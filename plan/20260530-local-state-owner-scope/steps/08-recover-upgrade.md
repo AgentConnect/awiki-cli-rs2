@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：08  
-状态：审查
+状态：完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
 | 开始时间 | 2026-05-30T20:22:58Z |
-| 完成时间 | |
-| 提交 | |
-| 审查证据 | 提交前审查：recover/replace 已改为 DID history 和 owner_did snapshot refresh，不做业务 owner rebind；`LegacyOwnerLookup` 生产调用已改为使用 `IdentitySummary.unique_id`；审查发现并修复旧 schema v3->v4 未执行 clean rebuild 的问题，改为确认 workspace SQLite backup 后删除旧 DB 文件集并创建干净 v17；审查发现并修复 legacy import 显式未知 `owner_did`/`credential_name` 会落到 default owner 的问题，改为 fail closed 并补测试；未新增 Secure discovery/default advertisement 或 public raw secure output。 |
+| 完成时间 | 2026-05-31T00:40:33Z |
+| 提交 | `20f21b6`：`awiki-cli: migrate local state to owner identity schema` |
+| 审查证据 | 提交前审查：recover/replace 已改为 DID history 和 owner_did snapshot refresh，不做业务 owner rebind；`LegacyOwnerLookup` 生产调用已改为使用 `IdentitySummary.unique_id`；审查发现并修复旧 schema v3->v4 未执行 clean rebuild 的问题，改为确认 workspace SQLite backup 后删除旧 DB 文件集并创建干净 v17；审查发现并修复 legacy import 显式未知 `owner_did`/`credential_name` 会落到 default owner 的问题，改为 fail closed 并补测试；未新增 Secure discovery/default advertisement 或 public raw secure output；提交后状态为分支 ahead 13，工作区干净。 |
 | 验证证据 | `CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked workspace_upgrade` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked import_legacy_database` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked recover` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked replace_did` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked --test identity_replace_did_upgrade_contract` 通过；`CARGO_BUILD_JOBS=1 cargo check -p awiki-cli --locked` 通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；redaction/discovery/legacy rebind 搜索命中已分类。 |
-| 下一步 | 创建步骤 08 聚焦实现提交，然后记录提交 hash 并标记步骤完成。 |
+| 下一步 | 步骤 09 开始前读取 `../plan.md`、[09-docs-diagnostics-dart.md](09-docs-diagnostics-dart.md) 和当前 `git status`。 |
 
 ## 2. 目标
 
@@ -89,7 +89,7 @@ Secure data-safety 规则：
 - [x] Secure state 只通过明确 key-material compatibility decision 被 preserve、repair、rotate 或 quarantine。
 - [x] Unresolved ownership 不会静默迁移。
 - [x] 审查发现 已处理或明确记录。
-- [ ] 已创建本步骤聚焦提交。
+- [x] 已创建本步骤聚焦提交。
 
 ## 8. 验证
 
