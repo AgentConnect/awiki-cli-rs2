@@ -4,7 +4,7 @@
 文档目录：`crates/awiki-deamon/docs/create/`
 创建日期：2026-05-30
 当前分支：`feature/release-0526/awiki-deamon`
-恢复位置：全部 8 个步骤和阶段 C Review 已完成；后续只需按残余风险重跑远端/本地系统 E2E
+恢复位置：全部 8 个初始化步骤和阶段 C Review 已完成；Step 08 残余 payload/token 本地系统验证已通过；后续执行 [长驻 daemon 进程真实 E2E 计划](steps/09-daemon-long-running-process-e2e.md)
 
 ## 1. 目标
 
@@ -130,6 +130,7 @@
 | 06 | user-service registration token API | 无强依赖；阶段 B 内可并行 | daemon/runtime registration token 契约与实现 | [steps/06-user-service-registration-token-api.md](steps/06-user-service-registration-token-api.md) | 必须 | 已完成 |
 | 07 | daemon agent 与 runtime agent 管理 | 01-06 | daemon DID 注册、runtime agent create/status、daemon 命令设计 | [steps/07-agent-registration-and-management.md](steps/07-agent-registration-and-management.md) | 必须 | 已完成 |
 | 08 | 集成、系统测试与发布门禁 | 01-07 | 跨仓 E2E、安全审查、文档和发布检查清单 | [steps/08-integration-system-tests-and-rollout.md](steps/08-integration-system-tests-and-rollout.md) | 如有文件变更则必须 | 已完成 |
+| 后续 09 | 长驻 daemon 进程真实 E2E | 01-08 | daemon 作为长驻进程接真实 message-service 的发布级闭环验证计划 | [steps/09-daemon-long-running-process-e2e.md](steps/09-daemon-long-running-process-e2e.md) | 实现时必须 | 待执行 |
 
 ## 9. 执行账本
 
@@ -148,6 +149,19 @@
 | 07 | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-31 04:35:30 CST | 2026-05-31 07:55:35 CST | `9ac7b4e` | Review 已完成：daemon agent/runtime agent DID 生成与本地私钥持久化、registration token 兑换、`controller_did` MVP 校验、`application/json + body.payload` command parser、ready/failed status outbox、daemon 管理命令、schema v4 迁移、CLI JSON 兼容输出、secret Debug 脱敏和 daemon/awiki-cli 边界已审查。发现并修复：secret-bearing request/identity 类型不再派生 serde；同步 registration client 在已有 Tokio runtime 内转入独立线程 runtime；`run_command_json` 保持 `status` 等命令原始 JSON 输出形状；恢复已有 daemon handle 时校验 controller mismatch；v3 `agent_definition` 升级到 v4 时回填 handle、policy、runtime plugin 和本地路径；文档中移除旧结构化 JSON 字段字面量。提交后 `git status --short --branch` 显示分支 ahead 2，工作区无未提交代码改动。 | `CARGO_BUILD_JOBS=1 cargo fmt --all --check` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` 通过；`CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；`rg -n "structured_json|application/vnd\\.awiki\\.agent-(command|status|result|task)\\+json" crates/awiki-deamon crates/im-core crates/im-core-dart` 无结果；生产代码日志搜索仅命中 `main.rs` 的 CLI stdout/stderr 输出；新增测试覆盖成功创建、非 controller 拒绝、registration token 失败不持久化 runtime agent、daemon 管理命令列表、identity Debug 脱敏。 | 开始步骤 08 |
 | 08 | 已完成 | `feature/release-0526/awiki-deamon`、`release/0526`（awiki-system-test） | 2026-05-31 08:00:16 CST | 2026-05-31 08:40:30 CST | `95864c1`（awiki-system-test） | Review 已完成：新增 `application/json + body.payload` direct/group 系统测试、user-service registration token 系统测试、daemon Rust contract wrapper、cleanup、CLAUDE 文档、旧字段/content type、daemon/awiki-cli 边界和环境性跳过原因均已审查；确认没有引入 `structured_json` 或 command/status/result 专用 JSON content type。提交后 awiki-system-test `git status --short --branch` 显示 `release/0526...origin/release/0526 [ahead 1]`，工作区干净。 | awiki-system-test 语法检查通过；3 个测试文件 collect-only 收集 7 个用例；设置 `AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2` 后 daemon Rust contract wrapper 3 passed、0 failed、0 skipped；payload 远端 suite 0 passed、0 failed、2 skipped，registration token 远端 suite 0 passed、0 failed、2 skipped，跳过原因均为远端 `https://awiki.ai/user-service/did-auth/rpc` 返回 502 Bad Gateway；未设置 Rust repo selector 时 daemon wrapper 0 passed、0 failed、3 skipped，属于设计内跳过；当前仓库 `cargo fmt --all --check`、`cargo test -p awiki-deamon --locked`、`cargo test -p im-core --locked payload`、`cargo test -p im-core-dart --locked payload_request_and_body_view_preserve_json_for_dart`、`cargo test --workspace --locked` 均通过；message-service focused payload 测试和 workspace 测试通过；user-service targeted registration token 测试 9 passed；user-service 全量测试仍受既有同名测试模块收集冲突影响。 | 执行阶段 C Review |
 | 阶段 C Review | 已完成 | `feature/release-0526/awiki-deamon`、`release/0526`（awiki-system-test） | 2026-05-31 08:43:45 CST | 2026-05-31 08:43:45 CST | 无新增代码提交；本次为阶段 Review 台账更新 | 阶段 C Review 通过：步骤 07-08 的 daemon agent/runtime agent 管理、`controller_did` MVP 校验、`application/json + body.payload` command/status、registration token 消费、本地 RPC token 安全继承验证、system-test 覆盖入口、CLAUDE 文档和发布残余风险已复核。未发现阻止完成初始化创建目标的问题；真实远端 E2E passed 证据受 user-service 502 影响，已作为残余风险记录。 | 复核证据：步骤 07 当前仓库 `cargo test --workspace --locked`、`cargo test -p awiki-deamon --locked`、旧字段/content type 搜索和 daemon/awiki-cli 边界搜索均通过；步骤 08 awiki-system-test 语法检查通过、collect-only 收集 7 个用例、daemon Rust contract wrapper 3 passed；message-service workspace 和 focused payload 测试通过；user-service targeted registration token 测试 9 passed；payload/token 远端 suite 0 failed 但各 2 skipped，跳过原因均为 `https://awiki.ai/user-service/did-auth/rpc` 502；user-service 全量测试仍受既有同名测试模块收集冲突影响。 | 初始化创建目标完成；后续在远端 user-service 恢复或本地 stack 可用后重跑 Step 08 远端/本地系统测试 |
+| Step 08 残余验证 | 已完成 | `feature/release-0526/awiki-deamon`、`feature/release-0526/daemon-registration-token-user-service`、`release/0526`（awiki-system-test） | 2026-05-31 09:00:00 CST | 2026-05-31 09:12:00 CST | `bcda176`（user-service：`user-service: map did bearer subjects for user rpc`）；本仓文档提交见后续提交 | Review 已完成：确认本地 user-service 9891 使用当前分支代码，message-service 18080 使用 `application/json + body.payload` 当前实现；发现 DID WBA bearer token 的 subject 为 DID，user 类型 RPC 需要反查内部 user_id，否则 registration token 会把 DID 写入 `issued_to_user_id` 并触发 MySQL 字段长度错误。已在 user-service 修复并推送。 | 详见 [release-validation.md](release-validation.md)：远端重跑不再是 502，但因 IP 注册限额跳过；本地模式 `AWIKI_SYSTEM_TEST_MODE=local` 下 payload suite 2 passed、0 failed、0 skipped，registration token suite 2 passed、0 failed、0 skipped，daemon contract wrapper 3 passed、0 failed、0 skipped；user-service 修复相关单测 `tests/app/test_rpc_dispatcher.py tests/app/agent_registration` 13 passed。 | 执行后续 09 长驻 daemon 进程真实 E2E 计划或实现 |
+
+## 9.1 发布前残余验证记录
+
+详见 [release-validation.md](release-validation.md)。
+
+结论：
+
+- Step 08 中 payload direct/group 与 registration token 两组系统测试已经在可控本地服务上取得 passed 证据，不再是 skipped。
+- daemon Rust contract wrapper 保持 passed。
+- 远端 `https://awiki.ai` 重跑时已经不再是 502，但仍会因当前 IP 注册限额跳过；远端环境可用性仍需要发布环境或 CI 独立确认。
+- 本轮发现并修复 user-service 的 DID bearer 到内部 user_id 映射问题，修复提交为 `bcda176`，已推送。
+- 仍未完成的是“长驻 daemon 进程接真实 message-service 的完整活体 E2E”；后续按 [steps/09-daemon-long-running-process-e2e.md](steps/09-daemon-long-running-process-e2e.md) 执行。
 
 ## 10. Codex Goal 执行协议
 
@@ -181,7 +195,7 @@
 |---|---|---|---|---|---|---|---|
 | 阶段 A | 已完成 | 通过。步骤 01-03 已形成可运行 daemon MVP：crate 和进程骨架、本地 RPC 安全、Generic CLI runtime 本地闭环均落在 `crates/awiki-deamon`，没有依赖 awiki-cli 内部模块。 | 未发现阻止进入阶段 B 的问题。 | 不适用；步骤内发现已在对应步骤修复并记录。 | 真实 payload 发送、真实 runtime CLI、长驻 listener、registration token 和跨服务 E2E 留到步骤 04-08。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；步骤 03 后 `cargo test --workspace --locked` 通过；daemon 源码/测试 awiki-cli 边界搜索无结果；旧字段和旧 content type 搜索无结果。 | 进入步骤 04。 |
 | 阶段 B | 已完成 | 通过。步骤 04-06 已把产品化所需的消息与身份承接能力补齐：`im-core` 暴露 `MessageBody::Payload` / `MessageBodyView::Payload` 并同步 Dart bridge；message-service direct/group 按 `meta.content_type = application/json` 与 `body.payload` 保留、存储、投递 JSON object；user-service 提供 daemon/runtime agent registration token 的签发、预检、兑换、撤销、过期和审计。 | 未发现阻止进入步骤 07 的问题。阶段 review 期间发现此前一条 `im-core` 精确测试名没有命中实际测试，已改用 `cargo test -p im-core --locked payload` 重新验证并通过。 | 步骤内已修复的问题包括 SDK 文档和旧字段搜索噪声、message-service group content-type/body shape 绑定、group list/incoming payload 保留测试、user-service reusable token 语义收紧、expired revoke 检查和测试文件命名。 | direct-e2ee/group-e2ee 内层 payload、跨 SDK 到真实 message-service 的进程级 E2E、daemon 真实注册闭环留到步骤 07/08；user-service 全量 `uv run python -m pytest tests -v` 仍受既有同名测试收集冲突影响，`--import-mode=importlib` 替代全量仍有既有 DID profile / DID relationship / Telegram 失败，均已记录且不阻塞 Step 07。 | `cargo test -p im-core --locked payload` 通过；`cargo test -p im-core-dart --locked payload_request_and_body_view_preserve_json_for_dart` 通过；message-service `cargo test -p im-direct --locked json_payload` 通过；message-service `cargo test -p im-group --locked group_incoming_notification_preserves_json_payload_body` 通过；user-service `uv run python -m pytest tests/app/agent_registration -q` 通过；三个仓库旧字段和旧专用 content type 搜索无结果；三个仓库工作区干净。 | 进入步骤 07。 |
-| 阶段 C | 已完成 | 通过。步骤 07-08 已完成 daemon agent/runtime agent 管理和系统测试发布门禁记录：daemon 侧实现 DID 生成/恢复、registration token 兑换、`controller_did` MVP 校验、payload command/status、最小管理命令和 DB schema v4；system-test 侧新增 payload、registration token 和 daemon Rust contract wrapper，并补齐 cleanup 与分层文档。 | 未发现阻止初始化创建目标完成的问题。阶段 review 期间确认真实远端 E2E 只能记录为跳过，不能记录为通过。 | 不适用；步骤 07 的实现发现已在步骤内修复，步骤 08 的系统测试和 cleanup 已提交到 awiki-system-test。 | 真实远端 direct/group payload 与 registration token 系统 E2E 因 user-service 502 未取得 passed 证据；本 Linux 容器不适合直接运行偏 macOS/Homebrew 的本地 stack install/start；daemon 长驻进程连接真实 message-service 的完整活体 E2E 需要后续在发布环境补跑。 | `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；`AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-project --python .venv/bin/python -m pytest tests_v2/daemon/test_awiki_daemon_rust_contracts.py -q` 通过，3 passed；awiki-system-test collect-only 7 collected；message-service workspace 测试通过；user-service targeted registration token 测试 9 passed；旧字段/content type 搜索无新增问题；daemon/awiki-cli 边界搜索无结果。 | 初始化创建计划完成；后续按残余风险补跑远端/本地系统 E2E。 |
+| 阶段 C | 已完成 | 通过。步骤 07-08 已完成 daemon agent/runtime agent 管理和系统测试发布门禁记录；Step 08 残余 payload/token 系统测试已在本地可控服务上补跑通过。 | 阶段 review 期间确认真实远端 E2E 不能假记为通过；残余验证期间发现 user-service user 类型 RPC 需要兼容 DID bearer subject，已修复并推送 `bcda176`。 | 步骤 07 的实现发现已在步骤内修复；步骤 08 的系统测试和 cleanup 已提交到 awiki-system-test；本轮 user-service DID bearer 到内部 user_id 映射问题已修复。 | 远端 `https://awiki.ai` 仍受当前 IP 注册限额影响；daemon 长驻进程连接真实 message-service 的完整活体 E2E 仍需按后续 09 执行。 | `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；daemon contract wrapper 3 passed；本地 payload suite 2 passed；本地 registration token suite 2 passed；user-service 相关测试 13 passed；message-service 本地健康；旧字段/content type 搜索无新增问题；daemon/awiki-cli 边界搜索无结果。 | 执行后续 09 长驻 daemon 进程真实 E2E。 |
 
 ## 12. 验证策略
 
@@ -240,6 +254,7 @@
 | 2026-05-30 | 删除协议仓库待执行阶段，将协议仓库修改作为已完成前置条件。 | 用户反馈协议仓库代码已经更新。 | 全部重新编号 | 是 |
 | 2026-05-30 | 计划正文改为中文，保留必要代码标识、路径和命令名。 | 用户要求以后所有计划全部使用中文。 | 全部 | 是 |
 | 2026-05-30 | 调整阶段顺序：daemon 工程骨架和本地 MVP 先于 SDK/service/token 产品化能力；补充阶段级代码 review 门禁。 | Review 发现原计划执行入口会先跑到 SDK/service，偏离 `crates/awiki-deamon` 初始化主线；用户要求每个阶段完成后做代码 review。 | 全部 | 是 |
+| 2026-05-31 | 新增 Step 08 残余发布验证记录和后续 09 长驻 daemon 进程真实 E2E 计划。 | 本轮已在本地可控服务取得 payload/token 系统测试 passed 证据；仍需把 daemon 长驻进程接真实 message-service 的完整闭环作为下一阶段入口。 | 08、后续 09 | 是 |
 
 ## 17. 风险与回滚
 

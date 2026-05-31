@@ -14,8 +14,8 @@
 | 完成时间 | 2026-05-31 08:40:30 CST |
 | 提交 | `95864c1`（awiki-system-test：`test: add daemon runtime host integration coverage`） |
 | 审查证据 | Review 已完成：系统测试新增 `application/json + body.payload` direct/group、user-service registration token、daemon Rust contract wrapper；helper cleanup、CLAUDE 分层文档、旧字段/content type、daemon/awiki-cli 边界、测试选择器和残余环境风险均已审查。 |
-| 验证证据 | awiki-system-test 语法检查通过；3 个测试文件 collect-only 收集 7 个用例；daemon Rust contract wrapper 设置 `AWIKI_DAEMON_RUST_REPO` 后 3 passed、0 failed、0 skipped；message-service payload 远端 suite 0 passed、0 failed、2 skipped，跳过原因是远端 `https://awiki.ai/user-service/did-auth/rpc` 返回 502；user-service registration token 远端 suite 0 passed、0 failed、2 skipped，跳过原因相同；未设置 Rust repo 选择器时 daemon wrapper 0 passed、0 failed、3 skipped，属于设计内跳过；当前仓库、message-service、user-service 的组件/全量验证见第 8 节。 |
-| 下一步 | 执行阶段 C Review。 |
+| 验证证据 | 初次执行时 awiki-system-test 语法检查通过、collect-only 收集 7 个用例、daemon Rust contract wrapper 3 passed、0 failed、0 skipped；payload/token 远端 suite 因远端 user-service 502 只能记录为 skipped。2026-05-31 09:12 CST 已补跑残余验证：远端重跑转为 IP 注册限额跳过；本地可控 user-service/message-service 下 payload suite 2 passed、0 failed、0 skipped，registration token suite 2 passed、0 failed、0 skipped，daemon wrapper 3 passed、0 failed、0 skipped；详见 [../release-validation.md](../release-validation.md)。 |
+| 下一步 | 执行 [09 长驻 daemon 进程真实 E2E](09-daemon-long-running-process-e2e.md)。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -77,9 +77,9 @@
 
 ## 7. 验收标准
 
-- [x] `application/json + body.payload` direct/group 系统测试入口已补齐；真实远端运行因 user-service 502 跳过，组件级 message-service workspace 验证已通过。
+- [x] `application/json + body.payload` direct/group 系统测试入口已补齐；本地可控 user-service/message-service 下 2 passed、0 failed、0 skipped。
 - [x] SDK payload history/incoming 解析通过 `im-core`、`im-core-dart` 和 daemon Rust contract wrapper 验证。
-- [x] user-service registration token 成功路径和失败路径系统测试入口已补齐；真实远端运行因 user-service 502 跳过，服务内 targeted registration token 测试 9 passed。
+- [x] user-service registration token 成功路径和失败路径系统测试入口已补齐；本地可控 user-service/message-service 下 2 passed、0 failed、0 skipped。
 - [x] daemon 本地 RPC token 安全测试沿用 `awiki-deamon` crate 和 Step 02/03/07 验证；Step 08 wrapper 已覆盖 `cargo test -p awiki-deamon --locked`。
 - [x] daemon MVP 测试 runtime 闭环通过 `awiki-deamon` crate 和 workspace 测试验证。
 - [x] 安全审查证据已记录。
@@ -108,6 +108,11 @@
 - awiki-system-test：`uv run --no-project --python .venv/bin/python -m pytest tests_v2/message_service/test_payload_local.py -q -rs` 结果 0 passed、0 failed、2 skipped；跳过用例为 direct payload 和 group payload 两个远端系统测试，原因是 node-a identity bootstrap 依赖的远端 user-service `https://awiki.ai/user-service/did-auth/rpc` 返回 502 Bad Gateway；当前配置为 `AWIKI_SYSTEM_TEST_MODE=remote`、user-service URL `https://awiki.ai`、message-service URL `https://awiki.ai`、WebSocket URL `wss://awiki.ai/im/ws`、DID domain `awiki.ai`。
 - awiki-system-test：`uv run --no-project --python .venv/bin/python -m pytest tests_v2/user_service/test_agent_registration_token_local.py -q -rs` 结果 0 passed、0 failed、2 skipped；跳过用例为 registration token issue/verify/exchange/reuse 和 scope mismatch 两个远端系统测试，原因同上。
 - awiki-system-test：`uv run --no-project --python .venv/bin/python -m pytest tests_v2/daemon/test_awiki_daemon_rust_contracts.py -q -rs` 在未设置 Rust repo selector 时结果 0 passed、0 failed、3 skipped；跳过原因为 wrapper 需要 `AWIKI_DAEMON_RUST_REPO`、`AWIKI_CLI_RUST_REPO` 或 `AWIKI_CLI_UNDER_TEST=rust`，属于设计内跳过。
+- awiki-system-test 残余远端重跑：payload direct/group 结果 0 passed、0 failed、2 skipped；registration token 结果 0 passed、0 failed、2 skipped；跳过原因从 502 变为远端 user-service 当前 IP 注册数量限制，具体为 `Registration limit exceeded for this IP (max 100)`。
+- 本地 user-service 修复：`bcda176 user-service: map did bearer subjects for user rpc` 已推送；修复 DID WBA bearer token 在 user 类型 RPC 中需要反查内部 user_id 的问题，避免 registration token 把 DID 写入 `issued_to_user_id`。
+- awiki-system-test 本地模式：`AWIKI_SYSTEM_TEST_MODE=local ... uv run --no-project --python .venv/bin/python -m pytest tests_v2/user_service/test_agent_registration_token_local.py -q -rs` 通过，2 passed、0 failed、0 skipped，配置为 user-service `http://127.0.0.1:9891`、message-service `http://127.0.0.1:18080`、WebSocket `ws://127.0.0.1:18080/im/ws`、DID domain `awiki.info`。
+- awiki-system-test 本地模式：`AWIKI_SYSTEM_TEST_MODE=local ... uv run --no-project --python .venv/bin/python -m pytest tests_v2/message_service/test_payload_local.py -q -rs` 通过，2 passed、0 failed、0 skipped，配置同上。
+- awiki-system-test：`AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-project --python .venv/bin/python -m pytest tests_v2/daemon/test_awiki_daemon_rust_contracts.py -q` 重跑通过，3 passed、0 failed、0 skipped、耗时约 3.75s。
 - awiki-system-test：`uv run --no-project --python .venv/bin/python manage_local_test_env.py check` 失败；本容器缺少本地拓扑依赖，该脚本偏 macOS/Homebrew 并可能触达 sudo/nginx/postgres，因此没有盲目执行 install/start。
 - 当前仓库：`CARGO_BUILD_JOBS=1 cargo fmt --all --check` 通过。
 - 当前仓库：`CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` 通过。
@@ -129,8 +134,8 @@
 |---|---|---|
 | 发现 | 已处理 | 新增 payload 系统测试必须使用 `application/json + body.payload`，不能引入旧字段或 daemon 专用 content type；registration token 测试需要把兑换出的 DID/user_id 接入 cleanup；daemon contract wrapper 不能依赖 awiki-cli 内部模块；真实远端 E2E 当前受 user-service 502 影响，不能记录为通过。 |
 | 已修复 | 已完成 | 增加 `tests_v2/message_service/test_payload_local.py`、`tests_v2/user_service/test_agent_registration_token_local.py`、`tests_v2/daemon/test_awiki_daemon_rust_contracts.py`；补充 `AGENT_REGISTRATION_RPC` helper 导出；cleanup 支持存在时删除 `agent_registration_tokens` 相关测试数据；补充 daemon/user_service L2 文档和父级 CLAUDE 索引。 |
-| 残余风险 | 已记录 | 真实 message-service/user-service 远端系统 E2E 因 `https://awiki.ai/user-service/did-auth/rpc` 502 未取得通过证据；本 Linux 容器不适合直接运行偏 macOS/Homebrew 的本地环境安装脚本；daemon 长驻进程连接真实 message-service 的完整活体 E2E 仍以后续发布环境验证为准。 |
-| 测试缺口 | 已记录 | Step 08 已提供系统测试入口和组件/contract 证据，但没有在当前环境取得 direct/group payload 和 registration token 远端 E2E passed；user-service 全量测试仍受既有测试收集冲突影响。 |
+| 残余风险 | 已收敛 | direct/group payload 和 registration token 已在本地可控服务取得系统测试 passed；远端仍受当前 IP 注册限额影响；daemon 长驻进程连接真实 message-service 的完整活体 E2E 仍需按步骤 09 执行。 |
+| 测试缺口 | 已记录 | Step 08 的 payload/token skipped 风险已通过本地系统测试关闭；仍缺长驻 daemon 进程接真实 message-service 的完整活体 E2E；user-service 全量测试仍受既有测试收集冲突影响。 |
 | 文档缺口 | 已完成 | 已更新 awiki-system-test 的根级、tests_v2、daemon、user_service、message_service、helpers CLAUDE 文档；本步骤文档和主计划账本记录验证、跳过原因、审查和残余风险。 |
 
 ## 10. 提交要求
@@ -146,6 +151,7 @@
 | 阻塞 | 证据 | 已尝试方案 | 影响范围 | 下一决策 |
 |---|---|---|---|---|
 | 远端 user-service 返回 502，导致真实远端 payload/token 系统测试跳过 | `pytest -q -rs` 显示 node-a identity bootstrap 依赖的 `https://awiki.ai/user-service/did-auth/rpc` 返回 502 Bad Gateway | 补充 collect-only、语法检查、daemon Rust contract wrapper、当前仓库 workspace、message-service workspace、user-service targeted registration token 测试作为替代证据；记录远端配置上下文和跳过用例 | 只影响当前环境中的远端系统 E2E passed 证据，不影响已提交的测试入口和组件级验证 | 后续在 user-service 远端恢复或本地 stack 可用后重跑 payload/token suite |
+| 远端 IP 注册限额导致真实远端 payload/token 系统测试跳过 | 2026-05-31 09:00 CST 重跑显示 `Registration limit exceeded for this IP (max 100)` | 改用本地可控 user-service/message-service，修复 user-service DID bearer subject 映射问题，重跑 payload/token 系统测试均通过 | 不影响本地系统验证 passed；远端发布环境仍需独立测试账号/IP/清理策略 | 已记录到 [../release-validation.md](../release-validation.md)；远端环境验证作为发布环境事项 |
 | 本地系统测试环境脚本不适合当前 Linux 容器直接安装启动 | `manage_local_test_env.py check` 失败，脚本偏 macOS/Homebrew 且可能触达 sudo/nginx/postgres | 没有盲目运行 install/start；改用现有组件验证和系统测试 collect/skip 证据 | 当前环境无法证明本地全栈 E2E | 后续在匹配的 macOS/Homebrew 或 CI 环境运行本地 stack |
 
 ## 12. 计划变更记录
@@ -153,9 +159,10 @@
 | 日期 | 变更 | 原因 | 主计划记录 |
 |---|---|---|---|
 | 2026-05-31 | Step 08 验收从“必须在当前环境获得真实远端 E2E passed”调整为“补齐系统测试入口并记录可运行验证、环境性跳过和残余风险”。 | 当前远端 user-service 返回 502，本地 stack 安装脚本不适合当前 Linux 容器；继续要求假性 passed 会污染发布判断。 | 主计划 Step 08 和阶段 C Review 记录替代验证与残余风险。 |
+| 2026-05-31 | 追加 Step 08 残余验证记录，payload/token 系统测试改用本地可控服务取得 passed 证据。 | 用户授权本地修改服务端代码并重启服务；本轮修复 user-service DID bearer 到内部 user_id 映射后，系统测试已通过。 | 主计划新增 `release-validation.md` 和步骤 09 后续计划。 |
 
 ## 13. 风险、回滚与后续
 
-- 风险：当前环境没有取得真实远端 direct/group payload 和 registration token 系统 E2E passed 证据；daemon 长驻进程连真实 message-service 的完整活体 E2E 仍需要在发布环境补跑。
+- 风险：当前环境已经取得本地 direct/group payload 和 registration token 系统 E2E passed 证据；远端 `https://awiki.ai` 仍受当前 IP 注册限额影响；daemon 长驻进程连真实 message-service 的完整活体 E2E 仍需要按步骤 09 补跑。
 - 回滚：系统测试提交只新增测试入口、helper cleanup 和文档；如远端契约变化导致失败，可回滚 awiki-system-test 提交 `95864c1` 或在后续提交中调整测试夹具。
-- 后续：在远端 user-service 恢复或可控本地 stack 可用后，重跑 `tests_v2/message_service/test_payload_local.py` 与 `tests_v2/user_service/test_agent_registration_token_local.py`；MVP 发布后继续推进 Claude Code driver、Hermes/OpenClaw 原生插件、workspace sandbox 加固和未来 proof/delegation 计划。
+- 后续：执行 [09 长驻 daemon 进程真实 E2E](09-daemon-long-running-process-e2e.md)；远端发布环境补跑 payload/token suite 时需要使用独立测试账号/IP 或清理策略；MVP 发布后继续推进 Claude Code driver、Hermes/OpenClaw 原生插件、workspace sandbox 加固和未来 proof/delegation 计划。
