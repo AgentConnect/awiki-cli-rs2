@@ -1,0 +1,229 @@
+# Step 02: Hermes profile 与 Awiki Skills 安装
+
+主计划: [../plan.md](../plan.md)  
+步骤编号: 02  
+状态：draft
+
+## 1. 执行状态
+
+| 字段 | 值 |
+|---|---|
+| 状态 | pending |
+| 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
+| 开始时间 | 未开始 |
+| 完成时间 | 未完成 |
+| 提交 | 未提交 |
+| 审查证据 | 待记录 |
+| 验证证据 | 待记录 |
+| 下一步 | 等 Step 01 完成后，实现 Hermes profile/Skills 初始化 |
+
+允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
+
+## 2. 目标
+
+- 目标：为 `runtime.hermes` Runtime Agent 创建本地 Hermes profile，并由 daemon 自动安装 Awiki Skills。
+- 系统可见结果：`runtime.agent.create` 创建 Hermes agent 后，daemon 能落库 `hermes_profiles`，在 profile home 写入 SOUL.md/profile config/Skills，并完成无副作用 smoke test。
+- 非目标：不启动真实消息执行，不调用 `msg.send`，不调用 `task.finish`，不安装 Hermes Python plugin，不写长期 run token。
+
+## 3. 范围
+
+| 仓库 / 模块 / 文件 | 计划变更 | 备注 |
+|---|---|---|
+| `crates/awiki-deamon/src/state/mod.rs` | 新增 `hermes_profiles` schema、migration、CRUD | schema version 递增，必须兼容旧 DB。 |
+| `crates/awiki-deamon/src/plugins/hermes/` | 新增 profile manager、skill installer、installation checker | 可新增 `mod.rs`, `profile.rs`, `skills.rs`, `install.rs`。 |
+| `crates/awiki-deamon/src/config.rs` | 如需新增 Hermes home/cache 路径，从 `state_root/runtime/hermes` 派生 | 路径必须在 `state_root` 下。 |
+| `crates/awiki-deamon/src/commands/mod.rs` | `runtime.agent.create` 对 `runtime: "hermes"` 调用 Hermes 初始化 | user-service registration token 流程保持不变。 |
+| `crates/awiki-deamon/docs/hermes-plugin/` | 记录 profile layout、Skills 内容和 smoke test 约束 | 中文。 |
+| `crates/awiki-deamon/tests/` | 增加 profile/Skills 初始化测试 | 不依赖真实 Hermes。 |
+
+## 4. 依赖
+
+- 前置步骤：Step 01。
+- 外部文档或决策：[../../hermes_runtime_plugin_design.md](../../hermes_runtime_plugin_design.md) 的第 6-9、16 章。
+- 环境前置条件：可写临时目录；无需真实 Hermes binary。
+
+## 5. 设计
+
+### Hermes profile 表
+
+新增 `hermes_profiles`，建议字段与设计文档保持一致：
+
+```sql
+CREATE TABLE hermes_profiles (
+  agent_did TEXT PRIMARY KEY,
+  runtime_profile_id TEXT NOT NULL,
+  hermes_profile TEXT NOT NULL,
+  hermes_home TEXT NOT NULL,
+  hermes_version TEXT,
+  awiki_skills_version TEXT,
+  status TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+```
+
+实现要求：
+
+- `agent_did` 与 daemon `agent_definition` 逻辑关联，不复制 DID 私钥。
+- `hermes_home` 必须落在 `DaemonConfig.state_root` 下，默认可用：
+
+```text
+<state_root>/runtime/hermes/profiles/<stable-agent-segment>/
+```
+
+- `hermes_profile` 是 Hermes profile 名，使用稳定安全 segment，例如 `awiki_<handle>` 或 `profile_hermes_<handle>`。
+- schema migration 使用 `CREATE TABLE IF NOT EXISTS` 和 `add_column_if_missing` 风格，旧 DB 可直接升级。
+
+### profile 文件布局
+
+建议落地：
+
+```text
+<hermes_home>/
+├── SOUL.md
+├── awiki-profile.json
+└── skills/
+    ├── awiki-runtime/
+    │   └── SKILL.md
+    ├── awiki-messaging/
+    │   └── SKILL.md
+    └── awiki-collaboration/
+        └── SKILL.md
+```
+
+`awiki-profile.json` 只写低风险配置：
+
+- agent DID、runtime_profile_id、controller_did；
+- daemon CLI wrapper 路径或命令名；
+- local RPC socket path；
+- skills version；
+- 明确 `run_capability_token` 不在 profile 中持久化。
+
+不得写入：
+
+- `runtime_rpc_token`；
+- 可用于 `msg.send`、`task.finish` 的 profile token；
+- DID private key；
+- user JWT；
+- Hermes Python plugin 配置。
+
+### Skills 内容
+
+`awiki-runtime/SKILL.md`：
+
+- 指导 Hermes 对当前 message/run 上报状态和最终回复；
+- 使用 wrapper 能力名 `report-status`、`finish-message`；
+- 提醒失败首版使用 failed status，不调用 success final。
+
+`awiki-messaging/SKILL.md`：
+
+- 指导 Hermes 外发消息必须调用 wrapper `send-message`；
+- 说明 daemon 会校验 run token、method scope、recipient scope；
+- 禁止直接连接 message-service 或声称未成功发送的消息已发送。
+
+`awiki-collaboration/SKILL.md`：
+
+- 指导 agent-to-agent 协作仍通过 `awiki-messaging`；
+- 说明非 controller 消息不自动执行。
+
+### smoke test
+
+初始化 smoke test 只允许：
+
+- profile 目录可创建；
+- Skills 文件存在且内容非空；
+- daemon CLI wrapper 路径存在或命令可定位；
+- local RPC socket path 配置格式正确；
+- 可选 `rpc.ping` 使用专门低风险 test token 或 profile health token；不得使用可写 run token。
+
+如果当前 daemon 尚无独立 wrapper binary，smoke test 可先检查 `CliWrapperRequest` 序列化和 `rpc.ping` handler，真实进程调用留给 Step 07。
+
+## 6. 细节与流程
+
+1. 更新主计划执行账本，将 Step 02 标记为 `in_progress`。
+2. 读取 Step 01 输出，确认契约未变。
+3. 在 `state/mod.rs` 增加 schema version 和 `hermes_profiles` migration；新增 store/load/upsert 方法。
+4. 新增 Hermes profile manager：
+   - 从 `RuntimeAgentProfile` 和 `DaemonConfig` 派生 stable profile name；
+   - 创建目录；
+   - 写 SOUL.md 和 `awiki-profile.json`；
+   - 安装或更新 Skills；
+   - 写入 `hermes_profiles`。
+5. 修改 `create_runtime_agent` 流程：当 `runtime_plugin_id == "runtime.hermes"` 时，在 agent/profile/workspace 已落库后调用 Hermes 初始化。
+6. 初始化失败时：
+   - 不删除已成功注册的 DID，避免破坏 user-service 已兑换 token 的事实；
+   - 将 Hermes profile 状态标记 `failed`；
+   - 向 controller 回 failed 状态；
+   - audit 记录失败原因但不记录 secret。
+7. 增加测试：
+   - Hermes runtime agent create 会写 `agent_definition`、`runtime_profile`、`hermes_profiles`；
+   - profile 文件和 3 个 Skill 存在；
+   - profile 内容不包含 token/private key；
+   - 初始化不会创建 `plugins/awiki-runtime/plugin.yaml`；
+   - 旧 DB migration 后有 `hermes_profiles`。
+8. 运行验证，进入 review，修复发现后提交。
+
+## 7. 验收标准
+
+- [ ] `runtime.agent.create` 支持 `runtime: "hermes"` 并创建 Hermes profile。
+- [ ] `hermes_profiles` schema 和 CRUD 有测试覆盖。
+- [ ] Awiki Skills 由 daemon 写入 Hermes profile，且内容指导 wrapper/local RPC，不声称自己是安全边界。
+- [ ] 初始化 smoke test 不使用可写 run token、不发送真实 ANP 消息、不调用 final。
+- [ ] profile 中不持久化 DID 私钥、JWT、runtime_rpc_token 或可写 profile token。
+- [ ] 未创建 Hermes plugin 目录、`plugin.yaml`、`tools.py` 等 Python plugin 文件。
+- [ ] 审查发现 已修复或明确记录。
+- [ ] 本步骤创建一个聚焦提交后才进入 Step 03。
+
+## 8. 验证方式
+
+| 检查 | 命令或方法 | 预期证据 |
+|---|---|---|
+| 格式 | `cargo fmt --all --check` | 通过。 |
+| daemon focused | `cargo test -p awiki-deamon --locked hermes_profile` | profile/Skills/schema 测试通过。 |
+| daemon 全量 | `cargo test -p awiki-deamon --locked` | 通过。 |
+| secret 搜索 | `rg -n "runtime_rpc_token|private.key|auth_private_key|jwt_token" <tmp profile evidence or tests>` | profile 产物测试确认不包含 secret；生产代码仅允许字段名处理。 |
+| 禁止 plugin | `rg -n "plugin.yaml|plugins/awiki-runtime|tools.py|__init__.py" crates/awiki-deamon/src crates/awiki-deamon/tests` | 无生产安装逻辑。 |
+| 文档空白 | `git diff --check -- crates/awiki-deamon` | 通过。 |
+
+## 9. 审查流程
+
+- 实现后、提交前必须进行审查。
+- 检查 schema migration、路径安全、secret 泄露、初始化失败语义、Skill 文案和用户可见状态。
+- 安全 review：profile 初始化不得产生长期可写能力；Skills 不得绕过 daemon。
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | 待记录 |  |
+| 已修复 | 待记录 |  |
+| 残余风险 | 待记录 |  |
+| 测试新增或缺失 | 待记录 |  |
+| 文档更新或缺失 | 待记录 |  |
+
+## 10. 提交要求
+
+- 提交时机：实现、验证、review 修复完成后。
+- 提交范围：Hermes profile/Skills 初始化、schema、测试和直接相关文档。
+- 提交前状态：记录 `git status --short --branch`。
+- 纳入文件：记录纳入提交的文件。
+- 提交后证据：记录 commit hash 和提交后 `git status --short --branch`。
+- 遗留未提交变更：明确记录。
+- 建议提交信息：`daemon: initialize hermes profiles and skills`
+
+## 11. 阻塞处理
+
+| 阻塞项 | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
+|---|---|---|---|---|
+| Hermes profile layout 与真实 Hermes 版本不一致 | 记录 Hermes version、profile docs 或错误 | 将 layout 封装在 profile manager；fake profile 测试先通过 | 真实 Hermes smoke | 先提交 daemon layout，Step 03 真实 gateway 时调整计划 |
+| schema migration 无法兼容旧 DB | 记录旧 DB fixture 和错误 | 增加 migration test，使用 additive schema | 当前步骤 | 修复后才能提交 |
+
+## 12. 计划变更记录
+
+| 日期 | 变更 | 原因 | 主计划变更日志链接 |
+|---|---|---|---|
+| 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+
+## 13. 风险、回滚与后续
+
+- 风险：profile layout 可能需要随 Hermes 真实版本调整；Skill 文案可能过强导致模型误以为具备权限。
+- 回滚/fallback：回滚本步骤提交会移除 Hermes profile 初始化；已注册 runtime agent 可继续作为普通 agent 记录存在。
+- 后续文档：若 profile layout 固化，补充 `crates/awiki-deamon/docs/hermes-plugin/profile-layout.md` 或更新设计文档。
