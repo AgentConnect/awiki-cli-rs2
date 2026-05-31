@@ -224,6 +224,8 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &Path, extra_env: &[(&str,
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env_remove("AWIKI_CLI_DISABLE_STRICT_VERSION")
         .env_remove("AWIKI_CLI_UPDATE_CACHE_ONLY")
         .env_remove("AWIKI_CLI_UPDATE_CACHE_TTL")

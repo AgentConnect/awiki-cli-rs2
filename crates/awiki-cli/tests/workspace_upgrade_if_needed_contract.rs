@@ -8,6 +8,45 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const LEGACY_V6_TABLES_SQL: &str = r#"
+CREATE TABLE messages (
+    msg_id          TEXT NOT NULL,
+    owner_did       TEXT NOT NULL DEFAULT '',
+    thread_id       TEXT NOT NULL,
+    direction       INTEGER NOT NULL DEFAULT 0,
+    sender_did      TEXT,
+    receiver_did    TEXT,
+    group_id        TEXT,
+    group_did       TEXT,
+    content_type    TEXT DEFAULT 'text',
+    content         TEXT,
+    title           TEXT,
+    server_seq      INTEGER,
+    sent_at         TEXT,
+    stored_at       TEXT NOT NULL,
+    is_e2ee         INTEGER DEFAULT 0,
+    is_read         INTEGER DEFAULT 0,
+    sender_name     TEXT,
+    metadata        TEXT,
+    credential_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (msg_id, owner_did)
+);
+
+CREATE TABLE e2ee_outbox (
+    outbox_id            TEXT PRIMARY KEY,
+    owner_did            TEXT NOT NULL DEFAULT '',
+    peer_did             TEXT NOT NULL,
+    session_id           TEXT,
+    original_type        TEXT NOT NULL DEFAULT 'text',
+    plaintext            TEXT NOT NULL,
+    local_status         TEXT NOT NULL DEFAULT 'queued',
+    attempt_count        INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    credential_name      TEXT NOT NULL DEFAULT ''
+);
+"#;
+
 #[test]
 fn workspace_upgrade_if_needed_skips_empty_workspace_and_captures_inspection_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-empty").expect("temp workspace");
@@ -22,7 +61,7 @@ fn workspace_upgrade_if_needed_skips_empty_workspace_and_captures_inspection_lik
     assert!(!Path::new(&paths.journal_path).exists());
     assert_eq!(context.current_meta, None);
     let inspection = context.inspection.expect("inspection captured");
-    assert_eq!(inspection.detection.current_version, 3);
+    assert_eq!(inspection.detection.current_version, 4);
     assert_eq!(inspection.detection.current_version_source, "default_empty");
     assert!(inspection.detection.empty);
 }
@@ -65,7 +104,7 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
     workspace_upgrade::save_meta(
         &latest_paths.meta_path,
         &workspace_upgrade::Meta {
-            workspace_schema_version: 3,
+            workspace_schema_version: 4,
             app_version: "1.2.3".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
             last_upgrade_id: String::new(),
@@ -79,8 +118,8 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
         &workspace_upgrade::Journal {
             upgrade_id: "upgrade-latest".to_string(),
             from_version: 2,
-            to_version: 3,
-            current_step: "workspace_2_to_3_replace_existing_k1_handle_dids".to_string(),
+            to_version: 4,
+            current_step: "workspace_3_to_4_owner_identity_local_state".to_string(),
             phase: "validating".to_string(),
             backup_dir: "backup-latest".to_string(),
             started_at: "2026-05-14T00:01:00Z".to_string(),
@@ -96,13 +135,13 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
     let meta = workspace_upgrade::load_meta(&latest_paths.meta_path)
         .expect("load latest meta")
         .expect("meta remains");
-    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(
         latest_context
             .current_meta
             .expect("current meta captured before no-op")
             .workspace_schema_version,
-        3
+        4
     );
 }
 
@@ -114,7 +153,7 @@ fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
     workspace_upgrade::save_meta(
         &paths.meta_path,
         &workspace_upgrade::Meta {
-            workspace_schema_version: 4,
+            workspace_schema_version: 5,
             app_version: "9.9.9".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
             last_upgrade_id: String::new(),
@@ -128,12 +167,12 @@ fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
         .expect_err("newer schema should be rejected");
     assert_eq!(
         err.to_string(),
-        "workspace schema version 4 is newer than supported 3"
+        "workspace schema version 5 is newer than supported 4"
     );
 }
 
 #[test]
-fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() {
+fn workspace_upgrade_if_needed_applies_local_v0_to_v4_without_current_k1_dids() {
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v0-v1-local").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
@@ -144,7 +183,7 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.3");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("no-k1 v2 to v3 migration should complete locally");
+        .expect("no-k1 v2 to v4 migration should complete locally");
     assert!(
         Path::new(&paths.lock_path).exists(),
         "lock anchor should be created before migration execution"
@@ -154,7 +193,7 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
     assert_eq!(lock["app_version"], "1.2.3");
 
     let guard = workspace_upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
-        .expect("upgrade_if_needed should release the OS lock after completed v2 to v3");
+        .expect("upgrade_if_needed should release the OS lock after completed v2 to v4");
     guard.release().expect("release lock");
 
     assert!(
@@ -178,23 +217,23 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved after v2 to v3");
-    assert_eq!(meta.workspace_schema_version, 3);
+        .expect("meta saved after v2 to v4");
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.app_version, "1.2.3");
     assert_eq!(meta.last_backup_dir, context.backup_dir);
     assert_eq!(
         context
             .current_meta
             .as_ref()
-            .expect("context meta after v2 to v3")
+            .expect("context meta after v2 to v4")
             .workspace_schema_version,
-        3
+        4
     );
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after completed v2 to v3"
+        "journal should be cleared after completed v2 to v4"
     );
 }
 
@@ -213,7 +252,7 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.7");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("legacy config migration should complete through no-k1 v2 to v3");
+        .expect("legacy config migration should complete through no-k1 v2 to v4");
 
     assert!(
         !Path::new(&paths.legacy_config_file).exists(),
@@ -226,8 +265,8 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     assert_contains(&config, "  did_domain: legacy.example\n");
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta after v2 to v3");
-    assert_eq!(meta.workspace_schema_version, 3);
+        .expect("meta after v2 to v4");
+    assert_eq!(meta.workspace_schema_version, 4);
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
@@ -264,7 +303,7 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.4");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("no-k1 v2 to v3 migration should complete with reused backup");
+        .expect("no-k1 v2 to v4 migration should complete with reused backup");
     assert_eq!(context.backup_dir, path_string(&existing_backup));
     assert_eq!(
         std::fs::read_to_string(existing_backup.join("sentinel.txt")).unwrap(),
@@ -282,7 +321,7 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta after reused backup migration");
-    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.last_backup_dir, path_string(&existing_backup));
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
@@ -313,16 +352,17 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     )
     .expect("write legacy settings");
     let old_did = seed_flat_legacy_identity(&paths, "legacy");
+    seed_legacy_sqlite_message(&resolved, "legacy-msg", &old_did, "legacy");
 
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.5");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("imported handle k1 replacement should complete like Go");
+        .expect("imported handle k1 replacement should complete through v4");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta after imported k1 replacement");
-    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.workspace_schema_version, 4);
     assert!(meta.warnings.is_empty());
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
@@ -355,10 +395,199 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     assert_eq!(backup_manifest["identity_name"], "legacy");
     assert_eq!(backup_manifest["old_did"], old_did);
     assert_eq!(backup_manifest["planned_new_did"], new_did);
+
+    let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open upgraded db");
+    let (owner_identity_id, owner_did, conversation_id, thread_id, content): (
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = db
+        .query_row(
+            "SELECT owner_identity_id, owner_did, conversation_id, thread_id, content FROM messages WHERE msg_id = ?1",
+            ["legacy-msg"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .expect("imported legacy message");
+    let new_identity_id = new_did.rsplit(':').next().unwrap_or(new_did);
+    assert_eq!(owner_identity_id, new_identity_id);
+    assert_eq!(owner_did, new_did);
+    assert_eq!(conversation_id, "dm:did:wba:example.test:user:e1_peer");
+    assert_eq!(thread_id, conversation_id);
+    assert_eq!(content, "legacy hello");
 }
 
 #[test]
-fn workspace_upgrade_if_needed_applies_v1_to_v3_without_current_k1_dids() {
+fn workspace_upgrade_if_needed_v3_to_v4_records_did_history_and_refreshes_snapshots() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-v3-v4").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    workspace_upgrade::save_meta(
+        &paths.meta_path,
+        &workspace_upgrade::Meta {
+            workspace_schema_version: 3,
+            app_version: "1.0.0".to_string(),
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save v3 meta");
+    std::fs::create_dir_all(&paths.identity_dir).expect("create identity dir");
+    std::fs::write(
+        Path::new(&paths.identity_dir).join("index.json"),
+        r#"{"schema_version":3,"default_credential_name":"current","credentials":{"current":{"credential_name":"current","dir_name":"current","did":"did:wba:example.test:user:e1_current","unique_id":"e1_current","name":"Current User","handle":"current","full_handle":"current.example.test","is_default":true}}}"#,
+    )
+    .expect("write identity index");
+    let db = open_local_state(&resolved.paths).expect("open local state");
+    db.execute(
+        "INSERT INTO messages(msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?6, ?7)",
+        rusqlite::params![
+            "msg-v3",
+            "e1_current",
+            "did:wba:example.test:user:old_current",
+            "dm:peer",
+            "hello",
+            "2026-05-15T00:00:00Z",
+            "current"
+        ],
+    )
+    .expect("insert stale owner_did snapshot");
+    drop(db);
+
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.13");
+    workspace_upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect("v3 to v4 should record DID history");
+
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta saved after v3 to v4");
+    assert_eq!(meta.workspace_schema_version, 4);
+    assert!(meta.warnings.is_empty());
+    let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open upgraded db");
+    let history: Vec<(String, String)> = db
+        .prepare(
+            "SELECT did, status FROM identity_did_history WHERE owner_identity_id = ?1 ORDER BY did",
+        )
+        .expect("prepare history")
+        .query_map(["e1_current"], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("query history")
+        .collect::<Result<_, _>>()
+        .expect("collect history");
+    assert_eq!(
+        history,
+        vec![(
+            "did:wba:example.test:user:e1_current".to_string(),
+            "current".to_string()
+        )]
+    );
+    let owner_did: String = db
+        .query_row(
+            "SELECT owner_did FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            ["e1_current", "msg-v3"],
+            |row| row.get(0),
+        )
+        .expect("query refreshed message owner_did");
+    assert_eq!(owner_did, "did:wba:example.test:user:e1_current");
+}
+
+#[test]
+fn workspace_upgrade_if_needed_v3_to_v4_rebuilds_old_sqlite_schema_after_backup() {
+    let workspace =
+        TempDir::new("workspace-upgrade-if-needed-v3-v4-rebuild").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    workspace_upgrade::save_meta(
+        &paths.meta_path,
+        &workspace_upgrade::Meta {
+            workspace_schema_version: 3,
+            app_version: "1.0.0".to_string(),
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save v3 meta");
+    std::fs::create_dir_all(&paths.identity_dir).expect("create identity dir");
+    std::fs::write(
+        Path::new(&paths.identity_dir).join("index.json"),
+        r#"{"schema_version":3,"default_credential_name":"current","credentials":{"current":{"credential_name":"current","dir_name":"current","did":"did:wba:example.test:user:e1_current","unique_id":"e1_current","name":"Current User","handle":"current","full_handle":"current.example.test","is_default":true}}}"#,
+    )
+    .expect("write identity index");
+    std::fs::create_dir_all(Path::new(&resolved.paths.database_file).parent().unwrap())
+        .expect("create db dir");
+    {
+        let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open old db");
+        db.execute_batch(
+            r#"
+CREATE TABLE messages (
+    msg_id TEXT PRIMARY KEY,
+    owner_did TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    content TEXT
+);
+INSERT INTO messages(msg_id, owner_did, thread_id, content)
+VALUES ('legacy-msg', 'did:wba:example.test:user:old_current', 'dm:legacy', 'legacy plaintext');
+"#,
+        )
+        .expect("seed old schema");
+        db.pragma_update(None, "user_version", 16)
+            .expect("set old user_version");
+    }
+
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.14");
+    workspace_upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect("old v3 sqlite should be rebuilt after backup");
+
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta saved after v3 to v4 rebuild");
+    assert_eq!(meta.workspace_schema_version, 4);
+    assert_eq!(meta.warnings.len(), 1);
+    assert_contains(&meta.warnings[0], "旧本地 SQLite schema 16");
+    assert_contains(
+        &meta.warnings[0],
+        "旧业务行未按 DID/credential/path 静默迁移",
+    );
+    let backup = PathBuf::from(&meta.last_backup_dir);
+    assert!(backup.join("awiki-cli.db.bak").is_file());
+
+    let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open rebuilt db");
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("query rebuilt user_version");
+    assert_eq!(version, im_core::compat::local_state::SCHEMA_VERSION);
+    let message_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+        .expect("query rebuilt messages");
+    assert_eq!(message_count, 0);
+    let history: Vec<(String, String)> = db
+        .prepare(
+            "SELECT did, status FROM identity_did_history WHERE owner_identity_id = ?1 ORDER BY did",
+        )
+        .expect("prepare rebuilt history")
+        .query_map(["e1_current"], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("query rebuilt history")
+        .collect::<Result<_, _>>()
+        .expect("collect rebuilt history");
+    assert_eq!(
+        history,
+        vec![(
+            "did:wba:example.test:user:e1_current".to_string(),
+            "current".to_string()
+        )]
+    );
+}
+
+#[test]
+fn workspace_upgrade_if_needed_applies_v1_to_v4_without_current_k1_dids() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v1-v2").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let paths = workspace_upgrade::resolve_paths(&resolved);
@@ -399,35 +628,35 @@ fn workspace_upgrade_if_needed_applies_v1_to_v3_without_current_k1_dids() {
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.6");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("v1 to v2 cleanup should continue through no-k1 v2 to v3");
+        .expect("v1 to v2 cleanup should continue through no-k1 v2 to v4");
 
     assert!(!skill_dir.exists());
     let heartbeat_text = std::fs::read_to_string(&heartbeat).expect("read heartbeat");
     assert!(!heartbeat_text.contains("awiki-agent-id-message"));
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved after v2 to v3");
-    assert_eq!(meta.workspace_schema_version, 3);
+        .expect("meta saved after v2 to v4");
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.app_version, "1.2.6");
     assert_eq!(meta.last_backup_dir, context.backup_dir);
     assert_eq!(
         context
             .current_meta
             .as_ref()
-            .expect("context meta after v2 to v3")
+            .expect("context meta after v2 to v4")
             .workspace_schema_version,
-        3
+        4
     );
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after completed v2 to v3"
+        "journal should be cleared after completed v2 to v4"
     );
 }
 
 #[test]
-fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
+fn workspace_upgrade_if_needed_replaces_v2_to_v4_current_k1_dids_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v2-v3-k1").expect("temp workspace");
     let server = TestServer::new(vec![TestResponse::ok(
         r#"{"jsonrpc":"2.0","result":{"handle":"legacy","full_handle":"legacy.example.test","access_token":"jwt-replaced"},"id":"req-1"}"#,
@@ -460,27 +689,27 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.8");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("current k1 identities should be replaced during v2 to v3");
+        .expect("current k1 identities should be replaced during v2 to v4");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after replacement");
-    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.app_version, "1.2.8");
     assert!(meta.warnings.is_empty());
     assert_eq!(
         context
             .current_meta
             .as_ref()
-            .expect("context meta after v2 to v3")
+            .expect("context meta after v2 to v4")
             .workspace_schema_version,
-        3
+        4
     );
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after successful v2 to v3"
+        "journal should be cleared after successful v2 to v4"
     );
 
     let requests = server.requests();
@@ -509,12 +738,12 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
     assert_eq!(backup_manifest["planned_new_did"], new_did);
 
     let guard = workspace_upgrade::acquire_file_lock(&paths.lock_path, "1.2.9")
-        .expect("upgrade_if_needed should release the OS lock after v2 to v3 replacement");
+        .expect("upgrade_if_needed should release the OS lock after v2 to v4 replacement");
     guard.release().expect("release lock");
 }
 
 #[test]
-fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warnings_like_go() {
+fn workspace_upgrade_if_needed_records_v2_to_v4_k1_replacement_failures_as_warnings_like_go() {
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v2-v3-k1-warning").expect("temp workspace");
     let server = TestServer::new(vec![TestResponse {
@@ -554,7 +783,7 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved despite warning");
-    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.warnings.len(), 1);
     assert_contains(
         &meta.warnings[0],
@@ -575,7 +804,7 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
 }
 
 #[test]
-fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_has_only_e1_dids() {
+fn workspace_upgrade_if_needed_completes_v2_to_v4_when_current_identity_index_has_only_e1_dids() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v2-v3-e1").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let paths = workspace_upgrade::resolve_paths(&resolved);
@@ -602,27 +831,27 @@ fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_ha
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.10");
     workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect("current non-k1 identities should complete v2 to v3 locally");
+        .expect("current non-k1 identities should complete v2 to v4 locally");
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved after v2 to v3");
-    assert_eq!(meta.workspace_schema_version, 3);
+        .expect("meta saved after v2 to v4");
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.app_version, "1.2.10");
     assert!(meta.warnings.is_empty());
     assert_eq!(
         context
             .current_meta
             .as_ref()
-            .expect("context meta after v2 to v3")
+            .expect("context meta after v2 to v4")
             .workspace_schema_version,
-        3
+        4
     );
     assert!(
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after completed v2 to v3"
+        "journal should be cleared after completed v2 to v4"
     );
 }
 
@@ -669,8 +898,8 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
 
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved after v2 to v3");
-    assert_eq!(meta.workspace_schema_version, 3);
+        .expect("meta saved after v2 to v4");
+    assert_eq!(meta.workspace_schema_version, 4);
     assert_eq!(meta.app_version, "1.2.12");
     assert_eq!(meta.warnings.len(), 1);
     assert_contains(
@@ -690,7 +919,7 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
         workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
-        "journal should be cleared after completed v2 to v3 with warning"
+        "journal should be cleared after completed v2 to v4 with warning"
     );
 }
 
@@ -780,6 +1009,52 @@ fn test_resolved(root: &Path) -> workspace_config::Resolved {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn open_local_state(paths: &workspace_config::Paths) -> rusqlite::Result<rusqlite::Connection> {
+    if let Some(parent) = Path::new(&paths.database_file).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    }
+    let connection = rusqlite::Connection::open(&paths.database_file)?;
+    im_core::compat::local_state::ensure_schema(&connection)
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    Ok(connection)
+}
+
+fn seed_legacy_sqlite_message(
+    resolved: &workspace_config::Resolved,
+    msg_id: &str,
+    owner_did: &str,
+    credential_name: &str,
+) {
+    let legacy_db = Path::new(&resolved.paths.legacy_data_dir)
+        .join("database")
+        .join("awiki.db");
+    std::fs::create_dir_all(legacy_db.parent().unwrap()).expect("create legacy db dir");
+    let db = rusqlite::Connection::open(&legacy_db).expect("open legacy db");
+    db.execute_batch(LEGACY_V6_TABLES_SQL)
+        .expect("create legacy v6 tables");
+    db.pragma_update(None, "user_version", 11)
+        .expect("set legacy schema version");
+    db.execute(
+        r#"
+INSERT INTO messages (
+    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    content_type, content, stored_at, credential_name
+) VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text', ?5, ?6, ?7)
+"#,
+        rusqlite::params![
+            msg_id,
+            owner_did,
+            format!("dm:{owner_did}:did:wba:example.test:user:e1_peer"),
+            "did:wba:example.test:user:e1_peer",
+            "legacy hello",
+            "2026-01-01T00:00:00Z",
+            credential_name,
+        ],
+    )
+    .expect("insert legacy sqlite message");
 }
 
 fn seed_flat_legacy_identity(paths: &workspace_upgrade::Paths, name: &str) -> String {

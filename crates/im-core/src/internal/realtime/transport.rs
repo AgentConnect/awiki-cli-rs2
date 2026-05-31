@@ -1,3 +1,4 @@
+#[cfg(feature = "blocking")]
 use std::sync::mpsc;
 
 pub const MESSAGE_WS_ENDPOINT: &str = "/im/ws";
@@ -48,10 +49,12 @@ pub struct RealtimeConnectSimulation {
     pub error: Option<String>,
 }
 
+#[cfg(feature = "blocking")]
 pub trait RealtimeTransport {
     fn dial_bearer(&mut self, websocket_url: &str, bearer_token: &str) -> RealtimeDialOutcome;
 }
 
+#[cfg(feature = "blocking")]
 pub trait RealtimeAuthProvider {
     fn refresh_realtime_bearer(
         &mut self,
@@ -59,16 +62,19 @@ pub trait RealtimeAuthProvider {
     ) -> crate::ImResult<RealtimeRefreshOutcome>;
 }
 
+#[cfg(feature = "blocking")]
 pub(crate) struct FileRealtimeAuthProvider<'a> {
     client: &'a crate::core::ImClient,
 }
 
+#[cfg(feature = "blocking")]
 impl<'a> FileRealtimeAuthProvider<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         Self { client }
     }
 }
 
+#[cfg(feature = "blocking")]
 impl RealtimeAuthProvider for FileRealtimeAuthProvider<'_> {
     fn refresh_realtime_bearer(
         &mut self,
@@ -122,6 +128,7 @@ pub fn realtime_client_construction_plan(
     })
 }
 
+#[cfg(feature = "blocking")]
 pub fn connect_realtime_with_transport<T, A>(
     endpoints: &RealtimeClientEndpoints,
     current_jwt: &str,
@@ -190,6 +197,7 @@ where
     }
 }
 
+#[cfg(feature = "blocking")]
 fn connected_handle(
     mut events: Vec<crate::realtime::ImEvent>,
 ) -> crate::ImResult<crate::realtime::RealtimeHandle> {
@@ -202,6 +210,7 @@ fn connected_handle(
     Ok(handle_with_initial_events(events))
 }
 
+#[cfg(feature = "blocking")]
 fn connect_error(
     mut events: Vec<crate::realtime::ImEvent>,
     error: String,
@@ -215,12 +224,89 @@ fn connect_error(
     Err(crate::ImError::TransportUnavailable { detail: error })
 }
 
+#[cfg(feature = "blocking")]
 pub(crate) fn require_realtime_auth_token(client: &crate::core::ImClient) -> crate::ImResult<()> {
     read_auth_token(&client.runtime().auth_state_path)?
         .map(|_| ())
         .ok_or(crate::ImError::AuthRequired)
 }
 
+pub(crate) async fn require_realtime_auth_token_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<()> {
+    read_auth_token_async(client.runtime().auth_state_path.clone())
+        .await?
+        .map(|_| ())
+        .ok_or(crate::ImError::AuthRequired)
+}
+
+pub(crate) async fn connect_async_websocket_session(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
+    let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
+    let endpoints = realtime_client_endpoints(service_base_url)?;
+    let current_jwt = read_auth_token_async(client.runtime().auth_state_path.clone())
+        .await?
+        .ok_or(crate::ImError::AuthRequired)?;
+    connect_async_websocket_session_with_token(client, &endpoints, current_jwt.trim()).await
+}
+
+async fn connect_async_websocket_session_with_token(
+    client: &crate::core::ImClient,
+    endpoints: &RealtimeClientEndpoints,
+    current_jwt: &str,
+) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
+    let current_jwt = current_jwt.trim();
+    let ca_bundle = client.core_inner().sdk_config().ca_bundle_path();
+    if !current_jwt.is_empty() {
+        match super::async_ws_transport::AsyncWsTransport::connect(
+            &endpoints.websocket_url,
+            current_jwt,
+            ca_bundle,
+        )
+        .await
+        {
+            Ok(transport) => return Ok(transport),
+            Err(err) if err.status_code == Some(401) => {}
+            Err(err) => {
+                return Err(crate::ImError::TransportUnavailable {
+                    detail: err.message,
+                });
+            }
+        }
+    }
+
+    let update = client.auth().refresh_session_async().await?;
+    let refreshed_token = read_auth_token_async(client.runtime().auth_state_path.clone())
+        .await?
+        .ok_or_else(|| {
+            if update.refreshed {
+                crate::ImError::TransportUnavailable {
+                    detail: "did-auth did not persist a websocket bearer token".to_owned(),
+                }
+            } else {
+                crate::ImError::TransportUnavailable {
+                    detail: "did-auth did not return a websocket bearer token".to_owned(),
+                }
+            }
+        })?;
+    if refreshed_token.trim().is_empty() {
+        return Err(crate::ImError::TransportUnavailable {
+            detail: "did-auth did not return a websocket bearer token".to_owned(),
+        });
+    }
+    super::async_ws_transport::AsyncWsTransport::connect(
+        &endpoints.websocket_url,
+        refreshed_token.trim(),
+        ca_bundle,
+    )
+    .await
+    .map_err(|err| crate::ImError::TransportUnavailable {
+        detail: err.message,
+    })
+}
+
+#[cfg(feature = "blocking")]
 pub(crate) fn connect_native_websocket_session(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<super::ws_transport::WsTransport> {
@@ -231,6 +317,7 @@ pub(crate) fn connect_native_websocket_session(
     connect_native_websocket_session_with_token(client, &endpoints, current_jwt.trim())
 }
 
+#[cfg(feature = "blocking")]
 fn connect_native_websocket_session_with_token(
     client: &crate::core::ImClient,
     endpoints: &RealtimeClientEndpoints,
@@ -428,6 +515,7 @@ fn format_dial_failure(error: &str, response_body: Option<&[u8]>) -> String {
     format_dial_error_message(Some(error), response_body).unwrap_or_else(|| error.to_string())
 }
 
+#[cfg(feature = "blocking")]
 fn handle_with_initial_events(
     events: Vec<crate::realtime::ImEvent>,
 ) -> crate::realtime::RealtimeHandle {
@@ -441,8 +529,29 @@ fn handle_with_initial_events(
     crate::realtime::RealtimeHandle::new(receiver, crate::realtime::RealtimeControl::default())
 }
 
+#[cfg(feature = "blocking")]
 fn read_auth_token(path: &std::path::Path) -> crate::ImResult<Option<String>> {
     let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(crate::ImError::from(err)),
+    };
+    let value: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?;
+    Ok(value
+        .get("jwt_token")
+        .or_else(|| value.get("token"))
+        .or_else(|| value.get("access_token"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned))
+}
+
+async fn read_auth_token_async(path: std::path::PathBuf) -> crate::ImResult<Option<String>> {
+    let raw = match tokio::fs::read(&path).await {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(crate::ImError::from(err)),

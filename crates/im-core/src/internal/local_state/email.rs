@@ -14,7 +14,17 @@ pub(crate) fn list_mail_notifications(
         rusqlite::Connection::open(sqlite_path).map_err(super::local_state_unavailable)?;
     super::configure(&connection)?;
     super::schema::ensure_schema(&connection)?;
-    let rows = query_mail_notification_rows(&connection, owner_identity_id, owner_did, limit.0)?;
+    list_mail_notifications_from_connection(&connection, owner_identity_id, owner_did, limit)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn list_mail_notifications_from_connection(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    limit: crate::ids::PageLimit,
+) -> crate::ImResult<crate::ids::Page<crate::email::EmailNotification>> {
+    let rows = query_mail_notification_rows(connection, owner_identity_id, owner_did, limit.0)?;
     let items = rows
         .into_iter()
         .filter_map(normalize_notification_row)
@@ -42,7 +52,7 @@ pub(crate) fn list_mail_notifications(
 fn query_mail_notification_rows(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     limit: u32,
 ) -> crate::ImResult<Vec<Value>> {
     let mut statement = connection
@@ -50,11 +60,11 @@ fn query_mail_notification_rows(
             r#"
 SELECT *
 FROM messages
-WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+WHERE owner_identity_id = ?1
   AND (COALESCE(content_type, '') = 'mail.notification'
        OR COALESCE(metadata, '') LIKE '%"source_kind":"mail"%')
 ORDER BY COALESCE(sent_at, stored_at) DESC
-LIMIT ?3
+LIMIT ?2
 "#,
         )
         .map_err(super::local_state_unavailable)?;
@@ -63,11 +73,10 @@ LIMIT ?3
         .into_iter()
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    let owner_identity_id = owner_identity_id.trim().to_string();
-    let owner_did = owner_did.trim().to_string();
+    let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
     let limit = i64::from(limit);
     let mut rows = statement
-        .query(rusqlite::params![owner_identity_id, owner_did, limit])
+        .query(rusqlite::params![owner_identity_id, limit])
         .map_err(super::local_state_unavailable)?;
     let mut results = Vec::new();
     while let Some(row) = rows.next().map_err(super::local_state_unavailable)? {
@@ -81,6 +90,18 @@ LIMIT ?3
         results.push(Value::Object(object));
     }
     Ok(results)
+}
+
+#[cfg(feature = "sqlite")]
+fn required_owner_identity_id(value: &str) -> crate::ImResult<String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner_identity_id is required",
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(feature = "sqlite")]

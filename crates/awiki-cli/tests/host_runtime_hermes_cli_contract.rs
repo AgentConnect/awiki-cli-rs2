@@ -270,7 +270,7 @@ fn host_notify_config_show_includes_go_hermes_guidance_warnings() {
         envelope
             .get("warnings")
             .and_then(Value::as_array)
-            .map_or(true, Vec::is_empty),
+            .is_none_or(Vec::is_empty),
         "non-Hermes sinks should not receive Hermes guidance warnings: {:?}",
         envelope["warnings"]
     );

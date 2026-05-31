@@ -10,7 +10,7 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `new`, `stop`, `take_event_receiver`
+// These functions are ignored because they are not marked as `pub`: `new`, `status`, `stop`, `take_event_receiver`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
 Future<DartRealtimeCapability> realtimeCapability({
@@ -33,6 +33,12 @@ Future<ArcDartRealtimeSession> realtimeStart({
 
 Future<void> realtimeStop({required ArcDartRealtimeSession session}) =>
     RustLib.instance.api.crateApiRealtimeRealtimeStop(session: session);
+
+Future<DartRealtimeStatus> realtimeSessionStatus({
+  required ArcDartRealtimeSession session,
+}) => RustLib.instance.api.crateApiRealtimeRealtimeSessionStatus(
+  session: session,
+);
 
 Stream<DartRealtimeEvent> realtimeEventStream({
   required ArcDartRealtimeSession session,

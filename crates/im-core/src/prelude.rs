@@ -55,14 +55,18 @@ pub use crate::messages::{
     SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
+#[cfg(feature = "blocking")]
 pub use crate::realtime::{
     run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
+    RealtimeEventReceiver, RealtimeHandle, RealtimeRunnerEventSink, RealtimeRunnerOutcome,
+    RealtimeRunnerTransport,
+};
+pub use crate::realtime::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupUpdateKind,
     GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
     LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
-    RealtimeConnectionState, RealtimeControl, RealtimeEventReceiver, RealtimeExit,
-    RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeRunnerEventSink,
-    RealtimeRunnerOutcome, RealtimeRunnerTransport, RealtimeService, RealtimeStatus,
+    RealtimeConnectionState, RealtimeControl, RealtimeEventStream, RealtimeExit,
+    RealtimeExitReason, RealtimeOptions, RealtimeService, RealtimeSession, RealtimeStatus,
     RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
 };
 pub use crate::secure::{

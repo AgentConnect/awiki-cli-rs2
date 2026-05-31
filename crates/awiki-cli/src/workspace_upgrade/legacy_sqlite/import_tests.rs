@@ -74,6 +74,27 @@ CREATE TABLE IF NOT EXISTS e2ee_outbox (
 );
 "#;
 
+const V11_EXTRA_TABLES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS e2ee_sessions (
+    owner_did        TEXT NOT NULL DEFAULT '',
+    peer_did         TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    is_initiator     INTEGER NOT NULL DEFAULT 0,
+    send_chain_key   TEXT NOT NULL,
+    recv_chain_key   TEXT NOT NULL,
+    send_seq         INTEGER NOT NULL DEFAULT 0,
+    recv_seq         INTEGER NOT NULL DEFAULT 0,
+    expires_at       REAL,
+    created_at       TEXT NOT NULL,
+    active_at        TEXT,
+    peer_confirmed   INTEGER NOT NULL DEFAULT 0,
+    credential_name  TEXT NOT NULL DEFAULT '',
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (owner_did, peer_did),
+    UNIQUE (owner_did, session_id)
+);
+"#;
+
 #[test]
 fn import_legacy_database_v11_imports_messages_and_contacts() {
     let temp = TempDir::new("store-import-v11").expect("temp dir");
@@ -84,9 +105,14 @@ fn import_legacy_database_v11_imports_messages_and_contacts() {
     std::fs::create_dir_all(legacy_db_path.parent().unwrap()).expect("legacy dir");
 
     {
-        let legacy_paths = path_override_paths(&legacy_db_path);
-        let legacy = store::open(&legacy_paths).expect("open legacy");
-        store::ensure_schema(&legacy).expect("legacy schema");
+        let legacy = rusqlite::Connection::open(&legacy_db_path).expect("open legacy");
+        legacy.execute_batch(V6_TABLES_SQL).expect("v6 schema");
+        legacy
+            .execute_batch(V11_EXTRA_TABLES_SQL)
+            .expect("v11 schema");
+        legacy
+            .pragma_update(None, "user_version", 11)
+            .expect("user_version");
         legacy
             .execute(
                 r#"
@@ -198,12 +224,7 @@ VALUES ('', ?1, ?2, ?3, ?4)
     assert_eq!(report.imported_rows["contacts"], 1);
     assert_eq!(
         report.skipped_tables,
-        [
-            "e2ee_sessions",
-            "group_members",
-            "groups",
-            "relationship_events"
-        ]
+        ["group_members", "groups", "relationship_events"]
     );
 
     let (owner_did, thread_id, content_type): (String, String, String) = target
@@ -214,7 +235,7 @@ VALUES ('', ?1, ?2, ?3, ?4)
         )
         .expect("imported message");
     assert_eq!(owner_did, "did:owner");
-    assert_eq!(thread_id, "dm:did:owner:did:peer");
+    assert_eq!(thread_id, "dm:did:peer");
     assert_eq!(content_type, "text");
 
     let handle: String = target
@@ -225,6 +246,108 @@ VALUES ('', ?1, ?2, ?3, ?4)
         )
         .expect("contact handle binding");
     assert_eq!(handle, "alice");
+}
+
+#[test]
+fn import_legacy_database_uses_identity_unique_id_as_owner_identity_id() {
+    let temp = TempDir::new("store-import-owner-identity").expect("temp dir");
+    let paths = test_paths(temp.path());
+    let legacy_db_path = Path::new(&paths.legacy_data_dir)
+        .join("database")
+        .join("awiki.db");
+    std::fs::create_dir_all(legacy_db_path.parent().unwrap()).expect("legacy dir");
+
+    {
+        let legacy = rusqlite::Connection::open(&legacy_db_path).expect("open legacy");
+        legacy.execute_batch(V6_TABLES_SQL).expect("v6 schema");
+        legacy
+            .pragma_update(None, "user_version", 6)
+            .expect("user_version");
+        legacy
+            .execute(
+                r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, is_read, credential_name, stored_at)
+VALUES (?1, '', '', 0, ?2, '', '', ?3, 0, 'alice', ?4)
+"#,
+                rusqlite::params![
+                    "legacy-msg",
+                    "did:peer",
+                    "legacy hello",
+                    "2026-01-01T00:00:00Z",
+                ],
+            )
+            .expect("insert legacy message");
+    }
+
+    let mut target = store::open(&paths).expect("open target");
+    let owners = LegacyOwnerLookup::from_identity_entries([(
+        "e1_alice".to_string(),
+        "alice".to_string(),
+        "did:owner:alice".to_string(),
+        true,
+    )]);
+
+    store::import_legacy_database(&mut target, &paths, &owners).expect("import legacy");
+
+    let (owner_identity_id, owner_did, credential_name): (String, String, String) = target
+        .query_row(
+            "SELECT owner_identity_id, owner_did, credential_name FROM messages WHERE msg_id = ?1",
+            ["legacy-msg"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("imported message");
+    assert_eq!(owner_identity_id, "e1_alice");
+    assert_eq!(owner_did, "did:owner:alice");
+    assert_eq!(credential_name, "alice");
+}
+
+#[test]
+fn import_legacy_database_rejects_unknown_explicit_owner_did() {
+    let temp = TempDir::new("store-import-unknown-owner").expect("temp dir");
+    let paths = test_paths(temp.path());
+    let legacy_db_path = Path::new(&paths.legacy_data_dir)
+        .join("database")
+        .join("awiki.db");
+    std::fs::create_dir_all(legacy_db_path.parent().unwrap()).expect("legacy dir");
+
+    {
+        let legacy = rusqlite::Connection::open(&legacy_db_path).expect("open legacy");
+        legacy.execute_batch(V6_TABLES_SQL).expect("v6 schema");
+        legacy
+            .pragma_update(None, "user_version", 6)
+            .expect("user_version");
+        legacy
+            .execute(
+                r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, is_read, credential_name, stored_at)
+VALUES (?1, 'did:owner:unknown', '', 0, ?2, '', '', ?3, 0, '', ?4)
+"#,
+                rusqlite::params![
+                    "legacy-msg",
+                    "did:peer",
+                    "legacy hello",
+                    "2026-01-01T00:00:00Z",
+                ],
+            )
+            .expect("insert legacy message");
+    }
+
+    let mut target = store::open(&paths).expect("open target");
+    let owners = LegacyOwnerLookup::from_identity_entries([(
+        "e1_alice".to_string(),
+        "alice".to_string(),
+        "did:owner:alice".to_string(),
+        true,
+    )]);
+
+    let err = store::import_legacy_database(&mut target, &paths, &owners)
+        .expect_err("unknown explicit owner must fail closed");
+    assert_contains(
+        &err.to_string(),
+        "legacy row owner_did could not be resolved to owner_identity_id",
+    );
 }
 
 #[test]
@@ -255,6 +378,13 @@ fn import_legacy_database_rejects_pre_v6_schema_without_imported_identity() {
     );
 }
 
+fn assert_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected {haystack:?} to contain {needle:?}"
+    );
+}
+
 fn test_paths(root: &Path) -> Paths {
     let data_dir = root.join("data");
     Paths {
@@ -271,13 +401,6 @@ fn test_paths(root: &Path) -> Paths {
         legacy_credentials_dir: path_string(&root.join("legacy").join("credentials")),
         legacy_data_dir: path_string(&root.join("legacy").join("data")),
     }
-}
-
-fn path_override_paths(database_file: &Path) -> Paths {
-    let root = database_file.parent().unwrap_or_else(|| Path::new("."));
-    let mut paths = test_paths(root);
-    paths.database_file = path_string(database_file);
-    paths
 }
 
 fn path_string(path: &Path) -> String {

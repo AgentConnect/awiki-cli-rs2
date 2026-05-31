@@ -1,7 +1,10 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::{AttachmentObjectTransport, AuthenticatedRpcTransport};
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{
+    AsyncAttachmentObjectBody, AsyncAttachmentObjectTransport, AsyncAuthenticatedRpcTransport,
+    AttachmentObjectTransport, AuthenticatedRpcTransport,
+};
 
 const MESSAGE_RPC_ENDPOINT: &str = crate::internal::message_runtime::direct::MESSAGE_RPC_ENDPOINT;
 
@@ -39,11 +42,26 @@ pub struct AttachmentUploadResult {
 struct PreparedAttachmentUpload {
     prepared: crate::attachments::manifest::PreparedAttachment,
     caption: String,
+    body: PreparedAttachmentBody,
 }
 
 struct ManifestSendResult {
     raw: Value,
     meta: Value,
+}
+
+enum PreparedAttachmentBody {
+    Bytes(Vec<u8>),
+    File(std::path::PathBuf),
+}
+
+impl PreparedAttachmentBody {
+    fn clone_for_sync(&self) -> Vec<u8> {
+        match self {
+            Self::Bytes(bytes) => bytes.clone(),
+            Self::File(_) => Vec::new(),
+        }
+    }
 }
 
 impl<'a, P, T> AttachmentUploadRuntime<'a, P, T>
@@ -77,7 +95,7 @@ where
         self.transport.put_attachment_object(
             slot.upload_uri.as_str(),
             upload_headers(&slot.upload_headers),
-            prepared.payload.clone(),
+            upload.body.clone_for_sync(),
         )?;
         self.commit_object(&service_did, &prepared, &slot)?;
 
@@ -198,6 +216,156 @@ where
     }
 }
 
+impl<'a, P, T> AttachmentUploadRuntime<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport + AsyncAttachmentObjectTransport,
+{
+    pub(crate) async fn send_async(
+        mut self,
+        input: AttachmentSendInput,
+    ) -> crate::ImResult<AttachmentUploadResult> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        let service_did = message_service_did(self.client)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+
+        let upload = prepare_request_async(input.request).await?;
+        let prepared = upload.prepared;
+        let slot = self
+            .create_slot_async(&target, &service_did, &prepared)
+            .await?;
+        let body = async_object_body(&prepared, upload.body)?;
+        self.transport
+            .put_attachment_object_stream(
+                slot.upload_uri.as_str(),
+                upload_headers(&slot.upload_headers),
+                body,
+            )
+            .await?;
+        self.commit_object_async(&service_did, &prepared, &slot)
+            .await?;
+
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared,
+            slot.attachment_id.clone(),
+            slot.object_uri.clone(),
+        );
+        let manifest =
+            crate::attachments::manifest::build_attachment_manifest(&descriptor, &upload.caption);
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let send_result = self
+            .send_manifest_async(&target, manifest.clone(), credentials)
+            .await?;
+        let sdk_result = sdk_result_from_raw(
+            send_result.raw.clone(),
+            &send_result.meta,
+            self.client.did().clone(),
+            &target,
+            &manifest,
+        )?;
+
+        Ok(AttachmentUploadResult {
+            sdk_result,
+            target_kind: target.kind(),
+            target_did: target.did().to_string(),
+            prepared,
+            slot,
+            manifest,
+            raw: send_result.raw,
+        })
+    }
+
+    async fn create_slot_async(
+        &mut self,
+        target: &ResolvedAttachmentTarget,
+        service_did: &str,
+        prepared: &crate::attachments::manifest::PreparedAttachment,
+    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+        let params = crate::internal::wire::attachment::build_attachment_create_slot_rpc_params(
+            self.client.did().as_str(),
+            service_did,
+            target.kind(),
+            target.did(),
+            prepared,
+        )?;
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "attachment.create_slot", params)
+            .await?;
+        let mut slot: crate::internal::wire::attachment::AttachmentCreateSlotResult =
+            serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        slot.request_service_did = service_did.to_string();
+        Ok(slot)
+    }
+
+    async fn commit_object_async(
+        &mut self,
+        service_did: &str,
+        prepared: &crate::attachments::manifest::PreparedAttachment,
+        slot: &crate::internal::wire::attachment::AttachmentCreateSlotResult,
+    ) -> crate::ImResult<()> {
+        let params = crate::internal::wire::attachment::build_attachment_commit_object_rpc_params(
+            self.client.did().as_str(),
+            service_did,
+            prepared,
+            slot,
+        )?;
+        let _: crate::internal::wire::attachment::AttachmentCommitObjectResult =
+            serde_json::from_value(
+                self.transport
+                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "attachment.commit_object", params)
+                    .await?,
+            )
+            .map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        Ok(())
+    }
+
+    async fn send_manifest_async(
+        &mut self,
+        target: &ResolvedAttachmentTarget,
+        manifest: Value,
+        credentials: AttachmentUploadCredentials,
+    ) -> crate::ImResult<ManifestSendResult> {
+        let identity = crate::internal::wire::attachment::AttachmentSigningIdentity {
+            identity_name: credentials.identity_name,
+            did: self.client.did().as_str().to_string(),
+            did_document: credentials.did_document,
+            key1_private_pem: credentials.key1_private_pem,
+        };
+        let (method, params) = match target {
+            ResolvedAttachmentTarget::Direct { target_did, .. } => (
+                "direct.send",
+                crate::internal::wire::attachment::build_direct_attachment_send_rpc_params(
+                    &identity, target_did, manifest,
+                )?,
+            ),
+            ResolvedAttachmentTarget::Group { group } => (
+                "group.send",
+                crate::internal::wire::attachment::build_group_attachment_send_rpc_params(
+                    &identity,
+                    group.as_str(),
+                    manifest,
+                )?,
+            ),
+        };
+        let meta = params.get("meta").cloned().unwrap_or(Value::Null);
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)
+            .await?;
+        Ok(ManifestSendResult { raw, meta })
+    }
+}
+
 fn send_target(
     target: &crate::messages::MessageTarget,
     resolved_target_did: Option<String>,
@@ -292,7 +460,110 @@ fn prepare_request(
             "attachment filename is required",
         ));
     };
-    Ok(PreparedAttachmentUpload { prepared, caption })
+    let body = PreparedAttachmentBody::Bytes(prepared.payload.clone());
+    Ok(PreparedAttachmentUpload {
+        prepared,
+        caption,
+        body,
+    })
+}
+
+async fn prepare_request_async(
+    request: crate::attachments::AttachmentSendRequest,
+) -> crate::ImResult<PreparedAttachmentUpload> {
+    let caption = request.caption.unwrap_or_default();
+    let request_filename = request.filename;
+    let request_mime = request.mime_type;
+    let source =
+        crate::internal::blob::source::attachment_input_to_async_blob_source(request.input)?;
+    let prepared = match source {
+        crate::internal::blob::source::AsyncBlobSource::Memory {
+            filename,
+            mime_type,
+            bytes,
+        } => {
+            let filename = request_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    filename
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                });
+            let mime_type = request_mime
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    mime_type
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_default();
+            let Some(filename) = filename else {
+                return Err(crate::ImError::invalid_input(
+                    Some("filename".to_string()),
+                    "attachment filename is required",
+                ));
+            };
+            let prepared = crate::attachments::manifest::prepare_attachment_payload(
+                &filename, &mime_type, bytes,
+            )?;
+            let body = PreparedAttachmentBody::Bytes(prepared.payload.clone());
+            PreparedAttachmentUpload {
+                prepared,
+                caption,
+                body,
+            }
+        }
+        crate::internal::blob::source::AsyncBlobSource::LocalFile { path } => {
+            let filename = request_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            let mime_type = request_mime
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_default();
+            let mut prepared = crate::attachments::manifest::prepare_attachment_metadata_from_path(
+                &path, &mime_type,
+            )
+            .await?;
+            if let Some(filename) = filename {
+                prepared.filename = filename;
+            }
+            PreparedAttachmentUpload {
+                prepared,
+                caption,
+                body: PreparedAttachmentBody::File(path),
+            }
+        }
+    };
+    Ok(prepared)
+}
+
+fn async_object_body(
+    prepared: &crate::attachments::manifest::PreparedAttachment,
+    body: PreparedAttachmentBody,
+) -> crate::ImResult<AsyncAttachmentObjectBody> {
+    match body {
+        PreparedAttachmentBody::Bytes(bytes) => Ok(AsyncAttachmentObjectBody::Bytes(bytes)),
+        PreparedAttachmentBody::File(path) => Ok(AsyncAttachmentObjectBody::File {
+            path,
+            len: prepared.size_bytes,
+            content_type: Some(prepared.mime_type.clone()),
+        }),
+    }
 }
 
 fn message_service_did(client: &crate::core::ImClient) -> crate::ImResult<String> {
@@ -338,8 +609,44 @@ fn load_credentials(
     })
 }
 
+async fn load_credentials_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<AttachmentUploadCredentials> {
+    let runtime = client.runtime();
+    let did_document = read_optional_json_async(runtime.did_document_path.clone()).await?;
+    let key1_private_pem = tokio::fs::read_to_string(&runtime.private_key_path)
+        .await
+        .map_err(|err| crate::ImError::CredentialFileUnreadable {
+            path_kind: "private_key".to_string(),
+            detail: err.to_string(),
+        })?;
+    Ok(AttachmentUploadCredentials {
+        identity_name: runtime.owner.identity_id.as_str().to_string(),
+        did_document,
+        key1_private_pem,
+    })
+}
+
 fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
     let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "did_document".to_string(),
+                detail: err.to_string(),
+            });
+        }
+    };
+    serde_json::from_slice(&raw)
+        .map(Some)
+        .map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
+}
+
+async fn read_optional_json_async(path: std::path::PathBuf) -> crate::ImResult<Option<Value>> {
+    let raw = match tokio::fs::read(path).await {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
@@ -893,6 +1200,60 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn attachments_upload_runtime_local_file_async_streams_explicit_path() {
+        let fixture = Fixture::new(Some("did:example:message-service"));
+        let client = fixture.client();
+        let file = fixture.root.join("explicit").join("large-report.txt");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"file bytes streamed from disk").unwrap();
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let result = AttachmentUploadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+            },
+        )
+        .send_async(AttachmentSendInput {
+            target: crate::messages::MessageTarget::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            request: crate::attachments::AttachmentSendRequest {
+                input: crate::attachments::AttachmentInput::LocalFile(file.clone()),
+                caption: None,
+                mime_type: None,
+                filename: None,
+                delivery: crate::messages::MessageDeliveryOptions::default(),
+            },
+            resolved_target_did: None,
+            credentials: Some(fixture.credentials()),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.prepared.filename, "large-report.txt");
+        assert_eq!(result.prepared.mime_type, "text/plain; charset=utf-8");
+        assert!(result.prepared.payload.is_empty());
+        let calls = calls.borrow();
+        let create = calls[0].rpc("attachment.create_slot");
+        assert_eq!(create.params["body"]["expected_size"], "29");
+        let put = calls[1].put_file("https://upload.example/slot-1");
+        assert_eq!(put.path, &file);
+        assert_eq!(put.len, 29);
+        assert_eq!(
+            put.content_type.as_deref(),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(
+            put.headers.get("X-Upload-Token").map(String::as_str),
+            Some("token-1")
+        );
+    }
+
     #[test]
     fn attachments_upload_runtime_group_uses_group_scope_and_wire() {
         let fixture = Fixture::new(Some("did:example:message-service"));
@@ -1046,6 +1407,29 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            self.scopes.borrow_mut().push(scope);
+            Ok(crate::auth::SessionBundle {
+                subject: crate::ids::Did::parse("did:example:alice")?,
+                scope,
+                expires_at: None,
+                refreshed: false,
+            })
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("attachment upload runtime should not refresh through the test provider")
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("attachment upload runtime should not read status")
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
     }
@@ -1126,6 +1510,67 @@ mod tests {
         }
     }
 
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
+    impl crate::internal::transport::AsyncAttachmentObjectTransport for RecordingTransport {
+        async fn put_attachment_object(
+            &mut self,
+            upload_uri: &str,
+            headers: BTreeMap<String, String>,
+            body: Vec<u8>,
+        ) -> crate::ImResult<()> {
+            AttachmentObjectTransport::put_attachment_object(self, upload_uri, headers, body)
+        }
+
+        async fn get_attachment_object(
+            &mut self,
+            object_uri: &str,
+            download_ticket: &str,
+        ) -> crate::ImResult<crate::internal::transport::AttachmentObjectResponse> {
+            AttachmentObjectTransport::get_attachment_object(self, object_uri, download_ticket)
+        }
+
+        async fn put_attachment_object_stream(
+            &mut self,
+            upload_uri: &str,
+            headers: BTreeMap<String, String>,
+            body: crate::internal::transport::AsyncAttachmentObjectBody,
+        ) -> crate::ImResult<()> {
+            match body {
+                crate::internal::transport::AsyncAttachmentObjectBody::Bytes(bytes) => {
+                    self.calls.borrow_mut().push(RecordedCall::Put {
+                        upload_uri: upload_uri.to_string(),
+                        headers,
+                        body: bytes,
+                    });
+                }
+                crate::internal::transport::AsyncAttachmentObjectBody::File {
+                    path,
+                    len,
+                    content_type,
+                } => {
+                    self.calls.borrow_mut().push(RecordedCall::PutFile {
+                        upload_uri: upload_uri.to_string(),
+                        headers,
+                        path,
+                        len,
+                        content_type,
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
     #[derive(Debug, Clone)]
     enum RecordedCall {
         Rpc {
@@ -1137,6 +1582,13 @@ mod tests {
             upload_uri: String,
             headers: BTreeMap<String, String>,
             body: Vec<u8>,
+        },
+        PutFile {
+            upload_uri: String,
+            headers: BTreeMap<String, String>,
+            path: PathBuf,
+            len: u64,
+            content_type: Option<String>,
         },
     }
 
@@ -1152,6 +1604,9 @@ mod tests {
                     RecordedRpc { endpoint, params }
                 }
                 Self::Put { .. } => panic!("expected rpc call {expected_method}, got put call"),
+                Self::PutFile { .. } => {
+                    panic!("expected rpc call {expected_method}, got file stream put call")
+                }
             }
         }
 
@@ -1166,6 +1621,31 @@ mod tests {
                     RecordedPut { headers, body }
                 }
                 Self::Rpc { method, .. } => panic!("expected put call, got rpc call {method}"),
+                Self::PutFile { .. } => panic!("expected put call, got file stream put call"),
+            }
+        }
+
+        fn put_file(&self, expected_uri: &str) -> RecordedPutFile<'_> {
+            match self {
+                Self::PutFile {
+                    upload_uri,
+                    headers,
+                    path,
+                    len,
+                    content_type,
+                } => {
+                    assert_eq!(upload_uri, expected_uri);
+                    RecordedPutFile {
+                        headers,
+                        path,
+                        len: *len,
+                        content_type,
+                    }
+                }
+                Self::Rpc { method, .. } => {
+                    panic!("expected file stream put call, got rpc call {method}")
+                }
+                Self::Put { .. } => panic!("expected file stream put call, got bytes put call"),
             }
         }
     }
@@ -1178,6 +1658,13 @@ mod tests {
     struct RecordedPut<'a> {
         headers: &'a BTreeMap<String, String>,
         body: &'a Vec<u8>,
+    }
+
+    struct RecordedPutFile<'a> {
+        headers: &'a BTreeMap<String, String>,
+        path: &'a PathBuf,
+        len: u64,
+        content_type: &'a Option<String>,
     }
 
     struct Fixture {

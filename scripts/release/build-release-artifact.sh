@@ -22,7 +22,7 @@ Options:
 
 Environment:
   CARGO                         Cargo binary (default: cargo)
-  AWIKI_CLI_RUST_TOOLCHAIN      Cargo toolchain without leading + (default: 1.79.0)
+  AWIKI_CLI_RUST_TOOLCHAIN      Cargo toolchain without leading + (default: 1.88.0)
   AWIKI_CLI_SKIP_E2EE_RELEASE_FEATURE_CHECK
                                 Set to 1 to skip the local feature graph check.
   AWIKI_CLI_BUILD_DATE          Build date override for buildinfo.
@@ -173,7 +173,7 @@ case "${ARCH_NAME}" in
 esac
 
 cargo_bin="${CARGO:-cargo}"
-toolchain="${AWIKI_CLI_RUST_TOOLCHAIN:-1.79.0}"
+toolchain="${AWIKI_CLI_RUST_TOOLCHAIN:-1.88.0}"
 if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
   cargo_cmd=(cargo "+${toolchain}")
 else

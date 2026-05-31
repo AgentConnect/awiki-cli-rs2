@@ -46,16 +46,16 @@ fn file_session_provider_reports_missing_token_without_faking_session() {
         .any(|warning| warning.contains("JWT")));
 }
 
-#[test]
-fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
+#[tokio::test]
+async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
     let server = TestServer::new(
         r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
-    let client = fixture.client("alice");
+    let client = fixture.client_async("alice").await;
 
-    let update = client.auth().refresh_session().unwrap();
+    let update = client.auth().refresh_session_async().await.unwrap();
 
     assert_eq!(update.subject.as_str(), "did:example:alice");
     assert_eq!(
@@ -75,24 +75,24 @@ fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
         "refresh must force a fresh DID auth signature:\n{}",
         requests[0]
     );
-    assert!(requests[0].contains("Signature-Input:"));
-    assert!(requests[0].contains("Signature:"));
+    assert!(contains_header(&requests[0], "Signature-Input"));
+    assert!(contains_header(&requests[0], "Signature"));
     let body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
     assert_eq!(body["method"], "get_me");
     assert_eq!(body["params"], serde_json::json!({}));
 }
 
-#[test]
-fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
+#[tokio::test]
+async fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
     let server = TestServer::with_authorization_header(
         r#"{"jsonrpc":"2.0","result":{"handle":"alice"},"id":"req-1"}"#,
         "fresh-header-token",
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
-    let client = fixture.client("alice");
+    let client = fixture.client_async("alice").await;
 
-    let update = client.auth().refresh_session().unwrap();
+    let update = client.auth().refresh_session_async().await.unwrap();
 
     assert_eq!(update.subject.as_str(), "did:example:alice");
     assert!(update.refreshed);
@@ -106,6 +106,34 @@ fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
         "refresh must not reuse stale bearer token:\n{}",
         requests[0]
     );
+}
+
+#[tokio::test]
+async fn async_file_session_provider_refreshes_jwt_with_async_transport() {
+    let server = TestServer::new(
+        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+    );
+    let fixture = AuthFixture::new().with_service_base_url(server.base_url());
+    fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
+    let client = fixture.client_async("alice").await;
+
+    let update = client.auth().refresh_session_async().await.unwrap();
+
+    assert_eq!(update.subject.as_str(), "did:example:alice");
+    assert_eq!(
+        update.previous_expires_at.as_deref(),
+        Some("2026-05-21T00:00:00Z")
+    );
+    assert!(update.refreshed);
+    let auth: Value =
+        serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
+    assert_eq!(auth["jwt_token"], "fresh-token");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
+    assert_eq!(body["method"], "get_me");
+    assert_eq!(body["params"], serde_json::json!({}));
 }
 
 #[test]
@@ -206,35 +234,51 @@ impl AuthFixture {
             .unwrap()
     }
 
+    async fn client_async(&self, alias: &str) -> ImClient {
+        self.core_async()
+            .await
+            .client_async(IdentitySelector::LocalAlias(alias.to_string()))
+            .await
+            .unwrap()
+    }
+
     fn core(&self) -> ImCore {
-        ImCore::new(
-            ImCoreConfig {
-                service_base_url: ServiceEndpoint::parse(&self.service_base_url).unwrap(),
-                did_domain: "awiki.test".to_string(),
-                user_service_endpoint: None,
-                message_service_endpoint: None,
-                mail_service_endpoint: None,
-                anp_service_endpoint: None,
-                anp_service_did: None,
-                ca_bundle: None,
-                transport_policy: MessageTransportPolicy::HttpOnly,
+        ImCore::new(self.config(), self.paths()).unwrap()
+    }
+
+    async fn core_async(&self) -> ImCore {
+        ImCore::open(self.config(), self.paths()).await.unwrap()
+    }
+
+    fn config(&self) -> ImCoreConfig {
+        ImCoreConfig {
+            service_base_url: ServiceEndpoint::parse(&self.service_base_url).unwrap(),
+            did_domain: "awiki.test".to_string(),
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: MessageTransportPolicy::HttpOnly,
+        }
+    }
+
+    fn paths(&self) -> ImCorePaths {
+        ImCorePaths {
+            identities: IdentityRegistryPaths {
+                identity_root_dir: self.root.join("identities"),
+                registry_path: self.root.join("identities").join("registry.json"),
+                default_identity_path: Some(self.root.join("identities").join("default")),
             },
-            ImCorePaths {
-                identities: IdentityRegistryPaths {
-                    identity_root_dir: self.root.join("identities"),
-                    registry_path: self.root.join("identities").join("registry.json"),
-                    default_identity_path: Some(self.root.join("identities").join("default")),
-                },
-                local_state: LocalStatePaths {
-                    sqlite_path: self.root.join("state").join("im.sqlite"),
-                },
-                runtime: RuntimePaths {
-                    cache_dir: self.root.join("cache"),
-                    temp_dir: self.root.join("tmp"),
-                },
+            local_state: LocalStatePaths {
+                sqlite_path: self.root.join("state").join("im.sqlite"),
             },
-        )
-        .unwrap()
+            runtime: RuntimePaths {
+                cache_dir: self.root.join("cache"),
+                temp_dir: self.root.join("tmp"),
+            },
+        }
     }
 }
 
@@ -388,7 +432,11 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]);
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("Content-Length")
+                        .then(|| value.trim())
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;
@@ -413,4 +461,10 @@ fn find_header_end(raw: &[u8]) -> Option<usize> {
 
 fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
+}
+
+fn contains_header(raw: &str, name: &str) -> bool {
+    raw.lines()
+        .filter_map(|line| line.split_once(':').map(|(header, _)| header))
+        .any(|header| header.eq_ignore_ascii_case(name))
 }

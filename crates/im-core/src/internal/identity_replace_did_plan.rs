@@ -8,8 +8,8 @@ const REPLACE_DID_LOCAL_WRITES: &[&str] = &[
     "e2ee-signing-private.pem",
     "e2ee-agreement-private.pem",
     ".legacy-backup/replace-did",
-    "sqlite.owner_did_rebind",
-    "sqlite.e2ee_cleanup",
+    "sqlite.identity_did_history",
+    "sqlite.owner_did_snapshot_refresh",
 ];
 
 #[cfg(feature = "sqlite")]
@@ -58,7 +58,7 @@ pub(crate) fn plan_replace_did(
         risk_summary: vec![
             "Replaces the selected handle identity DID and local key material.".to_string(),
             "Requires a local backup before any execution path may continue.".to_string(),
-            "Local SQLite owner state must be rebound from the old DID to the planned DID."
+            "Local SQLite DID history and owner_did snapshots are refreshed under the same owner identity."
                 .to_string(),
         ],
         backup_plan: crate::identity::ReplaceDidBackupPlan {
@@ -77,7 +77,7 @@ pub(crate) fn plan_replace_did(
             required: request.identity.did != request.planned_new_did,
             old_owner_did: request.identity.did.clone(),
             new_owner_did: request.planned_new_did.clone(),
-            destructive: true,
+            destructive: false,
             dry_run_only: true,
         },
         affected_local_state: request.affected_local_state,
@@ -89,7 +89,7 @@ pub(crate) fn plan_replace_did(
         rollback_notes: vec![
             "Do not execute remote replace_did unless the backup manifest has been written."
                 .to_string(),
-            "If later execution fails after the remote call, restore the identity backup and inspect local owner rebind counts."
+            "If later execution fails after the remote call, restore the identity backup and inspect local DID history/snapshot counts."
                 .to_string(),
         ],
         local_writes: REPLACE_DID_LOCAL_WRITES
@@ -106,36 +106,13 @@ pub(crate) fn plan_replace_did_local_state_rebind(
     old_owner_did: &str,
     new_owner_did: &str,
 ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
-    let empty = crate::identity::ReplaceDidAffectedLocalState {
+    let _ = (sqlite_path, old_owner_did, new_owner_did);
+    // v17 keeps business rows owned by stable owner_identity_id. Replacing a DID
+    // only records DID history and refreshes owner_did snapshots, so runtime
+    // planning must not scan or rebind rows by owner_did.
+    Ok(crate::identity::ReplaceDidAffectedLocalState {
         store_rebind_counts: zero_counts(REPLACE_DID_REBIND_TABLES),
         e2ee_cleanup_counts: zero_counts(REPLACE_DID_E2EE_TABLES),
-    };
-    if sqlite_path.metadata().is_err() {
-        return Ok(empty);
-    }
-
-    let old_owner_did = old_owner_did.trim();
-    let new_owner_did = new_owner_did.trim();
-    if old_owner_did.is_empty() || new_owner_did.is_empty() || old_owner_did == new_owner_did {
-        return Ok(empty);
-    }
-
-    let connection = rusqlite::Connection::open_with_flags(
-        sqlite_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(crate::internal::local_state::local_state_unavailable)?;
-    Ok(crate::identity::ReplaceDidAffectedLocalState {
-        store_rebind_counts: count_owner_rows_by_table(
-            &connection,
-            REPLACE_DID_REBIND_TABLES,
-            old_owner_did,
-        )?,
-        e2ee_cleanup_counts: count_owner_rows_by_table(
-            &connection,
-            REPLACE_DID_E2EE_TABLES,
-            old_owner_did,
-        )?,
     })
 }
 
@@ -146,26 +123,6 @@ pub(crate) fn plan_replace_did_local_state_rebind(
     _new_owner_did: &str,
 ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
     Ok(crate::identity::ReplaceDidAffectedLocalState::default())
-}
-
-#[cfg(feature = "sqlite")]
-fn count_owner_rows_by_table(
-    connection: &rusqlite::Connection,
-    tables: &[&str],
-    owner_did: &str,
-) -> crate::ImResult<std::collections::BTreeMap<String, i64>> {
-    let mut result = zero_counts(tables);
-    for table in tables {
-        let count = connection
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {table} WHERE owner_did = ?1"),
-                rusqlite::params![owner_did],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(crate::internal::local_state::local_state_unavailable)?;
-        result.insert((*table).to_string(), count);
-    }
-    Ok(result)
 }
 
 #[cfg(feature = "sqlite")]
@@ -301,7 +258,7 @@ mod tests {
 
     #[cfg(feature = "sqlite")]
     #[test]
-    fn replace_did_service_counts_local_state_from_client_sqlite_path() {
+    fn replace_did_service_does_not_count_business_rows_by_owner_did() {
         let root = tempfile::TempDir::new().unwrap();
         let core = crate::core::ImCore::new(
             crate::config::ImCoreConfig {
@@ -341,28 +298,13 @@ mod tests {
         let connection = crate::internal::local_state::open_writable(sqlite_path).unwrap();
         connection
             .execute(
-                "INSERT INTO messages (msg_id, owner_did, thread_id, stored_at)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, stored_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
                 rusqlite::params![
                     "replace-did-msg-1",
+                    "alice-id",
                     "did:wba:awiki.test:alice:e1_old",
-                    "dm:alice:bob",
-                    "2026-05-25T00:00:00Z",
-                ],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO e2ee_sessions
-                 (owner_did, peer_did, session_id, send_chain_key, recv_chain_key, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    "did:wba:awiki.test:alice:e1_old",
-                    "did:wba:example.test:bob",
-                    "session-1",
-                    "send",
-                    "recv",
-                    "2026-05-25T00:00:00Z",
+                    "dm:did:example:bob",
                     "2026-05-25T00:00:00Z",
                 ],
             )
@@ -382,10 +324,10 @@ mod tests {
             affected_local_state: crate::identity::ReplaceDidAffectedLocalState::default(),
         };
         let plan = client.identity().replace_did_plan(request.clone()).unwrap();
-        assert_eq!(plan.affected_local_state.store_rebind_counts["messages"], 1);
+        assert_eq!(plan.affected_local_state.store_rebind_counts["messages"], 0);
         assert_eq!(
             plan.affected_local_state.e2ee_cleanup_counts["e2ee_sessions"],
-            1
+            0
         );
 
         request.planned_new_did = request.identity.did.clone();

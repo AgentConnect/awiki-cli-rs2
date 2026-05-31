@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["blocking", "sqlite", "http"]
+default = ["sqlite", "http"]
 blocking = []
 sqlite = ["dep:rusqlite"]
 http = []
@@ -25,10 +25,15 @@ provider-traits = []
 anp.workspace = true
 base64.workspace = true
 rand.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 time.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
 rustls.workspace = true
 webpki-roots.workspace = true
 rusqlite = { workspace = true, optional = true }

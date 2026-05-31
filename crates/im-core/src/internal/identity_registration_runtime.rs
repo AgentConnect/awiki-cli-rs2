@@ -1,7 +1,9 @@
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-use crate::internal::transport::{RestTransport, RpcTransport};
+use crate::internal::transport::{
+    AsyncRestTransport, AsyncRpcTransport, RestTransport, RpcTransport,
+};
 
 const DEFAULT_EMAIL_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_EMAIL_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -25,14 +27,33 @@ struct RegistrationTarget {
     explicit_domain: bool,
 }
 
-impl<'a, T> IdentityRegistrationRuntime<'a, T>
-where
-    T: RpcTransport + RestTransport,
-{
+impl<'a, T> IdentityRegistrationRuntime<'a, T> {
     pub(crate) fn new(core: &'a crate::core::ImCore, transport: T) -> Self {
         Self { core, transport }
     }
 
+    fn pending_result(
+        &self,
+        request: crate::identity::RegisterHandleRequest,
+        handle: crate::ids::Handle,
+        method: crate::identity::RegistrationMethod,
+        state: crate::identity::HandleRegistrationState,
+    ) -> crate::identity::HandleRegistrationResult {
+        crate::identity::HandleRegistrationResult {
+            identity: None,
+            handle,
+            method,
+            state,
+            default_identity_change: None,
+            warnings: warnings_for_request(&request),
+        }
+    }
+}
+
+impl<'a, T> IdentityRegistrationRuntime<'a, T>
+where
+    T: RpcTransport + RestTransport,
+{
     pub(crate) fn register_handle(
         mut self,
         request: crate::identity::RegisterHandleRequest,
@@ -216,21 +237,218 @@ where
             std::thread::sleep(DEFAULT_EMAIL_POLL_INTERVAL);
         }
     }
+}
 
-    fn pending_result(
-        &self,
+impl<'a, T> IdentityRegistrationRuntime<'a, T>
+where
+    T: AsyncRpcTransport + AsyncRestTransport,
+{
+    pub(crate) async fn register_handle_async(
+        mut self,
         request: crate::identity::RegisterHandleRequest,
-        handle: crate::ids::Handle,
-        method: crate::identity::RegistrationMethod,
-        state: crate::identity::HandleRegistrationState,
-    ) -> crate::identity::HandleRegistrationResult {
-        crate::identity::HandleRegistrationResult {
-            identity: None,
-            handle,
-            method,
-            state,
-            default_identity_change: None,
-            warnings: warnings_for_request(&request),
+    ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
+        let target = registration_target(
+            request.requested_handle.as_str(),
+            &self.core.inner().sdk_config().did_domain,
+        )?;
+        let method = registration_method(&request.verification);
+        match &request.verification {
+            crate::identity::VerificationInput::Phone { phone, otp } => {
+                let phone = crate::internal::identity_wire::normalize_phone(phone)?;
+                if otp.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+                    let call =
+                        crate::internal::identity_wire::directory::build_send_otp_rpc_call(&phone)?;
+                    let raw = self
+                        .transport
+                        .rpc(call.endpoint, call.method, call.params.clone())
+                        .await?;
+                    return Ok(IdentityRegistrationRuntimeResult {
+                        sdk_result: self.pending_result(
+                            request,
+                            target.full_handle,
+                            method,
+                            crate::identity::HandleRegistrationState::OtpSent,
+                        ),
+                        raw: Some(raw),
+                    });
+                }
+                self.register_verified_async(request, target).await
+            }
+            crate::identity::VerificationInput::Email {
+                email,
+                wait_for_verification,
+            } => {
+                let email = crate::internal::identity_wire::required_normalized_email(email)?;
+                let status = self
+                    .email_status_value_async(&email, target.full_handle.as_str())
+                    .await?;
+                if !status.as_ref().is_some_and(email_verified) {
+                    let call = crate::internal::identity_wire::bind::build_email_send_rest_call(
+                        &email,
+                        Some(target.full_handle.as_str()),
+                        false,
+                    )?;
+                    let raw = self
+                        .transport
+                        .rest_post(call.endpoint, call.method, call.body.clone())
+                        .await?;
+                    if !wait_for_verification {
+                        return Ok(IdentityRegistrationRuntimeResult {
+                            sdk_result: self.pending_result(
+                                request,
+                                target.full_handle,
+                                method,
+                                crate::identity::HandleRegistrationState::EmailSent,
+                            ),
+                            raw: Some(raw),
+                        });
+                    }
+                    if !self
+                        .wait_for_email_verified_async(&email, target.full_handle.as_str())
+                        .await?
+                    {
+                        return Ok(IdentityRegistrationRuntimeResult {
+                            sdk_result: self.pending_result(
+                                request,
+                                target.full_handle,
+                                method,
+                                crate::identity::HandleRegistrationState::EmailPending,
+                            ),
+                            raw: Some(raw),
+                        });
+                    }
+                }
+                self.register_verified_async(request, target).await
+            }
+            crate::identity::VerificationInput::Otp { .. }
+            | crate::identity::VerificationInput::AlreadyVerified => {
+                self.register_verified_async(request, target).await
+            }
+        }
+    }
+
+    async fn register_verified_async(
+        &mut self,
+        request: crate::identity::RegisterHandleRequest,
+        target: RegistrationTarget,
+    ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
+        let previous_default = self
+            .core
+            .identities()
+            .default_identity_async()
+            .await
+            .ok()
+            .flatten();
+        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
+            &target.effective_domain,
+            [target.local_part.as_str()],
+            self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
+            self.core.inner().sdk_config().anp_service_did.as_ref(),
+        )?;
+        let call = crate::internal::identity_wire::recovery::build_register_rpc_call(
+            crate::internal::identity_wire::RegisterRpcParams {
+                did_document: generated.did_document.clone(),
+                handle: target.local_part.clone(),
+                phone: registration_phone(&request.verification),
+                otp_code: registration_otp(&request.verification),
+                email: registration_email(&request.verification),
+                invite_code: request.invite_code.clone().unwrap_or_default(),
+            },
+        )?;
+        let raw = self
+            .transport
+            .rpc(call.endpoint, call.method, call.params.clone())
+            .await?;
+        let local_alias = local_alias(&request, &target);
+        let stored = crate::internal::identity_store::IdentityStore::save_identity_async(
+            self.core.inner().sdk_paths().identities.clone(),
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias,
+                did: did_from_raw(&raw).unwrap_or_else(|| generated.did.clone()),
+                unique_id: generated.unique_id,
+                user_id: string_value(&raw, "user_id", ""),
+                display_name: request
+                    .profile
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| target.local_part.clone()),
+                handle: string_value(&raw, "handle", &target.local_part),
+                full_handle: string_value(&raw, "full_handle", target.full_handle.as_str()),
+                jwt_token: string_value(&raw, "access_token", ""),
+                did_document: Some(generated.did_document),
+                key1_private_pem: generated.key1_private_pem,
+                key1_public_pem: generated.key1_public_pem,
+                e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+                e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+                make_default: request.make_default,
+            },
+        )
+        .await?;
+        let identity = identity_summary_from_stored(&stored)?;
+        let sdk_result = crate::identity::HandleRegistrationResult {
+            identity: Some(identity.clone()),
+            handle: target.full_handle,
+            method: registration_method(&request.verification),
+            state: crate::identity::HandleRegistrationState::Registered,
+            default_identity_change: request.make_default.then(|| {
+                crate::identity::DefaultIdentityChange {
+                    previous: previous_default,
+                    next: identity,
+                    requires_default_identity_write: false,
+                    warnings: Vec::new(),
+                }
+            }),
+            warnings: Vec::new(),
+        };
+        Ok(IdentityRegistrationRuntimeResult {
+            sdk_result,
+            raw: Some(raw),
+        })
+    }
+
+    async fn email_status_value_async(
+        &mut self,
+        email: &str,
+        handle: &str,
+    ) -> crate::ImResult<Option<Value>> {
+        let call = crate::internal::identity_wire::bind::build_email_status_rest_call(
+            email,
+            Some(handle),
+            false,
+        )?;
+        match self
+            .transport
+            .rest_get(call.endpoint, call.method, &call.query)
+            .await
+        {
+            Ok(status) => Ok(Some(status)),
+            Err(crate::ImError::Service {
+                status_code: Some(404),
+                ..
+            }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn wait_for_email_verified_async(
+        &mut self,
+        email: &str,
+        handle: &str,
+    ) -> crate::ImResult<bool> {
+        let deadline = tokio::time::Instant::now() + DEFAULT_EMAIL_VERIFICATION_TIMEOUT;
+        loop {
+            if self
+                .email_status_value_async(email, handle)
+                .await?
+                .as_ref()
+                .is_some_and(email_verified)
+            {
+                return Ok(true);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(DEFAULT_EMAIL_POLL_INTERVAL).await;
         }
     }
 }

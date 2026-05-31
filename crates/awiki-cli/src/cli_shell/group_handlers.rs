@@ -92,6 +92,61 @@ impl App {
         )
     }
 
+    pub async fn run_group_create_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_create(command);
+        }
+        let resolved = self.resolve_config()?;
+        let name = string_flag(command, "name");
+        if !changed(command, "name") {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "group create requires --name.",
+                "Usage: awiki-cli group create --name <NAME>",
+            ));
+        }
+        let message_security_profile =
+            string_flag_or(command, "message-security-profile", "transport-protected");
+        let (secure_required, warnings) =
+            group_secure_requirement(command, Some(message_security_profile.as_str()))?;
+        let request = crate::m_core_cli_adapter::groups::GroupCreateRequest {
+            identity_name: self.globals.identity.clone(),
+            name,
+            description: string_flag(command, "description"),
+            discoverability: string_flag_or(command, "discoverability", "private"),
+            admission_mode: string_flag_or(command, "admission-mode", "open-join"),
+            message_security_profile: if secure_required {
+                GROUP_E2EE_PROFILE.to_string()
+            } else {
+                message_security_profile
+            },
+            secure_required,
+            e2ee: secure_required,
+            slug: string_flag(command, "slug"),
+            goal: string_flag(command, "goal"),
+            rules: string_flag(command, "rules"),
+            message_prompt: string_flag(command, "message-prompt"),
+            doc_url: string_flag(command, "doc-url"),
+            attachments_allowed: optional_bool(command, "attachments-allowed")?,
+            max_members: string_flag(command, "max-members"),
+            member_max_messages: optional_i64(command, "member-max-messages")?,
+            member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
+        };
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let mut result = crate::m_core_cli_adapter::groups::create_group_via_im_core_async(
+            &resolved, &client, request,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.create"))?;
+        result.warnings.extend(warnings);
+        self.render_group_result("awiki-cli group create", &resolved, result)
+    }
+
     pub fn run_group_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let group = required_string_flag(
@@ -124,6 +179,30 @@ impl App {
             "Dry run: group show planned",
             Vec::new(),
         )
+    }
+
+    pub async fn run_group_get_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_get(command);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            "group get",
+            "Usage: awiki-cli group get --group <GROUP_DID>",
+        )?;
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::groups::get_group_via_im_core_async(
+            &resolved, &client, group,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.get"))?;
+        self.render_group_result("awiki-cli group get", &resolved, result)
     }
 
     pub fn run_group_join(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -170,12 +249,65 @@ impl App {
         )
     }
 
+    pub async fn run_group_join_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_join(command);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            "group join",
+            "Usage: awiki-cli group join --group <GROUP_DID>",
+        )?;
+        let request = crate::m_core_cli_adapter::groups::GroupJoinRequest {
+            identity_name: self.globals.identity.clone(),
+            group,
+            reason_text: string_flag(command, "reason"),
+        };
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::groups::join_group_via_im_core_async(
+            &resolved, &client, request,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.join"))?;
+        self.render_group_result("awiki-cli group join", &resolved, result)
+    }
+
     pub fn run_group_add(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         self.run_group_member_mutation(command, "add", "group add", "group.add", "member", false)
     }
 
+    pub async fn run_group_add_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_group_member_mutation_async(
+            command,
+            "add",
+            "group add",
+            "group.add",
+            "member",
+            false,
+        )
+        .await
+    }
+
     pub fn run_group_remove(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         self.run_group_member_mutation(command, "kick", "group remove", "group.remove", "", true)
+    }
+
+    pub async fn run_group_remove_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_group_member_mutation_async(
+            command,
+            "kick",
+            "group remove",
+            "group.remove",
+            "",
+            true,
+        )
+        .await
     }
 
     fn run_group_member_mutation(
@@ -275,6 +407,79 @@ impl App {
         )
     }
 
+    async fn run_group_member_mutation_async(
+        &self,
+        command: &ParsedCommand,
+        public_action: &str,
+        command_name: &str,
+        command_id: &str,
+        role_fallback: &str,
+        include_reason: bool,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_member_mutation(
+                command,
+                public_action,
+                command_name,
+                command_id,
+                role_fallback,
+                include_reason,
+            );
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            command_name,
+            &format!("Usage: awiki-cli {command_name} --group <GROUP_DID> --member <MEMBER>"),
+        )?;
+        let member = required_string_flag(
+            command,
+            "member",
+            command_name,
+            &format!("Usage: awiki-cli {command_name} --group <GROUP_DID> --member <MEMBER>"),
+        )?;
+        let (secure_required, warnings) = group_secure_requirement(command, None)?;
+        let request = crate::m_core_cli_adapter::groups::GroupMemberRequest {
+            identity_name: self.globals.identity.clone(),
+            group,
+            member,
+            role: string_flag_or(command, "role", role_fallback),
+            reason_text: if include_reason {
+                string_flag(command, "reason")
+            } else {
+                String::new()
+            },
+            secure_required,
+            e2ee: secure_required,
+            leave_request_id: String::new(),
+        };
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let mut result = if public_action == "add" {
+            crate::m_core_cli_adapter::groups::add_group_member_via_im_core_async(
+                &resolved, &client, request,
+            )
+            .await
+        } else {
+            crate::m_core_cli_adapter::groups::remove_group_member_via_im_core_async(
+                &resolved, &client, request,
+            )
+            .await
+        }
+        .map_err(|err| group_membership_cutover_exit(err, command_id))?;
+        result.warnings.extend(warnings);
+        result.summary = if public_action == "add" {
+            "Added member to group".to_string()
+        } else {
+            "Removed member from group".to_string()
+        };
+        self.render_group_result(&format!("awiki-cli {command_name}"), &resolved, result)
+    }
+
     pub fn run_group_leave(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let group = required_string_flag(
@@ -323,6 +528,39 @@ impl App {
             "Dry run: group leave planned",
             warnings,
         )
+    }
+
+    pub async fn run_group_leave_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_leave(command);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            "group leave",
+            "Usage: awiki-cli group leave --group <GROUP_DID>",
+        )?;
+        let (secure_required, warnings) = group_secure_requirement(command, None)?;
+        let request = crate::m_core_cli_adapter::groups::GroupLeaveRequest {
+            identity_name: self.globals.identity.clone(),
+            group,
+            reason_text: string_flag(command, "reason"),
+            secure_required,
+            e2ee: secure_required,
+        };
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let mut result = crate::m_core_cli_adapter::groups::leave_group_via_im_core_async(
+            &resolved, &client, request,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.leave"))?;
+        result.warnings.extend(warnings);
+        self.render_group_result("awiki-cli group leave", &resolved, result)
     }
 
     pub fn run_group_update(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -393,6 +631,47 @@ impl App {
         )
     }
 
+    pub async fn run_group_update_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_update(command);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            "group update",
+            "Usage: awiki-cli group update --group <GROUP_DID>",
+        )?;
+        let request = crate::m_core_cli_adapter::groups::GroupUpdateRequest {
+            identity_name: self.globals.identity.clone(),
+            group,
+            name: string_flag(command, "name"),
+            description: string_flag(command, "description"),
+            discoverability: string_flag(command, "discoverability"),
+            admission_mode: string_flag(command, "admission-mode"),
+            slug: string_flag(command, "slug"),
+            goal: string_flag(command, "goal"),
+            rules: string_flag(command, "rules"),
+            message_prompt: string_flag(command, "message-prompt"),
+            doc_url: string_flag(command, "doc-url"),
+            attachments_allowed: optional_bool(command, "attachments-allowed")?,
+            max_members: string_flag(command, "max-members"),
+            member_max_messages: optional_i64(command, "member-max-messages")?,
+            member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
+        };
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::groups::update_group_via_im_core_async(
+            &resolved, &client, request,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.update"))?;
+        self.render_group_result("awiki-cli group update", &resolved, result)
+    }
+
     pub fn run_group_list(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 50)?;
@@ -424,6 +703,25 @@ impl App {
             "Dry run: group list planned",
             Vec::new(),
         )
+    }
+
+    pub async fn run_group_list_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_list(command);
+        }
+        let resolved = self.resolve_config()?;
+        let limit = int_flag(command, "limit", 50)?;
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::groups::list_groups_via_im_core_async(
+            &resolved, &client, limit,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.list"))?;
+        self.render_group_result("awiki-cli group list", &resolved, result)
     }
 
     pub fn run_group_members(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -464,6 +762,31 @@ impl App {
             "Dry run: group members planned",
             Vec::new(),
         )
+    }
+
+    pub async fn run_group_members_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_members(command);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            "group members",
+            "Usage: awiki-cli group members --group <GROUP_DID>",
+        )?;
+        let limit = int_flag(command, "limit", 100)?;
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::groups::group_members_via_im_core_async(
+            &resolved, &client, group, limit,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.members"))?;
+        self.render_group_result("awiki-cli group members", &resolved, result)
     }
 
     pub fn run_group_messages(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -509,8 +832,42 @@ impl App {
         )
     }
 
+    pub async fn run_group_messages_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_messages(command);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            "group messages",
+            "Usage: awiki-cli group messages --group <GROUP_DID>",
+        )?;
+        let limit = int_flag(command, "limit", 50)?;
+        let cursor = string_flag(command, "cursor");
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::groups::group_messages_via_im_core_async(
+            &resolved, &client, group, limit, cursor,
+        )
+        .await
+        .map_err(|err| group_cutover_exit(err, "group.messages"))?;
+        self.render_group_result("awiki-cli group messages", &resolved, result)
+    }
+
     pub fn run_group_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         self.run_group_secure(command, "status", false, false)
+    }
+
+    pub async fn run_group_secure_status_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        self.run_group_secure_async(command, "status", false, false)
+            .await
     }
 
     pub fn run_group_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -522,6 +879,21 @@ impl App {
             ));
         }
         self.run_group_secure(command, "repair", true, false)
+    }
+
+    pub async fn run_group_secure_repair_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if bool_flag(command, "explain")?.unwrap_or(false) {
+            return Err(super::unsupported::unsupported_cutover_command(
+                "group.secure.repair",
+                "group secure diagnostics",
+                "future diagnostics plan",
+            ));
+        }
+        self.run_group_secure_async(command, "repair", true, false)
+            .await
     }
 
     pub fn run_group_secure_diagnostics(&self) -> Result<(), ExitError> {
@@ -536,8 +908,24 @@ impl App {
         self.run_group_secure(command, "status", false, true)
     }
 
+    pub async fn run_group_e2ee_status_alias_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        self.run_group_secure_async(command, "status", false, true)
+            .await
+    }
+
     pub fn run_group_e2ee_repair_alias(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         self.run_group_secure(command, "repair", true, true)
+    }
+
+    pub async fn run_group_e2ee_repair_alias_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        self.run_group_secure_async(command, "repair", true, true)
+            .await
     }
 
     fn run_group_secure(
@@ -587,6 +975,51 @@ impl App {
             crate::m_core_cli_adapter::groups::group_secure_status_via_im_core(&client, group)
         } else {
             crate::m_core_cli_adapter::groups::group_secure_repair_via_im_core(&client, group)
+        }
+        .map_err(|err| group_cutover_exit(err, &format!("group.secure.{action}")))?;
+        result.warnings.extend(warnings);
+        self.render_group_result(
+            &format!("awiki-cli group secure {action}"),
+            &resolved,
+            result,
+        )
+    }
+
+    async fn run_group_secure_async(
+        &self,
+        command: &ParsedCommand,
+        action: &str,
+        side_effect: bool,
+        deprecated_alias: bool,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_group_secure(command, action, side_effect, deprecated_alias);
+        }
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            &format!("group secure {action}"),
+            &format!("Usage: awiki-cli group secure {action} --group <GROUP_DID>"),
+        )?;
+        let warnings = if deprecated_alias {
+            vec![format!(
+                "group e2ee {action} is deprecated; use group secure {action}."
+            )]
+        } else {
+            Vec::new()
+        };
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let mut result = if action == "status" {
+            crate::m_core_cli_adapter::groups::group_secure_status_via_im_core_async(&client, group)
+                .await
+        } else {
+            crate::m_core_cli_adapter::groups::group_secure_repair_via_im_core_async(&client, group)
+                .await
         }
         .map_err(|err| group_cutover_exit(err, &format!("group.secure.{action}")))?;
         result.warnings.extend(warnings);

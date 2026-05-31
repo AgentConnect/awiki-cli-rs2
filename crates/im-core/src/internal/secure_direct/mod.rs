@@ -1,4 +1,8 @@
 #[cfg(feature = "sqlite")]
+pub(crate) mod async_receive;
+#[cfg(feature = "sqlite")]
+pub(crate) mod async_send;
+#[cfg(feature = "sqlite")]
 pub(crate) mod client;
 pub(crate) mod control;
 pub(crate) mod file_runtime;

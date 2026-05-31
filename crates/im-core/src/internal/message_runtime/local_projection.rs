@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_messages(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
@@ -18,6 +18,34 @@ pub(crate) fn persist_messages(
     crate::internal::local_state::messages::upsert_messages(&connection, &records)
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_messages_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) -> crate::ImResult<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(records)
+        .await
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn persist_messages(
     _client: &crate::core::ImClient,
@@ -26,7 +54,15 @@ pub(crate) fn persist_messages(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_messages_async(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
@@ -40,31 +76,41 @@ pub(crate) fn persist_direct_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &crate::internal::local_state::messages::MessageRecord {
-            msg_id: sdk_result.message.id.as_str().to_owned(),
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            thread_id: direct_thread_id(client.did().as_str(), target_did),
-            direction: 1,
-            sender_did: client.did().as_str().to_owned(),
-            receiver_did: target_did.trim().to_owned(),
-            content_type: content_type_for_kind(kind).to_owned(),
-            content: text.to_owned(),
-            server_seq: sdk_result.message.metadata.server_sequence,
-            sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            is_e2ee: false,
-            is_read: true,
-            metadata: delivery_metadata_json(
-                &sdk_result.message.metadata,
-                [("target_handle", target_handle.unwrap_or_default())],
-            ),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        &direct_outgoing_record(client, target_did, target_handle, text, kind, sdk_result),
     )
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_outgoing(
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
 #[cfg(feature = "sqlite")]
+pub(crate) async fn persist_direct_outgoing_async(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = direct_outgoing_record(client, target_did, target_handle, text, kind, sdk_result);
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -77,30 +123,40 @@ pub(crate) fn persist_group_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &crate::internal::local_state::messages::MessageRecord {
-            msg_id: sdk_result.message.id.as_str().to_owned(),
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            thread_id: group_thread_id(group_did),
-            direction: 1,
-            sender_did: client.did().as_str().to_owned(),
-            group_id: group_storage_key(group_did),
-            group_did: group_did.trim().to_owned(),
-            content_type: content_type_for_kind(kind).to_owned(),
-            content: text.to_owned(),
-            server_seq: sdk_result.message.metadata.server_sequence,
-            sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            is_e2ee: false,
-            is_read: true,
-            metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        &group_outgoing_record(client, group_did, text, kind, sdk_result),
     )?;
     touch_group_after_outgoing(&connection, client, group_did, sdk_result)
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
 #[cfg(feature = "sqlite")]
+pub(crate) async fn persist_group_outgoing_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let db = client.core_inner().local_state_db().await?;
+    db.store_messages(vec![group_outgoing_record(
+        client, group_did, text, kind, sdk_result,
+    )])
+    .await?;
+    db.upsert_group(group_touch_record(client, group_did, sdk_result))
+        .await
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_attachment_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
@@ -113,32 +169,40 @@ pub(crate) fn persist_direct_attachment_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &crate::internal::local_state::messages::MessageRecord {
-            msg_id: sdk_result.message.id.as_str().to_owned(),
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            thread_id: direct_thread_id(client.did().as_str(), target_did),
-            direction: 1,
-            sender_did: client.did().as_str().to_owned(),
-            receiver_did: target_did.trim().to_owned(),
-            content_type: crate::attachments::manifest::attachment_manifest_content_type()
-                .to_owned(),
-            content: crate::attachments::manifest::manifest_content_string(manifest),
-            server_seq: sdk_result.message.metadata.server_sequence,
-            sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            is_e2ee: false,
-            is_read: true,
-            metadata: delivery_metadata_json(
-                &sdk_result.message.metadata,
-                attachment_metadata_extras(manifest, target_handle),
-            ),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        &direct_attachment_outgoing_record(client, target_did, target_handle, manifest, sdk_result),
     )
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_attachment_outgoing(
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _manifest: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
 #[cfg(feature = "sqlite")]
+pub(crate) async fn persist_direct_attachment_outgoing_async(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    manifest: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record =
+        direct_attachment_outgoing_record(client, target_did, target_handle, manifest, sdk_result);
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_attachment_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -150,34 +214,59 @@ pub(crate) fn persist_group_attachment_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &crate::internal::local_state::messages::MessageRecord {
-            msg_id: sdk_result.message.id.as_str().to_owned(),
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            thread_id: group_thread_id(group_did),
-            direction: 1,
-            sender_did: client.did().as_str().to_owned(),
-            group_id: group_storage_key(group_did),
-            group_did: group_did.trim().to_owned(),
-            content_type: crate::attachments::manifest::attachment_manifest_content_type()
-                .to_owned(),
-            content: crate::attachments::manifest::manifest_content_string(manifest),
-            server_seq: sdk_result.message.metadata.server_sequence,
-            sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            is_e2ee: false,
-            is_read: true,
-            metadata: delivery_metadata_json(
-                &sdk_result.message.metadata,
-                attachment_metadata_extras(manifest, None),
-            ),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        &group_attachment_outgoing_record(client, group_did, manifest, sdk_result),
     )?;
     touch_group_after_outgoing(&connection, client, group_did, sdk_result)
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_attachment_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _manifest: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
 #[cfg(feature = "sqlite")]
+pub(crate) async fn persist_group_attachment_outgoing_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    manifest: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let db = client.core_inner().local_state_db().await?;
+    db.store_messages(vec![group_attachment_outgoing_record(
+        client, group_did, manifest, sdk_result,
+    )])
+    .await?;
+    db.upsert_group(group_touch_record(client, group_did, sdk_result))
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_direct_attachment_outgoing_async(
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _manifest: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_group_attachment_outgoing_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _manifest: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn peer_dids_for_handle(
     client: &crate::core::ImClient,
     handle: &str,
@@ -193,7 +282,35 @@ pub(crate) fn peer_dids_for_handle(
     Ok(merge_peer_dids(current_did, &dids))
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn peer_dids_for_handle(
+    _client: &crate::core::ImClient,
+    _handle: &str,
+    _current_did: &str,
+) -> crate::ImResult<Vec<String>> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
 #[cfg(feature = "sqlite")]
+pub(crate) async fn peer_dids_for_handle_async(
+    client: &crate::core::ImClient,
+    handle: &str,
+    current_did: &str,
+) -> crate::ImResult<Vec<String>> {
+    let dids = client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .list_dids_by_handle(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            normalize_handle_value(handle),
+        )
+        .await?;
+    Ok(merge_peer_dids(current_did, &dids))
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_e2ee_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
@@ -204,28 +321,40 @@ pub(crate) fn persist_direct_e2ee_outgoing(
 ) -> crate::ImResult<()> {
     crate::internal::local_state::messages::upsert_message(
         connection,
-        &crate::internal::local_state::messages::MessageRecord {
-            msg_id: sdk_result.message.id.as_str().to_owned(),
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            thread_id: direct_thread_id(client.did().as_str(), target_did),
-            direction: 1,
-            sender_did: client.did().as_str().to_owned(),
-            receiver_did: target_did.trim().to_owned(),
-            content_type: content_type_for_kind(kind).to_owned(),
-            content: text.to_owned(),
-            server_seq: sdk_result.message.metadata.server_sequence,
-            sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            is_e2ee: true,
-            is_read: true,
-            metadata: secure_metadata_json("direct-e2ee", &sdk_result.message.metadata),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        &direct_e2ee_outgoing_record(client, target_did, text, kind, sdk_result),
     )
 }
 
-#[cfg(feature = "group-e2ee")]
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_e2ee_outgoing(
+    _connection: &rusqlite::Connection,
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_direct_e2ee_outgoing_async(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = direct_e2ee_outgoing_record(client, target_did, text, kind, sdk_result);
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(all(feature = "group-e2ee", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_e2ee_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -238,48 +367,90 @@ pub(crate) fn persist_group_e2ee_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &crate::internal::local_state::messages::MessageRecord {
-            msg_id: sdk_result.message.id.as_str().to_owned(),
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            thread_id: group_thread_id(group_did),
-            direction: 1,
-            sender_did: client.did().as_str().to_owned(),
-            group_id: group_did.trim().to_owned(),
-            group_did: group_did.trim().to_owned(),
-            content_type: content_type_for_kind(kind).to_owned(),
-            content: text.to_owned(),
-            server_seq: sdk_result.message.metadata.server_sequence,
-            sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            is_e2ee: true,
-            is_read: true,
-            metadata: secure_metadata_json("group-e2ee", &sdk_result.message.metadata),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::messages::MessageRecord::default()
-        },
+        &group_e2ee_outgoing_record(client, group_did, text, kind, sdk_result),
     )
 }
 
-pub(crate) fn direct_thread_id(owner_did: &str, peer_did: &str) -> String {
-    let owner_did = owner_did.trim();
-    let peer_did = peer_did.trim();
-    if peer_did.is_empty() {
-        return format!("dm:{owner_did}:unknown");
+#[cfg(all(feature = "group-e2ee", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_e2ee_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn persist_group_e2ee_outgoing_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = group_e2ee_outgoing_record(client, group_did, text, kind, sdk_result);
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_e2ee_outgoing_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        group_id: group_did.trim().to_owned(),
+        group_did: group_did.trim().to_owned(),
+        content_type: content_type_for_kind(kind).to_owned(),
+        content: text.to_owned(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: true,
+        is_read: true,
+        metadata: secure_metadata_json("group-e2ee", &sdk_result.message.metadata),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
     }
-    let mut pair = [owner_did.to_owned(), peer_did.to_owned()];
-    pair.sort();
-    format!("dm:{}:{}", pair[0], pair[1])
+}
+
+pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
+    crate::internal::local_state::owner_scope::direct_conversation_id(peer_did)
 }
 
 pub(crate) fn group_thread_id(group_did: &str) -> String {
-    format!("group:{}", group_did.trim())
+    group_conversation_id(group_did)
+}
+
+pub(crate) fn group_conversation_id(group_id_or_did: &str) -> String {
+    crate::internal::local_state::owner_scope::group_conversation_id(group_id_or_did)
+}
+
+pub(crate) fn mail_conversation_id(source: &str) -> String {
+    crate::internal::local_state::owner_scope::mail_conversation_id(source)
 }
 
 fn group_storage_key(group_did: &str) -> String {
     group_did.trim().to_owned()
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn touch_group_after_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
@@ -288,19 +459,189 @@ fn touch_group_after_outgoing(
 ) -> crate::ImResult<()> {
     crate::internal::local_state::groups::upsert_group(
         connection,
-        crate::internal::local_state::groups::GroupRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            group_id: group_storage_key(group_did),
-            group_did: group_did.trim().to_owned(),
-            membership_status: "active".to_owned(),
-            last_synced_seq: sdk_result.message.metadata.server_sequence,
-            last_message_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-            metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
-            credential_name: credential_name(client),
-            ..crate::internal::local_state::groups::GroupRecord::default()
-        },
+        group_touch_record(client, group_did, sdk_result),
     )
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_outgoing_record(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id(target_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        receiver_did: target_did.trim().to_owned(),
+        content_type: content_type_for_kind(kind).to_owned(),
+        content: text.to_owned(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: false,
+        is_read: true,
+        metadata: delivery_metadata_json(
+            &sdk_result.message.metadata,
+            [("target_handle", target_handle.unwrap_or_default())],
+        ),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_e2ee_outgoing_record(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id(target_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        receiver_did: target_did.trim().to_owned(),
+        content_type: content_type_for_kind(kind).to_owned(),
+        content: text.to_owned(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: true,
+        is_read: true,
+        metadata: secure_metadata_json("direct-e2ee", &sdk_result.message.metadata),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn group_outgoing_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    text: &str,
+    kind: &crate::messages::MessageKind,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        group_id: group_storage_key(group_did),
+        group_did: group_did.trim().to_owned(),
+        content_type: content_type_for_kind(kind).to_owned(),
+        content: text.to_owned(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: false,
+        is_read: true,
+        metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_attachment_outgoing_record(
+    client: &crate::core::ImClient,
+    target_did: &str,
+    target_handle: Option<&str>,
+    manifest: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id(target_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        receiver_did: target_did.trim().to_owned(),
+        content_type: crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+        content: crate::attachments::manifest::manifest_content_string(manifest),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: false,
+        is_read: true,
+        metadata: delivery_metadata_json(
+            &sdk_result.message.metadata,
+            attachment_metadata_extras(manifest, target_handle),
+        ),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn group_attachment_outgoing_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    manifest: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        group_id: group_storage_key(group_did),
+        group_did: group_did.trim().to_owned(),
+        content_type: crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+        content: crate::attachments::manifest::manifest_content_string(manifest),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: false,
+        is_read: true,
+        metadata: delivery_metadata_json(
+            &sdk_result.message.metadata,
+            attachment_metadata_extras(manifest, None),
+        ),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn group_touch_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::groups::GroupRecord {
+    crate::internal::local_state::groups::GroupRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        group_id: group_storage_key(group_did),
+        group_did: group_did.trim().to_owned(),
+        membership_status: "active".to_owned(),
+        last_synced_seq: sdk_result.message.metadata.server_sequence,
+        last_message_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::groups::GroupRecord::default()
+    }
 }
 
 fn delivery_metadata_json<'a, I>(metadata: &crate::messages::MessageMetadata, extras: I) -> String
@@ -537,11 +878,13 @@ fn message_record_from_message(
 ) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
     let (content_type, content) = body_projection(&message.body);
     let direction = direction_value_for_message(client.did().as_str(), message);
+    let conversation_id = conversation_id_for_message(client.did().as_str(), message);
     Ok(crate::internal::local_state::messages::MessageRecord {
         msg_id: message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: thread_id_for_message(client.did().as_str(), message),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction,
         sender_did: message.sender.as_str().to_owned(),
         receiver_did: message
@@ -569,18 +912,18 @@ fn message_record_from_message(
 }
 
 #[cfg(feature = "sqlite")]
-fn thread_id_for_message(owner_did: &str, message: &crate::messages::Message) -> String {
+fn conversation_id_for_message(owner_did: &str, message: &crate::messages::Message) -> String {
     if let Some(group) = group_ref_for_message(message) {
-        return group_thread_id(&group);
+        return group_conversation_id(&group);
     }
     let peer = direct_peer_for_message(owner_did, message);
     if !peer.trim().is_empty() {
-        return direct_thread_id(owner_did, &peer);
+        return direct_conversation_id(&peer);
     }
     match &message.thread {
         crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
-        crate::messages::ThreadRef::Direct(peer) => direct_thread_id(owner_did, peer.as_str()),
-        crate::messages::ThreadRef::Group(group) => group_thread_id(group.as_str()),
+        crate::messages::ThreadRef::Direct(peer) => direct_conversation_id(peer.as_str()),
+        crate::messages::ThreadRef::Group(group) => group_conversation_id(group.as_str()),
     }
 }
 
@@ -771,11 +1114,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_thread_id_is_stable_for_peer_order() {
+    fn conversation_ids_do_not_include_local_owner_did() {
         assert_eq!(
-            direct_thread_id("did:example:b", "did:example:a"),
-            "dm:did:example:a:did:example:b"
+            direct_conversation_id("did:example:bob"),
+            "dm:did:example:bob"
         );
+        assert_eq!(
+            group_conversation_id("did:example:group"),
+            "group:did:example:group"
+        );
+        assert_eq!(mail_conversation_id("inbox"), "mail:inbox");
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct TestIdentity {
     pub identity_name: String,
+    pub unique_id: String,
     pub did: String,
     pub identity_dir: PathBuf,
 }
@@ -99,6 +100,7 @@ pub fn write_ready_identity(workspace: &Path, options: TestIdentityOptions<'_>) 
             did: &did,
             unique_id: &unique_id,
             display_name,
+            handle,
             full_handle: &full_handle,
             make_default: options.make_default,
         },
@@ -106,6 +108,7 @@ pub fn write_ready_identity(workspace: &Path, options: TestIdentityOptions<'_>) 
 
     TestIdentity {
         identity_name: identity_name.to_string(),
+        unique_id,
         did,
         identity_dir,
     }
@@ -151,6 +154,7 @@ struct RegistryEntry<'a> {
     did: &'a str,
     unique_id: &'a str,
     display_name: &'a str,
+    handle: &'a str,
     full_handle: &'a str,
     make_default: bool,
 }
@@ -161,34 +165,36 @@ fn upsert_registry_entry(identity_root: &Path, entry: RegistryEntry<'_>) {
     let mut registry = std::fs::read(&registry_path)
         .ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-        .filter(|value| value.get("identities").and_then(Value::as_array).is_some())
-        .unwrap_or_else(|| json!({ "default_identity": Value::Null, "identities": [] }));
-    let identities = registry
-        .get_mut("identities")
-        .and_then(Value::as_array_mut)
-        .expect("registry identities array");
-    identities.retain(|item| {
-        item.get("local_alias").and_then(Value::as_str) != Some(entry.identity_name)
-    });
-    identities.push(json!({
-        "id": entry.unique_id,
-        "did": entry.did,
+        .filter(|value| {
+            value
+                .get("credentials")
+                .and_then(Value::as_object)
+                .is_some()
+        })
+        .unwrap_or_else(
+            || json!({ "schema_version": 3, "default_credential_name": "", "credentials": {} }),
+        );
+    registry["schema_version"] = Value::from(3);
+    registry["credentials"][entry.identity_name] = json!({
+        "credential_name": entry.identity_name,
         "dir_name": entry.dir_name,
-        "handle": entry.full_handle,
-        "display_name": entry.display_name,
-        "local_alias": entry.identity_name,
-        "ready_for_auth": true,
-        "ready_for_messaging": true,
-        "missing": [],
-    }));
+        "did": entry.did,
+        "unique_id": entry.unique_id,
+        "user_id": format!("user-{}", entry.handle),
+        "name": entry.display_name,
+        "handle": entry.handle,
+        "full_handle": entry.full_handle,
+        "created_at": "2026-05-25T00:00:00Z",
+        "is_default": entry.make_default,
+    });
     if entry.make_default
         || registry
-            .get("default_identity")
+            .get("default_credential_name")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .is_empty()
     {
-        registry["default_identity"] = Value::String(entry.identity_name.to_string());
+        registry["default_credential_name"] = Value::String(entry.identity_name.to_string());
         std::fs::write(
             identity_root.join("default"),
             format!("{}\n", entry.identity_name),

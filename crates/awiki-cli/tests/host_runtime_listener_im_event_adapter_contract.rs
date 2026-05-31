@@ -7,8 +7,8 @@ use awiki_cli::host_runtime::listener_im_event_adapter::{
 use im_core::prelude::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupRef,
     GroupUpdateKind, GroupUpdatedEvent, ImEvent, Message, MessageBodyView, MessageDirection,
-    MessageId, MessageKind, MessageMetadata, MessageReceivedEvent, PeerRef,
-    RealtimeConnectionState, ThreadRef, UnknownNotificationEvent,
+    MessageId, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageReceivedEvent,
+    PeerRef, RealtimeConnectionState, ThreadRef, UnknownNotificationEvent,
 };
 use serde_json::json;
 use std::sync::Mutex;
@@ -92,6 +92,18 @@ fn im_event_group_message_and_update_dispatch_host_notifications_only() {
     );
     assert_eq!(message.route, CliImEventRoute::GroupIncoming);
     assert!(message.dispatched_host_notification);
+    let events = sink.events();
+    let group_event = events
+        .iter()
+        .find(|event| event.topic == "im.group.message.received")
+        .expect("group message host notification");
+    assert_eq!(group_event.id, "raw-group-msg-1");
+    let HostNotificationData::Group(data) = group_event.data.as_ref().expect("group message data")
+    else {
+        panic!("expected group host notification data");
+    };
+    assert_eq!(data.message_id, "raw-group-msg-1");
+    assert_eq!(data.group_event_seq, "7");
 
     let update = handle_im_event(
         Some(&sink),
@@ -107,11 +119,11 @@ fn im_event_group_message_and_update_dispatch_host_notifications_only() {
     assert_eq!(update.route, CliImEventRoute::GroupStateChanged);
     assert!(update.dispatched_host_notification);
 
-    let events = sink.events();
-    assert!(events
+    let all_events = sink.events();
+    assert!(all_events
         .iter()
         .any(|event| event.topic == "im.group.message.received"));
-    assert!(events
+    assert!(all_events
         .iter()
         .any(|event| event.topic == "im.group.state.changed"));
 }
@@ -372,6 +384,10 @@ fn group_message_event() -> ImEvent {
                 operation_id: Some("op-group-1".to_string()),
                 server_sequence: Some(7),
                 content_type: Some("text/plain".to_string()),
+                attributes: vec![MessageMetadataAttribute {
+                    key: "raw_message_id".to_string(),
+                    value: "raw-group-msg-1".to_string(),
+                }],
                 ..MessageMetadata::default()
             },
         },

@@ -1,7 +1,11 @@
 use serde_json::{Map, Value};
+use std::future::Future;
 
-use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
+#[cfg(any(feature = "blocking", test))]
+use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport, RpcTransport};
 
+#[cfg(any(feature = "blocking", test))]
 use super::client::{
     prepare_direct_secure_client, DirectSecureClientInput, MessageServiceDirectSecureClient,
 };
@@ -36,10 +40,25 @@ pub(crate) enum DirectRealtimeNotificationDecision {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectRealtimeNotificationProjection {
     pub(crate) notification: Option<Value>,
+    pub(crate) additional_notifications: Vec<Value>,
     pub(crate) warnings: Vec<String>,
     pub(crate) decision: DirectRealtimeNotificationDecision,
 }
 
+impl DirectRealtimeNotificationProjection {
+    fn with_additional_notifications(mut self, additional_notifications: Vec<Value>) -> Self {
+        self.additional_notifications = additional_notifications;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DirectRealtimeAsyncProjectionOutcome {
+    Projected(DirectRealtimeNotificationProjection),
+    Fallback(Value),
+}
+
+#[cfg(any(feature = "blocking", test))]
 pub(crate) fn maybe_decrypt_direct_e2ee_messages_for_client<R>(
     client: &crate::core::ImClient,
     messages: &mut [Value],
@@ -128,6 +147,24 @@ where
     )
 }
 
+#[cfg(not(any(feature = "blocking", test)))]
+pub(crate) fn maybe_decrypt_direct_e2ee_messages_for_client<R>(
+    _client: &crate::core::ImClient,
+    messages: &mut [Value],
+    _directory_transport: &mut R,
+    _mode: DirectDecryptMode,
+) -> Vec<String>
+where
+    R: RpcTransport,
+{
+    if !messages.is_empty() && contains_direct_e2ee_messages(messages) {
+        vec!["direct E2EE sync read fallback is disabled".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(any(feature = "blocking", test))]
 pub(crate) fn maybe_normalize_direct_e2ee_notification_for_client<R>(
     client: &crate::core::ImClient,
     notification: Value,
@@ -182,7 +219,8 @@ where
     });
     let mut message_transport = crate::internal::transport::CoreHttpTransport::new(client);
     let rpc = Box::new(move |method: &str, params: Map<String, Value>| {
-        let value = message_transport.authenticated_rpc(
+        let value = AuthenticatedRpcTransport::authenticated_rpc(
+            &mut message_transport,
             super::send::MESSAGE_RPC_ENDPOINT,
             method,
             Value::Object(params),
@@ -261,6 +299,24 @@ where
     )
 }
 
+#[cfg(not(any(feature = "blocking", test)))]
+pub(crate) fn maybe_normalize_direct_e2ee_notification_for_client<R>(
+    _client: &crate::core::ImClient,
+    notification: Value,
+    _directory_transport: &mut R,
+    _mode: DirectDecryptMode,
+) -> DirectRealtimeNotificationProjection
+where
+    R: RpcTransport,
+{
+    DirectRealtimeNotificationProjection {
+        notification: Some(notification),
+        additional_notifications: Vec::new(),
+        warnings: vec!["direct E2EE sync realtime fallback is disabled".to_owned()],
+        decision: DirectRealtimeNotificationDecision::KeepOriginal,
+    }
+}
+
 pub(crate) fn maybe_normalize_direct_e2ee_notification_with_processor(
     notification: Value,
     mode: DirectDecryptMode,
@@ -293,6 +349,440 @@ pub(crate) fn maybe_normalize_direct_e2ee_notification_with_processor(
             Err(projection) => return projection,
         };
     normalize_direct_realtime_plaintext_notification(notification, mode, &mut plaintext, Vec::new())
+}
+
+pub(crate) async fn try_normalize_direct_e2ee_notification_for_client_async<S, Fut>(
+    client: &crate::core::ImClient,
+    notification: Value,
+    mode: DirectDecryptMode,
+    mut side_effects: S,
+) -> DirectRealtimeAsyncProjectionOutcome
+where
+    S: FnMut(DirectRealtimeControlSideEffect) -> Fut,
+    Fut: Future<Output = Vec<String>>,
+{
+    let processor = super::async_receive::AsyncDirectSecureIncomingProcessor::new(client);
+    normalize_direct_e2ee_notification_with_async_processor(
+        client,
+        &processor,
+        notification,
+        mode,
+        |client, processor, params| async move {
+            process_direct_realtime_incoming_async(client, processor, params).await
+        },
+        &mut side_effects,
+    )
+    .await
+}
+
+pub(crate) async fn normalize_direct_e2ee_notification_with_async_processor<'a, S, Fut, F, PFut>(
+    client: &'a crate::core::ImClient,
+    processor: &'a super::async_receive::AsyncDirectSecureIncomingProcessor<'a>,
+    notification: Value,
+    mode: DirectDecryptMode,
+    mut process_incoming: F,
+    mut side_effects: S,
+) -> DirectRealtimeAsyncProjectionOutcome
+where
+    S: FnMut(DirectRealtimeControlSideEffect) -> Fut,
+    Fut: Future<Output = Vec<String>>,
+    F: FnMut(
+        &'a crate::core::ImClient,
+        &'a super::async_receive::AsyncDirectSecureIncomingProcessor<'a>,
+        Map<String, Value>,
+    ) -> PFut,
+    PFut: Future<Output = crate::ImResult<super::async_receive::AsyncDirectSecureReceiveOutcome>>,
+{
+    if !is_direct_e2ee_incoming_notification(&notification) {
+        return DirectRealtimeAsyncProjectionOutcome::Projected(keep_realtime_notification(
+            notification,
+        ));
+    }
+    let fallback_notification = notification.clone();
+    let (params, sender_did) =
+        match direct_realtime_params_and_sender(&notification) {
+            Ok(value) => value,
+            Err(warning) => {
+                return DirectRealtimeAsyncProjectionOutcome::Projected(
+                    redacted_realtime_notification(notification, "failed", vec![warning]),
+                )
+            }
+        };
+    let result = match process_incoming(client, processor, params).await {
+        Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::Processed(result)) => {
+            AsyncDirectRealtimeProcessResult {
+                result,
+                replayed: Vec::new(),
+            }
+        }
+        Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::ProcessedWithReplay {
+            result,
+            replayed,
+        }) => AsyncDirectRealtimeProcessResult { result, replayed },
+        Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::Fallback(_)) => {
+            return DirectRealtimeAsyncProjectionOutcome::Fallback(fallback_notification)
+        }
+        Err(err) => {
+            return DirectRealtimeAsyncProjectionOutcome::Projected(redacted_realtime_notification(
+                notification,
+                "failed",
+                vec![format!(
+                    "Failed to decrypt secure direct realtime notification: {err}"
+                )],
+            ))
+        }
+    };
+    let mut plaintext =
+        match plaintext_from_realtime_result(notification.clone(), result.result, &sender_did) {
+            Ok(plaintext) => plaintext,
+            Err(projection) => return DirectRealtimeAsyncProjectionOutcome::Projected(projection),
+        };
+    let control_warnings =
+        match realtime_control_side_effect(&notification, &sender_did, &plaintext) {
+            Some(side_effect) if mode == DirectDecryptMode::WithSideEffects => {
+                side_effects(side_effect).await
+            }
+            _ => Vec::new(),
+        };
+    let mut projection = normalize_direct_realtime_plaintext_notification(
+        notification,
+        mode,
+        &mut plaintext,
+        control_warnings,
+    );
+    let replayed = result
+        .replayed
+        .into_iter()
+        .filter_map(|replay| {
+            normalize_replayed_direct_realtime_pending(replay.notification, replay.result, mode)
+        })
+        .collect::<Vec<_>>();
+    if !replayed.is_empty() {
+        projection = projection.with_additional_notifications(replayed);
+    }
+    DirectRealtimeAsyncProjectionOutcome::Projected(projection)
+}
+
+pub(crate) async fn try_normalize_direct_e2ee_notification_for_client_with_transports_async<M, D>(
+    client: &crate::core::ImClient,
+    notification: Value,
+    mode: DirectDecryptMode,
+    message_transport: &mut M,
+    directory_transport: &mut D,
+) -> DirectRealtimeAsyncProjectionOutcome
+where
+    M: AsyncAuthenticatedRpcTransport,
+    D: AsyncRpcTransport,
+{
+    let processor = super::async_receive::AsyncDirectSecureIncomingProcessor::new(client);
+    normalize_direct_e2ee_notification_with_async_processor_and_directory(
+        client,
+        &processor,
+        notification,
+        mode,
+        message_transport,
+        directory_transport,
+    )
+    .await
+}
+
+pub(crate) async fn normalize_direct_e2ee_notification_with_async_processor_and_directory<
+    'a,
+    M,
+    D,
+>(
+    client: &'a crate::core::ImClient,
+    processor: &'a super::async_receive::AsyncDirectSecureIncomingProcessor<'a>,
+    notification: Value,
+    mode: DirectDecryptMode,
+    message_transport: &mut M,
+    directory_transport: &mut D,
+) -> DirectRealtimeAsyncProjectionOutcome
+where
+    M: AsyncAuthenticatedRpcTransport,
+    D: AsyncRpcTransport,
+{
+    if !is_direct_e2ee_incoming_notification(&notification) {
+        return DirectRealtimeAsyncProjectionOutcome::Projected(keep_realtime_notification(
+            notification,
+        ));
+    }
+    let fallback_notification = notification.clone();
+    let (params, sender_did) =
+        match direct_realtime_params_and_sender(&notification) {
+            Ok(value) => value,
+            Err(warning) => {
+                return DirectRealtimeAsyncProjectionOutcome::Projected(
+                    redacted_realtime_notification(notification, "failed", vec![warning]),
+                )
+            }
+        };
+    let result = match process_direct_realtime_incoming_with_directory_async(
+        client,
+        processor,
+        params,
+        directory_transport,
+    )
+    .await
+    {
+        Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::Processed(result)) => {
+            AsyncDirectRealtimeProcessResult {
+                result,
+                replayed: Vec::new(),
+            }
+        }
+        Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::ProcessedWithReplay {
+            result,
+            replayed,
+        }) => AsyncDirectRealtimeProcessResult { result, replayed },
+        Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::Fallback(_)) => {
+            return DirectRealtimeAsyncProjectionOutcome::Fallback(fallback_notification)
+        }
+        Err(err) => {
+            return DirectRealtimeAsyncProjectionOutcome::Projected(redacted_realtime_notification(
+                notification,
+                "failed",
+                vec![format!(
+                    "Failed to decrypt secure direct realtime notification: {err}"
+                )],
+            ))
+        }
+    };
+    let mut plaintext =
+        match plaintext_from_realtime_result(notification.clone(), result.result, &sender_did) {
+            Ok(plaintext) => plaintext,
+            Err(projection) => return DirectRealtimeAsyncProjectionOutcome::Projected(projection),
+        };
+    let control_warnings =
+        match realtime_control_side_effect(&notification, &sender_did, &plaintext) {
+            Some(side_effect) if mode == DirectDecryptMode::WithSideEffects => {
+                async_direct_realtime_side_effect(
+                    client,
+                    message_transport,
+                    directory_transport,
+                    side_effect,
+                )
+                .await
+            }
+            _ => Vec::new(),
+        };
+    let mut projection = normalize_direct_realtime_plaintext_notification(
+        notification,
+        mode,
+        &mut plaintext,
+        control_warnings,
+    );
+    let replayed = result
+        .replayed
+        .into_iter()
+        .filter_map(|replay| {
+            normalize_replayed_direct_realtime_pending(replay.notification, replay.result, mode)
+        })
+        .collect::<Vec<_>>();
+    if !replayed.is_empty() {
+        projection = projection.with_additional_notifications(replayed);
+    }
+    DirectRealtimeAsyncProjectionOutcome::Projected(projection)
+}
+
+struct AsyncDirectRealtimeProcessResult {
+    result: Map<String, Value>,
+    replayed: Vec<super::async_receive::AsyncDirectSecurePendingReplay>,
+}
+
+async fn process_direct_realtime_incoming_async(
+    client: &crate::core::ImClient,
+    processor: &super::async_receive::AsyncDirectSecureIncomingProcessor<'_>,
+    params: Map<String, Value>,
+) -> crate::ImResult<super::async_receive::AsyncDirectSecureReceiveOutcome> {
+    let content_type = params
+        .get("meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("content_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if content_type == DIRECT_INIT_CONTENT_TYPE {
+        let sender_did = params
+            .get("meta")
+            .and_then(Value::as_object)
+            .and_then(|meta| meta.get("sender_did"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let sender_document = match crate::internal::identity_document_cache::load_local_did_document_async(
+            &client.core_inner().sdk_paths().identities,
+            sender_did,
+        )
+        .await?
+        {
+            Some(document) => document,
+            None => {
+                return Ok(super::async_receive::AsyncDirectSecureReceiveOutcome::Fallback(
+                    super::async_receive::AsyncDirectSecureReceiveFallback::NoEstablishedSession,
+                ))
+            }
+        };
+        return processor
+            .process_init_if_ready(params, sender_document)
+            .await;
+    }
+    processor.process_cipher_if_ready(params).await
+}
+
+async fn process_direct_realtime_incoming_with_directory_async<D>(
+    client: &crate::core::ImClient,
+    processor: &super::async_receive::AsyncDirectSecureIncomingProcessor<'_>,
+    params: Map<String, Value>,
+    directory_transport: &mut D,
+) -> crate::ImResult<super::async_receive::AsyncDirectSecureReceiveOutcome>
+where
+    D: AsyncRpcTransport,
+{
+    let content_type = params
+        .get("meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("content_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if content_type == DIRECT_INIT_CONTENT_TYPE {
+        let sender_did = params
+            .get("meta")
+            .and_then(Value::as_object)
+            .and_then(|meta| meta.get("sender_did"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let sender_document =
+            resolve_direct_sender_document_async(client, directory_transport, sender_did).await?;
+        return processor
+            .process_init_if_ready(params, sender_document)
+            .await;
+    }
+    processor.process_cipher_if_ready(params).await
+}
+
+async fn async_direct_realtime_side_effect<M, D>(
+    client: &crate::core::ImClient,
+    message_transport: &mut M,
+    _directory_transport: &mut D,
+    side_effect: DirectRealtimeControlSideEffect,
+) -> Vec<String>
+where
+    M: AsyncAuthenticatedRpcTransport,
+    D: AsyncRpcTransport,
+{
+    match side_effect {
+        DirectRealtimeControlSideEffect::FlushOutboxAfterAck { peer_did } => {
+            async_flush_secure_outbox_after_ack(client, message_transport, &peer_did).await
+        }
+        DirectRealtimeControlSideEffect::SendAckAfterInit {
+            peer_did,
+            message_id,
+            ack_id,
+            payload,
+        } => {
+            let mut warnings = async_send_ack_after_secure_init(
+                client,
+                message_transport,
+                &peer_did,
+                &message_id,
+                &ack_id,
+                payload,
+            )
+            .await;
+            if warnings.is_empty() {
+                warnings.extend(
+                    async_flush_secure_outbox_after_ack(client, message_transport, &peer_did).await,
+                );
+            }
+            warnings
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) async fn maybe_normalize_direct_e2ee_notification_with_processor_async<S, Fut>(
+    notification: Value,
+    mode: DirectDecryptMode,
+    mut process_incoming: impl FnMut(Map<String, Value>) -> DirectIncomingProcessorResult,
+    mut side_effects: S,
+) -> DirectRealtimeNotificationProjection
+where
+    S: FnMut(DirectRealtimeControlSideEffect) -> Fut,
+    Fut: Future<Output = Vec<String>>,
+{
+    if !is_direct_e2ee_incoming_notification(&notification) {
+        return keep_realtime_notification(notification);
+    }
+    let (params, sender_did) = match direct_realtime_params_and_sender(&notification) {
+        Ok(value) => value,
+        Err(warning) => {
+            return redacted_realtime_notification(notification, "failed", vec![warning])
+        }
+    };
+    let result = match process_incoming(params) {
+        Ok(result) => result,
+        Err(err) => {
+            return redacted_realtime_notification(
+                notification,
+                "failed",
+                vec![format!(
+                    "Failed to decrypt secure direct realtime notification: {err}"
+                )],
+            );
+        }
+    };
+    let mut plaintext =
+        match plaintext_from_realtime_result(notification.clone(), result, &sender_did) {
+            Ok(plaintext) => plaintext,
+            Err(projection) => return projection,
+        };
+    let control_warnings =
+        match realtime_control_side_effect(&notification, &sender_did, &plaintext) {
+            Some(side_effect) if mode == DirectDecryptMode::WithSideEffects => {
+                side_effects(side_effect).await
+            }
+            _ => Vec::new(),
+        };
+    normalize_direct_realtime_plaintext_notification(
+        notification,
+        mode,
+        &mut plaintext,
+        control_warnings,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectRealtimeControlSideEffect {
+    FlushOutboxAfterAck {
+        peer_did: String,
+    },
+    SendAckAfterInit {
+        peer_did: String,
+        message_id: String,
+        ack_id: String,
+        payload: Map<String, Value>,
+    },
+}
+
+fn realtime_control_side_effect(
+    notification: &Value,
+    sender_did: &str,
+    plaintext: &Map<String, Value>,
+) -> Option<DirectRealtimeControlSideEffect> {
+    if super::control::is_secure_ack_plaintext(plaintext) {
+        return Some(DirectRealtimeControlSideEffect::FlushOutboxAfterAck {
+            peer_did: sender_did.trim().to_owned(),
+        });
+    }
+    if super::control::is_secure_init_plaintext(plaintext) {
+        let request = ack_request_from_secure_init(notification, sender_did, plaintext).ok()?;
+        return Some(DirectRealtimeControlSideEffect::SendAckAfterInit {
+            peer_did: request.peer_did,
+            message_id: request.message_id,
+            ack_id: request.ack_id,
+            payload: request.payload,
+        });
+    }
+    None
 }
 
 fn plaintext_from_realtime_result(
@@ -334,6 +824,7 @@ fn normalize_direct_realtime_plaintext_notification(
     if super::control::is_secure_ack_plaintext(plaintext) {
         return DirectRealtimeNotificationProjection {
             notification: None,
+            additional_notifications: Vec::new(),
             warnings: compact_warnings(control_warnings),
             decision: DirectRealtimeNotificationDecision::DroppedControl,
         };
@@ -341,6 +832,7 @@ fn normalize_direct_realtime_plaintext_notification(
     if super::control::is_secure_init_plaintext(plaintext) {
         return DirectRealtimeNotificationProjection {
             notification: None,
+            additional_notifications: Vec::new(),
             warnings: match mode {
                 DirectDecryptMode::ReadOnly => Vec::new(),
                 DirectDecryptMode::WithSideEffects => compact_warnings(control_warnings),
@@ -352,9 +844,33 @@ fn normalize_direct_realtime_plaintext_notification(
     apply_plaintext_to_realtime_notification(&mut normalized, plaintext);
     DirectRealtimeNotificationProjection {
         notification: Some(normalized),
+        additional_notifications: Vec::new(),
         warnings: Vec::new(),
         decision: DirectRealtimeNotificationDecision::Normalized,
     }
+}
+
+fn normalize_replayed_direct_realtime_pending(
+    params: Map<String, Value>,
+    result: Map<String, Value>,
+    mode: DirectDecryptMode,
+) -> Option<Value> {
+    let notification = Value::Object(Map::from_iter([
+        (
+            "method".to_owned(),
+            Value::String("direct.incoming".to_owned()),
+        ),
+        ("params".to_owned(), Value::Object(params)),
+    ]));
+    let sender_did = notification
+        .pointer("/params/meta/sender_did")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut plaintext =
+        plaintext_from_realtime_result(notification.clone(), result, &sender_did).ok()?;
+    normalize_direct_realtime_plaintext_notification(notification, mode, &mut plaintext, Vec::new())
+        .notification
 }
 
 fn direct_realtime_params_and_sender(
@@ -373,6 +889,7 @@ fn direct_realtime_params_and_sender(
     Ok((params, sender_did))
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn flush_secure_outbox_after_ack(
     client: &crate::core::ImClient,
     connection: &rusqlite::Connection,
@@ -404,6 +921,7 @@ fn flush_secure_outbox_after_ack(
     )
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn send_ack_after_secure_init(
     direct_client: &mut MessageServiceDirectSecureClient<'_>,
     notification: &Value,
@@ -509,6 +1027,7 @@ fn realtime_decryptor_init_error(
     )
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn send_secure_outbox_request(
     direct_client: &mut MessageServiceDirectSecureClient<'_>,
     request: &super::outbox::SecureOutboxSendRequest,
@@ -540,6 +1059,194 @@ fn send_secure_outbox_request(
         delivery_state: default_string(&string_value(raw.get("delivery_state")), "accepted"),
         accepted_at: string_value(raw.get("accepted_at").or_else(|| raw.get("finalized_at"))),
     })
+}
+
+async fn async_send_ack_after_secure_init<M>(
+    client: &crate::core::ImClient,
+    message_transport: &mut M,
+    peer_did: &str,
+    message_id: &str,
+    ack_id: &str,
+    payload: Map<String, Value>,
+) -> Vec<String>
+where
+    M: AsyncAuthenticatedRpcTransport,
+{
+    let peer_did = peer_did.trim();
+    if peer_did.is_empty() {
+        return vec!["Secure direct init did not include sender; ACK was not sent".to_owned()];
+    }
+    let db = match client.core_inner().local_state_db().await {
+        Ok(db) => db,
+        Err(err) => {
+            return compact_warnings(vec![format!(
+                "Failed to open local state for secure direct ACK: {err}"
+            )])
+        }
+    };
+    match super::async_send::send_established_follow_up_payload_async(
+        client,
+        &db,
+        message_transport,
+        super::async_send::AsyncDirectSecureFollowUpSend {
+            target_did: peer_did.to_owned(),
+            operation_id: ack_id.trim().to_owned(),
+            message_id: ack_id.trim().to_owned(),
+            plaintext: anp::direct_e2ee::ApplicationPlaintext::new_json(
+                "application/json",
+                Value::Object(payload),
+            ),
+        },
+    )
+    .await
+    {
+        Ok(_) => Vec::new(),
+        Err(err) => compact_warnings(vec![format!(
+            "Failed to send secure direct ACK for {}: {err}",
+            message_id.trim()
+        )]),
+    }
+}
+
+async fn async_flush_secure_outbox_after_ack<M>(
+    client: &crate::core::ImClient,
+    message_transport: &mut M,
+    peer_did: &str,
+) -> Vec<String>
+where
+    M: AsyncAuthenticatedRpcTransport,
+{
+    if peer_did.trim().is_empty() {
+        return vec![
+            "Secure direct ACK did not include sender; queued outbox was not flushed".to_owned(),
+        ];
+    }
+    let db = match client.core_inner().local_state_db().await {
+        Ok(db) => db,
+        Err(err) => {
+            return compact_warnings(vec![format!(
+                "Failed to open local state for secure outbox flush: {err}"
+            )])
+        }
+    };
+    let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope::for_client(client);
+    let rows = match db
+        .list_e2ee_outbox(scope.clone(), Some("queued".to_owned()))
+        .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            return compact_warnings(vec![format!("Failed to list secure outbox: {err}")]);
+        }
+    };
+    let mut rows = rows
+        .iter()
+        .filter_map(super::outbox::queued_secure_outbox_row_from_record)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let mut warnings = Vec::new();
+    rows.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    let peer_filter = peer_did.trim().to_owned();
+    for row in rows {
+        if !peer_filter.is_empty() && row.peer_did != peer_filter {
+            continue;
+        }
+        let preflight = super::outbox::flush_queued_secure_outbox_rows_plan(
+            &scope.owner_identity_id,
+            &scope.owner_did,
+            &scope.credential_name,
+            "",
+            std::slice::from_ref(&row),
+            |_| super::outbox::SecureOutboxFlushRowOutcome {
+                send: super::outbox::SecureOutboxSendOutcome::Error("preflight".to_owned()),
+                ..super::outbox::SecureOutboxFlushRowOutcome::default()
+            },
+        );
+        let Some(request) = super::outbox::send_request_from_plan(&preflight) else {
+            warnings.extend(
+                super::outbox::execute_secure_outbox_flush_plan_async(&db, &scope, preflight).await,
+            );
+            continue;
+        };
+        let result =
+            async_send_secure_outbox_request(client, &db, message_transport, request).await;
+        let plan = super::outbox::flush_queued_secure_outbox_rows_plan(
+            &scope.owner_identity_id,
+            &scope.owner_did,
+            &scope.credential_name,
+            "",
+            std::slice::from_ref(&row),
+            |_| super::outbox::SecureOutboxFlushRowOutcome {
+                send: result.send.clone(),
+                session_id: result.session_id.clone(),
+                mark_sent: super::outbox::MarkSentOutcome::Success,
+                store_message: super::outbox::StoreMessageOutcome::Success,
+            },
+        );
+        warnings
+            .extend(super::outbox::execute_secure_outbox_flush_plan_async(&db, &scope, plan).await);
+    }
+    compact_warnings(warnings)
+}
+
+async fn async_send_secure_outbox_request<M>(
+    client: &crate::core::ImClient,
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    message_transport: &mut M,
+    request: super::outbox::SecureOutboxSendRequest,
+) -> super::outbox::SecureOutboxSendResult
+where
+    M: AsyncAuthenticatedRpcTransport,
+{
+    let operation_id = request.outbox_id.trim().to_owned();
+    let plaintext = if request.original_type.trim() == "json" {
+        match request.json_payload.clone() {
+            Some(payload) => anp::direct_e2ee::ApplicationPlaintext::new_json(
+                "application/json",
+                Value::Object(payload),
+            ),
+            None => {
+                return super::outbox::SecureOutboxSendResult {
+                    send: super::outbox::SecureOutboxSendOutcome::Error(
+                        "queued secure JSON payload was not parsed".to_owned(),
+                    ),
+                    session_id: String::new(),
+                }
+            }
+        }
+    } else {
+        anp::direct_e2ee::ApplicationPlaintext::new_text("text/plain", &request.plaintext)
+    };
+    match super::async_send::send_established_follow_up_payload_async(
+        client,
+        db,
+        message_transport,
+        super::async_send::AsyncDirectSecureFollowUpSend {
+            target_did: request.target_did,
+            operation_id: operation_id.clone(),
+            message_id: operation_id,
+            plaintext,
+        },
+    )
+    .await
+    {
+        Ok(result) => super::outbox::SecureOutboxSendResult {
+            session_id: result.session_id,
+            send: super::outbox::SecureOutboxSendOutcome::Success {
+                message_id: result.message_id,
+                operation_id: result.operation_id,
+                delivery_state: result.delivery_state,
+                accepted_at: result.accepted_at,
+            },
+        },
+        Err(err) => super::outbox::SecureOutboxSendResult {
+            send: super::outbox::SecureOutboxSendOutcome::Error(err.to_string()),
+            session_id: String::new(),
+        },
+    }
 }
 
 #[allow(dead_code)]
@@ -716,6 +1423,48 @@ fn resolve_did_document_with_transport(
     })
 }
 
+async fn resolve_direct_sender_document_async<D>(
+    client: &crate::core::ImClient,
+    directory_transport: &mut D,
+    did: &str,
+) -> crate::ImResult<Value>
+where
+    D: AsyncRpcTransport,
+{
+    if did == client.did().as_str() {
+        return read_json_file_async(client.runtime().did_document_path.clone(), "did_document")
+            .await;
+    }
+    match resolve_did_document_with_transport_async(directory_transport, did).await {
+        Ok(document) => Ok(document),
+        Err(err) => match crate::internal::identity_document_cache::load_local_did_document_async(
+            &client.core_inner().sdk_paths().identities,
+            did,
+        )
+        .await
+        {
+            Ok(Some(document)) => Ok(document),
+            Ok(None) | Err(_) => Err(err),
+        },
+    }
+}
+
+async fn resolve_did_document_with_transport_async<D>(
+    transport: &mut D,
+    did: &str,
+) -> crate::ImResult<Value>
+where
+    D: AsyncRpcTransport,
+{
+    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
+    let raw = transport
+        .rpc(call.endpoint, call.method, call.params)
+        .await?;
+    did_document_from_resolve(raw).ok_or_else(|| crate::ImError::PeerNotFound {
+        peer: did.to_owned(),
+    })
+}
+
 fn did_document_from_resolve(value: Value) -> Option<Value> {
     if looks_like_did_document(&value) {
         return Some(value);
@@ -729,9 +1478,10 @@ fn did_document_from_resolve(value: Value) -> Option<Value> {
         "/result/did_document",
         "/result/didDocument",
     ] {
-        let candidate = value.pointer(pointer)?;
-        if looks_like_did_document(candidate) {
-            return Some(candidate.clone());
+        if let Some(candidate) = value.pointer(pointer) {
+            if looks_like_did_document(candidate) {
+                return Some(candidate.clone());
+            }
         }
     }
     None
@@ -750,6 +1500,19 @@ fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Va
         path_kind: path_kind.to_owned(),
         detail: err.to_string(),
     })?;
+    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+        detail: err.to_string(),
+    })
+}
+
+async fn read_json_file_async(path: std::path::PathBuf, path_kind: &str) -> crate::ImResult<Value> {
+    let raw =
+        tokio::fs::read(&path)
+            .await
+            .map_err(|err| crate::ImError::CredentialFileUnreadable {
+                path_kind: path_kind.to_owned(),
+                detail: err.to_string(),
+            })?;
     serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
         detail: err.to_string(),
     })
@@ -822,6 +1585,7 @@ fn redact_direct_e2ee_content(message: &mut Map<String, Value>) {
 fn keep_realtime_notification(notification: Value) -> DirectRealtimeNotificationProjection {
     DirectRealtimeNotificationProjection {
         notification: Some(notification),
+        additional_notifications: Vec::new(),
         warnings: Vec::new(),
         decision: DirectRealtimeNotificationDecision::KeepOriginal,
     }
@@ -835,6 +1599,7 @@ fn redacted_realtime_notification(
     redact_realtime_notification(&mut notification, state);
     DirectRealtimeNotificationProjection {
         notification: Some(notification),
+        additional_notifications: Vec::new(),
         warnings: compact_warnings(warnings),
         decision: DirectRealtimeNotificationDecision::Redacted,
     }
@@ -1278,6 +2043,120 @@ mod tests {
         assert!(projection.warnings.is_empty());
     }
 
+    #[tokio::test]
+    async fn realtime_notification_async_side_effect_flushes_outbox_after_ack_via_actor() {
+        let temp = tempfile::tempdir().unwrap();
+        let sqlite_path = temp.path().join("local").join("im.sqlite");
+        let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            credential_name: "alice".to_owned(),
+        };
+        {
+            let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+            crate::internal::store::e2ee_outbox::queue_e2ee_outbox(
+                &connection,
+                crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
+                    outbox_id: "outbox-ack-flush".to_owned(),
+                    owner_identity_id: scope.owner_identity_id.clone(),
+                    owner_did: scope.owner_did.clone(),
+                    credential_name: scope.credential_name.clone(),
+                    peer_did: "did:example:bob".to_owned(),
+                    original_type: "text".to_owned(),
+                    plaintext: "queued after ack".to_owned(),
+                    local_status: "queued".to_owned(),
+                    created_at: "2026-05-24T00:00:00Z".to_owned(),
+                    updated_at: "2026-05-24T00:00:00Z".to_owned(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let db = crate::internal::local_state::actor::LocalStateDb::open(sqlite_path.clone())
+            .await
+            .unwrap();
+
+        let projection = maybe_normalize_direct_e2ee_notification_with_processor_async(
+            secure_direct_notification("ack-session-1", "ACK-CIPHER"),
+            DirectDecryptMode::WithSideEffects,
+            |_params| {
+                Ok(Map::from_iter([
+                    ("state".to_owned(), json!("decrypted")),
+                    (
+                        "plaintext".to_owned(),
+                        json!({
+                            "application_content_type": "application/json",
+                            "payload": {
+                                "system_type": super::super::control::SECURE_ACK_SYSTEM_TYPE,
+                                "session_id": "session-1",
+                                "acked_message_id": "msg-secure"
+                            }
+                        }),
+                    ),
+                ]))
+            },
+            |side_effect| {
+                let db = db.clone();
+                let scope = scope.clone();
+                async move {
+                    let DirectRealtimeControlSideEffect::FlushOutboxAfterAck { peer_did } =
+                        side_effect
+                    else {
+                        return vec!["unexpected side effect".to_owned()];
+                    };
+                    super::super::outbox::flush_queued_secure_outbox_with_sender_async(
+                        &db,
+                        &scope,
+                        &peer_did,
+                        |request| async move {
+                            assert_eq!(request.outbox_id, "outbox-ack-flush");
+                            assert_eq!(request.target_did, "did:example:bob");
+                            assert_eq!(request.plaintext, "queued after ack");
+                            super::super::outbox::SecureOutboxSendResult {
+                                session_id: "session-after-ack".to_owned(),
+                                send: super::super::outbox::SecureOutboxSendOutcome::Success {
+                                    message_id: "msg-after-ack".to_owned(),
+                                    operation_id: "outbox-ack-flush".to_owned(),
+                                    delivery_state: "accepted".to_owned(),
+                                    accepted_at: "2026-05-24T00:00:01Z".to_owned(),
+                                },
+                            }
+                        },
+                    )
+                    .await
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            projection.decision,
+            DirectRealtimeNotificationDecision::DroppedControl
+        );
+        assert!(projection.notification.is_none());
+        assert!(projection.warnings.is_empty());
+
+        let sent = db
+            .list_e2ee_outbox(scope.clone(), Some("sent".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].session_id, "session-after-ack");
+        assert_eq!(sent[0].sent_msg_id, "msg-after-ack");
+        db.shutdown().await.unwrap();
+
+        let connection = rusqlite::Connection::open(sqlite_path).unwrap();
+        let (content, is_e2ee): (String, i64) = connection
+            .query_row(
+                "SELECT content, is_e2ee FROM messages WHERE msg_id = 'msg-after-ack'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "queued after ack");
+        assert_eq!(is_e2ee, 1);
+    }
+
     #[test]
     fn secure_init_ack_request_uses_realtime_wire_session_without_public_projection() {
         let plaintext = Map::from_iter([
@@ -1351,6 +2230,351 @@ mod tests {
         assert!(warning.contains("session state reference"));
     }
 
+    #[tokio::test]
+    async fn realtime_notification_client_async_normalizer_uses_actor_cas_for_established_cipher() {
+        let fixture = super::super::async_receive::test_support::Fixture::new();
+        let client = fixture.client();
+        let exchange = super::super::async_receive::test_support::established_exchange();
+        let db = client.core_inner().local_state_db().await.unwrap();
+        db.save_direct_secure_session_if_revision(
+            super::super::sqlite_store::DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                peer_did: "did:example:bob".to_owned(),
+                session_id: exchange.alice_session.session_id.clone(),
+                state_blob: super::super::sqlite_store::direct_session_to_blob(
+                    &exchange.alice_session,
+                )
+                .unwrap(),
+                metadata_json: super::super::sqlite_store::direct_session_metadata_json(
+                    &exchange.alice_session,
+                )
+                .unwrap(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:00Z".to_owned(),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+        let notification =
+            super::super::async_receive::test_support::direct_cipher_realtime_notification(
+                &exchange.message_metadata,
+                &exchange.cipher_body,
+            );
+
+        let outcome = try_normalize_direct_e2ee_notification_for_client_async(
+            &client,
+            notification,
+            DirectDecryptMode::WithSideEffects,
+            |_side_effect| async { vec!["unexpected side effect".to_owned()] },
+        )
+        .await;
+
+        let DirectRealtimeAsyncProjectionOutcome::Projected(projection) = outcome else {
+            panic!("established cipher should be normalized by async realtime path");
+        };
+        assert_eq!(
+            projection.decision,
+            DirectRealtimeNotificationDecision::Normalized
+        );
+        assert!(projection.warnings.is_empty());
+        let notification = projection.notification.unwrap();
+        assert_eq!(
+            notification.pointer("/params/body/text"),
+            Some(&json!("async receive secret"))
+        );
+        assert_eq!(
+            notification.pointer("/params/secure_state"),
+            Some(&json!("decrypted"))
+        );
+        let encoded = serde_json::to_string(&notification).unwrap();
+        assert!(!encoded.contains("ciphertext_b64u"));
+        assert!(!encoded.contains("ratchet_header"));
+
+        let saved = db
+            .get_direct_secure_session("alice-id", "did:example:bob")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 1);
+        let saved_session =
+            super::super::sqlite_store::direct_session_from_blob(&saved.state_blob).unwrap();
+        assert_eq!(saved_session.recv_n, exchange.alice_session.recv_n + 1);
+    }
+
+    #[tokio::test]
+    async fn realtime_notification_client_async_normalizer_falls_back_without_established_session()
+    {
+        let fixture = super::super::async_receive::test_support::Fixture::new();
+        let client = fixture.client();
+        let exchange = super::super::async_receive::test_support::established_exchange();
+        let notification =
+            super::super::async_receive::test_support::direct_cipher_realtime_notification(
+                &exchange.message_metadata,
+                &exchange.cipher_body,
+            );
+
+        let outcome = try_normalize_direct_e2ee_notification_for_client_async(
+            &client,
+            notification.clone(),
+            DirectDecryptMode::ReadOnly,
+            |_side_effect| async { Vec::new() },
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            DirectRealtimeAsyncProjectionOutcome::Fallback(notification)
+        );
+    }
+
+    #[tokio::test]
+    async fn realtime_notification_client_async_normalizer_sends_ack_after_secure_init_control() {
+        let fixture = super::super::async_receive::test_support::Fixture::new();
+        let client = fixture.client();
+        let exchange = super::super::async_receive::test_support::established_exchange();
+        let db = client.core_inner().local_state_db().await.unwrap();
+        db.save_direct_secure_session_if_revision(
+            super::super::sqlite_store::DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                peer_did: "did:example:bob".to_owned(),
+                session_id: exchange.alice_session.session_id.clone(),
+                state_blob: super::super::sqlite_store::direct_session_to_blob(
+                    &exchange.alice_session,
+                )
+                .unwrap(),
+                metadata_json: super::super::sqlite_store::direct_session_metadata_json(
+                    &exchange.alice_session,
+                )
+                .unwrap(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:00Z".to_owned(),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+
+        let mut bob_session = exchange.bob_session.clone();
+        let metadata = anp::direct_e2ee::DirectEnvelopeMetadata {
+            sender_did: "did:example:bob".to_owned(),
+            recipient_did: "did:example:alice".to_owned(),
+            message_id: "secure-init-control-msg".to_owned(),
+            profile: DIRECT_E2EE_PROFILE.to_owned(),
+            security_profile: DIRECT_E2EE_SECURITY_PROFILE.to_owned(),
+        };
+        let mut init_payload = super::super::control::build_secure_init_payload();
+        init_payload.insert(
+            "session_id".to_owned(),
+            Value::String(exchange.alice_session.session_id.clone()),
+        );
+        let (_pending, init_control_body) = anp::direct_e2ee::DirectE2eeSession::encrypt_follow_up(
+            &mut bob_session,
+            &metadata,
+            "secure-init-control-msg",
+            &anp::direct_e2ee::ApplicationPlaintext::new_json(
+                "application/json",
+                Value::Object(init_payload),
+            ),
+        )
+        .unwrap();
+        let notification =
+            super::super::async_receive::test_support::direct_cipher_realtime_notification(
+                &metadata,
+                &init_control_body,
+            );
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let mut message_transport = RecordingAsyncTransport {
+            calls: std::sync::Arc::clone(&calls),
+        };
+        let mut directory_transport = NoopAsyncTransport;
+
+        let outcome = try_normalize_direct_e2ee_notification_for_client_with_transports_async(
+            &client,
+            notification,
+            DirectDecryptMode::WithSideEffects,
+            &mut message_transport,
+            &mut directory_transport,
+        )
+        .await;
+
+        let DirectRealtimeAsyncProjectionOutcome::Projected(projection) = outcome else {
+            panic!("secure init control should be projected by async realtime path");
+        };
+        assert_eq!(
+            projection.decision,
+            DirectRealtimeNotificationDecision::DroppedControl
+        );
+        assert!(projection.notification.is_none());
+        assert!(projection.warnings.is_empty());
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].pointer("/meta/content_type"),
+            Some(&json!("application/anp-direct-cipher+json"))
+        );
+        assert!(!calls[0].to_string().contains("awiki.direct.secure_ack.v1"));
+        let saved = db
+            .get_direct_secure_session("alice-id", "did:example:bob")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 2);
+    }
+
+    #[tokio::test]
+    async fn realtime_notification_client_async_normalizer_resolves_init_sender_document_over_async_directory(
+    ) {
+        let exchange = super::super::async_receive::test_support::incoming_init_exchange();
+        let fixture = super::super::async_receive::test_support::Fixture::with_identity(
+            &exchange.recipient_did,
+            exchange.recipient_document.clone(),
+        );
+        let client = fixture.client();
+        std::fs::write(
+            fixture.identity_dir().join("e2ee-agreement-private.pem"),
+            exchange.recipient_agreement_private.to_pem(),
+        )
+        .unwrap();
+        seed_direct_init_prekeys(&fixture, &exchange);
+        let notification = Value::Object(Map::from_iter([
+            (
+                "method".to_owned(),
+                Value::String("direct.incoming".to_owned()),
+            ),
+            (
+                "params".to_owned(),
+                Value::Object(
+                    super::super::async_receive::test_support::direct_init_notification(
+                        &exchange.metadata,
+                        &exchange.init_body,
+                    ),
+                ),
+            ),
+        ]));
+        let mut message_transport = RecordingAsyncTransport {
+            calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let directory_calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let mut directory_transport = ResolvingAsyncDirectoryTransport {
+            did: exchange.sender_did.clone(),
+            document: exchange.sender_document.clone(),
+            calls: std::sync::Arc::clone(&directory_calls),
+        };
+
+        let outcome = try_normalize_direct_e2ee_notification_for_client_with_transports_async(
+            &client,
+            notification,
+            DirectDecryptMode::ReadOnly,
+            &mut message_transport,
+            &mut directory_transport,
+        )
+        .await;
+
+        let DirectRealtimeAsyncProjectionOutcome::Projected(projection) = outcome else {
+            panic!("direct init should be normalized by async realtime path after DID resolve");
+        };
+        assert_eq!(
+            projection.decision,
+            DirectRealtimeNotificationDecision::Normalized
+        );
+        assert!(projection.warnings.is_empty());
+        let notification = projection.notification.unwrap();
+        assert_eq!(
+            notification.pointer("/params/body/text"),
+            Some(&json!("hello from init"))
+        );
+        assert_eq!(
+            notification.pointer("/params/secure_state"),
+            Some(&json!("decrypted"))
+        );
+        assert_eq!(directory_calls.lock().unwrap().len(), 1);
+        let saved = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .get_direct_secure_session("alice-id", exchange.sender_did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 0);
+    }
+
+    #[tokio::test]
+    async fn realtime_notification_client_async_normalizer_redacts_bad_cipher_without_saving() {
+        let fixture = super::super::async_receive::test_support::Fixture::new();
+        let client = fixture.client();
+        let mut exchange = super::super::async_receive::test_support::established_exchange();
+        let db = client.core_inner().local_state_db().await.unwrap();
+        db.save_direct_secure_session_if_revision(
+            super::super::sqlite_store::DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                peer_did: "did:example:bob".to_owned(),
+                session_id: exchange.alice_session.session_id.clone(),
+                state_blob: super::super::sqlite_store::direct_session_to_blob(
+                    &exchange.alice_session,
+                )
+                .unwrap(),
+                metadata_json: super::super::sqlite_store::direct_session_metadata_json(
+                    &exchange.alice_session,
+                )
+                .unwrap(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:00Z".to_owned(),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+        exchange.cipher_body.ciphertext_b64u =
+            super::super::async_receive::test_support::corrupt_b64u_tail(
+                &exchange.cipher_body.ciphertext_b64u,
+            );
+        let notification =
+            super::super::async_receive::test_support::direct_cipher_realtime_notification(
+                &exchange.message_metadata,
+                &exchange.cipher_body,
+            );
+
+        let outcome = try_normalize_direct_e2ee_notification_for_client_async(
+            &client,
+            notification,
+            DirectDecryptMode::ReadOnly,
+            |_side_effect| async { Vec::new() },
+        )
+        .await;
+
+        let DirectRealtimeAsyncProjectionOutcome::Projected(projection) = outcome else {
+            panic!("bad established cipher should produce an async projection");
+        };
+        assert_eq!(
+            projection.decision,
+            DirectRealtimeNotificationDecision::Redacted
+        );
+        assert!(projection.warnings.is_empty());
+        let notification = projection.notification.unwrap();
+        assert_eq!(
+            notification.pointer("/params/secure_state"),
+            Some(&json!("undecryptable"))
+        );
+        let encoded = serde_json::to_string(&notification).unwrap();
+        assert!(!encoded.contains("ciphertext_b64u"));
+        assert!(!encoded.contains("ratchet_header"));
+        let saved = db
+            .get_direct_secure_session("alice-id", "did:example:bob")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 0);
+    }
+
     #[test]
     fn realtime_notification_normalizer_redacts_failed_ciphertext() {
         let projection = maybe_normalize_direct_e2ee_notification_with_processor(
@@ -1381,6 +2605,129 @@ mod tests {
         let encoded = serde_json::to_string(&notification).unwrap();
         assert!(!encoded.contains("FAILED-CIPHER"));
         assert!(!encoded.contains("ratchet_header"));
+    }
+
+    struct RecordingAsyncTransport {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingAsyncTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            assert_eq!(endpoint, super::super::send::MESSAGE_RPC_ENDPOINT);
+            assert_eq!(method, "direct.send");
+            self.calls.lock().unwrap().push(params);
+            Ok(json!({
+                "accepted": true,
+                "message_id": "ack-secure-init",
+                "operation_id": "ack-secure-init",
+                "delivery_state": "accepted",
+                "accepted_at": "2026-05-24T00:00:01Z"
+            }))
+        }
+    }
+
+    struct NoopAsyncTransport;
+
+    impl crate::internal::transport::AsyncRpcTransport for NoopAsyncTransport {
+        async fn rpc(
+            &mut self,
+            _endpoint: &str,
+            _method: &str,
+            _params: Value,
+        ) -> crate::ImResult<Value> {
+            Err(crate::ImError::PeerNotFound {
+                peer: "noop".to_owned(),
+            })
+        }
+    }
+
+    struct ResolvingAsyncDirectoryTransport {
+        did: String,
+        document: Value,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+
+    impl crate::internal::transport::AsyncRpcTransport for ResolvingAsyncDirectoryTransport {
+        async fn rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            assert_eq!(
+                endpoint,
+                crate::internal::identity_wire::DID_PROFILE_RPC_ENDPOINT
+            );
+            assert_eq!(method, "resolve");
+            assert_eq!(params.get("did"), Some(&json!(self.did)));
+            self.calls.lock().unwrap().push(params);
+            Ok(json!({
+                "profile": {
+                    "did_document": self.document.clone()
+                }
+            }))
+        }
+    }
+
+    fn seed_direct_init_prekeys(
+        fixture: &super::super::async_receive::test_support::Fixture,
+        exchange: &super::super::async_receive::test_support::IncomingInitExchange,
+    ) {
+        let connection =
+            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        let store =
+            super::super::sqlite_store::SqliteDirectSecureStateStore::new(&connection).unwrap();
+        store
+            .upsert_signed_prekey(&super::super::sqlite_store::DirectSignedPrekeyRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: exchange.recipient_did.clone(),
+                key_id: exchange.recipient_signed_prekey.key_id.clone(),
+                private_key_blob: exchange
+                    .recipient_signed_prekey_private
+                    .to_pem()
+                    .into_bytes(),
+                public_key_blob: exchange
+                    .recipient_signed_prekey
+                    .public_key_b64u
+                    .as_bytes()
+                    .to_vec(),
+                status: super::super::sqlite_store::DirectPrekeyStatus::Active,
+                metadata_json: serde_json::to_string(&json!({
+                    "metadata": exchange.recipient_signed_prekey,
+                }))
+                .unwrap(),
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:00Z".to_owned(),
+            })
+            .unwrap();
+        store
+            .upsert_one_time_prekey(&super::super::sqlite_store::DirectOneTimePrekeyRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: exchange.recipient_did.clone(),
+                key_id: exchange.recipient_one_time_prekey.key_id.clone(),
+                private_key_blob: exchange
+                    .recipient_one_time_prekey_private
+                    .to_pem()
+                    .into_bytes(),
+                public_key_blob: exchange
+                    .recipient_one_time_prekey
+                    .public_key_b64u
+                    .as_bytes()
+                    .to_vec(),
+                status: super::super::sqlite_store::DirectPrekeyStatus::Available,
+                metadata_json: serde_json::to_string(&json!({
+                    "metadata": exchange.recipient_one_time_prekey,
+                }))
+                .unwrap(),
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                consumed_at: String::new(),
+            })
+            .unwrap();
     }
 
     fn secure_direct_notification(message_id: &str, ciphertext: &str) -> Value {

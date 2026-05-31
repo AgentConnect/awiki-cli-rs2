@@ -55,6 +55,36 @@ impl App {
         self.render_content_result("awiki-cli page create", &resolved, result)
     }
 
+    pub async fn run_page_create_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_page_create(command);
+        }
+        let slug = string_flag(command, "slug");
+        let title = string_flag(command, "title");
+        if slug.trim().is_empty() {
+            return Err(invalid_page_arg("slug is required", "slug is required"));
+        }
+        if title.trim().is_empty() {
+            return Err(invalid_page_arg("title is required", "title is required"));
+        }
+        let body = resolve_markdown_body(command)?.unwrap_or_default();
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.content_client_async(&resolved).await?;
+        let result = content::create_page_async(
+            &client,
+            slug,
+            title,
+            body,
+            string_flag(command, "visibility"),
+        )
+        .await
+        .map_err(content_exit(
+            "page create",
+            "Make sure the active identity has a handle and the page slug is valid.",
+        ))?;
+        self.render_content_result("awiki-cli page create", &resolved, result)
+    }
+
     pub fn run_page_list(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
@@ -79,6 +109,21 @@ impl App {
             "page list",
             "Make sure the active identity has a handle and can access content pages.",
         ))?;
+        self.render_content_result("awiki-cli page list", &resolved, result)
+    }
+
+    pub async fn run_page_list_async(&self) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_page_list();
+        }
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.content_client_async(&resolved).await?;
+        let result = content::list_pages_async(&client)
+            .await
+            .map_err(content_exit(
+                "page list",
+                "Make sure the active identity has a handle and can access content pages.",
+            ))?;
         self.render_content_result("awiki-cli page list", &resolved, result)
     }
 
@@ -111,6 +156,23 @@ impl App {
             "page get",
             "Make sure the page exists and the active identity can access it.",
         ))?;
+        self.render_content_result("awiki-cli page get", &resolved, result)
+    }
+
+    pub async fn run_page_get_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_page_get(command);
+        }
+        require_flags(command, &["slug"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let slug = string_flag(command, "slug");
+        let client = self.content_client_async(&resolved).await?;
+        let result = content::get_page_async(&client, slug)
+            .await
+            .map_err(content_exit(
+                "page get",
+                "Make sure the page exists and the active identity can access it.",
+            ))?;
         self.render_content_result("awiki-cli page get", &resolved, result)
     }
 
@@ -171,6 +233,30 @@ impl App {
         )
     }
 
+    pub async fn run_page_update_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_page_update(command);
+        }
+        require_flags(command, &["slug"])?;
+        let body = resolve_markdown_body(command)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let title = string_flag(command, "title");
+        let client = self.content_client_async(&resolved).await?;
+        let result = content::update_page_async(
+            &client,
+            string_flag(command, "slug"),
+            title,
+            body,
+            changed_flag(command, "visibility").then(|| string_flag(command, "visibility")),
+        )
+        .await
+        .map_err(content_exit(
+            "page update",
+            "Make sure the page exists and the updated fields are valid.",
+        ))?;
+        self.render_content_result("awiki-cli page update", &resolved, result)
+    }
+
     pub fn run_page_rename(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["slug", "to"])?;
         let resolved = self.resolve_config_for_workspace()?;
@@ -201,6 +287,26 @@ impl App {
             string_flag(command, "slug"),
             string_flag(command, "to"),
         )
+        .map_err(content_exit(
+            "page rename",
+            "Make sure the source page exists and the target slug is available.",
+        ))?;
+        self.render_content_result("awiki-cli page rename", &resolved, result)
+    }
+
+    pub async fn run_page_rename_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_page_rename(command);
+        }
+        require_flags(command, &["slug", "to"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.content_client_async(&resolved).await?;
+        let result = content::rename_page_async(
+            &client,
+            string_flag(command, "slug"),
+            string_flag(command, "to"),
+        )
+        .await
         .map_err(content_exit(
             "page rename",
             "Make sure the source page exists and the target slug is available.",
@@ -240,6 +346,23 @@ impl App {
         self.render_content_result("awiki-cli page delete", &resolved, result)
     }
 
+    pub async fn run_page_delete_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_page_delete(command);
+        }
+        require_flags(command, &["slug"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let slug = string_flag(command, "slug");
+        let client = self.content_client_async(&resolved).await?;
+        let result = content::delete_page_async(&client, slug)
+            .await
+            .map_err(content_exit(
+                "page delete",
+                "Make sure the page exists and the active identity can delete it.",
+            ))?;
+        self.render_content_result("awiki-cli page delete", &resolved, result)
+    }
+
     fn render_content_result(
         &self,
         command: &str,
@@ -263,6 +386,17 @@ impl App {
             resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
+    }
+
+    async fn content_client_async(
+        &self,
+        resolved: &crate::workspace_config::Resolved,
+    ) -> Result<im_core::ImClient, ExitError> {
+        crate::m_core_cli_adapter::build_im_client_async(
+            resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await
     }
 }
 

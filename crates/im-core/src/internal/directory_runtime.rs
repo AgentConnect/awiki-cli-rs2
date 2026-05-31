@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::internal::transport::RpcTransport;
+use crate::internal::transport::{AsyncRpcTransport, RpcTransport};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectoryResolveResult {
@@ -15,14 +15,16 @@ pub(crate) struct DirectoryRuntime<'a, T> {
     transport: T,
 }
 
+impl<'a, T> DirectoryRuntime<'a, T> {
+    pub(crate) fn new(client: &'a crate::core::ImClient, transport: T) -> Self {
+        Self { client, transport }
+    }
+}
+
 impl<'a, T> DirectoryRuntime<'a, T>
 where
     T: RpcTransport,
 {
-    pub(crate) fn new(client: &'a crate::core::ImClient, transport: T) -> Self {
-        Self { client, transport }
-    }
-
     pub(crate) fn lookup_handle(
         mut self,
         handle: crate::ids::Handle,
@@ -181,6 +183,181 @@ where
     }
 }
 
+impl<'a, T> DirectoryRuntime<'a, T>
+where
+    T: AsyncRpcTransport,
+{
+    pub(crate) async fn lookup_handle_async(
+        mut self,
+        handle: crate::ids::Handle,
+    ) -> crate::ImResult<crate::directory::HandleLookupResult> {
+        let raw = lookup_by_handle_async(&mut self.transport, handle.as_str()).await?;
+        handle_lookup_from_value(&raw)
+    }
+
+    pub(crate) async fn public_profile_async(
+        mut self,
+        subject: crate::directory::IdentitySubject,
+    ) -> crate::ImResult<crate::directory::PublicProfile> {
+        match subject {
+            crate::directory::IdentitySubject::Did(did) => {
+                self.public_profile_by_did_async(
+                    crate::directory::IdentitySubject::Did(did.clone()),
+                    did,
+                    None,
+                )
+                .await
+            }
+            crate::directory::IdentitySubject::Handle(handle) => {
+                self.public_profile_by_handle_async(handle).await
+            }
+            crate::directory::IdentitySubject::Any(input) => {
+                if input.trim().starts_with("did:") {
+                    let did = crate::ids::Did::parse(input.trim())?;
+                    self.public_profile_by_did_async(
+                        crate::directory::IdentitySubject::Did(did.clone()),
+                        did,
+                        None,
+                    )
+                    .await
+                } else {
+                    let handle = crate::ids::Handle::parse(input.trim(), "")?;
+                    self.public_profile_by_handle_async(handle).await
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn resolve_peer_async(
+        mut self,
+        peer: crate::ids::PeerRef,
+    ) -> crate::ImResult<DirectoryResolveResult> {
+        let input = peer.as_str().trim().to_string();
+        if input.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("peer".to_string()),
+                "peer must not be empty",
+            ));
+        }
+
+        if input.starts_with("did:") {
+            self.resolve_did_async(input).await
+        } else {
+            self.resolve_handle_async(input).await
+        }
+    }
+
+    async fn resolve_handle_async(
+        &mut self,
+        handle: String,
+    ) -> crate::ImResult<DirectoryResolveResult> {
+        let lookup_raw = lookup_by_handle_async(&mut self.transport, &handle)
+            .await
+            .map_err(|err| map_directory_not_found(err, &handle))?;
+        let lookup = handle_lookup_from_value(&lookup_raw)?;
+        let profile = public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
+            .await
+            .ok();
+        let resolve_raw =
+            resolve_profile_by_did_async(&mut self.transport, lookup.did.as_str()).await?;
+        let profile_dto = profile
+            .as_ref()
+            .map(|raw| {
+                let mut profile =
+                    crate::internal::profile_runtime::profile_from_value(self.client, raw)?;
+                profile.subject = lookup.did.clone();
+                Ok::<_, crate::ImError>(profile)
+            })
+            .transpose()?;
+        Ok(DirectoryResolveResult {
+            resolution: crate::directory::DirectoryResolution {
+                input: handle,
+                did: lookup.did.clone(),
+                handle: Some(lookup.handle),
+                profile: profile_dto,
+                warnings: Vec::new(),
+            },
+            resolve: Some(resolve_raw),
+            lookup: Some(lookup_raw),
+            public_profile: profile,
+        })
+    }
+
+    async fn resolve_did_async(&mut self, did: String) -> crate::ImResult<DirectoryResolveResult> {
+        let resolve_raw = resolve_profile_by_did_async(&mut self.transport, &did).await?;
+        let did = crate::ids::Did::parse(did)?;
+        let mut warnings = Vec::new();
+        let mut lookup_raw = None;
+        let mut handle = None;
+        match lookup_by_did_async(&mut self.transport, did.as_str()).await {
+            Ok(raw) => {
+                let lookup = handle_lookup_from_value(&raw)?;
+                handle = Some(lookup.handle);
+                lookup_raw = Some(raw);
+            }
+            Err(err) => warnings.push(format!("Handle lookup failed: {err}")),
+        }
+        let mut profile_raw = None;
+        let mut profile = None;
+        match public_profile_by_did_async(&mut self.transport, did.as_str()).await {
+            Ok(raw) => {
+                let mut value =
+                    crate::internal::profile_runtime::profile_from_value(self.client, &raw)?;
+                value.subject = did.clone();
+                profile = Some(value);
+                profile_raw = Some(raw);
+            }
+            Err(err) => warnings.push(format!("Public profile lookup failed: {err}")),
+        }
+        Ok(DirectoryResolveResult {
+            resolution: crate::directory::DirectoryResolution {
+                input: did.as_str().to_string(),
+                did,
+                handle,
+                profile,
+                warnings,
+            },
+            resolve: Some(resolve_raw),
+            lookup: lookup_raw,
+            public_profile: profile_raw,
+        })
+    }
+
+    async fn public_profile_by_handle_async(
+        &mut self,
+        handle: crate::ids::Handle,
+    ) -> crate::ImResult<crate::directory::PublicProfile> {
+        let lookup_raw = lookup_by_handle_async(&mut self.transport, handle.as_str())
+            .await
+            .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
+        let lookup = handle_lookup_from_value(&lookup_raw)?;
+        self.public_profile_by_did_async(
+            crate::directory::IdentitySubject::Handle(handle),
+            lookup.did,
+            Some(lookup.handle),
+        )
+        .await
+    }
+
+    async fn public_profile_by_did_async(
+        &mut self,
+        subject: crate::directory::IdentitySubject,
+        did: crate::ids::Did,
+        handle: Option<crate::ids::Handle>,
+    ) -> crate::ImResult<crate::directory::PublicProfile> {
+        let raw = public_profile_by_did_async(&mut self.transport, did.as_str()).await?;
+        let mut profile = crate::internal::profile_runtime::profile_from_value(self.client, &raw)?;
+        profile.subject = did.clone();
+        Ok(crate::directory::PublicProfile {
+            subject,
+            did,
+            handle: handle.or_else(|| profile.handle.clone()),
+            profile,
+            warnings: Vec::new(),
+        })
+    }
+}
+
 fn lookup_by_handle<T>(transport: &mut T, handle: &str) -> crate::ImResult<Value>
 where
     T: RpcTransport,
@@ -188,6 +365,15 @@ where
     let call =
         crate::internal::identity_wire::directory::build_handle_lookup_by_handle_rpc_call(handle)?;
     transport.rpc(call.endpoint, call.method, call.params)
+}
+
+async fn lookup_by_handle_async<T>(transport: &mut T, handle: &str) -> crate::ImResult<Value>
+where
+    T: AsyncRpcTransport,
+{
+    let call =
+        crate::internal::identity_wire::directory::build_handle_lookup_by_handle_rpc_call(handle)?;
+    transport.rpc(call.endpoint, call.method, call.params).await
 }
 
 fn map_directory_not_found(err: crate::ImError, peer: &str) -> crate::ImError {
@@ -230,6 +416,14 @@ where
     transport.rpc(call.endpoint, call.method, call.params)
 }
 
+async fn lookup_by_did_async<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
+where
+    T: AsyncRpcTransport,
+{
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
+    transport.rpc(call.endpoint, call.method, call.params).await
+}
+
 fn resolve_profile_by_did<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
 where
     T: RpcTransport,
@@ -238,12 +432,28 @@ where
     transport.rpc(call.endpoint, call.method, call.params)
 }
 
+async fn resolve_profile_by_did_async<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
+where
+    T: AsyncRpcTransport,
+{
+    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
+    transport.rpc(call.endpoint, call.method, call.params).await
+}
+
 fn public_profile_by_did<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
 where
     T: RpcTransport,
 {
     let call = crate::internal::identity_wire::profile::build_public_profile_rpc_call(did)?;
     transport.rpc(call.endpoint, call.method, call.params)
+}
+
+async fn public_profile_by_did_async<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>
+where
+    T: AsyncRpcTransport,
+{
+    let call = crate::internal::identity_wire::profile::build_public_profile_rpc_call(did)?;
+    transport.rpc(call.endpoint, call.method, call.params).await
 }
 
 fn handle_lookup_from_value(

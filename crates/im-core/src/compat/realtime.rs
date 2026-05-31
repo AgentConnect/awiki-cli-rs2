@@ -41,14 +41,18 @@ pub use crate::internal::realtime::session_loop::{
 pub use crate::internal::realtime::shutdown::{shutdown_decision, RealtimeShutdownDecision};
 #[doc(hidden)]
 pub use crate::internal::realtime::transport::{
-    bearer_authorization_header, connect_realtime_with_transport, derive_websocket_url,
-    format_dial_error_message, join_base_url, realtime_client_construction_plan,
-    realtime_client_endpoints, simulate_realtime_connect, validate_refresh_bearer_preconditions,
-    RealtimeAuthProvider, RealtimeClientConstructionPlan, RealtimeClientEndpoints,
+    bearer_authorization_header, derive_websocket_url, format_dial_error_message, join_base_url,
+    realtime_client_construction_plan, realtime_client_endpoints, simulate_realtime_connect,
+    validate_refresh_bearer_preconditions, RealtimeClientConstructionPlan, RealtimeClientEndpoints,
     RealtimeConnectAction, RealtimeConnectSimulation, RealtimeDialOutcome, RealtimeRefreshOutcome,
-    RealtimeTransport, DIAL_ERROR_BODY_LIMIT, MESSAGE_WS_ENDPOINT,
+    DIAL_ERROR_BODY_LIMIT, MESSAGE_WS_ENDPOINT,
+};
+#[cfg(feature = "blocking")]
+pub use crate::internal::realtime::transport::{
+    connect_realtime_with_transport, RealtimeAuthProvider, RealtimeTransport,
 };
 #[doc(hidden)]
+#[cfg(feature = "blocking")]
 pub use crate::realtime::runner::{
     run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
     RealtimeRunnerEventSink, RealtimeRunnerOutcome, RealtimeRunnerTransport,

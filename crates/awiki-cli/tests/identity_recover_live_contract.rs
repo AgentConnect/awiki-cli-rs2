@@ -152,7 +152,7 @@ fn identity_recover_migrates_legacy_config_json_before_send_otp_like_go() {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
     assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
     let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
@@ -556,7 +556,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

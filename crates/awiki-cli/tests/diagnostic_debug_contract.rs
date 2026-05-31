@@ -218,11 +218,12 @@ fn seed_handle_history(workspace: &Path) {
         .execute(
             r#"
 INSERT INTO contact_handle_bindings (
-    owner_did, handle, did, is_current, first_seen_at, last_seen_at,
+    owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at,
     source_type, source_group_id, metadata, credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 "#,
             rusqlite::params![
+                "owner-a-id",
                 "did:owner-a",
                 "alice",
                 "did:peer-current",
@@ -240,11 +241,12 @@ INSERT INTO contact_handle_bindings (
         .execute(
             r#"
 INSERT INTO contact_handle_bindings (
-    owner_did, handle, did, is_current, first_seen_at, last_seen_at,
+    owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at,
     source_type, source_group_id, metadata, credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 "#,
             rusqlite::params![
+                "owner-a-id",
                 "did:owner-a",
                 "alice",
                 "did:peer-old",
@@ -262,11 +264,12 @@ INSERT INTO contact_handle_bindings (
         .execute(
             r#"
 INSERT INTO contact_handle_bindings (
-    owner_did, handle, did, is_current, first_seen_at, last_seen_at,
+    owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at,
     source_type, source_group_id, metadata, credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 "#,
             rusqlite::params![
+                "owner-b-id",
                 "did:owner-b",
                 "alice",
                 "did:peer-b",
@@ -284,11 +287,12 @@ INSERT INTO contact_handle_bindings (
         .execute(
             r#"
 INSERT INTO contact_handle_bindings (
-    owner_did, handle, did, is_current, first_seen_at, last_seen_at,
+    owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at,
     credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
 "#,
             rusqlite::params![
+                "owner-a-id",
                 "did:owner-a",
                 "bob",
                 "did:peer-bob",
@@ -319,6 +323,8 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

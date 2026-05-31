@@ -2,6 +2,242 @@ pub struct MessageService<'a> {
     client: &'a crate::core::ImClient,
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+mod direct_e2ee_async_persistence_tests {
+    use serde_json::json;
+
+    use crate::internal::secure_direct::send::{
+        DirectSecureLocalEffect, DirectSecureTextSendResult,
+    };
+
+    #[tokio::test]
+    async fn deferred_direct_e2ee_success_projection_uses_db_actor() {
+        let fixture = Fixture::new("direct-e2ee-success-actor");
+        let client = fixture.client();
+        let sdk_result = sdk_result("msg-secure-actor", "accepted", Some(17));
+
+        let result = super::persist_deferred_direct_e2ee_effect(
+            &client,
+            DirectSecureTextSendResult {
+                sdk_result,
+                queued_outbox_id: None,
+                target_did: "did:example:bob".to_owned(),
+                text: "actor persisted secret".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+                raw: Some(json!({ "accepted": true })),
+                local_effect: DirectSecureLocalEffect::PersistOutgoing,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.message.id.as_str(), "msg-secure-actor");
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let stored = db
+            .query_row(
+                r#"
+SELECT content, is_e2ee, server_seq, metadata
+FROM messages
+WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-secure-actor'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, "actor persisted secret");
+        assert_eq!(stored.1, 1);
+        assert_eq!(stored.2, Some(17));
+        let metadata: serde_json::Value = serde_json::from_str(&stored.3).unwrap();
+        assert_eq!(metadata["security"], "direct-e2ee");
+        assert_eq!(metadata["contains_sensitive"], false);
+    }
+
+    #[tokio::test]
+    async fn deferred_direct_e2ee_pending_outbox_uses_db_actor() {
+        let fixture = Fixture::new("direct-e2ee-outbox-actor");
+        let client = fixture.client();
+        let sdk_result = sdk_result("msg-secure-queued", "queued", None);
+        let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope::for_client(&client);
+
+        super::persist_deferred_direct_e2ee_effect(
+            &client,
+            DirectSecureTextSendResult {
+                sdk_result,
+                queued_outbox_id: Some("outbox-actor".to_owned()),
+                target_did: "did:example:bob".to_owned(),
+                text: "queued actor secret".to_owned(),
+                kind: crate::messages::MessageKind::Markdown,
+                raw: None,
+                local_effect: DirectSecureLocalEffect::QueueOutbox(
+                    crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
+                        outbox_id: "outbox-actor".to_owned(),
+                        owner_identity_id: scope.owner_identity_id,
+                        owner_did: scope.owner_did,
+                        credential_name: scope.credential_name,
+                        peer_did: "did:example:bob".to_owned(),
+                        original_type: "markdown".to_owned(),
+                        plaintext: "queued actor secret".to_owned(),
+                        local_status: "queued".to_owned(),
+                        last_error_code: "pending-confirmation".to_owned(),
+                        retry_hint: "retry".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let stored = db
+            .query_row(
+                r#"
+SELECT peer_did, original_type, plaintext, local_status, last_error_code
+FROM e2ee_outbox
+WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-actor'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, "did:example:bob");
+        assert_eq!(stored.1, "markdown");
+        assert_eq!(stored.2, "queued actor secret");
+        assert_eq!(stored.3, "queued");
+        assert_eq!(stored.4, "pending-confirmation");
+    }
+
+    fn sdk_result(
+        message_id: &str,
+        delivery_state: &str,
+        server_sequence: Option<i64>,
+    ) -> crate::messages::SendMessageResult {
+        crate::messages::SendMessageResult {
+            message: crate::messages::Message {
+                id: crate::ids::MessageId::parse(message_id).unwrap(),
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                direction: crate::messages::MessageDirection::Outgoing,
+                sender: crate::ids::PeerRef::parse("did:example:alice", "").unwrap(),
+                receiver: Some(crate::ids::PeerRef::parse("did:example:bob", "").unwrap()),
+                group: None,
+                body: crate::messages::MessageBodyView::Text {
+                    text: "redacted from db builder".to_owned(),
+                    kind: crate::messages::MessageKind::Text,
+                },
+                sent_at: Some("2026-05-24T00:00:00Z".to_owned()),
+                received_at: None,
+                metadata: crate::messages::MessageMetadata {
+                    operation_id: Some(message_id.to_owned()),
+                    delivery_state: Some(delivery_state.to_owned()),
+                    send_state: None,
+                    retry_plan: None,
+                    server_sequence,
+                    content_type: Some("text/plain".to_owned()),
+                    attributes: vec![crate::messages::MessageMetadataAttribute {
+                        key: "security".to_owned(),
+                        value: "direct-e2ee".to_owned(),
+                    }],
+                },
+            },
+            delivery: crate::messages::DeliveryState::Accepted,
+            warnings: Vec::new(),
+        }
+    }
+
+    struct Fixture {
+        root: std::path::PathBuf,
+    }
+
+    impl Fixture {
+        fn new(prefix: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("im-core-{prefix}-{}-{nanos}", std::process::id()));
+            let identity_root = root.join("identities");
+            let identity_dir = identity_root.join("alice");
+            std::fs::create_dir_all(&identity_dir).unwrap();
+            std::fs::create_dir_all(root.join("local")).unwrap();
+            std::fs::write(identity_root.join("default"), "alice\n").unwrap();
+            std::fs::write(
+                identity_root.join("registry.json"),
+                json!({
+                    "default_identity": "alice",
+                    "identities": [{
+                        "id": "alice-id",
+                        "did": "did:example:alice",
+                        "local_alias": "alice",
+                        "ready_for_auth": true,
+                        "ready_for_messaging": true,
+                        "missing": []
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(identity_dir.join("did.json"), "{}").unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::IdentityRegistryPaths {
+                        identity_root_dir: self.root.join("identities"),
+                        registry_path: self.root.join("identities").join("registry.json"),
+                        default_identity_path: Some(self.root.join("identities").join("default")),
+                    },
+                    local_state: crate::LocalStatePaths {
+                        sqlite_path: self.sqlite_path(),
+                    },
+                    runtime: crate::RuntimePaths {
+                        cache_dir: self.root.join("cache"),
+                        temp_dir: self.root.join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
+
+        fn sqlite_path(&self) -> std::path::PathBuf {
+            self.root.join("local").join("im.sqlite")
+        }
+    }
+}
+
 impl<'a> MessageService<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         Self { client }
@@ -85,23 +321,101 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    pub async fn send_async(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        validate_body(&request.body)?;
+        validate_send_mode(&request.target, &request.security)?;
+        validate_attachment_security(&request.body, &request.security)?;
+        match (&request.target, &request.security) {
+            (
+                super::MessageTarget::Direct(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
+            ) => {
+                self.send_direct_e2ee_async(resolve_send_request_async(self.client, request).await?)
+                    .await
+            }
+            (super::MessageTarget::Direct(_), _) => {
+                let resolved = resolve_send_request_async(self.client, request).await?;
+                let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .send_async(crate::internal::message_runtime::direct::DirectTextSend {
+                    request: resolved.request,
+                    resolved_target_did: resolved.target_did,
+                    credentials: None,
+                })
+                .await?;
+                #[cfg(feature = "sqlite")]
+                if let Err(err) =
+                    crate::internal::message_runtime::local_projection::persist_direct_outgoing_async(
+                        self.client,
+                        &result.target_did,
+                        direct_handle_from_result(&result.sdk_result).as_deref(),
+                        &result.text,
+                        &message_kind_from_result(&result.sdk_result)?,
+                        &result.sdk_result,
+                    )
+                    .await
+                {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local message: {err}"));
+                }
+                Ok(result.sdk_result)
+            }
+            (
+                super::MessageTarget::Group(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
+            ) => self.send_group_e2ee_async(request).await,
+            (super::MessageTarget::Group(_), _) => {
+                let mut result = crate::internal::message_runtime::group::GroupTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .send_async(crate::internal::message_runtime::group::GroupTextSend {
+                    request,
+                    credentials: None,
+                })
+                .await?;
+                #[cfg(feature = "sqlite")]
+                if let Err(err) =
+                    crate::internal::message_runtime::local_projection::persist_group_outgoing_async(
+                        self.client,
+                        &result.group_did,
+                        &result.text,
+                        &message_kind_from_result(&result.sdk_result)?,
+                        &result.sdk_result,
+                    )
+                    .await
+                {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local group message: {err}"));
+                }
+                Ok(result.sdk_result)
+            }
+        }
+    }
+
     fn send_direct_e2ee(
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
-            crate::internal::secure_direct::send::DirectSecureTextSender::new(
-                self.client,
-                crate::internal::auth::session::FileSessionProvider::new(self.client),
-                crate::internal::transport::CoreHttpTransport::new(self.client),
-                crate::internal::transport::CoreHttpTransport::new(self.client),
-            )
-            .send(crate::internal::secure_direct::send::DirectSecureTextSend {
-                request: resolved.request,
-                resolved_target_did: resolved.target_did,
-            })
-            .map(|result| result.sdk_result)
+            send_direct_e2ee_with_client(self.client, resolved)
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = resolved;
+            Err(crate::ImError::unsupported("sync-secure-direct-send"))
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -110,42 +424,165 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    #[cfg(feature = "sqlite")]
+    async fn send_direct_e2ee_async(
+        &self,
+        resolved: ResolvedSendRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        let async_input = crate::internal::secure_direct::send::DirectSecureTextSend {
+            request: resolved.request.clone(),
+            resolved_target_did: resolved.target_did.clone(),
+            local_persistence:
+                crate::internal::secure_direct::send::DirectSecureLocalPersistence::Deferred,
+        };
+        match crate::internal::secure_direct::async_send::AsyncDirectSecureTextSender::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send_async_if_ready(async_input)
+        .await?
+        {
+            crate::internal::secure_direct::async_send::AsyncDirectSecureSendOutcome::Sent(
+                result,
+            ) => return persist_deferred_direct_e2ee_effect(self.client, result).await,
+            crate::internal::secure_direct::async_send::AsyncDirectSecureSendOutcome::Fallback(
+                crate::internal::secure_direct::async_send::AsyncDirectSecureSendFallback::NoEstablishedSession,
+            ) => {}
+        }
+
+        #[cfg(feature = "blocking")]
+        {
+            let client = self.client.clone();
+            let result = crate::internal::runtime::worker::run_blocking(move || {
+                send_direct_e2ee_with_client_and_persistence(
+                    &client,
+                    resolved,
+                    crate::internal::secure_direct::send::DirectSecureLocalPersistence::Deferred,
+                )
+            })
+            .await
+            .map_err(|err| crate::ImError::Internal {
+                message: err.to_string(),
+            })??;
+            persist_deferred_direct_e2ee_effect(self.client, result).await
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = resolved;
+            Err(crate::ImError::LocalStateUnavailable {
+                detail: "direct E2EE async send requires an established local session; sync compatibility fallback is disabled".to_owned(),
+            })
+        }
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    async fn send_direct_e2ee_async(
+        &self,
+        resolved: ResolvedSendRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        let _ = resolved;
+        Err(crate::ImError::unsupported("secure-direct"))
+    }
+
     #[cfg(feature = "group-e2ee")]
     fn send_group_e2ee(
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
-        let session_provider =
-            crate::internal::auth::session::FileSessionProvider::new(self.client);
-        let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
-        crate::internal::group_e2ee::lifecycle::ensure_group_e2ee_service_available(
-            self.client,
-            &session_provider,
-            &mut transport,
-            crate::internal::group_e2ee::lifecycle::GroupE2eeServiceAvailabilityInput {
+        #[cfg(feature = "blocking")]
+        {
+            let session_provider =
+                crate::internal::auth::session::FileSessionProvider::new(self.client);
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+            crate::internal::group_e2ee::lifecycle::ensure_group_e2ee_service_available(
+                self.client,
+                &session_provider,
+                &mut transport,
+                crate::internal::group_e2ee::lifecycle::GroupE2eeServiceAvailabilityInput {
+                    credentials: None,
+                    service_did: None,
+                    check_key_package: false,
+                },
+            )?;
+            let provider =
+                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
+            crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                provider,
+            )
+            .send(crate::internal::group_e2ee::runtime::GroupE2eeTextSend {
+                request,
+                group_state_ref: None,
                 credentials: None,
-                service_did: None,
-                check_key_package: false,
-            },
-        )?;
+            })
+            .map(|result| result.sdk_result)
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-group-e2ee-send"))
+        }
+    }
+
+    #[cfg(not(feature = "group-e2ee"))]
+    fn send_group_e2ee(
+        &self,
+        _request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        Err(crate::ImError::unsupported("group-e2ee"))
+    }
+
+    #[cfg(feature = "group-e2ee")]
+    async fn send_group_e2ee_async(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
         let provider =
             crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
-        crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
+        match crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
             provider,
         )
-        .send(crate::internal::group_e2ee::runtime::GroupE2eeTextSend {
-            request,
+        .send_async(crate::internal::group_e2ee::runtime::GroupE2eeTextSend {
+            request: request.clone(),
             group_state_ref: None,
             credentials: None,
         })
-        .map(|result| result.sdk_result)
+        .await
+        {
+            Ok(result) => Ok(result.sdk_result),
+            Err(err)
+                if crate::internal::group_e2ee::runtime::is_group_e2ee_epoch_mismatch(&err) =>
+            {
+                #[cfg(feature = "blocking")]
+                {
+                    let client = self.client.clone();
+                    crate::internal::runtime::worker::run_blocking(move || {
+                        client.messages().send_group_e2ee(request)
+                    })
+                    .await
+                    .map_err(|join| crate::ImError::Internal {
+                        message: join.to_string(),
+                    })?
+                }
+                #[cfg(not(feature = "blocking"))]
+                {
+                    let _ = request;
+                    Err(err)
+                }
+            }
+            Err(err) => Err(err),
+        }
     }
 
     #[cfg(not(feature = "group-e2ee"))]
-    fn send_group_e2ee(
+    async fn send_group_e2ee_async(
         &self,
         _request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
@@ -157,6 +594,15 @@ impl<'a> MessageService<'a> {
         query: super::InboxQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Message>> {
         self.inbox_with_metadata(query)
+            .map(super::MessagePage::into_page)
+    }
+
+    pub async fn inbox_async(
+        &self,
+        query: super::InboxQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.inbox_with_metadata_async(query)
+            .await
             .map(super::MessagePage::into_page)
     }
 
@@ -174,12 +620,37 @@ impl<'a> MessageService<'a> {
         .map(message_page_from_read_result)?
     }
 
+    pub async fn inbox_with_metadata_async(
+        &self,
+        query: super::InboxQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        crate::internal::message_runtime::read::MessageReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .inbox_async(crate::internal::message_runtime::read::InboxRead { query })
+        .await
+        .map(message_page_from_read_result)?
+    }
+
     pub fn history(
         &self,
         thread: super::ThreadRef,
         query: super::HistoryQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Message>> {
         self.history_with_metadata(thread, query)
+            .map(super::MessagePage::into_page)
+    }
+
+    pub async fn history_async(
+        &self,
+        thread: super::ThreadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.history_with_metadata_async(thread, query)
+            .await
             .map(super::MessagePage::into_page)
     }
 
@@ -228,7 +699,76 @@ impl<'a> MessageService<'a> {
         })?
     }
 
+    pub async fn history_with_metadata_async(
+        &self,
+        thread: super::ThreadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        let (thread, resolved_did, handle_peer) =
+            resolve_history_thread_async(self.client, thread).await?;
+        let mut page = crate::internal::message_runtime::read::MessageReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .history_async(crate::internal::message_runtime::read::HistoryRead {
+            thread,
+            query,
+            resolved_peer_did: resolved_did.clone(),
+        })
+        .await
+        .map(message_page_from_read_result)??;
+        #[cfg(feature = "sqlite")]
+        if let Some((handle, current_did)) = handle_peer.as_ref() {
+            if let Ok(dids) =
+                crate::internal::message_runtime::local_projection::peer_dids_for_handle_async(
+                    self.client,
+                    handle,
+                    current_did,
+                )
+                .await
+            {
+                page.resolved_dids = dids
+                    .into_iter()
+                    .filter_map(|did| crate::ids::Did::parse(did).ok())
+                    .collect();
+            }
+        }
+        if page.resolved_dids.is_empty() {
+            if let Some(did) = resolved_did {
+                if let Ok(did) = crate::ids::Did::parse(did) {
+                    page.resolved_dids.push(did);
+                }
+            }
+        }
+        Ok(page)
+    }
+
     pub fn mark_read(
+        &self,
+        ids: Vec<crate::ids::MessageId>,
+    ) -> crate::ImResult<super::MarkReadResult> {
+        #[cfg(feature = "blocking")]
+        {
+            crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .mark_read(crate::internal::message_runtime::mark_read::MarkReadInput {
+                message_ids: ids,
+            })
+            .map(|result| result.sdk_result)
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = ids;
+            Err(crate::ImError::unsupported("sync-message-mark-read"))
+        }
+    }
+
+    pub async fn mark_read_async(
         &self,
         ids: Vec<crate::ids::MessageId>,
     ) -> crate::ImResult<super::MarkReadResult> {
@@ -237,7 +777,10 @@ impl<'a> MessageService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .mark_read(crate::internal::message_runtime::mark_read::MarkReadInput { message_ids: ids })
+        .mark_read_async(crate::internal::message_runtime::mark_read::MarkReadInput {
+            message_ids: ids,
+        })
+        .await
         .map(|result| result.sdk_result)
     }
 
@@ -245,13 +788,101 @@ impl<'a> MessageService<'a> {
         &self,
         query: super::ConversationQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Conversation>> {
+        #[cfg(feature = "blocking")]
+        {
+            crate::internal::message_runtime::conversations::MessageConversationRuntime::new(
+                self.client,
+            )
+            .conversations(query)
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = query;
+            Err(crate::ImError::unsupported("sync-message-conversations"))
+        }
+    }
+
+    pub async fn conversations_async(
+        &self,
+        query: super::ConversationQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Conversation>> {
         crate::internal::message_runtime::conversations::MessageConversationRuntime::new(
             self.client,
         )
-        .conversations(query)
+        .conversations_async(query)
+        .await
     }
 }
 
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn send_direct_e2ee_with_client(
+    client: &crate::core::ImClient,
+    resolved: ResolvedSendRequest,
+) -> crate::ImResult<super::SendMessageResult> {
+    send_direct_e2ee_with_client_and_persistence(
+        client,
+        resolved,
+        crate::internal::secure_direct::send::DirectSecureLocalPersistence::LegacySqlite,
+    )
+    .map(|result| result.sdk_result)
+}
+
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn send_direct_e2ee_with_client_and_persistence(
+    client: &crate::core::ImClient,
+    resolved: ResolvedSendRequest,
+    local_persistence: crate::internal::secure_direct::send::DirectSecureLocalPersistence,
+) -> crate::ImResult<crate::internal::secure_direct::send::DirectSecureTextSendResult> {
+    crate::internal::secure_direct::send::DirectSecureTextSender::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .send(crate::internal::secure_direct::send::DirectSecureTextSend {
+        request: resolved.request,
+        resolved_target_did: resolved.target_did,
+        local_persistence,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+async fn persist_deferred_direct_e2ee_effect(
+    client: &crate::core::ImClient,
+    mut result: crate::internal::secure_direct::send::DirectSecureTextSendResult,
+) -> crate::ImResult<super::SendMessageResult> {
+    match result.local_effect {
+        crate::internal::secure_direct::send::DirectSecureLocalEffect::None => {}
+        crate::internal::secure_direct::send::DirectSecureLocalEffect::PersistOutgoing => {
+            if let Err(err) =
+                crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing_async(
+                    client,
+                    &result.target_did,
+                    &result.text,
+                    &result.kind,
+                    &result.sdk_result,
+                )
+                .await
+            {
+                result
+                    .sdk_result
+                    .warnings
+                    .push(format!("Failed to persist local secure direct message: {err}"));
+            }
+        }
+        crate::internal::secure_direct::send::DirectSecureLocalEffect::QueueOutbox(record) => {
+            client
+                .core_inner()
+                .local_state_db()
+                .await?
+                .queue_e2ee_outbox(record)
+                .await?;
+        }
+    }
+    Ok(result.sdk_result)
+}
+
+#[derive(Clone)]
 struct ResolvedSendRequest {
     request: super::SendMessageRequest,
     target_did: Option<String>,
@@ -263,6 +894,20 @@ fn resolve_send_request(
 ) -> crate::ImResult<ResolvedSendRequest> {
     let target_did = match &request.target {
         super::MessageTarget::Direct(peer) => resolve_direct_peer_did(client, peer)?,
+        super::MessageTarget::Group(_) => None,
+    };
+    Ok(ResolvedSendRequest {
+        request,
+        target_did,
+    })
+}
+
+async fn resolve_send_request_async(
+    client: &crate::core::ImClient,
+    request: super::SendMessageRequest,
+) -> crate::ImResult<ResolvedSendRequest> {
+    let target_did = match &request.target {
+        super::MessageTarget::Direct(peer) => resolve_direct_peer_did_async(client, peer).await?,
         super::MessageTarget::Group(_) => None,
     };
     Ok(ResolvedSendRequest {
@@ -283,6 +928,22 @@ fn resolve_direct_peer_did(
     client
         .directory()
         .lookup_handle(handle)
+        .map(|lookup| Some(lookup.did.as_str().to_owned()))
+}
+
+async fn resolve_direct_peer_did_async(
+    client: &crate::core::ImClient,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<Option<String>> {
+    let raw = peer.as_str().trim();
+    if raw.is_empty() || raw.starts_with("did:") {
+        return Ok(None);
+    }
+    let handle = crate::ids::Handle::parse(raw, "")?;
+    client
+        .directory()
+        .lookup_handle_async(handle)
+        .await
         .map(|lookup| Some(lookup.did.as_str().to_owned()))
 }
 
@@ -394,6 +1055,30 @@ fn resolve_history_thread(
     ))
 }
 
+async fn resolve_history_thread_async(
+    client: &crate::core::ImClient,
+    thread: super::ThreadRef,
+) -> crate::ImResult<(super::ThreadRef, Option<String>, Option<(String, String)>)> {
+    let super::ThreadRef::Direct(peer) = thread else {
+        return Ok((thread, None, None));
+    };
+    if peer.as_str().starts_with("did:") {
+        return Ok((
+            super::ThreadRef::Direct(peer.clone()),
+            Some(peer.as_str().to_owned()),
+            None,
+        ));
+    }
+    let handle = crate::ids::Handle::parse(peer.as_str(), "")?;
+    let lookup = client.directory().lookup_handle_async(handle).await?;
+    let did = lookup.did.as_str().to_owned();
+    Ok((
+        super::ThreadRef::Direct(crate::ids::PeerRef::parse(&did, "")?),
+        Some(did.clone()),
+        Some((lookup.handle.as_str().to_owned(), did)),
+    ))
+}
+
 fn message_page_from_read_result(
     result: crate::internal::message_runtime::read::ReadPageResult,
 ) -> crate::ImResult<super::MessagePage> {
@@ -447,6 +1132,7 @@ mod group_e2ee_public_send_tests {
 
     use crate::internal::group_e2ee::provider::GroupMlsProvider;
 
+    #[cfg(feature = "blocking")]
     #[test]
     fn public_group_e2ee_send_uses_native_provider_and_sends_cipher_only() {
         let fixture = Fixture::new();
@@ -545,6 +1231,119 @@ mod group_e2ee_public_send_tests {
         assert!(!encoded_send.contains("StorageProvider"));
         assert!(!encoded_send.contains("mls_state.sqlite"));
         assert!(!encoded_send.contains("openmls_group_id_b64u"));
+    }
+
+    #[cfg(not(feature = "blocking"))]
+    #[test]
+    fn public_group_e2ee_sync_send_fails_closed_by_default() {
+        let fixture = Fixture::new();
+        let core = crate::core::ImCore::new(
+            fixture.config("https://example.test".to_owned()),
+            fixture.paths(),
+        )
+        .unwrap();
+        let client = core
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+
+        let result = client.messages().send(crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Group(
+                crate::ids::GroupRef::parse(&fixture.group_did).unwrap(),
+            ),
+            body: crate::messages::MessageBody::Text {
+                text: "public group secret".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            security: crate::messages::MessageSecurityPolicy::E2eeRequired,
+            client_message_id: Some(
+                crate::ids::MessageId::parse("msg-public-group-e2ee-sync").unwrap(),
+            ),
+            delivery: crate::messages::MessageDeliveryOptions::default(),
+        });
+
+        assert!(matches!(
+            result,
+            Err(crate::ImError::UnsupportedCapability { capability }) if capability == "sync-group-e2ee-send"
+        ));
+    }
+
+    #[tokio::test]
+    async fn public_group_e2ee_send_async_uses_async_transport_and_db_actor_projection() {
+        let fixture = Fixture::new();
+        let server = RpcTestServer::spawn(vec![
+            json!({
+                "group_state_ref": {
+                    "group_did": fixture.group_did,
+                    "group_state_version": "service-state-async-1"
+                }
+            }),
+            json!({
+                "accepted": true,
+                "final_acceptance": true,
+                "group_did": fixture.group_did,
+                "message_id": "server-message-async-id",
+                "operation_id": "op-public-group-e2ee-async",
+                "group_event_seq": "92",
+                "group_state_version": "service-state-async-2",
+                "accepted_at": "2026-05-21T00:00:00Z"
+            }),
+        ]);
+        let core = crate::core::ImCore::open(fixture.config(server.base_url()), fixture.paths())
+            .await
+            .unwrap();
+        let client = core
+            .client_async(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .await
+            .unwrap();
+        prepare_local_mls_group(&client, &fixture.group_did);
+
+        let result = client
+            .messages()
+            .send_async(crate::messages::SendMessageRequest {
+                target: crate::messages::MessageTarget::Group(
+                    crate::ids::GroupRef::parse(&fixture.group_did).unwrap(),
+                ),
+                body: crate::messages::MessageBody::Text {
+                    text: "async group secret".to_owned(),
+                    kind: crate::messages::MessageKind::Text,
+                },
+                security: crate::messages::MessageSecurityPolicy::E2eeRequired,
+                client_message_id: Some(
+                    crate::ids::MessageId::parse("msg-public-group-e2ee-async").unwrap(),
+                ),
+                delivery: crate::messages::MessageDeliveryOptions {
+                    idempotency_key: Some("op-public-group-e2ee-async".to_owned()),
+                    wait_for_final_acceptance: true,
+                },
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.message.metadata.server_sequence, Some(92));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].rpc_method, "group.e2ee.head");
+        assert_eq!(requests[0].params["body"]["group_did"], fixture.group_did);
+        assert_eq!(requests[1].rpc_method, "group.e2ee.send");
+        assert_eq!(
+            requests[1].params["meta"]["content_type"],
+            anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
+        );
+        let encoded_send = serde_json::to_string(&requests[1].params).unwrap();
+        assert!(!encoded_send.contains("async group secret"));
+
+        let stored = stored_group_message(&fixture, &client, result.message.id.as_str());
+        assert_eq!(stored.thread_id, format!("group:{}", fixture.group_did));
+        assert_eq!(stored.group_did, fixture.group_did);
+        assert_eq!(stored.content, "async group secret");
+        assert!(stored.is_e2ee);
+        assert_eq!(stored.server_seq, Some(92));
+        let metadata: Value = serde_json::from_str(&stored.metadata).unwrap();
+        assert_eq!(metadata["security"], "group-e2ee");
     }
 
     #[test]
@@ -695,6 +1494,49 @@ mod group_e2ee_public_send_tests {
             r#"{"jwt_token":"test-token"}"#,
         )
         .unwrap();
+    }
+
+    #[derive(Debug)]
+    struct StoredGroupMessage {
+        thread_id: String,
+        group_did: String,
+        content: String,
+        is_e2ee: bool,
+        server_seq: Option<i64>,
+        metadata: String,
+    }
+
+    fn stored_group_message(
+        fixture: &Fixture,
+        client: &crate::core::ImClient,
+        message_id: &str,
+    ) -> StoredGroupMessage {
+        let connection =
+            rusqlite::Connection::open(fixture.root.join("local").join("im.sqlite")).unwrap();
+        connection
+            .query_row(
+                r#"
+SELECT thread_id, group_did, content, is_e2ee, server_seq, metadata
+FROM messages
+WHERE owner_identity_id = ?1 AND owner_did = ?2 AND msg_id = ?3
+"#,
+                rusqlite::params![
+                    client.current_identity().id.as_str(),
+                    client.did().as_str(),
+                    message_id
+                ],
+                |row| {
+                    Ok(StoredGroupMessage {
+                        thread_id: row.get(0)?,
+                        group_did: row.get(1)?,
+                        content: row.get(2)?,
+                        is_e2ee: row.get::<_, i64>(3)? != 0,
+                        server_seq: row.get(4)?,
+                        metadata: row.get(5)?,
+                    })
+                },
+            )
+            .unwrap()
     }
 
     #[derive(Debug, Clone)]

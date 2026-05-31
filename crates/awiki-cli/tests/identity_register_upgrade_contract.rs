@@ -45,6 +45,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_awiki-cli"))
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.join(".awiki-cli"))
+        .env("HOME", workspace)
+        .env("USERPROFILE", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -98,7 +100,7 @@ fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     assert!(meta["last_upgrade_id"]
         .as_str()
         .is_some_and(|id| !id.is_empty()));

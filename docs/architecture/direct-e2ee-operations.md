@@ -20,6 +20,10 @@ References:
 - identity-scoped session, signed prekey, OPK and pending/outbox state.
 - secure status, prepare, repair and retry domain results.
 
+Current direct E2EE runtime state is owned by `im-core` local state and keyed by
+`owner_identity_id`. `owner_did` is only the current DID snapshot and must not be
+used as a runtime owner fallback.
+
 `awiki-cli` owns product shell behavior:
 
 - parsing `--secure required` / secure command flags.
@@ -30,6 +34,15 @@ References:
 
 The CLI must not independently implement ratchet/session algorithms or expose raw secure artifacts.
 
+Historical Go SDK reference stores may exist under the identity directory, but active runtime state is stored through `im-core` local state rather than using those paths as owner identity.
+
+The CLI business SQLite additionally stores message indexes, local plaintext views,
+and E2EE outbox metadata. Active rows use `owner_identity_id` keys, including
+`e2ee_outbox(owner_identity_id, outbox_id)` and direct E2EE tables. It must not
+expose or log root keys, chain keys, skipped message keys, nonces, private
+ratchet keys, OPK private material, plaintext outbox payloads, raw SQLite rows,
+backup contents, or JWTs.
+
 ## Local State
 
 Direct E2EE state is identity-scoped. Private session/prekey material and pending secure delivery state are owned by `im-core` internals and must not be printed, logged, or serialized into CLI output.
@@ -39,6 +52,7 @@ The CLI business SQLite may store high-level message indexes, local plaintext vi
 - root keys, chain keys, skipped message keys.
 - nonces or private ratchet keys.
 - OPK private material.
+- plaintext outbox payloads, raw SQLite rows or backup contents.
 - JWTs or private identity keys.
 - raw secure wire payloads beyond explicit diagnostic gates.
 

@@ -8,6 +8,7 @@ use super::meta::{load_meta, save_meta, MetaError};
 use super::migration_v0_to_v1;
 use super::migration_v1_to_v2;
 use super::migration_v2_to_v3;
+use super::migration_v3_to_v4;
 use super::resolve_paths;
 use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
 use crate::workspace_config;
@@ -435,6 +436,7 @@ pub fn new_default_upgrader() -> Upgrader {
         Box::new(workspace_v0_to_v1_migration()),
         Box::new(workspace_v1_to_v2_migration()),
         Box::new(workspace_v2_to_v3_migration()),
+        Box::new(workspace_v3_to_v4_migration()),
     ];
     Upgrader {
         latest_version: LATEST_WORKSPACE_SCHEMA_VERSION,
@@ -476,6 +478,14 @@ fn workspace_v2_to_v3_migration() -> WorkspaceMigration {
     }
 }
 
+fn workspace_v3_to_v4_migration() -> WorkspaceMigration {
+    WorkspaceMigration {
+        from: 3,
+        to: 4,
+        name: "workspace_3_to_4_owner_identity_local_state",
+    }
+}
+
 impl Migration for WorkspaceMigration {
     fn from(&self) -> i64 {
         self.from
@@ -498,8 +508,32 @@ impl Migration for WorkspaceMigration {
 
     fn apply(&self, context: &mut Context) -> Result<(), MigrationError> {
         if self.from == 0 && self.to == 1 {
-            let imported = migration_v0_to_v1::apply_workspace_v0_to_v1_local_state(context)?;
+            migration_v0_to_v1::apply_workspace_v0_to_v1_config(context)?;
+            let refreshed = migration_v0_to_v1::refresh_resolved_config(&context.resolved)
+                .map_err(|err| MigrationError::Message(err.to_string()))?;
+            context.resolved = refreshed;
+            context.paths = resolve_paths(&context.resolved);
+            let imported = migration_v0_to_v1::import_legacy_identities(context)?;
+            let imported_any = !imported.imported.is_empty();
+            let historical_owner_dids = imported
+                .imported
+                .iter()
+                .map(|summary| (summary.identity_name.clone(), summary.did.clone()))
+                .collect::<Vec<_>>();
             migration_v2_to_v3::replace_k1_dids_for_summaries(context, imported.imported)?;
+            migration_v0_to_v1::import_legacy_sqlite_with_historical_dids(
+                context,
+                historical_owner_dids,
+            )?;
+            if std::path::Path::new(&context.paths.database_file).is_file() {
+                migration_v0_to_v1::ensure_target_store_schema(&context.resolved.paths)?;
+            }
+            if imported_any {
+                let refreshed = migration_v0_to_v1::refresh_resolved_config(&context.resolved)
+                    .map_err(|err| MigrationError::Message(err.to_string()))?;
+                context.resolved = refreshed;
+                context.paths = resolve_paths(&context.resolved);
+            }
             return Ok(());
         }
         if self.from == 1 && self.to == 2 {
@@ -507,6 +541,11 @@ impl Migration for WorkspaceMigration {
         }
         if self.from == 2 && self.to == 3 {
             return migration_v2_to_v3::apply_workspace_v2_to_v3_replace_existing_k1_dids(context);
+        }
+        if self.from == 3 && self.to == 4 {
+            return migration_v3_to_v4::apply_workspace_v3_to_v4_owner_identity_local_state(
+                context,
+            );
         }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
@@ -523,6 +562,11 @@ impl Migration for WorkspaceMigration {
                 context,
             );
         }
+        if self.from == 3 && self.to == 4 {
+            return migration_v3_to_v4::validate_workspace_v3_to_v4_owner_identity_local_state(
+                context,
+            );
+        }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
 }
@@ -534,10 +578,10 @@ mod tests {
     #[test]
     fn plan_rejects_newer_source_version_like_go() {
         let upgrader = new_default_upgrader();
-        let err = upgrader.plan(4, 3).expect_err("newer source should fail");
+        let err = upgrader.plan(5, 4).expect_err("newer source should fail");
         assert_eq!(
             err.to_string(),
-            "workspace schema version 4 is newer than target 3"
+            "workspace schema version 5 is newer than target 4"
         );
     }
 

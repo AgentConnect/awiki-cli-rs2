@@ -3,6 +3,7 @@ pub(crate) struct MessageRecord {
     pub(crate) msg_id: String,
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
+    pub(crate) conversation_id: String,
     pub(crate) thread_id: String,
     pub(crate) direction: i64,
     pub(crate) sender_did: String,
@@ -29,19 +30,22 @@ pub(crate) fn upsert_message(
 ) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
     let msg_id = required("msg_id", &record.msg_id)?;
+    let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
     let owner_did = required("owner_did", &record.owner_did)?;
-    let thread_id = required("thread_id", &record.thread_id)?;
+    let conversation_id = required("conversation_id", &stable_conversation_id(record))?;
+    let thread_id = conversation_id.clone();
     let stored_at = default_string(&record.stored_at, &now_utc_like());
     connection
         .execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
      group_id, group_did, content_type, content, title, server_seq, sent_at, stored_at,
      is_e2ee, is_read, sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-ON CONFLICT(msg_id, owner_did) DO UPDATE SET
-    owner_identity_id = COALESCE(excluded.owner_identity_id, messages.owner_identity_id),
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
+    owner_did = excluded.owner_did,
+    conversation_id = excluded.conversation_id,
     thread_id = excluded.thread_id,
     direction = excluded.direction,
     sender_did = excluded.sender_did,
@@ -61,8 +65,9 @@ ON CONFLICT(msg_id, owner_did) DO UPDATE SET
     credential_name = excluded.credential_name"#,
             rusqlite::params![
                 msg_id,
-                nullable_text(&record.owner_identity_id),
+                owner_identity_id,
                 owner_did,
+                conversation_id,
                 thread_id,
                 record.direction,
                 nullable_text(&record.sender_did),
@@ -121,19 +126,21 @@ pub(crate) fn classify_mark_read_ids(
     owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<MarkReadClassification> {
-    let rows = list_message_classification_rows(connection, "", owner_did, message_ids)?;
-    classify_mark_read_ids_from_rows(message_ids, rows)
+    let _ = (connection, owner_did, message_ids);
+    Err(crate::ImError::invalid_input(
+        Some("owner_identity_id".to_owned()),
+        "owner_identity_id is required",
+    ))
 }
 
 #[cfg(feature = "sqlite")]
 pub(crate) fn classify_mark_read_ids_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<MarkReadClassification> {
-    let rows =
-        list_message_classification_rows(connection, owner_identity_id, owner_did, message_ids)?;
+    let rows = list_message_classification_rows(connection, owner_identity_id, message_ids)?;
     classify_mark_read_ids_from_rows(message_ids, rows)
 }
 
@@ -165,24 +172,27 @@ pub(crate) fn mark_messages_read(
     owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<i64> {
-    mark_messages_read_for_owner(connection, "", owner_did, message_ids)
+    let _ = (connection, owner_did, message_ids);
+    Err(crate::ImError::invalid_input(
+        Some("owner_identity_id".to_owned()),
+        "owner_identity_id is required",
+    ))
 }
 
 #[cfg(feature = "sqlite")]
 pub(crate) fn mark_messages_read_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<i64> {
-    mark_messages_read_for_owner(connection, owner_identity_id, owner_did, message_ids)
+    mark_messages_read_for_owner(connection, owner_identity_id, message_ids)
 }
 
 #[cfg(feature = "sqlite")]
 fn mark_messages_read_for_owner(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<i64> {
     let ids = message_ids
@@ -199,10 +209,9 @@ fn mark_messages_read_for_owner(
         owner_predicate()
     );
     let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
-    let owner = normalize_owner_did(owner_did);
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
+    required("owner_identity_id", &owner_identity_id)?;
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
     params.push(&owner_identity_id);
-    params.push(&owner);
     for id in &ids {
         params.push(id);
     }
@@ -216,7 +225,6 @@ fn mark_messages_read_for_owner(
 fn list_message_classification_rows(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<Vec<MessageClassificationRow>> {
     let ids = message_ids
@@ -236,10 +244,9 @@ WHERE {} AND msg_id IN ({placeholders})"#,
         owner_predicate()
     );
     let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
-    let owner = normalize_owner_did(owner_did);
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
+    required("owner_identity_id", &owner_identity_id)?;
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
     params.push(&owner_identity_id);
-    params.push(&owner);
     for id in &ids {
         params.push(id);
     }
@@ -309,8 +316,62 @@ fn parse_metadata(value: &str) -> serde_json::Map<String, serde_json::Value> {
 }
 
 #[cfg(feature = "sqlite")]
-fn normalize_owner_did(value: &str) -> String {
-    value.trim().to_string()
+fn stable_conversation_id(record: &MessageRecord) -> String {
+    if let Some(value) = non_empty(record.conversation_id.as_str()) {
+        return value.to_owned();
+    }
+    if let Some(group) =
+        non_empty(record.group_id.as_str()).or_else(|| non_empty(&record.group_did))
+    {
+        return crate::internal::local_state::owner_scope::group_conversation_id(group);
+    }
+    if is_mail_record(record) {
+        if let Some(source) = record
+            .thread_id
+            .trim()
+            .strip_prefix("mail:")
+            .filter(|value| !value.trim().is_empty())
+        {
+            return crate::internal::local_state::owner_scope::mail_conversation_id(source);
+        }
+        return crate::internal::local_state::owner_scope::mail_conversation_id("inbox");
+    }
+    let owner_did = record.owner_did.trim();
+    let peer = if record.sender_did.trim() != owner_did {
+        record.sender_did.trim()
+    } else {
+        record.receiver_did.trim()
+    };
+    if !peer.is_empty() {
+        return crate::internal::local_state::owner_scope::direct_conversation_id(peer);
+    }
+    if let Some(conversation_id) =
+        crate::internal::local_state::owner_scope::direct_conversation_id_from_thread_alias(
+            &record.thread_id,
+            &record.owner_did,
+        )
+    {
+        return conversation_id;
+    }
+    default_string(&record.thread_id, "")
+}
+
+#[cfg(feature = "sqlite")]
+fn is_mail_record(record: &MessageRecord) -> bool {
+    if record.content_type.trim() == "mail.notification" {
+        return true;
+    }
+    parse_metadata(&record.metadata)
+        .get("source_kind")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.trim() == "mail")
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "sqlite")]
+fn non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 #[cfg(feature = "sqlite")]
@@ -320,7 +381,7 @@ fn normalize_owner_identity_id(value: &str) -> String {
 
 #[cfg(feature = "sqlite")]
 fn owner_predicate() -> &'static str {
-    "(owner_identity_id = ? OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?))"
+    "owner_identity_id = ?"
 }
 
 #[cfg(feature = "sqlite")]
@@ -364,18 +425,19 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn local_state_messages_classifies_mark_read_ids_like_legacy() {
+    fn local_state_messages_classifies_mark_read_ids_by_owner_identity() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         db.execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, stored_at)
-VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text/plain', 'direct', '2026-05-21T00:00:00Z')"#,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content, stored_at)
+VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3, 'text/plain', 'direct', '2026-05-21T00:00:00Z')"#,
             (
                 "direct-1",
+                "alice-id",
                 "did:example:alice",
-                "dm:alice:bob",
+                "dm:did:example:bob",
                 "did:example:bob",
             ),
         )
@@ -383,10 +445,11 @@ VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text/plain', 'direct', '2026-05-21T00:00:00Z')"#
         db.execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, group_id, group_did, content_type, content, stored_at)
-VALUES (?1, ?2, ?3, 0, ?4, ?4, 'text/plain', 'group', '2026-05-21T00:00:00Z')"#,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, group_id, group_did, content_type, content, stored_at)
+VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?5, 'text/plain', 'group', '2026-05-21T00:00:00Z')"#,
             (
                 "group-1",
+                "alice-id",
                 "did:example:alice",
                 "group:one",
                 "did:example:group",
@@ -396,10 +459,11 @@ VALUES (?1, ?2, ?3, 0, ?4, ?4, 'text/plain', 'group', '2026-05-21T00:00:00Z')"#,
         db.execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, content_type, content, stored_at, metadata)
-VALUES (?1, ?2, ?3, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00Z', ?4)"#,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, content_type, content, stored_at, metadata)
+VALUES (?1, ?2, ?3, ?4, ?4, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00Z', ?5)"#,
             (
                 "mail-1",
+                "alice-id",
                 "did:example:alice",
                 "mail:inbox",
                 r#"{"source_kind":"mail"}"#,
@@ -407,8 +471,9 @@ VALUES (?1, ?2, ?3, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00Z', ?4)"
         )
         .unwrap();
 
-        let classified = classify_mark_read_ids(
+        let classified = classify_mark_read_ids_for_owner_identity(
             &db,
+            "alice-id",
             "did:example:alice",
             &[
                 "direct-1".to_string(),
@@ -428,26 +493,32 @@ VALUES (?1, ?2, ?3, 0, 'mail.notification', 'mail', '2026-05-21T00:00:00Z', ?4)"
     fn local_state_messages_mark_read_respects_owner() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
-        for owner in ["did:owner-1", "did:owner-2"] {
+        for (identity, owner) in [("owner-1-id", "did:owner-1"), ("owner-2-id", "did:owner-2")] {
             db.execute(
                 r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
-VALUES (?1, ?2, 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
-                ("shared", owner),
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
+VALUES (?1, ?2, ?3, 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
+                ("shared", identity, owner),
             )
             .unwrap();
         }
 
-        let updated = mark_messages_read(&db, "did:owner-1", &["shared".to_string()]).unwrap();
+        let updated = mark_messages_read_for_owner_identity(
+            &db,
+            "owner-1-id",
+            "did:owner-1",
+            &["shared".to_string()],
+        )
+        .unwrap();
 
         assert_eq!(updated, 1);
-        assert_eq!(is_read(&db, "did:owner-1"), 1);
-        assert_eq!(is_read(&db, "did:owner-2"), 0);
+        assert_eq!(is_read(&db, "owner-1-id"), 1);
+        assert_eq!(is_read(&db, "owner-2-id"), 0);
     }
 
     #[test]
-    fn local_state_owner_mark_read_prefers_identity_and_falls_back_to_legacy_did() {
+    fn local_state_owner_mark_read_uses_identity_without_legacy_did_fallback() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         db.execute(
@@ -461,8 +532,8 @@ VALUES ('stable', 'alice-id', 'did:alice-old', 'thread', 0, 'text/plain', 'hello
         db.execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
-VALUES ('legacy', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
+VALUES ('same-did-other-id', 'mallory-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
             [],
         )
         .unwrap();
@@ -481,15 +552,15 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
             "did:alice-new",
             &[
                 "stable".to_string(),
-                "legacy".to_string(),
+                "same-did-other-id".to_string(),
                 "other".to_string(),
             ],
         )
         .unwrap();
 
-        assert_eq!(updated, 2);
+        assert_eq!(updated, 1);
         assert_eq!(read_by_msg_id(&db, "stable"), 1);
-        assert_eq!(read_by_msg_id(&db, "legacy"), 1);
+        assert_eq!(read_by_msg_id(&db, "same-did-other-id"), 0);
         assert_eq!(read_by_msg_id(&db, "other"), 0);
     }
 
@@ -502,7 +573,8 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
                 msg_id: "msg-1".to_owned(),
                 owner_identity_id: "alice-id".to_owned(),
                 owner_did: "did:example:alice".to_owned(),
-                thread_id: "dm:alice:bob".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
                 direction: 1,
                 sender_did: "did:example:alice".to_owned(),
                 receiver_did: "did:example:bob".to_owned(),
@@ -522,7 +594,8 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
                 msg_id: "msg-1".to_owned(),
                 owner_identity_id: "alice-id".to_owned(),
                 owner_did: "did:example:alice".to_owned(),
-                thread_id: "dm:alice:bob".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
                 direction: 1,
                 sender_did: "did:example:alice".to_owned(),
                 receiver_did: "did:example:bob".to_owned(),
@@ -539,23 +612,27 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
 
         let row = db
             .query_row(
-                "SELECT owner_identity_id, content, stored_at, is_e2ee FROM messages WHERE msg_id = 'msg-1'",
+                "SELECT owner_identity_id, conversation_id, thread_id, content, stored_at, is_e2ee FROM messages WHERE msg_id = 'msg-1'",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
                     ))
                 },
             )
             .unwrap();
 
         assert_eq!(row.0, "alice-id");
-        assert_eq!(row.1, "second");
-        assert_eq!(row.2, "2026-05-24T00:00:01Z");
-        assert_eq!(row.3, 1);
+        assert_eq!(row.1, "dm:did:example:bob");
+        assert_eq!(row.2, row.1);
+        assert_eq!(row.3, "second");
+        assert_eq!(row.4, "2026-05-24T00:00:01Z");
+        assert_eq!(row.5, 1);
     }
 
     #[test]
@@ -565,8 +642,10 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
             &db,
             &MessageRecord {
                 msg_id: "msg-flags".to_owned(),
+                owner_identity_id: "owner-id".to_owned(),
                 owner_did: "did:owner".to_owned(),
-                thread_id: "dm:did:owner:did:peer".to_owned(),
+                conversation_id: "dm:did:peer".to_owned(),
+                thread_id: "dm:did:peer".to_owned(),
                 direction: 0,
                 content: "read secure".to_owned(),
                 stored_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -580,8 +659,10 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
             &db,
             &MessageRecord {
                 msg_id: "msg-flags".to_owned(),
+                owner_identity_id: "owner-id".to_owned(),
                 owner_did: "did:owner".to_owned(),
-                thread_id: "dm:did:owner:did:peer".to_owned(),
+                conversation_id: "dm:did:peer".to_owned(),
+                thread_id: "dm:did:peer".to_owned(),
                 direction: 0,
                 content: "later projection".to_owned(),
                 stored_at: "2026-01-02T00:00:00Z".to_owned(),
@@ -603,10 +684,40 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
         assert_eq!(is_read, 1);
     }
 
-    fn is_read(db: &Connection, owner: &str) -> i64 {
+    #[test]
+    fn local_state_messages_upsert_normalizes_legacy_direct_thread_alias() {
+        let db = Connection::open_in_memory().unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-legacy-thread".to_owned(),
+                owner_identity_id: "owner-id".to_owned(),
+                owner_did: "did:owner".to_owned(),
+                thread_id: "dm:did:owner:did:peer".to_owned(),
+                direction: 0,
+                content: "legacy alias".to_owned(),
+                stored_at: "2026-01-01T00:00:00Z".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        let (conversation_id, thread_id): (String, String) = db
+            .query_row(
+                "SELECT conversation_id, thread_id FROM messages WHERE msg_id = 'msg-legacy-thread'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(conversation_id, "dm:did:peer");
+        assert_eq!(thread_id, conversation_id);
+    }
+
+    fn is_read(db: &Connection, owner_identity_id: &str) -> i64 {
         db.query_row(
-            "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = 'shared'",
-            [owner],
+            "SELECT is_read FROM messages WHERE owner_identity_id = ?1 AND msg_id = 'shared'",
+            [owner_identity_id],
             |row| row.get(0),
         )
         .unwrap()

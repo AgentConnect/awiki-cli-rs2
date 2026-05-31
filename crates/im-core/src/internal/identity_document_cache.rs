@@ -33,6 +33,36 @@ pub(crate) fn load_local_did_document(
     read_did_document(&paths.identity_root_dir.join(dir_name), did)
 }
 
+pub(crate) async fn load_local_did_document_async(
+    paths: &crate::paths::IdentityRegistryPaths,
+    did: &str,
+) -> crate::ImResult<Option<Value>> {
+    let did = did.trim();
+    if did.is_empty() || !did.starts_with("did:") {
+        return Ok(None);
+    }
+    let raw = match tokio::fs::read(&paths.registry_path).await {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "identity_registry".to_owned(),
+                detail: err.to_string(),
+            });
+        }
+    };
+    let registry: Value =
+        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?;
+    let Some(dir_name) =
+        sdk_identity_dir_name(&registry, did).or_else(|| legacy_identity_dir_name(&registry, did))
+    else {
+        return Ok(None);
+    };
+    read_did_document_async(&paths.identity_root_dir.join(dir_name), did).await
+}
+
 fn sdk_identity_dir_name(registry: &Value, did: &str) -> Option<String> {
     registry
         .get("identities")
@@ -73,6 +103,31 @@ fn legacy_identity_dir_name(registry: &Value, did: &str) -> Option<String> {
 fn read_did_document(identity_dir: &Path, did: &str) -> crate::ImResult<Option<Value>> {
     for path in did_document_paths(identity_dir) {
         let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(crate::ImError::CredentialFileUnreadable {
+                    path_kind: "did_document".to_owned(),
+                    detail: err.to_string(),
+                });
+            }
+        };
+        let document: Value =
+            serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        if document.get("id").and_then(Value::as_str) == Some(did)
+            && document.get("verificationMethod").is_some()
+        {
+            return Ok(Some(document));
+        }
+    }
+    Ok(None)
+}
+
+async fn read_did_document_async(identity_dir: &Path, did: &str) -> crate::ImResult<Option<Value>> {
+    for path in did_document_paths(identity_dir) {
+        let raw = match tokio::fs::read(&path).await {
             Ok(raw) => raw,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {

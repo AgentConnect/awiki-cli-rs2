@@ -6,12 +6,16 @@
 
 主要能力包括 DID/Handle 身份管理、auth/session、消息收发、群组、附件、邮件、内容页、site pages、direct/group E2EE、realtime listener、本地缓存和 host notification。
 
+**技术栈**: Rust 1.88+ workspace + Cargo + bundled SQLite (`rusqlite`) + ANP Rust SDK
+
 ## 1. 环境要求
 
 - Rust toolchain：使用仓库根目录 `rust-toolchain.toml` 固定版本。
 - Node.js 18+：用于 npm wrapper、install script 和发布流程。
 - 同级 ANP Rust SDK：`Cargo.toml` 通过 path dependency 读取 `../anp/anp/rust`。
 - Flutter SDK：仅在修改 `packages/awiki_im_core` 或 `crates/im-core-dart` 时需要。
+
+`Cargo.toml` 中的最低 Rust 版本为 1.88。发布脚本默认使用 `AWIKI_CLI_RUST_TOOLCHAIN=1.88.0`，如本机已安装兼容 toolchain，也可以通过环境变量覆盖。
 
 检查本地依赖：
 
@@ -31,6 +35,13 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo test --workspace --locked
 cargo run -p awiki-cli -- --help
+```
+
+如本机未安装 Rust，可使用 Docker 备选：
+
+```bash
+docker run --rm -v "$PWD":/app -w /app rust:1.88 cargo build --workspace --locked
+docker run --rm -v "$PWD":/app -w /app rust:1.88 cargo test --workspace --all-features
 ```
 
 结构与版本检查：

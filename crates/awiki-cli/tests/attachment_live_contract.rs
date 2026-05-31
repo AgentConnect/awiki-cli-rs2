@@ -785,6 +785,8 @@ fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -881,6 +883,20 @@ fn request_body_bytes(raw: &[u8]) -> &[u8] {
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {
+    if let Some((header_name, expected_value)) = needle
+        .strip_suffix("\r\n")
+        .and_then(|line| line.split_once(':'))
+    {
+        let header_name = header_name.trim();
+        let expected_value = expected_value.trim();
+        if haystack.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(header_name) && value.trim() == expected_value
+            })
+        }) {
+            return;
+        }
+    }
     assert!(
         haystack.contains(needle),
         "expected request to contain {needle:?}, got:\n{haystack}"

@@ -712,6 +712,7 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     write_group_config(workspace.path(), "http://127.0.0.1:9");
     seed_group_snapshot(
         workspace.path(),
+        &alice.unique_id,
         &alice.did,
         &alice.identity_name,
         group_did,
@@ -1147,6 +1148,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(publish_plan["recovery"], false);
     assert_eq!(publish_plan["device"], "bob-main");
     assert_eq!(publish_plan["contract_test_only"], true);
+    assert_group_e2ee_plan_is_redacted(publish_plan);
 
     let recovery_alias = success_json(&awiki_internal_cmd(
         &[
@@ -1178,8 +1180,9 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     ));
     assert_eq!(pending["summary"], "Dry run: group e2ee pending planned");
     assert_eq!(pending["data"]["plan"]["action"], "group.e2ee.pending");
-    assert_eq!(pending["data"]["plan"]["provider"], "exec");
+    assert_eq!(pending["data"]["plan"]["provider"], "internal");
     assert_eq!(pending["data"]["plan"]["group"], group);
+    assert_group_e2ee_plan_is_redacted(&pending["data"]["plan"]);
 
     let repair = success_json(&awiki_internal_cmd(
         &[
@@ -1234,6 +1237,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(process_plan["leave_request_id"], "lr-bob-1");
     assert_eq!(process_plan["request"]["LeaveRequestID"], "lr-bob-1");
     assert_eq!(process_plan["request"]["ReasonText"], "owner remove");
+    assert_group_e2ee_plan_is_redacted(process_plan);
 
     let recover = success_json(&awiki_internal_cmd(
         &[
@@ -1267,6 +1271,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         .contains(&Value::String(
             "hidden group.e2ee.recover_member".to_string()
         )));
+    assert_group_e2ee_plan_is_redacted(&recover["data"]["plan"]);
 
     let update = success_json(&awiki_internal_cmd(
         &[
@@ -1290,6 +1295,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(update["data"]["plan"]["key_package_purpose"], "update");
     assert_eq!(update["data"]["plan"]["hidden_awiki_extension"], true);
     assert_eq!(update["data"]["plan"]["p4_membership_mutate"], false);
+    assert_group_e2ee_plan_is_redacted(&update["data"]["plan"]);
 
     let rejoin = success_json(&awiki_internal_cmd(
         &[
@@ -1316,6 +1322,19 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(rejoin["data"]["plan"]["key_package_purpose"], "normal");
     assert_eq!(rejoin["data"]["plan"]["external_commit"], false);
     assert_eq!(rejoin["data"]["plan"]["p4_membership_mutate"], true);
+}
+
+fn assert_group_e2ee_plan_is_redacted(plan: &Value) {
+    assert_eq!(plan["provider"], "internal");
+    let encoded = serde_json::to_string(plan).expect("plan json");
+    assert!(
+        !encoded.contains("mls_data_dir"),
+        "group E2EE dry-run plan must not expose MLS state paths: {encoded}"
+    );
+    assert!(
+        !encoded.contains("\"binary\""),
+        "group E2EE dry-run plan must not expose provider binary paths: {encoded}"
+    );
 }
 
 #[test]
@@ -1439,6 +1458,8 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -1477,6 +1498,7 @@ fn write_group_config(workspace: &Path, base_url: &str) {
 
 fn seed_group_snapshot(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     credential_name: &str,
     group_did: &str,
@@ -1486,12 +1508,13 @@ fn seed_group_snapshot(
     db.execute(
         r#"
 INSERT INTO groups (
-    owner_did, group_id, group_did, name, group_owner_did, group_mode,
+    owner_identity_id, owner_did, group_id, group_did, name, group_owner_did, group_mode,
     my_role, membership_status, stored_at, credential_name
-) VALUES (?1, ?2, ?2, 'Guard Group', ?1, 'general', ?3, 'active',
-          '2026-05-25T00:00:00Z', ?4)
-ON CONFLICT(owner_did, group_id)
+) VALUES (?1, ?2, ?3, ?3, 'Guard Group', ?2, 'general', ?4, 'active',
+          '2026-05-25T00:00:00Z', ?5)
+ON CONFLICT(owner_identity_id, group_id)
 DO UPDATE SET
+    owner_did = excluded.owner_did,
     group_did = excluded.group_did,
     name = excluded.name,
     group_owner_did = excluded.group_owner_did,
@@ -1499,7 +1522,13 @@ DO UPDATE SET
     membership_status = excluded.membership_status,
     credential_name = excluded.credential_name
 "#,
-        rusqlite::params![owner_did, group_did, role, credential_name],
+        rusqlite::params![
+            owner_identity_id,
+            owner_did,
+            group_did,
+            role,
+            credential_name
+        ],
     )
     .expect("seed group snapshot");
 }
@@ -1692,7 +1721,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

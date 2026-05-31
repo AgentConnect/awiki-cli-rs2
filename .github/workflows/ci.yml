@@ -25,7 +25,7 @@ jobs:
 
       - name: Set up Rust
         working-directory: awiki-cli-rs2
-        run: rustup toolchain install 1.79.0 --profile minimal --component rustfmt
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -34,7 +34,7 @@ jobs:
 
       - name: Check formatting
         working-directory: awiki-cli-rs2
-        run: cargo +1.79.0 fmt --check
+        run: cargo +1.88.0 fmt --check
 
       - name: Run unit tests
         working-directory: awiki-cli-rs2
@@ -42,11 +42,11 @@ jobs:
 
       - name: Run cargo check
         working-directory: awiki-cli-rs2
-        run: cargo +1.79.0 check -p awiki-cli --locked
+        run: cargo +1.88.0 check -p awiki-cli --locked
 
       - name: Check structure
         working-directory: awiki-cli-rs2
-        run: cargo +1.79.0 run --bin xtask --locked -- check-structure
+        run: cargo +1.88.0 run --bin xtask --locked -- check-structure
 
       - name: Check release script syntax
         working-directory: awiki-cli-rs2

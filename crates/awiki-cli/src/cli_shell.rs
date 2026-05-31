@@ -87,6 +87,21 @@ pub struct App {
 }
 
 pub fn execute() -> i32 {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(execute_async()),
+        Err(err) => App::default().handle_error(ExitError::new(
+            "internal_error",
+            1,
+            format!("failed to start async runtime: {err}"),
+            "Retry the command or run with --diagnostic for more context.",
+        )),
+    }
+}
+
+pub async fn execute_async() -> i32 {
     let command = match cli_parser::parse_env() {
         Ok(command) => command,
         Err(err) => return App::default().handle_error(err),
@@ -100,7 +115,7 @@ pub fn execute() -> i32 {
     let exit_code = if let Err(err) = app.preflight(&command) {
         app.handle_error(err)
     } else {
-        match cli_parser::dispatch(&app, &command) {
+        match cli_parser::dispatch_async(&app, &command).await {
             Ok(()) => 0,
             Err(err) => app.handle_error(err),
         }
@@ -366,7 +381,7 @@ impl App {
         )
     }
 
-    pub fn run_init(&self) -> Result<(), ExitError> {
+    pub async fn run_init_async(&self) -> Result<(), ExitError> {
         let mut resolved = self.resolve_config()?;
         let dirs = init_dirs(&resolved);
         if self.globals.dry_run {
@@ -396,7 +411,9 @@ impl App {
                 .map_err(internal_anyhow)?;
             resolved.config_exists = true;
         }
-        ensure_sqlite_schema(&resolved).map_err(internal_anyhow)?;
+        ensure_sqlite_schema(&resolved)
+            .await
+            .map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli init",
             &resolved,
@@ -499,15 +516,51 @@ impl App {
         self.render_identity_result("awiki-cli id register", &resolved, result)
     }
 
+    pub async fn run_id_register_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = if self.globals.dry_run {
+            crate::m_core_cli_adapter::identity::register_handle_plan_via_im_core_async(
+                &resolved,
+                command,
+                &self.globals.identity,
+            )
+            .await?
+        } else {
+            crate::m_core_cli_adapter::identity::register_handle_via_im_core_async(
+                &resolved,
+                command,
+                &self.globals.identity,
+            )
+            .await?
+        };
+        self.render_identity_result("awiki-cli id register", &resolved, result)
+    }
+
     pub fn run_id_list(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::identity::list_identities_via_im_core(&resolved)?;
         self.render_identity_result("awiki-cli id list", &resolved, result)
     }
 
+    pub async fn run_id_list_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result =
+            crate::m_core_cli_adapter::identity::list_identities_via_im_core_async(&resolved)
+                .await?;
+        self.render_identity_result("awiki-cli id list", &resolved, result)
+    }
+
     pub fn run_id_current(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::identity::current_identity_via_im_core(&resolved)?;
+        self.render_identity_result("awiki-cli id current", &resolved, result)
+    }
+
+    pub async fn run_id_current_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result =
+            crate::m_core_cli_adapter::identity::current_identity_via_im_core_async(&resolved)
+                .await?;
         self.render_identity_result("awiki-cli id current", &resolved, result)
     }
 
@@ -532,9 +585,39 @@ impl App {
         self.render_identity_result("awiki-cli id use", &resolved, result)
     }
 
+    pub async fn run_id_use_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if command.args.len() != 1 {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "id use requires exactly one identity name.",
+                "Usage: awiki-cli id use <identity>",
+            ));
+        }
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = if self.globals.dry_run {
+            crate::m_core_cli_adapter::identity::use_identity_plan_via_im_core(&command.args[0])
+        } else {
+            crate::m_core_cli_adapter::identity::use_identity_via_im_core_async(
+                &resolved,
+                &command.args[0],
+            )
+            .await?
+        };
+        self.render_identity_result("awiki-cli id use", &resolved, result)
+    }
+
     pub fn run_id_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::identity::identity_status_via_im_core(&resolved)?;
+        self.render_identity_result("awiki-cli id status", &resolved, result)
+    }
+
+    pub async fn run_id_status_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result =
+            crate::m_core_cli_adapter::identity::identity_status_via_im_core_async(&resolved)
+                .await?;
         self.render_identity_result("awiki-cli id status", &resolved, result)
     }
 
@@ -590,6 +673,22 @@ impl App {
         self.render_identity_result("awiki-cli id bind", &resolved, result)
     }
 
+    pub async fn run_id_bind_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = if self.globals.dry_run {
+            crate::m_core_cli_adapter::identity::bind_contact_plan_via_im_core(command)?
+        } else {
+            crate::m_core_cli_adapter::identity::bind_contact_via_im_core_async(
+                &resolved,
+                &self.globals.identity,
+                command,
+            )
+            .await
+            .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?
+        };
+        self.render_identity_result("awiki-cli id bind", &resolved, result)
+    }
+
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let result = if self.globals.dry_run {
@@ -599,6 +698,21 @@ impl App {
                 &resolved,
                 &self.globals.identity,
             )
+            .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?
+        };
+        self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
+    }
+
+    pub async fn run_id_refresh_token_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = if self.globals.dry_run {
+            crate::m_core_cli_adapter::auth::refresh_token_plan_via_im_core(&self.globals.identity)
+        } else {
+            crate::m_core_cli_adapter::auth::refresh_token_via_im_core_async(
+                &resolved,
+                &self.globals.identity,
+            )
+            .await
             .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?
         };
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
@@ -657,6 +771,41 @@ impl App {
         self.render_identity_result("awiki-cli id profile set", &resolved, result)
     }
 
+    pub async fn run_id_profile_set_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let display_name = string_flag(command, "display-name");
+        let bio = string_flag(command, "bio");
+        let tags = string_flag(command, "tags");
+        let markdown = string_flag(command, "markdown");
+        let markdown_file = string_flag(command, "markdown-file");
+        if !markdown.trim().is_empty() && !markdown_file.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "Use either --markdown or --markdown-file, not both.",
+                "Choose one profile body source.",
+            ));
+        }
+        let resolved = self.resolve_config_for_workspace()?;
+        if self.globals.dry_run {
+            return self.run_id_profile_set(command);
+        }
+        let request = crate::m_core_cli_adapter::identity::set_profile_request(
+            display_name,
+            bio,
+            tags,
+            markdown,
+            markdown_file,
+        )?;
+        let result = crate::m_core_cli_adapter::identity::set_profile_via_im_core_async(
+            &resolved,
+            &self.globals.identity,
+            request,
+        )
+        .await
+        .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?;
+        self.render_identity_result("awiki-cli id profile set", &resolved, result)
+    }
+
     pub fn run_id_profile_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let request = crate::m_core_cli_adapter::identity::get_profile_request(command);
@@ -678,6 +827,29 @@ impl App {
         self.render_identity_result("awiki-cli id profile get", &resolved, result)
     }
 
+    pub async fn run_id_profile_get_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let request = crate::m_core_cli_adapter::identity::get_profile_request(command);
+        let self_profile = request.self_profile
+            || (request.handle.trim().is_empty() && request.did.trim().is_empty());
+        let result = if self_profile {
+            crate::m_core_cli_adapter::identity::get_self_profile_via_im_core_async(
+                &resolved,
+                &self.globals.identity,
+            )
+            .await
+            .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?
+        } else {
+            crate::m_core_cli_adapter::identity::get_public_profile_via_im_core_async(
+                &resolved,
+                &self.globals.identity,
+                request,
+            )
+            .await?
+        };
+        self.render_identity_result("awiki-cli id profile get", &resolved, result)
+    }
+
     pub fn run_id_resolve(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::m_core_cli_adapter::identity::resolve_identity_via_im_core(
@@ -685,6 +857,17 @@ impl App {
             &self.globals.identity,
             crate::m_core_cli_adapter::identity::resolve_request(command),
         )?;
+        self.render_identity_result("awiki-cli id resolve", &resolved, result)
+    }
+
+    pub async fn run_id_resolve_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let result = crate::m_core_cli_adapter::identity::resolve_identity_via_im_core_async(
+            &resolved,
+            &self.globals.identity,
+            crate::m_core_cli_adapter::identity::resolve_request(command),
+        )
+        .await?;
         self.render_identity_result("awiki-cli id resolve", &resolved, result)
     }
 
@@ -883,11 +1066,20 @@ fn init_dirs(resolved: &Resolved) -> Vec<String> {
     ]
 }
 
-fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
+async fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
     crate::m_core_cli_adapter::build_im_core(resolved)?
         .bootstrap()
-        .initialize_local_state()?;
+        .initialize_local_state_async()
+        .await?;
     Ok(())
+}
+
+fn ensure_sqlite_schema_blocking(resolved: &Resolved) -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| anyhow::anyhow!("failed to start async runtime: {err}"))?
+        .block_on(ensure_sqlite_schema(resolved))
 }
 
 fn identity_meta_from_resolved(resolved: &Resolved) -> Option<IdentityMeta> {
@@ -1100,8 +1292,15 @@ fn legacy_owner_lookup(manager: &Manager) -> store::LegacyOwnerLookup {
         .list()
         .unwrap_or_default()
         .into_iter()
-        .map(|summary| (summary.identity_name, summary.did, summary.is_default));
-    store::LegacyOwnerLookup::from_entries(entries)
+        .map(|summary| {
+            (
+                summary.unique_id,
+                summary.identity_name,
+                summary.did,
+                summary.is_default,
+            )
+        });
+    store::LegacyOwnerLookup::from_identity_entries(entries)
 }
 
 #[cfg(test)]

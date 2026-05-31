@@ -1,3 +1,4 @@
+pub(crate) mod async_ws_transport;
 pub(crate) mod attachment_projection;
 pub(crate) mod dispatch;
 pub(crate) mod frame;
@@ -9,4 +10,5 @@ pub(crate) mod reconnect;
 pub(crate) mod session_loop;
 pub(crate) mod shutdown;
 pub(crate) mod transport;
+#[cfg(feature = "blocking")]
 pub(crate) mod ws_transport;

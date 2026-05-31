@@ -14,6 +14,7 @@ pub(super) struct MessageRecord {
     pub(super) msg_id: String,
     pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
+    pub(super) conversation_id: String,
     pub(super) thread_id: String,
     pub(super) direction: i64,
     pub(super) sender_did: String,
@@ -148,6 +149,7 @@ pub(super) fn normalize_recovered_message_row(
     row: &RowMap,
     old_owner_set: &BTreeSet<String>,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> MessageRecord {
     let sender_did = remap_recovered_self_did(
@@ -162,7 +164,7 @@ pub(super) fn normalize_recovered_message_row(
     );
     let group_id = string_from_row(row, "group_id");
     let group_did = string_from_row(row, "group_did");
-    let thread_id =
+    let conversation_id =
         if let Some(group_key) = first_non_empty([group_id.as_str(), group_did.as_str()]) {
             make_thread_id(new_owner_did, "", group_key)
         } else {
@@ -171,9 +173,10 @@ pub(super) fn normalize_recovered_message_row(
         };
     MessageRecord {
         msg_id: string_from_row(row, "msg_id"),
-        owner_identity_id: final_credential_name.to_string(),
+        owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
-        thread_id,
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: int_from_row(row, "direction"),
         sender_did,
         receiver_did,
@@ -196,10 +199,11 @@ pub(super) fn normalize_recovered_message_row(
 pub(super) fn normalize_recovered_contact_row(
     row: &RowMap,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> ContactRecord {
     ContactRecord {
-        owner_identity_id: final_credential_name.to_string(),
+        owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
         did: string_from_row(row, "did"),
         name: string_from_row(row, "name"),
@@ -227,10 +231,11 @@ pub(super) fn normalize_recovered_contact_row(
 pub(super) fn normalize_recovered_contact_handle_binding_row(
     row: &RowMap,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> ContactHandleBindingRecord {
     ContactHandleBindingRecord {
-        owner_identity_id: final_credential_name.to_string(),
+        owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
         handle: string_from_row(row, "handle"),
         did: string_from_row(row, "did"),
@@ -247,11 +252,12 @@ pub(super) fn normalize_recovered_contact_handle_binding_row(
 pub(super) fn normalize_recovered_relationship_event_row(
     row: &RowMap,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> RelationshipEventRecord {
     RelationshipEventRecord {
         event_id: string_from_row(row, "event_id"),
-        owner_identity_id: final_credential_name.to_string(),
+        owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
         target_did: string_from_row(row, "target_did"),
         target_handle: string_from_row(row, "target_handle"),
@@ -273,10 +279,11 @@ pub(super) fn normalize_recovered_group_row(
     row: &RowMap,
     old_owner_set: &BTreeSet<String>,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> GroupRecord {
     GroupRecord {
-        owner_identity_id: final_credential_name.to_string(),
+        owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
         group_id: string_from_row(row, "group_id"),
         group_did: string_from_row(row, "group_did"),
@@ -315,10 +322,11 @@ pub(super) fn normalize_recovered_group_member_row(
     row: &RowMap,
     old_owner_set: &BTreeSet<String>,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> GroupMemberRecord {
     GroupMemberRecord {
-        owner_identity_id: final_credential_name.to_string(),
+        owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
         group_id: string_from_row(row, "group_id"),
         user_id: string_from_row(row, "user_id"),
@@ -341,6 +349,10 @@ pub(super) fn normalize_recovered_group_member_row(
 
 pub(super) fn merge_recovered_message(existing: &RowMap, incoming: MessageRecord) -> MessageRecord {
     MessageRecord {
+        conversation_id: default_string(
+            incoming.conversation_id.clone(),
+            &string_from_row(existing, "conversation_id"),
+        ),
         thread_id: default_string(
             incoming.thread_id.clone(),
             &string_from_row(existing, "thread_id"),

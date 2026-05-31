@@ -55,6 +55,8 @@ fn awiki_command(workspace: &Path) -> Command {
     command
         .args(["runtime", "listener", "run"])
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env("AWIKI_CLI_INTERNAL_ENTRY", "1")
         .env_remove("AWIKI_WORKSPACE")

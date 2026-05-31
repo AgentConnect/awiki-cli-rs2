@@ -29,6 +29,7 @@ pub(crate) mod profile_runtime;
 pub(crate) mod proof;
 pub(crate) mod realtime;
 pub(crate) mod relationship_runtime;
+pub(crate) mod runtime;
 pub(crate) mod secure_direct;
 pub(crate) mod store;
 pub(crate) mod transport;

@@ -18,9 +18,25 @@ pub fn wait_for_foreground_shutdown(shutdown: &AtomicBool) {
     wait_for_foreground_shutdown_with_interval(shutdown, Duration::from_millis(250));
 }
 
+pub async fn wait_for_foreground_shutdown_async(shutdown: &AtomicBool) {
+    wait_for_foreground_shutdown_with_interval_async(shutdown, Duration::from_millis(250)).await;
+}
+
 pub fn wait_for_foreground_shutdown_with_interval(shutdown: &AtomicBool, interval: Duration) {
     while !shutdown.load(Ordering::SeqCst) && !SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
         thread::sleep(interval);
+    }
+    if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+        shutdown.store(true, Ordering::SeqCst);
+    }
+}
+
+pub async fn wait_for_foreground_shutdown_with_interval_async(
+    shutdown: &AtomicBool,
+    interval: Duration,
+) {
+    while !shutdown.load(Ordering::SeqCst) && !SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+        tokio::time::sleep(interval).await;
     }
     if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
         shutdown.store(true, Ordering::SeqCst);

@@ -6,40 +6,40 @@ use crate::dto::{
     profile::{DartProfilePatch, DartUserProfile},
 };
 
-pub fn load_my_profile(
+pub async fn load_my_profile(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartUserProfile, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .identity()
-            .profile()
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .identity()
+        .profile_async()
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn update_profile(
+pub async fn update_profile(
     client: &Arc<crate::api::client::DartImClient>,
     patch: DartProfilePatch,
 ) -> Result<DartUserProfile, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .identity()
-            .update_profile(patch.into())
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .identity()
+        .update_profile_async(patch.into())
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn load_public_profile(
+pub async fn load_public_profile(
     client: &Arc<crate::api::client::DartImClient>,
     subject: DartIdentitySubject,
 ) -> Result<DartUserProfile, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .directory()
-            .public_profile(subject.try_into()?)
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .directory()
+        .public_profile_async(subject.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
