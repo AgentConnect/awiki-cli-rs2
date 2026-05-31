@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 08  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-06-01 01:15:27 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 等 Step 01-07 完成后，执行 repo、focused E2E 和完整 remote 系统测试 |
+| 审查证据 | 2026-06-01 01:37:15 +0800 完成集成 review：Step 01-07 均有提交和 review 记录；当前仓库格式、daemon 全量、workspace 全量、边界搜索和 secret 搜索通过；focused daemon remote 系统测试通过 3、失败 0、跳过 1；完整 remote `awiki.info` 系统测试已执行但失败 61、通过 66、跳过 68，发布门禁未通过。 |
+| 验证证据 | 启动前当前仓库 `git status --short --branch` 无未提交变更；`../awiki-system-test` 无未提交变更；当前仓库 `cargo fmt --all --check`、`cargo test -p awiki-deamon --locked`、`cargo test --workspace --locked`、`git diff --check -- crates/awiki-deamon` 通过；focused daemon 系统测试 `3 passed, 1 skipped, 0 failed, 1 warning in 196.89s`；完整 remote 系统测试 `61 failed, 66 passed, 68 skipped, 1 warning in 918.23s`。 |
+| 下一步 | 提交 Step 08 验证记录并回填提交 hash；发布前需要修复完整 remote suite 失败或由 CI/环境补跑通过 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -160,15 +160,15 @@ uv run awiki-system-test
 
 ## 7. 验收标准
 
-- [ ] Step 01-07 均为 `done`，且每步有 review 和 commit 记录。
-- [ ] 当前仓库 `cargo fmt --all --check` 通过。
-- [ ] 当前仓库 `cargo test -p awiki-deamon --locked` 通过。
-- [ ] 当前仓库 `cargo test --workspace --locked` 通过，或失败原因与替代验证被清楚记录。
-- [ ] daemon/Hermes focused 系统测试 有实际命令和结果。
-- [ ] 完整系统测试已在 `../awiki-system-test` 执行，使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `awiki.info` 域名。
-- [ ] 完整系统测试记录通过/失败/跳过数量、失败或跳过原因、关键环境配置。
-- [ ] L3 安全 review 完成并记录。
-- [ ] 文档同步完成。
+- [x] Step 01-07 均为 `done`，且每步有 review 和 commit 记录。
+- [x] 当前仓库 `cargo fmt --all --check` 通过。
+- [x] 当前仓库 `cargo test -p awiki-deamon --locked` 通过。
+- [x] 当前仓库 `cargo test --workspace --locked` 通过。
+- [x] daemon/Hermes focused 系统测试 有实际命令和结果。
+- [x] 完整系统测试已在 `../awiki-system-test` 执行，使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `awiki.info` 域名。
+- [x] 完整系统测试记录通过/失败/跳过数量、失败或跳过原因、关键环境配置。
+- [x] L3 安全 review 完成并记录。
+- [x] 文档同步完成。
 - [ ] 如有本步骤文件变更，review 后创建聚焦提交。
 
 ## 8. 验证方式
@@ -193,11 +193,11 @@ uv run awiki-system-test
 
 | 审查项 | 结果 | 备注 |
 |---|---|---|
-| 发现 | 待记录 |  |
-| 已修复 | 待记录 |  |
-| 残余风险 | 待记录 |  |
-| 测试新增或缺失 | 待记录 |  |
-| 文档更新或缺失 | 待记录 |  |
+| 发现 | 完整 remote `awiki.info` 系统测试失败 61 个；失败横跨 CLI direct/group/host-notify/listener/core/debug/id/message-service/runtime/page 等域，不是单一 Hermes daemon regression；代表性错误包括 message-service HTTP 502、CLI contract summary drift、Hermes host-notify setup 找不到 `scripts/hermes_notify_adapter.py`、`awiki-cli runtime listener service-run` 子进程长时间不退出。 | 发布门禁未通过，不能声明 remote ready。 |
+| 已修复 | 本步骤未做生产代码修复；验证阶段只记录结果。为让完整 pytest 产出 summary，已对卡住的 `awiki-cli runtime listener service-run` 子进程执行 `kill -TERM 2244707`，pytest 随后继续并记录对应失败。 | 不把 focused 通过替代为完整通过。 |
+| 残余风险 | 真实 Hermes `StdioHermesGateway` 的 `session.create`/`prompt.submit` 仍未接线；没有真实 `AWIKI_HERMES_BIN` smoke；direct-e2ee remote suite 存在失败；完整系统测试 cleanup 在 remote 模式下尝试访问本地 PostgreSQL `127.0.0.1:5432` 失败并警告可能有测试数据残留。 | 发布前需要修复完整 remote suite 或由合适 CI/远端环境补跑通过。 |
+| 测试新增或缺失 | 未新增系统测试文件；复用了现有 `tests_v2/daemon` focused wrapper 和完整 `tests_v2` suite。focused daemon remote 覆盖 daemon Rust contracts；long-running daemon foreground E2E 为 local-only，在 remote 模式被跳过。 | Hermes fake route 已由当前仓库 tests 覆盖；real Hermes 端到端仍缺。 |
+| 文档更新或缺失 | 主计划和本步骤记录所有命令、关键环境、通过/失败/跳过数量、失败/跳过原因和残余风险。 | `../awiki-system-test` 无文件变更。 |
 
 ## 10. 提交要求
 
@@ -228,3 +228,188 @@ uv run awiki-system-test
 - 风险：remote 环境不可控导致完整系统测试失败/跳过；真实 Hermes binary 与 fake gateway 覆盖范围不同；direct-e2ee 可能需要更多前置数据。
 - 回滚/fallback：如果 release gate 失败，不发布 Hermes ready；保留 fake/local 证据作为开发验证，不作为生产通过结论。
 - 后续文档：将最终验证结果写入 plan 执行账本；如需要可新增 `release-validation.md`。
+
+## 14. Step 08 执行记录
+
+### 已执行范围
+
+- 当前仓库 L1/L3 验证：格式、daemon crate、workspace、边界搜索、Hermes plugin 禁止项搜索、secret 搜索。
+- `../awiki-system-test` focused daemon 验证：remote `awiki.info` 模式，显式指定 `AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/hermes-plugin-cli-rs2`。
+- `../awiki-system-test` 完整系统测试：remote `awiki.info` 模式，显式指定 `AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/hermes-plugin-cli-rs2`，执行 `tests_v2 -q -ra` 以输出失败和跳过摘要。
+- 集成 review：检查 Step 01-07 账本、提交、review 记录、安全边界和 residual risks。
+
+### 当前仓库验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked` | 通过：58 passed，0 failed，1 ignored，doc tests 0。 |
+| `cargo test --workspace --locked` | 通过：`awiki-cli`、`awiki-deamon`、`im-core`、`awiki_im_core`、`xtask` 和 doc-tests 均无失败。 |
+| `git diff --check -- crates/awiki-deamon` | 通过。 |
+| `rg -n "crates/awiki-cli\|awiki_cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过：无命中，命令退出码 1 表示未找到。 |
+| `rg -n "plugin.yaml\|plugins/awiki-runtime\|tools.py\|__init__.py" crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过但有预期命中：仅测试断言 `plugins/awiki-runtime/plugin.yaml`、`tools.py` 不存在，以及契约文档测试“不写 plugin.yaml”；无生产安装逻辑。 |
+| `rg -n "rtok_\|runtime_rpc_token.*println\|auth_private_key\|jwt_token" crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过但有预期命中：测试 fake token/脱敏断言、既有 agent private key/JWT 状态字段、foreground JWT 选项传递、diagnostic 敏感标记列表和 fake token placeholder；未发现 token 原文 println/log。 |
+
+### Focused daemon 系统测试
+
+实际命令：
+
+```bash
+cd ../awiki-system-test
+AWIKI_SYSTEM_TEST_MODE=remote \
+E2E_DID_DOMAIN=awiki.info \
+E2E_USER_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info \
+AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/hermes-plugin-cli-rs2 \
+uv run awiki-system-test tests_v2/daemon
+```
+
+关键环境：
+
+- `AWIKI_SYSTEM_TEST_MODE=remote`
+- `E2E_DID_DOMAIN=awiki.info`
+- `E2E_USER_SERVICE_URL=https://awiki.info`
+- `E2E_MESSAGE_SERVICE_URL=https://awiki.info`
+- `E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info`
+- `AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/hermes-plugin-cli-rs2`
+- `AWIKI_HERMES_BIN` 未设置，未启用真实 Hermes binary smoke。
+
+结果：
+
+- 通过：3
+- 失败：0
+- 跳过：1
+- 警告：1
+- 耗时：196.89s
+
+跳过原因：
+
+- `tests_v2/daemon/test_awiki_daemon_long_running_e2e.py`：`This test requires the local tests_v2 topology.`；该 long-running daemon foreground E2E 在 remote 模式被设计为跳过。
+
+警告：
+
+- cleanup warning：`message_service PostgreSQL cleanup failed: psql: error: connection to server at "127.0.0.1", port 5432 failed: Connection refused`；remote 模式下清理器尝试访问本地 PostgreSQL，可能有测试创建数据残留。
+
+### 完整 remote 系统测试
+
+实际命令：
+
+```bash
+cd ../awiki-system-test
+AWIKI_SYSTEM_TEST_MODE=remote \
+E2E_DID_DOMAIN=awiki.info \
+E2E_USER_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info \
+AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/hermes-plugin-cli-rs2 \
+uv run awiki-system-test tests_v2 -q -ra
+```
+
+关键环境：
+
+- `AWIKI_SYSTEM_TEST_MODE=remote`
+- `E2E_DID_DOMAIN=awiki.info`
+- `E2E_USER_SERVICE_URL=https://awiki.info`
+- `E2E_MESSAGE_SERVICE_URL=https://awiki.info`
+- `E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info`
+- `AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/hermes-plugin-cli-rs2`
+- `AWIKI_CLI_UNDER_TEST` 未设置，默认 `go`，因此 Rust awiki-cli selector 类用例按设计跳过。
+- `AWIKI_ENABLE_GROUP_E2EE_TESTS` 未设置，Group E2EE focused system tests 按设计跳过。
+- `AWIKI_HERMES_BIN` 未设置，没有真实 Hermes binary/system E2E。
+
+结果：
+
+- 通过：66
+- 失败：61
+- 跳过：68
+- 警告：1
+- 耗时：918.23s，即 0:15:18
+- 结论：完整 remote 发布门禁未通过。
+
+执行中的异常处理：
+
+- pytest 执行期间 `awiki-cli runtime listener service-run` 子进程 `pid=2244707` 长时间不退出，超过对应测试自身 10s 观测窗口后仍运行约 12 分钟；为让 pytest 继续产出完整 summary，执行 `kill -TERM 2244707`。随后 pytest 继续运行，并将 `tests_v2/cli/test_awiki_cli_service_run_local.py::test_awiki_cli_runtime_listener_service_run_starts_and_exposes_runtime_artifacts` 记为失败。
+
+失败用例与功能域：
+
+| 功能域 | 失败数 | 用例 |
+|---|---:|---|
+| CLI direct / secure / attachment | 8 | `tests_v2/cli/test_awiki_cli_direct_local.py::{test_awiki_cli_msg_secure_status_failed_and_drop_use_local_outbox_without_services, test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read, test_awiki_cli_can_send_direct_messages_and_mark_them_read, test_awiki_cli_can_send_secure_direct_messages_with_manual_reply_confirmation, test_awiki_cli_secure_direct_handle_queries_hide_raw_wire_cache_and_mark_read, test_awiki_cli_can_send_and_download_direct_attachments, test_awiki_cli_msg_and_attachment_commands_validate_local_arguments, test_awiki_cli_inbox_scope_all_limit_and_mark_read_work}` |
+| CLI group / group attachment | 4 | `tests_v2/cli/test_awiki_cli_group_local.py::{test_awiki_cli_can_create_group_add_member_send_and_list_messages, test_awiki_cli_can_update_members_remove_and_leave_groups, test_awiki_cli_can_join_open_group_and_use_show_alias, test_awiki_cli_can_send_and_download_group_attachments}` |
+| CLI host-notify probes | 6 | `tests_v2/cli/test_awiki_cli_host_notify_failure_local.py::test_awiki_cli_host_notify_failure_local_probe_succeeds`; `tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds`; `tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py::test_awiki_cli_host_notify_hermes_local_probe_succeeds`; `tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py::test_awiki_cli_host_notify_openclaw_local_probe_succeeds`; `tests_v2/cli/test_awiki_cli_host_notify_openclaw_main_only_local.py::test_awiki_cli_host_notify_openclaw_main_only_probe_succeeds`; `tests_v2/cli/test_awiki_cli_host_notify_openclaw_webhook_only_probe.py::test_awiki_cli_host_notify_openclaw_webhook_only_probe_succeeds` |
+| CLI listener / local cache / secure commands | 6 | `tests_v2/cli/test_awiki_cli_msg_inbox_local_cache.py::test_awiki_cli_msg_inbox_cutover_does_not_fallback_to_local_cache`; `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::{test_awiki_cli_runtime_listener_local_probe_succeeds, test_awiki_cli_runtime_listener_local_identity_reports_registration_error}`; `tests_v2/cli/test_awiki_cli_secure_init_local.py::test_awiki_cli_msg_secure_init_is_stable_unsupported_without_direct_init_wire`; `tests_v2/cli/test_awiki_cli_secure_repair_local.py::test_awiki_cli_msg_secure_repair_resets_state_and_sends_manual_direct_init`; `tests_v2/cli/test_awiki_cli_secure_retry_local.py::test_awiki_cli_msg_secure_retry_is_stable_unsupported_without_outbox_flush` |
+| CLI service-run | 1 | `tests_v2/cli/test_awiki_cli_service_run_local.py::test_awiki_cli_runtime_listener_service_run_starts_and_exposes_runtime_artifacts` |
+| Core / output contracts | 4 | `tests_v2/core/test_basic_commands.py::{test_config_show_rejects_deprecated_service_url_fields, test_go_planned_stub_commands_return_frozen_contract_hints}`; `tests_v2/core/test_output_contracts_cli.py::{test_representative_dry_run_commands_emit_plan_payloads, test_trace_timing_preserves_cli_output_channels}` |
+| Debug CLI | 5 | `tests_v2/debug/test_debug_cli.py::{test_debug_db_query_is_cutover_unsupported_without_opening_store, test_debug_db_query_unsupported_boundary_keeps_legacy_config_untouched, test_debug_db_import_v1_imports_seeded_legacy_sqlite_without_message_service, test_debug_db_handle_history_reads_contact_bindings, test_debug_db_import_v1_supports_dry_run_and_missing_path_errors}` |
+| Identity CLI | 9 | `tests_v2/id/test_identity_cli.py::{test_id_create_list_current_use_and_status, test_id_create_generates_default_anp_message_service, test_id_create_and_use_support_dry_run_and_argument_validation, test_id_use_unknown_identity_returns_not_found, test_id_bind_email_send_requires_auth_and_supports_registered_identity, test_id_import_v1_imports_flat_legacy_identity, test_id_import_v1_all_imports_flat_and_indexed_legacy_identities, test_id_import_v1_reports_missing_legacy_layout, test_id_replace_did_diagnostic_command_dry_run_warns_about_danger_and_backup}` |
+| message-service attachment | 2 | `tests_v2/message_service/test_attachment_local.py::{test_same_domain_attachment_control_and_download, test_same_domain_group_attachment_ticket_and_download}` |
+| message-service direct / E2EE / capabilities | 5 | `tests_v2/message_service/test_direct_local.py::{test_get_capabilities_exposes_direct_group_and_attachment_profiles, test_same_domain_direct_send_inbox_mark_read_and_history, test_direct_e2ee_get_prekey_bundle_returns_top_level_one_time_prekey_when_available, test_direct_e2ee_get_prekey_bundle_require_opk_returns_unavailable_without_opks, test_direct_e2ee_rejects_legacy_hpke_style_wire_objects}` |
+| message-service group | 1 | `tests_v2/message_service/test_group_local.py::test_same_domain_group_create_invite_send_and_list` |
+| message-service auth / payload / ws | 4 | `tests_v2/message_service/test_jsonrpc_auth_http_status.py::test_message_service_jsonrpc_missing_bearer_auth_uses_http_401`; `tests_v2/message_service/test_payload_local.py::{test_direct_json_payload_round_trips_in_inbox_history_and_ws, test_group_json_payload_round_trips_in_message_list_and_ws}`; `tests_v2/message_service/test_ws_notifications.py::test_same_domain_ws_receives_direct_incoming` |
+| multi-tenant CLI | 1 | `tests_v2/multi_tenant/test_awiki_cli_tenant_config.py::test_awiki_cli_id_create_uses_tenant_did_domain_but_platform_message_service` |
+| page CLI | 1 | `tests_v2/page/test_page_cli.py::test_page_required_flags_are_enforced_like_go_cobra` |
+| runtime / Hermes host-notify CLI | 4 | `tests_v2/runtime/test_runtime_cli.py::{test_runtime_host_notify_validates_inputs_and_supports_dry_run, test_runtime_host_notify_hermes_guide_status_and_config_commands_work, test_runtime_host_notify_webhook_bridge_service_run_reaches_hermes_preflight, test_runtime_host_notify_hermes_setup_writes_local_files}` |
+
+失败原因概括：
+
+- 远端 service 可用性：多处 direct/group/message-service 用例返回 `message service http error 502` 或相关 HTTP/WS 失败，说明 `https://awiki.info` message-service remote 不是全量测试的稳定通过环境。
+- CLI contract drift：部分本地 contract 期望与当前 CLI 输出不一致，例如 secure status summary 从 `Loaded direct secure status` 变为 `Loaded 0 secure session(s) and N secure outbox record(s)`。
+- Hermes host-notify 环境/安装：`runtime host-notify hermes setup` 失败，提示 `could not locate scripts/hermes_notify_adapter.py next to the awiki-cli installation`。
+- Listener 进程生命周期：`awiki-cli runtime listener service-run` 在完整 suite 中长期不退出，需要人工 SIGTERM 才能让 pytest 继续。
+- cleanup 警告：remote 模式 cleanup 尝试访问本地 PostgreSQL `127.0.0.1:5432`，连接失败，可能留下测试创建数据。
+
+跳过用例与原因汇总：
+
+| 跳过类别 | 数量 | 原因 |
+|---|---:|---|
+| Rust awiki-cli selector | 30 | `AWIKI_CLI_UNDER_TEST` 未设置为 `rust`，相关 Rust contract/focused selector 按设计跳过。 |
+| Group E2EE focused system tests | 11 | `AWIKI_ENABLE_GROUP_E2EE_TESTS` 未设置，Group E2EE focused validation 按设计跳过。 |
+| focused Rust-under-test workspace upgrade selector | 23 | workspace upgrade selector 仅在 focused Rust-under-test 模式运行。 |
+| mail tests | 4 | `awiki-mail-service /mail/health returned HTTP 502`。 |
+| local-only tests | 3 | daemon long-running foreground、mail notification、message-service direct local-only 用例要求 local tests_v2 topology。 |
+| multi-tenant optional env | 3 | 未设置 `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` / `E2E_MESSAGE_V2_MESSAGE_ONLY_DID`。 |
+| runtime optional selector | 3 | Hermes bridge service management / local host-notify selector 需要 `AWIKI_CLI_UNDER_TEST=rust`。 |
+
+> 注：pytest summary 总跳过数为 68，上表按 summary 条目人工归类；部分条目为 `SKIPPED [2]` 或 `SKIPPED [4]`，已按数量累计。
+
+### L3 安全 review
+
+- Controller DID：Step 04/07 的 controller text path 仍通过 `run_controller_text_task` 校验 `sender_did == controller_did`；Step 07 非 controller foreground route 测试确认 gateway 前拒绝。
+- Runtime token：local RPC 授权仍从 token 和内部 state 反查 context，不信任请求体 spoof 字段；secret 搜索未发现 token 原文日志。
+- Recipient scope：Step 05 后 controller text run token 默认 `allowed_recipients = Some(controller_did)`；Hermes `msg.send` 不能默认发任意 DID。
+- DID 私钥隔离：Hermes profile/session 表不保存 DID private key/JWT/runtime token；daemon 持有 agent identity 并通过 `im-core` 发送。
+- E2EE 边界：daemon 只把 `direct_e2ee` 映射到 `MessageSecurityMode::SecureDirect`，不处理 E2EE key；完整 remote suite 中 direct-e2ee 相关用例失败，不能声明 remote L3 通过。
+- Prompt 边界：prompt wrapper 不含 runtime token/private key/JWT；`agent-status` `last_error` 已对 token/JWT/private key/secret 片段 fail-closed。
+
+### 最终结论
+
+- 当前仓库实现与 focused daemon contracts 通过。
+- 完整 remote `awiki.info` 系统测试已实际执行，但失败 61；本步骤记录为 release gate failed。
+- 不发布 Hermes real-ready 结论；fake/local 证据只证明 daemon 内部 contract，不能替代真实 Hermes binary、remote message-service 和 direct-e2ee 端到端通过。
+
+### 提交前状态
+
+- 当前仓库 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 15]
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/08-integration-verification.md
+```
+
+- `../awiki-system-test git status --short --branch`：
+
+```text
+## release/0526...origin/release/0526
+```
+
+- 纳入当前仓库提交文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/08-integration-verification.md`
+
+### 提交后状态
+
+- 验证记录提交：待回填。
+- 当前仓库提交后 `git status --short --branch`：待回填。
+- `../awiki-system-test`：无文件变更，无提交。
