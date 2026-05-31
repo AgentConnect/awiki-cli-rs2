@@ -283,6 +283,11 @@ fn sqlite_check(resolved: &Resolved) -> Check {
     let mut schema_error = String::new();
     let mut handle_bindings_exists = false;
     let mut handle_bindings_count = 0_i64;
+    let mut owner_invariant_count = 0_usize;
+    let mut owner_invariants = Vec::new();
+    let mut legacy_secure_tables = serde_json::Map::new();
+    legacy_secure_tables.insert("e2ee_sessions_exists".to_string(), json!(false));
+    legacy_secure_tables.insert("e2ee_sessions_count".to_string(), json!(0));
     if database_exists {
         match store::open_read_only(&resolved.paths.database_file) {
             Ok(db) => {
@@ -292,6 +297,33 @@ fn sqlite_check(resolved: &Resolved) -> Check {
                         if version != store::SCHEMA_VERSION {
                             status = "warn";
                             summary = "SQLite database exists but schema version is not current";
+                        } else {
+                            match im_core::compat::local_state::identity_owned_owner_invariants(&db)
+                            {
+                                Ok(violations) => {
+                                    owner_invariant_count = violations.len();
+                                    owner_invariants = violations
+                                        .into_iter()
+                                        .map(|violation| {
+                                            json!({
+                                                "table": violation.table,
+                                                "invariant": violation.invariant,
+                                                "row_count": violation.row_count,
+                                            })
+                                        })
+                                        .collect();
+                                    if owner_invariant_count > 0 {
+                                        status = "warn";
+                                        summary = "SQLite owner identity invariants need attention";
+                                    }
+                                }
+                                Err(err) => {
+                                    status = "error";
+                                    summary =
+                                        "SQLite owner identity invariants could not be inspected";
+                                    schema_error = err.to_string();
+                                }
+                            }
                         }
                     }
                     Err(err) => {
@@ -315,6 +347,14 @@ fn sqlite_check(resolved: &Resolved) -> Check {
                             .unwrap_or(0);
                     }
                 }
+                legacy_secure_tables.insert(
+                    "e2ee_sessions_exists".to_string(),
+                    json!(sqlite_table_exists(&db, "e2ee_sessions").unwrap_or(false)),
+                );
+                legacy_secure_tables.insert(
+                    "e2ee_sessions_count".to_string(),
+                    json!(sqlite_table_count(&db, "e2ee_sessions").unwrap_or(0)),
+                );
             }
             Err(err) => {
                 status = "error";
@@ -335,9 +375,35 @@ fn sqlite_check(resolved: &Resolved) -> Check {
             "target_schema_version": store::SCHEMA_VERSION,
             "contact_handle_bindings_exists": handle_bindings_exists,
             "contact_handle_bindings_count": handle_bindings_count,
+            "owner_identity_invariant_count": owner_invariant_count,
+            "owner_identity_invariants": owner_invariants,
+            "legacy_secure_tables": legacy_secure_tables,
             "schema_error": schema_error,
         })),
     )
+}
+
+fn sqlite_table_exists(
+    connection: &rusqlite::Connection,
+    table: &str,
+) -> Result<bool, rusqlite::Error> {
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get::<_, i64>(0).map(|count| count != 0),
+    )
+}
+
+fn sqlite_table_count(
+    connection: &rusqlite::Connection,
+    table: &str,
+) -> Result<i64, rusqlite::Error> {
+    if !sqlite_table_exists(connection, table)? {
+        return Ok(0);
+    }
+    connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
 }
 
 fn anp_mls_check(resolved: &Resolved) -> Check {

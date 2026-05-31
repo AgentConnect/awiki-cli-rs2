@@ -50,6 +50,11 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let sqlite = check_by_name(&envelope, "sqlite");
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], false);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 0);
+    assert_eq!(sqlite["details"]["owner_identity_invariant_count"], 0);
+    assert_eq!(
+        sqlite["details"]["legacy_secure_tables"]["e2ee_sessions_count"],
+        0
+    );
     let workspace_upgrade = check_by_name(&envelope, "workspace_upgrade");
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version"],
@@ -111,6 +116,46 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     );
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], true);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 1);
+    assert_eq!(sqlite["details"]["owner_identity_invariant_count"], 0);
+}
+
+#[test]
+fn doctor_reports_owner_invariant_summary_without_secure_plaintext() {
+    let workspace = TempDir::new().expect("temp workspace");
+    assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
+    seed_owner_invariant_violation_with_sentinels(workspace.path());
+
+    let output = awiki_cmd_with_workspace(&["doctor"], workspace.path());
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(status_of(&envelope, "sqlite"), "warn");
+    let sqlite = check_by_name(&envelope, "sqlite");
+    assert_eq!(sqlite["details"]["owner_identity_invariant_count"], 1);
+    assert_eq!(
+        sqlite["details"]["owner_identity_invariants"][0]["table"],
+        "messages"
+    );
+    assert_eq!(
+        sqlite["details"]["owner_identity_invariants"][0]["invariant"],
+        "conversation_id_must_not_include_owner_did"
+    );
+    assert_eq!(
+        sqlite["details"]["owner_identity_invariants"][0]["row_count"],
+        1
+    );
+    let encoded = serde_json::to_string(sqlite).expect("sqlite json");
+    for forbidden in [
+        "plaintext-sentinel-do-not-leak",
+        "private-key-sentinel-do-not-leak",
+        "jwt-token-sentinel-do-not-leak",
+        "raw-ciphertext-sentinel-do-not-leak",
+    ] {
+        assert!(
+            !encoded.contains(forbidden),
+            "doctor sqlite details must not expose sentinel {forbidden}: {encoded}"
+        );
+    }
 }
 
 #[test]
@@ -228,8 +273,9 @@ fn seed_contact_handle_binding(workspace: &Path) {
     im_core::compat::local_state::ensure_schema(&connection).expect("ensure schema");
     connection
         .execute(
-            "INSERT INTO contact_handle_bindings (owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO contact_handle_bindings (owner_identity_id, owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
+                "alice",
                 "did:wba:alice.example",
                 "bob",
                 "did:wba:bob.example",
@@ -239,6 +285,53 @@ fn seed_contact_handle_binding(workspace: &Path) {
             ],
         )
         .expect("seed contact handle binding");
+}
+
+fn seed_owner_invariant_violation_with_sentinels(workspace: &Path) {
+    let database = workspace.join("data").join("awiki-cli.db");
+    let connection = rusqlite::Connection::open(&database).expect("open sqlite database");
+    im_core::compat::local_state::ensure_schema(&connection).expect("ensure schema");
+    connection
+        .execute(
+            "INSERT INTO identity_did_history (owner_identity_id, did, status, first_seen_at, last_seen_at)
+             VALUES (?1, ?2, 'current', ?3, ?3)",
+            rusqlite::params![
+                "alice",
+                "did:wba:alice.example",
+                "2026-05-31T00:00:00Z",
+            ],
+        )
+        .expect("seed identity DID history");
+    connection
+        .execute(
+            "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, content, metadata, stored_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "msg-owner-invariant",
+                "alice",
+                "did:wba:alice.example",
+                "dm:did:wba:alice.example:did:wba:bob.example",
+                "plaintext-sentinel-do-not-leak",
+                r#"{"private_key":"private-key-sentinel-do-not-leak","jwt_token":"jwt-token-sentinel-do-not-leak"}"#,
+                "2026-05-31T00:00:00Z",
+            ],
+        )
+        .expect("seed invariant message");
+    connection
+        .execute(
+            "INSERT INTO e2ee_outbox (outbox_id, owner_identity_id, owner_did, peer_did, plaintext, metadata, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            rusqlite::params![
+                "outbox-owner-invariant",
+                "alice",
+                "did:wba:alice.example",
+                "did:wba:bob.example",
+                "plaintext-sentinel-do-not-leak",
+                r#"{"ciphertext":"raw-ciphertext-sentinel-do-not-leak"}"#,
+                "2026-05-31T00:00:00Z",
+            ],
+        )
+        .expect("seed secure outbox sentinel");
 }
 
 fn check_names(envelope: &Value) -> Vec<&str> {

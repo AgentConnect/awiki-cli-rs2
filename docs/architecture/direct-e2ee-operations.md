@@ -22,7 +22,11 @@ The CLI does not implement P5 cryptographic algorithms independently; it consume
 
 ## Local state layout
 
-Per identity, the Go SDK reference stores live under the identity directory:
+Current direct E2EE runtime state is owned by `im-core` local state and keyed by
+`owner_identity_id`. `owner_did` is only the current DID snapshot and must not be
+used as a runtime owner fallback.
+
+Historical Go SDK reference stores may exist under the identity directory:
 
 ```text
 identities/<identity-id>/p5-e2ee-sessions/
@@ -30,7 +34,12 @@ identities/<identity-id>/p5-signed-prekeys/
 identities/<identity-id>/p5-one-time-prekeys/
 ```
 
-The CLI business SQLite additionally stores message indexes, local plaintext views, and E2EE outbox metadata. It must not expose or log root keys, chain keys, skipped message keys, nonces, private ratchet keys, OPK private material, or JWTs.
+The CLI business SQLite additionally stores message indexes, local plaintext views,
+and E2EE outbox metadata. Active rows use `owner_identity_id` keys, including
+`e2ee_outbox(owner_identity_id, outbox_id)` and direct E2EE tables. It must not
+expose or log root keys, chain keys, skipped message keys, nonces, private
+ratchet keys, OPK private material, plaintext outbox payloads, raw SQLite rows,
+backup contents, or JWTs.
 
 ## Main secure direct flow
 

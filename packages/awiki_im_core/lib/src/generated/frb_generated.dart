@@ -92,7 +92,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
-        stem: 'UNKNOWN',
+        stem: 'awiki_im_core',
         ioDirectory: '../../crates/im-core-dart/target/release/',
         webPrefix: 'pkg/',
         wasmBindgenName: 'wasm_bindgen',

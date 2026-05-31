@@ -1,8 +1,8 @@
 # awiki-cli 本地状态升级系统设计
 
-**文档状态**：Draft v1.0  
-**最后更新**：2026-04-11  
-**适用范围**：`awiki-cli` 本地 config、identity store、SQLite、本地升级元数据，以及从 `awiki-agent-id-message` Python v1 布局导入 legacy 本地状态。
+**文档状态**：Draft v1.1
+**最后更新**：2026-05-31
+**适用范围**：Rust `awiki-cli` 本地 config、identity store、SQLite、本地升级元数据，以及从 `awiki-agent-id-message` Python v1 布局导入 legacy 本地状态。
 
 ---
 
@@ -16,7 +16,7 @@ awiki-cli 不再把本地状态升级拆散到 config、identity、SQLite 三套
 2. 支持跨版本跳变，而不是依赖用户按顺序安装每个历史二进制版本。
 3. 兼容导入 Python v1 `awiki-agent-id-message` 的 legacy identity / SQLite / settings。
 4. 通过 lock、backup、journal 提升升级中断后的可恢复性。
-5. 全部实现保持 **pure Go / no CGO**。
+5. 升级流程必须保护本地敏感状态，不在日志、manifest、doctor 或 normal output 中输出 private keys、JWT、message plaintext、secure outbox plaintext、raw E2EE/MLS artifacts、provider stdout/stderr/path、raw SQLite rows 或 backup contents。
 
 ---
 
@@ -35,7 +35,8 @@ awiki-cli 不再把本地状态升级拆散到 config、identity、SQLite 三套
 
 当前实现版本：
 
-- `latest workspace schema version = 2`
+- `latest workspace schema version = 4`
+- `local SQLite schema version = 17`
 - `workspace schema 0` 表示：
   - 已存在 awiki-cli 本地状态，但尚未接入统一升级元数据，或
   - 仅存在 Python v1 legacy source，或
@@ -47,6 +48,13 @@ awiki-cli 不再把本地状态升级拆散到 config、identity、SQLite 三套
     - 停止并卸载旧 websocket listener service
     - 删除旧 skill 安装目录
     - 清理旧 OpenClaw `HEARTBEAT.md` 里的 legacy awiki section
+- `workspace schema 3` 表示：
+  - 已扫描当前 identity store 中的 legacy handle 形态 `k1_...` DID，并按 replace-DID 兼容流程迁到 `e1_...` DID。
+- `workspace schema 4` 表示：
+  - SQLite 本地状态已收敛到 identity-owned schema 17。
+  - 业务行使用 `owner_identity_id` 作为 owner partition key。
+  - DID recover/replace 只写 `identity_did_history` 并刷新 `owner_did` snapshot，不再做业务行 owner rebind。
+  - 旧 SQLite schema 通过 backup 后 clean rebuild 进入干净 schema 17，不按 DID、credential、alias 或路径静默迁移业务所有权。
 
 ---
 
@@ -231,7 +239,7 @@ SQLite 备份要求：
 
 统一接口：
 
-```go
+```rust
 type Migration interface {
     From() int
     To() int
@@ -284,7 +292,7 @@ type Migration interface {
 
 ---
 
-## 10. 后续迁移：`1 -> 2` 与 `2 -> 3`
+## 10. 后续迁移：`1 -> 2`、`2 -> 3` 与 `3 -> 4`
 
 `workspace 1 -> 2` 的职责：
 
@@ -295,8 +303,20 @@ type Migration interface {
 `workspace 2 -> 3` 的职责：
 
 - 针对已经完成旧版本迁移的既有 workspace，扫描当前 identity store 中的全部 identities
-- 对仍为 handle 形态 `k1_...` DID 的 identity 自动调用 `replace_did` 换绑为 `e1_...` DID
-- 替换前同样先备份旧 identity 目录到 `.legacy-backup/replace-did/`；成功后同步执行本地 SQLite `owner_did` rebind；单个 identity 失败仍只记录 warning，不阻断 workspace upgrade
+- 对仍为 handle 形态 `k1_...` DID 的 identity 自动调用 `replace_did` 换绑为 `e1_...` DID。
+- 替换前同样先备份旧 identity 目录到 `.legacy-backup/replace-did/`。
+- 对已升级到 identity-owned schema 的 workspace，replace-DID 成功后只记录 DID history 并刷新同一 `owner_identity_id` 的 `owner_did` snapshot，不执行跨 owner 的业务行 rebind。
+- 单个 identity 失败仍只记录 warning，不阻断 workspace upgrade。
+
+`workspace 3 -> 4` 的职责：
+
+- 确认 live SQLite 是否存在。
+- 若 SQLite 不存在，保持空工作区语义。
+- 若 SQLite schema 已经是 `17`，执行 owner invariant 检查。
+- 若 SQLite schema 高于当前支持版本，fail closed。
+- 若 SQLite schema 低于 `17`，必须先完成 workspace SQLite backup，然后删除旧 DB 文件集并创建干净 schema 17 DB。
+- 迁移完成后写入 workspace schema 4 metadata。
+- 不按旧 `owner_did`、`credential_name`、identity alias 或 path 静默迁移业务行。系统尚未上线时，备份后 clean rebuild 是默认安全策略。
 
 ---
 
@@ -308,6 +328,12 @@ type Migration interface {
 - 若 SQLite 存在，则 `PRAGMA user_version == store.SchemaVersion`
 - `PRAGMA integrity_check`
 - `PRAGMA foreign_key_check`
+- SQLite schema 17 下 owner invariant 检查通过：
+  - required owner tables 的 `owner_identity_id` 非空；
+  - identity-owned natural key 没有重复；
+  - 每个 identity 只有一个 current DID；
+  - current DID 不跨 live identity 重复；
+  - direct conversation id 不包含本地 owner DID。
 - 若本次发生 legacy identity 导入，则至少存在一个可列出的 identity
 
 `doctor` 应额外暴露：
@@ -316,6 +342,10 @@ type Migration interface {
 - `meta.json` 内容
 - 是否存在 `upgrade_journal.json`
 - 是否仍检测到 legacy source
+- SQLite owner invariant 摘要，仅包含 table、invariant、row_count
+- legacy secure table 是否存在和计数
+
+`doctor` 不得暴露 raw SQLite rows、message plaintext、secure outbox plaintext、private keys、JWT、raw ciphertext、ratchet/MLS state、provider stdout/stderr/path 或 backup contents。
 
 ---
 
@@ -323,11 +353,12 @@ type Migration interface {
 
 当前落地实现包含：
 
-- `internal/upgrade` 统一入口
+- `workspace_upgrade` 统一入口
 - `meta / journal / lock / backup / detection`
-- 真实迁移 `0 -> 1`、`1 -> 2`、`2 -> 3`
+- 真实迁移 `0 -> 1`、`1 -> 2`、`2 -> 3`、`3 -> 4`
 - 状态型 CLI 命令在本地状态初始化前触发升级检查
 - `doctor` / `config show` 可检查升级元数据
+- SQLite schema 17 的 identity-owned owner invariant 检查
 
 后续阶段可继续演进：
 

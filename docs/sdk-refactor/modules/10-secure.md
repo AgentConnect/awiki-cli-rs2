@@ -233,11 +233,19 @@ raw_ciphertext(...)
 ## 8. 路径边界
 
 - direct E2EE session、signed prekey、one-time prekey 等中间状态存入 `im-core` local SQLite / local secure store，并按 `owner_identity_id` 隔离。
+- `e2ee_outbox` 使用 `(owner_identity_id, outbox_id)` 作为本地 owner-scoped key；DID recover/replace 只刷新 `owner_did` snapshot，不移动 secure outbox ownership。
 - SDK public API 不接收、返回或配置 direct session/prekey 文件路径；也不暴露 `p5-e2ee-sessions`、`p5-signed-prekeys`、`p5-one-time-prekeys` 等 legacy 目录。
 - `ImCorePaths.local_state` 提供 SQLite root/path；direct secure runtime 通过 internal local_state repository 读写，不自行拼 CLI `identity_dir`。
 - secure outbox 暂时保留现有 SQLite `e2ee_outbox.plaintext` 明文 payload，但 public `SecureOutboxEntry` 只返回摘要，不返回 plaintext。
-- 群组 MLS provider data dir 本轮不调整；后续确认 group E2EE 长期方案后再决定是否迁入 SQLite。
+- 群组 MLS provider state/path selection 必须按 `owner_identity_id + device_id` scoped；是否迁入 SQLite 由后续 group E2EE 长期方案决定。
 - DID 私钥文件、MLS provider binary 路径等由 CLI 或 App 通过 `ImCorePaths` / host config 选择并传入。
 - `im-core` 不自行发现 workspace。
 - 文件权限、目录创建、备份、清理策略仍由 CLI 或 App 负责。
 - Phase 7 如需扩展外部 provider，再考虑 non-default 的 `SecureSessionStore`、`PrekeyStore`、`SecureOutboxStore`、`CryptoProvider`、`MlsProvider` trait。
+
+## 9. Discovery 和 diagnostics 门禁
+
+- Direct E2EE public discovery 继续 disabled。默认 DID/service discovery 不 advertise `anp.direct.e2ee.v1` 或 `direct-e2ee`。
+- Group E2EE public discovery 继续 disabled。默认 DID/service discovery 不 advertise `anp.group.e2ee.v1` 或 `group-e2ee`。
+- CLI/App/Dart public DTO、doctor、日志和文档只能暴露 high-level secure status、problem、repair summary 和计数。
+- 不得暴露 private keys、JWT、message plaintext、secure outbox plaintext、raw ciphertext、direct session counters、ratchet keys、KeyPackage、Welcome、Commit、Proposal、raw MLS notice、provider stdout/stderr/path、raw SQLite rows 或 backup contents。
