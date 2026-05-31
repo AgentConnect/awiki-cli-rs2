@@ -5,7 +5,7 @@ DOC：`crates/awiki-deamon/docs/hermes-plugin/plan/`
 Harness：`/home/ecs-user/awiki-space/awiki-harness`  
 创建日期：2026-05-31  
 当前分支：`feature/release-0526/hermes-plugin-cli-rs2`  
-恢复位置：Step 01，直到执行开始前均从 Step 01 读取并启动
+恢复位置：Step 01，状态 `in_progress`，继续契约与代码基线收敛
 
 ## 1. 目标
 
@@ -108,7 +108,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 
 | 步骤 | 标题 | 依赖 | 输出 | 步骤文档 | 提交门禁 | 状态 |
 |---|---|---|---|---|---|---|
-| 01 | 契约与代码基线收敛 | 无 | Hermes MVP 契约、现有代码差距、测试夹具策略和执行范围冻结 | [steps/01-contract-baseline.md](steps/01-contract-baseline.md) | 必须 | pending |
+| 01 | 契约与代码基线收敛 | 无 | Hermes MVP 契约、现有代码差距、测试夹具策略和执行范围冻结 | [steps/01-contract-baseline.md](steps/01-contract-baseline.md) | 必须 | in_progress |
 | 02 | Hermes profile 与 Awiki Skills 安装 | 01 | `hermes_profiles`、profile home、SOUL.md、Awiki Skills、无副作用 smoke test | [steps/02-profile-skills.md](steps/02-profile-skills.md) | 必须 | pending |
 | 03 | TUI Gateway runner 与 plugin 骨架 | 02 | `runtime.hermes` plugin、TUI Gateway adapter、fake gateway 测试、stream observation | [steps/03-tui-gateway-runner.md](steps/03-tui-gateway-runner.md) | 必须 | pending |
 | 04 | Controller 消息执行链与 Prompt Wrapper | 03 | controller text/plain 到 Hermes，run token，prompt wrapper，status/final 回调 | [steps/04-message-execution.md](steps/04-message-execution.md) | 必须 | pending |
@@ -123,7 +123,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 
 | 步骤 | 状态 | 分支 | 开始时间 | 完成时间 | 提交 | 审查证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
-| 01 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 读取 Step 01 并启动契约收敛 |
+| 01 | review | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-05-31 23:02:52 +0800 | 未完成 | 未提交 | 2026-05-31 23:13:02 +0800 完成提交前 review：未发现生产实现越界；已修复 focused 测试过滤问题；残余风险为 `msg.send` 真实外发仍待 Step 05 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes` 通过，5 个 hermes contract tests；`cargo test -p awiki-deamon --locked` 通过，39 个测试；`git diff --check -- crates/awiki-deamon/docs/hermes-plugin crates/awiki-deamon/tests crates/awiki-deamon/src/plugins` 通过；禁止项搜索仅命中文档非目标、测试断言和既有 `WorkspaceMode::Sandbox` | 创建 Step 01 聚焦提交并回填 commit hash |
 | 02 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 01 完成 |
 | 03 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 02 完成 |
 | 04 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 03 完成 |
@@ -142,6 +142,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 - 每次提交代码后必须进入代码 review 环节，review 发现必须修复或在步骤文档中明确记录残余风险，不能跳过 review 直接进入下一步。
 - 不能带着上一依赖步骤的未提交完成工作进入下一步骤。
 - 每步提交前记录 `git status` 和纳入文件；提交后记录 commit hash 和提交后的 `git status`。
+- Git 提交对象无法在同一个提交中记录自己的最终 hash；执行时允许在当前步骤实现提交之后，追加一个同一步账本收尾提交，用于记录实现提交 hash、提交后状态和 `done` 状态。进入下一步骤前工作树必须干净，且账本收尾提交不得夹带下一步骤实现。
 - 如果需要改变范围、顺序、验收标准、公开契约、数据模型、安全假设或验证策略，必须先更新本计划并写入变更日志。
 - 本地 RPC 授权不能信任请求体中的 `agent_did`、`run_id`、`message_id`、`runtime_profile_id`、`controller_did`；可信上下文必须来自 daemon 根据 token 和内部状态反查。
 - Hermes 不能持有 DID 私钥，不能直连 message-service，不能直接调用 `im-core`；所有远端通信必须经 daemon。
@@ -194,6 +195,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 - 提交后记录 commit hash 和工作区状态。
 - Step 08 只有产生文件变更时才需要最终集成提交；验证记录本身如写入文档则必须提交。
 - 不能把所有步骤变更堆到最后一个大提交。
+- 如步骤文档需要记录刚创建的实现提交 hash，允许创建同一步账本收尾提交；该提交只包含主计划、步骤文档或执行记录的 hash/status 回填，不视为下一步骤实现提交。
 
 ## 13. 阻塞处理
 
@@ -213,6 +215,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 日期 | 变更 | 原因 | 影响步骤 | 是否需要审查 |
 |---|---|---|---|---|
 | 2026-05-31 | 创建 Hermes Runtime Plugin 落地总计划和 8 个阶段文档 | 用户要求把 Hermes 设计拆成可执行小任务并放入指定 plan 目录 | 01-08 | 是 |
+| 2026-05-31 | 明确每步提交 hash 的回填策略：步骤实现提交后可追加同一步账本收尾提交，专门记录实现提交 hash、提交后状态和 `done` 状态；进入下一步骤前必须保持工作树干净 | Git 提交无法在同一个提交中记录自己的最终 hash，需要避免自引用账本不可能完成，同时保持逐步提交和可审计证据 | 01-08 | 是 |
 
 ## 15. 风险与回滚
 

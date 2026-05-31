@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 01  
-状态：draft
+状态：in_progress
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-05-31 23:02:52 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 对照 Hermes 设计文档和当前 daemon 代码冻结 MVP 契约 |
+| 审查证据 | 2026-05-31 23:13:02 +0800 完成提交前 review：契约文档与设计一致，未实现 Hermes Python plugin、profile、TUI Gateway、session 或真实外发；生产代码仅新增 `plugins::hermes` 常量；发现 focused 测试函数名未全部匹配 `hermes` 过滤器，已改名修复。 |
+| 验证证据 | 启动前 `git status --porcelain=v1 -b` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes` 通过，5 个 hermes contract tests；`cargo test -p awiki-deamon --locked` 通过，39 个测试；`git diff --check -- crates/awiki-deamon/docs/hermes-plugin crates/awiki-deamon/tests crates/awiki-deamon/src/plugins` 通过；禁止项搜索仅命中文档非目标、测试断言和既有 `WorkspaceMode::Sandbox`。 |
+| 下一步 | 创建 Step 01 聚焦提交并回填 commit hash |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -148,6 +148,76 @@ crates/awiki-deamon/tests/hermes_contracts.rs
 | 日期 | 变更 | 原因 | 主计划变更日志链接 |
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+| 2026-05-31 | 执行中补充 Git hash 回填策略 | Git 提交无法在同一个提交中记录自身最终 hash，主计划已允许同一步账本收尾提交 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+
+## 14. Step 01 执行记录
+
+### 已实现
+
+- 新增 [../../implementation-contract.md](../../implementation-contract.md)，冻结 Hermes MVP 消息驱动语义、兼容 RPC 命名、安全边界、当前代码缺口和后续步骤引用要求。
+- 新增 `crates/awiki-deamon/src/plugins/hermes/mod.rs`，只提供 `HERMES_RUNTIME_NAME` 和 `HERMES_RUNTIME_PLUGIN_ID` 常量，不实现 runner/profile/TUI Gateway。
+- 新增 `crates/awiki-deamon/tests/hermes_contracts.rs`，覆盖 runtime plugin id、兼容 RPC 名称、recipient scope、controller 文本路由和非目标文档断言。
+
+### 当前代码基线审计
+
+| 项 | 证据 | 结论 |
+|---|---|---|
+| Runtime Agent 注册 | `commands::handle_agent_payload_message`、`agent::runtime_plugin_id("hermes")` | 已有创建入口，Step 02 可接 profile 初始化。 |
+| controller DID 校验 | `commands` 校验 daemon command sender，`inbox::route_controller_text_task` 校验 runtime text sender | 后续 Hermes 路由必须复用或等价实现。 |
+| local RPC token | `RuntimeTokenScope`、`DaemonState::authorize_runtime_rpc`、`local_rpc::execute_runtime_rpc_request` | 授权上下文来自 token，不能信任请求体自报字段。 |
+| `task.finish` failed final | `local_rpc::apply_runtime_rpc_side_effects` 固定把 `task.finish` 落为 `finished` | 后续缺口，本步骤不修。 |
+| `msg.send` | `RuntimeOutbox::send_message` 抽象存在，foreground `ControllerRuntimeOutbox::send_message` 仍发 status payload | 明确为 Step 05 门禁，不能算真实外发。 |
+| `UdsTestRuntimePlugin` | foreground 文本与 `runtime.task.submit` 当前都构造测试 runtime | Step 07 才切换 `runtime.hermes` 路由。 |
+| session/profile/TUI Gateway | 当前无 `hermes_profiles`、`hermes_native_sessions` 和 Hermes runner | 分别留给 Step 02、03、06。 |
+
+### Review 记录
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | focused 命令 `cargo test -p awiki-deamon --locked hermes` 最初只匹配到 1 个测试，覆盖不足。 | 测试函数名未全部带 `hermes`。 |
+| 已修复 | 将新增 contract 测试函数统一改为 `hermes_*`，重跑 focused 命令后 5 个测试全部执行并通过。 | 已验证。 |
+| 残余风险 | `msg.send` 真实 direct/direct-e2ee 外发仍未实现；`task.finish` failed final 仍未实现。 | 已作为 Step 05 和后续缺口记录，不属于 Step 01 范围。 |
+| 测试新增或缺失 | 新增 `hermes_contracts.rs`。 | 不依赖真实 Hermes binary。 |
+| 文档更新或缺失 | 新增 `implementation-contract.md`，回填主计划计划变更日志。 | 文档中文优先。 |
+
+### 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked hermes` | 通过：5 个 `hermes_*` contract tests。 |
+| `cargo test -p awiki-deamon --locked` | 通过：39 个测试，doc tests 0 个。 |
+| `git diff --check -- crates/awiki-deamon/docs/hermes-plugin crates/awiki-deamon/tests crates/awiki-deamon/src/plugins` | 通过。 |
+| `rg -n "plugin.yaml\|plugins/awiki-runtime\|approval\|sandbox" crates/awiki-deamon/src crates/awiki-deamon/tests crates/awiki-deamon/docs/hermes-plugin` | 通过但有预期命中：仅文档非目标说明、测试断言和既有 `WorkspaceMode::Sandbox`；生产代码无 Hermes Python plugin 安装逻辑。 |
+
+### 提交前状态
+
+- `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/01-contract-baseline.md
+ M crates/awiki-deamon/src/plugins/mod.rs
+?? crates/awiki-deamon/docs/hermes-plugin/implementation-contract.md
+?? crates/awiki-deamon/src/plugins/hermes/
+?? crates/awiki-deamon/tests/hermes_contracts.rs
+```
+
+- 纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/implementation-contract.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/01-contract-baseline.md`
+  - `crates/awiki-deamon/src/plugins/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/tests/hermes_contracts.rs`
+
+### 提交后状态
+
+- 实现提交：待回填。
+- 账本收尾提交：待回填。
+- 提交后 `git status --short --branch`：待回填。
+- 遗留未提交变更：待回填。
 
 ## 13. 风险、回滚与后续
 
