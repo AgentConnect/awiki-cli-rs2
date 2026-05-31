@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：09  
-状态：审查中
+状态：完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
 | 开始时间 | 2026-05-31T00:42:21Z |
-| 完成时间 | |
-| 提交 | |
+| 完成时间 | 2026-05-31T01:10:14Z |
+| 提交 | 步骤 09 聚焦提交：`36443ec`（`docs: document identity-owned local state`） |
 | 审查证据 | 提交前审查：`replace_did` 计划已停止按 `owner_did` 扫描业务表，只保留兼容零计数字段；`doctor` 只输出 owner invariant 的 table/invariant/row_count 和 legacy secure table 计数，不输出 raw SQLite rows、plaintext、JWT、private key 或 raw E2EE/MLS artifacts；新增文档保持 Direct/Group E2EE public discovery disabled；Dart generated diff 仅更新 loader stem，无 DTO 形状变化。 |
 | 验证证据 | `cargo fmt --all --check` 通过；`git diff --check` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked diagnostics` 通过但测试名过滤实际匹配 0 个用例，已补跑 `CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked --test diagnostics_contract`，5 个用例通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked replace_did` 通过，5 个匹配用例通过；`CARGO_BUILD_JOBS=1 cargo check -p awiki-cli --locked` 通过；`scripts/flutter/codegen-check.sh` 首次发现 generated loader stem 漂移并更新，第二次通过；owner fallback/redaction/discovery 搜索已分类。 |
-| 下一步 | 创建步骤 09 聚焦提交，随后回填提交 hash 并标记完成。 |
+| 下一步 | 步骤 10 开始前读取步骤 10 文档和 `git status`。 |
 
 ## 2. 目标
 
@@ -82,7 +82,7 @@ Diagnostics 和 generated DTOs 必须保持脱敏：
 - [x] 文档和 generated DTO 不把 raw secure artifacts 或 low-level group E2EE operations 暴露为默认 public API。
 - [x] 如果 DTO 变化，generated Dart/Rust bridge files 是最新的。
 - [x] 审查发现 已处理或明确记录。
-- [ ] 已创建本步骤聚焦提交。
+- [x] 已创建本步骤聚焦提交。
 
 ## 8. 验证
 
