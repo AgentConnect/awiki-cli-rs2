@@ -3,6 +3,7 @@ pub mod cli_wrapper;
 pub mod commands;
 pub mod config;
 pub mod daemon_cli;
+pub mod foreground;
 pub mod im_core_adapter;
 pub mod inbox;
 pub mod local_rpc;
@@ -34,13 +35,17 @@ pub enum DaemonCommand {
         agent_did: String,
     },
     Foreground {
-        state_root: PathBuf,
+        options: crate::foreground::ForegroundOptions,
     },
     InitState {
         state_root: PathBuf,
     },
     RuntimeList {
         state_root: PathBuf,
+    },
+    SetupDaemonAgent {
+        state_root: PathBuf,
+        options: crate::daemon_cli::SetupDaemonAgentOptions,
     },
     Status {
         state_root: PathBuf,
@@ -53,7 +58,9 @@ pub enum DaemonCommandOutput {
     Status(DaemonStatus),
     AgentList(crate::daemon_cli::AgentListOutput),
     AgentStatus(crate::daemon_cli::AgentStatusOutput),
+    Foreground(crate::foreground::ForegroundRunSummary),
     RuntimeList(crate::daemon_cli::AgentListOutput),
+    SetupDaemonAgent(crate::daemon_cli::SetupDaemonAgentOutput),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,16 +100,19 @@ fn command_output_json(output: DaemonCommandOutput) -> Result<Value> {
             Ok(serde_json::to_value(output)?)
         }
         DaemonCommandOutput::AgentStatus(output) => Ok(serde_json::to_value(output)?),
+        DaemonCommandOutput::Foreground(output) => Ok(serde_json::to_value(output)?),
+        DaemonCommandOutput::SetupDaemonAgent(output) => Ok(serde_json::to_value(output)?),
     }
 }
 
 pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOutput> {
     match command {
-        DaemonCommand::Foreground { state_root }
-        | DaemonCommand::InitState { state_root }
-        | DaemonCommand::Status { state_root } => Ok(DaemonCommandOutput::Status(
-            initialize_and_report(state_root).await?,
+        DaemonCommand::Foreground { options } => Ok(DaemonCommandOutput::Foreground(
+            crate::foreground::run_foreground(options).await?,
         )),
+        DaemonCommand::InitState { state_root } | DaemonCommand::Status { state_root } => Ok(
+            DaemonCommandOutput::Status(initialize_and_report(state_root).await?),
+        ),
         DaemonCommand::AgentList { state_root } => {
             let (_config, state, _status) = initialize_state_for_management(state_root).await?;
             let output = crate::daemon_cli::list_agents(&state)?;
@@ -120,6 +130,15 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
             let (_config, state, _status) = initialize_state_for_management(state_root).await?;
             let output = crate::daemon_cli::list_runtime_agents(&state)?;
             Ok(DaemonCommandOutput::RuntimeList(output))
+        }
+        DaemonCommand::SetupDaemonAgent {
+            state_root,
+            options,
+        } => {
+            let (config, state, _status) = initialize_state_for_management(state_root).await?;
+            let output =
+                crate::daemon_cli::setup_daemon_agent_from_token(&config, &state, options)?;
+            Ok(DaemonCommandOutput::SetupDaemonAgent(output))
         }
     }
 }

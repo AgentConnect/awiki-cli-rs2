@@ -10,7 +10,10 @@ use awiki_deamon::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     RegistrationToken,
 };
-use awiki_deamon::{run_command_json, DaemonCommand, DaemonConfig, DaemonState};
+use awiki_deamon::{
+    daemon_cli::{setup_daemon_agent_from_token, SetupDaemonAgentOptions},
+    run_command_json, DaemonCommand, DaemonConfig, DaemonState,
+};
 use rusqlite::Connection;
 use serde_json::json;
 
@@ -300,4 +303,21 @@ fn daemon_management_commands_list_agents_without_cli_crate_dependency() {
     .unwrap();
 
     assert_eq!(output["agents"][0]["handle"], "alice-mac-daemon");
+}
+
+#[test]
+fn setup_daemon_agent_options_validate_required_fields() {
+    let (_root, config, state) = fixture();
+    let error = setup_daemon_agent_from_token(
+        &config,
+        &state,
+        SetupDaemonAgentOptions {
+            handle: "".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            registration_token: "tok_daemon_secret_value".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("--handle"));
 }

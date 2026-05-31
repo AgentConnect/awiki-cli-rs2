@@ -20,6 +20,8 @@ pub struct DaemonConfig {
     pub local_socket_path: PathBuf,
     pub audit_log_path: PathBuf,
     pub service_base_url: String,
+    pub user_service_base_url: String,
+    pub message_service_base_url: String,
     pub did_domain: String,
     pub identity_selector: IdentitySelectorConfig,
 }
@@ -28,6 +30,8 @@ pub struct DaemonConfig {
 pub struct DaemonConfigFile {
     pub state_root: PathBuf,
     pub service_base_url: Option<String>,
+    pub user_service_base_url: Option<String>,
+    pub message_service_base_url: Option<String>,
     pub did_domain: Option<String>,
     pub identity_selector: Option<IdentitySelectorConfig>,
 }
@@ -43,6 +47,13 @@ pub enum IdentitySelectorConfig {
 impl DaemonConfig {
     pub fn for_state_root(state_root: impl Into<PathBuf>) -> Result<Self> {
         let state_root = normalize_state_root(state_root.into())?;
+        let service_base_url =
+            env_or_default("AWIKI_DAEMON_SERVICE_BASE_URL", "https://example.invalid");
+        let user_service_base_url =
+            env_or_default("AWIKI_DAEMON_USER_SERVICE_BASE_URL", &service_base_url);
+        let message_service_base_url =
+            env_or_default("AWIKI_DAEMON_MESSAGE_SERVICE_BASE_URL", &service_base_url);
+        let did_domain = env_or_default("AWIKI_DAEMON_DID_DOMAIN", "awiki.local");
         Ok(Self {
             daemon_db_path: state_root.join("daemon.db"),
             im_core_sqlite_path: state_root.join("im-core").join("local-state.sqlite"),
@@ -53,8 +64,10 @@ impl DaemonConfig {
             runtime_temp_dir: state_root.join("runtime").join("tmp"),
             local_socket_path: state_root.join("rpc").join("awiki-deamon.sock"),
             audit_log_path: state_root.join("audit").join("audit.log"),
-            service_base_url: "https://example.invalid".to_string(),
-            did_domain: "awiki.local".to_string(),
+            service_base_url,
+            user_service_base_url,
+            message_service_base_url,
+            did_domain,
             identity_selector: IdentitySelectorConfig::Default,
             state_root,
         })
@@ -64,6 +77,18 @@ impl DaemonConfig {
         let mut config = Self::for_state_root(file.state_root)?;
         if let Some(service_base_url) = file.service_base_url {
             config.service_base_url = service_base_url;
+            if file.user_service_base_url.is_none() {
+                config.user_service_base_url = config.service_base_url.clone();
+            }
+            if file.message_service_base_url.is_none() {
+                config.message_service_base_url = config.service_base_url.clone();
+            }
+        }
+        if let Some(user_service_base_url) = file.user_service_base_url {
+            config.user_service_base_url = user_service_base_url;
+        }
+        if let Some(message_service_base_url) = file.message_service_base_url {
+            config.message_service_base_url = message_service_base_url;
         }
         if let Some(did_domain) = file.did_domain {
             config.did_domain = did_domain;
@@ -110,6 +135,18 @@ impl DaemonConfig {
         validate_child_path("audit_log_path", &self.audit_log_path, &self.state_root)?;
         ServiceEndpoint::parse(&self.service_base_url)
             .with_context(|| format!("invalid service_base_url {}", self.service_base_url))?;
+        ServiceEndpoint::parse(&self.user_service_base_url).with_context(|| {
+            format!(
+                "invalid user_service_base_url {}",
+                self.user_service_base_url
+            )
+        })?;
+        ServiceEndpoint::parse(&self.message_service_base_url).with_context(|| {
+            format!(
+                "invalid message_service_base_url {}",
+                self.message_service_base_url
+            )
+        })?;
         if self.did_domain.trim().is_empty() {
             bail!("did_domain must not be empty");
         }
@@ -157,6 +194,9 @@ impl DaemonConfig {
             ServiceEndpoint::parse(&self.service_base_url)?,
             self.did_domain.clone(),
         )?;
+        config.user_service_endpoint = Some(ServiceEndpoint::parse(&self.user_service_base_url)?);
+        config.message_service_endpoint =
+            Some(ServiceEndpoint::parse(&self.message_service_base_url)?);
         config.transport_policy = MessageTransportPolicy::HttpOnly;
         Ok(config)
     }
@@ -177,6 +217,14 @@ impl DaemonConfig {
             },
         }
     }
+}
+
+fn env_or_default(name: &str, default: &str) -> String {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 impl IdentitySelectorConfig {

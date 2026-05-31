@@ -11,10 +11,10 @@ use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeT
 use crate::security::runtime_token::{
     current_time_millis, IssuedRuntimeToken, RpcMethod, RuntimeRpcToken, RuntimeTokenScope,
 };
-use crate::workspace::WorkspaceBindingConfig;
+use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 4;
+const DAEMON_SCHEMA_VERSION: i64 = 5;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -341,6 +341,60 @@ WHERE agent_did = ?1
             .with_context(|| format!("load agent identity {agent_did}"))
     }
 
+    pub fn store_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<()> {
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        let jwt_token = jwt_token.trim();
+        if jwt_token.is_empty() {
+            bail!("agent auth token must not be empty");
+        }
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO agent_auth_state (
+    agent_did,
+    jwt_token,
+    updated_at_ms
+) VALUES (?1, ?2, ?3)
+ON CONFLICT(agent_did) DO UPDATE SET
+    jwt_token = excluded.jwt_token,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![agent_did, jwt_token, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_agent_auth_token(&self, agent_did: &str) -> Result<Option<String>> {
+        let connection = self.connection()?;
+        let mut statement =
+            connection.prepare("SELECT jwt_token FROM agent_auth_state WHERE agent_did = ?1")?;
+        let mut rows = statement.query([agent_did])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(row.get(0)?))
+    }
+
+    pub fn list_agent_auth_tokens(&self) -> Result<Vec<(String, String)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT agent_did, jwt_token
+FROM agent_auth_state
+ORDER BY agent_did ASC
+"#,
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut tokens = Vec::new();
+        for row in rows {
+            tokens.push(row?);
+        }
+        Ok(tokens)
+    }
+
     pub fn load_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
         let connection = self.connection()?;
         connection
@@ -402,6 +456,74 @@ LIMIT 1
 
     pub fn list_runtime_agent_definitions(&self) -> Result<Vec<AgentDefinition>> {
         self.list_agent_definitions_by_kind(Some(AgentKind::Runtime))
+    }
+
+    pub fn load_runtime_agent_profile(&self, agent_did: &str) -> Result<RuntimeAgentProfile> {
+        let definition = self.load_agent_definition(agent_did)?;
+        if definition.agent_kind != AgentKind::Runtime {
+            bail!("agent is not a runtime agent");
+        }
+        let runtime_profile_id = definition
+            .runtime_profile_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .context("runtime agent is missing runtime_profile_id")?;
+        let connection = self.connection()?;
+        let mut profile = connection
+            .query_row(
+                r#"
+SELECT
+    runtime_profile_id,
+    agent_did,
+    runtime_plugin_id,
+    display_name
+FROM runtime_profile
+WHERE runtime_profile_id = ?1
+"#,
+                [runtime_profile_id],
+                |row| {
+                    Ok(RuntimeAgentProfile {
+                        runtime_profile_id: row.get(0)?,
+                        agent_did: row.get(1)?,
+                        runtime_plugin_id: row.get(2)?,
+                        display_name: row.get(3)?,
+                        controller_did: definition.controller_did.clone(),
+                        workspace_id: definition.workspace_id.clone(),
+                        workspace_root: None,
+                        workspace_mode: None,
+                    })
+                },
+            )
+            .context("load runtime profile")?;
+        if let Some(workspace_id) = definition.workspace_id.as_deref() {
+            let binding: (String, WorkspaceMode) = connection.query_row(
+                r#"
+SELECT workspace_root, workspace_mode
+FROM workspace_binding
+WHERE workspace_id = ?1
+"#,
+                [workspace_id],
+                |row| {
+                    let root: String = row.get(0)?;
+                    let mode: String = row.get(1)?;
+                    let mode = WorkspaceMode::parse(&mode).map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            mode.len(),
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                err.to_string(),
+                            )),
+                        )
+                    })?;
+                    Ok((root, mode))
+                },
+            )?;
+            profile.workspace_root = Some(PathBuf::from(binding.0));
+            profile.workspace_mode = Some(binding.1);
+        }
+        profile.validate()?;
+        Ok(profile)
     }
 
     fn list_agent_definitions_by_kind(
@@ -639,6 +761,41 @@ WHERE run_id = ?1
                 },
             )
             .context("load runtime run")
+    }
+
+    pub fn load_runtime_task(&self, task_id: &str) -> Result<RuntimeTask> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    task_id,
+    agent_did,
+    controller_did,
+    sender_did,
+    conversation_id,
+    task_text
+FROM runtime_task
+WHERE task_id = ?1
+"#,
+                [task_id],
+                |row| {
+                    Ok(RuntimeTask {
+                        task_id: row.get(0)?,
+                        agent_did: row.get(1)?,
+                        controller_did: row.get(2)?,
+                        sender_did: row.get(3)?,
+                        conversation_id: row.get(4)?,
+                        text: row.get(5)?,
+                    })
+                },
+            )
+            .context("load runtime task")
+    }
+
+    pub fn load_runtime_task_for_run(&self, run_id: &str) -> Result<RuntimeTask> {
+        let run = self.load_runtime_run(run_id)?;
+        self.load_runtime_task(&run.task_id)
     }
 
     pub fn authorize_runtime_rpc(
@@ -914,6 +1071,12 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS agent_auth_state (
+            agent_did TEXT PRIMARY KEY,
+            jwt_token TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -923,6 +1086,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_run_v3(connection)?;
     migrate_runtime_task_v3(connection)?;
     migrate_agent_definition_v4(connection)?;
+    migrate_agent_auth_state_v5(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -930,6 +1094,19 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_agent_auth_state_v5(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_auth_state (
+            agent_did TEXT PRIMARY KEY,
+            jwt_token TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
     )?;
     Ok(())
 }
@@ -1205,6 +1382,7 @@ mod tests {
             "runtime_rpc_tokens",
             "audit_log",
             "agent_identity",
+            "agent_auth_state",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -1274,6 +1452,40 @@ mod tests {
         assert!(!debug.contains("private-secret"));
         assert!(!debug.contains("signing-secret"));
         assert!(!debug.contains("agreement-secret"));
+    }
+
+    #[test]
+    fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        state
+            .store_agent_auth_token("did:agent:daemon", "jwt-secret-value")
+            .unwrap();
+
+        assert_eq!(
+            state
+                .load_agent_auth_token("did:agent:daemon")
+                .unwrap()
+                .as_deref(),
+            Some("jwt-secret-value")
+        );
+        assert_eq!(
+            state.list_agent_auth_tokens().unwrap(),
+            vec![(
+                "did:agent:daemon".to_string(),
+                "jwt-secret-value".to_string()
+            )]
+        );
+
+        let audit_count: i64 = state
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(audit_count, 0);
     }
 }
 

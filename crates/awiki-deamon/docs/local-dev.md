@@ -7,6 +7,7 @@
 - `awiki-deamon foreground --state-root <path>`
 - `awiki-deamon init-state --state-root <path>`
 - `awiki-deamon status --state-root <path>`
+- `awiki-deamon setup-daemon-agent --state-root <path> --handle <handle> --controller-did <did> --registration-token <token>`
 - `awiki-deamon agent-list --state-root <path>`
 - `awiki-deamon agent-status --state-root <path> --agent-did <did>`
 - `awiki-deamon runtime-list --state-root <path>`
@@ -35,6 +36,7 @@
 
 - `agent_definition`：daemon agent 和 runtime agent 的本地定义，包含 `handle`、`agent_kind`、`controller_did`、runtime profile、workspace 和本地路径。
 - `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥只保存在本地 daemon 状态库中，不进入 Debug 输出、日志或 audit。
+- `agent_auth_state`：daemon/runtime agent 调 message-service 时使用的本地 bearer token 状态。该表用于本地长驻 E2E 和后续登录态恢复；不要把 token 原文写入日志或 audit。
 - `runtime_profile`：runtime agent 绑定的插件、展示名和状态。
 - `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
 
@@ -157,3 +159,55 @@ runtime agent 的最小创建流程：
 - daemon 不使用历史结构化 JSON 同义字段。
 - daemon 不定义 command/status/result/task 专用 JSON content type。
 - `payload.schema`、`payload.command`、`payload.state`、`payload.result` 是 daemon 上层业务语义，不是 message-service 的传输语义。
+
+## 长驻 foreground E2E
+
+Step 09 后，`foreground` 不再只是初始化状态后返回，它会作为长驻 daemon 进程运行：
+
+1. 初始化 `daemon.db` 和 `im-core` 本地状态。
+2. 将本地 daemon/runtime agent identity 同步到 `im-core` identity registry。
+3. 启动 Unix domain socket local RPC worker。
+4. 周期轮询 message-service inbox。
+5. 消费 `application/json + body.payload` command。
+6. 对 `runtime.agent.create` 复用 daemon agent 管理逻辑。
+7. 对 `runtime.task.submit` 创建 runtime task/run，并启动 `test-runtime-uds`。
+8. 测试 runtime 通过 UDS local RPC 回传 `task.status` 和 `task.finish`。
+9. daemon 通过 `im-core` 发回 `awiki.agent.status.v1` payload。
+
+系统测试使用这些控制参数让长驻进程稳定退出：
+
+```bash
+awiki-deamon foreground \
+  --state-root /tmp/awiki-deamon-state \
+  --ready-file /tmp/awiki-deamon-ready.json \
+  --max-runtime-ms 30000 \
+  --max-processed-messages 2 \
+  --poll-interval-ms 100
+```
+
+本地同域 E2E 需要 message-service 能解析本地 user-service 刚注册的 agent DID。运行 `tests_v2/daemon/test_awiki_daemon_long_running_e2e.py` 前，确认本地 message-service 的运行配置等价于：
+
+```toml
+[did_resolution]
+base_url = "http://127.0.0.1:9891"
+verify_ssl = false
+```
+
+否则 runtime agent DID 会被解析到公网域名，本地刚注册的 DID 文档不可见，status/final 发送会失败。
+
+系统测试入口位于：
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_SYSTEM_TEST_MODE=local \
+E2E_USER_SERVICE_URL=http://127.0.0.1:9891 \
+E2E_MESSAGE_SERVICE_URL=http://127.0.0.1:9900 \
+E2E_MESSAGE_SERVICE_WS_URL=ws://127.0.0.1:9900/im/ws \
+E2E_DID_DOMAIN=awiki.info \
+AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2 \
+CARGO_BUILD_JOBS=1 \
+uv run --no-project --python .venv/bin/python -m pytest \
+  tests_v2/daemon/test_awiki_daemon_long_running_e2e.py -q -rs
+```
+
+该测试覆盖：controller command、daemon listener、`controller_did` MVP 校验、runtime run 创建、UDS local RPC progress/final、`application/json + body.payload` status/final、controller history 结果和 audit 不记录 `runtime_rpc_token` 原文。

@@ -41,6 +41,16 @@ impl WorkspaceMode {
         }
     }
 
+    pub fn parse(input: &str) -> Result<Self> {
+        match input.trim() {
+            "shared-root" => Ok(Self::SharedRoot),
+            "worktree-per-task" => Ok(Self::WorktreePerTask),
+            "container" => Ok(Self::Container),
+            "sandbox" => Ok(Self::Sandbox),
+            other => bail!("unsupported workspace mode: {other}"),
+        }
+    }
+
     pub fn is_security_boundary(self) -> bool {
         matches!(self, Self::Container | Self::Sandbox)
     }

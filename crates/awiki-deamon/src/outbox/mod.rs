@@ -4,6 +4,7 @@ use anyhow::Result;
 use im_core::ids::PeerRef;
 use im_core::messages::{
     MessageBody, MessageDeliveryOptions, MessageSecurityMode, MessageTarget, SendMessageRequest,
+    SendMessageResult,
 };
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,73 @@ pub struct ImCoreAgentOutbox {
 impl ImCoreAgentOutbox {
     pub fn new(client: im_core::ImClient) -> Self {
         Self { client }
+    }
+
+    pub async fn send_payload_async(
+        &self,
+        recipient_did: &str,
+        payload: serde_json::Value,
+    ) -> Result<SendMessageResult> {
+        ensure_messaging_session(&self.client).await?;
+        let result = self
+            .client
+            .messages()
+            .send_async(SendMessageRequest {
+                target: MessageTarget::Direct(PeerRef::parse(recipient_did, "")?),
+                body: MessageBody::Payload { payload },
+                security: MessageSecurityMode::DefaultPlain,
+                client_message_id: None,
+                delivery: MessageDeliveryOptions::default(),
+            })
+            .await?;
+        Ok(result)
+    }
+
+    pub fn send_payload(
+        &self,
+        recipient_did: &str,
+        payload: serde_json::Value,
+    ) -> Result<SendMessageResult> {
+        let outbox = self.clone();
+        let recipient_did = recipient_did.to_string();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let join = std::thread::Builder::new()
+                .name("awiki-daemon-outbox-send".to_string())
+                .spawn(move || block_on_payload_send(outbox, recipient_did, payload))?;
+            return join
+                .join()
+                .map_err(|_| anyhow::anyhow!("outbox send thread panicked"))?;
+        }
+        block_on_payload_send(outbox, recipient_did, payload)
+    }
+}
+
+fn block_on_payload_send(
+    outbox: ImCoreAgentOutbox,
+    recipient_did: String,
+    payload: serde_json::Value,
+) -> Result<SendMessageResult> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(outbox.send_payload_async(&recipient_did, payload))
+}
+
+async fn ensure_messaging_session(client: &im_core::ImClient) -> Result<()> {
+    match client
+        .auth()
+        .ensure_session_async(im_core::auth::AuthScope::Messaging)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            client.auth().refresh_session_async().await?;
+            client
+                .auth()
+                .ensure_session_async(im_core::auth::AuthScope::Messaging)
+                .await?;
+            Ok(())
+        }
     }
 }
 
@@ -106,15 +174,7 @@ impl AgentManagementOutbox for MemoryRuntimeOutbox {
 
 impl AgentManagementOutbox for ImCoreAgentOutbox {
     fn send_agent_status(&self, response: &AgentStatusResponse) -> Result<()> {
-        self.client.messages().send(SendMessageRequest {
-            target: MessageTarget::Direct(PeerRef::parse(&response.recipient_did, "")?),
-            body: MessageBody::Payload {
-                payload: response.payload.clone(),
-            },
-            security: MessageSecurityMode::DefaultPlain,
-            client_message_id: None,
-            delivery: MessageDeliveryOptions::default(),
-        })?;
+        self.send_payload(&response.recipient_did, response.payload.clone())?;
         Ok(())
     }
 }

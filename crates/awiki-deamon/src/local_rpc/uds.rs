@@ -6,7 +6,11 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::local_rpc::{handle_runtime_rpc_request, read_request_from, write_response_to};
+use crate::local_rpc::{
+    execute_runtime_rpc_request_with_outbox, handle_runtime_rpc_request, read_request_from,
+    write_response_to,
+};
+use crate::outbox::RuntimeOutbox;
 use crate::state::DaemonState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +30,35 @@ pub fn serve_one_uds_request(state: &DaemonState, socket_path: &Path) -> Result<
     verify_peer_credential(&stream)?;
     let request = read_request_from(stream.try_clone()?)?;
     let response = handle_runtime_rpc_request(state, request);
+    write_response_to(&mut stream, &response)?;
+    Ok(())
+}
+
+pub fn bind_uds_listener(socket_path: &Path) -> Result<UnixListener> {
+    prepare_socket_path(socket_path)?;
+    let listener = UnixListener::bind(socket_path)
+        .with_context(|| format!("bind daemon local RPC {}", socket_path.display()))?;
+    fs::set_permissions(socket_path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod daemon local RPC socket {}", socket_path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .context("set daemon local RPC listener nonblocking")?;
+    Ok(listener)
+}
+
+pub fn handle_uds_stream_with_outbox(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    mut stream: UnixStream,
+) -> Result<()> {
+    verify_peer_credential(&stream)?;
+    let request = read_request_from(stream.try_clone()?)?;
+    let response = match execute_runtime_rpc_request_with_outbox(state, outbox, request) {
+        Ok(response) => response,
+        Err(error) => {
+            crate::local_rpc::RuntimeRpcResponse::failure("runtime_rpc_error", error.to_string())
+        }
+    };
     write_response_to(&mut stream, &response)?;
     Ok(())
 }

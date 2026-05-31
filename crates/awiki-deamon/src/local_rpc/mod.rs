@@ -14,7 +14,10 @@ use crate::state::{AuthorizedRuntimeContext, DaemonState};
 mod uds;
 
 #[cfg(unix)]
-pub use uds::{serve_one_uds_request, verify_socket_permissions, PeerCredential};
+pub use uds::{
+    bind_uds_listener, handle_uds_stream_with_outbox, serve_one_uds_request,
+    verify_socket_permissions, PeerCredential,
+};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRpcRequest {

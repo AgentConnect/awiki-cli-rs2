@@ -185,11 +185,12 @@ fn exchange_token_body(request: AgentRegistrationExchangeRequest) -> Value {
 
 fn parse_exchange_response(bytes: &[u8]) -> Result<AgentRegistrationExchangeResult> {
     let value: Value = serde_json::from_slice(bytes).context("parse registration response")?;
-    if let Some(error) = value.get("error") {
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         let reason = error
             .get("data")
             .and_then(|data| data.get("reason"))
             .and_then(Value::as_str)
+            .or_else(|| error.get("data").and_then(Value::as_str))
             .or_else(|| error.get("message").and_then(Value::as_str))
             .unwrap_or("unknown");
         bail!("agent registration token exchange failed: {reason}");
@@ -245,5 +246,29 @@ mod tests {
         }"#;
         let error = parse_exchange_response(response).unwrap_err();
         assert!(error.to_string().contains("scope_mismatch"));
+    }
+
+    #[test]
+    fn json_rpc_success_ignores_null_error_field() {
+        let response = br#"{
+            "jsonrpc": "2.0",
+            "result": {
+                "token_id": "areg_tok_1",
+                "did": "did:agent:daemon",
+                "user_id": "user-1",
+                "agent_kind": "daemon",
+                "controller_did": "did:human:alice",
+                "handle": "alice-daemon",
+                "status": "registered"
+            },
+            "error": null,
+            "id": 1
+        }"#;
+
+        let parsed = parse_exchange_response(response).unwrap();
+
+        assert_eq!(parsed.token_id, "areg_tok_1");
+        assert_eq!(parsed.did, "did:agent:daemon");
+        assert_eq!(parsed.agent_kind, AgentKind::Daemon);
     }
 }

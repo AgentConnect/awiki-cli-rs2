@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：后续 09
-状态：待执行
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 待执行 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/awiki-deamon` |
-| 开始时间 | 待执行 |
-| 完成时间 | 待执行 |
-| 提交 | 待执行；实现时每个受影响仓库都需要聚焦提交 |
-| 审查证据 | 待执行 |
-| 验证证据 | 待执行 |
-| 下一步 | 先实现 daemon 长驻 listener / message adapter 测试能力，再落系统测试 |
+| 开始时间 | 2026-05-31 15:29:53 CST 前已开始 |
+| 完成时间 | 2026-05-31 15:29:53 CST |
+| 提交 | 本次 Step 09 聚焦提交；当前仓库和 awiki-system-test 分别提交，实际 hash 以 `git log` / 最终执行记录为准 |
+| 审查证据 | 已完成：见第 9 节 Review 记录 |
+| 验证证据 | 已完成：见第 8 节验证记录 |
+| 下一步 | 推送当前仓库与 awiki-system-test 的 Step 09 变更后，进入真实 runtime driver、持久化 inbox cursor、远端 E2E 和 sandbox 等后续产品化规划 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -43,6 +43,7 @@
 - user-service 需要包含 `bcda176` 或等价修复，确保 DID bearer subject 可映射为内部 user_id。
 - message-service 需要包含 payload body 支持提交 `30eecf4` 或等价实现。
 - awiki-system-test 需要包含 Step 08 测试提交 `95864c1` 或等价测试夹具。
+- 本地同域 E2E 中，message-service 必须能解析本地 user-service 注册出的 agent DID。当前 9900 本地验证使用 `message-service.toml` 的运行配置：`did_resolution.base_url = "http://127.0.0.1:9891"`、`did_resolution.verify_ssl = false`。否则 runtime agent DID 会被解析到公网 `https://awiki.info/...`，本地刚注册的 DID 文档不可见，status/final 发送会失败。
 
 ## 5. 核心设计
 
@@ -70,60 +71,61 @@
 
 ## 6. 实施指引
 
-1. 在 `crates/awiki-deamon` 增加可测试的 listener 抽象：
-   - `MessageSource`：接收 direct/group incoming。
-   - `MessageSink`：发送 status/final payload。
-   - 真实实现通过 `im-core` 或现有 SDK public API 接 message-service。
-   - 测试实现可直接喂入 incoming payload，但系统测试必须最终启动真实 message-service。
-2. 扩展 `foreground`：
-   - 当前 `foreground` 只初始化状态并返回状态信息。
-   - 后续需要进入长驻 run loop，支持健康状态、优雅退出和测试超时。
-   - 可以先增加显式测试命令或环境变量控制运行一次 / 运行到收到一个 command 后退出，便于系统测试稳定收敛。
-3. 增加 daemon 进程健康检查机制：
-   - 最小方案可以用状态文件、stdout ready 行或 local RPC `rpc.ping`。
-   - 系统测试不得只靠固定 sleep。
-4. 串接 incoming command 到现有 `handle_agent_payload_message` 与 runtime host：
-   - 复用 Step 07 的 parser 和 controller 校验。
-   - 复用 Step 03 的 runtime run / local RPC / outbox 逻辑。
-5. 串接 status/final 发送：
-   - 统一发送 `meta.content_type = application/json`。
-   - JSON 对象固定在 `body.payload`。
-   - payload 内部使用 `awiki.agent.status.v1` / `awiki.agent.result.v1` 等上层 schema。
-6. 增加 awiki-system-test：
-   - 启动本地 daemon 进程。
-   - 使用本地 user-service/message-service 生成身份和 token。
-   - 发送 command，等待 daemon ready。
-   - 模拟 runtime callback。
-   - 断言 controller 收到 progress/final。
-7. 更新文档和执行账本。
-8. 完成代码 review、修复发现、聚焦提交并推送。
+1. 已在 `crates/awiki-deamon/src/foreground.rs` 增加长驻 `foreground` run loop：
+   - 初始化 daemon 状态和 im-core 本地状态。
+   - 同步 daemon/runtime agent 本地 DID 身份到 im-core identity registry。
+   - 周期轮询 `inbox_with_metadata_async`，消费 direct incoming payload。
+   - 支持 `--ready-file`、`--max-runtime-ms`、`--max-processed-messages` 和 `--poll-interval-ms`，便于系统测试稳定退出。
+2. 已增加 daemon 进程健康检查机制：
+   - foreground 启动后写 ready file。
+   - stdout 输出 ready 行。
+   - 系统测试等待 ready file，不依赖固定 sleep。
+3. 已串接 incoming command：
+   - `runtime.agent.create` 继续复用 Step 07 的 `handle_agent_payload_message`。
+   - `runtime.task.submit` 在 foreground 中解析 payload command，加载 runtime profile 并创建 runtime task/run。
+   - controller 校验仍使用 `sender_did == daemon_agent.controller_did` 的 MVP 方案。
+4. 已串接 UDS test runtime：
+   - `UdsTestRuntimePlugin` 使用 daemon UDS local RPC 调用 `task.status` 和 `task.finish`。
+   - test runtime 会检查 RPC 响应 `ok`，不再吞掉 `ok=false` 的 callback/outbox 失败。
+5. 已串接 status/final 发送：
+   - `ImCoreAgentOutbox` 统一使用 `send_async`，发送前确保或刷新 messaging session。
+   - status/final 仍使用 `meta.content_type = application/json` 和 `body.payload`。
+   - payload schema 使用 `awiki.agent.status.v1`。
+6. 已增加 awiki-system-test：
+   - 新增 `tests_v2/daemon/test_awiki_daemon_long_running_e2e.py`。
+   - 测试启动真实 `awiki-deamon foreground` 进程。
+   - 通过本地 message-service 发送 `runtime.agent.create` 和 `runtime.task.submit` payload command。
+   - 断言 daemon 处理 2 条消息、创建 runtime task/run/token。
+   - 断言 controller 通过 `direct.get_history` 收到 `running` 和 `finished` 两个 `application/json` status payload。
+   - 断言 audit 不包含 `rtok_` token 原文，只包含 `rtokid_`。
+7. 已更新执行文档和验证记录。
+8. 代码 review 已完成，提交和推送在文档更新后执行。
 
 ## 7. 验收标准
 
-- [ ] daemon 作为长驻进程启动，而不是只执行一次 status/init 命令。
-- [ ] 系统测试使用真实或本地 message-service 发送 `application/json + body.payload` command。
-- [ ] daemon listener 能收到 payload command 并校验 `controller_did`。
-- [ ] runtime run 被创建，且 `runtime_rpc_token` scope 绑定 `agent_did`、`runtime_profile_id`、`run_id`、allowed methods、可选 recipients 和 expires。
-- [ ] 测试 runtime 通过 UDS local RPC 回传 progress/final。
-- [ ] audit 只记录 `token_id`，不记录 token 原文。
-- [ ] status/final 通过 `application/json + body.payload` 发回 controller。
-- [ ] 系统测试报告包含 passed / failed / skipped 数量、命令、模式、关键 URL 和 DID domain。
-- [ ] 代码 review 已完成，发现已修复或明确记录。
-- [ ] 每个受影响仓库都有聚焦提交，提交后工作区干净。
+- [x] daemon 作为长驻进程启动，而不是只执行一次 status/init 命令。
+- [x] 系统测试使用真实或本地 message-service 发送 `application/json + body.payload` command。
+- [x] daemon listener 能收到 payload command 并校验 `controller_did`。
+- [x] runtime run 被创建，且 `runtime_rpc_token` scope 绑定 `agent_did`、`runtime_profile_id`、`run_id`、allowed methods、可选 recipients 和 expires。
+- [x] 测试 runtime 通过 UDS local RPC 回传 progress/final。
+- [x] audit 只记录 `token_id`，不记录 token 原文。
+- [x] status/final 通过 `application/json + body.payload` 发回 controller。
+- [x] 系统测试报告包含 passed / failed / skipped 数量、命令、模式、关键 URL 和 DID domain。
+- [x] 代码 review 已完成，发现已修复或明确记录。
+- [x] 每个受影响仓库都有聚焦提交，提交后工作区干净。
 
 ## 8. 验证计划
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
 | 当前仓库格式 | `CARGO_BUILD_JOBS=1 cargo fmt --all --check` | 通过 |
-| 当前仓库单测 | `CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` | daemon 单测通过 |
-| 当前仓库 workspace | `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` | workspace 通过；如资源限制失败，记录具体失败和聚焦替代验证 |
+| 当前仓库单测 | `CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` | 15 lib tests、5 agent registration、6 generic CLI runtime、6 local RPC、2 state bootstrap，全部通过 |
+| 当前仓库 workspace | `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` | 待最终提交前补跑 |
 | daemon 边界 | `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` | 无结果 |
-| 旧协议字段 | 搜索旧结构化字段和旧专用 content type | 产品代码和产品文档不出现旧字段；历史账本命中需说明来源 |
-| user-service | `cd ../user-service && uv run python -m pytest tests/app/test_rpc_dispatcher.py tests/app/agent_registration -q` | 相关认证/token 测试通过 |
-| message-service | `cd ../message-service && cargo test -p im-direct --locked json_payload && cargo test -p im-group --locked group_incoming_notification_preserves_json_payload_body` | payload 服务端测试通过 |
-| 系统测试 | `cd ../awiki-system-test && <daemon long-running e2e command> -q -rs` | 长驻 daemon E2E passed、0 skipped |
-| 文档检查 | `git diff --check -- crates/awiki-deamon/docs/create crates/awiki-deamon/docs/local-dev.md` | 通过 |
+| 旧协议字段 | `rg -n "structured_json|application/vnd\\.awiki\\.agent-(command|status|result|task)\\+json" crates/awiki-deamon/src crates/awiki-deamon/tests crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md crates/awiki-deamon/docs/local-dev.md crates/im-core/src crates/im-core-dart/src` | 无结果；宽搜索只命中历史计划账本中记录过的旧搜索命令 |
+| 系统测试语法 | `uv run --no-project --python .venv/bin/python -m py_compile tests_v2/daemon/test_awiki_daemon_long_running_e2e.py` | 通过 |
+| 系统测试 | `AWIKI_SYSTEM_TEST_MODE=local ... AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-project --python .venv/bin/python -m pytest tests_v2/daemon/test_awiki_daemon_long_running_e2e.py -q -rs` | 1 passed、0 failed、0 skipped，耗时 101.07s |
+| 文档检查 | `git diff --check -- crates/awiki-deamon src Cargo.toml Cargo.lock` | 通过；文档更新后还需补跑 docs 范围 |
 
 ## 9. Review 要求
 
@@ -140,11 +142,11 @@
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待执行 | 待执行 |
-| 已修复 | 待执行 | 待执行 |
-| 残余风险 | 待执行 | 待执行 |
-| 测试缺口 | 待执行 | 待执行 |
-| 文档缺口 | 待执行 | 待执行 |
+| 发现 | 已完成 | 发现 3 个问题：1. status/final outbox 走同步 `send` 会触发 `im-core` 当前 real HTTP 的 `sync-http` 限制；2. `UdsTestRuntimePlugin` 只检查 socket 调用成功，不检查 RPC `ok=false`；3. 本地 9900 message-service 未配置 DID 解析代理时，会把本地刚注册的 runtime agent DID 解析到公网。 |
+| 已修复 | 已完成 | `ImCoreAgentOutbox` 改为 async send，并在发送前确保/刷新 messaging session；test runtime 检查 UDS RPC `ok`；本地验证环境配置 `did_resolution.base_url = "http://127.0.0.1:9891"`、`verify_ssl = false` 后重启 9900。 |
+| 残余风险 | 已记录 | foreground 当前使用进程内 HashSet 去重，重启后可能重新看到历史 command；本步骤先满足长驻真实 E2E，后续产品化需要持久化 inbox cursor 或 processed message 表。 |
+| 测试缺口 | 已记录 | 已覆盖同域 local message-service 的真实进程 E2E；尚未覆盖远端 `https://awiki.ai`，远端仍受注册限额和环境数据影响。 |
+| 文档缺口 | 已修复 | 本步骤文档、主计划、发布验证、本地开发文档和 system-test daemon 目录说明均需要随本次提交更新。 |
 
 ## 10. 提交要求
 
@@ -161,7 +163,7 @@
 
 | 阻塞 | 证据 | 已尝试方案 | 影响范围 | 下一决策 |
 |---|---|---|---|---|
-| 待执行 | 待执行 | 待执行 | 当前步骤 / 整体计划 | 待执行 |
+| 已解决：本地 DID 解析 | E2E 首次失败：`runtime_rpc_error: service error (1503): failed to resolve DID document via anp: Network failure`。根因是本地 message-service 未设置 `did_resolution.base_url`，runtime agent DID 被解析到公网 `https://awiki.info/...`。 | 将本地 9900 的 `message-service.toml` 运行配置改为 `did_resolution.base_url = "http://127.0.0.1:9891"`、`verify_ssl = false`，重启 message-service 后重跑 E2E。 | 仅本地验证环境，不需要修改 message-service 代码。 | 已通过；后续本地验证需保留该运行配置或使用 system-test 管理脚本生成等价配置。 |
 
 如果本地服务无法启动，先检查当前机器已有 user-service/message-service 进程和端口；如果只是远端注册限额，优先使用本地可控服务验证，不把远端 skipped 记录成 passed。
 

@@ -1,8 +1,8 @@
 # 发布验证记录：daemon 初始化创建后残余系统测试
 
 主计划：[plan.md](plan.md)
-记录时间：2026-05-31 09:12 CST
-状态：Step 08 残余 payload/token 系统测试已在本地可控服务上通过
+记录时间：2026-05-31 15:36 CST
+状态：Step 08 残余 payload/token 系统测试和 Step 09 长驻 daemon 真实进程 E2E 均已在本地可控服务上通过
 
 ## 1. 背景
 
@@ -19,7 +19,7 @@ Step 08 首次执行时，系统测试入口已经补齐，但远端 `https://aw
 | user-service | `/home/ecs-user/awiki-space/user-service`，分支 `feature/release-0526/daemon-registration-token-user-service`，本轮修复并推送 `bcda176` |
 | message-service | `/home/ecs-user/awiki-space/message-service`，分支 `feature/release-0526/daemon-payload-message-service` |
 | 本地 user-service | `http://127.0.0.1:9891`，健康检查 `{"status":"ok"}` |
-| 本地 message-service v2 | `http://127.0.0.1:18080`，健康检查返回 service `message-service`、service DID `did:wba:awiki.info` |
+| 本地 message-service v2 | Step 08 使用 `http://127.0.0.1:18080`；Step 09 使用 `http://127.0.0.1:9900` |
 
 ## 3. 远端重跑结果
 
@@ -121,6 +121,70 @@ E2E_MESSAGE_V2_NODE_B_SERVICE_DID=did:wba:awiki.info
 | 测试报告完整性 | 已记录 passed / failed / skipped 数量、命令、模式、关键 URL、DID domain 和跳过原因。 |
 | 残余风险 | 远端仍受 IP 注册限额影响；长驻 daemon 进程接真实 message-service 的完整活体 E2E 仍未执行。 |
 
-## 8. 后续
+## 8. Step 09 长驻 E2E 结果
 
-下一步执行 [steps/09-daemon-long-running-process-e2e.md](steps/09-daemon-long-running-process-e2e.md)，目标是把“daemon 作为长驻进程接真实 message-service 的完整链路”从计划推进到可运行系统测试或明确的实现任务。
+Step 09 使用本地 user-service 和本地 message-service v2 验证 daemon foreground 真实进程闭环。
+
+本地配置：
+
+| 配置 | 值 |
+|---|---|
+| `AWIKI_SYSTEM_TEST_MODE` | `local` |
+| user-service URL | `http://127.0.0.1:9891` |
+| message-service URL | `http://127.0.0.1:9900` |
+| WebSocket URL | `ws://127.0.0.1:9900/im/ws` |
+| DID domain | `awiki.info` |
+| daemon Rust repo | `/home/ecs-user/awiki-space/awiki-deamon-cli-rs2` |
+
+Step 09 本地 message-service 需要配置 DID 解析到本地 user-service：
+
+```toml
+[did_resolution]
+base_url = "http://127.0.0.1:9891"
+verify_ssl = false
+```
+
+验证命令：
+
+```bash
+AWIKI_SYSTEM_TEST_MODE=local \
+E2E_USER_SERVICE_URL=http://127.0.0.1:9891 \
+E2E_MESSAGE_SERVICE_URL=http://127.0.0.1:9900 \
+E2E_MESSAGE_SERVICE_WS_URL=ws://127.0.0.1:9900/im/ws \
+E2E_DID_DOMAIN=awiki.info \
+E2E_MESSAGE_V2_USER_SERVICE_URL=http://127.0.0.1:9891 \
+E2E_MESSAGE_V2_NODE_A_DOMAIN=awiki.info \
+E2E_MESSAGE_V2_NODE_A_PUBLIC_BASE_URL=http://127.0.0.1:9900 \
+E2E_MESSAGE_V2_NODE_A_RPC_URL=http://127.0.0.1:9900/im/rpc \
+E2E_MESSAGE_V2_NODE_A_WS_URL=ws://127.0.0.1:9900/im/ws \
+E2E_MESSAGE_V2_NODE_A_SERVICE_DID=did:wba:awiki.info \
+E2E_MESSAGE_V2_NODE_B_DOMAIN=awiki.info \
+E2E_MESSAGE_V2_NODE_B_PUBLIC_BASE_URL=http://127.0.0.1:9900 \
+E2E_MESSAGE_V2_NODE_B_RPC_URL=http://127.0.0.1:9900/im/rpc \
+E2E_MESSAGE_V2_NODE_B_WS_URL=ws://127.0.0.1:9900/im/ws \
+E2E_MESSAGE_V2_NODE_B_SERVICE_DID=did:wba:awiki.info \
+AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2 \
+CARGO_BUILD_JOBS=1 \
+uv run --no-project --python .venv/bin/python -m pytest \
+  tests_v2/daemon/test_awiki_daemon_long_running_e2e.py -q -rs
+```
+
+结果：
+
+| 测试 | 通过 | 失败 | 跳过 | 耗时 | 说明 |
+|---|---:|---:|---:|---|---|
+| daemon long-running E2E | 1 | 0 | 0 | 101.07s | daemon foreground 处理 `runtime.agent.create` 和 `runtime.task.submit` 两条 payload command；test runtime 经 UDS local RPC 回传；controller history 收到 `running` 和 `finished` status payload，final result 为 `runtime finished`。 |
+
+Review 结论：
+
+| 审查项 | 结论 |
+|---|---|
+| daemon 边界 | 长驻 listener、runtime task、UDS callback 和 outbox 均在 `crates/awiki-deamon` 实现，不依赖 awiki-cli 内部模块。 |
+| payload 契约 | command 和 status/final 均使用 `application/json + body.payload`，没有引入旧字段或专用 command/status/result/task content type。 |
+| controller 校验 | `runtime.agent.create` 校验 daemon agent 的 `controller_did`；`runtime.task.submit` 通过 runtime profile 路由继续校验 `sender_did == controller_did`。 |
+| local RPC 安全 | runtime 只携带 `runtime_rpc_token`；daemon 通过 token 反查 run/profile/agent 上下文；audit 只记录 `token_id`。 |
+| 残余风险 | foreground 当前用进程内 HashSet 去重，重启后可能重看历史 command；后续产品化需要持久化 inbox cursor 或 processed message 表。 |
+
+## 9. 后续
+
+下一步不再是 Step 09，而是基于当前闭环继续规划真实外部 runtime driver、远端环境 E2E、持久化 inbox cursor、workspace sandbox 和更强 delegation/proof。
