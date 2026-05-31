@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 08  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-06-01 01:15:27 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-06-01 01:42:41 +0800 |
+| 提交 | 验证记录提交 `b39df1829e1906cae89ba9fad99db2850021e4a3` |
 | 审查证据 | 2026-06-01 01:37:15 +0800 完成集成 review：Step 01-07 均有提交和 review 记录；当前仓库格式、daemon 全量、workspace 全量、边界搜索和 secret 搜索通过；focused daemon remote 系统测试通过 3、失败 0、跳过 1；完整 remote `awiki.info` 系统测试已执行但失败 61、通过 66、跳过 68，发布门禁未通过。 |
 | 验证证据 | 启动前当前仓库 `git status --short --branch` 无未提交变更；`../awiki-system-test` 无未提交变更；当前仓库 `cargo fmt --all --check`、`cargo test -p awiki-deamon --locked`、`cargo test --workspace --locked`、`git diff --check -- crates/awiki-deamon` 通过；focused daemon 系统测试 `3 passed, 1 skipped, 0 failed, 1 warning in 196.89s`；完整 remote 系统测试 `61 failed, 66 passed, 68 skipped, 1 warning in 918.23s`。 |
-| 下一步 | 提交 Step 08 验证记录并回填提交 hash；发布前需要修复完整 remote suite 失败或由 CI/环境补跑通过 |
+| 下一步 | 发布前需要修复完整 remote suite 失败或由 CI/环境补跑通过 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -169,7 +169,7 @@ uv run awiki-system-test
 - [x] 完整系统测试记录通过/失败/跳过数量、失败或跳过原因、关键环境配置。
 - [x] L3 安全 review 完成并记录。
 - [x] 文档同步完成。
-- [ ] 如有本步骤文件变更，review 后创建聚焦提交。
+- [x] 如有本步骤文件变更，review 后创建聚焦提交。
 
 ## 8. 验证方式
 
@@ -410,6 +410,10 @@ uv run awiki-system-test tests_v2 -q -ra
 
 ### 提交后状态
 
-- 验证记录提交：待回填。
-- 当前仓库提交后 `git status --short --branch`：待回填。
+- 验证记录提交：`b39df1829e1906cae89ba9fad99db2850021e4a3`。
+- 当前仓库提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 16]
+```
 - `../awiki-system-test`：无文件变更，无提交。
