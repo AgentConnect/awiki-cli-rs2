@@ -53,7 +53,7 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let workspace_upgrade = check_by_name(&envelope, "workspace_upgrade");
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version"],
-        3
+        4
     );
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version_source"],

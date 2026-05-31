@@ -33,8 +33,9 @@ pub(crate) trait ReplaceDidExecutionBridge {
 
     fn rebind_local_state(
         &mut self,
-        old_owner_did: &crate::ids::Did,
-        new_owner_did: &crate::ids::Did,
+        owner_identity_id: &crate::ids::IdentityId,
+        old_did: &crate::ids::Did,
+        new_did: &crate::ids::Did,
     ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState>;
 }
 
@@ -78,8 +79,12 @@ where
             .map_err(|err| local_failure_after_remote("local identity update", err, &backup))?;
         let affected_local_state = self
             .bridge
-            .rebind_local_state(&request.plan.identity.did, &local_update.new_did)
-            .map_err(|err| local_failure_after_remote("local owner rebind", err, &backup))?;
+            .rebind_local_state(
+                &request.plan.identity.id,
+                &request.plan.identity.did,
+                &local_update.new_did,
+            )
+            .map_err(|err| local_failure_after_remote("local DID history update", err, &backup))?;
 
         Ok(crate::identity::ReplaceDidExecutionResult {
             identity: local_update.identity,
@@ -148,7 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replace_did_execution_orders_backup_remote_local_rebind() {
+    fn replace_did_execution_orders_backup_remote_local_history_update() {
         let client = fixture_client();
         let result = ReplaceDidExecutionRuntime::new(
             &client,
@@ -274,13 +279,14 @@ mod tests {
 
         fn rebind_local_state(
             &mut self,
-            _old_owner_did: &crate::ids::Did,
-            _new_owner_did: &crate::ids::Did,
+            _owner_identity_id: &crate::ids::IdentityId,
+            _old_did: &crate::ids::Did,
+            _new_did: &crate::ids::Did,
         ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
-            self.events.push("rebind");
+            self.events.push("history");
             if self.fail_rebind {
                 return Err(crate::ImError::LocalStateUnavailable {
-                    detail: "rebind failed".to_string(),
+                    detail: "history update failed".to_string(),
                 });
             }
             Ok(crate::identity::ReplaceDidAffectedLocalState {

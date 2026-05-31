@@ -347,8 +347,15 @@ fn legacy_owner_lookup(manager: &identity::Manager) -> store::LegacyOwnerLookup 
         .list()
         .unwrap_or_default()
         .into_iter()
-        .map(|summary| (summary.identity_name, summary.did, summary.is_default));
-    store::LegacyOwnerLookup::from_entries(entries)
+        .map(|summary| {
+            (
+                summary.unique_id,
+                summary.identity_name,
+                summary.did,
+                summary.is_default,
+            )
+        });
+    store::LegacyOwnerLookup::from_identity_entries(entries)
 }
 
 #[cfg(test)]

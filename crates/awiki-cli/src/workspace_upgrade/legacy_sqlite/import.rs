@@ -24,15 +24,15 @@ const IMPORT_TABLES: &[(&str, Importer)] = &[
     ("groups", import_groups),
     ("group_members", import_group_members),
     ("relationship_events", import_relationship_events),
-    ("e2ee_sessions", import_e2ee_sessions),
 ];
 
 type Importer = fn(&Connection, &mut Connection, &LegacyOwnerLookup) -> StoreResult<usize>;
 
 #[derive(Debug, Clone, Default)]
 pub struct LegacyOwnerLookup {
-    owner_by_credential: BTreeMap<String, String>,
-    default_owner: String,
+    owner_by_credential: BTreeMap<String, LegacyOwnerScope>,
+    owner_by_did: BTreeMap<String, LegacyOwnerScope>,
+    default_owner: Option<LegacyOwnerScope>,
 }
 
 impl LegacyOwnerLookup {
@@ -40,36 +40,97 @@ impl LegacyOwnerLookup {
     where
         I: IntoIterator<Item = (String, String, bool)>,
     {
+        Self::from_identity_entries(
+            entries
+                .into_iter()
+                .map(|(name, did, is_default)| (name.clone(), name, did, is_default)),
+        )
+    }
+
+    pub fn from_identity_entries<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String, String, bool)>,
+    {
         let entries = entries.into_iter().collect::<Vec<_>>();
         let mut lookup = Self::default();
-        for (name, did, is_default) in &entries {
-            lookup.owner_by_credential.insert(name.clone(), did.clone());
+        for (identity_id, name, did, is_default) in &entries {
+            let Some(scope) = LegacyOwnerScope::new(identity_id, did, Some(name)) else {
+                continue;
+            };
+            lookup
+                .owner_by_credential
+                .insert(name.trim().to_string(), scope.clone());
+            lookup
+                .owner_by_did
+                .insert(scope.owner_did.clone(), scope.clone());
             if *is_default {
-                lookup.default_owner = did.clone();
+                lookup.default_owner = Some(scope.clone());
             }
         }
-        if lookup.default_owner.is_empty() && entries.len() == 1 {
-            lookup.default_owner = entries[0].1.clone();
+        if lookup.default_owner.is_none() && entries.len() == 1 {
+            let (identity_id, name, did, _) = &entries[0];
+            lookup.default_owner = LegacyOwnerScope::new(identity_id, did, Some(name));
         }
         lookup
     }
 
-    fn infer_owner_did(&self, row: &Value) -> String {
+    fn infer_owner_scope(&self, row: &Value) -> StoreResult<LegacyOwnerScope> {
         let owner = string_from_row(row, "owner_did");
         if !owner.trim().is_empty() {
-            return owner;
+            if let Some(scope) = self.owner_by_did.get(owner.trim()) {
+                return Ok(scope.clone());
+            }
+            return Err(StoreError::Invalid(
+                "legacy row owner_did could not be resolved to owner_identity_id".to_string(),
+            ));
         }
         let credential = string_from_row(row, "credential_name");
         if !credential.is_empty() {
-            if let Some(owner) = self.owner_by_credential.get(&credential) {
-                return owner.clone();
+            if let Some(scope) = self.owner_by_credential.get(credential.trim()) {
+                return Ok(scope.clone());
             }
+            return Err(StoreError::Invalid(
+                "legacy row credential_name could not be resolved to owner_identity_id".to_string(),
+            ));
         }
-        self.default_owner.clone()
+        self.default_owner.clone().ok_or_else(|| {
+            StoreError::Invalid("legacy row owner_identity_id could not be resolved".to_string())
+        })
     }
 
     fn has_default_owner(&self) -> bool {
-        !self.default_owner.is_empty()
+        self.default_owner.is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LegacyOwnerScope {
+    owner_identity_id: String,
+    owner_did: String,
+    credential_name: String,
+}
+
+impl LegacyOwnerScope {
+    fn new(identity_id: &str, did: &str, credential_name: Option<&str>) -> Option<Self> {
+        let owner_identity_id = identity_id.trim();
+        let owner_did = did.trim();
+        if owner_identity_id.is_empty() || owner_did.is_empty() {
+            return None;
+        }
+        Some(Self {
+            owner_identity_id: owner_identity_id.to_string(),
+            owner_did: owner_did.to_string(),
+            credential_name: credential_name.unwrap_or_default().trim().to_string(),
+        })
+    }
+
+    fn credential_name_for_row(&self, row_credential_name: &str) -> String {
+        let row_credential_name = normalize_credential_name(row_credential_name);
+        if row_credential_name.is_empty() {
+            self.credential_name.clone()
+        } else {
+            row_credential_name
+        }
     }
 }
 
@@ -163,20 +224,22 @@ fn import_messages(
         if msg_id.is_empty() {
             continue;
         }
-        let owner_did = owners.infer_owner_did(&row);
+        let owner = owners.infer_owner_scope(&row)?;
         let mut thread_id = string_from_row(&row, "thread_id");
         if thread_id.is_empty() {
             thread_id = make_thread_id(
-                &owner_did,
+                &owner.owner_did,
                 &string_from_row(&row, "sender_did"),
                 &string_from_row(&row, "group_id"),
             );
         }
+        let credential_name =
+            owner.credential_name_for_row(&string_from_row(&row, "credential_name"));
         store_message(
             target,
             MessageImport {
                 msg_id,
-                owner_did,
+                owner,
                 thread_id,
                 direction: int_from_row(&row, "direction"),
                 sender_did: string_from_row(&row, "sender_did"),
@@ -193,7 +256,7 @@ fn import_messages(
                 is_read: bool_from_row(&row, "is_read"),
                 sender_name: string_from_row(&row, "sender_name"),
                 metadata: metadata_from_row(&row, "metadata"),
-                credential_name: string_from_row(&row, "credential_name"),
+                credential_name,
             },
         )?;
         count += 1;
@@ -209,11 +272,14 @@ fn import_e2ee_outbox(
     let rows = query_rows(source, "SELECT * FROM e2ee_outbox")?;
     let mut count = 0;
     for row in rows {
+        let owner = owners.infer_owner_scope(&row)?;
+        let credential_name =
+            owner.credential_name_for_row(&string_from_row(&row, "credential_name"));
         queue_e2ee_outbox(
             target,
             E2EEOutboxImport {
                 outbox_id: string_from_row(&row, "outbox_id"),
-                owner_did: owners.infer_owner_did(&row),
+                owner,
                 peer_did: string_from_row(&row, "peer_did"),
                 session_id: string_from_row(&row, "session_id"),
                 original_type: default_string(string_from_row(&row, "original_type"), "text"),
@@ -230,7 +296,7 @@ fn import_e2ee_outbox(
                 last_attempt_at: string_from_row(&row, "last_attempt_at"),
                 created_at: string_from_row(&row, "created_at"),
                 updated_at: string_from_row(&row, "updated_at"),
-                credential_name: string_from_row(&row, "credential_name"),
+                credential_name,
             },
         )?;
         count += 1;
@@ -250,10 +316,13 @@ fn import_contacts(
         if did.is_empty() {
             continue;
         }
+        let owner = owners.infer_owner_scope(&row)?;
+        let credential_name =
+            owner.credential_name_for_row(&string_from_row(&row, "credential_name"));
         upsert_contact(
             target,
             ContactImport {
-                owner_did: owners.infer_owner_did(&row),
+                owner,
                 did,
                 name: string_from_row(&row, "name"),
                 handle: string_from_row(&row, "handle"),
@@ -273,7 +342,7 @@ fn import_contacts(
                 first_seen_at: string_from_row(&row, "first_seen_at"),
                 last_seen_at: string_from_row(&row, "last_seen_at"),
                 metadata: metadata_from_row(&row, "metadata"),
-                credential_name: string_from_row(&row, "credential_name"),
+                credential_name,
             },
         )?;
         count += 1;
@@ -293,10 +362,13 @@ fn import_groups(
         if group_id.is_empty() {
             continue;
         }
+        let owner = owners.infer_owner_scope(&row)?;
+        let credential_name =
+            owner.credential_name_for_row(&string_from_row(&row, "credential_name"));
         upsert_group(
             target,
             GroupImport {
-                owner_did: owners.infer_owner_did(&row),
+                owner,
                 group_id,
                 group_did: string_from_row(&row, "group_did"),
                 name: string_from_row(&row, "name"),
@@ -325,7 +397,7 @@ fn import_groups(
                 remote_updated_at: string_from_row(&row, "remote_updated_at"),
                 stored_at: string_from_row(&row, "stored_at"),
                 metadata: metadata_from_row(&row, "metadata"),
-                credential_name: string_from_row(&row, "credential_name"),
+                credential_name,
             },
         )?;
         count += 1;
@@ -346,10 +418,13 @@ fn import_group_members(
         if group_id.is_empty() || user_id.is_empty() {
             continue;
         }
+        let owner = owners.infer_owner_scope(&row)?;
+        let credential_name =
+            owner.credential_name_for_row(&string_from_row(&row, "credential_name"));
         upsert_group_member(
             target,
             GroupMemberImport {
-                owner_did: owners.infer_owner_did(&row),
+                owner,
                 group_id,
                 user_id,
                 member_did: string_from_row(&row, "member_did"),
@@ -361,7 +436,7 @@ fn import_group_members(
                 sent_message_count: int64_ptr_from_row(&row, "sent_message_count"),
                 last_synced_at: string_from_row(&row, "last_synced_at"),
                 metadata: metadata_from_row(&row, "metadata"),
-                credential_name: string_from_row(&row, "credential_name"),
+                credential_name,
             },
         )?;
         count += 1;
@@ -382,11 +457,14 @@ fn import_relationship_events(
         if target_did.is_empty() || event_type.is_empty() {
             continue;
         }
+        let owner = owners.infer_owner_scope(&row)?;
+        let credential_name =
+            owner.credential_name_for_row(&string_from_row(&row, "credential_name"));
         append_relationship_event(
             target,
             RelationshipEventImport {
                 event_id: string_from_row(&row, "event_id"),
-                owner_did: owners.infer_owner_did(&row),
+                owner,
                 target_did,
                 target_handle: string_from_row(&row, "target_handle"),
                 event_type,
@@ -399,44 +477,8 @@ fn import_relationship_events(
                 created_at: string_from_row(&row, "created_at"),
                 updated_at: string_from_row(&row, "updated_at"),
                 metadata: metadata_from_row(&row, "metadata"),
-                credential_name: string_from_row(&row, "credential_name"),
+                credential_name,
             },
-        )?;
-        count += 1;
-    }
-    Ok(count)
-}
-
-fn import_e2ee_sessions(
-    source: &Connection,
-    target: &mut Connection,
-    owners: &LegacyOwnerLookup,
-) -> StoreResult<usize> {
-    let rows = query_rows(source, "SELECT * FROM e2ee_sessions")?;
-    let mut count = 0;
-    for row in rows {
-        target.execute(
-            r#"
-INSERT OR REPLACE INTO e2ee_sessions
-    (owner_did, peer_did, session_id, is_initiator, send_chain_key, recv_chain_key,
-     send_seq, recv_seq, expires_at, created_at, active_at, peer_confirmed, credential_name, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
-            params![
-                normalize_owner_did(&owners.infer_owner_did(&row)),
-                string_from_row(&row, "peer_did"),
-                string_from_row(&row, "session_id"),
-                bool_to_int(bool_from_row(&row, "is_initiator")),
-                string_from_row(&row, "send_chain_key"),
-                string_from_row(&row, "recv_chain_key"),
-                int_from_row(&row, "send_seq"),
-                int_from_row(&row, "recv_seq"),
-                normalize_optional_float64(float64_ptr_from_row(&row, "expires_at")),
-                string_from_row(&row, "created_at"),
-                normalize_optional_string(&string_from_row(&row, "active_at")),
-                bool_to_int(bool_from_row(&row, "peer_confirmed")),
-                normalize_credential_name(&string_from_row(&row, "credential_name")),
-                default_string(string_from_row(&row, "updated_at"), &now_utc()),
-            ],
         )?;
         count += 1;
     }
@@ -446,7 +488,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
 #[derive(Debug)]
 struct MessageImport {
     msg_id: String,
-    owner_did: String,
+    owner: LegacyOwnerScope,
     thread_id: String,
     direction: i64,
     sender_did: String,
@@ -474,17 +516,25 @@ fn store_message(target: &Connection, record: MessageImport) -> StoreResult<()> 
         return Err(StoreError::Invalid("thread_id is required".to_string()));
     }
     let now = now_utc();
-    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
+    let owner_identity_id = record.owner.owner_identity_id;
+    let owner_did = record.owner.owner_did;
+    let conversation_id = conversation_id_from_legacy_thread(
+        &record.thread_id,
+        &owner_did,
+        &record.sender_did,
+        &record.group_id,
+    );
     target.execute(
         r#"
 INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, title, server_seq, sent_at, stored_at, is_e2ee, is_read,
      sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-ON CONFLICT(msg_id, owner_did)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+ON CONFLICT(owner_identity_id, msg_id)
 DO UPDATE SET
-    owner_identity_id = COALESCE(excluded.owner_identity_id, messages.owner_identity_id),
+    owner_did = excluded.owner_did,
+    conversation_id = excluded.conversation_id,
     thread_id = excluded.thread_id,
     direction = excluded.direction,
     sender_did = excluded.sender_did,
@@ -519,7 +569,8 @@ DO UPDATE SET
         params![
             record.msg_id,
             owner_identity_id,
-            normalize_owner_did(&record.owner_did),
+            owner_did,
+            conversation_id,
             record.thread_id,
             record.direction,
             normalize_optional_string(&record.sender_did),
@@ -542,10 +593,74 @@ DO UPDATE SET
     Ok(())
 }
 
+fn conversation_id_from_legacy_thread(
+    thread_id: &str,
+    owner_did: &str,
+    sender_did: &str,
+    group_id: &str,
+) -> String {
+    let group_id = group_id.trim();
+    if !group_id.is_empty() {
+        return format!("group:{group_id}");
+    }
+
+    let thread_id = thread_id.trim();
+    let owner_did = owner_did.trim();
+    if let Some(rest) = thread_id.strip_prefix("group:") {
+        let group = rest.trim();
+        if !group.is_empty() {
+            return format!("group:{group}");
+        }
+    }
+    if let Some(rest) = thread_id.strip_prefix("dm:") {
+        let parts = split_legacy_dm_thread(rest);
+        if let Some(peer) = parts
+            .iter()
+            .find(|part| !part.trim().is_empty() && part.trim() != owner_did)
+        {
+            return format!("dm:{}", peer.trim());
+        }
+    }
+
+    let sender_did = sender_did.trim();
+    if !sender_did.is_empty() && sender_did != owner_did {
+        return format!("dm:{sender_did}");
+    }
+
+    let fallback = thread_id.trim_start_matches("dm:").trim();
+    if !fallback.is_empty() && fallback != owner_did {
+        return format!("dm:{fallback}");
+    }
+    "dm:unknown".to_string()
+}
+
+fn split_legacy_dm_thread(rest: &str) -> Vec<String> {
+    let markers = rest
+        .match_indices("did:")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if markers.len() >= 2 {
+        return markers
+            .iter()
+            .enumerate()
+            .map(|(position, start)| {
+                let end = markers.get(position + 1).copied().unwrap_or(rest.len());
+                rest[*start..end].trim_matches(':').to_string()
+            })
+            .filter(|part| !part.trim().is_empty())
+            .collect();
+    }
+    rest.split(':')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 #[derive(Debug)]
 struct E2EEOutboxImport {
     outbox_id: String,
-    owner_did: String,
+    owner: LegacyOwnerScope,
     peer_did: String,
     session_id: String,
     original_type: String,
@@ -568,16 +683,38 @@ struct E2EEOutboxImport {
 fn queue_e2ee_outbox(target: &Connection, record: E2EEOutboxImport) -> StoreResult<String> {
     let outbox_id = default_string(record.outbox_id, &generate_id());
     let now = now_utc();
+    let owner_identity_id = record.owner.owner_identity_id;
+    let owner_did = record.owner.owner_did;
     target.execute(
         r#"
 INSERT INTO e2ee_outbox
-    (outbox_id, owner_did, peer_did, session_id, original_type, plaintext, local_status,
+    (outbox_id, owner_identity_id, owner_did, peer_did, session_id, original_type, plaintext, local_status,
      attempt_count, sent_msg_id, sent_server_seq, last_error_code, retry_hint, failed_msg_id,
      failed_server_seq, metadata, last_attempt_at, created_at, updated_at, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+ON CONFLICT(owner_identity_id, outbox_id)
+DO UPDATE SET
+    owner_did = excluded.owner_did,
+    peer_did = excluded.peer_did,
+    session_id = COALESCE(excluded.session_id, e2ee_outbox.session_id),
+    original_type = excluded.original_type,
+    plaintext = excluded.plaintext,
+    local_status = excluded.local_status,
+    attempt_count = excluded.attempt_count,
+    sent_msg_id = COALESCE(excluded.sent_msg_id, e2ee_outbox.sent_msg_id),
+    sent_server_seq = COALESCE(excluded.sent_server_seq, e2ee_outbox.sent_server_seq),
+    last_error_code = COALESCE(excluded.last_error_code, e2ee_outbox.last_error_code),
+    retry_hint = COALESCE(excluded.retry_hint, e2ee_outbox.retry_hint),
+    failed_msg_id = COALESCE(excluded.failed_msg_id, e2ee_outbox.failed_msg_id),
+    failed_server_seq = COALESCE(excluded.failed_server_seq, e2ee_outbox.failed_server_seq),
+    metadata = COALESCE(excluded.metadata, e2ee_outbox.metadata),
+    last_attempt_at = COALESCE(excluded.last_attempt_at, e2ee_outbox.last_attempt_at),
+    updated_at = excluded.updated_at,
+    credential_name = COALESCE(excluded.credential_name, e2ee_outbox.credential_name)"#,
         params![
             outbox_id,
-            normalize_owner_did(&record.owner_did),
+            owner_identity_id,
+            owner_did,
             record.peer_did,
             normalize_optional_string(&record.session_id),
             default_string(record.original_type, "text"),
@@ -602,7 +739,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
 
 #[derive(Debug)]
 struct ContactImport {
-    owner_did: String,
+    owner: LegacyOwnerScope,
     did: String,
     name: String,
     handle: String,
@@ -629,22 +766,22 @@ fn upsert_contact(target: &mut Connection, record: ContactImport) -> StoreResult
     if record.did.trim().is_empty() {
         return Err(StoreError::Invalid("contact did is required".to_string()));
     }
-    let owner_did = normalize_owner_did(&record.owner_did);
-    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
+    let owner_identity_id = record.owner.owner_identity_id.clone();
+    let owner_did = record.owner.owner_did.clone();
     let handle = record.handle.trim().to_string();
     let tx = target.transaction()?;
     let now = now_utc();
-    let existing_by_did = query_contact_did_handle(&tx, &owner_did, &record.did)?;
+    let existing_by_did = query_contact_did_handle(&tx, &owner_identity_id, &record.did)?;
     let existing_by_handle = if handle.is_empty() {
         Vec::new()
     } else {
-        query_contacts_by_handle(&tx, &owner_did, &handle)?
+        query_contacts_by_handle(&tx, &owner_identity_id, &handle)?
     };
     if !handle.is_empty() && !existing_by_handle.is_empty() && existing_by_handle[0].0 != record.did
     {
         tx.execute(
-            "UPDATE contacts SET handle = NULL, last_seen_at = ?1 WHERE owner_did = ?2 AND did = ?3",
-            params![now, owner_did, existing_by_handle[0].0],
+            "UPDATE contacts SET handle = NULL, last_seen_at = ?1 WHERE owner_identity_id = ?2 AND did = ?3",
+            params![now, owner_identity_id, existing_by_handle[0].0],
         )?;
     }
     if !existing_by_did.is_empty() {
@@ -671,7 +808,7 @@ SET name = COALESCE(?1, name),
     metadata = COALESCE(?18, metadata),
     owner_identity_id = COALESCE(?19, owner_identity_id),
     credential_name = COALESCE(?20, credential_name)
-WHERE owner_did = ?21 AND did = ?22"#,
+WHERE owner_identity_id = ?21 AND did = ?22"#,
             params![
                 normalize_optional_string(&record.name),
                 normalize_optional_string(&handle),
@@ -693,7 +830,7 @@ WHERE owner_did = ?21 AND did = ?22"#,
                 normalize_metadata(&record.metadata),
                 owner_identity_id.clone(),
                 normalize_credential_name(&record.credential_name),
-                owner_did,
+                owner_identity_id,
                 record.did,
             ],
         )?;
@@ -754,12 +891,12 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
 
 fn query_contact_did_handle(
     tx: &Transaction<'_>,
-    owner_did: &str,
+    owner_identity_id: &str,
     did: &str,
 ) -> StoreResult<Vec<(String, String)>> {
     let mut statement =
-        tx.prepare("SELECT did, handle FROM contacts WHERE owner_did = ?1 AND did = ?2")?;
-    let rows = statement.query_map(params![owner_did, did], |row| {
+        tx.prepare("SELECT did, handle FROM contacts WHERE owner_identity_id = ?1 AND did = ?2")?;
+    let rows = statement.query_map(params![owner_identity_id, did], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -771,12 +908,12 @@ fn query_contact_did_handle(
 
 fn query_contacts_by_handle(
     tx: &Transaction<'_>,
-    owner_did: &str,
+    owner_identity_id: &str,
     handle: &str,
 ) -> StoreResult<Vec<(String, String)>> {
-    let mut statement =
-        tx.prepare("SELECT did, handle FROM contacts WHERE owner_did = ?1 AND handle = ?2")?;
-    let rows = statement.query_map(params![owner_did, handle], |row| {
+    let mut statement = tx
+        .prepare("SELECT did, handle FROM contacts WHERE owner_identity_id = ?1 AND handle = ?2")?;
+    let rows = statement.query_map(params![owner_identity_id, handle], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -789,7 +926,7 @@ fn query_contacts_by_handle(
 #[derive(Debug)]
 struct ContactHandleBindingImport {
     owner_did: String,
-    owner_identity_id: Option<String>,
+    owner_identity_id: String,
     handle: String,
     did: String,
     is_current: bool,
@@ -811,9 +948,7 @@ fn upsert_contact_handle_binding(
         return Ok(());
     }
     let owner_did = normalize_owner_did(&record.owner_did);
-    let owner_identity_id = record
-        .owner_identity_id
-        .or_else(|| owner_identity_id_from_credential(&record.credential_name));
+    let owner_identity_id = record.owner_identity_id;
     let first_seen_at = default_string(record.first_seen_at, &now_utc());
     let last_seen_at = default_string(record.last_seen_at, &first_seen_at);
     if record.is_current {
@@ -825,8 +960,8 @@ SET is_current = 0,
         WHEN last_seen_at IS NULL OR last_seen_at < ?1 THEN ?1
         ELSE last_seen_at
     END
-WHERE owner_did = ?2 AND handle = ?3 AND did <> ?4"#,
-            params![last_seen_at, owner_did, handle, did],
+WHERE owner_identity_id = ?2 AND handle = ?3 AND did <> ?4"#,
+            params![last_seen_at, owner_identity_id, handle, did],
         )?;
     }
     tx.execute(
@@ -834,9 +969,9 @@ WHERE owner_did = ?2 AND handle = ?3 AND did <> ?4"#,
 INSERT INTO contact_handle_bindings
     (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-ON CONFLICT(owner_did, handle, did)
+ON CONFLICT(owner_identity_id, handle, did)
 DO UPDATE SET
-    owner_identity_id = COALESCE(excluded.owner_identity_id, contact_handle_bindings.owner_identity_id),
+    owner_did = excluded.owner_did,
     is_current = excluded.is_current,
     first_seen_at = COALESCE(contact_handle_bindings.first_seen_at, excluded.first_seen_at),
     last_seen_at = excluded.last_seen_at,
@@ -863,7 +998,7 @@ DO UPDATE SET
 
 #[derive(Debug)]
 struct GroupImport {
-    owner_did: String,
+    owner: LegacyOwnerScope,
     group_id: String,
     group_did: String,
     name: String,
@@ -893,22 +1028,50 @@ struct GroupImport {
 }
 
 fn upsert_group(target: &Connection, record: GroupImport) -> StoreResult<()> {
-    let owner_did = normalize_owner_did(&record.owner_did);
+    let owner_identity_id = record.owner.owner_identity_id;
+    let owner_did = record.owner.owner_did;
     if owner_did.is_empty() || record.group_id.trim().is_empty() {
         return Err(StoreError::Invalid(
             "owner_did and group_id are required".to_string(),
         ));
     }
     let now = now_utc();
-    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
     target.execute(
         r#"
-INSERT OR REPLACE INTO groups
+INSERT INTO groups
     (owner_identity_id, owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
      doc_url, group_owner_did, group_owner_handle, my_role, membership_status, join_enabled, join_code,
      join_code_expires_at, member_count, last_synced_seq, last_read_seq, last_message_at, remote_created_at,
      remote_updated_at, stored_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
+ON CONFLICT(owner_identity_id, group_id)
+DO UPDATE SET
+    owner_did = excluded.owner_did,
+    group_did = COALESCE(excluded.group_did, groups.group_did),
+    name = COALESCE(excluded.name, groups.name),
+    group_mode = excluded.group_mode,
+    slug = COALESCE(excluded.slug, groups.slug),
+    description = COALESCE(excluded.description, groups.description),
+    goal = COALESCE(excluded.goal, groups.goal),
+    rules = COALESCE(excluded.rules, groups.rules),
+    message_prompt = COALESCE(excluded.message_prompt, groups.message_prompt),
+    doc_url = COALESCE(excluded.doc_url, groups.doc_url),
+    group_owner_did = COALESCE(excluded.group_owner_did, groups.group_owner_did),
+    group_owner_handle = COALESCE(excluded.group_owner_handle, groups.group_owner_handle),
+    my_role = COALESCE(excluded.my_role, groups.my_role),
+    membership_status = excluded.membership_status,
+    join_enabled = COALESCE(excluded.join_enabled, groups.join_enabled),
+    join_code = COALESCE(excluded.join_code, groups.join_code),
+    join_code_expires_at = COALESCE(excluded.join_code_expires_at, groups.join_code_expires_at),
+    member_count = COALESCE(excluded.member_count, groups.member_count),
+    last_synced_seq = COALESCE(excluded.last_synced_seq, groups.last_synced_seq),
+    last_read_seq = COALESCE(excluded.last_read_seq, groups.last_read_seq),
+    last_message_at = COALESCE(excluded.last_message_at, groups.last_message_at),
+    remote_created_at = COALESCE(excluded.remote_created_at, groups.remote_created_at),
+    remote_updated_at = COALESCE(excluded.remote_updated_at, groups.remote_updated_at),
+    stored_at = excluded.stored_at,
+    metadata = COALESCE(excluded.metadata, groups.metadata),
+    credential_name = COALESCE(excluded.credential_name, groups.credential_name)"#,
         params![
             owner_identity_id,
             owner_did,
@@ -945,7 +1108,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
 
 #[derive(Debug)]
 struct GroupMemberImport {
-    owner_did: String,
+    owner: LegacyOwnerScope,
     group_id: String,
     user_id: String,
     member_did: String,
@@ -961,16 +1124,30 @@ struct GroupMemberImport {
 }
 
 fn upsert_group_member(target: &Connection, record: GroupMemberImport) -> StoreResult<()> {
-    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
+    let owner_identity_id = record.owner.owner_identity_id;
+    let owner_did = record.owner.owner_did;
     target.execute(
         r#"
-INSERT OR REPLACE INTO group_members
+INSERT INTO group_members
     (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
      joined_at, sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+ON CONFLICT(owner_identity_id, group_id, user_id)
+DO UPDATE SET
+    owner_did = excluded.owner_did,
+    member_did = COALESCE(excluded.member_did, group_members.member_did),
+    member_handle = COALESCE(excluded.member_handle, group_members.member_handle),
+    profile_url = COALESCE(excluded.profile_url, group_members.profile_url),
+    role = COALESCE(excluded.role, group_members.role),
+    status = excluded.status,
+    joined_at = COALESCE(excluded.joined_at, group_members.joined_at),
+    sent_message_count = excluded.sent_message_count,
+    last_synced_at = excluded.last_synced_at,
+    metadata = COALESCE(excluded.metadata, group_members.metadata),
+    credential_name = COALESCE(excluded.credential_name, group_members.credential_name)"#,
         params![
             owner_identity_id,
-            normalize_owner_did(&record.owner_did),
+            owner_did,
             record.group_id,
             record.user_id,
             normalize_optional_string(&record.member_did),
@@ -991,7 +1168,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
 #[derive(Debug)]
 struct RelationshipEventImport {
     event_id: String,
-    owner_did: String,
+    owner: LegacyOwnerScope,
     target_did: String,
     target_handle: String,
     event_type: String,
@@ -1013,17 +1190,34 @@ fn append_relationship_event(
 ) -> StoreResult<String> {
     let event_id = default_string(record.event_id, &generate_id());
     let now = now_utc();
-    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
+    let owner_identity_id = record.owner.owner_identity_id;
+    let owner_did = record.owner.owner_did;
     target.execute(
         r#"
 INSERT INTO relationship_events
     (event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, source_type, source_name, source_group_id,
      reason, score, status, created_at, updated_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+ON CONFLICT(owner_identity_id, event_id)
+DO UPDATE SET
+    owner_did = excluded.owner_did,
+    target_did = excluded.target_did,
+    target_handle = COALESCE(excluded.target_handle, relationship_events.target_handle),
+    event_type = excluded.event_type,
+    source_type = COALESCE(excluded.source_type, relationship_events.source_type),
+    source_name = COALESCE(excluded.source_name, relationship_events.source_name),
+    source_group_id = COALESCE(excluded.source_group_id, relationship_events.source_group_id),
+    reason = COALESCE(excluded.reason, relationship_events.reason),
+    score = COALESCE(excluded.score, relationship_events.score),
+    status = excluded.status,
+    created_at = relationship_events.created_at,
+    updated_at = excluded.updated_at,
+    metadata = COALESCE(excluded.metadata, relationship_events.metadata),
+    credential_name = COALESCE(excluded.credential_name, relationship_events.credential_name)"#,
         params![
             event_id,
             owner_identity_id,
-            normalize_owner_did(&record.owner_did),
+            owner_did,
             record.target_did,
             normalize_optional_string(&record.target_handle),
             record.event_type,
@@ -1121,10 +1315,6 @@ fn metadata_from_row(row: &Value, key: &str) -> String {
         Some(Value::Null) | None => String::new(),
         Some(value) => serde_json::to_string(value).unwrap_or_default(),
     }
-}
-
-fn owner_identity_id_from_credential(credential_name: &str) -> Option<String> {
-    normalize_optional_string(&normalize_credential_name(credential_name))
 }
 
 fn parse_i64_go_style(raw: &str) -> Option<i64> {

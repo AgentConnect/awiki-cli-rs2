@@ -12,11 +12,10 @@ use records::{
 };
 use rusqlite::Transaction;
 use sql::{
-    count_rows_for_owners, delete_rows_for_owners, normalize_recovered_current_handles,
-    query_maps_with_param, query_one_map2, query_one_map3, store_file_exists,
-    upsert_recovered_contact, upsert_recovered_contact_handle_binding, upsert_recovered_group,
-    upsert_recovered_group_member, upsert_recovered_message, upsert_recovered_relationship_event,
-    zero_counts,
+    count_rows_for_owners, delete_rows_for_owners, query_maps_with_param, query_one_map2,
+    query_one_map3, store_file_exists, upsert_recovered_contact,
+    upsert_recovered_contact_handle_binding, upsert_recovered_group, upsert_recovered_group_member,
+    upsert_recovered_message, upsert_recovered_relationship_event, zero_counts,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -65,85 +64,16 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
     final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
-    let mut store_merge = zero_counts(STORE_MERGE_TABLES);
-    let mut e2ee_cleanup = zero_counts(E2EE_CLEANUP_TABLES);
+    let store_merge = zero_counts(STORE_MERGE_TABLES);
+    let e2ee_cleanup = zero_counts(E2EE_CLEANUP_TABLES);
     let owners = normalize_recover_owner_dids(old_owner_dids, new_owner_did);
-    if owners.is_empty() {
-        return Ok((store_merge, e2ee_cleanup));
-    }
-
-    let transaction = connection.transaction()?;
-    let owner_set = owners.iter().cloned().collect::<BTreeSet<_>>();
-    let mut affected_handles = BTreeSet::new();
-
-    store_merge.insert(
-        "messages".to_string(),
-        merge_recovered_messages(
-            &transaction,
-            &owners,
-            &owner_set,
-            new_owner_did,
-            final_owner_identity_id,
-            final_credential_name,
-        )?,
-    );
-    store_merge.insert(
-        "contacts".to_string(),
-        merge_recovered_contacts(
-            &transaction,
-            &owners,
-            new_owner_did,
-            final_owner_identity_id,
-            final_credential_name,
-            &mut affected_handles,
-        )?,
-    );
-    store_merge.insert(
-        "contact_handle_bindings".to_string(),
-        merge_recovered_contact_handle_bindings(
-            &transaction,
-            &owners,
-            new_owner_did,
-            final_owner_identity_id,
-            final_credential_name,
-            &mut affected_handles,
-        )?,
-    );
-    normalize_recovered_current_handles(&transaction, new_owner_did, &affected_handles)?;
-    store_merge.insert(
-        "relationship_events".to_string(),
-        merge_recovered_relationship_events(
-            &transaction,
-            &owners,
-            new_owner_did,
-            final_owner_identity_id,
-            final_credential_name,
-        )?,
-    );
-    store_merge.insert(
-        "groups".to_string(),
-        merge_recovered_groups(
-            &transaction,
-            &owners,
-            &owner_set,
-            new_owner_did,
-            final_owner_identity_id,
-            final_credential_name,
-        )?,
-    );
-    store_merge.insert(
-        "group_members".to_string(),
-        merge_recovered_group_members(
-            &transaction,
-            &owners,
-            &owner_set,
-            new_owner_did,
-            final_owner_identity_id,
-            final_credential_name,
-        )?,
-    );
-    e2ee_cleanup = clear_recovered_owner_e2ee_data(&transaction, &owners)?;
-    transaction.commit()?;
+    let _ = final_credential_name;
+    crate::internal::local_state::schema::record_identity_did_history_transition(
+        connection,
+        final_owner_identity_id,
+        new_owner_did,
+        &owners,
+    )?;
     Ok((store_merge, e2ee_cleanup))
 }
 
@@ -585,79 +515,80 @@ mod tests {
         )
         .expect("merge recovered local state");
 
-        assert_eq!(store_merge["messages"], 2);
-        assert_eq!(store_merge["contacts"], 2);
-        assert_eq!(store_merge["contact_handle_bindings"], 2);
-        assert_eq!(store_merge["relationship_events"], 1);
-        assert_eq!(store_merge["groups"], 1);
-        assert_eq!(store_merge["group_members"], 1);
-        assert_eq!(e2ee_cleanup["e2ee_outbox"], 1);
-        assert_eq!(e2ee_cleanup["e2ee_sessions"], 1);
+        assert_zero_counts(&store_merge, STORE_KEYS);
+        assert_zero_counts(&e2ee_cleanup, E2EE_KEYS);
 
         let verify = Connection::open(&sqlite_path).expect("open database");
-        for table in STORE_KEYS.iter().chain(E2EE_KEYS.iter()) {
-            assert_owner_count(&verify, table, "did:owner:old-1", 0);
-            assert_owner_count(&verify, table, "did:owner:old-2", 0);
-        }
-        assert_owner_count(&verify, "messages", "did:owner:new", 2);
-        assert_owner_count(&verify, "contacts", "did:owner:new", 2);
-        assert_owner_count(&verify, "contact_handle_bindings", "did:owner:new", 2);
-        assert_owner_count(&verify, "relationship_events", "did:owner:new", 1);
-        assert_owner_count(&verify, "groups", "did:owner:new", 1);
-        assert_owner_count(&verify, "group_members", "did:owner:new", 1);
+        assert_owner_count(&verify, "messages", "did:owner:old-1", 1);
+        assert_owner_count(&verify, "messages", "did:owner:old-2", 1);
+        assert_owner_count(&verify, "contacts", "did:owner:old-1", 1);
+        assert_owner_count(&verify, "contacts", "did:owner:old-2", 1);
+        assert_owner_count(&verify, "contact_handle_bindings", "did:owner:old-1", 1);
+        assert_owner_count(&verify, "contact_handle_bindings", "did:owner:old-2", 1);
+        assert_owner_count(&verify, "relationship_events", "did:owner:old-1", 1);
+        assert_owner_count(&verify, "groups", "did:owner:old-2", 1);
+        assert_owner_count(&verify, "group_members", "did:owner:old-2", 1);
+        assert_owner_count(&verify, "messages", "did:owner:new", 0);
+        assert_owner_count(&verify, "contacts", "did:owner:new", 0);
+        assert_owner_count(&verify, "contact_handle_bindings", "did:owner:new", 0);
+        assert_owner_count(&verify, "relationship_events", "did:owner:new", 0);
+        assert_owner_count(&verify, "groups", "did:owner:new", 0);
+        assert_owner_count(&verify, "group_members", "did:owner:new", 0);
         assert_owner_count(&verify, "messages", "did:owner:other", 1);
         assert_owner_count(&verify, "contacts", "did:owner:other", 1);
         assert_owner_count(&verify, "e2ee_outbox", "did:owner:new", 1);
         assert_owner_count(&verify, "e2ee_sessions", "did:owner:new", 1);
+        assert_owner_count(&verify, "e2ee_outbox", "did:owner:old-1", 1);
+        assert_owner_count(&verify, "e2ee_sessions", "did:owner:old-2", 1);
         assert_owner_count(&verify, "e2ee_outbox", "did:owner:other", 1);
 
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT receiver_did FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-old-1'",
+                "SELECT receiver_did FROM messages WHERE owner_did = 'did:owner:old-1' AND msg_id = 'msg-old-1'",
             ),
-            "did:owner:new"
+            "did:owner:old-1"
         );
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT thread_id FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-old-1'",
+                "SELECT thread_id FROM messages WHERE owner_did = 'did:owner:old-1' AND msg_id = 'msg-old-1'",
             ),
-            expected_thread_id("did:owner:new", "did:peer:bob", "")
+            expected_thread_id("did:owner:old-1", "did:peer:bob", "")
         );
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT sender_did FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-old-2'",
+                "SELECT sender_did FROM messages WHERE owner_did = 'did:owner:old-2' AND msg_id = 'msg-old-2'",
             ),
-            "did:owner:new"
+            "did:owner:old-2"
         );
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT credential_name FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-old-2'",
+                "SELECT credential_name FROM messages WHERE owner_did = 'did:owner:old-2' AND msg_id = 'msg-old-2'",
             ),
-            "final-credential"
+            "old-credential-2"
         );
 
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT did FROM contact_handle_bindings WHERE owner_did = 'did:owner:new' AND handle = 'alice' AND is_current = 1",
+                "SELECT did FROM contact_handle_bindings WHERE owner_did = 'did:owner:old-2' AND handle = 'alice' AND is_current = 1",
             ),
             "did:peer:new"
         );
         assert_eq!(
             scalar_opt_string(
                 &verify,
-                "SELECT handle FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:old'",
+                "SELECT handle FROM contacts WHERE owner_did = 'did:owner:old-1' AND did = 'did:peer:old'",
             ),
-            None
+            Some("alice".to_string())
         );
         assert_eq!(
             scalar_opt_string(
                 &verify,
-                "SELECT handle FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:new'",
+                "SELECT handle FROM contacts WHERE owner_did = 'did:owner:old-2' AND did = 'did:peer:new'",
             ),
             Some("alice".to_string())
         );
@@ -665,17 +596,20 @@ mod tests {
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT group_owner_did FROM groups WHERE owner_did = 'did:owner:new' AND group_id = 'group:one'",
+                "SELECT group_owner_did FROM groups WHERE owner_did = 'did:owner:old-2' AND group_id = 'group:one'",
             ),
-            "did:owner:new"
+            "did:owner:old-2"
         );
         assert_eq!(
             scalar_string(
                 &verify,
-                "SELECT member_did FROM group_members WHERE owner_did = 'did:owner:new' AND group_id = 'group:one' AND user_id = 'user-z'",
+                "SELECT member_did FROM group_members WHERE owner_did = 'did:owner:old-2' AND group_id = 'group:one' AND user_id = 'user-z'",
             ),
-            "did:owner:new"
+            "did:owner:old-2"
         );
+        assert_did_history(&verify, "final-owner-id", "did:owner:new", "current");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old-1", "previous");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old-2", "previous");
     }
 
     #[test]
@@ -695,104 +629,104 @@ mod tests {
         )
         .expect("merge recovered conflicts");
 
-        for key in STORE_KEYS {
-            assert_eq!(store_merge[*key], 1, "source count for {key}");
-        }
+        assert_zero_counts(&store_merge, STORE_KEYS);
         assert_zero_counts(&e2ee_cleanup, E2EE_KEYS);
 
         let verify = Connection::open(&sqlite_path).expect("open database");
         for table in STORE_KEYS {
-            assert_owner_count(&verify, table, "did:owner:old", 0);
+            assert_owner_count(&verify, table, "did:owner:old", 1);
         }
 
         assert_eq!(
-            scalar_string(&verify, "SELECT content FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-conflict'"),
+            scalar_string(&verify, "SELECT content FROM messages WHERE owner_did = 'did:owner:old' AND msg_id = 'msg-conflict'"),
             "incoming content"
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT server_seq FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-conflict'"),
+            scalar_i64(&verify, "SELECT server_seq FROM messages WHERE owner_did = 'did:owner:old' AND msg_id = 'msg-conflict'"),
             9
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT sent_at FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-conflict'"),
+            scalar_string(&verify, "SELECT sent_at FROM messages WHERE owner_did = 'did:owner:old' AND msg_id = 'msg-conflict'"),
             "2026-01-03T00:00:00Z"
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT is_e2ee FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-conflict'"),
+            scalar_i64(&verify, "SELECT is_e2ee FROM messages WHERE owner_did = 'did:owner:old' AND msg_id = 'msg-conflict'"),
             1
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT is_read FROM messages WHERE owner_did = 'did:owner:new' AND msg_id = 'msg-conflict'"),
-            1
+            scalar_i64(&verify, "SELECT is_read FROM messages WHERE owner_did = 'did:owner:old' AND msg_id = 'msg-conflict'"),
+            0
         );
 
         assert_eq!(
-            scalar_string(&verify, "SELECT name FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:conflict'"),
+            scalar_string(&verify, "SELECT name FROM contacts WHERE owner_did = 'did:owner:old' AND did = 'did:peer:conflict'"),
             "Incoming Alice"
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT first_seen_at FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:conflict'"),
+            scalar_string(&verify, "SELECT first_seen_at FROM contacts WHERE owner_did = 'did:owner:old' AND did = 'did:peer:conflict'"),
             "2026-01-01T00:00:00Z"
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT last_seen_at FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:conflict'"),
+            scalar_string(&verify, "SELECT last_seen_at FROM contacts WHERE owner_did = 'did:owner:old' AND did = 'did:peer:conflict'"),
             "2026-01-10T00:00:00Z"
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT followed FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:conflict'"),
-            1
+            scalar_i64(&verify, "SELECT followed FROM contacts WHERE owner_did = 'did:owner:old' AND did = 'did:peer:conflict'"),
+            0
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT messaged FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:conflict'"),
+            scalar_i64(&verify, "SELECT messaged FROM contacts WHERE owner_did = 'did:owner:old' AND did = 'did:peer:conflict'"),
             1
         );
 
         assert_eq!(
-            scalar_string(&verify, "SELECT first_seen_at FROM contact_handle_bindings WHERE owner_did = 'did:owner:new' AND handle = 'alice' AND did = 'did:peer:conflict'"),
+            scalar_string(&verify, "SELECT first_seen_at FROM contact_handle_bindings WHERE owner_did = 'did:owner:old' AND handle = 'alice' AND did = 'did:peer:conflict'"),
             "2026-01-01T00:00:00Z"
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT last_seen_at FROM contact_handle_bindings WHERE owner_did = 'did:owner:new' AND handle = 'alice' AND did = 'did:peer:conflict'"),
+            scalar_string(&verify, "SELECT last_seen_at FROM contact_handle_bindings WHERE owner_did = 'did:owner:old' AND handle = 'alice' AND did = 'did:peer:conflict'"),
             "2026-01-10T00:00:00Z"
         );
 
         assert_eq!(
-            scalar_string(&verify, "SELECT name FROM groups WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict'"),
+            scalar_string(&verify, "SELECT name FROM groups WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict'"),
             "Incoming Group"
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT group_owner_did FROM groups WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict'"),
-            "did:owner:new"
+            scalar_string(&verify, "SELECT group_owner_did FROM groups WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict'"),
+            "did:owner:old"
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT member_count FROM groups WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict'"),
+            scalar_i64(&verify, "SELECT member_count FROM groups WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict'"),
             7
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT remote_created_at FROM groups WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict'"),
+            scalar_string(&verify, "SELECT remote_created_at FROM groups WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict'"),
             "2026-01-01T00:00:00Z"
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT remote_updated_at FROM groups WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict'"),
+            scalar_string(&verify, "SELECT remote_updated_at FROM groups WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict'"),
             "2026-01-10T00:00:00Z"
         );
 
         assert_eq!(
-            scalar_string(&verify, "SELECT member_did FROM group_members WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
-            "did:owner:new"
+            scalar_string(&verify, "SELECT member_did FROM group_members WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
+            "did:owner:old"
         );
         assert_eq!(
-            scalar_i64(&verify, "SELECT sent_message_count FROM group_members WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
+            scalar_i64(&verify, "SELECT sent_message_count FROM group_members WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
             8
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT joined_at FROM group_members WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
+            scalar_string(&verify, "SELECT joined_at FROM group_members WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
             "2026-01-01T00:00:00Z"
         );
         assert_eq!(
-            scalar_string(&verify, "SELECT last_synced_at FROM group_members WHERE owner_did = 'did:owner:new' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
+            scalar_string(&verify, "SELECT last_synced_at FROM group_members WHERE owner_did = 'did:owner:old' AND group_id = 'group-conflict' AND user_id = 'user-conflict'"),
             "2026-01-10T00:00:00Z"
         );
+        assert_did_history(&verify, "final-owner-id", "did:owner:new", "current");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old", "previous");
     }
 
     #[test]
@@ -839,30 +773,31 @@ mod tests {
         .expect("merge contacts");
 
         let verify = Connection::open(&sqlite_path).expect("open database");
-        assert_eq!(
-            scalar_string(
-                &verify,
-                "SELECT did FROM contact_handle_bindings WHERE owner_did = 'did:owner:new' AND handle = 'same' AND is_current = 1",
-            ),
-            "did:peer:z"
-        );
+        assert_owner_count(&verify, "contacts", "did:owner:new", 0);
+        assert_did_history(&verify, "final-owner-id", "did:owner:new", "current");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old-a", "previous");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old-z", "previous");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old-old", "previous");
         assert_eq!(
             scalar_opt_string(
                 &verify,
-                "SELECT handle FROM contacts WHERE owner_did = 'did:owner:new' AND did = 'did:peer:z'",
+                "SELECT handle FROM contacts WHERE owner_did = 'did:owner:old-z' AND did = 'did:peer:z'",
             ),
             Some("same".to_string())
         );
-        for did in ["did:peer:a", "did:peer:old"] {
+        for (owner_did, did) in [
+            ("did:owner:old-a", "did:peer:a"),
+            ("did:owner:old-old", "did:peer:old"),
+        ] {
             assert_eq!(
                 scalar_opt_string(
                     &verify,
                     &format!(
-                        "SELECT handle FROM contacts WHERE owner_did = 'did:owner:new' AND did = '{did}'"
+                        "SELECT handle FROM contacts WHERE owner_did = '{owner_did}' AND did = '{did}'"
                     ),
                 ),
-                None,
-                "{did} should no longer own the current handle"
+                Some("same".to_string()),
+                "{did} should remain in its original owner identity"
             );
         }
     }
@@ -909,7 +844,7 @@ INSERT INTO relationship_events (
         )
         .expect("merge relationship event");
 
-        assert_eq!(store_merge["relationship_events"], 1);
+        assert_zero_counts(&store_merge, STORE_KEYS);
         assert_zero_counts(&e2ee_cleanup, E2EE_KEYS);
 
         let verify = Connection::open(&sqlite_path).expect("open database");
@@ -925,14 +860,14 @@ INSERT INTO relationship_events (
                 &verify,
                 "SELECT owner_did FROM relationship_events WHERE event_id = 'evt-global'",
             ),
-            "did:owner:new"
+            "did:owner:old"
         );
         assert_eq!(
             scalar_string(
                 &verify,
                 "SELECT credential_name FROM relationship_events WHERE event_id = 'evt-global'",
             ),
-            "final-credential"
+            "old-credential"
         );
         assert_eq!(
             scalar_opt_f64(
@@ -941,6 +876,8 @@ INSERT INTO relationship_events (
             ),
             Some(0.42)
         );
+        assert_did_history(&verify, "final-owner-id", "did:owner:new", "current");
+        assert_did_history(&verify, "final-owner-id", "did:owner:old", "previous");
     }
 
     fn seed_recover_main_rows(connection: &Connection) -> rusqlite::Result<()> {
@@ -1511,6 +1448,24 @@ CREATE TABLE IF NOT EXISTS e2ee_sessions (
             &format!("SELECT COUNT(*) FROM {table} WHERE owner_did = '{owner_did}'"),
         );
         assert_eq!(got, want, "owner count for {table}/{owner_did}");
+    }
+
+    fn assert_did_history(
+        connection: &Connection,
+        owner_identity_id: &str,
+        did: &str,
+        status: &str,
+    ) {
+        let got = scalar_string(
+            connection,
+            &format!(
+                "SELECT status FROM identity_did_history WHERE owner_identity_id = '{owner_identity_id}' AND did = '{did}'"
+            ),
+        );
+        assert_eq!(
+            got, status,
+            "DID history status for {owner_identity_id}/{did}"
+        );
     }
 
     fn scalar_string(connection: &Connection, sql: &str) -> String {

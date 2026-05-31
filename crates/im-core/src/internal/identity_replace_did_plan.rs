@@ -8,8 +8,8 @@ const REPLACE_DID_LOCAL_WRITES: &[&str] = &[
     "e2ee-signing-private.pem",
     "e2ee-agreement-private.pem",
     ".legacy-backup/replace-did",
-    "sqlite.owner_did_rebind",
-    "sqlite.e2ee_cleanup",
+    "sqlite.identity_did_history",
+    "sqlite.owner_did_snapshot_refresh",
 ];
 
 #[cfg(feature = "sqlite")]
@@ -58,7 +58,7 @@ pub(crate) fn plan_replace_did(
         risk_summary: vec![
             "Replaces the selected handle identity DID and local key material.".to_string(),
             "Requires a local backup before any execution path may continue.".to_string(),
-            "Local SQLite owner state must be rebound from the old DID to the planned DID."
+            "Local SQLite DID history and owner_did snapshots are refreshed under the same owner identity."
                 .to_string(),
         ],
         backup_plan: crate::identity::ReplaceDidBackupPlan {
@@ -77,7 +77,7 @@ pub(crate) fn plan_replace_did(
             required: request.identity.did != request.planned_new_did,
             old_owner_did: request.identity.did.clone(),
             new_owner_did: request.planned_new_did.clone(),
-            destructive: true,
+            destructive: false,
             dry_run_only: true,
         },
         affected_local_state: request.affected_local_state,
@@ -89,7 +89,7 @@ pub(crate) fn plan_replace_did(
         rollback_notes: vec![
             "Do not execute remote replace_did unless the backup manifest has been written."
                 .to_string(),
-            "If later execution fails after the remote call, restore the identity backup and inspect local owner rebind counts."
+            "If later execution fails after the remote call, restore the identity backup and inspect local DID history/snapshot counts."
                 .to_string(),
         ],
         local_writes: REPLACE_DID_LOCAL_WRITES

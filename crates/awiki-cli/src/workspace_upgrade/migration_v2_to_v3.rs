@@ -1,7 +1,5 @@
 use super::upgrader::{Context, MigrationError};
 use crate::workspace_upgrade::legacy_identity as identity;
-use crate::workspace_upgrade::legacy_sqlite as store;
-use serde_json::Value;
 
 pub(crate) fn apply_workspace_v2_to_v3_replace_existing_k1_dids(
     context: &mut Context,
@@ -74,16 +72,6 @@ pub(crate) fn replace_k1_dids_for_summaries(
                 continue;
             }
         };
-        let old_did = string_field(&result.data, "old_did");
-        let new_did = string_field(&result.data, "did");
-        if let Err(err) =
-            store::rebind_local_identity_state(&context.resolved.paths, &old_did, &new_did)
-        {
-            context.warnings.push(format!(
-                "Automatic DID replacement completed but local SQLite rebinding failed for identity {}: {}",
-                summary.identity_name, err
-            ));
-        }
         for warning in result.warnings.drain(..) {
             context.warnings.push(format!(
                 "Automatic DID replacement completed with warning for identity {}: {}",
@@ -106,14 +94,6 @@ pub(crate) fn is_k1_did(did: &str) -> bool {
         .unwrap_or(did)
         .trim()
         .starts_with("k1_")
-}
-
-fn string_field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }
 
 fn validate_handle_did(did: &str) -> Result<(), String> {

@@ -98,7 +98,7 @@ fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     assert!(meta["last_upgrade_id"]
         .as_str()
         .is_some_and(|id| !id.is_empty()));

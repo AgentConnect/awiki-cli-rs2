@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const LATEST_WORKSPACE_SCHEMA_VERSION: i64 = 3;
+pub const LATEST_WORKSPACE_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]

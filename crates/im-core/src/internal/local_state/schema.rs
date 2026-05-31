@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const SCHEMA_VERSION: i64 = 17;
@@ -415,6 +416,19 @@ const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
     "direct_e2ee_one_time_prekeys",
 ];
 
+const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
+    "contacts",
+    "contact_handle_bindings",
+    "messages",
+    "groups",
+    "group_members",
+    "relationship_events",
+    "e2ee_outbox",
+    "direct_e2ee_sessions",
+    "direct_e2ee_signed_prekeys",
+    "direct_e2ee_one_time_prekeys",
+];
+
 const IDENTITY_OWNED_INDEX_TEMPLATES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity_last_seen{s} ON contacts{s}(owner_identity_id, last_seen_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity_source_group{s} ON contacts{s}(owner_identity_id, source_group_id)",
@@ -686,6 +700,89 @@ pub(crate) fn identity_owned_owner_invariants(
     }
 
     Ok(violations)
+}
+
+pub(crate) fn record_identity_did_history_transition<S: AsRef<str>>(
+    connection: &mut Connection,
+    owner_identity_id: &str,
+    current_did: &str,
+    previous_dids: &[S],
+) -> crate::ImResult<BTreeMap<String, i64>> {
+    let scope =
+        crate::internal::local_state::owner_scope::OwnerScope::new(owner_identity_id, current_did)?;
+    ensure_schema(connection)?;
+    let now = now_utc_like();
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+
+    transaction
+        .execute(
+            r#"
+UPDATE identity_did_history
+SET status = 'previous',
+    last_seen_at = ?1
+WHERE owner_identity_id = ?2
+  AND status = 'current'
+  AND did <> ?3"#,
+            rusqlite::params![now, scope.owner_identity_id, scope.owner_did],
+        )
+        .map_err(super::local_state_unavailable)?;
+
+    for previous in normalized_previous_dids(previous_dids, &scope.owner_did) {
+        transaction
+            .execute(
+                r#"
+INSERT INTO identity_did_history
+    (owner_identity_id, did, status, first_seen_at, last_seen_at)
+VALUES (?1, ?2, 'previous', ?3, ?3)
+ON CONFLICT(owner_identity_id, did)
+DO UPDATE SET
+    status = CASE
+        WHEN identity_did_history.status = 'current' THEN 'current'
+        ELSE 'previous'
+    END,
+    last_seen_at = excluded.last_seen_at"#,
+                rusqlite::params![scope.owner_identity_id, previous, now],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+
+    transaction
+        .execute(
+            r#"
+INSERT INTO identity_did_history
+    (owner_identity_id, did, status, first_seen_at, last_seen_at)
+VALUES (?1, ?2, 'current', ?3, ?3)
+ON CONFLICT(owner_identity_id, did)
+DO UPDATE SET
+    status = 'current',
+    last_seen_at = excluded.last_seen_at"#,
+            rusqlite::params![scope.owner_identity_id, scope.owner_did, now],
+        )
+        .map_err(super::local_state_unavailable)?;
+
+    let mut snapshot_counts = BTreeMap::new();
+    for table in OWNER_DID_SNAPSHOT_TABLES_V17 {
+        let updated = transaction
+            .execute(
+                &format!(
+                    r#"
+UPDATE {table}
+SET owner_did = ?1
+WHERE owner_identity_id = ?2
+  AND owner_did <> ?1"#
+                ),
+                rusqlite::params![scope.owner_did, scope.owner_identity_id],
+            )
+            .map_err(super::local_state_unavailable)? as i64;
+        snapshot_counts.insert((*table).to_string(), updated);
+    }
+
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(snapshot_counts)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -975,6 +1072,21 @@ fn owner_hint_contains_did(hint: &LocalStateOwnerHint, did: &str) -> bool {
 
 fn first_non_empty<const N: usize>(values: [&str; N]) -> Option<&str> {
     values.into_iter().find(|value| !value.trim().is_empty())
+}
+
+fn normalized_previous_dids<S: AsRef<str>>(values: &[S], current_did: &str) -> Vec<String> {
+    let current_did = current_did.trim();
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.as_ref().trim();
+        if value.is_empty() || value == current_did {
+            continue;
+        }
+        if !normalized.iter().any(|known| known == value) {
+            normalized.push(value.to_owned());
+        }
+    }
+    normalized
 }
 
 fn count_query(connection: &Connection, sql: &str) -> crate::ImResult<i64> {

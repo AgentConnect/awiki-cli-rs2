@@ -1867,12 +1867,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(store_merge.get("messages"), Some(&1));
-        assert_eq!(e2ee_cleanup.get("e2ee_outbox"), Some(&1));
+        assert_eq!(store_merge.get("messages"), Some(&0));
+        assert_eq!(e2ee_cleanup.get("e2ee_outbox"), Some(&0));
         let messages = db
             .list_conversations(
-                "alice-recovered-id",
-                new_did,
+                "old-alice",
+                old_did,
                 crate::messages::ConversationQuery {
                     limit: crate::ids::PageLimit(10),
                     include_groups: false,
@@ -1895,7 +1895,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(old_outbox.is_empty());
+        assert_eq!(old_outbox.len(), 1);
 
         db.shutdown().await.unwrap();
     }

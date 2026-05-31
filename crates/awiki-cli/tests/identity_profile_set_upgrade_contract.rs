@@ -152,7 +152,7 @@ fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
     assert_eq!(
         std::fs::read_to_string(backup_dir.join("config.json.bak"))

@@ -187,8 +187,9 @@ pub trait BridgeReplaceDidExecution {
 
     fn rebind_local_identity_state(
         &mut self,
-        old_owner_did: &crate::ids::Did,
-        new_owner_did: &crate::ids::Did,
+        owner_identity_id: &crate::ids::IdentityId,
+        old_did: &crate::ids::Did,
+        new_did: &crate::ids::Did,
     ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState>;
 }
 
@@ -423,10 +424,11 @@ where
 
     fn rebind_local_state(
         &mut self,
-        old_owner_did: &crate::ids::Did,
-        new_owner_did: &crate::ids::Did,
+        owner_identity_id: &crate::ids::IdentityId,
+        old_did: &crate::ids::Did,
+        new_did: &crate::ids::Did,
     ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
         self.0
-            .rebind_local_identity_state(old_owner_did, new_owner_did)
+            .rebind_local_identity_state(owner_identity_id, old_did, new_did)
     }
 }

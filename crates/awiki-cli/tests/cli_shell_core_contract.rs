@@ -152,7 +152,7 @@ fn config_show_reports_resolved_configuration_snapshot() {
     );
     assert_eq!(
         envelope["data"]["workspace_upgrade"]["detection"]["latest_version"],
-        3
+        4
     );
     assert_ne!(
         envelope["data"]["workspace_upgrade"]["detection"]["current_version"],
@@ -277,7 +277,7 @@ fn config_set_migrates_legacy_config_json_before_writing_like_go() {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
     assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
     let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
