@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 03  
-状态：in_progress
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-05-31 23:34:15 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-05-31 23:42:25 +0800 |
+| 提交 | 实现提交 `fa4668a206404e61beda09db1d5675548ff30731`；账本收尾提交待回填 |
 | 审查证据 | 2026-05-31 23:41:03 +0800 完成提交前 review：Gateway trait 隔离协议字段；fake gateway deterministic；`StdioHermesGateway` 只做 installation check，未虚假实现未知 `session.create` / `prompt.submit` 协议；发现 `launch_run` 缺少 run/profile binding 校验，已修复并补测试。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，5 个默认测试、1 个 ignored；`cargo test -p awiki-deamon --locked` 通过，47 个测试、1 ignored；`cargo test -p awiki-deamon --locked hermes_real_smoke -- --ignored --nocapture` 通过并记录 `skipped: AWIKI_HERMES_BIN is not set`；secret/debug 搜索仅命中测试 fixture/脱敏断言和安全说明；`git diff --check -- crates/awiki-deamon` 通过。 |
-| 下一步 | 创建 Step 03 聚焦提交并回填 commit hash |
+| 下一步 | 启动 Step 04 Controller 消息执行链与 Prompt Wrapper |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -239,10 +239,23 @@ runner.exited
 
 ### 提交后状态
 
-- 实现提交：待回填。
+- 实现提交：`fa4668a206404e61beda09db1d5675548ff30731`
+- 实现提交纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/02-profile-skills.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/03-tui-gateway-runner.md`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/gateway.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/runner.rs`
+  - `crates/awiki-deamon/tests/hermes_gateway.rs`
+- 实现提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 5]
+```
+
+- 遗留未提交变更：无。
 - 账本收尾提交：待回填。
-- 提交后 `git status --short --branch`：待回填。
-- 遗留未提交变更：待回填。
 
 ## 13. 风险、回滚与后续
 
