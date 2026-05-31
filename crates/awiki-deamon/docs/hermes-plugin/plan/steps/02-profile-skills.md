@@ -12,7 +12,7 @@
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-05-31 23:19:11 +0800 |
 | 完成时间 | 2026-05-31 23:32:43 +0800 |
-| 提交 | 实现提交 `f8a0ae9b9994ebb7ebbee2aef48364a9d5fc6261`；账本收尾提交待回填 |
+| 提交 | 实现提交 `f8a0ae9b9994ebb7ebbee2aef48364a9d5fc6261`；账本收尾提交 `56b4c7ea50f498777bbe42d34e0f3a706f7f1f8f` |
 | 审查证据 | 2026-05-31 23:31:00 +0800 完成提交前 review：schema migration 为 additive；profile home 派生在 `state_root/runtime/hermes/profiles/` 下；profile 不写 run token、DID 私钥或 JWT；发现并修复 profile 文案中的精确敏感字段名和 wrapper 配置夸大真实进程能力问题；同步 schema version 测试。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，42 个测试；secret 搜索仅命中测试断言和安全说明；禁止 plugin 搜索仅命中测试断言；`git diff --check -- crates/awiki-deamon` 通过。 |
 | 下一步 | 启动 Step 03 TUI Gateway runner 与 plugin 骨架 |
@@ -301,7 +301,7 @@ CREATE TABLE hermes_profiles (
 ```
 
 - 遗留未提交变更：无。
-- 账本收尾提交：待回填。
+- 账本收尾提交：`56b4c7ea50f498777bbe42d34e0f3a706f7f1f8f`
 
 ## 13. 风险、回滚与后续
 

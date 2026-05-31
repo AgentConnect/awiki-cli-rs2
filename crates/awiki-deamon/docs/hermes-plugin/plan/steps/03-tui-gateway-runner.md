@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 03  
-状态：draft
+状态：in_progress
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-05-31 23:34:15 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 等 Step 02 完成后，实现 Hermes TUI Gateway adapter 和 runner 骨架 |
+| 审查证据 | 2026-05-31 23:41:03 +0800 完成提交前 review：Gateway trait 隔离协议字段；fake gateway deterministic；`StdioHermesGateway` 只做 installation check，未虚假实现未知 `session.create` / `prompt.submit` 协议；发现 `launch_run` 缺少 run/profile binding 校验，已修复并补测试。 |
+| 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，5 个默认测试、1 个 ignored；`cargo test -p awiki-deamon --locked` 通过，47 个测试、1 ignored；`cargo test -p awiki-deamon --locked hermes_real_smoke -- --ignored --nocapture` 通过并记录 `skipped: AWIKI_HERMES_BIN is not set`；secret/debug 搜索仅命中测试 fixture/脱敏断言和安全说明；`git diff --check -- crates/awiki-deamon` 通过。 |
+| 下一步 | 创建 Step 03 聚焦提交并回填 commit hash |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -182,6 +182,67 @@ runner.exited
 | 日期 | 变更 | 原因 | 主计划变更日志链接 |
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+
+## 14. Step 03 执行记录
+
+### 已实现
+
+- 新增 `plugins/hermes/gateway.rs`，定义 `HermesGateway` trait、runner/session/prompt/event 类型、`FakeHermesGateway` 和 `StdioHermesGateway` installation checker。
+- 新增 `plugins/hermes/runner.rs`，定义 `HermesRunner` 和 `HermesRuntimePlugin` 骨架；`RuntimePlugin::launch_run` 在 fake gateway 下 start -> session.create -> prompt.submit，并返回 `Running`、无 callbacks。
+- `HermesPromptSubmitRequest` 的 `Debug` 输出会 redacted prompt，避免 prompt 中 token 或 secret 进入日志。
+- 新增 `tests/hermes_gateway.rs`，覆盖 fake runner/session/prompt/event、`message.complete` 不产生 final callback、profile binding 校验、installation checker、prompt debug redaction、ignored real smoke。
+
+### Review 记录
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | `HermesRuntimePlugin::launch_run` 初版未校验 `RuntimeLaunchContext` 与绑定 `HermesProfileRecord` 是否一致。 | 可能在后续 foreground 路由时误用错误 profile runner。 |
+| 已修复 | 增加 agent_did、runtime_profile_id、runtime_plugin_id binding 校验；补 `hermes_gateway_plugin_rejects_mismatched_profile_binding` 测试。 | 已重跑 focused 和全量测试。 |
+| 残余风险 | 真实 Hermes TUI Gateway 的 framing、JSON-RPC method 和 event schema 仍未接入。 | `StdioHermesGateway` 在本步骤只做 installation check；真实协议留给 Step 04/后续 smoke 按计划收敛。 |
+| 测试新增或缺失 | 新增 `hermes_gateway` focused tests 5 个默认测试和 1 个 ignored smoke。 | 默认测试不依赖真实 Hermes binary。 |
+| 文档更新或缺失 | 本步骤执行记录已回填；未新增 adapter runbook。 | 真实 protocol 确认后再补。 |
+
+### 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked hermes_gateway` | 通过：5 个默认测试，1 个 ignored real smoke 被过滤。 |
+| `cargo test -p awiki-deamon --locked` | 通过：47 个测试，1 ignored，doc tests 0 个。 |
+| `cargo test -p awiki-deamon --locked hermes_real_smoke -- --ignored --nocapture` | 通过：1 个 ignored smoke 执行；当前 `AWIKI_HERMES_BIN` 未设置，测试输出 `skipped: AWIKI_HERMES_BIN is not set`。 |
+| `rg -n "runtime_rpc_token\|rtok_\|private key\|jwt" crates/awiki-deamon/src/plugins/hermes crates/awiki-deamon/tests` | 通过但有预期命中：测试 fixture、脱敏断言、既有 local RPC security tests 和安全说明；生产 Hermes gateway/runner 无 token 原文日志。 |
+| `git diff --check -- crates/awiki-deamon` | 通过。 |
+
+### 提交前状态
+
+- `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 4]
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/02-profile-skills.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/03-tui-gateway-runner.md
+ M crates/awiki-deamon/src/plugins/hermes/mod.rs
+?? crates/awiki-deamon/src/plugins/hermes/gateway.rs
+?? crates/awiki-deamon/src/plugins/hermes/runner.rs
+?? crates/awiki-deamon/tests/hermes_gateway.rs
+```
+
+- 纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/02-profile-skills.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/03-tui-gateway-runner.md`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/gateway.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/runner.rs`
+  - `crates/awiki-deamon/tests/hermes_gateway.rs`
+
+### 提交后状态
+
+- 实现提交：待回填。
+- 账本收尾提交：待回填。
+- 提交后 `git status --short --branch`：待回填。
+- 遗留未提交变更：待回填。
 
 ## 13. 风险、回滚与后续
 

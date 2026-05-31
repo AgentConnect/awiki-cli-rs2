@@ -7,6 +7,16 @@ use crate::config::DaemonConfig;
 use crate::runtime::RuntimeAgentProfile;
 use crate::state::{DaemonState, HermesProfileRecord};
 
+pub mod gateway;
+pub mod runner;
+
+pub use gateway::{
+    FakeHermesGateway, HermesGateway, HermesPromptOutcome, HermesPromptSubmitRequest,
+    HermesRunnerRef, HermesRuntimeEvent, HermesRuntimeEventKind, HermesSessionCreateRequest,
+    HermesSessionRef, StdioHermesGateway,
+};
+pub use runner::{HermesRunner, HermesRuntimePlugin};
+
 pub const HERMES_RUNTIME_NAME: &str = "hermes";
 pub const HERMES_RUNTIME_PLUGIN_ID: &str = "runtime.hermes";
 
