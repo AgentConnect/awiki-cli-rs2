@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 06  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-06-01 00:40:24 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-06-01 00:53:38 +0800 |
+| 提交 | 实现提交 `9c5bff865682d3c77e97355484aacbe8d0f64823` |
 | 审查证据 | 2026-06-01 00:51:13 +0800 完成提交前 review：确认 session 表只保存 route/session metadata，不保存 prompt 原文、runtime token、private key 或 JWT；确认 active route 唯一约束、resume/reset 和 schema migration；残余风险为首次同 route 并发创建缺少事务重试。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_session` 通过，2 个 focused tests；`cargo test -p awiki-deamon --locked state` 通过，12 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个匹配测试；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，6 个匹配测试、1 个 ignored real smoke 被过滤；`cargo test -p awiki-deamon --locked` 通过，56 个测试、1 ignored；`git diff --check -- crates/awiki-deamon` 通过；边界/secret 搜索结果已记录在执行记录。 |
-| 下一步 | 创建 Step 06 实现提交，随后回填 hash 并标记 done |
+| 下一步 | 启动 Step 07 长驻 daemon 集成与诊断 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -165,13 +165,13 @@ debug
 
 ## 7. 验收标准
 
-- [ ] Hermes native session mapping 持久化到 SQLite。
-- [ ] 同一 `(agent_did, controller_did, conversation_id, session_kind)` route 可复用 Hermes session。
-- [ ] reset/resume 语义有测试覆盖。
-- [ ] daemon 不复制 Hermes transcript，不把 observation 当 final。
-- [ ] schema migration 兼容旧 DB。
-- [ ] 审查发现 已修复或明确记录。
-- [ ] 本步骤创建一个聚焦提交后才进入 Step 07。
+- [x] Hermes native session mapping 持久化到 SQLite。
+- [x] 同一 `(agent_did, controller_did, conversation_id, session_kind)` route 可复用 Hermes session。
+- [x] reset/resume 语义有测试覆盖。
+- [x] daemon 不复制 Hermes transcript，不把 observation 当 final。
+- [x] schema migration 兼容旧 DB。
+- [x] 审查发现 已修复或明确记录。
+- [x] 本步骤创建一个聚焦提交后才进入 Step 07。
 
 ## 8. 验证方式
 
@@ -264,9 +264,14 @@ debug
 
 ### 提交后状态
 
-- 实现提交：待回填。
-- 实现提交后 `git status --short --branch`：待回填。
-- 遗留未提交变更：待回填。
+- 实现提交：`9c5bff865682d3c77e97355484aacbe8d0f64823`
+- 实现提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 12]
+```
+
+- 遗留未提交变更：无。
 
 ## 10. 提交要求
 
