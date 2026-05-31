@@ -187,6 +187,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendPayloadRequest dco_decode_box_autoadd_dart_send_payload_request(
+    dynamic raw,
+  );
+
+  @protected
   DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
     dynamic raw,
   );
@@ -468,6 +473,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw);
+
+  @protected
+  DartSendPayloadRequest dco_decode_dart_send_payload_request(dynamic raw);
 
   @protected
   DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw);
@@ -765,6 +773,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendPayloadRequest sse_decode_box_autoadd_dart_send_payload_request(
     SseDeserializer deserializer,
   );
 
@@ -1146,6 +1159,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendPayloadRequest sse_decode_dart_send_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendTextRequest sse_decode_dart_send_text_request(
     SseDeserializer deserializer,
   );
@@ -1497,6 +1515,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_send_email_request(
     DartSendEmailRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_payload_request(
+    DartSendPayloadRequest self,
     SseSerializer serializer,
   );
 
@@ -1971,6 +1995,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_send_message_result(
     DartSendMessageResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_payload_request(
+    DartSendPayloadRequest self,
     SseSerializer serializer,
   );
 

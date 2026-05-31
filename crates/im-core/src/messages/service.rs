@@ -271,12 +271,10 @@ impl<'a> MessageService<'a> {
                 )?;
                 #[cfg(feature = "sqlite")]
                 if let Err(err) =
-                    crate::internal::message_runtime::local_projection::persist_direct_outgoing(
+                    crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
                         self.client,
                         &result.target_did,
                         direct_handle_from_result(&result.sdk_result).as_deref(),
-                        &result.text,
-                        &message_kind_from_result(&result.sdk_result)?,
                         &result.sdk_result,
                     )
                 {
@@ -303,11 +301,9 @@ impl<'a> MessageService<'a> {
                 })?;
                 #[cfg(feature = "sqlite")]
                 if let Err(err) =
-                    crate::internal::message_runtime::local_projection::persist_group_outgoing(
+                    crate::internal::message_runtime::local_projection::persist_group_outgoing_result(
                         self.client,
                         &result.group_did,
-                        &result.text,
-                        &message_kind_from_result(&result.sdk_result)?,
                         &result.sdk_result,
                     )
                 {
@@ -351,12 +347,10 @@ impl<'a> MessageService<'a> {
                 .await?;
                 #[cfg(feature = "sqlite")]
                 if let Err(err) =
-                    crate::internal::message_runtime::local_projection::persist_direct_outgoing_async(
+                    crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
                         self.client,
                         &result.target_did,
                         direct_handle_from_result(&result.sdk_result).as_deref(),
-                        &result.text,
-                        &message_kind_from_result(&result.sdk_result)?,
                         &result.sdk_result,
                     )
                     .await
@@ -385,11 +379,9 @@ impl<'a> MessageService<'a> {
                 .await?;
                 #[cfg(feature = "sqlite")]
                 if let Err(err) =
-                    crate::internal::message_runtime::local_projection::persist_group_outgoing_async(
+                    crate::internal::message_runtime::local_projection::persist_group_outgoing_result_async(
                         self.client,
                         &result.group_did,
-                        &result.text,
-                        &message_kind_from_result(&result.sdk_result)?,
                         &result.sdk_result,
                     )
                     .await
@@ -979,6 +971,13 @@ fn validate_body(body: &super::MessageBody) -> crate::ImResult<()> {
             ))
         }
         super::MessageBody::Text { .. } => Ok(()),
+        super::MessageBody::Payload { payload } if !payload.is_object() => {
+            Err(crate::ImError::invalid_input(
+                Some("payload".to_string()),
+                "message payload must be a JSON object",
+            ))
+        }
+        super::MessageBody::Payload { .. } => Ok(()),
         super::MessageBody::Attachment { .. } => Ok(()),
     }
 }
@@ -1013,6 +1012,9 @@ fn message_kind_from_result(
 ) -> crate::ImResult<super::MessageKind> {
     match &result.message.body {
         super::MessageBodyView::Text { kind, .. } => Ok(kind.clone()),
+        super::MessageBodyView::Payload { .. } => Err(crate::ImError::unsupported(
+            "message-projection-body:application/json",
+        )),
         super::MessageBodyView::Unsupported { content_type } => {
             Err(crate::ImError::unsupported(format!(
                 "message-projection-body:{}",

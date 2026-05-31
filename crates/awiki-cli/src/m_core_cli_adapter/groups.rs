@@ -1407,6 +1407,7 @@ fn group_message_to_json(message: &Message) -> Value {
 fn message_body_content(body: &im_core::prelude::MessageBodyView) -> String {
     match body {
         im_core::prelude::MessageBodyView::Text { text, .. } => text.clone(),
+        im_core::prelude::MessageBodyView::Payload { payload } => payload.to_string(),
         im_core::prelude::MessageBodyView::Unsupported { .. } => String::new(),
     }
 }
@@ -1418,6 +1419,7 @@ fn message_content_type(body: &im_core::prelude::MessageBodyView) -> &'static st
             ..
         } => "text/markdown",
         im_core::prelude::MessageBodyView::Text { .. } => "text/plain",
+        im_core::prelude::MessageBodyView::Payload { .. } => "application/json",
         im_core::prelude::MessageBodyView::Unsupported { .. } => "application/octet-stream",
     }
 }

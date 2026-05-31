@@ -298,6 +298,9 @@ pub(crate) fn text_body(
             ))
         }
         crate::messages::MessageBody::Text { text, kind } => Ok((text.as_str(), kind.clone())),
+        crate::messages::MessageBody::Payload { .. } => {
+            Err(crate::ImError::unsupported("secure-direct-payload"))
+        }
         crate::messages::MessageBody::Attachment { .. } => {
             Err(crate::ImError::unsupported("attachments"))
         }

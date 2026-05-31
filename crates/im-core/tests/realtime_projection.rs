@@ -108,6 +108,51 @@ fn realtime_projection_direct_attachment_like_notification_is_generic_unsupporte
 }
 
 #[test]
+fn realtime_projection_direct_json_payload_becomes_payload_body() {
+    let projection = project_notification(&json!({
+        "method": "direct.incoming",
+        "params": {
+            "meta": {
+                "message_id": "msg-payload",
+                "operation_id": "op-payload",
+                "sender_did": "did:example:bob",
+                "target": {"did": "did:example:alice"},
+                "content_type": "application/json",
+                "created_at": "2026-05-22T00:00:00Z"
+            },
+            "body": {
+                "payload": {
+                    "schema": "awiki.agent.command.v1",
+                    "command": "runtime.agent.create"
+                }
+            }
+        }
+    }));
+
+    assert_eq!(
+        projection.route,
+        NotificationProjectionRoute::DirectIncoming
+    );
+    let ImEvent::MessageReceived(MessageReceivedEvent { message, .. }) = projection.event else {
+        panic!("expected message received");
+    };
+    assert_eq!(message.id.as_str(), "msg-payload");
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command": "runtime.agent.create"
+            })
+        }
+    );
+    assert_eq!(
+        message.metadata.content_type.as_deref(),
+        Some("application/json")
+    );
+}
+
+#[test]
 fn realtime_attachment_projection_direct_manifest_enriches_message_event() {
     let projection = project_notification(&json!({
         "method": "direct.incoming",

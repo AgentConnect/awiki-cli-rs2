@@ -4,7 +4,7 @@ use crate::dto::{
     error::DartImError,
     message::{
         DartConversationPage, DartMarkReadResult, DartMessagePage, DartSendMessageResult,
-        DartSendTextRequest, DartThreadRef,
+        DartSendPayloadRequest, DartSendTextRequest, DartThreadRef,
     },
 };
 
@@ -15,6 +15,19 @@ fn page_limit(limit: u32) -> Result<im_core::ids::PageLimit, DartImError> {
 pub async fn send_text(
     client: &Arc<crate::api::client::DartImClient>,
     request: DartSendTextRequest,
+) -> Result<DartSendMessageResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .send_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn send_payload(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSendPayloadRequest,
 ) -> Result<DartSendMessageResult, DartImError> {
     let inner = client.clone_inner()?;
     inner

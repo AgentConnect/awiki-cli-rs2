@@ -29,6 +29,32 @@ pub(crate) fn build_group_send_payload(
     })
 }
 
+pub(crate) fn build_group_json_send_payload(
+    sender_did: &str,
+    group_did: &str,
+    payload: Value,
+) -> crate::ImResult<DirectPayload> {
+    let group_did = group_did.trim();
+    if group_did.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("group_did".to_string()),
+            "group target is required",
+        ));
+    }
+    if !payload.is_object() {
+        return Err(crate::ImError::invalid_input(
+            Some("payload".to_string()),
+            "message payload must be a JSON object",
+        ));
+    }
+
+    Ok(DirectPayload {
+        method: "group.send".to_string(),
+        meta: signed_group_meta(sender_did, "group", group_did, "application/json", true),
+        body: json!({ "payload": payload }),
+    })
+}
+
 pub(crate) fn build_group_create_payload(
     sender_did: &str,
     request: &crate::groups::GroupCreateRequest,

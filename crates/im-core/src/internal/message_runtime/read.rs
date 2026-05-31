@@ -941,6 +941,21 @@ fn message_body(value: &Value) -> crate::messages::MessageBodyView {
     let Some(content) = value.get("content") else {
         return crate::messages::MessageBodyView::Unsupported { content_type };
     };
+    if content_type.as_deref() == Some("application/json") {
+        let payload = match content {
+            Value::String(value) => match serde_json::from_str::<Value>(value) {
+                Ok(value) => value,
+                Err(_) => {
+                    return crate::messages::MessageBodyView::Unsupported { content_type };
+                }
+            },
+            value => value.clone(),
+        };
+        if payload.is_object() {
+            return crate::messages::MessageBodyView::Payload { payload };
+        }
+        return crate::messages::MessageBodyView::Unsupported { content_type };
+    }
     let text = match content {
         Value::String(value) => value.clone(),
         value => serde_json::to_string(value).unwrap_or_default(),
@@ -1372,6 +1387,60 @@ mod tests {
         assert_eq!(
             result.page.items[0].sent_at.as_deref(),
             Some("2026-05-21T03:04:05Z")
+        );
+    }
+
+    #[test]
+    fn messages_read_runtime_maps_application_json_content_to_payload_body() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-history-payload",
+                        "sender_did": "did:example:bob",
+                        "receiver_did": "did:example:alice",
+                        "content": {
+                            "schema": "awiki.agent.command.v1",
+                            "command": "runtime.agent.create"
+                        },
+                        "content_type": "application/json",
+                        "created_at": "2026-05-21T03:04:05Z"
+                    }]
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .history(HistoryRead {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(5),
+                    cursor: None,
+                },
+                resolved_peer_did: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.page.items[0].body,
+            crate::messages::MessageBodyView::Payload {
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command": "runtime.agent.create"
+                })
+            }
+        );
+        assert_eq!(
+            result.page.items[0].metadata.content_type.as_deref(),
+            Some("application/json")
         );
     }
 

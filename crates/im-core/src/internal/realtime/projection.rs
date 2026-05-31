@@ -62,7 +62,6 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
     }
 
     let content_type = fallback_string(string_from_object(meta, "content_type"), "text/plain");
-    let text = direct_text(body);
     let message_id = parse_message_id(
         &fallback_string(
             string_from_object(meta, "message_id"),
@@ -100,7 +99,7 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
         group: None,
-        body: message_body_view(&content_type, text),
+        body: message_body_view(&content_type, body),
         sent_at: none_if_empty(string_from_object(meta, "created_at")),
         received_at: None,
         metadata,
@@ -180,7 +179,7 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
         group: Some(parse_group(&group_did)),
-        body: message_body_view(&content_type, string_from_object(body, "text")),
+        body: message_body_view(&content_type, body),
         sent_at: none_if_empty(fallback_string(
             string_from_object(body, "accepted_at"),
             &string_from_object(meta, "created_at"),
@@ -285,24 +284,27 @@ fn message_received_event(
     })
 }
 
-fn direct_text(body: Option<&Map<String, Value>>) -> String {
-    let text = string_from_object(body, "text");
-    if !text.is_empty() {
-        return text;
+fn message_body_view(content_type: &str, body: Option<&Map<String, Value>>) -> MessageBodyView {
+    if content_type == "application/json" {
+        if let Some(payload) = value_from_object(body, "payload").filter(|value| value.is_object())
+        {
+            return MessageBodyView::Payload {
+                payload: payload.clone(),
+            };
+        }
+        return MessageBodyView::Unsupported {
+            content_type: none_if_empty(content_type.to_string()),
+        };
     }
-    string_like_value(value_from_object(body, "payload"))
-}
-
-fn message_body_view(content_type: &str, text: String) -> MessageBodyView {
+    let text = string_from_object(body, "text");
     if content_type == "text/plain" && !text.is_empty() {
-        MessageBodyView::Text {
+        return MessageBodyView::Text {
             text,
             kind: MessageKind::Text,
-        }
-    } else {
-        MessageBodyView::Unsupported {
-            content_type: none_if_empty(content_type.to_string()),
-        }
+        };
+    }
+    MessageBodyView::Unsupported {
+        content_type: none_if_empty(content_type.to_string()),
     }
 }
 

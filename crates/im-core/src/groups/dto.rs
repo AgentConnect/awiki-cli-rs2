@@ -842,7 +842,18 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
         .get("secure")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let body = if let Some(text) = optional_string(object.get("text"))
+    let body = if content_type.as_deref() == Some("application/json") {
+        object
+            .get("payload")
+            .or_else(|| object.get("content"))
+            .or_else(|| object.get("body").and_then(|body| body.get("payload")))
+            .cloned()
+            .filter(Value::is_object)
+            .map(|payload| crate::messages::MessageBodyView::Payload { payload })
+            .unwrap_or(crate::messages::MessageBodyView::Unsupported {
+                content_type: content_type.clone(),
+            })
+    } else if let Some(text) = optional_string(object.get("text"))
         .or_else(|| optional_string(object.get("content")))
         .or_else(|| nested_string(object.get("body"), "text"))
     {

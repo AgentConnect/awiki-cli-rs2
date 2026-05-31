@@ -172,6 +172,7 @@ fn message_content_type(message: &crate::messages::Message) -> String {
         .map(str::to_string)
         .unwrap_or_else(|| match &message.body {
             crate::messages::MessageBodyView::Text { .. } => "text/plain".to_string(),
+            crate::messages::MessageBodyView::Payload { .. } => "application/json".to_string(),
             crate::messages::MessageBodyView::Unsupported { content_type } => content_type
                 .as_ref()
                 .map(|value| value.trim())
@@ -185,6 +186,9 @@ fn message_content_type(message: &crate::messages::Message) -> String {
 fn message_content(message: &crate::messages::Message) -> String {
     match &message.body {
         crate::messages::MessageBodyView::Text { text, .. } => text.clone(),
+        crate::messages::MessageBodyView::Payload { payload } => {
+            serde_json::to_string(payload).unwrap_or_default()
+        }
         crate::messages::MessageBodyView::Unsupported { content_type } => json!({
             "unsupported": true,
             "content_type": content_type,

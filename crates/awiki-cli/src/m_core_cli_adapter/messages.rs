@@ -1073,6 +1073,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
 fn message_body_content(message: &im_core::prelude::Message) -> Value {
     match &message.body {
         MessageBodyView::Text { text, .. } => Value::String(text.clone()),
+        MessageBodyView::Payload { payload } => payload.clone(),
         MessageBodyView::Unsupported { .. } => {
             raw_content_value(&message.metadata.attributes).unwrap_or(Value::Null)
         }
@@ -1095,6 +1096,7 @@ fn message_content_type(message: &im_core::prelude::Message) -> String {
             ..
         } => "text/markdown".to_string(),
         MessageBodyView::Text { .. } => "text/plain".to_string(),
+        MessageBodyView::Payload { .. } => "application/json".to_string(),
         MessageBodyView::Unsupported { content_type } => content_type
             .as_ref()
             .map(|value| value.trim())
@@ -1261,6 +1263,9 @@ fn message_text_and_type(
 ) -> Result<(&str, &'static str), MessageAdapterError> {
     match body {
         MessageBodyView::Text { text, kind } => Ok((text.as_str(), message_type_for_kind(kind))),
+        MessageBodyView::Payload { .. } => Err(MessageAdapterError::Internal(
+            "payload message body returned by im-core where text was required".to_string(),
+        )),
         MessageBodyView::Unsupported { content_type } => {
             Err(MessageAdapterError::Internal(format!(
                 "unsupported message body returned by im-core: {}",

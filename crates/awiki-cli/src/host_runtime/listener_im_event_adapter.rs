@@ -241,6 +241,7 @@ fn message_content_type(message: &Message) -> String {
         .map(str::to_string)
         .unwrap_or_else(|| match &message.body {
             MessageBodyView::Text { .. } => "text/plain".to_string(),
+            MessageBodyView::Payload { .. } => "application/json".to_string(),
             MessageBodyView::Unsupported { content_type } => content_type
                 .as_ref()
                 .map(|value| value.trim())
@@ -435,6 +436,7 @@ fn host_notification_from_sdk_host_event(
 fn text_body(message: &Message) -> String {
     match &message.body {
         MessageBodyView::Text { text, .. } => text.clone(),
+        MessageBodyView::Payload { payload } => payload.to_string(),
         MessageBodyView::Unsupported { .. } => String::new(),
     }
 }

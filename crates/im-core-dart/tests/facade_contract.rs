@@ -125,6 +125,48 @@ fn dart_message_security_exposes_target_independent_e2ee_required() {
 }
 
 #[test]
+fn payload_request_and_body_view_preserve_json_for_dart() {
+    let request = awiki_im_core::dto::message::DartSendPayloadRequest {
+        target: awiki_im_core::dto::message::DartMessageTarget::Direct {
+            peer: "did:example:bob".to_string(),
+        },
+        payload_json: r#"{"schema":"awiki.agent.command.v1","command":"runtime.agent.create"}"#
+            .to_string(),
+        security: awiki_im_core::dto::message::DartMessageSecurityMode::Plain,
+        client_message_id: None,
+        idempotency_key: Some("op-payload".to_string()),
+        wait_for_final_acceptance: true,
+    };
+
+    let core: im_core::messages::SendMessageRequest =
+        request.try_into().expect("payload request maps");
+    assert!(matches!(
+        core.body,
+        im_core::messages::MessageBody::Payload { ref payload }
+            if payload["schema"] == "awiki.agent.command.v1"
+                && payload["command"] == "runtime.agent.create"
+    ));
+    assert_eq!(core.delivery.idempotency_key.as_deref(), Some("op-payload"));
+    assert!(core.delivery.wait_for_final_acceptance);
+
+    let dart_body: awiki_im_core::dto::message::DartMessageBodyView =
+        im_core::messages::MessageBodyView::Payload {
+            payload: serde_json::json!({
+                "schema": "awiki.agent.status.v1",
+                "state": "running"
+            }),
+        }
+        .into();
+    assert!(dart_body.text.is_none());
+    assert_eq!(dart_body.kind.as_deref(), Some("payload"));
+    let payload: serde_json::Value =
+        serde_json::from_str(dart_body.payload_json.as_deref().unwrap()).unwrap();
+    assert_eq!(payload["schema"], "awiki.agent.status.v1");
+    assert_eq!(payload["state"], "running");
+    assert!(dart_body.unsupported_content_type.is_none());
+}
+
+#[test]
 fn secure_outbox_entry_does_not_expose_plaintext_or_crypto_material() {
     let entry = awiki_im_core::dto::secure::DartSecureOutboxEntry {
         id: "outbox-1".to_string(),

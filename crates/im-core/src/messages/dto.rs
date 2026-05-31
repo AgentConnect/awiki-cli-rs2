@@ -21,6 +21,9 @@ pub enum MessageBody {
         text: String,
         kind: MessageKind,
     },
+    Payload {
+        payload: serde_json::Value,
+    },
     Attachment {
         input: crate::attachments::AttachmentInput,
         caption: Option<String>,
@@ -110,6 +113,7 @@ pub enum MessageDirection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageBodyView {
     Text { text: String, kind: MessageKind },
+    Payload { payload: serde_json::Value },
     Unsupported { content_type: Option<String> },
 }
 
@@ -164,6 +168,8 @@ pub enum MessageRetryAction {
     None,
     RetryDirectText,
     RetryGroupText,
+    RetryDirectPayload,
+    RetryGroupPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

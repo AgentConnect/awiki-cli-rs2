@@ -717,6 +717,13 @@ fn message_body(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::messages::MessageBodyView {
     let content_type = non_empty_string(&record.content_type);
+    if content_type.as_deref() == Some("application/json") {
+        return serde_json::from_str::<serde_json::Value>(&record.content)
+            .ok()
+            .filter(serde_json::Value::is_object)
+            .map(|payload| crate::messages::MessageBodyView::Payload { payload })
+            .unwrap_or(crate::messages::MessageBodyView::Unsupported { content_type });
+    }
     let kind = match content_type.as_deref() {
         Some("text/markdown") => crate::messages::MessageKind::Markdown,
         Some("text/plain") | Some("text") | None => crate::messages::MessageKind::Text,

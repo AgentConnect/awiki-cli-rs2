@@ -90,6 +90,15 @@ pub fn build_direct_text_payload(
 }
 
 #[doc(hidden)]
+pub fn build_direct_json_payload(
+    sender_did: &str,
+    target_did: &str,
+    payload: Value,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::direct::build_direct_json_payload(sender_did, target_did, payload)
+}
+
+#[doc(hidden)]
 pub fn build_group_send_payload(
     sender_did: &str,
     group_did: &str,
@@ -102,6 +111,15 @@ pub fn build_group_send_payload(
         text,
         content_type,
     )
+}
+
+#[doc(hidden)]
+pub fn build_group_json_send_payload(
+    sender_did: &str,
+    group_did: &str,
+    payload: Value,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_json_send_payload(sender_did, group_did, payload)
 }
 
 #[doc(hidden)]

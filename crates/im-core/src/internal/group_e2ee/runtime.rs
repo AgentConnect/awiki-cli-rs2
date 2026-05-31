@@ -4,7 +4,8 @@ use anp::group_e2ee::{GroupApplicationPlaintext, GroupStateRef};
 use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::message_runtime::group::{
     content_type_for_message_type, group_target, load_credentials, load_credentials_async,
-    message_type, sdk_result_from_group_result, text_body, GroupRpcResult, GroupTextCredentials,
+    message_type, sdk_text_result_from_group_result, text_body, GroupRpcResult,
+    GroupTextCredentials,
 };
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
@@ -204,7 +205,7 @@ where
         if result.operation_id.trim().is_empty() {
             result.operation_id = input.operation_id.clone();
         }
-        let mut sdk_result = sdk_result_from_group_result(
+        let mut sdk_result = sdk_text_result_from_group_result(
             &result,
             self.client.did().clone(),
             input.group.clone(),
@@ -425,7 +426,7 @@ where
         if result.operation_id.trim().is_empty() {
             result.operation_id = input.operation_id.clone();
         }
-        let mut sdk_result = sdk_result_from_group_result(
+        let mut sdk_result = sdk_text_result_from_group_result(
             &result,
             self.client.did().clone(),
             input.group.clone(),

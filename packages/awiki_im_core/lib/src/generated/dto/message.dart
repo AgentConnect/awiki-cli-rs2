@@ -166,17 +166,22 @@ class DartMessage {
 class DartMessageBodyView {
   final String? text;
   final String? kind;
+  final String? payloadJson;
   final String? unsupportedContentType;
 
   const DartMessageBodyView({
     this.text,
     this.kind,
+    this.payloadJson,
     this.unsupportedContentType,
   });
 
   @override
   int get hashCode =>
-      text.hashCode ^ kind.hashCode ^ unsupportedContentType.hashCode;
+      text.hashCode ^
+      kind.hashCode ^
+      payloadJson.hashCode ^
+      unsupportedContentType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -185,6 +190,7 @@ class DartMessageBodyView {
           runtimeType == other.runtimeType &&
           text == other.text &&
           kind == other.kind &&
+          payloadJson == other.payloadJson &&
           unsupportedContentType == other.unsupportedContentType;
 }
 
@@ -320,6 +326,45 @@ class DartSendMessageResult {
           message == other.message &&
           deliveryState == other.deliveryState &&
           warnings == other.warnings;
+}
+
+class DartSendPayloadRequest {
+  final DartMessageTarget target;
+  final String payloadJson;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+
+  const DartSendPayloadRequest({
+    required this.target,
+    required this.payloadJson,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+  });
+
+  @override
+  int get hashCode =>
+      target.hashCode ^
+      payloadJson.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendPayloadRequest &&
+          runtimeType == other.runtimeType &&
+          target == other.target &&
+          payloadJson == other.payloadJson &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance;
 }
 
 class DartSendTextRequest {
