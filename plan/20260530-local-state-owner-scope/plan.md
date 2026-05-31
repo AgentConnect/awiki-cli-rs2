@@ -1,10 +1,10 @@
 # 计划：本地状态所有者作用域重构
 
-状态：执行中
+状态：完成
 文档目录：`plan/20260530-local-state-owner-scope/`  
 Harness：`/home/ecs-user/awiki-space/awiki-harness`  
 创建日期：2026-05-30  
-恢复执行位置：步骤 10 pending；继续时先读取 [steps/10-integration-gate.md](steps/10-integration-gate.md) 和当前 `git status`
+恢复执行位置：全部步骤已完成；步骤 10 最终 remote `awiki.info` 系统测试通过，daemon 相关用例按用户要求默认跳过。
 
 ## 1. 目标
 
@@ -115,7 +115,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 07 | Secure 本地状态和 公开接口 门禁 | 03,04 | identity-scoped outbox、direct E2EE 验证、group E2EE device 检查、disabled discovery/redaction 门禁 | [steps/07-secure-local-state.md](steps/07-secure-local-state.md) | 必须 | done |
 | 08 | Recover/replace 和 workspace upgrade | 01-07 | DID history、v3 到 v4 workspace migration、legacy rebind 退役 | [steps/08-recover-upgrade.md](steps/08-recover-upgrade.md) | 必须 | done |
 | 09 | 回退移除、diagnostics、文档和 Dart | 01-08 | 无 runtime 回退、redacted doctor checks、文档和 codegen 更新 | [steps/09-docs-diagnostics-dart.md](steps/09-docs-diagnostics-dart.md) | 必须 | done |
-| 10 | 集成门禁 | 01-09 | 完整验证报告、完整系统测试和最终清理 | [steps/10-integration-gate.md](steps/10-integration-gate.md) | 有变更时必须 | pending |
+| 10 | 集成门禁 | 01-09 | 完整验证报告、完整系统测试和最终清理 | [steps/10-integration-gate.md](steps/10-integration-gate.md) | 有变更时必须 | done |
 
 ## 8. 执行台账
 
@@ -132,7 +132,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 07 | done | `feature/release-0526/db-refactor-in-async` | 2026-05-30T19:35:53Z | 2026-05-30T20:20:56Z | 实现提交 `1eb0ce1`：`im-core: scope secure local state by owner identity` | 提交前审查完成：`e2ee_outbox` 的 get/list/retry/drop/mark-sent/failure update 都按 `owner_identity_id` strict predicate 执行，不再使用 credential/DID 回退；direct secure status/repair 的 pending/requeue 按 `owner_identity_id + peer_did` scoped；Group MLS provider 继续按 `owner_identity_id + device_id` scoped；Group E2EE dry-run plan 和 doctor `anp_mls` details 已移除 provider binary、MLS state path、state.db/state.lock 和 scoped state path 输出；审查发现 doctor I/O error 文本可能包含本地路径，已改为 `ErrorKind` 级别脱敏，并将 provider `binary_name` 兼容错误限制为文件名；低层 group E2EE command catalog 仍 hidden/internal；未发现默认 DID/service discovery 新增 direct/group E2EE advertisement。提交后状态：分支 ahead 11，工作区干净。 | `CARGO_BUILD_JOBS=1 cargo test -p im-core --locked e2ee_outbox` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked direct_secure` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --features group-e2ee --locked group_e2ee` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked msg_secure` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked group_secure` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked group_e2ee_dry_run_plans_match_go_contracts` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked doctor_anp_mls_probe_and_state_details_match_go_contract` 脱敏修复后通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；redaction/discovery/legacy fallback 搜索命中已分类，无新增 public raw secure output 或默认 advertisement。过宽 `cargo test -p awiki-cli --locked e2ee` 失败在步骤 08 范围的 legacy workspace upgrade fixture 缺少 `messages.owner_identity_id`。 | 步骤 08 开始前读取步骤 08 文档和 `git status` |
 | 08 | done | `feature/release-0526/db-refactor-in-async` | 2026-05-30T20:22:58Z | 2026-05-31T00:40:33Z | 实现提交 `20f21b6`：`awiki-cli: migrate local state to owner identity schema` | 提交前审查：recover/replace 已改为 DID history 和 owner_did snapshot refresh，不做业务 owner rebind；`LegacyOwnerLookup` 生产调用已改为使用 `IdentitySummary.unique_id`；审查发现并修复旧 schema v3->v4 未执行 clean rebuild 的问题，改为确认 workspace SQLite backup 后删除旧 DB 文件集并创建干净 v17；审查发现并修复 legacy import 显式未知 `owner_did`/`credential_name` 会落到 default owner 的问题，改为 fail closed 并补测试；未新增 Secure discovery/default advertisement 或 public raw secure output。提交后状态：分支 ahead 13，工作区干净。 | `CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked workspace_upgrade` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked import_legacy_database` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked recover` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked replace_did` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked --test identity_replace_did_upgrade_contract` 通过；`CARGO_BUILD_JOBS=1 cargo check -p awiki-cli --locked` 通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；redaction/discovery/legacy rebind 搜索命中已分类。 | 步骤 09 开始前读取步骤 09 文档和 `git status` |
 | 09 | done | `feature/release-0526/db-refactor-in-async` | 2026-05-31T00:42:21Z | 2026-05-31T01:10:14Z | 步骤 09 聚焦提交：`36443ec`（`docs: document identity-owned local state`） | 提交前审查：`replace_did` 计划已停止按 `owner_did` 扫描业务表，只保留兼容零计数字段；`doctor` 只输出 owner invariant 的 table/invariant/row_count 和 legacy secure table 计数，不输出 raw SQLite rows、plaintext、JWT、private key 或 raw E2EE/MLS artifacts；新增文档保持 Direct/Group E2EE public discovery disabled；Dart generated diff 仅更新 loader stem，无 DTO 形状变化。 | `cargo fmt --all --check` 通过；`git diff --check` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked diagnostics` 通过但匹配 0 个用例，已补跑 `CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked --test diagnostics_contract`，5 个用例通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked replace_did` 通过；`CARGO_BUILD_JOBS=1 cargo check -p awiki-cli --locked` 通过；`scripts/flutter/codegen-check.sh` 保留 generated loader stem 后第二次通过；fallback/redaction/discovery 搜索已分类。 | 步骤 10 开始前读取步骤 10 文档和 `git status` |
-| 10 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 等待步骤 09 |
+| 10 | done | `feature/release-0526/db-refactor-in-async` | 2026-05-31T01:11:39Z | 2026-05-31T04:47:04Z | 主仓库提交 `test: verify identity-owned local state cutover`，最终 hash 以提交后 `git log -1 --oneline` 为准；系统测试仓库提交 `04115ea`（`test: align system tests with identity-owned local state`） | 最终审查未发现未解决的 correctness/security findings；legacy upgrade、v3->v4 clean rebuild、owner alias 迁移期限定、unknown owner fail closed、Direct/Group E2EE public discovery disabled、public redaction、backup/log/diagnostics 脱敏、系统测试 Rust v4/Go v3 兼容分支和 daemon 默认 skip 均已复查。 | `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；`bash scripts/sdk-refactor/final-cutover-check.sh` 通过；`scripts/flutter/codegen-check.sh` 通过；secure focused tests 通过；discovery/redaction/owner fallback 搜索已分类；最终 `../awiki-system-test` remote `awiki.info` 完整系统测试不设置 `AWIKI_DAEMON_RUST_REPO`，结果 143 passed，51 skipped，0 failed，耗时 178.83s，wall time 179.85s；daemon 3 个用例按用户要求跳过。 | 提交步骤 10 改动并推送分支 |
 
 ## 9. Codex Goal 执行协议
 
@@ -209,6 +209,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 2026-05-30 | 增加 Secure 要求基线并加强每步 secure 门禁。 | 用户要求按 Secure 要求复核计划。 | 全部，尤其 07-10 | 是 |
 | 2026-05-30 | 将计划文档改为中文，并要求最终步骤在 `../awiki-system-test` 使用 remote 模式和 `awiki.info` 域名执行完整系统测试。 | 用户要求所有计划文档使用中文，并要求最后一步完整系统测试；随后补充系统测试使用 `awiki.info` 域名和 remote 模式。 | 全部，尤其 10 | 是 |
 | 2026-05-31 | 步骤 08 的旧 schema v3->v4 路径收敛为“确认 workspace SQLite backup 后 clean rebuild”，并要求 legacy import 显式未知 owner fail closed。 | 实现审查发现：直接按旧 owner-DID rows 推断 ownership 风险高；旧方案要求不能按 DID、credential、alias 或 path 静默迁移。系统未上线，备份后重建更符合数据安全目标。 | 08 | 是 |
+| 2026-05-31 | 步骤 10 最终系统测试不再依赖 daemon 仓库；`../awiki-system-test/tests_v2/daemon` 仅在显式设置 `AWIKI_DAEMON_RUST_REPO` 时运行。 | 用户明确说明 daemon 相关测试用例跳过即可，daemon 是另外一个项目在并行开发；owner-scope 最终门禁应只验证 awiki-cli 相关行为。 | 10 | 是 |
 
 ## 16. 风险和回滚
 

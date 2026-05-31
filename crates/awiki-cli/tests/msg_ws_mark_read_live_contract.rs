@@ -16,11 +16,13 @@ use support::open_local_state;
 #[test]
 fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     let workspace = TempDir::new("msg-ws-mark-read-http-cutover").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-mark-http", "bob", "jwt-bob");
+    let bob_identity_id =
+        register_ready_msg_identity(workspace.path(), "bob-ws-mark-http", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
+        &bob_identity_id,
         bob_did,
         alice_did,
         "msg-ws-read-http",
@@ -55,7 +57,10 @@ fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     assert_eq!(envelope["data"]["updated_count"], 1);
     assert_eq!(envelope["data"]["message_ids"], json!(["msg-ws-read-http"]));
     assert_no_legacy_websocket_fallback_warning(&envelope);
-    assert_eq!(is_read(workspace.path(), bob_did, "msg-ws-read-http"), 1);
+    assert_eq!(
+        is_read(workspace.path(), &bob_identity_id, "msg-ws-read-http"),
+        1
+    );
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -74,11 +79,13 @@ fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
 #[test]
 fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
     let workspace = TempDir::new("msg-ws-mark-read-http-failure").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-mark-fail", "bob", "jwt-bob");
+    let bob_identity_id =
+        register_ready_msg_identity(workspace.path(), "bob-ws-mark-fail", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
+        &bob_identity_id,
         bob_did,
         alice_did,
         "msg-ws-read-fail",
@@ -116,7 +123,10 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
         !message.contains("local websocket bridge request failed"),
         "legacy bridge fallback should not be used, got: {message}"
     );
-    assert_eq!(is_read(workspace.path(), bob_did, "msg-ws-read-fail"), 0);
+    assert_eq!(
+        is_read(workspace.path(), &bob_identity_id, "msg-ws-read-fail"),
+        0
+    );
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -127,7 +137,7 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
 #[test]
 fn msg_mark_read_websocket_mode_reports_transport_unavailable_without_cache_fallback() {
     let workspace = TempDir::new("msg-ws-mark-read-transport-unavailable").expect("workspace");
-    register_ready_msg_identity(
+    let bob_identity_id = register_ready_msg_identity(
         workspace.path(),
         "bob-ws-mark-unavailable",
         "bob",
@@ -137,6 +147,7 @@ fn msg_mark_read_websocket_mode_reports_transport_unavailable_without_cache_fall
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
+        &bob_identity_id,
         bob_did,
         alice_did,
         "msg-ws-read-unavailable",
@@ -163,7 +174,11 @@ fn msg_mark_read_websocket_mode_reports_transport_unavailable_without_cache_fall
 
     assert_transport_unavailable_without_legacy_fallback(&output);
     assert_eq!(
-        is_read(workspace.path(), bob_did, "msg-ws-read-unavailable"),
+        is_read(
+            workspace.path(),
+            &bob_identity_id,
+            "msg-ws-read-unavailable"
+        ),
         0
     );
 }
@@ -171,10 +186,12 @@ fn msg_mark_read_websocket_mode_reports_transport_unavailable_without_cache_fall
 #[test]
 fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_only() {
     let workspace = TempDir::new("msg-ws-mark-read-local-only").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-mark-local", "bob", "jwt-bob");
+    let bob_identity_id =
+        register_ready_msg_identity(workspace.path(), "bob-ws-mark-local", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     seed_group_message(
         workspace.path(),
+        &bob_identity_id,
         bob_did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "msg-group-read-local",
@@ -183,6 +200,7 @@ fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_only() {
     );
     seed_mail_notification(
         workspace.path(),
+        &bob_identity_id,
         bob_did,
         "msg-mail-read-local",
         "mail hello",
@@ -220,10 +238,13 @@ fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_only() {
     assert_no_legacy_websocket_fallback_warning(&envelope);
     assert!(server.requests().is_empty());
     assert_eq!(
-        is_read(workspace.path(), bob_did, "msg-group-read-local"),
+        is_read(workspace.path(), &bob_identity_id, "msg-group-read-local"),
         1
     );
-    assert_eq!(is_read(workspace.path(), bob_did, "msg-mail-read-local"), 1);
+    assert_eq!(
+        is_read(workspace.path(), &bob_identity_id, "msg-mail-read-local"),
+        1
+    );
 }
 
 fn register_ready_msg_identity(
@@ -231,7 +252,7 @@ fn register_ready_msg_identity(
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) {
+) -> String {
     let create = awiki_cmd(
         &[
             "--migration",
@@ -248,6 +269,10 @@ fn register_ready_msg_identity(
 
     let index_path = workspace.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let unique_id = index["credentials"][identity_name]["unique_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
     index["credentials"][identity_name]["did"] = json!(did);
     index["credentials"][identity_name]["handle"] = json!(handle);
@@ -288,13 +313,14 @@ fn register_ready_msg_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+    unique_id
 }
 
 fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
         format!(
-            "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n"
+            "schema_version: 1\nruntime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n"
         ),
     )
     .unwrap();
@@ -302,26 +328,36 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
 
 fn seed_direct_message(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     peer_did: &str,
     msg_id: &str,
     content: &str,
     sent_at: &str,
 ) {
-    let thread_id = format!("dm:{owner_did}:{peer_did}");
+    let conversation_id = format!("dm:{peer_did}");
     execute_sql(
         workspace,
         r#"
-INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content,
-     sent_at, stored_at, is_read, credential_name)
-VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text/plain', ?5, ?6, ?6, 0, 'bob-msg')"#,
-        (msg_id, owner_did, thread_id, peer_did, content, sent_at),
+	INSERT INTO messages
+	    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content,
+	     sent_at, stored_at, is_read, credential_name)
+	VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3, 'text/plain', ?6, ?7, ?7, 0, 'bob-msg')"#,
+        (
+            msg_id,
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            peer_did,
+            content,
+            sent_at,
+        ),
     );
 }
 
 fn seed_group_message(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     group_did: &str,
     msg_id: &str,
@@ -331,13 +367,14 @@ fn seed_group_message(
     execute_sql(
         workspace,
         r#"
-INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, group_id, group_did, content_type,
-     content, sent_at, stored_at, is_read, credential_name)
-VALUES (?1, ?2, ?3, 0, 'did:wba:awiki.ai:alice:e1_alice', ?4, ?4, 'text/plain',
-        ?5, ?6, ?6, 0, 'bob-msg')"#,
+	INSERT INTO messages
+	    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, group_id, group_did, content_type,
+	     content, sent_at, stored_at, is_read, credential_name)
+	VALUES (?1, ?2, ?3, ?4, ?4, 0, 'did:wba:awiki.ai:alice:e1_alice', ?5, ?5, 'text/plain',
+	        ?6, ?7, ?7, 0, 'bob-msg')"#,
         (
             msg_id,
+            owner_identity_id,
             owner_did,
             format!("group:{group_did}"),
             group_did,
@@ -349,6 +386,7 @@ VALUES (?1, ?2, ?3, 0, 'did:wba:awiki.ai:alice:e1_alice', ?4, ?4, 'text/plain',
 
 fn seed_mail_notification(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     msg_id: &str,
     content: &str,
@@ -357,15 +395,16 @@ fn seed_mail_notification(
     execute_sql(
         workspace,
         r#"
-INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content,
-     sent_at, stored_at, is_read, metadata, credential_name)
-VALUES (?1, ?2, ?3, 0, 'did:wba:mail:system', ?2, 'mail.notification', ?4,
-        ?5, ?5, 0, '{"source_kind":"mail"}', 'bob-msg')"#,
+	INSERT INTO messages
+	    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content,
+	     sent_at, stored_at, is_read, metadata, credential_name)
+	VALUES (?1, ?2, ?3, ?4, ?4, 0, 'did:wba:mail:system', ?3, 'mail.notification', ?5,
+	        ?6, ?6, 0, '{"source_kind":"mail"}', 'bob-msg')"#,
         (
             msg_id,
+            owner_identity_id,
             owner_did,
-            format!("mail:{owner_did}"),
+            "mail:bob@awiki.ai",
             content,
             sent_at,
         ),
@@ -382,12 +421,12 @@ where
         .expect("execute test sql");
 }
 
-fn is_read(workspace: &Path, owner_did: &str, message_id: &str) -> i64 {
+fn is_read(workspace: &Path, owner_identity_id: &str, message_id: &str) -> i64 {
     let connection = open_local_state(workspace);
     connection
         .query_row(
-            "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = ?2",
-            (owner_did, message_id),
+            "SELECT is_read FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            (owner_identity_id, message_id),
             |row| row.get(0),
         )
         .expect("read message is_read")
@@ -405,6 +444,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

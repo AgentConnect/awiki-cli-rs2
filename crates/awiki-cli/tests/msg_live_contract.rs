@@ -292,6 +292,7 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let alice_new = "did:wba:awiki.ai:alice:e1_new";
     seed_contact(
         workspace.path(),
+        &bob.unique_id,
         bob_did,
         alice_old,
         "alice",
@@ -299,6 +300,7 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     );
     seed_direct_message(
         workspace.path(),
+        &bob.unique_id,
         bob_did,
         alice_old,
         "msg-old",
@@ -370,6 +372,7 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
     let alice_new = "did:wba:awiki.ai:alice:e1_new";
     seed_contact(
         workspace.path(),
+        &bob.unique_id,
         bob_did,
         alice_old,
         "alice",
@@ -377,6 +380,7 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
     );
     seed_direct_message_with_type(
         workspace.path(),
+        &bob.unique_id,
         bob_did,
         alice_old,
         "msg-wire",
@@ -386,6 +390,7 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
     );
     seed_direct_message_with_type(
         workspace.path(),
+        &bob.unique_id,
         bob_did,
         alice_old,
         "msg-plain",
@@ -494,6 +499,8 @@ fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -624,23 +631,31 @@ fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
         .collect()
 }
 
-fn seed_contact(workspace: &Path, owner_did: &str, peer_did: &str, handle: &str, seen_at: &str) {
+fn seed_contact(
+    workspace: &Path,
+    owner_identity_id: &str,
+    owner_did: &str,
+    peer_did: &str,
+    handle: &str,
+    seen_at: &str,
+) {
     execute_sql(
         workspace,
         format!(
-            "INSERT INTO contacts (owner_did, did, handle, messaged, first_seen_at, last_seen_at) VALUES ('{owner_did}', '{peer_did}', '{handle}', 1, '{seen_at}', '{seen_at}')",
+            "INSERT INTO contacts (owner_identity_id, owner_did, did, handle, messaged, first_seen_at, last_seen_at) VALUES ('{owner_identity_id}', '{owner_did}', '{peer_did}', '{handle}', 1, '{seen_at}', '{seen_at}')",
         ),
     );
     execute_sql(
         workspace,
         format!(
-            "UPDATE contact_handle_bindings SET is_current = 1, last_seen_at = '{seen_at}', credential_name = 'bob-msg' WHERE owner_did = '{owner_did}' AND handle = '{handle}' AND did = '{peer_did}'",
+            "INSERT INTO contact_handle_bindings (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, credential_name) VALUES ('{owner_identity_id}', '{owner_did}', '{handle}', '{peer_did}', 1, '{seen_at}', '{seen_at}', 'bob-msg') ON CONFLICT(owner_identity_id, handle, did) DO UPDATE SET is_current = excluded.is_current, last_seen_at = excluded.last_seen_at, credential_name = excluded.credential_name",
         ),
     );
 }
 
 fn seed_direct_message(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     peer_did: &str,
     msg_id: &str,
@@ -649,6 +664,7 @@ fn seed_direct_message(
 ) {
     seed_direct_message_with_type(
         workspace,
+        owner_identity_id,
         owner_did,
         peer_did,
         msg_id,
@@ -660,6 +676,7 @@ fn seed_direct_message(
 
 fn seed_direct_message_with_type(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     peer_did: &str,
     msg_id: &str,
@@ -667,9 +684,9 @@ fn seed_direct_message_with_type(
     content: &str,
     sent_at: &str,
 ) {
-    let thread_id = format!("dm:{owner_did}:{peer_did}");
+    let conversation_id = format!("dm:{peer_did}");
     let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', '{content_type}', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
+        "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_identity_id}', '{owner_did}', '{conversation_id}', '{conversation_id}', 0, '{peer_did}', '{owner_did}', '{content_type}', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
     );
     execute_sql(workspace, statement);
 }

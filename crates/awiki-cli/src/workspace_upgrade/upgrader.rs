@@ -508,8 +508,32 @@ impl Migration for WorkspaceMigration {
 
     fn apply(&self, context: &mut Context) -> Result<(), MigrationError> {
         if self.from == 0 && self.to == 1 {
-            let imported = migration_v0_to_v1::apply_workspace_v0_to_v1_local_state(context)?;
+            migration_v0_to_v1::apply_workspace_v0_to_v1_config(context)?;
+            let refreshed = migration_v0_to_v1::refresh_resolved_config(&context.resolved)
+                .map_err(|err| MigrationError::Message(err.to_string()))?;
+            context.resolved = refreshed;
+            context.paths = resolve_paths(&context.resolved);
+            let imported = migration_v0_to_v1::import_legacy_identities(context)?;
+            let imported_any = !imported.imported.is_empty();
+            let historical_owner_dids = imported
+                .imported
+                .iter()
+                .map(|summary| (summary.identity_name.clone(), summary.did.clone()))
+                .collect::<Vec<_>>();
             migration_v2_to_v3::replace_k1_dids_for_summaries(context, imported.imported)?;
+            migration_v0_to_v1::import_legacy_sqlite_with_historical_dids(
+                context,
+                historical_owner_dids,
+            )?;
+            if std::path::Path::new(&context.paths.database_file).is_file() {
+                migration_v0_to_v1::ensure_target_store_schema(&context.resolved.paths)?;
+            }
+            if imported_any {
+                let refreshed = migration_v0_to_v1::refresh_resolved_config(&context.resolved)
+                    .map_err(|err| MigrationError::Message(err.to_string()))?;
+                context.resolved = refreshed;
+                context.paths = resolve_paths(&context.resolved);
+            }
             return Ok(());
         }
         if self.from == 1 && self.to == 2 {

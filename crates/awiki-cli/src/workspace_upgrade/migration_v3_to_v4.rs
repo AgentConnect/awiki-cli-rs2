@@ -9,6 +9,9 @@ use std::path::PathBuf;
 pub(crate) fn apply_workspace_v3_to_v4_owner_identity_local_state(
     context: &mut Context,
 ) -> Result<(), MigrationError> {
+    if !fsutil::file_exists(&context.paths.database_file) {
+        return Ok(());
+    }
     let mut connection = store::open(&context.resolved.paths)?;
     let version = store::current_schema_version(&connection)?;
     if version == 0 || version == im_core::compat::local_state::SCHEMA_VERSION {

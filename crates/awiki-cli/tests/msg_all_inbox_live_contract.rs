@@ -13,10 +13,12 @@ use support::open_local_state;
 #[test]
 fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     let workspace = TempDir::new("msg-all-inbox-no-legacy-cache").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-no-cache", "alice", "jwt-alice");
+    let alice_identity_id =
+        register_ready_msg_identity(workspace.path(), "alice-no-cache", "alice", "jwt-alice");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:bob:e1_bob",
         "direct-1",
@@ -26,6 +28,7 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     );
     seed_group_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "group-1",
@@ -35,6 +38,7 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     );
     seed_mail_notification(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "mail-1",
         "mail raw",
@@ -61,10 +65,12 @@ fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
 #[test]
 fn msg_inbox_group_scope_without_target_filter_does_not_fallback_to_legacy_group_cache() {
     let workspace = TempDir::new("msg-group-inbox-no-legacy-cache").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-group-cache", "alice", "jwt-alice");
+    let alice_identity_id =
+        register_ready_msg_identity(workspace.path(), "alice-group-cache", "alice", "jwt-alice");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_group_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "group-local-1",
@@ -94,10 +100,12 @@ fn msg_inbox_group_scope_without_target_filter_does_not_fallback_to_legacy_group
 #[test]
 fn msg_inbox_target_filters_are_cutover_unsupported() {
     let workspace = TempDir::new("msg-inbox-target-filters").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-filter", "alice", "jwt-alice");
+    let alice_identity_id =
+        register_ready_msg_identity(workspace.path(), "alice-filter", "alice", "jwt-alice");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:bob:e1_bob",
         "direct-filter",
@@ -107,6 +115,7 @@ fn msg_inbox_target_filters_are_cutover_unsupported() {
     );
     seed_group_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "group-filter",
@@ -177,10 +186,12 @@ fn msg_inbox_target_filters_are_cutover_unsupported() {
 #[test]
 fn msg_inbox_mark_read_side_effect_is_cutover_unsupported_and_leaves_local_rows_unchanged() {
     let workspace = TempDir::new("msg-inbox-mark-read-unsupported").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-mark", "alice", "jwt-alice");
+    let alice_identity_id =
+        register_ready_msg_identity(workspace.path(), "alice-mark", "alice", "jwt-alice");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:bob:e1_bob",
         "direct-mark",
@@ -190,6 +201,7 @@ fn msg_inbox_mark_read_side_effect_is_cutover_unsupported_and_leaves_local_rows_
     );
     seed_group_message(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "did:wba:awiki.ai:groups:demo:e1_group",
         "group-mark",
@@ -199,6 +211,7 @@ fn msg_inbox_mark_read_side_effect_is_cutover_unsupported_and_leaves_local_rows_
     );
     seed_mail_notification(
         workspace.path(),
+        &alice_identity_id,
         alice_did,
         "mail-mark",
         "mark mail",
@@ -245,7 +258,7 @@ fn register_ready_msg_identity(
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) {
+) -> String {
     let create = awiki_cmd(
         &[
             "--migration",
@@ -276,6 +289,7 @@ fn register_ready_msg_identity(
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
+    let unique_id = identity["unique_id"].as_str().unwrap().to_string();
     let original_did = identity["did"].as_str().unwrap().to_string();
     identity["did"] = json!(did);
     identity["handle"] = json!(handle);
@@ -302,6 +316,7 @@ fn register_ready_msg_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+    unique_id
 }
 
 fn write_msg_ws_config(workspace: &Path, base_url: &str) {
@@ -318,6 +333,7 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str) {
 
 fn seed_direct_message(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     peer_did: &str,
     msg_id: &str,
@@ -325,18 +341,19 @@ fn seed_direct_message(
     sent_at: &str,
     is_read: bool,
 ) {
-    let thread_id = direct_thread_id(owner_did, peer_did);
+    let conversation_id = direct_conversation_id(peer_did);
     let is_read = if is_read { 1 } else { 0 };
     execute_sql(
         workspace,
         format!(
-            "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', {is_read}, 'alice-msg')",
+            "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_identity_id}', '{owner_did}', '{conversation_id}', '{conversation_id}', 0, '{peer_did}', '{owner_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', {is_read}, 'alice-msg')",
         ),
     );
 }
 
 fn seed_group_message(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     group_did: &str,
     msg_id: &str,
@@ -348,13 +365,14 @@ fn seed_group_message(
     execute_sql(
         workspace,
         format!(
-            "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, group_id, group_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', 'group:{group_did}', 0, 'did:wba:awiki.ai:carol:e1_carol', '{group_did}', '{group_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', {is_read}, 'alice-msg')",
+            "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, group_id, group_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_identity_id}', '{owner_did}', 'group:{group_did}', 'group:{group_did}', 0, 'did:wba:awiki.ai:carol:e1_carol', '{group_did}', '{group_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', {is_read}, 'alice-msg')",
         ),
     );
 }
 
 fn seed_mail_notification(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     msg_id: &str,
     content: &str,
@@ -365,15 +383,13 @@ fn seed_mail_notification(
     execute_sql(
         workspace,
         format!(
-            "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, title, sent_at, stored_at, is_read, metadata, credential_name) VALUES ('{msg_id}', '{owner_did}', 'mail:alice@awiki.ai', 0, 'did:wba:mail:system', '{owner_did}', 'mail.notification', '{content}', 'Mail subject', '{sent_at}', '{sent_at}', {is_read}, '{{\"source_kind\":\"mail\",\"mailbox_address\":\"alice@awiki.ai\",\"from_addr\":\"sender@example.com\",\"subject\":\"Mail subject\",\"preview\":\"Preview text\",\"has_attachments\":true}}', 'alice-msg')",
+            "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, content_type, content, title, sent_at, stored_at, is_read, metadata, credential_name) VALUES ('{msg_id}', '{owner_identity_id}', '{owner_did}', 'mail:alice@awiki.ai', 'mail:alice@awiki.ai', 0, 'did:wba:mail:system', '{owner_did}', 'mail.notification', '{content}', 'Mail subject', '{sent_at}', '{sent_at}', {is_read}, '{{\"source_kind\":\"mail\",\"mailbox_address\":\"alice@awiki.ai\",\"from_addr\":\"sender@example.com\",\"subject\":\"Mail subject\",\"preview\":\"Preview text\",\"has_attachments\":true}}', 'alice-msg')",
         ),
     );
 }
 
-fn direct_thread_id(owner_did: &str, peer_did: &str) -> String {
-    let mut pair = [owner_did.to_string(), peer_did.to_string()];
-    pair.sort();
-    format!("dm:{}:{}", pair[0], pair[1])
+fn direct_conversation_id(peer_did: &str) -> String {
+    format!("dm:{peer_did}")
 }
 
 fn execute_sql(workspace: &Path, statement: String) {
@@ -421,6 +437,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -450,7 +468,10 @@ fn assert_transport_unavailable(output: &Output) {
         String::from_utf8_lossy(&output.stderr)
     );
     let envelope = error_json(output);
-    assert_eq!(envelope["error"]["code"], "transport_unavailable");
+    assert_eq!(
+        envelope["error"]["code"], "transport_unavailable",
+        "unexpected error envelope: {envelope}"
+    );
 }
 
 fn assert_unsupported_capability(

@@ -712,6 +712,7 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     write_group_config(workspace.path(), "http://127.0.0.1:9");
     seed_group_snapshot(
         workspace.path(),
+        &alice.unique_id,
         &alice.did,
         &alice.identity_name,
         group_did,
@@ -1457,6 +1458,8 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -1495,6 +1498,7 @@ fn write_group_config(workspace: &Path, base_url: &str) {
 
 fn seed_group_snapshot(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     credential_name: &str,
     group_did: &str,
@@ -1504,12 +1508,13 @@ fn seed_group_snapshot(
     db.execute(
         r#"
 INSERT INTO groups (
-    owner_did, group_id, group_did, name, group_owner_did, group_mode,
+    owner_identity_id, owner_did, group_id, group_did, name, group_owner_did, group_mode,
     my_role, membership_status, stored_at, credential_name
-) VALUES (?1, ?2, ?2, 'Guard Group', ?1, 'general', ?3, 'active',
-          '2026-05-25T00:00:00Z', ?4)
-ON CONFLICT(owner_did, group_id)
+) VALUES (?1, ?2, ?3, ?3, 'Guard Group', ?2, 'general', ?4, 'active',
+          '2026-05-25T00:00:00Z', ?5)
+ON CONFLICT(owner_identity_id, group_id)
 DO UPDATE SET
+    owner_did = excluded.owner_did,
     group_did = excluded.group_did,
     name = excluded.name,
     group_owner_did = excluded.group_owner_did,
@@ -1517,7 +1522,13 @@ DO UPDATE SET
     membership_status = excluded.membership_status,
     credential_name = excluded.credential_name
 "#,
-        rusqlite::params![owner_did, group_did, role, credential_name],
+        rusqlite::params![
+            owner_identity_id,
+            owner_did,
+            group_did,
+            role,
+            credential_name
+        ],
     )
     .expect("seed group snapshot");
 }

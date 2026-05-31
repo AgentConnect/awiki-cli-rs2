@@ -93,6 +93,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     Command::new(bin)
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.join(".awiki-cli"))
+        .env("HOME", workspace)
+        .env("USERPROFILE", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

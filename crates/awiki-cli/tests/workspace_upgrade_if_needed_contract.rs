@@ -8,6 +8,45 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const LEGACY_V6_TABLES_SQL: &str = r#"
+CREATE TABLE messages (
+    msg_id          TEXT NOT NULL,
+    owner_did       TEXT NOT NULL DEFAULT '',
+    thread_id       TEXT NOT NULL,
+    direction       INTEGER NOT NULL DEFAULT 0,
+    sender_did      TEXT,
+    receiver_did    TEXT,
+    group_id        TEXT,
+    group_did       TEXT,
+    content_type    TEXT DEFAULT 'text',
+    content         TEXT,
+    title           TEXT,
+    server_seq      INTEGER,
+    sent_at         TEXT,
+    stored_at       TEXT NOT NULL,
+    is_e2ee         INTEGER DEFAULT 0,
+    is_read         INTEGER DEFAULT 0,
+    sender_name     TEXT,
+    metadata        TEXT,
+    credential_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (msg_id, owner_did)
+);
+
+CREATE TABLE e2ee_outbox (
+    outbox_id            TEXT PRIMARY KEY,
+    owner_did            TEXT NOT NULL DEFAULT '',
+    peer_did             TEXT NOT NULL,
+    session_id           TEXT,
+    original_type        TEXT NOT NULL DEFAULT 'text',
+    plaintext            TEXT NOT NULL,
+    local_status         TEXT NOT NULL DEFAULT 'queued',
+    attempt_count        INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    credential_name      TEXT NOT NULL DEFAULT ''
+);
+"#;
+
 #[test]
 fn workspace_upgrade_if_needed_skips_empty_workspace_and_captures_inspection_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-empty").expect("temp workspace");
@@ -313,6 +352,7 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     )
     .expect("write legacy settings");
     let old_did = seed_flat_legacy_identity(&paths, "legacy");
+    seed_legacy_sqlite_message(&resolved, "legacy-msg", &old_did, "legacy");
 
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.5");
     workspace_upgrade::new_default_upgrader()
@@ -355,6 +395,27 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     assert_eq!(backup_manifest["identity_name"], "legacy");
     assert_eq!(backup_manifest["old_did"], old_did);
     assert_eq!(backup_manifest["planned_new_did"], new_did);
+
+    let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open upgraded db");
+    let (owner_identity_id, owner_did, conversation_id, thread_id, content): (
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = db
+        .query_row(
+            "SELECT owner_identity_id, owner_did, conversation_id, thread_id, content FROM messages WHERE msg_id = ?1",
+            ["legacy-msg"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .expect("imported legacy message");
+    let new_identity_id = new_did.rsplit(':').next().unwrap_or(new_did);
+    assert_eq!(owner_identity_id, new_identity_id);
+    assert_eq!(owner_did, new_did);
+    assert_eq!(conversation_id, "dm:did:wba:example.test:user:e1_peer");
+    assert_eq!(thread_id, conversation_id);
+    assert_eq!(content, "legacy hello");
 }
 
 #[test]
@@ -959,6 +1020,41 @@ fn open_local_state(paths: &workspace_config::Paths) -> rusqlite::Result<rusqlit
     im_core::compat::local_state::ensure_schema(&connection)
         .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
     Ok(connection)
+}
+
+fn seed_legacy_sqlite_message(
+    resolved: &workspace_config::Resolved,
+    msg_id: &str,
+    owner_did: &str,
+    credential_name: &str,
+) {
+    let legacy_db = Path::new(&resolved.paths.legacy_data_dir)
+        .join("database")
+        .join("awiki.db");
+    std::fs::create_dir_all(legacy_db.parent().unwrap()).expect("create legacy db dir");
+    let db = rusqlite::Connection::open(&legacy_db).expect("open legacy db");
+    db.execute_batch(LEGACY_V6_TABLES_SQL)
+        .expect("create legacy v6 tables");
+    db.pragma_update(None, "user_version", 11)
+        .expect("set legacy schema version");
+    db.execute(
+        r#"
+INSERT INTO messages (
+    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    content_type, content, stored_at, credential_name
+) VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text', ?5, ?6, ?7)
+"#,
+        rusqlite::params![
+            msg_id,
+            owner_did,
+            format!("dm:{owner_did}:did:wba:example.test:user:e1_peer"),
+            "did:wba:example.test:user:e1_peer",
+            "legacy hello",
+            "2026-01-01T00:00:00Z",
+            credential_name,
+        ],
+    )
+    .expect("insert legacy sqlite message");
 }
 
 fn seed_flat_legacy_identity(paths: &workspace_upgrade::Paths, name: &str) -> String {

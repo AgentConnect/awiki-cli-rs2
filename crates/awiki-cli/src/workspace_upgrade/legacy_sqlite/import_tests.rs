@@ -235,7 +235,7 @@ VALUES ('', ?1, ?2, ?3, ?4)
         )
         .expect("imported message");
     assert_eq!(owner_did, "did:owner");
-    assert_eq!(thread_id, "dm:did:owner:did:peer");
+    assert_eq!(thread_id, "dm:did:peer");
     assert_eq!(content_type, "text");
 
     let handle: String = target

@@ -1064,6 +1064,8 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", Path::new(workspace).join("home"))
+        .env("USERPROFILE", Path::new(workspace).join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -1079,6 +1081,8 @@ fn awiki_trace_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", Path::new(workspace).join("home"))
+        .env("USERPROFILE", Path::new(workspace).join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")

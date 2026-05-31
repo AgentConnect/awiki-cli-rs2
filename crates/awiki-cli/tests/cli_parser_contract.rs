@@ -102,6 +102,8 @@ fn awiki_cmd(args: &[&str]) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.path())
+        .env("HOME", workspace.path().join("home"))
+        .env("USERPROFILE", workspace.path().join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

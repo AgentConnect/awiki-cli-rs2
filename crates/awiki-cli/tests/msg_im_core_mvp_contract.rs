@@ -353,6 +353,7 @@ fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
     write_msg_config(workspace.path(), &server.base_url());
     seed_message(
         workspace.path(),
+        &alice.unique_id,
         &alice.did,
         "direct-mark-cutover",
         "",
@@ -380,7 +381,7 @@ fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
         json!(["direct-mark-cutover"])
     );
     assert_eq!(
-        is_read(workspace.path(), &alice.did, "direct-mark-cutover"),
+        is_read(workspace.path(), &alice.unique_id, "direct-mark-cutover"),
         1
     );
 
@@ -411,6 +412,7 @@ fn msg_mark_read_default_cutover_keeps_group_and_mail_local_only() {
     write_msg_config(workspace.path(), &server.base_url());
     seed_message(
         workspace.path(),
+        &alice.unique_id,
         &alice.did,
         "group-mark-cutover",
         "did:wba:awiki.ai:groups:demo:e1_group",
@@ -419,6 +421,7 @@ fn msg_mark_read_default_cutover_keeps_group_and_mail_local_only() {
     );
     seed_message(
         workspace.path(),
+        &alice.unique_id,
         &alice.did,
         "mail-mark-cutover",
         "",
@@ -443,11 +446,11 @@ fn msg_mark_read_default_cutover_keeps_group_and_mail_local_only() {
     assert_eq!(envelope["data"]["updated_count"], 2);
     assert_eq!(server.requests().len(), 0);
     assert_eq!(
-        is_read(workspace.path(), &alice.did, "group-mark-cutover"),
+        is_read(workspace.path(), &alice.unique_id, "group-mark-cutover"),
         1
     );
     assert_eq!(
-        is_read(workspace.path(), &alice.did, "mail-mark-cutover"),
+        is_read(workspace.path(), &alice.unique_id, "mail-mark-cutover"),
         1
     );
 }
@@ -457,6 +460,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -506,13 +511,14 @@ fn register_generated_read_identity(
 fn write_msg_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
-        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
+        format!("schema_version: 1\nruntime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
 }
 
 fn seed_message(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     message_id: &str,
     group_did: &str,
@@ -523,15 +529,16 @@ fn seed_message(
     connection
         .execute(
             r#"
-INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
-     content_type, content, stored_at, metadata, is_read)
-VALUES (?1, ?2, ?3, 0, 'did:wba:awiki.ai:bob:e1_bob', ?2, ?4, ?4, ?5, 'hello',
-        '2026-05-21T00:00:00Z', ?6, 0)"#,
+	INSERT INTO messages
+	    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+	     content_type, content, stored_at, metadata, is_read)
+	VALUES (?1, ?2, ?3, ?4, ?4, 0, 'did:wba:awiki.ai:bob:e1_bob', ?3, ?5, ?5, ?6, 'hello',
+	        '2026-05-21T00:00:00Z', ?7, 0)"#,
             (
                 message_id,
+                owner_identity_id,
                 owner_did,
-                format!("thread:{message_id}"),
+                conversation_id_for_fixture(message_id, group_did, content_type, metadata),
                 group_did,
                 content_type,
                 metadata,
@@ -540,13 +547,28 @@ VALUES (?1, ?2, ?3, 0, 'did:wba:awiki.ai:bob:e1_bob', ?2, ?4, ?4, ?5, 'hello',
         .unwrap();
 }
 
-fn is_read(workspace: &Path, owner_did: &str, message_id: &str) -> i64 {
+fn conversation_id_for_fixture(
+    _message_id: &str,
+    group_did: &str,
+    content_type: &str,
+    metadata: &str,
+) -> String {
+    if !group_did.is_empty() {
+        format!("group:{group_did}")
+    } else if content_type == "mail.notification" || metadata.contains(r#""source_kind":"mail""#) {
+        "mail:alice@awiki.ai".to_string()
+    } else {
+        "dm:did:wba:awiki.ai:bob:e1_bob".to_string()
+    }
+}
+
+fn is_read(workspace: &Path, owner_identity_id: &str, message_id: &str) -> i64 {
     let connection =
         rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db")).unwrap();
     connection
         .query_row(
-            "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = ?2",
-            (owner_did, message_id),
+            "SELECT is_read FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+            (owner_identity_id, message_id),
             |row| row.get(0),
         )
         .unwrap()

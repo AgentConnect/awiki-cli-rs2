@@ -74,6 +74,24 @@ impl LegacyOwnerLookup {
         lookup
     }
 
+    pub fn add_owner_did_alias(
+        &mut self,
+        legacy_did: &str,
+        identity_id: &str,
+        current_did: &str,
+        credential_name: &str,
+    ) {
+        let legacy_did = legacy_did.trim();
+        if legacy_did.is_empty() {
+            return;
+        }
+        let Some(scope) = LegacyOwnerScope::new(identity_id, current_did, Some(credential_name))
+        else {
+            return;
+        };
+        self.owner_by_did.insert(legacy_did.to_string(), scope);
+    }
+
     fn infer_owner_scope(&self, row: &Value) -> StoreResult<LegacyOwnerScope> {
         let owner = string_from_row(row, "owner_did");
         if !owner.trim().is_empty() {
@@ -240,6 +258,7 @@ fn import_messages(
             MessageImport {
                 msg_id,
                 owner,
+                legacy_owner_did: string_from_row(&row, "owner_did"),
                 thread_id,
                 direction: int_from_row(&row, "direction"),
                 sender_did: string_from_row(&row, "sender_did"),
@@ -489,6 +508,7 @@ fn import_relationship_events(
 struct MessageImport {
     msg_id: String,
     owner: LegacyOwnerScope,
+    legacy_owner_did: String,
     thread_id: String,
     direction: i64,
     sender_did: String,
@@ -521,9 +541,11 @@ fn store_message(target: &Connection, record: MessageImport) -> StoreResult<()> 
     let conversation_id = conversation_id_from_legacy_thread(
         &record.thread_id,
         &owner_did,
+        &record.legacy_owner_did,
         &record.sender_did,
         &record.group_id,
     );
+    let thread_id = conversation_id.clone();
     target.execute(
         r#"
 INSERT INTO messages
@@ -571,7 +593,7 @@ DO UPDATE SET
             owner_identity_id,
             owner_did,
             conversation_id,
-            record.thread_id,
+            thread_id,
             record.direction,
             normalize_optional_string(&record.sender_did),
             normalize_optional_string(&record.receiver_did),
@@ -596,6 +618,7 @@ DO UPDATE SET
 fn conversation_id_from_legacy_thread(
     thread_id: &str,
     owner_did: &str,
+    legacy_owner_did: &str,
     sender_did: &str,
     group_id: &str,
 ) -> String {
@@ -614,10 +637,10 @@ fn conversation_id_from_legacy_thread(
     }
     if let Some(rest) = thread_id.strip_prefix("dm:") {
         let parts = split_legacy_dm_thread(rest);
-        if let Some(peer) = parts
-            .iter()
-            .find(|part| !part.trim().is_empty() && part.trim() != owner_did)
-        {
+        if let Some(peer) = parts.iter().find(|part| {
+            let part = part.trim();
+            !part.is_empty() && part != owner_did && part != legacy_owner_did.trim()
+        }) {
             return format!("dm:{}", peer.trim());
         }
     }
