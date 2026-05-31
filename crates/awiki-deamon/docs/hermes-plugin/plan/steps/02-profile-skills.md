@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 02  
-状态：in_progress
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-05-31 23:19:11 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-05-31 23:32:43 +0800 |
+| 提交 | 实现提交 `f8a0ae9b9994ebb7ebbee2aef48364a9d5fc6261`；账本收尾提交待回填 |
 | 审查证据 | 2026-05-31 23:31:00 +0800 完成提交前 review：schema migration 为 additive；profile home 派生在 `state_root/runtime/hermes/profiles/` 下；profile 不写 run token、DID 私钥或 JWT；发现并修复 profile 文案中的精确敏感字段名和 wrapper 配置夸大真实进程能力问题；同步 schema version 测试。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，42 个测试；secret 搜索仅命中测试断言和安全说明；禁止 plugin 搜索仅命中测试断言；`git diff --check -- crates/awiki-deamon` 通过。 |
-| 下一步 | 创建 Step 02 聚焦提交并回填 commit hash |
+| 下一步 | 启动 Step 03 TUI Gateway runner 与 plugin 骨架 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -283,10 +283,25 @@ CREATE TABLE hermes_profiles (
 
 ### 提交后状态
 
-- 实现提交：待回填。
+- 实现提交：`f8a0ae9b9994ebb7ebbee2aef48364a9d5fc6261`
+- 实现提交纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/01-contract-baseline.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/02-profile-skills.md`
+  - `crates/awiki-deamon/src/cli_wrapper/mod.rs`
+  - `crates/awiki-deamon/src/commands/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/state/mod.rs`
+  - `crates/awiki-deamon/tests/hermes_profile.rs`
+  - `crates/awiki-deamon/tests/state_bootstrap.rs`
+- 实现提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 3]
+```
+
+- 遗留未提交变更：无。
 - 账本收尾提交：待回填。
-- 提交后 `git status --short --branch`：待回填。
-- 遗留未提交变更：待回填。
 
 ## 13. 风险、回滚与后续
 
