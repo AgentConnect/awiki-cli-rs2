@@ -5,7 +5,7 @@ DOC：`crates/awiki-deamon/docs/hermes-plugin/plan/`
 Harness：`/home/ecs-user/awiki-space/awiki-harness`  
 创建日期：2026-05-31  
 当前分支：`feature/release-0526/hermes-plugin-cli-rs2`  
-恢复位置：Step 01，状态 `in_progress`，继续契约与代码基线收敛
+恢复位置：Step 02，等待启动 Hermes profile 与 Awiki Skills 安装
 
 ## 1. 目标
 
@@ -108,7 +108,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 
 | 步骤 | 标题 | 依赖 | 输出 | 步骤文档 | 提交门禁 | 状态 |
 |---|---|---|---|---|---|---|
-| 01 | 契约与代码基线收敛 | 无 | Hermes MVP 契约、现有代码差距、测试夹具策略和执行范围冻结 | [steps/01-contract-baseline.md](steps/01-contract-baseline.md) | 必须 | in_progress |
+| 01 | 契约与代码基线收敛 | 无 | Hermes MVP 契约、现有代码差距、测试夹具策略和执行范围冻结 | [steps/01-contract-baseline.md](steps/01-contract-baseline.md) | 必须 | done |
 | 02 | Hermes profile 与 Awiki Skills 安装 | 01 | `hermes_profiles`、profile home、SOUL.md、Awiki Skills、无副作用 smoke test | [steps/02-profile-skills.md](steps/02-profile-skills.md) | 必须 | pending |
 | 03 | TUI Gateway runner 与 plugin 骨架 | 02 | `runtime.hermes` plugin、TUI Gateway adapter、fake gateway 测试、stream observation | [steps/03-tui-gateway-runner.md](steps/03-tui-gateway-runner.md) | 必须 | pending |
 | 04 | Controller 消息执行链与 Prompt Wrapper | 03 | controller text/plain 到 Hermes，run token，prompt wrapper，status/final 回调 | [steps/04-message-execution.md](steps/04-message-execution.md) | 必须 | pending |
@@ -123,7 +123,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 
 | 步骤 | 状态 | 分支 | 开始时间 | 完成时间 | 提交 | 审查证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
-| 01 | review | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-05-31 23:02:52 +0800 | 未完成 | 未提交 | 2026-05-31 23:13:02 +0800 完成提交前 review：未发现生产实现越界；已修复 focused 测试过滤问题；残余风险为 `msg.send` 真实外发仍待 Step 05 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes` 通过，5 个 hermes contract tests；`cargo test -p awiki-deamon --locked` 通过，39 个测试；`git diff --check -- crates/awiki-deamon/docs/hermes-plugin crates/awiki-deamon/tests crates/awiki-deamon/src/plugins` 通过；禁止项搜索仅命中文档非目标、测试断言和既有 `WorkspaceMode::Sandbox` | 创建 Step 01 聚焦提交并回填 commit hash |
+| 01 | done | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-05-31 23:02:52 +0800 | 2026-05-31 23:17:21 +0800 | 实现提交 `e4c46fc4cd6fcf7e44f793404640abc21c0cade4`；账本收尾提交待回填 | 2026-05-31 23:13:02 +0800 完成提交前 review：未发现生产实现越界；已修复 focused 测试过滤问题；残余风险为 `msg.send` 真实外发仍待 Step 05 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes` 通过，5 个 hermes contract tests；`cargo test -p awiki-deamon --locked` 通过，39 个测试；`git diff --check -- crates/awiki-deamon/docs/hermes-plugin crates/awiki-deamon/tests crates/awiki-deamon/src/plugins` 通过；禁止项搜索仅命中文档非目标、测试断言和既有 `WorkspaceMode::Sandbox`；提交后 `git status --short --branch`：`## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 1]`，无未提交变更 | 启动 Step 02 |
 | 02 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 01 完成 |
 | 03 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 02 完成 |
 | 04 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 03 完成 |
