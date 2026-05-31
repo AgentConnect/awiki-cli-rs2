@@ -7,6 +7,9 @@ use crate::agent::{
     runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
 };
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
+use crate::plugins::hermes::{
+    initialize_hermes_profile, mark_hermes_profile_failed, HERMES_RUNTIME_PLUGIN_ID,
+};
 use crate::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     RegistrationToken,
@@ -275,6 +278,41 @@ where
             "command_id": payload.command_id,
         }),
     )?;
+
+    if profile.runtime_plugin_id == HERMES_RUNTIME_PLUGIN_ID {
+        match initialize_hermes_profile(config, state, &profile, &exchange.handle) {
+            Ok(install) => {
+                state.insert_audit_event_json(
+                    "hermes.profile.initialize",
+                    Some(&profile.agent_did),
+                    Some(&profile.runtime_profile_id),
+                    None,
+                    None,
+                    json!({
+                        "status": install.record.status,
+                        "hermes_profile": install.record.hermes_profile,
+                        "hermes_home": install.record.hermes_home,
+                        "awiki_skills_version": install.record.awiki_skills_version,
+                    }),
+                )?;
+            }
+            Err(error) => {
+                mark_hermes_profile_failed(config, state, &profile, &exchange.handle)?;
+                state.insert_audit_event_json(
+                    "hermes.profile.initialize",
+                    Some(&profile.agent_did),
+                    Some(&profile.runtime_profile_id),
+                    None,
+                    None,
+                    json!({
+                        "status": "failed",
+                        "reason": error.to_string(),
+                    }),
+                )?;
+                return Err(error).context("initialize Hermes profile");
+            }
+        }
+    }
 
     Ok(RuntimeAgentCreateOutcome {
         command_id: payload.command_id.clone(),

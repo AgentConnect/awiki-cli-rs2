@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 02  
-状态：draft
+状态：in_progress
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-05-31 23:19:11 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 等 Step 01 完成后，实现 Hermes profile/Skills 初始化 |
+| 审查证据 | 2026-05-31 23:31:00 +0800 完成提交前 review：schema migration 为 additive；profile home 派生在 `state_root/runtime/hermes/profiles/` 下；profile 不写 run token、DID 私钥或 JWT；发现并修复 profile 文案中的精确敏感字段名和 wrapper 配置夸大真实进程能力问题；同步 schema version 测试。 |
+| 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，42 个测试；secret 搜索仅命中测试断言和安全说明；禁止 plugin 搜索仅命中测试断言；`git diff --check -- crates/awiki-deamon` 通过。 |
+| 下一步 | 创建 Step 02 聚焦提交并回填 commit hash |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -221,6 +221,72 @@ CREATE TABLE hermes_profiles (
 | 日期 | 变更 | 原因 | 主计划变更日志链接 |
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+
+## 14. Step 02 执行记录
+
+### 已实现
+
+- 在 `state/mod.rs` 新增 `HermesProfileRecord`、`hermes_profiles` schema version 6、additive migration、`upsert_hermes_profile` 和 `load_hermes_profile`。
+- 在 `plugins/hermes` 实现 Hermes profile manager：派生 `hermes_home`、写 `SOUL.md`、写 `awiki-profile.json`、安装 3 个 Awiki Skills、执行无副作用 smoke check，并禁止创建 Hermes Python plugin 目录。
+- 在 `commands::create_runtime_agent` 中，仅当 `runtime_plugin_id == "runtime.hermes"` 时调用 Hermes profile 初始化；失败时记录 failed profile 和 audit，并复用现有 failed status 发送路径。
+- 在 `cli_wrapper` 新增 `rpc_ping` 请求构造，作为 profile smoke test 的低风险 wrapper 请求形状证据，不调用真实 UDS 或可写 token。
+- 新增 `tests/hermes_profile.rs` 覆盖 schema/CRUD、旧 DB migration、runtime agent create profile/Skills 安装、无 secret、无 plugin 目录和 wrapper `rpc.ping` 请求形状。
+
+### Review 记录
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | profile config/SOUL 中最初出现精确 `runtime_rpc_token` 字段名；profile config 最初写成真实 `awiki-deamon local-rpc` 命令，可能夸大当前 wrapper 进程能力；schema version 断言仍为 5。 | 都属于 Step 02 直接问题。 |
+| 已修复 | 将 profile 文案改为 `run capability token`；wrapper 配置改为 `library:awiki_deamon::cli_wrapper; process wrapper wired in Step 07`；新增 `CliWrapperRequest::rpc_ping` 形状测试；schema version 测试更新到 6。 | 已重跑验证。 |
+| 残余风险 | 真实 Hermes profile layout 和真实 Hermes binary 兼容性尚未验证。 | 按计划留给 Step 03 真实 gateway/smoke。 |
+| 测试新增或缺失 | 新增 `hermes_profile` focused tests 3 个。 | 不依赖真实 Hermes binary，不发送真实消息。 |
+| 文档更新或缺失 | 本步骤执行记录已回填；未新增独立 profile layout 文档。 | 当前 layout 已在代码和测试中锁定，后续如真实 Hermes 需要调整再更新设计文档。 |
+
+### 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked hermes_profile` | 通过：3 个 focused tests。 |
+| `cargo test -p awiki-deamon --locked` | 通过：42 个测试，doc tests 0 个。 |
+| `rg -n "runtime_rpc_token\|private.key\|auth_private_key\|jwt_token" crates/awiki-deamon/src/plugins/hermes crates/awiki-deamon/tests/hermes_profile.rs` | 通过但有预期命中：测试断言确保 profile dump 不含这些字段名；生产代码仅包含“JWT stays in daemon-managed storage”安全说明。 |
+| `rg -n "plugin.yaml\|plugins/awiki-runtime\|tools.py\|__init__.py" crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过但有预期命中：仅测试断言和 Step 01 contract test；生产代码无 Hermes Python plugin 安装逻辑。 |
+| `git diff --check -- crates/awiki-deamon` | 通过。 |
+
+### 提交前状态
+
+- `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 2]
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/01-contract-baseline.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/02-profile-skills.md
+ M crates/awiki-deamon/src/cli_wrapper/mod.rs
+ M crates/awiki-deamon/src/commands/mod.rs
+ M crates/awiki-deamon/src/plugins/hermes/mod.rs
+ M crates/awiki-deamon/src/state/mod.rs
+ M crates/awiki-deamon/tests/state_bootstrap.rs
+?? crates/awiki-deamon/tests/hermes_profile.rs
+```
+
+- 纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/01-contract-baseline.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/02-profile-skills.md`
+  - `crates/awiki-deamon/src/cli_wrapper/mod.rs`
+  - `crates/awiki-deamon/src/commands/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/state/mod.rs`
+  - `crates/awiki-deamon/tests/hermes_profile.rs`
+  - `crates/awiki-deamon/tests/state_bootstrap.rs`
+
+### 提交后状态
+
+- 实现提交：待回填。
+- 账本收尾提交：待回填。
+- 提交后 `git status --short --branch`：待回填。
+- 遗留未提交变更：待回填。
 
 ## 13. 风险、回滚与后续
 

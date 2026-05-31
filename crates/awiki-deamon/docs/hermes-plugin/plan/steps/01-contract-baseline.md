@@ -12,7 +12,7 @@
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-05-31 23:02:52 +0800 |
 | 完成时间 | 2026-05-31 23:17:21 +0800 |
-| 提交 | 实现提交 `e4c46fc4cd6fcf7e44f793404640abc21c0cade4`；账本收尾提交待回填 |
+| 提交 | 实现提交 `e4c46fc4cd6fcf7e44f793404640abc21c0cade4`；账本收尾提交 `770a150896d5890093867346ab942aecd29f699f` |
 | 审查证据 | 2026-05-31 23:13:02 +0800 完成提交前 review：契约文档与设计一致，未实现 Hermes Python plugin、profile、TUI Gateway、session 或真实外发；生产代码仅新增 `plugins::hermes` 常量；发现 focused 测试函数名未全部匹配 `hermes` 过滤器，已改名修复。 |
 | 验证证据 | 启动前 `git status --porcelain=v1 -b` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes` 通过，5 个 hermes contract tests；`cargo test -p awiki-deamon --locked` 通过，39 个测试；`git diff --check -- crates/awiki-deamon/docs/hermes-plugin crates/awiki-deamon/tests crates/awiki-deamon/src/plugins` 通过；禁止项搜索仅命中文档非目标、测试断言和既有 `WorkspaceMode::Sandbox`。 |
 | 下一步 | 启动 Step 02 Hermes profile 与 Awiki Skills 安装 |
@@ -229,7 +229,7 @@ crates/awiki-deamon/tests/hermes_contracts.rs
 ```
 
 - 遗留未提交变更：无。
-- 账本收尾提交：待回填。
+- 账本收尾提交：`770a150896d5890093867346ab942aecd29f699f`
 
 ## 13. 风险、回滚与后续
 

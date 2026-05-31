@@ -13,6 +13,14 @@ pub struct CliWrapperRequest {
 }
 
 impl CliWrapperRequest {
+    pub fn rpc_ping(runtime_rpc_token: impl Into<String>) -> Self {
+        Self {
+            runtime_rpc_token: runtime_rpc_token.into(),
+            method: "rpc.ping".to_string(),
+            params: json!({}),
+        }
+    }
+
     pub fn task_status(
         runtime_rpc_token: impl Into<String>,
         task_id: impl Into<String>,

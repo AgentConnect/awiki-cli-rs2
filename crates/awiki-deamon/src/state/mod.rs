@@ -14,7 +14,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 5;
+const DAEMON_SCHEMA_VERSION: i64 = 6;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -26,6 +26,41 @@ pub struct DaemonState {
 pub struct StateSummary {
     pub database_path: PathBuf,
     pub schema_version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HermesProfileRecord {
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub hermes_profile: String,
+    pub hermes_home: PathBuf,
+    pub hermes_version: Option<String>,
+    pub awiki_skills_version: String,
+    pub status: String,
+}
+
+impl HermesProfileRecord {
+    pub fn validate(&self) -> Result<()> {
+        if self.agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        if self.runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        if self.hermes_profile.trim().is_empty() {
+            bail!("hermes_profile must not be empty");
+        }
+        if self.hermes_home.as_os_str().is_empty() {
+            bail!("hermes_home must not be empty");
+        }
+        if self.awiki_skills_version.trim().is_empty() {
+            bail!("awiki_skills_version must not be empty");
+        }
+        if self.status.trim().is_empty() {
+            bail!("hermes profile status must not be empty");
+        }
+        Ok(())
+    }
 }
 
 impl DaemonState {
@@ -393,6 +428,79 @@ ORDER BY agent_did ASC
             tokens.push(row?);
         }
         Ok(tokens)
+    }
+
+    pub fn upsert_hermes_profile(&self, profile: &HermesProfileRecord) -> Result<()> {
+        profile.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO hermes_profiles (
+    agent_did,
+    runtime_profile_id,
+    hermes_profile,
+    hermes_home,
+    hermes_version,
+    awiki_skills_version,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+ON CONFLICT(agent_did) DO UPDATE SET
+    runtime_profile_id = excluded.runtime_profile_id,
+    hermes_profile = excluded.hermes_profile,
+    hermes_home = excluded.hermes_home,
+    hermes_version = excluded.hermes_version,
+    awiki_skills_version = excluded.awiki_skills_version,
+    status = excluded.status,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                profile.agent_did,
+                profile.runtime_profile_id,
+                profile.hermes_profile,
+                profile.hermes_home.display().to_string(),
+                profile.hermes_version,
+                profile.awiki_skills_version,
+                profile.status,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_hermes_profile(&self, agent_did: &str) -> Result<HermesProfileRecord> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    agent_did,
+    runtime_profile_id,
+    hermes_profile,
+    hermes_home,
+    hermes_version,
+    awiki_skills_version,
+    status
+FROM hermes_profiles
+WHERE agent_did = ?1
+"#,
+                [agent_did],
+                |row| {
+                    let hermes_home: String = row.get(3)?;
+                    Ok(HermesProfileRecord {
+                        agent_did: row.get(0)?,
+                        runtime_profile_id: row.get(1)?,
+                        hermes_profile: row.get(2)?,
+                        hermes_home: PathBuf::from(hermes_home),
+                        hermes_version: row.get(4)?,
+                        awiki_skills_version: row.get(5)?,
+                        status: row.get(6)?,
+                    })
+                },
+            )
+            .with_context(|| format!("load Hermes profile for agent {agent_did}"))
     }
 
     pub fn load_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
@@ -1077,6 +1185,18 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS hermes_profiles (
+            agent_did TEXT PRIMARY KEY,
+            runtime_profile_id TEXT NOT NULL,
+            hermes_profile TEXT NOT NULL,
+            hermes_home TEXT NOT NULL,
+            hermes_version TEXT,
+            awiki_skills_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -1087,6 +1207,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_task_v3(connection)?;
     migrate_agent_definition_v4(connection)?;
     migrate_agent_auth_state_v5(connection)?;
+    migrate_hermes_profiles_v6(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -1108,6 +1229,37 @@ fn migrate_agent_auth_state_v5(connection: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    Ok(())
+}
+
+fn migrate_hermes_profiles_v6(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS hermes_profiles (
+            agent_did TEXT PRIMARY KEY,
+            runtime_profile_id TEXT NOT NULL,
+            hermes_profile TEXT NOT NULL,
+            hermes_home TEXT NOT NULL,
+            hermes_version TEXT,
+            awiki_skills_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    for (column, definition) in [
+        ("runtime_profile_id", "TEXT NOT NULL DEFAULT ''"),
+        ("hermes_profile", "TEXT NOT NULL DEFAULT ''"),
+        ("hermes_home", "TEXT NOT NULL DEFAULT ''"),
+        ("hermes_version", "TEXT"),
+        ("awiki_skills_version", "TEXT NOT NULL DEFAULT ''"),
+        ("status", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("created_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        add_column_if_missing(connection, "hermes_profiles", column, definition)?;
+    }
     Ok(())
 }
 
@@ -1383,6 +1535,7 @@ mod tests {
             "audit_log",
             "agent_identity",
             "agent_auth_state",
+            "hermes_profiles",
         ] {
             let count: i64 = connection
                 .query_row(
