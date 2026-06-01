@@ -9,6 +9,8 @@ use std::io::{Read, Write};
 #[cfg(feature = "blocking")]
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
+#[cfg(feature = "blocking")]
+use std::sync::Arc;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
