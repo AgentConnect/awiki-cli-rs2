@@ -12,6 +12,7 @@ use crate::runtime::{
 };
 use crate::security::runtime_token::{issue_runtime_token, RpcMethod, RuntimeTokenScope};
 use crate::state::DaemonState;
+use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipientPolicy {
@@ -85,6 +86,43 @@ where
     P: RuntimePlugin,
     O: RuntimeOutbox,
 {
+    run_controller_text_task_with_socket(state, profile, plugin, outbox, message, None)
+}
+
+pub fn run_controller_text_task_with_config<P, O>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    run_controller_text_task_with_socket(
+        state,
+        profile,
+        plugin,
+        outbox,
+        message,
+        Some(config.local_socket_path.clone()),
+    )
+}
+
+fn run_controller_text_task_with_socket<P, O>(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+    local_socket_path: Option<std::path::PathBuf>,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
     profile.validate()?;
     let task = route_controller_text_task(profile, message)?;
     state.upsert_runtime_agent_profile(profile)?;
@@ -132,6 +170,7 @@ where
         task,
         workspace_root: profile.workspace_root.clone(),
         runtime_rpc_token: issued.token.clone(),
+        local_socket_path,
     };
     let launch_outcome = match plugin.launch_run(launch_context) {
         Ok(outcome) => outcome,

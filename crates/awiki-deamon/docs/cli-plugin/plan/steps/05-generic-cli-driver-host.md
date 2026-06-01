@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 接入 generic-cli profile loader 和 driver registry |
+| Started | 2026-06-01 17:58:49 +0800 |
+| Completed | 2026-06-01 18:09:34 +0800 |
+| Commit | 步骤提交：`daemon: route generic cli profiles through driver registry`，hash 以 `git log` 为准 |
+| Review evidence | 自查发现并修复 2 项：`GenericCliInvocation` Debug 曾暴露 task text，已改为 redaction；payload 型 `runtime.task.submit` 曾仍 fallback 到 `UdsTestRuntimePlugin`，已让 `generic-cli` 路径加载 `cli_runtime_profile` 和 driver registry。确认 command driver 不注入 `AWIKI_DAEMON_TASK_TEXT`，真实 command driver callback 为空并通过 local RPC 发送 status/final。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：13 passed；`cargo test -p awiki-deamon --locked foreground`：4 foreground tests passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test hermes_gateway --locked`：6 passed + 1 ignored；`cargo test -p awiki-deamon --locked`：29 unit passed，integration 10/13/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；`rg -n "AWIKI_DAEMON_TASK_TEXT" crates/awiki-deamon/src crates/awiki-deamon/tests` 仅命中测试断言。 |
+| Next action | 提交 Step 05 后启动 Step 06。 |
 
 ## 2. 目标
 
@@ -79,13 +79,13 @@ Step index：05
 
 ## 7. 验收标准
 
-- [ ] `runtime_plugin_id=generic-cli` 在 foreground 中不再 fallback 到 `UdsTestRuntimePlugin`。
-- [ ] driver registry 可以按 `driver_id` 选择 driver，并对未知 driver 返回明确错误。
-- [ ] 真实 command driver 使用 wrapper/local RPC 产生 status/final，不依赖 `RuntimeLaunchOutcome.callbacks` 伪造主链路。
-- [ ] 真实 command driver env 不包含 `AWIKI_DAEMON_TASK_TEXT`。
-- [ ] Hermes runtime path 不受影响。
-- [ ] token/socket 不进入 prompt 文本、Debug 或日志。
-- [ ] Review 发现已经修复或明确记录。
+- [x] `runtime_plugin_id=generic-cli` 在 foreground 中不再 fallback 到 `UdsTestRuntimePlugin`。
+- [x] driver registry 可以按 `driver_id` 选择 driver，并对未知 driver 返回明确错误。
+- [x] 真实 command driver 使用 wrapper/local RPC 产生 status/final，不依赖 `RuntimeLaunchOutcome.callbacks` 伪造主链路。
+- [x] 真实 command driver env 不包含 `AWIKI_DAEMON_TASK_TEXT`。
+- [x] Hermes runtime path 不受影响。
+- [x] token/socket 不进入 prompt 文本、Debug 或日志。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
@@ -98,6 +98,17 @@ Step index：05
 | Daemon crate | `cd codex-plugin-cli-rs2 && cargo test -p awiki-deamon --locked` | 全 crate 通过。 |
 | Env grep | `cd codex-plugin-cli-rs2 && rg -n "AWIKI_DAEMON_TASK_TEXT" crates/awiki-deamon/src crates/awiki-deamon/tests` | 生产真实 driver 不命中；如果测试/文档命中需说明。 |
 
+实际验证证据：
+
+- `cargo fmt --all --check`：通过。
+- `cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：13 passed。
+- `cargo test -p awiki-deamon --locked foreground`：4 foreground tests passed。
+- `cargo test -p awiki-deamon --test hermes_message --locked`：8 passed。
+- `cargo test -p awiki-deamon --test hermes_gateway --locked`：6 passed + 1 ignored。
+- `cargo test -p awiki-deamon --locked`：29 unit passed；integration 10/13/5/6 passed + 1 ignored/8/3/13/2 passed；doc-tests 0 passed。
+- `git diff --check`：通过。
+- Env grep：`AWIKI_DAEMON_TASK_TEXT` 仅命中 `generic_cli_runtime_mvp` 中确认该 env 未注入的测试脚本。
+
 ## 9. Review 环节
 
 - Review 时机：driver host 和 tests 完成后、commit 前。
@@ -105,11 +116,11 @@ Step index：05
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 已发现 2 项，均已处理 | 1. `GenericCliInvocation` Debug 曾包含 task text；2. payload 型 `runtime.task.submit` 的 generic-cli route 仍可能走 `UdsTestRuntimePlugin` fallback。 |
+| 已修复问题 | 已修复 | Debug 改为 `<redacted-task-text>`；payload 和文本消息的 `generic-cli` foreground 路径都加载 `cli_runtime_profile` 并走 `GenericCliDriverRegistry`。 |
+| 剩余风险 | 已记录 | Step 05 只注册 `command` 真实 driver；`codex` 返回未安装/未实现占位，Step 06 实现。`CommandGenericCliDriver` 仍把 token 放进子进程 env，这是本地 wrapper 当前契约，后续 Step 06/07 继续收敛。 |
+| 新增或缺失测试 | 已新增 | command fake process 通过 UDS local RPC 发送 status/final；env 不含 `AWIKI_DAEMON_TASK_TEXT`；registry command profile；foreground generic-cli 不 fallback；Debug redaction；Hermes gateway/message 回归。 |
+| 已更新或缺失文档 | 已更新 | 主 Plan 与本 Step 文档已记录状态、Review 结论和验证证据。 |
 
 ## 10. Commit 要求
 

@@ -57,6 +57,7 @@ pub struct RuntimeLaunchContext {
     pub task: RuntimeTask,
     pub workspace_root: Option<PathBuf>,
     pub runtime_rpc_token: RuntimeRpcToken,
+    pub local_socket_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

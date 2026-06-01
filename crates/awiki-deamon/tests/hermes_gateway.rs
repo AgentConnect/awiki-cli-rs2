@@ -99,6 +99,7 @@ fn hermes_gateway_plugin_launch_observes_complete_without_final_callback() {
             },
             workspace_root: None,
             runtime_rpc_token: token.token,
+            local_socket_path: None,
         })
         .unwrap();
 
@@ -147,6 +148,7 @@ fn hermes_gateway_plugin_rejects_mismatched_profile_binding() {
             },
             workspace_root: None,
             runtime_rpc_token: token.token,
+            local_socket_path: None,
         })
         .unwrap_err();
 
@@ -189,6 +191,7 @@ fn hermes_gateway_plugin_rejects_mismatched_task_context() {
             },
             workspace_root: None,
             runtime_rpc_token: token.token,
+            local_socket_path: None,
         })
         .unwrap_err();
 
