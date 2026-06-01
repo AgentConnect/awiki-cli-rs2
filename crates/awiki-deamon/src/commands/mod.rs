@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 
 use crate::agent::{
     agent_data_paths, generate_agent_identity, normalize_handle, resolve_runtime,
-    runtime_plugin_id, runtime_profile_id, workspace_id, workspace_path, AgentDefinition,
-    AgentKind,
+    runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
+    GENERIC_CLI_RUNTIME_PLUGIN_ID,
 };
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
 use crate::plugins::hermes::{
@@ -16,7 +16,7 @@ use crate::registration::{
     RegistrationToken,
 };
 use crate::runtime::RuntimeAgentProfile;
-use crate::state::DaemonState;
+use crate::state::{CliRuntimeProfileRecord, DaemonState};
 use crate::workspace::WorkspaceMode;
 use crate::DaemonConfig;
 
@@ -41,6 +41,8 @@ pub struct RuntimeAgentCreateOutcome {
     pub handle: String,
     pub runtime_profile_id: String,
     pub runtime_plugin_id: String,
+    pub driver_id: Option<String>,
+    pub defaulted_driver_id: bool,
     pub workspace_id: Option<String>,
     pub registration_token_id: String,
 }
@@ -160,6 +162,8 @@ where
                 "handle": outcome.handle,
                 "runtime_profile_id": outcome.runtime_profile_id,
                 "runtime_plugin_id": outcome.runtime_plugin_id,
+                "driver_id": outcome.driver_id,
+                "defaulted_driver_id": outcome.defaulted_driver_id,
                 "workspace_id": outcome.workspace_id,
                 "registration_token_id": outcome.registration_token_id,
             }),
@@ -236,8 +240,8 @@ where
     if controller_did.is_empty() {
         bail!("controller_did must not be empty");
     }
-    validate_runtime_create_args_contract(&payload.args)?;
-    let plugin_id = runtime_plugin_id(&payload.args.runtime)?;
+    let resolution = validate_runtime_create_args_contract(&payload.args)?;
+    let plugin_id = resolution.runtime_plugin_id.clone();
     let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
     let workspace_root = workspace_path(payload.args.workspace.as_deref())?;
     let workspace_id = workspace_root
@@ -272,6 +276,20 @@ where
         workspace_mode: workspace_id.as_ref().map(|_| WorkspaceMode::SharedRoot),
     };
     state.upsert_runtime_agent_profile_with_handle(&profile, &exchange.handle)?;
+    if profile.runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        let driver_id = resolution
+            .driver_id
+            .clone()
+            .context("generic-cli runtime must have driver_id")?;
+        let mut cli_profile = CliRuntimeProfileRecord::for_driver(&profile_id, driver_id)?;
+        if let Some(recipient_policy) = payload.args.recipient_policy.clone() {
+            cli_profile.recipient_policy_json = recipient_policy;
+        }
+        if let Some(driver_config) = payload.args.driver_config.clone() {
+            cli_profile.driver_config_json = driver_config;
+        }
+        state.upsert_cli_runtime_profile(&cli_profile)?;
+    }
     state.insert_audit_event_json(
         "agent.registration.exchange",
         Some(&exchange.did),
@@ -284,6 +302,11 @@ where
             "handle": exchange.handle,
             "daemon_agent_did": daemon_agent.agent_did,
             "command_id": payload.command_id,
+            "runtime_alias": payload.args.runtime.clone(),
+            "runtime_plugin_id": profile.runtime_plugin_id.clone(),
+            "driver_id": resolution.driver_id.clone(),
+            "defaulted_driver_id": resolution.defaulted_driver_id,
+            "legacy_runtime_plugin_id": resolution.legacy_runtime_plugin_id.clone(),
         }),
     )?;
 
@@ -328,16 +351,20 @@ where
         handle: exchange.handle,
         runtime_profile_id: profile_id,
         runtime_plugin_id: plugin_id,
+        driver_id: resolution.driver_id.clone(),
+        defaulted_driver_id: resolution.defaulted_driver_id,
         workspace_id,
         registration_token_id: exchange.token_id,
     })
 }
 
-fn validate_runtime_create_args_contract(args: &RuntimeAgentCreateArgs) -> Result<()> {
-    resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
+fn validate_runtime_create_args_contract(
+    args: &RuntimeAgentCreateArgs,
+) -> Result<crate::agent::RuntimeResolution> {
+    let resolution = resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
     validate_optional_object(args.driver_config.as_ref(), "driver_config")?;
     validate_optional_object(args.recipient_policy.as_ref(), "recipient_policy")?;
-    Ok(())
+    Ok(resolution)
 }
 
 fn validate_optional_object(value: Option<&Value>, field_name: &str) -> Result<()> {

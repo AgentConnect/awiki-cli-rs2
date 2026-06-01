@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 将 Step 01/02 接入 `create_runtime_agent` |
+| Started | 2026-06-01 17:22:29 +0800 |
+| Completed | 2026-06-01 17:26:45 +0800 |
+| Commit | 步骤提交：`daemon: create cli agents through generic cli profiles` |
+| Review evidence | 自查无阻塞发现；确认 create path 不再调用旧 `runtime_plugin_id()`，CLI family 新建写 `generic-cli` + `cli_runtime_profile.driver_id`，Hermes native 分支保持 `runtime.hermes`。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test agent_registration_management --locked`：10 passed；`cargo test -p awiki-deamon --test hermes_profile --locked`：3 passed；`cargo test -p awiki-deamon --locked`：27 unit passed，integration 10/6/5/6+1 ignored/8/3/8/2 passed；legacy grep 仅命中 legacy helper、legacy metadata/audit 测试和 migration/fixture。 |
+| Next action | Step 04：Recipient policy、handle resolve 与 `msg.send` 审计 |
 
 ## 2. 目标
 
@@ -73,14 +73,14 @@ Step index：03
 
 ## 7. 验收标准
 
-- [ ] `runtime.agent.create(runtime=codex|codex-cli)` 写入 `runtime_plugin_id=generic-cli` 和 `driver_id=codex`。
-- [ ] `runtime.agent.create(runtime=generic-cli, driver_id=codex)` 可创建 Codex profile。
-- [ ] `runtime.agent.create(runtime=claude-code|gemini|gemini-cli)` 写入 `runtime_plugin_id=generic-cli` 和对应 `driver_id`。
-- [ ] `runtime.agent.create(runtime=hermes)` 仍写入 `runtime.hermes`，并初始化 Hermes profile。
-- [ ] status payload / audit 不包含 registration token 原文。
-- [ ] 新创建数据不再出现 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli`。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] `runtime.agent.create(runtime=codex|codex-cli)` 写入 `runtime_plugin_id=generic-cli` 和 `driver_id=codex`。
+- [x] `runtime.agent.create(runtime=generic-cli, driver_id=codex)` 可创建 Codex profile。
+- [x] `runtime.agent.create(runtime=claude-code|gemini|gemini-cli)` 写入 `runtime_plugin_id=generic-cli` 和对应 `driver_id`。
+- [x] `runtime.agent.create(runtime=hermes)` 仍写入 `runtime.hermes`，并初始化 Hermes profile。
+- [x] status payload / audit 不包含 registration token 原文。
+- [x] 新创建数据不再出现 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli`。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -99,11 +99,11 @@ Step index：03
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 无阻塞发现 | 旧 helper 仍存在，但 create path 已不再调用。 |
+| 已修复问题 | 已清除旧 create 期望 | `agent_registration_management` 不再正向期望 `runtime.cli.*` 新写入。 |
+| 剩余风险 | profile id 仍使用 runtime alias | 按本 Step 兼容策略允许；后续若要统一 profile id 规则需单独迁移。 |
+| 新增或缺失测试 | 已新增 alias coverage | 覆盖 `codex`、`codex-cli`、`generic-cli` 默认 Codex、`claude-code`、`gemini`、`gemini-cli` 和 Hermes 保持不变。 |
+| 已更新或缺失文档 | 已更新本 Step 台账 | 主 Plan 执行台账已同步。 |
 
 ## 10. Commit 要求
 
