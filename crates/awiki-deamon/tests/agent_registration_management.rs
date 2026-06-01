@@ -119,7 +119,9 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
 
     let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
     assert_eq!(created.handle, "alice-awiki-coder");
-    assert_eq!(created.runtime_plugin_id, "runtime.cli.claude-code");
+    assert_eq!(created.runtime_plugin_id, "generic-cli");
+    assert_eq!(created.driver_id.as_deref(), Some("claude-code"));
+    assert!(!created.defaulted_driver_id);
     assert_eq!(
         created.runtime_profile_id,
         "profile_claude_code_alice_awiki_coder"
@@ -148,8 +150,9 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert_eq!(statuses[0].payload["state"], "ready");
     assert_eq!(
         statuses[0].payload["result"]["runtime_plugin_id"],
-        "runtime.cli.claude-code"
+        "generic-cli"
     );
+    assert_eq!(statuses[0].payload["result"]["driver_id"], "claude-code");
 
     let requests = registration.requests();
     assert_eq!(requests.len(), 2);
@@ -171,6 +174,14 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
         })
         .unwrap();
     assert_eq!(workspace_count, 1);
+    let cli_driver_id: String = connection
+        .query_row(
+            "SELECT driver_id FROM cli_runtime_profile WHERE runtime_profile_id = ?1",
+            [&created.runtime_profile_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cli_driver_id, "claude-code");
     let audit_dump: String = connection
         .query_row(
             "SELECT COALESCE(token_id, '') || ' ' || COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'agent.registration.exchange' LIMIT 1",
@@ -179,7 +190,275 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
         )
         .unwrap();
     assert!(audit_dump.contains(&created.registration_token_id));
+    assert!(audit_dump.contains("\"runtime_plugin_id\":\"generic-cli\""));
+    assert!(audit_dump.contains("\"driver_id\":\"claude-code\""));
+    assert!(audit_dump.contains("\"legacy_runtime_plugin_id\":\"runtime.cli.claude-code\""));
     assert!(!audit_dump.contains("tok_runtime_secret_value"));
+}
+
+#[test]
+fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_generic_cli".to_string(),
+            conversation_id: Some("conv_daemon_generic_cli".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_generic_cli",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-generic-cli",
+                    "runtime": "generic-cli",
+                    "driver_id": "codex",
+                    "driver_config": {
+                        "profile": "awiki"
+                    },
+                    "recipient_policy": {
+                        "allow": [
+                            "did:human:alice",
+                            "@bob"
+                        ]
+                    },
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
+    assert_eq!(created.runtime_plugin_id, "generic-cli");
+    assert_eq!(created.driver_id.as_deref(), Some("codex"));
+    assert!(!created.defaulted_driver_id);
+    assert_eq!(
+        created.runtime_profile_id,
+        "profile_generic_cli_alice_generic_cli"
+    );
+    assert_eq!(
+        outbox.agent_statuses()[0].payload["result"]["runtime_plugin_id"],
+        "generic-cli"
+    );
+    assert_eq!(
+        outbox.agent_statuses()[0].payload["result"]["driver_id"],
+        "codex"
+    );
+    let cli_profile = state
+        .load_cli_runtime_profile(&created.runtime_profile_id)
+        .unwrap();
+    assert_eq!(cli_profile.driver_id, "codex");
+    assert_eq!(
+        cli_profile.driver_config_json,
+        json!({ "profile": "awiki" })
+    );
+    assert_eq!(
+        cli_profile.recipient_policy_json,
+        json!({ "allow": ["did:human:alice", "@bob"] })
+    );
+}
+
+#[test]
+fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() {
+    for (runtime, expected_driver_id, expected_profile_id) in [
+        ("codex", "codex", "profile_codex_alice_codex"),
+        ("codex-cli", "codex", "profile_codex_cli_alice_codex_cli"),
+        ("gemini", "gemini", "profile_gemini_alice_gemini"),
+        (
+            "gemini-cli",
+            "gemini",
+            "profile_gemini_cli_alice_gemini_cli",
+        ),
+    ] {
+        let (_root, config, state) = fixture();
+        let registration = MockRegistrationClient::default();
+        let daemon = setup_daemon_agent(
+            &config,
+            &state,
+            &registration,
+            "alice-mac-daemon",
+            "did:human:alice",
+            RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+        )
+        .unwrap();
+
+        let outbox = MemoryRuntimeOutbox::default();
+        let outcome = handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: format!("msg_create_{runtime}"),
+                conversation_id: Some(format!("conv_create_{runtime}")),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did,
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": format!("cmd_create_{runtime}"),
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": format!("@alice-{runtime}"),
+                        "runtime": runtime,
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value"
+                    }
+                }),
+            },
+        )
+        .unwrap();
+
+        let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
+        assert_eq!(created.runtime_plugin_id, "generic-cli");
+        assert_eq!(created.driver_id.as_deref(), Some(expected_driver_id));
+        assert_eq!(created.runtime_profile_id, expected_profile_id);
+        assert!(!created.defaulted_driver_id);
+        let runtime_agent = state.load_agent_definition(&created.agent_did).unwrap();
+        assert_eq!(
+            runtime_agent.runtime_plugin_id.as_deref(),
+            Some("generic-cli")
+        );
+        let cli_profile = state
+            .load_cli_runtime_profile(&created.runtime_profile_id)
+            .unwrap();
+        assert_eq!(cli_profile.driver_id, expected_driver_id);
+        assert_eq!(
+            cli_profile.recipient_policy_json,
+            json!({ "mode": "controller-only" })
+        );
+        assert_eq!(
+            outbox.agent_statuses()[0].payload["result"]["driver_id"],
+            expected_driver_id
+        );
+    }
+}
+
+#[test]
+fn runtime_agent_create_defaults_generic_cli_driver_to_codex() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_generic_cli_default".to_string(),
+            conversation_id: Some("conv_create_generic_cli_default".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_generic_cli_default",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-generic-default",
+                    "runtime": "generic-cli",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
+    assert_eq!(created.runtime_plugin_id, "generic-cli");
+    assert_eq!(created.driver_id.as_deref(), Some("codex"));
+    assert!(created.defaulted_driver_id);
+    assert_eq!(
+        outbox.agent_statuses()[0].payload["result"]["defaulted_driver_id"],
+        true
+    );
+    let cli_profile = state
+        .load_cli_runtime_profile(&created.runtime_profile_id)
+        .unwrap();
+    assert_eq!(cli_profile.driver_id, "codex");
+}
+
+#[test]
+fn runtime_agent_create_rejects_invalid_generic_cli_contract_fields() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let error = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_generic_cli_invalid".to_string(),
+            conversation_id: Some("conv_daemon_generic_cli_invalid".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_generic_cli_invalid",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-generic-cli-invalid",
+                    "runtime": "generic-cli",
+                    "driver_id": "codex",
+                    "driver_config": ["not", "an", "object"],
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value"
+                }
+            }),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("driver_config"));
+    assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
+    assert_eq!(outbox.agent_statuses().len(), 1);
+    assert_eq!(outbox.agent_statuses()[0].payload["state"], "failed");
 }
 
 #[test]

@@ -109,6 +109,9 @@ pub fn execute_runtime_rpc_request(
     request: RuntimeRpcRequest,
 ) -> Result<RuntimeRpcResponse> {
     let method = RpcMethod::parse(&request.method)?;
+    if method == RpcMethod::MsgSend {
+        bail!("msg.send requires runtime outbox side effects");
+    }
     let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
     let recipient = rpc_recipient(&method, &request.params);
     let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
@@ -130,9 +133,25 @@ pub fn execute_runtime_rpc_request_with_outbox(
 ) -> Result<RuntimeRpcResponse> {
     let method = RpcMethod::parse(&request.method)?;
     let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
-    let recipient = rpc_recipient(&method, &request.params);
-    let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
-    apply_runtime_rpc_side_effects(state, outbox, &context, &method, &request.params)?;
+    let context = if method == RpcMethod::MsgSend {
+        let message = RuntimeMessageSend::from_params(&request.params)?;
+        let preliminary_context =
+            state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
+        let message = resolve_message_recipient(outbox, &preliminary_context, message)?;
+        let context = state.authorize_runtime_rpc_with_message_policy(
+            &token,
+            &method,
+            message.recipient_candidates(),
+            Some(message.security.as_str()),
+        )?;
+        apply_msg_send_side_effect(state, outbox, &context, &message)?;
+        context
+    } else {
+        let recipient = rpc_recipient(&method, &request.params);
+        let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
+        apply_runtime_rpc_side_effects(state, outbox, &context, &method, &request.params)?;
+        context
+    };
 
     RuntimeRpcResponse::success(RuntimeRpcExecution::from(context))
 }
@@ -225,16 +244,74 @@ fn apply_runtime_rpc_side_effects(
             )?;
         }
         RpcMethod::TaskFinish => {
+            let run = state.load_runtime_run(&context.run_id)?;
+            if run.status == RuntimeRunStatus::Finished {
+                return Ok(());
+            }
             state.update_runtime_run_status(&context.run_id, RuntimeRunStatus::Finished)?;
             outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
         }
-        RpcMethod::MsgSend => {
-            let message = RuntimeMessageSend::from_params(params)?;
-            outbox.send_message(context, &message)?;
-        }
+        RpcMethod::MsgSend => {}
         RpcMethod::RpcPing | RpcMethod::ArtifactCreated => {}
     }
     Ok(())
+}
+
+fn resolve_message_recipient(
+    outbox: &impl RuntimeOutbox,
+    context: &AuthorizedRuntimeContext,
+    message: RuntimeMessageSend,
+) -> Result<RuntimeMessageSend> {
+    let resolved = outbox
+        .resolve_recipient_did(context, &message.recipient)
+        .with_context(|| format!("resolve msg.send recipient {}", message.recipient))?;
+    let Some(resolved_did) = resolved else {
+        bail!("msg.send recipient could not be resolved");
+    };
+    Ok(message.with_resolved_recipient(resolved_did))
+}
+
+fn apply_msg_send_side_effect(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    context: &AuthorizedRuntimeContext,
+    message: &RuntimeMessageSend,
+) -> Result<()> {
+    let result = outbox.send_message(context, message);
+    match result {
+        Ok(send_result) => {
+            state.insert_audit_event_json(
+                "runtime.msg_send.sent",
+                Some(&context.agent_did),
+                Some(&context.runtime_profile_id),
+                Some(&context.run_id),
+                Some(&context.token_id),
+                serde_json::json!({
+                    "raw_recipient": send_result.raw_recipient,
+                    "resolved_did": send_result.resolved_did,
+                    "security": send_result.security.as_str(),
+                    "message_id": send_result.message_id,
+                }),
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            state.insert_audit_event_json(
+                "runtime.msg_send.failed",
+                Some(&context.agent_did),
+                Some(&context.runtime_profile_id),
+                Some(&context.run_id),
+                Some(&context.token_id),
+                serde_json::json!({
+                    "raw_recipient": message.raw_recipient,
+                    "resolved_did": message.resolved_did,
+                    "security": message.security.as_str(),
+                    "reason": error.to_string(),
+                }),
+            )?;
+            Err(error).context("send runtime message")
+        }
+    }
 }
 
 impl From<AuthorizedRuntimeContext> for RuntimeRpcExecution {

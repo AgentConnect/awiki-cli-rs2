@@ -98,7 +98,10 @@ fn hermes_gateway_plugin_launch_observes_complete_without_final_callback() {
                 text: "不要把 complete 直接当 final".to_string(),
             },
             workspace_root: None,
+            workspace_instance: None,
+            runtime_temp_dir: None,
             runtime_rpc_token: token.token,
+            local_socket_path: None,
         })
         .unwrap();
 
@@ -146,7 +149,10 @@ fn hermes_gateway_plugin_rejects_mismatched_profile_binding() {
                 text: "wrong binding".to_string(),
             },
             workspace_root: None,
+            workspace_instance: None,
+            runtime_temp_dir: None,
             runtime_rpc_token: token.token,
+            local_socket_path: None,
         })
         .unwrap_err();
 
@@ -188,7 +194,10 @@ fn hermes_gateway_plugin_rejects_mismatched_task_context() {
                 text: "wrong task binding".to_string(),
             },
             workspace_root: None,
+            workspace_instance: None,
+            runtime_temp_dir: None,
             runtime_rpc_token: token.token,
+            local_socket_path: None,
         })
         .unwrap_err();
 

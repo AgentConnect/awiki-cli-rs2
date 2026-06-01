@@ -32,12 +32,14 @@
 
 `daemon.db` 是 daemon 自己的状态库，首版包含 agent、runtime profile、workspace binding、runtime run、runtime RPC token 占位表和 audit 表。`im-core/local-state.sqlite` 由 `im-core` 自己初始化和维护。
 
-步骤 07 后，`daemon.db` 的 agent 相关状态包括：
+当前 `daemon.db` 的 agent / runtime 相关状态包括：
 
 - `agent_definition`：daemon agent 和 runtime agent 的本地定义，包含 `handle`、`agent_kind`、`controller_did`、runtime profile、workspace 和本地路径。
 - `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥只保存在本地 daemon 状态库中，不进入 Debug 输出、日志或 audit。
 - `agent_auth_state`：daemon/runtime agent 调 message-service 时使用的本地 bearer token 状态。该表用于本地长驻 E2E 和后续登录态恢复；不要把 token 原文写入日志或 audit。
-- `runtime_profile`：runtime agent 绑定的插件、展示名和状态。
+- `runtime_profile`：runtime agent 绑定的 runtime plugin type、展示名和状态。CLI 家族新数据统一使用 `runtime_plugin_id=generic-cli`。
+- `cli_runtime_profile`：`generic-cli` 插件内部 profile，保存 `driver_id`、binary/config、默认 sandbox、默认 workspace mode、`msg.send` recipient policy 和 driver-specific config。
+- `cli_driver_run`：CLI run 的 route/session/workspace/output metadata，包括 workspace instance、command、stdout/stderr/JSONL/final output 路径和 fallback final 来源。
 - `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
 
 首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
@@ -86,28 +88,53 @@ Linux 使用 `SO_PEERCRED` 校验连接方 UID 必须等于 daemon UID。其他 
 
 ## 通用 CLI runtime MVP
 
-daemon 当前提供最小 Generic CLI runtime 闭环：
+daemon 当前提供 Generic CLI runtime MVP 闭环：
 
-1. 加载手工配置的 runtime agent profile。
-2. 只接受 `sender_did == controller_did` 的 controller 文本消息。
-3. 将文本消息标准化为 `RuntimeTask`。
-4. 创建 `RuntimeRun`，并签发短期 `runtime_rpc_token`。
-5. Generic CLI plugin 启动无界面 runtime，并把 token 注入 runtime launch context。
-6. runtime 通过 CLI wrapper 形态的 `task.status` 和 `task.finish` callback 回到 daemon local RPC。
-7. daemon 通过 token 反查可信上下文，更新 run 状态，并把 status/final 写入 testable outbox。
+1. `runtime.agent.create` 支持 `runtime=generic-cli` 以及 `codex`、`codex-cli`、`claude-code`、`gemini`、`gemini-cli` alias。
+2. CLI family 新建 agent 时持久化 `runtime_plugin_id=generic-cli`，并在 `cli_runtime_profile.driver_id` 中保存具体 driver。`runtime=generic-cli` 未显式传 `driver_id` 时默认 `codex`。
+3. 旧数据中的 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 只作为 legacy migration / alias 处理；新写入路径不再产生这些值。
+4. 消息入口仍按 Runtime Agent DID 路由到 `agent_definition`，然后读取 `runtime_profile` 和 CLI profile 选择 driver；`generic-cli` 不是外部消息 routing key。
+5. daemon 只接受 `sender_did == controller_did` 的 controller 消息执行 run，将文本消息标准化为内部 `RuntimeTask`。
+6. daemon 创建 `RuntimeRun`，按 profile/run recipient policy 签发短期 `runtime_rpc_token`。
+7. `GenericCliDriverRegistry` 按 `driver_id` 选择 `CodexDriver`、`command` driver 或后续 driver；Claude Code / Gemini 当前只保留未实现分支。
+8. Codex driver 使用 `codex exec` headless 模式，通过 stdin prompt envelope 传入用户消息，使用 `--output-last-message` 记录 fallback final。
+9. Codex / command driver 通过 daemon CLI wrapper + local RPC 回传 `task.status`、`task.finish`、`msg.send` 和 `artifact.created`；真实 Codex run 不使用 `RuntimeLaunchOutcome.callbacks` 作为 status/final 主链路。
+10. daemon 通过 token 反查可信上下文，更新 run 状态，写 audit，并通过 outbox 发送 status/final/message。单元测试使用 `MemoryRuntimeOutbox`；foreground 主链路通过 `im-core` SDK 发送 direct text。
 
-MVP 阶段的消息出口是 testable outbox，不直连 message-service。真实 `application/json + body.payload` 产品化闭环会在后续 SDK/service/agent 管理步骤完成。
+Codex 真实 run 注入的环境变量包括：
+
+```text
+AWIKI_DAEMON_RUN_ID
+AWIKI_DAEMON_TASK_ID
+AWIKI_DAEMON_RUNTIME_RPC_TOKEN
+AWIKI_DAEMON_SOCKET
+AWIKI_DAEMON_AGENT_DID
+AWIKI_DAEMON_RUNTIME_PROFILE_ID
+AWIKI_DAEMON_CLI_WRAPPER
+```
+
+真实 Codex run 不注入 `AWIKI_DAEMON_TASK_TEXT`。用户消息只通过 stdin prompt envelope 进入 Codex，避免完整消息进入进程环境。
+
+`msg.send` 支持 profile/run 授权的非 controller DID 或 handle。daemon 会先 resolve handle，再同时校验原始 handle 和 resolved DID 是否在 token scope / recipient policy 中，最后由 outbox 走测试内存记录或 foreground IM Core SDK 发送。未授权目标必须返回失败，不能伪造成发送成功。
 
 workspace mode 只记录边界，不夸大安全性：
 
 | mode | 定位 | 是否安全边界 |
 |---|---|---|
 | `shared-root` | 个人低风险、本机可信、读任务 | 否 |
-| `worktree-per-task` | 代码变更隔离、避免任务互相污染 | 部分隔离，不防系统凭据读取 |
+| `worktree-per-task` | 代码变更隔离、避免任务互相污染 | 否，仅变更隔离 |
 | `container` | 外部委托、高风险、自动写代码 | 是，依赖容器配置 |
 | `sandbox` | 外部委托、高风险、自动写代码 | 是，依赖 sandbox profile |
 
-RuntimeEvent 当前不作为任务状态和结果的第二条权威通道。权威回传链路是 Skill / daemon CLI wrapper / local RPC。
+RuntimeEvent 当前不作为任务状态和结果的第二条权威通道。权威回传链路是 runtime / daemon CLI wrapper / local RPC。
+
+`worktree-per-task` 会在 daemon 管理的 runtime 临时目录下创建 per-run git worktree，路径形如：
+
+```text
+<state-root>/runtime/tmp/worktrees/<workspace_id>/<run_id>/
+```
+
+该模式用于变更隔离和 audit/diff 保留，不是安全边界。`shared-root` 会使用用户绑定的 workspace root；container / sandbox 只保留接入点，尚不是当前 Codex MVP 的默认实现。
 
 ## Daemon Agent 与 Runtime Agent 管理
 
@@ -162,7 +189,7 @@ runtime agent 的最小创建流程：
 
 ## 长驻 foreground E2E
 
-Step 09 后，`foreground` 不再只是初始化状态后返回，它会作为长驻 daemon 进程运行：
+当前 `foreground` 不再只是初始化状态后返回，它会作为长驻 daemon 进程运行：
 
 1. 初始化 `daemon.db` 和 `im-core` 本地状态。
 2. 将本地 daemon/runtime agent identity 同步到 `im-core` identity registry。
@@ -195,19 +222,29 @@ verify_ssl = false
 
 否则 runtime agent DID 会被解析到公网域名，本地刚注册的 DID 文档不可见，status/final 发送会失败。
 
-系统测试入口位于：
+本地 daemon E2E 系统测试入口位于：
 
 ```bash
-cd /home/ecs-user/awiki-space/awiki-system-test
+cd ../awiki-system-test
 AWIKI_SYSTEM_TEST_MODE=local \
 E2E_USER_SERVICE_URL=http://127.0.0.1:9891 \
 E2E_MESSAGE_SERVICE_URL=http://127.0.0.1:9900 \
 E2E_MESSAGE_SERVICE_WS_URL=ws://127.0.0.1:9900/im/ws \
 E2E_DID_DOMAIN=awiki.info \
-AWIKI_DAEMON_RUST_REPO=/home/ecs-user/awiki-space/awiki-deamon-cli-rs2 \
+AWIKI_DAEMON_RUST_REPO=../codex-plugin-cli-rs2 \
 CARGO_BUILD_JOBS=1 \
 uv run --no-project --python .venv/bin/python -m pytest \
   tests_v2/daemon/test_awiki_daemon_long_running_e2e.py -q -rs
 ```
 
 该测试覆盖：controller command、daemon listener、`controller_did` MVP 校验、runtime run 创建、UDS local RPC progress/final、`application/json + body.payload` status/final、controller history 结果和 audit 不记录 `runtime_rpc_token` 原文。
+
+Generic CLI / Codex 的 focused daemon contract 验证可通过系统测试仓库的 Rust wrapper 执行：
+
+```bash
+cd ../awiki-system-test
+AWIKI_DAEMON_RUST_REPO=../codex-plugin-cli-rs2 \
+CARGO_BUILD_JOBS=1 \
+uv run --no-sync python -m pytest \
+  tests_v2/daemon/test_awiki_daemon_rust_contracts.py -q -rs
+```

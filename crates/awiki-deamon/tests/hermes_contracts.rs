@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use awiki_deamon::agent::resolve_runtime;
 use awiki_deamon::agent::runtime_plugin_id;
 use awiki_deamon::inbox::{route_controller_text_task, ControllerTextMessage};
 use awiki_deamon::plugins::hermes::{HERMES_RUNTIME_NAME, HERMES_RUNTIME_PLUGIN_ID};
@@ -29,6 +30,13 @@ fn hermes_runtime_plugin_id_is_stable() {
         runtime_plugin_id(" hermes ").unwrap(),
         HERMES_RUNTIME_PLUGIN_ID
     );
+
+    let resolution = resolve_runtime(HERMES_RUNTIME_NAME, None).unwrap();
+    assert_eq!(resolution.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
+    assert_eq!(resolution.driver_id, None);
+    assert_eq!(resolution.legacy_runtime_plugin_id, None);
+    assert!(!resolution.defaulted_driver_id);
+    assert!(resolve_runtime(HERMES_RUNTIME_NAME, Some("codex")).is_err());
 }
 
 #[test]

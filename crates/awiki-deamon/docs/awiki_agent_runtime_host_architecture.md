@@ -363,7 +363,8 @@ agent_definition (
 @alice-awiki-coder
   → agent_kind = runtime
   → controller_did = did:human:alice
-  → runtime_plugin_id = runtime.cli.claude-code
+  → runtime_plugin_id = generic-cli
+  → driver_id = claude-code
   → runtime_profile_id = cc-awiki-me
   → workspace_id = ws-awiki-me
 ```
@@ -421,7 +422,6 @@ runtime_profile (
   runtime_profile_id TEXT PRIMARY KEY,
   agent_did TEXT NOT NULL,
   runtime_plugin_id TEXT NOT NULL,
-  driver TEXT NOT NULL,
 
   config_dir TEXT,
   binary_path TEXT,
@@ -1317,9 +1317,10 @@ agent DID
 ```text
 @alice-awiki-coder
   → did:agent:alice-awiki-coder
-  → runtime_plugin = runtime.cli.claude-code
+  → runtime_plugin = generic-cli
+  → driver_id = claude-code
   → runtime_profile = cc-awiki-me
-  → workspace = /Users/alice/work/awiki-me
+  → workspace = ~/work/awiki-me
   → controller_did = did:human:alice
   → policy = coding-agent-strict
 ```
@@ -1538,7 +1539,7 @@ Plugin DB：每个 agent + runtime plugin 独立数据库
 │   ├── logs/
 │   └── plugins/
 │       ├── runtime.hermes/
-│       └── runtime.cli/
+│       └── generic-cli/
 │
 ├── identities/
 │   ├── did_daemon_xxx/
@@ -1583,10 +1584,9 @@ Plugin DB：每个 agent + runtime plugin 独立数据库
         ├── audit.db
         ├── workspaces/
         └── plugins/
-            └── runtime.cli.claude-code/
+            └── generic-cli/
                 ├── plugin.db
                 ├── skills/
-                ├── mcp/
                 ├── settings/
                 └── sessions/
 ```

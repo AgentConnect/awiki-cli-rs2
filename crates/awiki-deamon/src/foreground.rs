@@ -20,12 +20,15 @@ use crate::local_rpc::call_uds_once;
 use crate::local_rpc::{
     bind_uds_listener, handle_uds_stream_with_outbox, verify_socket_permissions,
 };
-use crate::outbox::{ImCoreAgentOutbox, RuntimeMessageSend, RuntimeOutbox};
+use crate::outbox::{
+    ImCoreAgentOutbox, RuntimeMessageSend, RuntimeMessageSendResult, RuntimeOutbox,
+};
+use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{
     HermesGateway, HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID,
 };
 use crate::registration::UserServiceAgentRegistrationClient;
-use crate::runtime::host::run_controller_text_task;
+use crate::runtime::host::run_controller_text_task_with_config;
 use crate::runtime::{
     RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
     RuntimeRunStatus,
@@ -285,11 +288,16 @@ where
                 hermes_profile,
                 state.clone(),
             );
-            run_controller_text_task(state, &profile, &plugin, outbox, message)
+            run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
+        }
+        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
+            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+            let plugin = GenericCliDriverRegistry::new(cli_profile);
+            run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
         }
         _ => {
             let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_controller_text_task(state, &profile, &plugin, outbox, message)
+            run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
         }
     }
 }
@@ -316,20 +324,38 @@ fn run_runtime_task_command(
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
-    let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-    run_controller_text_task(
-        state,
-        &profile,
-        &plugin,
-        &runtime_outbox,
-        ControllerTextMessage {
-            message_id,
-            conversation_id: message.conversation_id,
-            sender_did: message.sender_did,
-            target_agent_did,
-            text: payload.text,
-        },
-    )?;
+    let task_message = ControllerTextMessage {
+        message_id,
+        conversation_id: message.conversation_id,
+        sender_did: message.sender_did,
+        target_agent_did,
+        text: payload.text,
+    };
+    match profile.runtime_plugin_id.as_str() {
+        GENERIC_CLI_RUNTIME_PLUGIN_ID => {
+            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+            let plugin = GenericCliDriverRegistry::new(cli_profile);
+            run_controller_text_task_with_config(
+                config,
+                state,
+                &profile,
+                &plugin,
+                &runtime_outbox,
+                task_message,
+            )?;
+        }
+        _ => {
+            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
+            run_controller_text_task_with_config(
+                config,
+                state,
+                &profile,
+                &plugin,
+                &runtime_outbox,
+                task_message,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -472,9 +498,31 @@ impl ControllerOutboxSender {
             Self::Mock => Ok(format!("mock-message-{}", message.security.as_str())),
         }
     }
+
+    fn resolve_recipient_did(&self, recipient: &str) -> Result<Option<String>> {
+        match self {
+            Self::ImCore(outbox) => outbox.resolve_handle(recipient),
+            Self::Mock => {
+                let recipient = recipient.trim();
+                if recipient.starts_with("did:") {
+                    Ok(Some(recipient.to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
 }
 
 impl RuntimeOutbox for ControllerRuntimeOutbox {
+    fn resolve_recipient_did(
+        &self,
+        _context: &crate::state::AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        self.inner.resolve_recipient_did(recipient)
+    }
+
     fn send_status(
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
@@ -518,9 +566,17 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
         &self,
         _context: &crate::state::AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
-    ) -> Result<()> {
-        let _message_id = self.inner.send_runtime_message(message)?;
-        Ok(())
+    ) -> Result<RuntimeMessageSendResult> {
+        let message_id = self.inner.send_runtime_message(message)?;
+        Ok(RuntimeMessageSendResult {
+            message_id: Some(message_id),
+            raw_recipient: message.raw_recipient.clone(),
+            resolved_did: message
+                .resolved_did
+                .clone()
+                .unwrap_or_else(|| message.recipient.clone()),
+            security: message.security,
+        })
     }
 }
 
@@ -591,6 +647,28 @@ impl RuntimeCallbackOutbox {
 }
 
 impl RuntimeOutbox for RuntimeCallbackOutbox {
+    fn resolve_recipient_did(
+        &self,
+        context: &crate::state::AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        let recipient = recipient.trim();
+        if recipient.starts_with("did:") {
+            return Ok(Some(recipient.to_string()));
+        }
+        if self.mock_status_outbox {
+            return Ok(None);
+        }
+        let identity = self.state.load_agent_identity(&context.agent_did)?;
+        let jwt_token = self.state.load_agent_auth_token(&context.agent_did)?;
+        let client = self.im_core.client_for_agent_identity(
+            &self.config,
+            &identity,
+            jwt_token.as_deref(),
+        )?;
+        ImCoreAgentOutbox::new(client).resolve_handle(recipient)
+    }
+
     fn send_status(
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
@@ -613,7 +691,7 @@ impl RuntimeOutbox for RuntimeCallbackOutbox {
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
-    ) -> Result<()> {
+    ) -> Result<RuntimeMessageSendResult> {
         self.controller_outbox(context)?
             .send_message(context, message)
     }
@@ -664,6 +742,7 @@ impl RuntimePlugin for UdsTestRuntimePlugin {
             status: RuntimeRunStatus::Finished,
             exit_code: Some(0),
             callbacks: Vec::new(),
+            metadata: serde_json::json!({}),
         })
     }
 }
@@ -939,6 +1018,44 @@ mod tests {
         assert!(error.to_string().contains("controller_did"));
         assert!(gateway.created_sessions().is_empty());
         assert!(gateway.submitted_prompts().is_empty());
+        assert!(outbox.records().is_empty());
+    }
+
+    #[test]
+    fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
+        let (root, config, state) = fixture();
+        let mut profile = profile(root.path());
+        profile.agent_did = "did:agent:generic-cli".to_string();
+        profile.runtime_profile_id = "profile_generic_cli_foreground".to_string();
+        profile.runtime_plugin_id = GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string();
+        profile.display_name = Some("Alice Generic CLI".to_string());
+        state.upsert_runtime_agent_profile(&profile).unwrap();
+        let mut cli_profile =
+            crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex")
+                .unwrap();
+        cli_profile.binary_path = Some(root.path().join("missing-codex"));
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+        let outbox = MemoryRuntimeOutbox::default();
+        let gateway = FakeHermesGateway::default();
+
+        let error = run_runtime_text_message_with_gateway(
+            &config,
+            &state,
+            &outbox,
+            ControllerTextMessage {
+                message_id: "msg_foreground_generic_cli".to_string(),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: "did:agent:generic-cli".to_string(),
+                text: "foreground route to generic cli".to_string(),
+            },
+            || gateway.clone(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("generic-cli"));
+        assert!(error.to_string().contains("not installed"));
+        assert!(gateway.created_sessions().is_empty());
         assert!(outbox.records().is_empty());
     }
 

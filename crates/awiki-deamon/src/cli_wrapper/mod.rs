@@ -58,13 +58,26 @@ impl CliWrapperRequest {
         to: impl Into<String>,
         text: impl Into<String>,
     ) -> Self {
+        Self::msg_send_with_security(runtime_rpc_token, to, text, None::<String>)
+    }
+
+    pub fn msg_send_with_security(
+        runtime_rpc_token: impl Into<String>,
+        to: impl Into<String>,
+        text: impl Into<String>,
+        security: Option<impl Into<String>>,
+    ) -> Self {
+        let mut params = json!({
+            "to": to.into(),
+            "text": text.into(),
+        });
+        if let Some(security) = security {
+            params["security"] = Value::String(security.into());
+        }
         Self {
             runtime_rpc_token: runtime_rpc_token.into(),
             method: "msg.send".to_string(),
-            params: json!({
-                "to": to.into(),
-                "text": text.into(),
-            }),
+            params,
         }
     }
 
