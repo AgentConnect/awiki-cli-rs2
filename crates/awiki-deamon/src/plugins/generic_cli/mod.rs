@@ -3,6 +3,8 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
+pub mod codex;
+
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::local_rpc::RuntimeRpcRequest;
 use crate::runtime::{
@@ -22,6 +24,8 @@ pub trait GenericCliDriver {
 pub struct GenericCliInvocation {
     pub run_id: String,
     pub task_id: String,
+    pub message_id: String,
+    pub conversation_id: Option<String>,
     pub task_text: String,
     pub agent_did: String,
     pub runtime_profile_id: String,
@@ -36,6 +40,8 @@ impl std::fmt::Debug for GenericCliInvocation {
         f.debug_struct("GenericCliInvocation")
             .field("run_id", &self.run_id)
             .field("task_id", &self.task_id)
+            .field("message_id", &self.message_id)
+            .field("conversation_id", &self.conversation_id)
             .field("task_text", &"<redacted-task-text>")
             .field("agent_did", &self.agent_did)
             .field("runtime_profile_id", &self.runtime_profile_id)
@@ -108,6 +114,13 @@ where
         let exit = self.driver.run(GenericCliInvocation {
             run_id: context.run.run_id.clone(),
             task_id: context.task.task_id.clone(),
+            message_id: context
+                .task
+                .task_id
+                .strip_prefix("task_")
+                .unwrap_or(&context.task.task_id)
+                .to_string(),
+            conversation_id: context.task.conversation_id.clone(),
             task_text: context.task.text.clone(),
             workspace_root: context.workspace_root.clone(),
             agent_did: context.run.agent_did.clone(),
@@ -148,10 +161,7 @@ impl RuntimePlugin for GenericCliDriverRegistry {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
         match self.cli_profile.driver_id.as_str() {
             "command" => command_driver_from_profile(&self.cli_profile)?.check_install_status(),
-            "codex" => Ok(RuntimeInstallStatus {
-                installed: false,
-                detail: Some("generic-cli codex driver is implemented in Step 06".to_string()),
-            }),
+            "codex" => codex::CodexDriver::from_profile(&self.cli_profile)?.check_install_status(),
             "claude-code" | "gemini" => Ok(RuntimeInstallStatus {
                 installed: false,
                 detail: Some(format!(
@@ -169,7 +179,11 @@ impl RuntimePlugin for GenericCliDriverRegistry {
                 GenericCliRuntimePlugin::new(command_driver_from_profile(&self.cli_profile)?)
                     .launch_run(context)
             }
-            "codex" | "claude-code" | "gemini" => {
+            "codex" => {
+                GenericCliRuntimePlugin::new(codex::CodexDriver::from_profile(&self.cli_profile)?)
+                    .launch_run(context)
+            }
+            "claude-code" | "gemini" => {
                 bail!(
                     "generic-cli driver {} is not implemented yet",
                     self.cli_profile.driver_id
@@ -235,7 +249,8 @@ impl GenericCliDriver for CommandGenericCliDriver {
             .env(
                 "AWIKI_DAEMON_RUNTIME_RPC_TOKEN",
                 &invocation.runtime_rpc_token,
-            );
+            )
+            .env_remove("AWIKI_DAEMON_TASK_TEXT");
         let status = command.status().context("run generic CLI runtime")?;
         Ok(GenericCliExit::from_exit_code(status.code().unwrap_or(1)))
     }

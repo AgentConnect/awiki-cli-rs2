@@ -1029,9 +1029,10 @@ mod tests {
         profile.runtime_plugin_id = GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string();
         profile.display_name = Some("Alice Generic CLI".to_string());
         state.upsert_runtime_agent_profile(&profile).unwrap();
-        let cli_profile =
+        let mut cli_profile =
             crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex")
                 .unwrap();
+        cli_profile.binary_path = Some(root.path().join("missing-codex"));
         state.upsert_cli_runtime_profile(&cli_profile).unwrap();
         let outbox = MemoryRuntimeOutbox::default();
         let gateway = FakeHermesGateway::default();

@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：06  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 实现 Codex driver、prompt envelope 和 fake binary tests |
+| Started | 2026-06-01 18:11:07 +0800 |
+| Completed | 2026-06-01 18:33:17 +0800 |
+| Commit | 步骤提交：`daemon: add codex generic cli driver`，hash 以 `git log` 为准 |
+| Review evidence | 自查发现并修复 4 项：`driver_config_json.sandbox` 应优先于 profile 默认 sandbox；Codex/command 子进程需要显式移除继承环境中的 `AWIKI_DAEMON_TASK_TEXT`；Codex prompt 需要携带 `message_id` 和 `conversation_id`；本机真实 Codex 安装会影响 foreground 路由测试，已改用 missing binary 固化未安装分支。 |
+| Verification evidence | 已确认 `codex exec --help` 支持 stdin `-`、`--cd`、`--sandbox read-only/workspace-write/danger-full-access`、`--json`、`--output-last-message`、`--model`、`--profile`、`--ignore-user-config`、`--ignore-rules`、`--ephemeral`，且危险 bypass flag 存在但未使用；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked codex`：6 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：19 passed；`cargo test -p awiki-deamon --locked`：unit 29 passed，integration 10/19/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret/sandbox grep 仅命中测试断言、token 类型实现、Hermes fake token、redaction 词表和 `env_remove`。 |
+| Next action | Step 07：Workspace instance 与 CLI run metadata |
 
 ## 2. 目标
 
@@ -37,7 +37,7 @@ Step index：06
   6. driver 收集 stdout/stderr/JSONL/final output metadata，并返回 exit code。
 - 兼容性：如果真实 Codex 未安装，install status 返回未安装；测试不依赖真实安装。
 - 迁移策略：只注册 `driver_id=codex`，不新增 `runtime.cli.codex`。
-- 风险控制：`danger-full-access`、`--dangerously-bypass-approvals-and-sandbox` 默认禁用；只有外部 sandbox 明确启用时可作为显式配置，并进入 audit。
+- 风险控制：MVP 只允许 `read-only`、`workspace-write`，显式拒绝 `danger-full-access` 和 `--dangerously-bypass-approvals-and-sandbox`；外部 sandbox 审计接入延后到后续步骤。
 
 ## 4. 实现方法
 
@@ -79,8 +79,8 @@ Step index：06
 | 仓库 / 模块 / 文件 | 计划变更 | 备注 |
 |---|---|---|
 | `codex-plugin-cli-rs2/crates/awiki-deamon/src/plugins/generic_cli/codex.rs` | 新增 Codex driver | 主要实现 |
-| `codex-plugin-cli-rs2/crates/awiki-deamon/src/plugins/generic_cli/prompt.rs` | prompt envelope builder | 可与未来 Claude/Gemini 复用 |
-| `codex-plugin-cli-rs2/crates/awiki-deamon/src/plugins/generic_cli/registry.rs` | 注册 `codex` | 来自 Step 05 |
+| `codex-plugin-cli-rs2/crates/awiki-deamon/src/plugins/generic_cli/mod.rs` | 注册 `codex`，扩展 `GenericCliInvocation` 消息上下文 | 来自 Step 05 |
+| `codex-plugin-cli-rs2/crates/awiki-deamon/src/foreground.rs` | 固化 generic-cli foreground 未安装分支测试 | 避免本机真实 Codex 安装影响测试预期 |
 | `codex-plugin-cli-rs2/crates/awiki-deamon/tests/generic_cli_runtime_mvp.rs` | 可扩展或拆新 Codex test 文件 | fake binary tests |
 | `codex-plugin-cli-rs2/crates/awiki-deamon/docs/cli-plugin/generic_cli_runtime_plugin_design.md` | 如实现偏离设计，需要同步 | 文档只更新事实 |
 
@@ -92,16 +92,16 @@ Step index：06
 
 ## 7. 验收标准
 
-- [ ] `CodexDriver::driver_id()` 或等价 registry key 为 `codex`。
-- [ ] check install status 能处理 binary 存在/不存在。
-- [ ] command builder 生成 `codex exec`、`--cd`、`--sandbox`、`--output-last-message`、stdin `-`。
-- [ ] prompt 通过 stdin 传入，不通过 argv。
-- [ ] env 注入 local RPC 必需字段，但不注入 `AWIKI_DAEMON_TASK_TEXT`。
-- [ ] prompt、stdout/stderr、JSONL、final output、Debug 都不包含 runtime token。
-- [ ] 非零 exit 不伪造 success final。
-- [ ] 默认不使用 `danger-full-access` 或 bypass sandbox flags。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] `CodexDriver::driver_id()` 或等价 registry key 为 `codex`。
+- [x] check install status 能处理 binary 存在/不存在。
+- [x] command builder 生成 `codex exec`、`--cd`、`--sandbox`、`--output-last-message`、stdin `-`。
+- [x] prompt 通过 stdin 传入，不通过 argv。
+- [x] env 注入 local RPC 必需字段，但不注入 `AWIKI_DAEMON_TASK_TEXT`。
+- [x] prompt、stdout/stderr、JSONL、final output、Debug 都不包含 runtime token。
+- [x] 非零 exit 不伪造 success final。
+- [x] 默认不使用 `danger-full-access` 或 bypass sandbox flags。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -120,11 +120,11 @@ Step index：06
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 无阻塞发现 | Step 06 可独立交付；路径收敛、metadata 持久化和 fallback final 审计仍属于 Step 07 范围。 |
+| 已修复问题 | 已修复 sandbox 优先级、env 继承、prompt 上下文和测试稳定性 | `driver_config_json.sandbox` 覆盖 profile 默认值；Codex/command 子进程都 `env_remove("AWIKI_DAEMON_TASK_TEXT")`；Codex prompt 包含 `message_id` 和 `conversation_id`；foreground 测试使用 missing binary。 |
+| 剩余风险 | 输出路径收敛、run metadata、成功退出但未 `task.finish` 的 fallback final/audit 延后 Step 07 | 当前 Codex driver 按进程 exit code 返回 run status，不把 `RuntimeLaunchOutcome.callbacks` 当真实主链路；fake binary 覆盖契约，未执行真实 Codex smoke。 |
+| 新增或缺失测试 | 已新增 Codex fake binary tests | 覆盖 command args、install status、sandbox 拒绝和优先级、stdin prompt/env、本地 RPC status/final、token redaction、非零 exit 不伪造 final。 |
+| 已更新或缺失文档 | 已更新本 Step 台账和主 Plan 台账 | 未修改设计文档；实现仍符合 Step 06 范围。 |
 
 ## 10. Commit 要求
 

@@ -1,7 +1,8 @@
 use awiki_deamon::inbox::{route_controller_text_task, ControllerTextMessage};
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
 use awiki_deamon::plugins::generic_cli::{
-    CommandGenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
+    codex::{CodexDriver, CodexDriverConfig},
+    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
     TestGenericCliDriver,
 };
 use awiki_deamon::runtime::host::{run_controller_text_task, run_controller_text_task_with_config};
@@ -670,6 +671,384 @@ PY
     assert_eq!(records[0].text.as_deref(), Some("registry finished"));
 }
 
+fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
+    CodexDriverConfig {
+        binary_path,
+        profile: Some("awiki".to_string()),
+        model: Some("gpt-test".to_string()),
+        sandbox: "workspace-write".to_string(),
+        ignore_user_config: true,
+        ignore_rules: true,
+        ephemeral: true,
+        output_dir: None,
+        cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+    }
+}
+
+#[test]
+fn codex_driver_command_builder_uses_safe_exec_contract() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let final_output = root.path().join("final.txt");
+    let driver = CodexDriver::new(codex_config(root.path().join("codex"))).unwrap();
+
+    let args = driver.command_args(&workspace, &final_output);
+
+    assert_eq!(args[0], "exec");
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--cd", workspace.to_str().unwrap()]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--sandbox", "workspace-write"]));
+    assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-test"]));
+    assert!(args.windows(2).any(|pair| pair == ["--profile", "awiki"]));
+    assert!(args.contains(&"--ignore-user-config".to_string()));
+    assert!(args.contains(&"--ignore-rules".to_string()));
+    assert!(args.contains(&"--ephemeral".to_string()));
+    assert!(args.contains(&"--json".to_string()));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--output-last-message", final_output.to_str().unwrap()]));
+    assert_eq!(args.last().map(String::as_str), Some("-"));
+    assert!(!args.contains(&"danger-full-access".to_string()));
+    assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+}
+
+#[test]
+fn codex_driver_rejects_dangerous_default_sandbox() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = codex_config(root.path().join("codex"));
+    config.sandbox = "danger-full-access".to_string();
+
+    let error = CodexDriver::new(config).unwrap_err();
+
+    assert!(error.to_string().contains("sandbox"));
+}
+
+#[test]
+fn codex_driver_config_prefers_driver_config_sandbox_over_profile_default() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "codex").unwrap();
+    cli_profile.binary_path = Some(root.path().join("codex-from-profile"));
+    cli_profile.default_model = Some("model-from-profile".to_string());
+    cli_profile.default_sandbox = Some("read-only".to_string());
+    cli_profile.driver_config_json = json!({
+        "sandbox": "workspace-write",
+        "profile": "codex-profile",
+        "ignore_user_config": true,
+        "ignore_rules": true,
+        "ephemeral": false
+    });
+
+    let config = CodexDriverConfig::from_profile(&cli_profile).unwrap();
+
+    assert_eq!(config.binary_path, root.path().join("codex-from-profile"));
+    assert_eq!(config.model.as_deref(), Some("model-from-profile"));
+    assert_eq!(config.sandbox, "workspace-write");
+    assert_eq!(config.profile.as_deref(), Some("codex-profile"));
+    assert!(config.ignore_user_config);
+    assert!(config.ignore_rules);
+    assert!(!config.ephemeral);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let fake_codex = root.path().join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let installed = CodexDriver::new(codex_config(fake_codex))
+        .unwrap()
+        .check_install_status()
+        .unwrap();
+    assert!(installed.installed);
+    assert!(installed.detail.unwrap().contains("codex-cli 9.9.9"));
+
+    let missing = CodexDriver::new(codex_config(root.path().join("missing-codex")))
+        .unwrap()
+        .check_install_status()
+        .unwrap();
+    assert!(!missing.installed);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_driver_fake_binary_uses_stdin_env_outputs_and_local_rpc() {
+    use awiki_deamon::local_rpc::{bind_uds_listener, handle_uds_stream_with_outbox};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex");
+    let args_capture = root.path().join("codex-args.txt");
+    let env_capture = root.path().join("codex-env.txt");
+    let prompt_capture = root.path().join("codex-prompt.txt");
+    let output_dir = root.path().join("codex-output");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+printf '%s\n' "$@" > "{args_capture}"
+cat > "{prompt_capture}"
+cat > "{env_capture}" <<EOF
+TASK_TEXT=${{AWIKI_DAEMON_TASK_TEXT-}}
+SOCKET=${{AWIKI_DAEMON_SOCKET-}}
+RUN_ID=${{AWIKI_DAEMON_RUN_ID-}}
+TASK_ID=${{AWIKI_DAEMON_TASK_ID-}}
+AGENT_DID=${{AWIKI_DAEMON_AGENT_DID-}}
+PROFILE_ID=${{AWIKI_DAEMON_RUNTIME_PROFILE_ID-}}
+WRAPPER=${{AWIKI_DAEMON_CLI_WRAPPER-}}
+EOF
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+printf 'fake codex final %s\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" > "$FINAL_OUTPUT"
+printf '{{"type":"codex-event","message":"stdout jsonl %s"}}\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN"
+printf 'stderr diagnostic %s\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" >&2
+python3 - "$AWIKI_DAEMON_SOCKET" "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" "$AWIKI_DAEMON_TASK_ID" <<'PY'
+import json
+import socket
+import sys
+
+socket_path, token, task_id = sys.argv[1:4]
+for request in [
+    {{
+        "runtime_rpc_token": token,
+        "method": "task.status",
+        "params": {{"task_id": task_id, "state": "running", "text": "codex started"}},
+    }},
+    {{
+        "runtime_rpc_token": token,
+        "method": "task.finish",
+        "params": {{"task_id": task_id, "text": "codex finished"}},
+    }},
+]:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(socket_path)
+    client.sendall((json.dumps(request) + "\n").encode())
+    response = b""
+    while not response.endswith(b"\n"):
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    client.close()
+    decoded = json.loads(response.decode())
+    if not decoded.get("ok"):
+        raise SystemExit(decoded)
+PY
+"#,
+            args_capture = args_capture.display(),
+            prompt_capture = prompt_capture.display(),
+            env_capture = env_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let listener = bind_uds_listener(&config.local_socket_path).unwrap();
+    let worker_state = state.clone();
+    let worker_outbox = outbox.clone();
+    let worker = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut handled = 0;
+        while handled < 2 {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    handle_uds_stream_with_outbox(&worker_state, &worker_outbox, stream).unwrap();
+                    handled += 1;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() > deadline {
+                        panic!("timed out waiting for codex driver RPC");
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept codex driver RPC: {error}"),
+            }
+        }
+    });
+
+    let mut driver_config = codex_config(fake_codex);
+    driver_config.output_dir = Some(output_dir.clone());
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_driver".to_string(),
+            conversation_id: Some("conv_codex_driver".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run codex driver".to_string(),
+        },
+    )
+    .unwrap();
+    worker.join().unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
+    assert!(result.launch_outcome.callbacks.is_empty());
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].text.as_deref(), Some("codex finished"));
+
+    let args_dump = std::fs::read_to_string(args_capture).unwrap();
+    assert!(args_dump.contains("exec\n"));
+    assert!(args_dump.contains("--cd\n"));
+    assert!(args_dump.contains("--sandbox\nworkspace-write\n"));
+    assert!(args_dump.contains("--json\n"));
+    assert!(args_dump.contains("--output-last-message\n"));
+    assert!(args_dump.ends_with("-\n"));
+    assert!(!args_dump.contains("danger-full-access"));
+    assert!(!args_dump.contains("dangerously-bypass"));
+
+    let prompt = std::fs::read_to_string(prompt_capture).unwrap();
+    assert!(prompt.contains("[Awiki Runtime Context]"));
+    assert!(prompt.contains("driver_id: codex"));
+    assert!(prompt.contains("message_id: msg_codex_driver"));
+    assert!(prompt.contains("conversation_id: conv_codex_driver"));
+    assert!(prompt.contains("user_message:\nrun codex driver"));
+    assert!(!prompt.contains("rtok_"));
+    assert!(!prompt.contains(config.local_socket_path.to_str().unwrap()));
+
+    let env_dump = std::fs::read_to_string(env_capture).unwrap();
+    assert!(env_dump.contains("TASK_TEXT=\n"));
+    assert!(env_dump.contains("SOCKET="));
+    assert!(env_dump.contains("RUN_ID=run_task_msg_codex_driver"));
+    assert!(env_dump.contains("TASK_ID=task_msg_codex_driver"));
+    assert!(env_dump.contains("AGENT_DID=did:agent:alice-coder"));
+    assert!(env_dump.contains("PROFILE_ID=profile_generic_cli_1"));
+    assert!(env_dump.contains("WRAPPER=library:awiki_deamon::cli_wrapper"));
+
+    assert_eq!(
+        std::fs::read_to_string(output_dir.join("final-output.txt")).unwrap(),
+        "fake codex final <redacted-runtime-rpc-token>\n"
+    );
+    let stdout_dump = std::fs::read_to_string(output_dir.join("codex-stdout.jsonl")).unwrap();
+    assert!(stdout_dump.contains("stdout jsonl"));
+    assert!(!stdout_dump.contains("rtok_"));
+    let stderr_dump = std::fs::read_to_string(output_dir.join("codex-stderr.log")).unwrap();
+    assert!(stderr_dump.contains("stderr diagnostic"));
+    assert!(!stderr_dump.contains("rtok_"));
+    assert!(
+        std::fs::read_to_string(output_dir.join("codex-observation.jsonl"))
+            .unwrap()
+            .contains("codex.exec.observation")
+    );
+    assert!(
+        !std::fs::read_to_string(output_dir.join("final-output.txt"))
+            .unwrap()
+            .contains("rtok_")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_driver_nonzero_exit_does_not_forge_success_final() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-fail");
+    let output_dir = root.path().join("codex-fail-output");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+cat >/dev/null
+echo "codex failed" >&2
+exit 42
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    driver_config.output_dir = Some(output_dir.clone());
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_failed".to_string(),
+            conversation_id: Some("conv_codex_failed".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run failing codex driver".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.exit_code, Some(42));
+    assert!(result.launch_outcome.callbacks.is_empty());
+    assert!(outbox.records().is_empty());
+    assert!(std::fs::read_to_string(output_dir.join("codex-stderr.log"))
+        .unwrap()
+        .contains("codex failed"));
+}
+
 #[test]
 fn non_controller_text_is_not_routed_to_runtime_task() {
     let profile = profile(std::env::temp_dir().join("awiki-workspace"));
@@ -725,6 +1104,8 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
     let invocation = awiki_deamon::plugins::generic_cli::GenericCliInvocation {
         run_id: "run_debug".to_string(),
         task_id: "task_debug".to_string(),
+        message_id: "debug".to_string(),
+        conversation_id: Some("conv_debug".to_string()),
         task_text: "secret prompt rtok_debug_secret_value_123456789".to_string(),
         agent_did: "did:agent:debug".to_string(),
         runtime_profile_id: "profile_debug".to_string(),

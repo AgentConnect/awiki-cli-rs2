@@ -1,10 +1,10 @@
 # Plan：Generic CLI Runtime Plugin 落地计划
 
-状态：draft  
+状态：in_progress
 DOC：`codex-plugin-cli-rs2/crates/awiki-deamon/docs/cli-plugin/plan`  
 Harness：`awiki-harness`  
 创建时间：2026-06-01  
-恢复指针：执行开始前从 Step 01 开始；恢复时读取本文件、当前 Step 文档、执行台账和 `git status`。
+恢复指针：Step 06 已完成并准备提交；提交后从 Step 07 继续。恢复时读取本文件、当前 Step 文档、执行台账和 `git status`。
 
 ## 1. 目标
 
@@ -84,7 +84,7 @@ Harness：`awiki-harness`
 | 03 | runtime.agent.create 写入 generic-cli profile | 01, 02 | 创建路径保存 `generic-cli` plugin type 和 `driver_id`，Hermes 保持 native type | [steps/03-runtime-create-wiring.md](steps/03-runtime-create-wiring.md) | 必须 | done |
 | 04 | Recipient policy、handle resolve 与 `msg.send` 审计 | 02, 03 | 非 controller 授权收件人、handle resolve、send result/audit、final 幂等基础 | [steps/04-recipient-policy-local-rpc.md](steps/04-recipient-policy-local-rpc.md) | 必须 | done |
 | 05 | Generic CLI driver registry 与真实 callback 主链路 | 03, 04 | runtime host 按 profile 选 driver，真实 CLI 不再依赖 callback 模拟 | [steps/05-generic-cli-driver-host.md](steps/05-generic-cli-driver-host.md) | 必须 | done |
-| 06 | Codex driver MVP | 05 | `CodexDriver`、prompt envelope、stdin、env 注入、fake binary 测试 | [steps/06-codex-driver-mvp.md](steps/06-codex-driver-mvp.md) | 必须 | pending |
+| 06 | Codex driver MVP | 05 | `CodexDriver`、prompt envelope、stdin、env 注入、fake binary 测试 | [steps/06-codex-driver-mvp.md](steps/06-codex-driver-mvp.md) | 必须 | done |
 | 07 | Workspace instance 与 CLI run metadata | 06 | `shared-root` / `worktree-per-task`、output paths、route/session metadata、fallback final | [steps/07-workspace-run-metadata.md](steps/07-workspace-run-metadata.md) | 必须 | pending |
 | 08 | 系统测试、文档收口与全局 Review | 01-07 | daemon acceptance、remote `awiki.info` 系统测试证据、文档同步和最终 Review | [steps/08-system-test-and-docs.md](steps/08-system-test-and-docs.md) | 必须，如有文件变更 | pending |
 
@@ -99,7 +99,7 @@ Harness：`awiki-harness`
 | 03 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:22:29 +0800 | 2026-06-01 17:26:45 +0800 | 步骤提交：`daemon: create cli agents through generic cli profiles` | 自查无阻塞发现；确认 create path 不再调用旧 `runtime_plugin_id()`，CLI family 新建写 `generic-cli` + `cli_runtime_profile.driver_id`，Hermes native 分支保持 `runtime.hermes` | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test agent_registration_management --locked`：10 passed；`cargo test -p awiki-deamon --test hermes_profile --locked`：3 passed；`cargo test -p awiki-deamon --locked`：27 unit passed，integration 10/6/5/6+1 ignored/8/3/8/2 passed；legacy grep 仅命中 legacy helper、legacy metadata/audit 测试和 migration/fixture | 启动 Step 04 |
 | 04 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:30:14 +0800 | 2026-06-01 17:54:47 +0800 | 步骤提交：`daemon: enforce recipient policy for runtime msg send`，hash 以 `git log` 为准 | 自查发现并修复无 outbox 的 `execute_runtime_rpc_request` 对 `msg.send` 可能返回假成功的问题，改为拒绝并要求真实发送走 `_with_outbox`；补齐 `task.finish` 重复 callback 幂等，确认 handle resolve 在授权前、发送前完成，audit 只记录 token id 不记录 token secret | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test local_rpc_security --locked`：13 passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：10 passed；`cargo test -p awiki-deamon --locked`：28 unit passed，integration 10/10/5/6+1 ignored/8/3/13/2 passed；secret grep 仅命中测试 fixture、字段名、redaction/secret handling 代码和 Hermes fake token | 启动 Step 05 |
 | 05 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:58:49 +0800 | 2026-06-01 18:09:34 +0800 | 步骤提交：`daemon: route generic cli profiles through driver registry`，hash 以 `git log` 为准 | 自查发现并修复 2 项：`GenericCliInvocation` Debug 曾暴露 task text，已改为 redaction；payload 型 `runtime.task.submit` 曾仍 fallback 到 `UdsTestRuntimePlugin`，已让 `generic-cli` 路径加载 `cli_runtime_profile` 和 driver registry。确认 command driver 不注入 `AWIKI_DAEMON_TASK_TEXT`，真实 command driver callback 为空并通过 local RPC 发送 status/final | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：13 passed；`cargo test -p awiki-deamon --locked foreground`：4 foreground tests passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test hermes_gateway --locked`：6 passed + 1 ignored；`cargo test -p awiki-deamon --locked`：29 unit passed，integration 10/13/5/6+1 ignored/8/3/13/2 passed；Env grep 仅命中测试断言 | 启动 Step 06 |
-| 06 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 05 |
+| 06 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 18:11:07 +0800 | 2026-06-01 18:33:17 +0800 | 步骤提交：`daemon: add codex generic cli driver`，hash 以 `git log` 为准 | 自查发现并修复 4 项：`driver_config_json.sandbox` 应优先于 profile 默认 sandbox；Codex/command 子进程需要显式移除继承环境中的 `AWIKI_DAEMON_TASK_TEXT`；Codex prompt 需要携带 `message_id` 和 `conversation_id`；本机真实 Codex 安装会影响 foreground 路由测试，已改用 missing binary 固化未安装分支。确认真实 Codex 回调不使用 `RuntimeLaunchOutcome.callbacks` 作为主链路，发送消息仍只走 daemon wrapper/local RPC。 | 已确认 `codex exec --help` 支持 stdin `-`、`--cd`、`--sandbox`、`--json`、`--output-last-message`、`--model`、`--profile`、`--ignore-user-config`、`--ignore-rules`、`--ephemeral`；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked codex`：6 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：19 passed；`cargo test -p awiki-deamon --locked`：unit 29 passed，integration 10/19/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret/sandbox grep 仅命中测试断言、token 类型实现、Hermes fake token、redaction 词表和 `env_remove`。 | 提交 Step 06 后启动 Step 07 |
 | 07 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 06 |
 | 08 | pending | `feature/release-0526/codex-plugin-cli-rs2`、可能涉及 `awiki-system-test` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 07 |
 | 最终全局 Review | pending | 同上 | 待记录 | 待记录 | 如有文件变更则记录 | 待记录 | 待记录 | 所有步骤 done 后执行 |
