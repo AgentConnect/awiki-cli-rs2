@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：01  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 实现 `RuntimeResolution` 契约和 focused tests |
+| Started | 2026-06-01 16:59:10 +0800 |
+| Completed | 2026-06-01 17:08:31 +0800 |
+| Commit | 基线提交：`946d756`；步骤提交：`daemon: resolve cli runtimes to generic cli driver` |
+| Review evidence | 自查无阻塞发现；确认 `generic-cli` type 语义、Hermes/native 兼容、默认 `driver_id` 审计字段和旧 helper 边界。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test hermes_contracts --locked`：5 passed；`cargo test -p awiki-deamon --test agent_registration_management --locked`：8 passed；`cargo test -p awiki-deamon agent::tests::resolve_runtime --locked`：4 passed；legacy grep 仅命中 legacy helper、legacy 兼容测试和新 legacy metadata 测试。 |
+| Next action | Step 02：CLI profile 存储与 legacy 迁移 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -77,14 +77,14 @@ pub struct RuntimeResolution {
 
 ## 7. 验收标准
 
-- [ ] `runtime=codex|codex-cli` 解析为 `generic-cli + driver_id=codex`。
-- [ ] `runtime=claude-code` 解析为 `generic-cli + driver_id=claude-code`。
-- [ ] `runtime=gemini|gemini-cli` 解析为 `generic-cli + driver_id=gemini`。
-- [ ] `runtime=generic-cli` 支持显式 `driver_id`，未传时默认 `codex` 并可审计 defaulted 标记。
-- [ ] Hermes/OpenClaw/native runtime 不产生 CLI `driver_id`。
-- [ ] 新测试证明 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 不再是新建 alias 的解析结果。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] `runtime=codex|codex-cli` 解析为 `generic-cli + driver_id=codex`。
+- [x] `runtime=claude-code` 解析为 `generic-cli + driver_id=claude-code`。
+- [x] `runtime=gemini|gemini-cli` 解析为 `generic-cli + driver_id=gemini`。
+- [x] `runtime=generic-cli` 支持显式 `driver_id`，未传时默认 `codex` 并可审计 defaulted 标记。
+- [x] Hermes/OpenClaw/native runtime 不产生 CLI `driver_id`。
+- [x] 新测试证明 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 不再是新建 alias 的解析结果。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -105,11 +105,11 @@ pub struct RuntimeResolution {
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 无阻塞发现 | 旧 `runtime_plugin_id()` helper 仍保留 legacy 行为，按计划留给 Step 03 替换 create 路径。 |
+| 已修复问题 | 已补 Hermes contract 覆盖 | `resolve_runtime("hermes")` 不产生 `driver_id`，并拒绝 Hermes 携带 CLI driver。 |
+| 剩余风险 | legacy create 行为仍存在 | Step 01 非目标；Step 03 必须把 `create_runtime_agent` 切到 `RuntimeResolution`。 |
+| 新增或缺失测试 | 已新增 focused tests | `agent` 单元测试覆盖 CLI alias/native/错误路径；`agent_registration_management` 覆盖新 args serde 和非对象拒绝。 |
+| 已更新或缺失文档 | 已更新本 Step 台账 | 主 Plan 执行台账已同步。 |
 
 ## 10. Commit 要求
 

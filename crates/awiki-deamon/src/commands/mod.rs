@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent::{
-    agent_data_paths, generate_agent_identity, normalize_handle, runtime_plugin_id,
-    runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
+    agent_data_paths, generate_agent_identity, normalize_handle, resolve_runtime,
+    runtime_plugin_id, runtime_profile_id, workspace_id, workspace_path, AgentDefinition,
+    AgentKind,
 };
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
 use crate::plugins::hermes::{
@@ -65,6 +66,12 @@ struct RuntimeAgentCreatePayload {
 struct RuntimeAgentCreateArgs {
     handle: String,
     runtime: String,
+    #[serde(default)]
+    driver_id: Option<String>,
+    #[serde(default)]
+    driver_config: Option<Value>,
+    #[serde(default)]
+    recipient_policy: Option<Value>,
     #[serde(default)]
     workspace: Option<String>,
     controller_did: String,
@@ -229,6 +236,7 @@ where
     if controller_did.is_empty() {
         bail!("controller_did must not be empty");
     }
+    validate_runtime_create_args_contract(&payload.args)?;
     let plugin_id = runtime_plugin_id(&payload.args.runtime)?;
     let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
     let workspace_root = workspace_path(payload.args.workspace.as_deref())?;
@@ -323,6 +331,20 @@ where
         workspace_id,
         registration_token_id: exchange.token_id,
     })
+}
+
+fn validate_runtime_create_args_contract(args: &RuntimeAgentCreateArgs) -> Result<()> {
+    resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
+    validate_optional_object(args.driver_config.as_ref(), "driver_config")?;
+    validate_optional_object(args.recipient_policy.as_ref(), "recipient_policy")?;
+    Ok(())
+}
+
+fn validate_optional_object(value: Option<&Value>, field_name: &str) -> Result<()> {
+    if value.is_some_and(|value| !value.is_object()) {
+        bail!("{field_name} must be a JSON object when present");
+    }
+    Ok(())
 }
 
 fn validate_application_json_payload(message: &IncomingAgentPayloadMessage) -> Result<()> {

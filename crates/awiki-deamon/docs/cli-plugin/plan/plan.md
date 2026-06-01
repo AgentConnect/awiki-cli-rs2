@@ -94,7 +94,7 @@ Harness：`awiki-harness`
 
 | Step | 状态 | 分支 | 开始时间 | 完成时间 | Commit | Review 证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
-| 01 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 启动 Step 01 |
+| 01 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 16:59:10 +0800 | 2026-06-01 17:08:31 +0800 | 基线提交：`946d756`；步骤提交：`daemon: resolve cli runtimes to generic cli driver` | 自查无阻塞发现；确认 CLI alias 解析契约与 legacy helper 边界清晰，Hermes native runtime 不产生 `driver_id` | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test hermes_contracts --locked`：5 passed；`cargo test -p awiki-deamon --test agent_registration_management --locked`：8 passed；`cargo test -p awiki-deamon agent::tests::resolve_runtime --locked`：4 passed；legacy grep 仅命中 legacy helper、legacy 兼容测试和新 legacy metadata 测试 | 启动 Step 02 |
 | 02 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 01 |
 | 03 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 02 |
 | 04 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 03 |

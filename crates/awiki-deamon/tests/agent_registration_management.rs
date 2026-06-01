@@ -183,6 +183,120 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
 }
 
 #[test]
+fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_generic_cli".to_string(),
+            conversation_id: Some("conv_daemon_generic_cli".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_generic_cli",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-generic-cli",
+                    "runtime": "generic-cli",
+                    "driver_id": "codex",
+                    "driver_config": {
+                        "profile": "awiki"
+                    },
+                    "recipient_policy": {
+                        "allow": [
+                            "did:human:alice",
+                            "@bob"
+                        ]
+                    },
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
+    assert_eq!(created.runtime_plugin_id, "generic-cli");
+    assert_eq!(
+        created.runtime_profile_id,
+        "profile_generic_cli_alice_generic_cli"
+    );
+    assert_eq!(
+        outbox.agent_statuses()[0].payload["result"]["runtime_plugin_id"],
+        "generic-cli"
+    );
+}
+
+#[test]
+fn runtime_agent_create_rejects_invalid_generic_cli_contract_fields() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let error = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_generic_cli_invalid".to_string(),
+            conversation_id: Some("conv_daemon_generic_cli_invalid".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_generic_cli_invalid",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-generic-cli-invalid",
+                    "runtime": "generic-cli",
+                    "driver_id": "codex",
+                    "driver_config": ["not", "an", "object"],
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value"
+                }
+            }),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("driver_config"));
+    assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
+    assert_eq!(outbox.agent_statuses().len(), 1);
+    assert_eq!(outbox.agent_statuses()[0].payload["state"], "failed");
+}
+
+#[test]
 fn non_controller_runtime_create_command_is_rejected_without_creating_agent() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();
