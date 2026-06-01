@@ -31,10 +31,10 @@ Controller DID
 
 核心决策：
 
-1. **CLI 家族只保留一个 daemon-side 通用插件 ID。** 消息入口路由始终先按 `target_agent_did` / `agent_did` 找到 Runtime Agent；`generic-cli` 不是消息路由键，而是 Agent 命中后用于 daemon runtime plugin 分发的持久化 plugin ID。Codex、Claude Code、Gemini 是同一个插件实现下的 `driver_id` / profile 配置，不生成新的持久化 plugin ID。运行时可以为不同 profile/run 创建不同的 `GenericCliRuntimePlugin<Driver>` 对象实例，但这些实例的 `plugin_id()` 仍应返回 `generic-cli`。
+1. **CLI 家族只保留一个 daemon-side 通用 runtime plugin type。** 消息入口路由始终先按 `target_agent_did` / `agent_did` 找到 Runtime Agent；`generic-cli` 不是消息路由键，也不是某个插件对象实例 ID，而是 Agent 命中后用于 daemon runtime plugin 分发的持久化 plugin type。Codex、Claude Code、Gemini 是同一个插件实现下的 `driver_id` / profile 配置，不生成新的持久化 plugin type。当前代码字段名/接口名仍可能叫 `runtime_plugin_id` / `plugin_id()`，但本方案按 type/discriminator 语义使用它们。运行时可以为不同 profile/run 创建不同的 `GenericCliRuntimePlugin<Driver>` 对象实例，但这些实例的 `plugin_id()` 仍应返回 `generic-cli` 这个 type。
 2. **首个实现基准改为 Codex CLI。** MVP 以 `codex exec` headless non-interactive 模式跑通 controller 消息、workspace-bound 执行、状态回传、最终回复和受控外发消息。
 3. **允许 driver 内部有各自特殊实现。** 通用插件只统一 daemon 边界、run/token/workspace/callback 语义；Codex、Claude Code、Gemini 的命令参数、context 文件、输出解析、sandbox/profile、native state、甚至 driver-specific 数据表可以各自不同。
-4. **driver-specific 不等于新 plugin。** 如果某个 CLI 需要自己的原生状态、原生命令或原生 SQL/schema，也应放在 `generic-cli` 插件内部的 driver namespace 下，例如 `cli_driver_codex_*`、`cli_driver_gemini_*` 表或 `driver_state_json`，而不是新增 `runtime.cli.codex` / `runtime.cli.gemini` 持久化 plugin ID。
+4. **driver-specific 不等于新 plugin type。** 如果某个 CLI 需要自己的原生状态、原生命令或原生 SQL/schema，也应放在 `generic-cli` 插件内部的 driver namespace 下，例如 `cli_driver_codex_*`、`cli_driver_gemini_*` 表或 `driver_state_json`，而不是新增 `runtime.cli.codex` / `runtime.cli.gemini` 持久化 plugin type。
 5. **不做 MCP。** 本方案不设计 Awiki MCP Server、MCP tool callback 或 MCP 配置安装。CLI agent 回调 daemon 的主链路是 Awiki CLI wrapper + local RPC。
 6. **daemon 是唯一 IM Core SDK 调用者。** Codex/Claude/Gemini 不持有 DID 私钥，不直连 message-service，不自行判断 controller DID。
 7. **MVP 使用消息/run 语义，不扩大产品层 task 概念。** 当前代码中的 `RuntimeTask`、`runtime_task`、`task.status`、`task.finish` 是历史兼容命名。文档可以标注这些名字，但产品语义应描述为“消息执行过程”和“run”。
@@ -77,7 +77,7 @@ Controller DID
 
 MVP 不做：
 
-1. CLI 家族多持久化 plugin ID 并列注册，例如 `runtime.cli.codex`、`runtime.cli.claude_code`、`runtime.cli.gemini`。
+1. CLI 家族多持久化 plugin type 并列注册，例如 `runtime.cli.codex`、`runtime.cli.claude_code`、`runtime.cli.gemini`。
 2. Awiki MCP Server 或 MCP tool callback。
 3. CLI agent 直接连接 message-service。
 4. CLI agent 直接持有或使用 Agent DID 私钥。
@@ -98,8 +98,8 @@ MVP 不做：
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
 | Runtime Agent Profile | 已有 | `RuntimeAgentProfile` 包含 `agent_did`、`controller_did`、`runtime_profile_id`、`runtime_plugin_id`、workspace 字段 |
-| RuntimePlugin v1 | 已有 | 同步接口：`plugin_id` / `check_install_status` / `launch_run` |
-| Generic CLI 插件 | 已有 MVP | `GenericCliRuntimePlugin<D>`，`plugin_id()` 固定返回 `generic-cli` |
+| RuntimePlugin v1 | 已有 | 同步接口：`plugin_id` / `check_install_status` / `launch_run`；方法名是历史命名，当前返回值按 plugin type 使用 |
+| Generic CLI 插件 | 已有 MVP | `GenericCliRuntimePlugin<D>`，`plugin_id()` 固定返回 `generic-cli` 这个 plugin type |
 | GenericCliDriver | 已有 MVP | 当前只有 `check_install_status` / `run` |
 | CommandGenericCliDriver | 已有 MVP | 启动一个本地 program，设置 run/task/token 相关 env |
 | controller 校验 | 已有 | 当前主要校验 `sender_did == controller_did` |
@@ -154,10 +154,10 @@ trait GenericCliDriver {
 | `agent_did` | ANP / Awiki | Runtime Agent 的对外通信身份 | 是 |
 | `agent_handle` | ANP / Awiki | 指向 `agent_did` 的 handle | 是 |
 | `controller_did` | daemon / user-service | 允许控制该 Agent 的 DID | 可展示 |
-| `runtime_plugin_id` | daemon | Runtime plugin 类型；本方案首版为 `generic-cli` | 不建议直接暴露 |
+| `runtime_plugin_id` | daemon | 当前代码字段名；语义上是 Runtime plugin type / discriminator，本方案首版为 `generic-cli` | 不建议直接暴露 |
 | `driver_id` | generic-cli plugin | 插件内部 driver，例如 `codex` / `claude-code` / `gemini` | debug 可见 |
 | plugin implementation | Rust 代码实现 | 例如 `GenericCliRuntimePlugin`；可被多个 driver/profile 复用 | 否 |
-| plugin instance | 运行时对象实例 | 某个 profile/run 绑定的 `GenericCliRuntimePlugin<Driver>` 或等价对象 | 否 |
+| plugin instance | 运行时对象实例 | 某个 profile/run 绑定的 `GenericCliRuntimePlugin<Driver>` 或等价对象；不是持久化 ID | 否 |
 | `runtime_profile_id` | daemon / plugin | 指向一个 CLI runtime profile | debug 可见 |
 | `workspace_id` | daemon | workspace binding ID | debug 可见 |
 | `workspace_root` | daemon / plugin | 用户绑定的 repo/workspace 根目录 | 不建议直接暴露 |
@@ -172,10 +172,10 @@ trait GenericCliDriver {
 命名约束：
 
 1. 消息入口路由按 `target_agent_did` / `agent_did` 完成，不按 `runtime_plugin_id` 完成。
-2. `runtime_plugin_id` 是 Agent 命中后的 runtime plugin 分发字段，不等同于 Rust 类名或对象实例数量。
+2. `runtime_plugin_id` 是 Agent 命中后的 runtime plugin type/discriminator 字段，不等同于 Rust 类名、对象实例 ID 或对象实例数量。
 3. `GenericCliRuntimePlugin` 可以按 profile/run 创建多个对象实例，但 CLI 家族持久化的 `runtime_plugin_id` 仍统一为 `generic-cli`。
 4. `driver_id` 才是 Codex / Claude Code / Gemini 的区分字段。
-5. `runtime.hermes` 是 native runtime plugin ID，不属于 CLI 家族，不受 `generic-cli` 单插件约束影响。
+5. `runtime.hermes` 是 native runtime plugin type，不属于 CLI 家族，不受 `generic-cli` 单插件类型约束影响。
 
 ---
 
@@ -219,7 +219,7 @@ generic-cli plugin
 关键约束：
 
 1. 消息入口先按 `target_agent_did` / `agent_did` 路由到 `agent_definition`，再读取该 Agent 绑定的 `runtime_profile_id`、`runtime_plugin_id` 和 CLI `driver_id`。
-2. 对 CLI 家族来说，`RuntimePluginRegistry` 只需要看到 `generic-cli` 这一个 plugin ID；Hermes 等 native runtime 仍可以拥有自己的 plugin id，例如 `runtime.hermes`。
+2. 对 CLI 家族来说，`RuntimePluginRegistry` 只需要看到 `generic-cli` 这一个 plugin type；Hermes 等 native runtime 仍可以拥有自己的 plugin type，例如 `runtime.hermes`。
 3. `DriverRegistry` 是 `generic-cli` 插件内部机制。
 4. `agent_definition.runtime_plugin_id` 首版保存 `generic-cli`。
 5. `cli_runtime_profile.driver_id` 决定使用 `codex`、`claude-code` 还是 `gemini`。
@@ -238,7 +238,7 @@ incoming message.target_agent_did
   -> launch run
 ```
 
-因此，`generic-cli` 只参与 RuntimePluginRegistry 分发，不参与外部 ANP 消息寻址。外部消息寻址始终由 DID 完成。
+因此，`generic-cli` 只作为 runtime plugin type 参与 RuntimePluginRegistry 分发，不参与外部 ANP 消息寻址。外部消息寻址始终由 DID 完成。
 
 Agent create alias 规则：
 
@@ -266,9 +266,9 @@ runtime.agent.create args.runtime = hermes
 
 兼容策略：
 
-1. 旧实现中已写入的 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 记录应作为 legacy plugin ID 处理。
+1. 旧实现中已写入的 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 记录应作为 legacy plugin type 处理。
 2. MVP 可以选择一次性迁移到 `runtime_plugin_id=generic-cli` 并补写 `cli_runtime_profile.driver_id`。
-3. 如果暂不迁移，daemon registry 可临时把 legacy plugin ID alias 到 `generic-cli`，但新写入数据不得继续产生 `runtime.cli.*`。
+3. 如果暂不迁移，daemon registry 可临时把 legacy plugin type alias 到 `generic-cli`，但新写入数据不得继续产生 `runtime.cli.*`。
 4. alias 只用于兼容旧数据，不代表新增 daemon-side plugin。
 
 ---
@@ -299,7 +299,7 @@ runtime_profile.runtime_plugin_id = generic-cli
 runtime_run.runtime_plugin_id = generic-cli
 ```
 
-这些字段不应因为 Codex / Claude Code / Gemini 切换而变成不同 plugin id。
+这些字段名虽然叫 `runtime_plugin_id`，但在本方案中承载的是 runtime plugin type。它们不应因为 Codex / Claude Code / Gemini 切换而变成不同 type。
 
 ### 5.2 CLI runtime profile 扩展
 
@@ -325,7 +325,7 @@ CREATE TABLE cli_runtime_profile (
 
 说明：
 
-1. `driver_id` 是插件内部路由字段，不是 plugin id。
+1. `driver_id` 是插件内部路由字段，不是 runtime plugin type。
 2. `driver_config_json` 保存 driver-specific 配置，例如 Codex profile、Claude settings、Gemini sandbox profile。
 3. `recipient_policy_json` 保存 `msg.send` 的目标 DID / handle allowlist、默认安全模式、是否需要 approval 等策略。MVP 不做 approval UI 时，仍必须明确允许哪些 DID/handle。
 4. 首版可以只支持 `driver_id = codex`，但表结构不应阻止后续加入 `claude-code` 和 `gemini`。
@@ -350,13 +350,13 @@ codex | codex-cli              -> runtime_plugin_id=generic-cli, driver_id=codex
 claude-code                    -> runtime_plugin_id=generic-cli, driver_id=claude-code
 gemini | gemini-cli            -> runtime_plugin_id=generic-cli, driver_id=gemini
 hermes                         -> runtime_plugin_id=runtime.hermes, driver_id=NULL
-其他显式 plugin id             -> 按 native/plugin-specific runtime 处理
+其他显式 plugin type           -> 按 native/plugin-specific runtime 处理
 ```
 
 写入要求：
 
 1. 新创建的 Codex / Claude Code / Gemini agent 不得再写入 `runtime.cli.codex`、`runtime.cli.claude-code` 或 `runtime.cli.gemini-cli`。
-2. 如果历史数据中存在这些 legacy plugin id，应在读取或迁移时转换为 `runtime_plugin_id=generic-cli` 和对应 `driver_id`。
+2. 如果历史数据中存在这些 legacy plugin type，应在读取或迁移时转换为 `runtime_plugin_id=generic-cli` 和对应 `driver_id`。
 3. `runtime=generic-cli` 且未提供 `driver_id` 时，MVP 可默认 `codex`，但对外命令帮助和 audit 需要记录该默认值。
 
 ### 5.3 Driver native state
@@ -702,7 +702,7 @@ Claude Code 特有部分：
 注意：
 
 1. Claude Code 的 native session 可以作为后续增强，不阻塞 Codex MVP。
-2. 不新增 `runtime.cli.claude_code` plugin。
+2. 不新增 `runtime.cli.claude_code` runtime plugin type。
 3. 不把 Claude Code memory/context 当作安全边界。
 
 ### 8.2 Gemini CLI Driver
@@ -728,7 +728,7 @@ Gemini 特有部分：
 注意：
 
 1. Gemini sandbox 能力可以接入 `WorkspaceMode::Sandbox`，但必须明确依赖具体 sandbox profile。
-2. 不新增 `runtime.cli.gemini` plugin。
+2. 不新增 `runtime.cli.gemini` runtime plugin type。
 
 ---
 
@@ -996,7 +996,7 @@ native_session_id = optional
 | 能力 | Codex CLI | Claude Code | Gemini CLI |
 |---|---|---|---|
 | MVP 顺序 | 第一优先级 | 第二阶段 | 第三阶段 |
-| Plugin ID | `generic-cli` | `generic-cli` | `generic-cli` |
+| Runtime Plugin Type | `generic-cli` | `generic-cli` | `generic-cli` |
 | Driver ID | `codex` | `claude-code` | `gemini` |
 | Headless | `codex exec` | `claude -p` / `--print` | `gemini -p` |
 | JSON/event | `--json` JSONL | `--output-format stream-json` | `--output-format stream-json` |
@@ -1016,7 +1016,7 @@ native_session_id = optional
 2. 明确 `runtime_plugin_id = generic-cli`。
 3. 修改 runtime alias 解析：`runtime=codex|claude-code|gemini` 新写入 `runtime_plugin_id=generic-cli`，并保存对应 `driver_id`。
 4. 增加 `cli_runtime_profile` 或等价 driver profile 存储，至少保存 `driver_id`、driver config 和 recipient policy。
-5. 对旧的 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 设计迁移或 plugin registry alias。
+5. 对旧的 `runtime.cli.codex`、`runtime.cli.claude-code`、`runtime.cli.gemini-cli` 设计迁移或 plugin type alias。
 6. 记录当前 `RuntimePlugin v1`、`GenericCliDriver`、workspace binding、local RPC token、outbox 缺口。
 7. 删除 MCP 相关设计和落地项。
 8. 明确 `task.status` / `task.finish` 是兼容 RPC 名称，不是产品层 task workflow。
@@ -1060,14 +1060,14 @@ native_session_id = optional
 1. 在同一 `generic-cli` 插件内新增 `ClaudeCodeDriver`。
 2. 复用 prompt envelope、workspace、token、wrapper、outbox。
 3. 只新增 Claude-specific command builder、permission mapping、event parser、native session metadata。
-4. 不新增 `runtime.cli.claude_code` plugin。
+4. 不新增 `runtime.cli.claude_code` runtime plugin type。
 
 ### Phase 5：Gemini CLI Driver
 
 1. 在同一 `generic-cli` 插件内新增 `GeminiCliDriver`。
 2. 复用 prompt envelope、workspace、token、wrapper、outbox。
 3. 只新增 Gemini-specific command builder、sandbox mapping、event parser、checkpoint metadata。
-4. 不新增 `runtime.cli.gemini` plugin。
+4. 不新增 `runtime.cli.gemini` runtime plugin type。
 
 ### Phase 6：统一增强
 
@@ -1099,7 +1099,7 @@ Codex MVP 完成时应满足：
 13. `worktree-per-task` 被记录为变更隔离，不被宣传为安全边界，并使用 daemon-managed runtime temp/cache 路径。
 14. Codex run metadata 保存 route/session 字段，后续能与 Hermes session route 模型对齐。
 15. 文档和测试都不依赖 MCP。
-16. Codex 引入后，后续 Claude Code / Gemini 只需在同一 plugin 内新增 driver，不需要新持久化 plugin ID。
+16. Codex 引入后，后续 Claude Code / Gemini 只需在同一 plugin type 内新增 driver，不需要新持久化 plugin type。
 
 ---
 
