@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：02  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 新增 CLI profile schema、typed API 和 migration tests |
+| Started | 2026-06-01 17:11:50 +0800 |
+| Completed | 2026-06-01 17:20:48 +0800 |
+| Commit | 步骤提交：`daemon: add cli runtime profile storage` |
+| Review evidence | 自查无阻塞发现；确认 v8 migration 幂等、legacy 只改写已知 `runtime.cli.*`、Hermes/native 不受影响、默认 recipient policy 为 `controller-only`。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test state_bootstrap --locked`：2 passed；`cargo test -p awiki-deamon --test hermes_profile --locked`：3 passed；`cargo test -p awiki-deamon --locked`：27 unit passed，integration 8/6/5/6+1 ignored/8/3/8/2 passed；legacy grep 仅命中 legacy helper、legacy create 测试和 migration/fixture。 |
+| Next action | Step 03：runtime.agent.create 写入 generic-cli profile |
 
 ## 2. 目标
 
@@ -81,13 +81,13 @@ pub struct CliRuntimeProfileRecord {
 
 ## 7. 验收标准
 
-- [ ] 新初始化 daemon db 包含 `cli_runtime_profile`。
-- [ ] CLI profile 记录可 upsert/load，`driver_id` 必须非空且只接受当前支持值或明确的 future driver 值。
-- [ ] legacy `runtime.cli.*` 可迁移或读取 alias，且新 core profile 变为 `generic-cli`。
-- [ ] Hermes `runtime.hermes`、OpenClaw/native plugin type 不被 CLI migration 改写。
-- [ ] recipient policy 默认 deny 或 controller-only 的语义明确，不默认全网放开。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] 新初始化 daemon db 包含 `cli_runtime_profile`。
+- [x] CLI profile 记录可 upsert/load，`driver_id` 必须非空且只接受当前支持值或明确的 future driver 值。
+- [x] legacy `runtime.cli.*` 可迁移或读取 alias，且新 core profile 变为 `generic-cli`。
+- [x] Hermes `runtime.hermes`、OpenClaw/native plugin type 不被 CLI migration 改写。
+- [x] recipient policy 默认 deny 或 controller-only 的语义明确，不默认全网放开。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -107,11 +107,11 @@ pub struct CliRuntimeProfileRecord {
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 无阻塞发现 | 完整 daemon 测试初次发现 Hermes schema 版本断言仍为 7，已随 v8 修正。 |
+| 已修复问题 | 已修复 schema bump 断言 | `tests/hermes_profile.rs` 旧库 migration 预期更新为 schema 8。 |
+| 剩余风险 | Step 03 仍需切 create 路径 | 当前 legacy `claude-code` create 测试仍按旧 helper 期望，已作为 Step 03 carry-over。 |
+| 新增或缺失测试 | 已新增 state focused tests | 覆盖表存在、CLI profile roundtrip、默认 policy、invalid policy/driver、legacy migration、Hermes 保持不变。 |
+| 已更新或缺失文档 | 已更新本 Step 台账 | 主 Plan 执行台账已同步。 |
 
 ## 10. Commit 要求
 
