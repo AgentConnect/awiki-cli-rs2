@@ -20,7 +20,9 @@ use crate::local_rpc::call_uds_once;
 use crate::local_rpc::{
     bind_uds_listener, handle_uds_stream_with_outbox, verify_socket_permissions,
 };
-use crate::outbox::{ImCoreAgentOutbox, RuntimeMessageSend, RuntimeOutbox};
+use crate::outbox::{
+    ImCoreAgentOutbox, RuntimeMessageSend, RuntimeMessageSendResult, RuntimeOutbox,
+};
 use crate::plugins::hermes::{
     HermesGateway, HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID,
 };
@@ -472,9 +474,31 @@ impl ControllerOutboxSender {
             Self::Mock => Ok(format!("mock-message-{}", message.security.as_str())),
         }
     }
+
+    fn resolve_recipient_did(&self, recipient: &str) -> Result<Option<String>> {
+        match self {
+            Self::ImCore(outbox) => outbox.resolve_handle(recipient),
+            Self::Mock => {
+                let recipient = recipient.trim();
+                if recipient.starts_with("did:") {
+                    Ok(Some(recipient.to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
 }
 
 impl RuntimeOutbox for ControllerRuntimeOutbox {
+    fn resolve_recipient_did(
+        &self,
+        _context: &crate::state::AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        self.inner.resolve_recipient_did(recipient)
+    }
+
     fn send_status(
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
@@ -518,9 +542,17 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
         &self,
         _context: &crate::state::AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
-    ) -> Result<()> {
-        let _message_id = self.inner.send_runtime_message(message)?;
-        Ok(())
+    ) -> Result<RuntimeMessageSendResult> {
+        let message_id = self.inner.send_runtime_message(message)?;
+        Ok(RuntimeMessageSendResult {
+            message_id: Some(message_id),
+            raw_recipient: message.raw_recipient.clone(),
+            resolved_did: message
+                .resolved_did
+                .clone()
+                .unwrap_or_else(|| message.recipient.clone()),
+            security: message.security,
+        })
     }
 }
 
@@ -591,6 +623,28 @@ impl RuntimeCallbackOutbox {
 }
 
 impl RuntimeOutbox for RuntimeCallbackOutbox {
+    fn resolve_recipient_did(
+        &self,
+        context: &crate::state::AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        let recipient = recipient.trim();
+        if recipient.starts_with("did:") {
+            return Ok(Some(recipient.to_string()));
+        }
+        if self.mock_status_outbox {
+            return Ok(None);
+        }
+        let identity = self.state.load_agent_identity(&context.agent_did)?;
+        let jwt_token = self.state.load_agent_auth_token(&context.agent_did)?;
+        let client = self.im_core.client_for_agent_identity(
+            &self.config,
+            &identity,
+            jwt_token.as_deref(),
+        )?;
+        ImCoreAgentOutbox::new(client).resolve_handle(recipient)
+    }
+
     fn send_status(
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
@@ -613,7 +667,7 @@ impl RuntimeOutbox for RuntimeCallbackOutbox {
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
-    ) -> Result<()> {
+    ) -> Result<RuntimeMessageSendResult> {
         self.controller_outbox(context)?
             .send_message(context, message)
     }

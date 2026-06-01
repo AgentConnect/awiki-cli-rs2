@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 8;
+const DAEMON_SCHEMA_VERSION: i64 = 9;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -364,6 +364,10 @@ impl DaemonState {
             Some(recipients) => Some(serde_json::to_string(recipients)?),
             None => None,
         };
+        let allowed_message_security_json = match issued.scope.allowed_message_security.as_ref() {
+            Some(security_modes) => Some(serde_json::to_string(security_modes)?),
+            None => None,
+        };
         connection.execute(
             r#"
 INSERT INTO runtime_rpc_tokens (
@@ -374,6 +378,7 @@ INSERT INTO runtime_rpc_tokens (
     run_id,
     allowed_methods_json,
     allowed_recipients_json,
+    allowed_message_security_json,
     expires_at_ms,
     single_use,
     revoked_at_ms,
@@ -381,7 +386,7 @@ INSERT INTO runtime_rpc_tokens (
     created_at_ms,
     expires_at,
     created_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11, ?12)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, ?11, ?12, ?13)
 "#,
             rusqlite::params![
                 issued.token_id,
@@ -391,6 +396,7 @@ INSERT INTO runtime_rpc_tokens (
                 issued.scope.run_id,
                 allowed_methods_json,
                 allowed_recipients_json,
+                allowed_message_security_json,
                 issued.scope.expires_at_ms,
                 if issued.scope.single_use {
                     1_i64
@@ -1446,10 +1452,57 @@ WHERE task_id = ?1
         method: &RpcMethod,
         recipient: Option<&str>,
     ) -> Result<AuthorizedRuntimeContext> {
+        self.authorize_runtime_rpc_with_message_policy(
+            token,
+            method,
+            recipient.into_iter().collect::<Vec<_>>(),
+            None,
+        )
+    }
+
+    pub fn authorize_runtime_rpc_with_message_policy<'a>(
+        &self,
+        token: &RuntimeRpcToken,
+        method: &RpcMethod,
+        recipient_candidates: impl IntoIterator<Item = &'a str>,
+        message_security: Option<&str>,
+    ) -> Result<AuthorizedRuntimeContext> {
+        self.authorize_runtime_rpc_internal(
+            token,
+            method,
+            recipient_candidates,
+            message_security,
+            true,
+        )
+    }
+
+    pub fn authorize_runtime_rpc_for_recipient_resolution(
+        &self,
+        token: &RuntimeRpcToken,
+        method: &RpcMethod,
+    ) -> Result<AuthorizedRuntimeContext> {
+        self.authorize_runtime_rpc_internal(token, method, std::iter::empty::<&str>(), None, false)
+    }
+
+    fn authorize_runtime_rpc_internal<'a>(
+        &self,
+        token: &RuntimeRpcToken,
+        method: &RpcMethod,
+        recipient_candidates: impl IntoIterator<Item = &'a str>,
+        message_security: Option<&str>,
+        enforce_message_policy: bool,
+    ) -> Result<AuthorizedRuntimeContext> {
         let connection = self.connection()?;
         let token_id = token.token_id();
         let record = load_runtime_token_record(&connection, &token_id)?;
         let audit_scope = record.scope_for_audit();
+        let recipient_candidates = recipient_candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let candidate = candidate.trim();
+                (!candidate.is_empty()).then(|| candidate.to_string())
+            })
+            .collect::<Vec<_>>();
         let mut authorized = false;
         let mut reason = "authorized".to_string();
 
@@ -1475,9 +1528,18 @@ WHERE task_id = ?1
                 reason = "method_not_allowed".to_string();
                 bail!("runtime RPC method not allowed");
             }
-            if *method == RpcMethod::MsgSend && !record.scope.allows_recipient(recipient) {
-                reason = "recipient_not_allowed".to_string();
-                bail!("runtime RPC recipient not allowed");
+            if *method == RpcMethod::MsgSend && enforce_message_policy {
+                if !record
+                    .scope
+                    .allows_recipient_candidates(recipient_candidates.iter().map(String::as_str))
+                {
+                    reason = "recipient_not_allowed".to_string();
+                    bail!("runtime RPC recipient not allowed");
+                }
+                if !record.scope.allows_message_security(message_security) {
+                    reason = "message_security_not_allowed".to_string();
+                    bail!("runtime RPC message security not allowed");
+                }
             }
             authorized = true;
             Ok(AuthorizedRuntimeContext {
@@ -1489,7 +1551,16 @@ WHERE task_id = ?1
             })
         })();
 
-        self.insert_audit_event(&token_id, audit_scope, method, authorized, &reason)?;
+        self.insert_audit_event(
+            &token_id,
+            audit_scope,
+            method,
+            authorized,
+            &reason,
+            &recipient_candidates,
+            message_security,
+            enforce_message_policy,
+        )?;
 
         let context = result?;
         if record.single_use {
@@ -1508,6 +1579,9 @@ WHERE task_id = ?1
         method: &RpcMethod,
         authorized: bool,
         reason: &str,
+        recipient_candidates: &[String],
+        message_security: Option<&str>,
+        enforce_message_policy: bool,
     ) -> Result<()> {
         let connection = self.connection()?;
         let now = current_time_millis()?;
@@ -1518,6 +1592,9 @@ WHERE task_id = ?1
             "method_level": method.level(),
             "authorized": authorized,
             "reason": reason,
+            "recipient_candidates": recipient_candidates,
+            "message_security": message_security,
+            "message_policy_enforced": enforce_message_policy,
         })
         .to_string();
         connection.execute(
@@ -1691,6 +1768,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             run_id TEXT NOT NULL,
             allowed_methods_json TEXT NOT NULL,
             allowed_recipients_json TEXT,
+            allowed_message_security_json TEXT,
             expires_at TEXT NOT NULL DEFAULT '',
             expires_at_ms INTEGER NOT NULL,
             single_use INTEGER NOT NULL DEFAULT 0,
@@ -1780,6 +1858,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_hermes_profiles_v6(connection)?;
     migrate_hermes_native_sessions_v7(connection)?;
     migrate_cli_runtime_profile_v8(connection)?;
+    migrate_runtime_rpc_tokens_v9(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -1787,6 +1866,16 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_rpc_tokens_v9(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "runtime_rpc_tokens",
+        "allowed_message_security_json",
+        "TEXT",
     )?;
     Ok(())
 }
@@ -2151,6 +2240,7 @@ SELECT
     run_id,
     allowed_methods_json,
     allowed_recipients_json,
+    allowed_message_security_json,
     expires_at_ms,
     single_use,
     revoked_at_ms,
@@ -2162,6 +2252,7 @@ WHERE token_id = ?1
         |row| {
             let allowed_methods_json: String = row.get(4)?;
             let allowed_recipients_json: Option<String> = row.get(5)?;
+            let allowed_message_security_json: Option<String> = row.get(6)?;
             let allowed_methods: Vec<RpcMethod> = serde_json::from_str(&allowed_methods_json)
                 .map_err(|err| {
                     rusqlite::Error::FromSqlConversionFailure(
@@ -2181,7 +2272,21 @@ WHERE token_id = ?1
                         Box::new(err),
                     )
                 })?;
-            let single_use = row.get::<_, i64>(7)? != 0;
+            let allowed_message_security = allowed_message_security_json
+                .as_ref()
+                .map(|json| serde_json::from_str(json))
+                .transpose()
+                .map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        allowed_message_security_json
+                            .as_deref()
+                            .unwrap_or_default()
+                            .len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?;
+            let single_use = row.get::<_, i64>(8)? != 0;
             Ok(RuntimeTokenRecord {
                 token_secret_hash: row.get(0)?,
                 scope: RuntimeTokenScope {
@@ -2190,12 +2295,13 @@ WHERE token_id = ?1
                     run_id: row.get(3)?,
                     allowed_methods,
                     allowed_recipients,
-                    expires_at_ms: row.get(6)?,
+                    allowed_message_security,
+                    expires_at_ms: row.get(7)?,
                     single_use,
                 },
                 single_use,
-                revoked_at_ms: row.get(8)?,
-                used_at_ms: row.get(9)?,
+                revoked_at_ms: row.get(9)?,
+                used_at_ms: row.get(10)?,
             })
         },
     )?;

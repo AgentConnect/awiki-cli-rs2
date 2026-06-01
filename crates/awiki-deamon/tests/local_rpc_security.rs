@@ -27,7 +27,7 @@ fn issue(
     methods: Vec<RpcMethod>,
     recipients: Option<Vec<String>>,
 ) -> awiki_deamon::security::runtime_token::IssuedRuntimeToken {
-    let scope = RuntimeTokenScope::new(
+    let mut scope = RuntimeTokenScope::new(
         "did:agent:test",
         "profile_1",
         "run_1",
@@ -36,6 +36,8 @@ fn issue(
         Duration::from_secs(60),
     )
     .unwrap();
+    scope.allowed_message_security =
+        Some(vec!["default_plain".to_string(), "direct_e2ee".to_string()]);
     let issued = issue_runtime_token(scope).unwrap();
     state.store_runtime_token(&issued).unwrap();
     issued
@@ -87,12 +89,14 @@ fn method_and_recipient_scope_are_enforced() {
     .unwrap_err();
     assert!(method_error.to_string().contains("method not allowed"));
 
-    let recipient_error = execute_runtime_rpc_request(
+    let outbox = MemoryRuntimeOutbox::default();
+    let recipient_error = execute_runtime_rpc_request_with_outbox(
         &state,
+        &outbox,
         RuntimeRpcRequest {
             runtime_rpc_token: issued.token.as_str().to_string(),
             method: "msg.send".to_string(),
-            params: json!({ "to": "@bob", "text": "hello" }),
+            params: json!({ "to": "did:human:bob", "text": "hello" }),
             debug: None,
         },
     )
@@ -100,6 +104,30 @@ fn method_and_recipient_scope_are_enforced() {
     assert!(recipient_error
         .to_string()
         .contains("recipient not allowed"));
+    assert!(outbox.records().is_empty());
+}
+
+#[test]
+fn msg_send_requires_outbox_execution_path() {
+    let (_root, state) = fixture();
+    let issued = issue(
+        &state,
+        vec![RpcMethod::MsgSend],
+        Some(vec!["did:human:alice".to_string()]),
+    );
+
+    let error = execute_runtime_rpc_request(
+        &state,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({ "to": "did:human:alice", "text": "hello" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("requires runtime outbox"));
 }
 
 #[test]
@@ -193,11 +221,180 @@ fn msg_send_records_direct_message_side_effect_with_security_mode() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Message);
     assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[0].raw_recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[0].resolved_did.as_deref(), Some("did:human:alice"));
+    assert!(records[0].message_id.is_some());
     assert_eq!(records[0].text.as_deref(), Some("hello from Hermes"));
     assert_eq!(
         records[0].security,
         Some(RuntimeMessageSecurity::DirectE2ee)
     );
+}
+
+#[test]
+fn msg_send_allows_authorized_non_controller_did_and_records_send_audit() {
+    let (root, state) = fixture();
+    let issued = issue(
+        &state,
+        vec![RpcMethod::MsgSend],
+        Some(vec!["did:human:bob".to_string()]),
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+
+    execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({
+                "to": "did:human:bob",
+                "text": "hello bob"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outbox.records().len(), 1);
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let audit_dump: String = connection
+        .query_row(
+            "SELECT token_id || ' ' || COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime.msg_send.sent' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audit_dump.contains(&issued.token_id));
+    assert!(audit_dump.contains("did:human:bob"));
+    assert!(audit_dump.contains("default_plain"));
+    assert!(!audit_dump.contains(issued.token.as_str()));
+}
+
+#[test]
+fn msg_send_authorizes_raw_handle_after_resolve_to_did() {
+    let (root, state) = fixture();
+    let issued = issue(
+        &state,
+        vec![RpcMethod::MsgSend],
+        Some(vec!["@bob".to_string()]),
+    );
+    let outbox =
+        MemoryRuntimeOutbox::default().with_handle_resolution("@bob", "did:human:bob-resolved");
+
+    execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({
+                "to": "@bob",
+                "text": "hello handle"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap();
+
+    let records = outbox.records();
+    assert_eq!(
+        records[0].recipient.as_deref(),
+        Some("did:human:bob-resolved")
+    );
+    assert_eq!(records[0].raw_recipient.as_deref(), Some("@bob"));
+    assert_eq!(
+        records[0].resolved_did.as_deref(),
+        Some("did:human:bob-resolved")
+    );
+
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let authorize_dump: String = connection
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime_rpc.authorize' AND detail_json LIKE '%recipient_candidates%' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(authorize_dump.contains("@bob"));
+    assert!(authorize_dump.contains("did:human:bob-resolved"));
+}
+
+#[test]
+fn msg_send_rejects_unresolved_or_unauthorized_handle_without_side_effect() {
+    let (_root, state) = fixture();
+    let issued = issue(
+        &state,
+        vec![RpcMethod::MsgSend],
+        Some(vec!["@alice".to_string()]),
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let unresolved = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({ "to": "@alice", "text": "hello" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(unresolved.to_string().contains("could not be resolved"));
+
+    let outbox =
+        MemoryRuntimeOutbox::default().with_handle_resolution("@mallory", "did:human:mallory");
+    let unauthorized = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({ "to": "@mallory", "text": "hello" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(unauthorized.to_string().contains("recipient not allowed"));
+    assert!(outbox.records().is_empty());
+}
+
+#[test]
+fn msg_send_rejects_policy_disallowed_security_without_side_effect() {
+    let (_root, state) = fixture();
+    let mut scope = RuntimeTokenScope::new(
+        "did:agent:test",
+        "profile_1",
+        "run_1",
+        vec![RpcMethod::MsgSend],
+        Some(vec!["did:human:alice".to_string()]),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    scope.allowed_message_security = Some(vec!["default_plain".to_string()]);
+    let issued = issue_runtime_token(scope).unwrap();
+    state.store_runtime_token(&issued).unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let error = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({
+                "to": "did:human:alice",
+                "text": "secure hello",
+                "security": "direct_e2ee"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("message security not allowed"));
+    assert!(outbox.records().is_empty());
 }
 
 #[test]
@@ -314,8 +511,13 @@ fn audit_records_token_id_not_token_secret() {
 
 #[test]
 fn cli_wrapper_request_only_uses_token_as_authorization_material() {
-    let request = CliWrapperRequest::msg_send("rtok_test_secret_value_123456789", "@alice", "hi")
-        .into_rpc_request();
+    let request = CliWrapperRequest::msg_send_with_security(
+        "rtok_test_secret_value_123456789",
+        "@alice",
+        "hi",
+        Some("direct_e2ee"),
+    )
+    .into_rpc_request();
 
     assert_eq!(
         request.runtime_rpc_token,
@@ -323,6 +525,7 @@ fn cli_wrapper_request_only_uses_token_as_authorization_material() {
     );
     assert_eq!(request.method, "msg.send");
     assert_eq!(request.params["to"], "@alice");
+    assert_eq!(request.params["security"], "direct_e2ee");
     assert!(request.debug.is_none());
 }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -12,6 +13,19 @@ use serde_json::Value;
 use crate::state::AuthorizedRuntimeContext;
 
 pub trait RuntimeOutbox {
+    fn resolve_recipient_did(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        let recipient = recipient.trim();
+        if recipient.starts_with("did:") {
+            Ok(Some(recipient.to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn send_status(
         &self,
         context: &AuthorizedRuntimeContext,
@@ -25,7 +39,7 @@ pub trait RuntimeOutbox {
         &self,
         context: &AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
-    ) -> Result<()>;
+    ) -> Result<RuntimeMessageSendResult>;
 }
 
 pub trait AgentManagementOutbox {
@@ -131,6 +145,56 @@ impl ImCoreAgentOutbox {
         }
         block_on_text_send(outbox, recipient_did, text, security)
     }
+
+    pub fn resolve_handle(&self, recipient: &str) -> Result<Option<String>> {
+        let recipient = recipient.trim();
+        if recipient.starts_with("did:") {
+            return Ok(Some(recipient.to_string()));
+        }
+        let handle = im_core::ids::Handle::parse(recipient, "")?;
+        let lookup = self.client.directory().lookup_handle(handle)?;
+        Ok(Some(lookup.did.as_str().to_string()))
+    }
+}
+
+impl RuntimeOutbox for ImCoreAgentOutbox {
+    fn resolve_recipient_did(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        self.resolve_handle(recipient)
+    }
+
+    fn send_status(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        _state: &str,
+        _text: Option<&str>,
+    ) -> Result<()> {
+        anyhow::bail!("ImCoreAgentOutbox cannot send runtime status without controller context")
+    }
+
+    fn send_final(&self, _context: &AuthorizedRuntimeContext, _text: Option<&str>) -> Result<()> {
+        anyhow::bail!("ImCoreAgentOutbox cannot send final status without controller context")
+    }
+
+    fn send_message(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
+    ) -> Result<RuntimeMessageSendResult> {
+        let result = self.send_text(&message.recipient, &message.text, message.security)?;
+        Ok(RuntimeMessageSendResult {
+            message_id: Some(result.message.id.as_str().to_string()),
+            raw_recipient: message.raw_recipient.clone(),
+            resolved_did: message
+                .resolved_did
+                .clone()
+                .unwrap_or_else(|| message.recipient.clone()),
+            security: message.security,
+        })
+    }
 }
 
 fn block_on_payload_send(
@@ -181,6 +245,9 @@ pub struct OutboxRecord {
     pub kind: OutboxRecordKind,
     pub state: Option<String>,
     pub recipient: Option<String>,
+    pub raw_recipient: Option<String>,
+    pub resolved_did: Option<String>,
+    pub message_id: Option<String>,
     pub text: Option<String>,
     pub security: Option<RuntimeMessageSecurity>,
 }
@@ -227,6 +294,8 @@ impl RuntimeMessageSecurity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeMessageSend {
     pub recipient: String,
+    pub raw_recipient: String,
+    pub resolved_did: Option<String>,
     pub text: String,
     pub security: RuntimeMessageSecurity,
 }
@@ -250,16 +319,43 @@ impl RuntimeMessageSend {
 
         Ok(Self {
             recipient: recipient.to_string(),
+            raw_recipient: recipient.to_string(),
+            resolved_did: None,
             text: text.to_string(),
             security,
         })
     }
+
+    pub fn with_resolved_recipient(mut self, resolved_did: impl Into<String>) -> Self {
+        let resolved_did = resolved_did.into();
+        self.raw_recipient = self.recipient;
+        self.recipient = resolved_did.clone();
+        self.resolved_did = Some(resolved_did);
+        self
+    }
+
+    pub fn recipient_candidates(&self) -> Vec<&str> {
+        let mut candidates = vec![self.raw_recipient.as_str(), self.recipient.as_str()];
+        if let Some(resolved_did) = self.resolved_did.as_deref() {
+            candidates.push(resolved_did);
+        }
+        candidates
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMessageSendResult {
+    pub message_id: Option<String>,
+    pub raw_recipient: String,
+    pub resolved_did: String,
+    pub security: RuntimeMessageSecurity,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct MemoryRuntimeOutbox {
     records: Arc<Mutex<Vec<OutboxRecord>>>,
     agent_statuses: Arc<Mutex<Vec<AgentStatusResponse>>>,
+    handle_resolutions: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl MemoryRuntimeOutbox {
@@ -272,6 +368,14 @@ impl MemoryRuntimeOutbox {
             .lock()
             .expect("outbox lock poisoned")
             .clone()
+    }
+
+    pub fn with_handle_resolution(self, handle: impl Into<String>, did: impl Into<String>) -> Self {
+        self.handle_resolutions
+            .lock()
+            .expect("outbox lock poisoned")
+            .insert(normalize_handle_candidate(&handle.into()), did.into());
+        self
     }
 
     fn push(&self, record: OutboxRecord) {
@@ -300,6 +404,23 @@ impl AgentManagementOutbox for ImCoreAgentOutbox {
 }
 
 impl RuntimeOutbox for MemoryRuntimeOutbox {
+    fn resolve_recipient_did(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> Result<Option<String>> {
+        let recipient = recipient.trim();
+        if recipient.starts_with("did:") {
+            return Ok(Some(recipient.to_string()));
+        }
+        Ok(self
+            .handle_resolutions
+            .lock()
+            .expect("outbox lock poisoned")
+            .get(&normalize_handle_candidate(recipient))
+            .cloned())
+    }
+
     fn send_status(
         &self,
         context: &AuthorizedRuntimeContext,
@@ -312,6 +433,9 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             kind: OutboxRecordKind::Status,
             state: Some(state.to_string()),
             recipient: None,
+            raw_recipient: None,
+            resolved_did: None,
+            message_id: None,
             text: text.map(str::to_string),
             security: None,
         });
@@ -325,6 +449,9 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             kind: OutboxRecordKind::Final,
             state: Some("finished".to_string()),
             recipient: None,
+            raw_recipient: None,
+            resolved_did: None,
+            message_id: None,
             text: text.map(str::to_string),
             security: None,
         });
@@ -335,17 +462,41 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
         &self,
         context: &AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
-    ) -> Result<()> {
+    ) -> Result<RuntimeMessageSendResult> {
+        let message_id = format!(
+            "memory-message-{}",
+            self.records.lock().expect("outbox lock poisoned").len() + 1
+        );
         self.push(OutboxRecord {
             run_id: context.run_id.clone(),
             agent_did: context.agent_did.clone(),
             kind: OutboxRecordKind::Message,
             state: None,
             recipient: Some(message.recipient.clone()),
+            raw_recipient: Some(message.raw_recipient.clone()),
+            resolved_did: message.resolved_did.clone(),
+            message_id: Some(message_id.clone()),
             text: Some(message.text.clone()),
             security: Some(message.security),
         });
-        Ok(())
+        Ok(RuntimeMessageSendResult {
+            message_id: Some(message_id),
+            raw_recipient: message.raw_recipient.clone(),
+            resolved_did: message
+                .resolved_did
+                .clone()
+                .unwrap_or_else(|| message.recipient.clone()),
+            security: message.security,
+        })
+    }
+}
+
+fn normalize_handle_candidate(input: &str) -> String {
+    let value = input.trim().to_ascii_lowercase();
+    if value.starts_with('@') {
+        value
+    } else {
+        format!("@{value}")
     }
 }
 
@@ -363,6 +514,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(plain.recipient, "did:human:alice");
+        assert_eq!(plain.raw_recipient, "did:human:alice");
+        assert_eq!(plain.resolved_did, None);
         assert_eq!(plain.text, "hello");
         assert_eq!(plain.security, RuntimeMessageSecurity::DefaultPlain);
         assert_eq!(

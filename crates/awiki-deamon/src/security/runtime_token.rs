@@ -14,6 +14,7 @@ pub struct RuntimeTokenScope {
     pub run_id: String,
     pub allowed_methods: Vec<RpcMethod>,
     pub allowed_recipients: Option<Vec<String>>,
+    pub allowed_message_security: Option<Vec<String>>,
     pub expires_at_ms: i64,
     pub single_use: bool,
 }
@@ -142,6 +143,7 @@ impl RuntimeTokenScope {
             run_id: run_id.into(),
             allowed_methods,
             allowed_recipients,
+            allowed_message_security: None,
             expires_at_ms,
             single_use: false,
         };
@@ -170,6 +172,14 @@ impl RuntimeTokenScope {
                 bail!("allowed_recipients must not contain blank entries");
             }
         }
+        if let Some(security_modes) = self.allowed_message_security.as_ref() {
+            if security_modes
+                .iter()
+                .any(|security| security.trim().is_empty())
+            {
+                bail!("allowed_message_security must not contain blank entries");
+            }
+        }
         Ok(())
     }
 
@@ -178,13 +188,47 @@ impl RuntimeTokenScope {
     }
 
     pub fn allows_recipient(&self, recipient: Option<&str>) -> bool {
+        let Some(recipient) = recipient else {
+            return self.allows_recipient_candidates(std::iter::empty::<&str>());
+        };
+        self.allows_recipient_candidates([recipient])
+    }
+
+    pub fn allows_recipient_candidates<'a>(
+        &self,
+        recipients: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
         let Some(allowed) = self.allowed_recipients.as_ref() else {
             return true;
         };
-        let Some(recipient) = recipient else {
+        recipients.into_iter().any(|recipient| {
+            let candidate = normalize_recipient_for_scope(recipient);
+            allowed
+                .iter()
+                .any(|known| normalize_recipient_for_scope(known) == candidate)
+        })
+    }
+
+    pub fn allows_message_security(&self, security: Option<&str>) -> bool {
+        let Some(allowed) = self.allowed_message_security.as_ref() else {
+            return true;
+        };
+        let Some(security) = security else {
             return false;
         };
-        allowed.iter().any(|known| known == recipient)
+        let security = security.trim();
+        allowed.iter().any(|known| known.trim() == security)
+    }
+}
+
+fn normalize_recipient_for_scope(input: &str) -> String {
+    let value = input.trim();
+    if value.starts_with("did:") {
+        value.to_string()
+    } else if value.starts_with('@') {
+        value.to_ascii_lowercase()
+    } else {
+        format!("@{}", value.to_ascii_lowercase())
     }
 }
 
@@ -233,6 +277,27 @@ mod tests {
         assert!(scope.allows_method(&RpcMethod::TaskStatus));
         assert!(!scope.allows_method(&RpcMethod::TaskFinish));
         assert!(scope.allows_recipient(Some("@alice")));
+        assert!(scope.allows_recipient(Some("alice")));
         assert!(!scope.allows_recipient(Some("@bob")));
+    }
+
+    #[test]
+    fn scope_enforces_recipient_candidates_and_security() {
+        let mut scope = RuntimeTokenScope::new(
+            "did:agent:test",
+            "profile_1",
+            "run_1",
+            vec![RpcMethod::MsgSend],
+            Some(vec!["@bob".to_string(), "did:human:alice".to_string()]),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        scope.allowed_message_security = Some(vec!["default_plain".to_string()]);
+
+        assert!(scope.allows_recipient_candidates(["@unknown", "did:human:alice"]));
+        assert!(scope.allows_recipient_candidates(["bob", "did:human:bob"]));
+        assert!(!scope.allows_recipient_candidates(["@mallory", "did:human:mallory"]));
+        assert!(scope.allows_message_security(Some("default_plain")));
+        assert!(!scope.allows_message_security(Some("direct_e2ee")));
     }
 }

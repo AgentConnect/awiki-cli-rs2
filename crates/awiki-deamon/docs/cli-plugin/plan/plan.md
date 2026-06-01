@@ -60,7 +60,7 @@ Harness：`awiki-harness`
 
 ### 开放问题
 
-- handle resolve 的稳定入口应优先复用 `im-core` 还是 user-service handle API，需要在 Step 04 实现前确认当前 SDK 暴露面。
+- handle resolve 的稳定入口已在 Step 04 确认复用 `im-core` directory `lookup_handle`，测试中使用 `MemoryRuntimeOutbox` fake resolver 固化契约。
 - Codex CLI 当前安装版本和 `codex exec` 参数兼容性需要实现时用 `codex --help` 或官方文档再确认；测试不能依赖本机真实安装。
 - Codex final fallback 和 `task.finish` 幂等的持久化表名可以在 Step 04/06 实现时细化，但必须保持 run/audit 可追溯。
 - remote 系统测试可能受远端配额、OTP、服务状态影响；失败或跳过不能静默忽略，必须记录具体原因。
@@ -79,10 +79,10 @@ Harness：`awiki-harness`
 
 | Step | 标题 | 依赖 | 产出 | 小 Plan 文档 | Commit gate | 状态 |
 |---|---|---|---|---|---|---|
-| 01 | Runtime resolution 与创建契约 | 无 | `runtime=codex|claude-code|gemini` 解析为 `generic-cli + driver_id` 的契约和测试 | [steps/01-runtime-resolution-contract.md](steps/01-runtime-resolution-contract.md) | 必须 | pending |
-| 02 | CLI profile 存储与 legacy 迁移 | 01 | `cli_runtime_profile`、recipient policy、legacy `runtime.cli.*` 迁移/alias | [steps/02-cli-profile-storage-migration.md](steps/02-cli-profile-storage-migration.md) | 必须 | pending |
-| 03 | runtime.agent.create 写入 generic-cli profile | 01, 02 | 创建路径保存 `generic-cli` plugin type 和 `driver_id`，Hermes 保持 native type | [steps/03-runtime-create-wiring.md](steps/03-runtime-create-wiring.md) | 必须 | pending |
-| 04 | Recipient policy、handle resolve 与 `msg.send` 审计 | 02, 03 | 非 controller 授权收件人、handle resolve、send result/audit、final 幂等基础 | [steps/04-recipient-policy-local-rpc.md](steps/04-recipient-policy-local-rpc.md) | 必须 | pending |
+| 01 | Runtime resolution 与创建契约 | 无 | `runtime=codex|claude-code|gemini` 解析为 `generic-cli + driver_id` 的契约和测试 | [steps/01-runtime-resolution-contract.md](steps/01-runtime-resolution-contract.md) | 必须 | done |
+| 02 | CLI profile 存储与 legacy 迁移 | 01 | `cli_runtime_profile`、recipient policy、legacy `runtime.cli.*` 迁移/alias | [steps/02-cli-profile-storage-migration.md](steps/02-cli-profile-storage-migration.md) | 必须 | done |
+| 03 | runtime.agent.create 写入 generic-cli profile | 01, 02 | 创建路径保存 `generic-cli` plugin type 和 `driver_id`，Hermes 保持 native type | [steps/03-runtime-create-wiring.md](steps/03-runtime-create-wiring.md) | 必须 | done |
+| 04 | Recipient policy、handle resolve 与 `msg.send` 审计 | 02, 03 | 非 controller 授权收件人、handle resolve、send result/audit、final 幂等基础 | [steps/04-recipient-policy-local-rpc.md](steps/04-recipient-policy-local-rpc.md) | 必须 | done |
 | 05 | Generic CLI driver registry 与真实 callback 主链路 | 03, 04 | runtime host 按 profile 选 driver，真实 CLI 不再依赖 callback 模拟 | [steps/05-generic-cli-driver-host.md](steps/05-generic-cli-driver-host.md) | 必须 | pending |
 | 06 | Codex driver MVP | 05 | `CodexDriver`、prompt envelope、stdin、env 注入、fake binary 测试 | [steps/06-codex-driver-mvp.md](steps/06-codex-driver-mvp.md) | 必须 | pending |
 | 07 | Workspace instance 与 CLI run metadata | 06 | `shared-root` / `worktree-per-task`、output paths、route/session metadata、fallback final | [steps/07-workspace-run-metadata.md](steps/07-workspace-run-metadata.md) | 必须 | pending |
@@ -97,7 +97,7 @@ Harness：`awiki-harness`
 | 01 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 16:59:10 +0800 | 2026-06-01 17:08:31 +0800 | 基线提交：`946d756`；步骤提交：`daemon: resolve cli runtimes to generic cli driver` | 自查无阻塞发现；确认 CLI alias 解析契约与 legacy helper 边界清晰，Hermes native runtime 不产生 `driver_id` | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test hermes_contracts --locked`：5 passed；`cargo test -p awiki-deamon --test agent_registration_management --locked`：8 passed；`cargo test -p awiki-deamon agent::tests::resolve_runtime --locked`：4 passed；legacy grep 仅命中 legacy helper、legacy 兼容测试和新 legacy metadata 测试 | 启动 Step 02 |
 | 02 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:11:50 +0800 | 2026-06-01 17:20:48 +0800 | 步骤提交：`daemon: add cli runtime profile storage` | 自查无阻塞发现；确认 v8 migration 幂等、legacy 仅改写已知 `runtime.cli.*`、Hermes/native 不受影响、默认 recipient policy 为 `controller-only` | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test state_bootstrap --locked`：2 passed；`cargo test -p awiki-deamon --test hermes_profile --locked`：3 passed；`cargo test -p awiki-deamon --locked`：27 unit passed，integration 8/6/5/6+1 ignored/8/3/8/2 passed；legacy grep 仅命中 legacy helper、legacy create 测试和 migration/fixture | 启动 Step 03 |
 | 03 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:22:29 +0800 | 2026-06-01 17:26:45 +0800 | 步骤提交：`daemon: create cli agents through generic cli profiles` | 自查无阻塞发现；确认 create path 不再调用旧 `runtime_plugin_id()`，CLI family 新建写 `generic-cli` + `cli_runtime_profile.driver_id`，Hermes native 分支保持 `runtime.hermes` | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test agent_registration_management --locked`：10 passed；`cargo test -p awiki-deamon --test hermes_profile --locked`：3 passed；`cargo test -p awiki-deamon --locked`：27 unit passed，integration 10/6/5/6+1 ignored/8/3/8/2 passed；legacy grep 仅命中 legacy helper、legacy metadata/audit 测试和 migration/fixture | 启动 Step 04 |
-| 04 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 03 |
+| 04 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:30:14 +0800 | 2026-06-01 17:54:47 +0800 | 步骤提交：`daemon: enforce recipient policy for runtime msg send`，hash 以 `git log` 为准 | 自查发现并修复无 outbox 的 `execute_runtime_rpc_request` 对 `msg.send` 可能返回假成功的问题，改为拒绝并要求真实发送走 `_with_outbox`；补齐 `task.finish` 重复 callback 幂等，确认 handle resolve 在授权前、发送前完成，audit 只记录 token id 不记录 token secret | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test local_rpc_security --locked`：13 passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：10 passed；`cargo test -p awiki-deamon --locked`：28 unit passed，integration 10/10/5/6+1 ignored/8/3/13/2 passed；secret grep 仅命中测试 fixture、字段名、redaction/secret handling 代码和 Hermes fake token | 启动 Step 05 |
 | 05 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 04 |
 | 06 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 05 |
 | 07 | pending | `feature/release-0526/codex-plugin-cli-rs2` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 06 |

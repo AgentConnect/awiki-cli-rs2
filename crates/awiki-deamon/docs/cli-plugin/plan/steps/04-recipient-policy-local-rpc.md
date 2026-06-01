@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：04  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 设计并实现 recipient policy 到 local RPC 的授权链路 |
+| Started | 2026-06-01 17:30:14 +0800 |
+| Completed | 2026-06-01 17:54:47 +0800 |
+| Commit | 步骤提交：`daemon: enforce recipient policy for runtime msg send`，hash 以 `git log` 为准 |
+| Review evidence | 自查发现并修复无 outbox 的 `execute_runtime_rpc_request` 对 `msg.send` 可能返回假成功的问题，改为拒绝并要求真实发送走 `_with_outbox`；补齐 `task.finish` 重复 callback 幂等；确认 handle resolve 在授权前、发送前完成，audit 只记录 token id 不记录 token secret。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test local_rpc_security --locked`：13 passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：10 passed；`cargo test -p awiki-deamon --locked`：28 unit passed，integration 10/10/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret grep 仅命中测试 fixture、字段名、redaction/secret handling 代码和 Hermes fake token。 |
+| Next action | 提交 Step 04 后启动 Step 05。 |
 
 ## 2. 目标
 
@@ -75,15 +75,15 @@ Step index：04
 
 ## 7. 验收标准
 
-- [ ] token scope 不再硬编码只允许 controller DID。
-- [ ] profile policy 可以允许一个非 controller DID，并允许 `msg.send` 成功。
-- [ ] profile policy 可以允许一个 handle，daemon resolve 后对 raw handle 和 resolved DID 做授权检查。
-- [ ] 未授权 recipient 被拒绝，且不产生 outbox send side effect。
-- [ ] unsupported `security` 或 policy 不允许的 `security` 被拒绝。
-- [ ] audit 不记录 token 原文，记录 token id、recipient、resolved DID、security、结果。
-- [ ] wrapper 返回失败时，runtime 不能把消息发送当作成功。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] token scope 不再硬编码只允许 controller DID。
+- [x] profile policy 可以允许一个非 controller DID，并允许 `msg.send` 成功。
+- [x] profile policy 可以允许一个 handle，daemon resolve 后对 raw handle 和 resolved DID 做授权检查。
+- [x] 未授权 recipient 被拒绝，且不产生 outbox send side effect。
+- [x] unsupported `security` 或 policy 不允许的 `security` 被拒绝。
+- [x] audit 不记录 token 原文，记录 token id、recipient、resolved DID、security、结果。
+- [x] wrapper 返回失败时，runtime 不能把消息发送当作成功。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -95,6 +95,16 @@ Step index：04
 | Daemon crate | `cd codex-plugin-cli-rs2 && cargo test -p awiki-deamon --locked` | daemon crate 全部通过。 |
 | Secret grep | `cd codex-plugin-cli-rs2 && rg -n "rtok_|runtime_rpc_token.*println|registration_token|jwt_token|auth_private_key" crates/awiki-deamon/src crates/awiki-deamon/tests/local_rpc_security.rs` | 生产代码不得泄漏 token/secret；测试 fixture 预期命中需解释。 |
 
+实际验证证据：
+
+- `cargo fmt --all --check`：通过。
+- `cargo test -p awiki-deamon --test local_rpc_security --locked`：13 passed。
+- `cargo test -p awiki-deamon --test hermes_message --locked`：8 passed。
+- `cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：10 passed。
+- `cargo test -p awiki-deamon --locked`：28 unit passed；integration 10/10/5/6 passed + 1 ignored/8/3/13/2 passed；doc-tests 0 passed。
+- `git diff --check`：通过。
+- Secret grep：仅命中 `tests/local_rpc_security.rs` 的 fixture token、结构字段名、redaction/secret handling 代码、Hermes fake token；未发现生产日志或 audit 泄漏 runtime token secret。
+
 ## 9. Review 环节
 
 - Review 时机：local RPC / outbox / tests 完成后、commit 前。
@@ -102,11 +112,11 @@ Step index：04
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 已发现 2 项，均已处理 | 1. 无 outbox 的 `execute_runtime_rpc_request` 对 `msg.send` 只授权不发送，可能返回假成功；2. `task.finish` 重复 callback 会重复发送 final。 |
+| 已修复问题 | 已修复 | `msg.send` 现在必须走 `execute_runtime_rpc_request_with_outbox`；无 outbox 入口直接拒绝。`task.finish` 在 run 已 `finished` 时幂等 no-op，不重复发送 final。 |
+| 剩余风险 | 已记录 | foreground mock outbox 无法解析 handle，只能解析 DID；真实 foreground 使用 IM Core `directory().lookup_handle()`。真实远端 handle resolver 行为留到 Step 08 系统测试验证。 |
+| 新增或缺失测试 | 已新增 | `local_rpc_security` 覆盖非 controller DID、handle resolve、未解析/未授权 handle、security policy、无 outbox `msg.send` 拒绝、audit token redaction；`generic_cli_runtime_mvp` 覆盖 profile policy 透传、未授权 callback 失败无副作用、重复 `task.finish` 幂等。 |
+| 已更新或缺失文档 | 已更新 | 主 Plan 与本 Step 文档已记录状态、Review 结论和验证证据。 |
 
 ## 10. Commit 要求
 
