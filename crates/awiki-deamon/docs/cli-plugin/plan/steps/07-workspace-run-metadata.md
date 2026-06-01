@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：07  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/codex-plugin-cli-rs2` |
-| Started | 待记录 |
-| Completed | 待记录 |
-| Commit | 待记录 |
-| Review evidence | 待记录 |
-| Verification evidence | 待记录 |
-| Next action | 实现 workspace instance preparer 和 CLI run metadata |
+| Started | 2026-06-01 18:36:02 +0800 |
+| Completed | 2026-06-01 18:56:04 +0800 |
+| Commit | 步骤提交：`daemon: track cli run workspace metadata`，hash 以 `git log` 为准 |
+| Review evidence | 自查发现并修复 4 项：workspace instance 准备应只作用于 `generic-cli`，避免影响 Hermes/native；`runtime_temp_dir` 必须从 `DaemonConfig` 显式传入，不能从 socket path 推断；无 workspace instance 的 metadata path 需尽量 canonicalize；worktree 测试需要静默 git 输出并检查命令成功。确认 `worktree-per-task` 仍只作为变更隔离，不作为安全边界。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test state_bootstrap --locked`：2 passed；`cargo test -p awiki-deamon --locked codex`：7 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：21 passed；`cargo test -p awiki-deamon --locked`：unit 29 passed，integration 10/21/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret/sandbox grep 仅命中测试断言、token 类型实现、Hermes fake token、redaction 词表和 `env_remove`；path grep 无本机绝对路径命中；legacy grep 仅命中兼容 alias/migration 和计划说明。 |
+| Next action | Step 08：系统测试、文档收口与全局 Review |
 
 ## 2. 目标
 
@@ -96,15 +96,15 @@ Step index：07
 
 ## 7. 验收标准
 
-- [ ] `shared-root` run 记录 workspace instance path 和“非安全边界” audit/metadata。
-- [ ] `worktree-per-task` 在 daemon state root 下创建唯一 worktree path。
-- [ ] 非 git workspace 明确失败或只读回退，不静默污染原 workspace。
-- [ ] path containment 防止 worktree path 逃逸 state root。
-- [ ] `cli_driver_run` 保存 route/session/output/workspace metadata。
-- [ ] Codex process 成功但未 final 时，fallback final 只发送一次并标记来源。
-- [ ] Codex process 失败时不伪造 success final。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] `shared-root` run 记录 workspace instance path 和“非安全边界” audit/metadata。
+- [x] `worktree-per-task` 在 daemon state root 下创建唯一 worktree path。
+- [x] 非 git workspace 明确失败或只读回退，不静默污染原 workspace。
+- [x] path containment 防止 worktree path 逃逸 state root。
+- [x] `cli_driver_run` 保存 route/session/output/workspace metadata。
+- [x] Codex process 成功但未 final 时，fallback final 只发送一次并标记来源。
+- [x] Codex process 失败时不伪造 success final。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -123,11 +123,11 @@ Step index：07
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待记录 |  |
-| 已修复问题 | 待记录 |  |
-| 剩余风险 | 待记录 |  |
-| 新增或缺失测试 | 待记录 |  |
-| 已更新或缺失文档 | 待记录 |  |
+| 发现问题 | 无阻塞发现 | Step 07 可独立交付；remote/system-test 和文档最终收口属于 Step 08。 |
+| 已修复问题 | 已修复 workspace 作用域、runtime temp 来源、metadata path 和测试输出 | workspace preparer 只挂到 `generic-cli`；`RuntimeLaunchContext` 显式携带 `runtime_temp_dir`；`cli_driver_run` 尽量保存 canonical workspace path；git 测试命令静默并检查 success。 |
+| 剩余风险 | worktree 成功/失败后默认保留，cleanup job 未实现 | 当前记录 `cleanup_policy=preserve`；container/sandbox 未实现，只保留明确错误。 |
+| 新增或缺失测试 | 已新增 workspace/run metadata/fallback tests | 覆盖 shared-root metadata、worktree-per-task runtime tmp containment、fallback final、失败不伪造 final、schema v10。 |
+| 已更新或缺失文档 | 已更新本 Step 台账和主 Plan 台账 | 设计文档未在本步骤修改；最终文档收口留到 Step 08。 |
 
 ## 10. Commit 要求
 

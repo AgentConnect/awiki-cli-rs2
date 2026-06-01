@@ -742,6 +742,7 @@ impl RuntimePlugin for UdsTestRuntimePlugin {
             status: RuntimeRunStatus::Finished,
             exit_code: Some(0),
             callbacks: Vec::new(),
+            metadata: serde_json::json!({}),
         })
     }
 }

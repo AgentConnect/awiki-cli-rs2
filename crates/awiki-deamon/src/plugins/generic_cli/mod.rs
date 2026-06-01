@@ -30,6 +30,8 @@ pub struct GenericCliInvocation {
     pub agent_did: String,
     pub runtime_profile_id: String,
     pub workspace_root: Option<std::path::PathBuf>,
+    pub workspace_instance: Option<crate::workspace::WorkspaceInstance>,
+    pub runtime_temp_dir: Option<std::path::PathBuf>,
     pub runtime_rpc_token: String,
     pub local_socket_path: Option<std::path::PathBuf>,
     pub callbacks: Vec<RuntimeRpcRequest>,
@@ -46,6 +48,8 @@ impl std::fmt::Debug for GenericCliInvocation {
             .field("agent_did", &self.agent_did)
             .field("runtime_profile_id", &self.runtime_profile_id)
             .field("workspace_root", &self.workspace_root)
+            .field("workspace_instance", &self.workspace_instance)
+            .field("runtime_temp_dir", &self.runtime_temp_dir)
             .field("runtime_rpc_token", &"<redacted>")
             .field("local_socket_path", &self.local_socket_path)
             .field("callbacks", &self.callbacks)
@@ -58,6 +62,7 @@ pub struct GenericCliExit {
     pub exit_code: i32,
     pub status: RuntimeRunStatus,
     pub callbacks: Vec<RuntimeRpcRequest>,
+    pub metadata: Value,
 }
 
 impl GenericCliExit {
@@ -71,6 +76,7 @@ impl GenericCliExit {
             exit_code,
             status,
             callbacks: Vec::new(),
+            metadata: serde_json::json!({}),
         }
     }
 }
@@ -123,6 +129,8 @@ where
             conversation_id: context.task.conversation_id.clone(),
             task_text: context.task.text.clone(),
             workspace_root: context.workspace_root.clone(),
+            workspace_instance: context.workspace_instance.clone(),
+            runtime_temp_dir: context.runtime_temp_dir.clone(),
             agent_did: context.run.agent_did.clone(),
             runtime_profile_id: context.run.runtime_profile_id.clone(),
             runtime_rpc_token: context.runtime_rpc_token.as_str().to_string(),
@@ -134,6 +142,7 @@ where
             status: exit.status,
             exit_code: Some(exit.exit_code),
             callbacks: exit.callbacks,
+            metadata: exit.metadata,
         })
     }
 }
@@ -275,6 +284,7 @@ impl GenericCliDriver for TestGenericCliDriver {
                 exit_code: self.exit_code,
                 status: RuntimeRunStatus::Finished,
                 callbacks: invocation.callbacks,
+                metadata: serde_json::json!({}),
             })
         } else {
             Ok(GenericCliExit {
@@ -287,6 +297,7 @@ impl GenericCliDriver for TestGenericCliDriver {
                     "runtime failed",
                 )
                 .into_rpc_request()],
+                metadata: serde_json::json!({}),
             })
         }
     }

@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 9;
+const DAEMON_SCHEMA_VERSION: i64 = 10;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -49,6 +49,54 @@ pub struct CliRuntimeProfileRecord {
     pub recipient_policy_json: Value,
     pub driver_config_json: Value,
     pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliDriverRunRecord {
+    pub run_id: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub driver_id: String,
+    pub controller_did: String,
+    pub conversation_id: Option<String>,
+    pub route_key: String,
+    pub workspace_id: Option<String>,
+    pub workspace_root: Option<PathBuf>,
+    pub workspace_instance_path: Option<PathBuf>,
+    pub workspace_mode: Option<WorkspaceMode>,
+    pub is_security_boundary: bool,
+    pub command_json: Value,
+    pub output_json: Value,
+    pub final_output_path: Option<PathBuf>,
+    pub native_session_id: Option<String>,
+    pub synthetic_session_id: Option<String>,
+    pub status: String,
+    pub fallback_final_source: Option<String>,
+}
+
+impl CliDriverRunRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("run_id", self.run_id.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("driver_id", self.driver_id.as_str()),
+            ("controller_did", self.controller_did.as_str()),
+            ("route_key", self.route_key.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.command_json.is_object() {
+            bail!("command_json must be a JSON object");
+        }
+        if !self.output_json.is_object() {
+            bail!("output_json must be a JSON object");
+        }
+        Ok(())
+    }
 }
 
 impl CliRuntimeProfileRecord {
@@ -1446,6 +1494,122 @@ WHERE task_id = ?1
         self.load_runtime_task(&run.task_id)
     }
 
+    pub fn upsert_cli_driver_run(&self, record: &CliDriverRunRecord) -> Result<()> {
+        record.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO cli_driver_run (
+    run_id,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_did,
+    conversation_id,
+    route_key,
+    workspace_id,
+    workspace_root,
+    workspace_instance_path,
+    workspace_mode,
+    is_security_boundary,
+    command_json,
+    output_json,
+    final_output_path,
+    native_session_id,
+    synthetic_session_id,
+    status,
+    fallback_final_source,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20)
+ON CONFLICT(run_id) DO UPDATE SET
+    agent_did = excluded.agent_did,
+    runtime_profile_id = excluded.runtime_profile_id,
+    driver_id = excluded.driver_id,
+    controller_did = excluded.controller_did,
+    conversation_id = excluded.conversation_id,
+    route_key = excluded.route_key,
+    workspace_id = excluded.workspace_id,
+    workspace_root = excluded.workspace_root,
+    workspace_instance_path = excluded.workspace_instance_path,
+    workspace_mode = excluded.workspace_mode,
+    is_security_boundary = excluded.is_security_boundary,
+    command_json = excluded.command_json,
+    output_json = excluded.output_json,
+    final_output_path = excluded.final_output_path,
+    native_session_id = excluded.native_session_id,
+    synthetic_session_id = excluded.synthetic_session_id,
+    status = excluded.status,
+    fallback_final_source = excluded.fallback_final_source,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                record.run_id,
+                record.agent_did,
+                record.runtime_profile_id,
+                record.driver_id,
+                record.controller_did,
+                record.conversation_id,
+                record.route_key,
+                record.workspace_id,
+                record.workspace_root.as_ref().map(|path| path.display().to_string()),
+                record
+                    .workspace_instance_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                record.workspace_mode.map(WorkspaceMode::as_str),
+                if record.is_security_boundary { 1 } else { 0 },
+                record.command_json.to_string(),
+                record.output_json.to_string(),
+                record
+                    .final_output_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                record.native_session_id,
+                record.synthetic_session_id,
+                record.status,
+                record.fallback_final_source,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_cli_driver_run(&self, run_id: &str) -> Result<CliDriverRunRecord> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    run_id,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_did,
+    conversation_id,
+    route_key,
+    workspace_id,
+    workspace_root,
+    workspace_instance_path,
+    workspace_mode,
+    is_security_boundary,
+    command_json,
+    output_json,
+    final_output_path,
+    native_session_id,
+    synthetic_session_id,
+    status,
+    fallback_final_source
+FROM cli_driver_run
+WHERE run_id = ?1
+"#,
+                [run_id],
+                cli_driver_run_from_row,
+            )
+            .context("load cli driver run")
+    }
+
     pub fn authorize_runtime_rpc(
         &self,
         token: &RuntimeRpcToken,
@@ -1732,6 +1896,30 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS cli_driver_run (
+            run_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            driver_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT,
+            route_key TEXT NOT NULL,
+            workspace_id TEXT,
+            workspace_root TEXT,
+            workspace_instance_path TEXT,
+            workspace_mode TEXT,
+            is_security_boundary INTEGER NOT NULL DEFAULT 0,
+            command_json TEXT NOT NULL DEFAULT '{}',
+            output_json TEXT NOT NULL DEFAULT '{}',
+            final_output_path TEXT,
+            native_session_id TEXT,
+            synthetic_session_id TEXT,
+            status TEXT NOT NULL,
+            fallback_final_source TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS runtime_run (
             run_id TEXT PRIMARY KEY,
             task_id TEXT DEFAULT '',
@@ -1859,6 +2047,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_hermes_native_sessions_v7(connection)?;
     migrate_cli_runtime_profile_v8(connection)?;
     migrate_runtime_rpc_tokens_v9(connection)?;
+    migrate_cli_driver_run_v10(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -1867,6 +2056,61 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
     )?;
+    Ok(())
+}
+
+fn migrate_cli_driver_run_v10(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS cli_driver_run (
+            run_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            driver_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT,
+            route_key TEXT NOT NULL,
+            workspace_id TEXT,
+            workspace_root TEXT,
+            workspace_instance_path TEXT,
+            workspace_mode TEXT,
+            is_security_boundary INTEGER NOT NULL DEFAULT 0,
+            command_json TEXT NOT NULL DEFAULT '{}',
+            output_json TEXT NOT NULL DEFAULT '{}',
+            final_output_path TEXT,
+            native_session_id TEXT,
+            synthetic_session_id TEXT,
+            status TEXT NOT NULL,
+            fallback_final_source TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    for (column, definition) in [
+        ("agent_did", "TEXT NOT NULL DEFAULT ''"),
+        ("runtime_profile_id", "TEXT NOT NULL DEFAULT ''"),
+        ("driver_id", "TEXT NOT NULL DEFAULT ''"),
+        ("controller_did", "TEXT NOT NULL DEFAULT ''"),
+        ("conversation_id", "TEXT"),
+        ("route_key", "TEXT NOT NULL DEFAULT ''"),
+        ("workspace_id", "TEXT"),
+        ("workspace_root", "TEXT"),
+        ("workspace_instance_path", "TEXT"),
+        ("workspace_mode", "TEXT"),
+        ("is_security_boundary", "INTEGER NOT NULL DEFAULT 0"),
+        ("command_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("output_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("final_output_path", "TEXT"),
+        ("native_session_id", "TEXT"),
+        ("synthetic_session_id", "TEXT"),
+        ("status", "TEXT NOT NULL DEFAULT 'created'"),
+        ("fallback_final_source", "TEXT"),
+        ("created_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        add_column_if_missing(connection, "cli_driver_run", column, definition)?;
+    }
     Ok(())
 }
 
@@ -2354,6 +2598,60 @@ fn cli_runtime_profile_from_row(
     })
 }
 
+fn cli_driver_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliDriverRunRecord> {
+    let workspace_mode_raw: Option<String> = row.get(10)?;
+    let workspace_mode = match workspace_mode_raw {
+        Some(raw) => Some(WorkspaceMode::parse(&raw).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                raw.len(),
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    err.to_string(),
+                )),
+            )
+        })?),
+        None => None,
+    };
+    let command_raw: String = row.get(12)?;
+    let command_json = serde_json::from_str(&command_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            command_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let output_raw: String = row.get(13)?;
+    let output_json = serde_json::from_str(&output_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            output_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    Ok(CliDriverRunRecord {
+        run_id: row.get(0)?,
+        agent_did: row.get(1)?,
+        runtime_profile_id: row.get(2)?,
+        driver_id: row.get(3)?,
+        controller_did: row.get(4)?,
+        conversation_id: row.get(5)?,
+        route_key: row.get(6)?,
+        workspace_id: row.get(7)?,
+        workspace_root: row.get::<_, Option<String>>(8)?.map(PathBuf::from),
+        workspace_instance_path: row.get::<_, Option<String>>(9)?.map(PathBuf::from),
+        workspace_mode,
+        is_security_boundary: row.get::<_, i64>(11)? != 0,
+        command_json,
+        output_json,
+        final_output_path: row.get::<_, Option<String>>(14)?.map(PathBuf::from),
+        native_session_id: row.get(15)?,
+        synthetic_session_id: row.get(16)?,
+        status: row.get(17)?,
+        fallback_final_source: row.get(18)?,
+    })
+}
+
 fn agent_definition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinition> {
     let kind_raw: String = row.get(2)?;
     let agent_kind = AgentKind::parse(&kind_raw).map_err(|err| {
@@ -2425,6 +2723,7 @@ mod tests {
             "agent_identity",
             "agent_auth_state",
             "cli_runtime_profile",
+            "cli_driver_run",
             "hermes_profiles",
             "hermes_native_sessions",
         ] {

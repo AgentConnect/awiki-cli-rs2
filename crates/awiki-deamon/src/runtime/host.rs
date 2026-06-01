@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+use crate::cli_wrapper::CliWrapperRequest;
 use crate::inbox::{route_controller_text_task, ControllerTextMessage};
 use crate::local_rpc::execute_runtime_rpc_request_with_outbox;
 use crate::outbox::RuntimeOutbox;
@@ -11,7 +12,8 @@ use crate::runtime::{
     RuntimeRunStatus,
 };
 use crate::security::runtime_token::{issue_runtime_token, RpcMethod, RuntimeTokenScope};
-use crate::state::DaemonState;
+use crate::state::{CliDriverRunRecord, DaemonState};
+use crate::workspace::{prepare_workspace_instance, WorkspaceBindingConfig, WorkspaceInstance};
 use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +88,7 @@ where
     P: RuntimePlugin,
     O: RuntimeOutbox,
 {
-    run_controller_text_task_with_socket(state, profile, plugin, outbox, message, None)
+    run_controller_text_task_with_socket(state, profile, plugin, outbox, message, None, None)
 }
 
 pub fn run_controller_text_task_with_config<P, O>(
@@ -108,6 +110,7 @@ where
         outbox,
         message,
         Some(config.local_socket_path.clone()),
+        Some(config.runtime_temp_dir.clone()),
     )
 }
 
@@ -118,6 +121,7 @@ fn run_controller_text_task_with_socket<P, O>(
     outbox: &O,
     message: ControllerTextMessage,
     local_socket_path: Option<std::path::PathBuf>,
+    runtime_temp_dir: Option<std::path::PathBuf>,
 ) -> Result<RuntimeTaskRunResult>
 where
     P: RuntimePlugin,
@@ -164,11 +168,36 @@ where
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
+    let workspace_instance = match (
+        profile.workspace_id.as_ref(),
+        profile.workspace_root.as_ref(),
+        profile.workspace_mode,
+        local_socket_path.is_some(),
+        plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID,
+    ) {
+        (Some(workspace_id), Some(workspace_root), Some(workspace_mode), true, true) => Some(
+            prepare_workspace_instance(
+                runtime_temp_dir
+                    .as_ref()
+                    .context("runtime temp dir is unavailable without daemon config")?,
+                &WorkspaceBindingConfig {
+                    workspace_id: workspace_id.clone(),
+                    workspace_root: workspace_root.clone(),
+                    workspace_mode,
+                },
+                &run.run_id,
+            )
+            .context("prepare runtime workspace instance")?,
+        ),
+        _ => None,
+    };
 
     let launch_context = RuntimeLaunchContext {
         run: run.clone(),
         task,
         workspace_root: profile.workspace_root.clone(),
+        workspace_instance: workspace_instance.clone(),
+        runtime_temp_dir,
         runtime_rpc_token: issued.token.clone(),
         local_socket_path,
     };
@@ -185,8 +214,41 @@ where
             .context("apply runtime callback")?;
     }
 
+    let mut fallback_final_source = None;
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && launch_outcome.status == RuntimeRunStatus::Finished
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
+    {
+        if let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? {
+            let response = execute_runtime_rpc_request_with_outbox(
+                state,
+                outbox,
+                CliWrapperRequest::task_finish(
+                    issued.token.as_str().to_string(),
+                    run.task_id.clone(),
+                    final_text,
+                )
+                .into_rpc_request(),
+            )
+            .context("apply fallback final from CLI driver output")?;
+            if response.ok {
+                fallback_final_source = Some("codex_output_last_message".to_string());
+            }
+        }
+    }
+
     if launch_outcome.status == RuntimeRunStatus::Failed {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+    }
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        persist_cli_driver_run(
+            state,
+            profile,
+            &run,
+            &launch_outcome,
+            workspace_instance.as_ref(),
+            fallback_final_source.as_deref(),
+        )?;
     }
 
     Ok(RuntimeTaskRunResult {
@@ -194,6 +256,120 @@ where
         launch_outcome,
         token_id: issued.token_id,
     })
+}
+
+fn persist_cli_driver_run(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+    launch_outcome: &RuntimeLaunchOutcome,
+    workspace_instance: Option<&WorkspaceInstance>,
+    fallback_final_source: Option<&str>,
+) -> Result<()> {
+    let task = state.load_runtime_task(&run.task_id)?;
+    let Some(driver_id) = state
+        .load_cli_runtime_profile(&profile.runtime_profile_id)
+        .map(|profile| profile.driver_id)
+        .or_else(|_| {
+            launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .context("generic-cli run metadata does not include driver_id")
+        })
+        .ok()
+    else {
+        return Ok(());
+    };
+    let output_json = launch_outcome
+        .metadata
+        .get("output")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let command_json = launch_outcome
+        .metadata
+        .get("command")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    state.upsert_cli_driver_run(&CliDriverRunRecord {
+        run_id: run.run_id.clone(),
+        agent_did: run.agent_did.clone(),
+        runtime_profile_id: run.runtime_profile_id.clone(),
+        driver_id,
+        controller_did: profile.controller_did.clone(),
+        conversation_id: task.conversation_id.clone(),
+        route_key: generic_cli_route_key(
+            &run.agent_did,
+            &profile.controller_did,
+            task.conversation_id.as_deref(),
+        ),
+        workspace_id: profile.workspace_id.clone(),
+        workspace_root: workspace_instance
+            .map(|instance| instance.workspace_root.clone())
+            .or_else(|| canonicalize_optional_path(profile.workspace_root.as_ref())),
+        workspace_instance_path: workspace_instance
+            .map(|instance| instance.workspace_instance_path.clone())
+            .or_else(|| canonicalize_optional_path(profile.workspace_root.as_ref())),
+        workspace_mode: workspace_instance
+            .map(|instance| instance.workspace_mode)
+            .or(profile.workspace_mode),
+        is_security_boundary: workspace_instance
+            .map(|instance| instance.is_security_boundary)
+            .unwrap_or(false),
+        command_json,
+        output_json,
+        final_output_path: launch_outcome
+            .metadata
+            .get("final_output_path")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from),
+        native_session_id: None,
+        synthetic_session_id: Some(generic_cli_route_key(
+            &run.agent_did,
+            &profile.controller_did,
+            task.conversation_id.as_deref(),
+        )),
+        status: launch_outcome.status.as_str().to_string(),
+        fallback_final_source: fallback_final_source.map(str::to_string),
+    })?;
+    Ok(())
+}
+
+fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    path.map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+}
+
+fn generic_cli_route_key(
+    agent_did: &str,
+    controller_did: &str,
+    conversation_id: Option<&str>,
+) -> String {
+    format!(
+        "cli:{agent_did}:{controller_did}:{}:message-run",
+        conversation_id.unwrap_or("no-conversation")
+    )
+}
+
+fn fallback_final_text(metadata: &Value) -> Result<Option<String>> {
+    let Some(path) = metadata
+        .get("final_output_path")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("read fallback final output {}", path.display()))?;
+    let text = text.trim();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(text.to_string()))
+    }
 }
 
 fn runtime_recipient_policy(

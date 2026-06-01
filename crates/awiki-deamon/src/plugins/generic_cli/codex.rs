@@ -137,6 +137,12 @@ impl GenericCliDriver for CodexDriver {
 
     fn run(&self, invocation: GenericCliInvocation) -> Result<GenericCliExit> {
         let workspace_root = invocation
+            .workspace_instance
+            .as_ref()
+            .map(|instance| instance.workspace_instance_path.clone())
+            .or_else(|| invocation.workspace_root.clone())
+            .context("Codex driver requires workspace_root")?;
+        let workspace_binding_root = invocation
             .workspace_root
             .clone()
             .context("Codex driver requires workspace_root")?;
@@ -216,6 +222,31 @@ impl GenericCliDriver for CodexDriver {
                 RuntimeRunStatus::Failed
             },
             callbacks: Vec::new(),
+            metadata: serde_json::json!({
+                "driver_id": "codex",
+                "command": {
+                    "program": self.config.binary_path,
+                    "args": args,
+                },
+                "workspace": {
+                    "workspace_root": workspace_binding_root,
+                    "workspace_instance_path": workspace_root,
+                    "workspace_mode": invocation.workspace_instance.as_ref().map(|instance| instance.workspace_mode.as_str()),
+                    "is_security_boundary": invocation.workspace_instance.as_ref().map(|instance| instance.is_security_boundary),
+                    "isolation_note": invocation.workspace_instance.as_ref().map(|instance| instance.isolation_note.as_str()),
+                    "cleanup_policy": invocation.workspace_instance.as_ref().map(|instance| instance.cleanup_policy),
+                    "base_ref": invocation.workspace_instance.as_ref().and_then(|instance| instance.base_ref.as_deref()),
+                    "branch_name": invocation.workspace_instance.as_ref().and_then(|instance| instance.branch_name.as_deref()),
+                },
+                "output": {
+                    "output_dir": paths.output_dir,
+                    "stdout_path": paths.stdout_path,
+                    "stderr_path": paths.stderr_path,
+                    "jsonl_path": paths.jsonl_path,
+                    "final_output_path": paths.final_output_path.clone(),
+                },
+                "final_output_path": paths.final_output_path,
+            }),
         })
     }
 }
@@ -261,7 +292,10 @@ impl CodexDriver {
 
     pub fn run_paths(&self, invocation: &GenericCliInvocation) -> Result<CodexRunPaths> {
         let output_dir = self.config.output_dir.clone().unwrap_or_else(|| {
-            std::env::temp_dir()
+            invocation
+                .runtime_temp_dir
+                .clone()
+                .unwrap_or_else(std::env::temp_dir)
                 .join("awiki-deamon")
                 .join("generic-cli")
                 .join("codex")

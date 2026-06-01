@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::local_rpc::RuntimeRpcRequest;
 use crate::security::runtime_token::RuntimeRpcToken;
-use crate::workspace::WorkspaceMode;
+use crate::workspace::{WorkspaceInstance, WorkspaceMode};
 
 pub mod host;
 
@@ -56,6 +57,8 @@ pub struct RuntimeLaunchContext {
     pub run: RuntimeRun,
     pub task: RuntimeTask,
     pub workspace_root: Option<PathBuf>,
+    pub workspace_instance: Option<WorkspaceInstance>,
+    pub runtime_temp_dir: Option<PathBuf>,
     pub runtime_rpc_token: RuntimeRpcToken,
     pub local_socket_path: Option<PathBuf>,
 }
@@ -66,6 +69,7 @@ pub struct RuntimeLaunchOutcome {
     pub status: RuntimeRunStatus,
     pub exit_code: Option<i32>,
     pub callbacks: Vec<RuntimeRpcRequest>,
+    pub metadata: Value,
 }
 
 pub trait RuntimePlugin {

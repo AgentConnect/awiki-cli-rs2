@@ -166,6 +166,7 @@ impl RuntimePlugin for MsgSendCallbackPlugin {
                 )
                 .into_rpc_request(),
             ],
+            metadata: json!({"driver_id": "codex"}),
         })
     }
 }
@@ -206,6 +207,7 @@ impl RuntimePlugin for DuplicateFinishCallbackPlugin {
                 )
                 .into_rpc_request(),
             ],
+            metadata: json!({"driver_id": "codex"}),
         })
     }
 }
@@ -236,6 +238,7 @@ impl RuntimePlugin for UnauthorizedMsgSendCallbackPlugin {
                 "blocked",
             )
             .into_rpc_request()],
+            metadata: json!({"driver_id": "codex"}),
         })
     }
 }
@@ -386,6 +389,7 @@ impl awiki_deamon::plugins::generic_cli::GenericCliDriver for SendMessageDriver 
             exit_code: 0,
             status: RuntimeRunStatus::Finished,
             callbacks: invocation.callbacks,
+            metadata: json!({"driver_id": "codex"}),
         })
     }
 }
@@ -908,6 +912,7 @@ PY
     });
 
     let mut driver_config = codex_config(fake_codex);
+    let binary_path = driver_config.binary_path.clone();
     driver_config.output_dir = Some(output_dir.clone());
     let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
     let result = run_controller_text_task_with_config(
@@ -984,6 +989,234 @@ PY
         !std::fs::read_to_string(output_dir.join("final-output.txt"))
             .unwrap()
             .contains("rtok_")
+    );
+
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.driver_id, "codex");
+    assert_eq!(run_record.controller_did, "did:human:alice");
+    assert_eq!(
+        run_record.conversation_id.as_deref(),
+        Some("conv_codex_driver")
+    );
+    assert_eq!(
+        run_record.route_key,
+        "cli:did:agent:alice-coder:did:human:alice:conv_codex_driver:message-run"
+    );
+    assert_eq!(run_record.workspace_mode, Some(WorkspaceMode::SharedRoot));
+    assert!(!run_record.is_security_boundary);
+    assert_eq!(
+        run_record.workspace_instance_path.as_deref(),
+        profile.workspace_root.as_deref()
+    );
+    assert_eq!(
+        run_record.final_output_path,
+        Some(output_dir.join("final-output.txt"))
+    );
+    assert_eq!(run_record.fallback_final_source, None);
+    assert_eq!(
+        run_record.command_json["program"].as_str(),
+        Some(binary_path.to_str().unwrap_or_default())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_driver_success_without_finish_uses_fallback_final_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-no-final");
+    let output_dir = root.path().join("codex-fallback-output");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf 'fallback final from codex\n' > "$FINAL_OUTPUT"
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    driver_config.output_dir = Some(output_dir.clone());
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_fallback".to_string(),
+            conversation_id: Some("conv_codex_fallback".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run codex without explicit final".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
+    assert!(result.launch_outcome.callbacks.is_empty());
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Final);
+    assert_eq!(
+        records[0].text.as_deref(),
+        Some("fallback final from codex")
+    );
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(
+        run_record.fallback_final_source.as_deref(),
+        Some("codex_output_last_message")
+    );
+    assert_eq!(
+        run_record.final_output_path,
+        Some(output_dir.join("final-output.txt"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_per_task_uses_daemon_runtime_temp_and_records_metadata() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let workspace = root.path().join("git-workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["-c", "init.defaultBranch=main"])
+        .args(["init"])
+        .arg(&workspace)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(workspace.join("README.md"), "workspace\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(&workspace)
+        .args(["add", "README.md"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .arg("-C")
+        .arg(&workspace)
+        .args([
+            "-c",
+            "user.name=Awiki Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "init",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success());
+    let mut profile = profile(workspace.clone());
+    profile.workspace_mode = Some(WorkspaceMode::WorktreePerTask);
+
+    let fake_codex = root.path().join("codex-worktree");
+    let pwd_capture = root.path().join("codex-pwd.txt");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+pwd > "{pwd_capture}"
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf 'worktree final\n' > "$FINAL_OUTPUT"
+exit 0
+"#,
+            pwd_capture = pwd_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(codex_config(fake_codex)).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_worktree".to_string(),
+            conversation_id: None,
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run codex in worktree".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    let instance_path = run_record.workspace_instance_path.unwrap();
+    assert!(instance_path.starts_with(config.runtime_temp_dir.join("worktrees")));
+    assert_ne!(instance_path, workspace.canonicalize().unwrap());
+    assert_eq!(
+        run_record.workspace_mode,
+        Some(WorkspaceMode::WorktreePerTask)
+    );
+    assert!(!run_record.is_security_boundary);
+    assert_eq!(
+        std::fs::read_to_string(pwd_capture).unwrap().trim(),
+        instance_path.to_str().unwrap()
+    );
+    assert_eq!(
+        run_record.route_key,
+        "cli:did:agent:alice-coder:did:human:alice:no-conversation:message-run"
     );
 }
 
@@ -1110,6 +1343,8 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
         agent_did: "did:agent:debug".to_string(),
         runtime_profile_id: "profile_debug".to_string(),
         workspace_root: None,
+        workspace_instance: None,
+        runtime_temp_dir: None,
         runtime_rpc_token: "rtok_debug_secret_value_123456789".to_string(),
         local_socket_path: None,
         callbacks: Vec::new(),

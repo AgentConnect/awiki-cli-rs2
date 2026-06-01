@@ -138,6 +138,7 @@ where
             status: RuntimeRunStatus::Running,
             exit_code: None,
             callbacks,
+            metadata: serde_json::json!({}),
         })
     }
 }
