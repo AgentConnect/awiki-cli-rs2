@@ -3,7 +3,7 @@
 
 # Generic CLI Runtime Plugin 设计方案
 
-版本：v0.3 draft
+版本：v0.4 implementation checkpoint
 日期：2026-06-01
 适用范围：awiki daemon / ANP Agent Runtime Host / Codex CLI / Claude Code / Gemini CLI
 定位：以当前 `awiki-deamon` 实现为基线、以 Codex CLI 为首个落地基准的通用 CLI Runtime Plugin 方案
@@ -38,8 +38,8 @@ Controller DID
 5. **不做 MCP。** 本方案不设计 Awiki MCP Server、MCP tool callback 或 MCP 配置安装。CLI agent 回调 daemon 的主链路是 Awiki CLI wrapper + local RPC。
 6. **daemon 是唯一 IM Core SDK 调用者。** Codex/Claude/Gemini 不持有 DID 私钥，不直连 message-service，不自行判断 controller DID。
 7. **MVP 使用消息/run 语义，不扩大产品层 task 概念。** 当前代码中的 `RuntimeTask`、`runtime_task`、`task.status`、`task.finish` 是历史兼容命名。文档可以标注这些名字，但产品语义应描述为“消息执行过程”和“run”。
-8. **`msg.send` 必须是真正发送 ANP direct/direct-e2ee 消息。** 当前 foreground runtime outbox 已具备经 IM Core 发送 direct text 的主链路，测试 outbox 仍可只记录内存。后续缺口应聚焦在 recipient policy / handle resolve / send result 持久化 / audit 证据 / 幂等上，而不是把 `msg.send` 设计成 status payload 或第二条消息链路。
-9. **`task.finish` 当前只表达成功 final。** 失败 final、幂等 final、重复 final 去重是后续缺口；MVP 失败先使用 `task.status(state=failed)`。
+8. **`msg.send` 必须是真正发送 ANP direct/direct-e2ee 消息。** 当前 local RPC 已支持 profile/run recipient policy、非 controller DID/handle、handle resolve、resolved DID 授权、security mode 校验、send success/failure audit；foreground runtime outbox 经 IM Core 发送 direct text，测试 outbox 只记录内存。剩余缺口是独立 send result 表、更多系统测试证据和更完整的 direct-e2ee 验收，而不是把 `msg.send` 设计成 status payload 或第二条消息链路。
+9. **`task.finish` 当前只表达成功 final。** 重复 final 已做幂等保护；失败 final 仍未实现，MVP 失败先使用 `task.status(state=failed)`。
 10. **session 首版不超前抽象。** Codex baseline 首版采用 task-scoped synthetic session / transcript summary；不强制新增通用 `runtime_session_mapping`。后续 Claude Code native session 或 Codex resume 能力成熟后再补。
 11. **worktree-per-task 是变更隔离，不是安全边界。** 硬安全边界只能来自 container / OS sandbox / runtime sandbox。`shared-root` 只能用于低风险个人场景。
 
@@ -113,15 +113,17 @@ MVP 不做：
 | CLI wrapper 请求结构 | 已有 MVP | `task_status` / `task_finish` / `msg_send` |
 | Hermes Runtime Plugin | 已有 MVP | 独立 native runtime，`runtime_plugin_id = runtime.hermes`，不属于 CLI 家族 |
 | Hermes local RPC 边界 | 已有 MVP | Hermes prompt 不携带 token，能力调用通过 daemon wrapper + local RPC |
-| driver profile 表 | 未实现 | 当前 `runtime_profile` 不包含 `driver_id` 和 driver-specific config |
-| CLI agent create alias | 未实现 | 当前 `runtime=codex` / `claude-code` / `gemini` 仍可能映射成 `runtime.cli.*`，需要改为 `generic-cli + driver_id` |
-| Codex driver | 未实现 | 当前只有 generic command driver 和 test driver |
-| prompt envelope | 未实现 | 当前没有统一 prompt builder |
-| output parser | 未实现 | 当前不解析 Codex JSONL/event/final output |
-| worktree 创建器 | 未实现 | 当前 workspace mode 有枚举，但没有自动创建 per-run worktree 的实现 |
+| driver profile 表 | 已实现 MVP | `cli_runtime_profile` 保存 `driver_id`、binary/config、default sandbox/workspace mode、recipient policy 和 driver config |
+| CLI agent create alias | 已实现 | `runtime=codex` / `codex-cli` / `claude-code` / `gemini` / `gemini-cli` 新建时写入 `generic-cli + driver_id`；legacy `runtime.cli.*` 仅用于迁移/alias |
+| Generic CLI driver registry | 已实现 MVP | `GenericCliDriverRegistry` 按 `cli_runtime_profile.driver_id` 选择 `codex` / `command`；Claude Code / Gemini 当前返回未实现 |
+| Codex driver | 已实现 MVP | `CodexDriver` 构造 `codex exec`、stdin prompt、env、输出路径和 fallback final；真实 Codex 主链路不依赖 callback 模拟 |
+| prompt envelope | 已实现 MVP | Codex driver 通过 stdin 传 Awiki runtime context、message/run、callback rules 和 safety 约束 |
+| output parser | 部分实现 | 已记录 stdout/stderr/observation JSONL/final output path，并支持 `--output-last-message` fallback final；尚未完整解析 Codex JSONL event |
+| worktree 创建器 | 已实现 MVP | `shared-root` canonicalize；`worktree-per-task` 在 daemon runtime temp 下创建 per-run detached git worktree；container/sandbox 尚未实现 |
 | runtime session 表 | 部分已有 | Hermes 已有 `hermes_native_sessions` 和 `runtime_session_id`；CLI 首版不强制新增通用 `runtime_session_mapping`，但 run metadata 应保留 route/session 字段 |
-| `task.finish` failed final | 未实现 | 当前 `task.finish` 总是落到 `finished` |
-| `msg.send` 真实 ANP direct send | 主链路已有，策略需补齐 | foreground runtime outbox 已能经 IM Core 发送 direct text；仍需补 handle resolve、recipient allowlist、send result 持久化、幂等和系统测试证据 |
+| CLI driver run metadata | 已实现 MVP | `cli_driver_run` 记录 route/session/workspace/command/output/fallback final metadata |
+| `task.finish` failed final | 部分实现 | 当前 `task.finish` 总是落到 `finished`；重复 final 幂等已实现；失败 final 尚未实现 |
+| `msg.send` 真实 ANP direct send | 已实现 MVP | local RPC 支持 handle resolve、recipient allowlist、resolved DID 授权、security mode、send result audit；foreground outbox 经 IM Core 发送 direct text；缺少独立 send result 表和 remote E2E 证据 |
 | MCP | 不做 | 本方案删除该能力 |
 
 当前 v1 `RuntimePlugin` 接口：
@@ -143,7 +145,7 @@ trait GenericCliDriver {
 }
 ```
 
-本方案的第一步应尽量在这两个 v1 接口上扩展，而不是一开始替换成 async runner/session/cancel 的目标态接口。
+后续如果继续演进，应尽量在这两个 v1 接口上兼容扩展，而不是一开始替换成 async runner/session/cancel 的目标态接口。
 
 ---
 
@@ -303,7 +305,7 @@ runtime_run.runtime_plugin_id = generic-cli
 
 ### 5.2 CLI runtime profile 扩展
 
-建议在当前 `runtime_profile` 之外新增插件内部 profile 表。`runtime_profile.runtime_plugin_id` 仍保存 `generic-cli`，CLI driver 选择信息保存在本表：
+已在当前 `runtime_profile` 之外新增插件内部 profile 表。`runtime_profile.runtime_plugin_id` 仍保存 `generic-cli`，CLI driver 选择信息保存在本表：
 
 ```sql
 CREATE TABLE cli_runtime_profile (
@@ -332,13 +334,14 @@ CREATE TABLE cli_runtime_profile (
 
 ### 5.2.1 Runtime alias 解析结果
 
-`runtime.agent.create` 不应再只调用返回字符串的 `runtime_plugin_id(runtime)`。建议改成返回结构化解析结果：
+`runtime.agent.create` 不再只调用返回字符串的 `runtime_plugin_id(runtime)`。当前实现使用结构化解析结果：
 
 ```rust
 struct RuntimeResolution {
     runtime_plugin_id: String,
     driver_id: Option<String>,
     legacy_runtime_plugin_id: Option<String>,
+    defaulted_driver_id: bool,
 }
 ```
 
@@ -353,7 +356,7 @@ hermes                         -> runtime_plugin_id=runtime.hermes, driver_id=NU
 其他显式 plugin type           -> 按 native/plugin-specific runtime 处理
 ```
 
-写入要求：
+当前写入要求：
 
 1. 新创建的 Codex / Claude Code / Gemini agent 不得再写入 `runtime.cli.codex`、`runtime.cli.claude-code` 或 `runtime.cli.gemini-cli`。
 2. 如果历史数据中存在这些 legacy plugin type，应在读取或迁移时转换为 `runtime_plugin_id=generic-cli` 和对应 `driver_id`。
@@ -395,7 +398,7 @@ cli_driver_claude_sessions
 
 ### 5.4 Run metadata
 
-建议新增轻量 run metadata 表，避免一开始引入通用 session 表：
+已新增轻量 run metadata 表，避免一开始引入通用 session 表：
 
 ```sql
 CREATE TABLE cli_driver_run (
@@ -405,14 +408,19 @@ CREATE TABLE cli_driver_run (
   driver_id TEXT NOT NULL,
   controller_did TEXT NOT NULL,
   conversation_id TEXT,
-  route_key TEXT,
+  route_key TEXT NOT NULL,
+  workspace_id TEXT,
+  workspace_root TEXT,
   workspace_instance_path TEXT,
+  workspace_mode TEXT,
+  is_security_boundary INTEGER NOT NULL DEFAULT 0,
   command_json TEXT,
-  output_log_path TEXT,
+  output_json TEXT,
   final_output_path TEXT,
   native_session_id TEXT,
   synthetic_session_id TEXT,
   status TEXT NOT NULL,
+  fallback_final_source TEXT,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
@@ -836,7 +844,7 @@ CLI agent 不能直接调用 IM Core SDK。
 | `rpc.ping` | local RPC health | 已有 | read level |
 | `task.status` | 当前消息 run 状态 | 已有 | 历史兼容名 |
 | `task.finish` | 当前消息 run 成功 final | 已有 | 当前总是 `finished` |
-| `msg.send` | 发送 ANP direct/direct-e2ee 消息 | foreground 主链路已有，策略需增强 | 必须是真正外发 |
+| `msg.send` | 发送 ANP direct/direct-e2ee 消息 | 已实现 MVP | 支持 authorized DID/handle、handle resolve、send audit；foreground 经 IM Core 外发 |
 | `artifact.created` | artifact 报告 | 入口已有 | 后续增强 |
 
 不新增 `task.result` 作为 MVP 对外协议。
@@ -858,13 +866,13 @@ CLI agent
 
 Recipient scope 要求：
 
-1. `msg.send` 必须支持发送给 controller 以外的 DID / handle，这是 CLI agent 协作能力的一部分。
-2. local RPC token 不能固定只允许 `controller_did`，必须从 CLI runtime profile、message/run policy 或 controller 授权中生成 `allowed_recipients`。
-3. 如果输入是 handle，daemon 必须先 resolve 为 DID，再对 resolved DID 和原始 handle 做授权检查。
-4. `allowed_recipients` 可以支持精确 DID、精确 handle、profile allowlist、run-scoped allowlist。MVP 不支持通配全网默认放开。
-5. 如果目标不在 allowlist 中，wrapper 必须返回明确失败，Codex 不得声称消息已发送。
-6. audit 需要记录原始 recipient、resolved DID、security mode、授权结果、send result message id 或失败原因。
-7. `security` 默认为 `default_plain`，可显式指定 `direct_e2ee`；是否允许 `direct_e2ee` 也应由 profile policy 控制。
+1. `msg.send` 已支持发送给 controller 以外的 DID / handle，这是 CLI agent 协作能力的一部分。
+2. local RPC token 不固定只允许 `controller_did`；`allowed_recipients` 从 CLI runtime profile 的 recipient policy 生成，默认仍是 `controller-only`。
+3. 如果输入是 handle，daemon 会先通过 outbox resolver resolve 为 DID，再对 resolved DID 和原始 handle 做授权检查。
+4. `allowed_recipients` 已支持精确 DID、精确 handle、profile allowlist 和 run token scope。MVP 不支持通配全网默认放开。
+5. 如果目标不在 allowlist 中，wrapper 返回明确失败，Codex 不得声称消息已发送。
+6. audit 已记录原始 recipient、resolved DID、security mode、授权结果、send result message id 或失败原因。当前还没有独立 send result 持久表。
+7. `security` 默认为 `default_plain`，可显式指定 `direct_e2ee`；是否允许由 token/profile policy 控制。
 
 ### 10.4 `task.finish` 当前限制
 
@@ -881,7 +889,7 @@ CLI agent
 1. `task.finish` 只表达 successful finish。
 2. 失败时先调用 `task.status(state=failed)`。
 3. 后续需要补 `finish(state=failed)` 或新的 message-level final 语义。
-4. 后续需要幂等 final，避免重复发送最终回复。
+4. 重复 final 已具备幂等保护，已 finished 的 run 再收到 `task.finish` 不会重复发送最终回复。
 5. final 回复仍通过 daemon local RPC -> outbox -> IM Core SDK 主链路发送，不新增 Codex 到 message-service 的直接链路。
 
 ---
@@ -899,18 +907,18 @@ pending
   -> failed
 ```
 
-当前 Generic CLI MVP 行为：
+当前 Generic CLI test driver / command driver 行为：
 
 1. driver exit code 为 0 时，生成 `running` status 和 `task.finish` callback。
 2. driver exit code 非 0 时，生成 `failed` status callback。
 3. `task.finish` side effect 会把 run 标为 `finished`。
 
-真实 Codex driver 行为应调整为：
+真实 Codex driver 当前行为：
 
 1. Codex 进程运行期间由 wrapper 调用 local RPC 上报 status/final/msg.send。
 2. driver exit code 只作为 fallback 信号，不直接伪造成功 final。
 3. `RuntimeLaunchOutcome.callbacks` 不作为真实 Codex 主链路，只作为测试 driver 或 legacy fallback。
-4. 如果进程退出时 run 仍未 final，daemon 根据 final output file / exit code / timeout 生成 fallback 状态，并标记 fallback source。
+4. 如果进程成功退出且 run 仍未 final，daemon 根据 `--output-last-message` final output file 生成 fallback final，并在 `cli_driver_run.fallback_final_source` 标记来源。
 
 ### 11.2 目标状态
 
@@ -1010,6 +1018,18 @@ native_session_id = optional
 
 ## 14. 落地步骤
 
+当前实现进度：
+
+| 阶段 | 当前状态 | 说明 |
+|---|---|---|
+| Phase 0 | 已实现 MVP | runtime alias、`cli_runtime_profile`、legacy `runtime.cli.*` 迁移、`generic-cli` type 语义和 MCP 非目标已落地 |
+| Phase 1 | 已实现 MVP | `CodexDriver`、`codex exec` command builder、stdin prompt envelope、env 注入、shared-root、worktree-per-task、stdout/stderr/JSONL/final output path 已落地 |
+| Phase 2 | 已实现 MVP | wrapper/local RPC、token redaction、recipient policy、handle resolve、resolved DID 授权、send audit、final 幂等已落地；failed final 未落地 |
+| Phase 3 | 部分实现 | workspace instance、sandbox 参数映射、`cli_driver_run`、route/session metadata 和 fallback final 已落地；container/sandbox 硬隔离、完整 Codex JSONL parser、cleanup job 和 token revoke 证据仍待后续 |
+| Phase 4 | 未实现 | Claude Code driver 仍是 extension point |
+| Phase 5 | 未实现 | Gemini CLI driver 仍是 extension point |
+| Phase 6 | 未实现 | cancellation、artifact reporting、stable native session mapping、container sandbox 和更多 system-test 覆盖待后续 |
+
 ### Phase 0：对齐当前实现基线
 
 1. 保留 `GenericCliRuntimePlugin` 作为唯一 CLI runtime plugin。
@@ -1020,7 +1040,7 @@ native_session_id = optional
 6. 记录当前 `RuntimePlugin v1`、`GenericCliDriver`、workspace binding、local RPC token、outbox 缺口。
 7. 删除 MCP 相关设计和落地项。
 8. 明确 `task.status` / `task.finish` 是兼容 RPC 名称，不是产品层 task workflow。
-9. 明确 `msg.send` 已有 foreground IM Core 发送主链路，但仍需补 recipient allowlist、handle resolve、send result/audit、幂等和系统测试证据。
+9. 明确 `msg.send` 已有 foreground IM Core 发送主链路，当前已补 recipient allowlist、handle resolve、resolved DID 授权、send audit 和 final 幂等；仍需补独立 send result 表和 remote 系统测试证据。
 
 ### Phase 1：Codex Driver MVP
 
@@ -1047,13 +1067,13 @@ native_session_id = optional
 
 ### Phase 3：Codex 安全与可观测性
 
-1. worktree-per-task 自动创建和清理。
-2. `read-only` / `workspace-write` 策略映射。
+1. worktree-per-task 自动创建已实现；cleanup job 未实现，当前默认保留 worktree 作为证据。
+2. Codex `read-only` / `workspace-write` 策略映射已实现。
 3. external container/sandbox 接入点。
-4. Codex JSONL event 解析和 audit 摘要。
-5. driver run metadata 表。
-6. route/session metadata 与 Hermes session route 模型对齐。
-7. token revoke/expiry 证据记录。
+4. Codex JSONL event observation path 已记录；完整 event parser 和 audit 摘要未实现。
+5. driver run metadata 表已实现。
+6. route/session metadata 与 Hermes session route 模型对齐已实现 MVP。
+7. token expiry 已由 runtime token scope 约束；显式 revoke 证据仍待后续。
 
 ### Phase 4：Claude Code Driver
 
@@ -1084,22 +1104,24 @@ native_session_id = optional
 
 Codex MVP 完成时应满足：
 
-1. `runtime_plugin_id` 仍为 `generic-cli`。
-2. `runtime.agent.create(runtime=codex|codex-cli)` 新写入 `runtime_plugin_id=generic-cli`，并保存 `driver_id=codex`。
-3. `runtime.agent.create(runtime=generic-cli)` 可以通过显式 `driver_id=codex` 创建 Codex profile。
-4. controller DID 消息可以触发 Codex headless run。
-5. 非 controller 消息不会进入执行链。
-6. Codex 只在指定 workspace instance 中运行。
-7. local RPC token 绑定 run、method、recipient scope 和 TTL；recipient scope 支持 controller 以外的被授权 DID/handle。
-8. token 不出现在 debug log、prompt 明文、stdout/stderr、JSONL、final output 和持久 transcript 中。
-9. Codex 可以通过与 Hermes 复用的 daemon CLI wrapper + local RPC 上报 running/failed/finished。
-10. 真实 Codex driver 不依赖 `RuntimeLaunchOutcome.callbacks` 模拟 status/final。
-11. Codex 可以提交最终回复，且 final 具备重复防护。
-12. `msg.send` 真实走 daemon / IM Core SDK 外发链路，并记录 handle resolve、recipient 授权、security mode 和 send result 证据。
-13. `worktree-per-task` 被记录为变更隔离，不被宣传为安全边界，并使用 daemon-managed runtime temp/cache 路径。
-14. Codex run metadata 保存 route/session 字段，后续能与 Hermes session route 模型对齐。
-15. 文档和测试都不依赖 MCP。
-16. Codex 引入后，后续 Claude Code / Gemini 只需在同一 plugin type 内新增 driver，不需要新持久化 plugin type。
+| 标准 | 当前状态 | 说明 |
+|---|---|---|
+| `runtime_plugin_id` 仍为 `generic-cli` | 已满足 | CLI family 新写入统一使用 `generic-cli` runtime plugin type |
+| `runtime.agent.create(runtime=codex|codex-cli)` 新写入 `generic-cli + driver_id=codex` | 已满足 | alias 解析和 create path 已覆盖 |
+| `runtime.agent.create(runtime=generic-cli)` 可显式 `driver_id=codex` | 已满足 | 未显式时默认 `codex`，并记录 `defaulted_driver_id` |
+| controller DID 消息可以触发 Codex headless run | 已满足 MVP | fake Codex binary 测试覆盖；真实 Codex smoke 仍按环境可用性记录 |
+| 非 controller 消息不会进入执行链 | 已满足 | controller 校验保持在 daemon 层 |
+| Codex 只在指定 workspace instance 中运行 | 已满足 MVP | `shared-root` / `worktree-per-task` 已实现；container/sandbox 未实现 |
+| local RPC token 绑定 run、method、recipient scope 和 TTL | 已满足 | recipient scope 支持授权 controller 以外 DID/handle |
+| token 不出现在 debug log、prompt、stdout/stderr、JSONL、final output 和持久 transcript 中 | 已满足 MVP | 通过 redaction、prompt token 检查和 grep gate 验证；没有持久 transcript 表 |
+| Codex 通过 Hermes 同源 wrapper + local RPC 上报状态/最终回复/外发消息 | 已满足架构和 fake binary contract | 真实 Codex 是否实际调用 wrapper 取决于 prompt/runtime 行为，需 remote/smoke 持续验证 |
+| 真实 Codex driver 不依赖 `RuntimeLaunchOutcome.callbacks` 模拟 status/final | 已满足 | Codex driver 返回空 callbacks，daemon 支持 fallback final |
+| Codex 可以提交最终回复，且 final 具备重复防护 | 已满足 MVP | `task.finish` 幂等；无 finish 时成功退出可用 `--output-last-message` fallback |
+| `msg.send` 真实走 daemon / IM Core SDK 外发链路，并记录 handle resolve、recipient 授权、security mode 和 send result 证据 | 已满足 MVP | local RPC + Memory/IM Core outbox 已实现；独立 send result 表和 remote E2E 证据仍待补 |
+| `worktree-per-task` 被记录为变更隔离，不被宣传为安全边界 | 已满足 | worktree 位于 daemon-managed runtime temp，metadata 记录 `is_security_boundary=false` |
+| Codex run metadata 保存 route/session 字段 | 已满足 MVP | `cli_driver_run` 保存 route key、synthetic session、workspace、command、output 和 fallback final source |
+| 文档和测试都不依赖 MCP | 已满足 | MCP 明确非目标 |
+| 后续 Claude Code / Gemini 只需在同一 plugin type 内新增 driver | 已满足架构 | 当前 driver registry 对两者返回未实现，不新增持久化 plugin type |
 
 ---
 

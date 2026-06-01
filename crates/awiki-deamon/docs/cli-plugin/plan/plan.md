@@ -1,10 +1,10 @@
 # Plan：Generic CLI Runtime Plugin 落地计划
 
-状态：in_progress
+状态：done（remote full system test 已执行但未通过，失败域见第 17 节）
 DOC：`codex-plugin-cli-rs2/crates/awiki-deamon/docs/cli-plugin/plan`  
 Harness：`awiki-harness`  
 创建时间：2026-06-01  
-恢复指针：Step 07 已完成并准备提交；提交后从 Step 08 继续。恢复时读取本文件、当前 Step 文档、执行台账和 `git status`。
+恢复指针：全部计划步骤已完成；后续恢复时读取本文件、`steps/08-system-test-and-docs.md`、执行台账和 `git status`，优先处理第 17 节记录的 remote full system test 剩余失败。
 
 ## 1. 目标
 
@@ -86,7 +86,7 @@ Harness：`awiki-harness`
 | 05 | Generic CLI driver registry 与真实 callback 主链路 | 03, 04 | runtime host 按 profile 选 driver，真实 CLI 不再依赖 callback 模拟 | [steps/05-generic-cli-driver-host.md](steps/05-generic-cli-driver-host.md) | 必须 | done |
 | 06 | Codex driver MVP | 05 | `CodexDriver`、prompt envelope、stdin、env 注入、fake binary 测试 | [steps/06-codex-driver-mvp.md](steps/06-codex-driver-mvp.md) | 必须 | done |
 | 07 | Workspace instance 与 CLI run metadata | 06 | `shared-root` / `worktree-per-task`、output paths、route/session metadata、fallback final | [steps/07-workspace-run-metadata.md](steps/07-workspace-run-metadata.md) | 必须 | done |
-| 08 | 系统测试、文档收口与全局 Review | 01-07 | daemon acceptance、remote `awiki.info` 系统测试证据、文档同步和最终 Review | [steps/08-system-test-and-docs.md](steps/08-system-test-and-docs.md) | 必须，如有文件变更 | pending |
+| 08 | 系统测试、文档收口与全局 Review | 01-07 | daemon acceptance、remote `awiki.info` 系统测试证据、文档同步和最终 Review | [steps/08-system-test-and-docs.md](steps/08-system-test-and-docs.md) | 必须，如有文件变更 | done |
 
 ## 7. 执行台账
 
@@ -100,9 +100,9 @@ Harness：`awiki-harness`
 | 04 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:30:14 +0800 | 2026-06-01 17:54:47 +0800 | 步骤提交：`daemon: enforce recipient policy for runtime msg send`，hash 以 `git log` 为准 | 自查发现并修复无 outbox 的 `execute_runtime_rpc_request` 对 `msg.send` 可能返回假成功的问题，改为拒绝并要求真实发送走 `_with_outbox`；补齐 `task.finish` 重复 callback 幂等，确认 handle resolve 在授权前、发送前完成，audit 只记录 token id 不记录 token secret | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test local_rpc_security --locked`：13 passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：10 passed；`cargo test -p awiki-deamon --locked`：28 unit passed，integration 10/10/5/6+1 ignored/8/3/13/2 passed；secret grep 仅命中测试 fixture、字段名、redaction/secret handling 代码和 Hermes fake token | 启动 Step 05 |
 | 05 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 17:58:49 +0800 | 2026-06-01 18:09:34 +0800 | 步骤提交：`daemon: route generic cli profiles through driver registry`，hash 以 `git log` 为准 | 自查发现并修复 2 项：`GenericCliInvocation` Debug 曾暴露 task text，已改为 redaction；payload 型 `runtime.task.submit` 曾仍 fallback 到 `UdsTestRuntimePlugin`，已让 `generic-cli` 路径加载 `cli_runtime_profile` 和 driver registry。确认 command driver 不注入 `AWIKI_DAEMON_TASK_TEXT`，真实 command driver callback 为空并通过 local RPC 发送 status/final | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：13 passed；`cargo test -p awiki-deamon --locked foreground`：4 foreground tests passed；`cargo test -p awiki-deamon --test hermes_message --locked`：8 passed；`cargo test -p awiki-deamon --test hermes_gateway --locked`：6 passed + 1 ignored；`cargo test -p awiki-deamon --locked`：29 unit passed，integration 10/13/5/6+1 ignored/8/3/13/2 passed；Env grep 仅命中测试断言 | 启动 Step 06 |
 | 06 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 18:11:07 +0800 | 2026-06-01 18:33:17 +0800 | 步骤提交：`daemon: add codex generic cli driver`，hash `f3d7856` | 自查发现并修复 4 项：`driver_config_json.sandbox` 应优先于 profile 默认 sandbox；Codex/command 子进程需要显式移除继承环境中的 `AWIKI_DAEMON_TASK_TEXT`；Codex prompt 需要携带 `message_id` 和 `conversation_id`；本机真实 Codex 安装会影响 foreground 路由测试，已改用 missing binary 固化未安装分支。确认真实 Codex 回调不使用 `RuntimeLaunchOutcome.callbacks` 作为主链路，发送消息仍只走 daemon wrapper/local RPC。 | 已确认 `codex exec --help` 支持 stdin `-`、`--cd`、`--sandbox`、`--json`、`--output-last-message`、`--model`、`--profile`、`--ignore-user-config`、`--ignore-rules`、`--ephemeral`；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked codex`：6 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：19 passed；`cargo test -p awiki-deamon --locked`：unit 29 passed，integration 10/19/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret/sandbox grep 仅命中测试断言、token 类型实现、Hermes fake token、redaction 词表和 `env_remove`。 | 启动 Step 07 |
-| 07 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 18:36:02 +0800 | 2026-06-01 18:56:04 +0800 | 步骤提交：`daemon: track cli run workspace metadata`，hash 以 `git log` 为准 | 自查发现并修复 4 项：workspace instance 准备应只作用于 `generic-cli`，避免影响 Hermes/native；`runtime_temp_dir` 必须从 `DaemonConfig` 显式传入，不能从 socket path 推断；无 workspace instance 的 metadata path 需尽量 canonicalize；worktree 测试需要静默 git 输出并检查命令成功。确认 `worktree-per-task` 仍只作为变更隔离，不作为安全边界。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test state_bootstrap --locked`：2 passed；`cargo test -p awiki-deamon --locked codex`：7 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：21 passed；`cargo test -p awiki-deamon --locked`：unit 29 passed，integration 10/21/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret/sandbox grep 仅命中测试断言、token 类型实现、Hermes fake token、redaction 词表和 `env_remove`；path grep 无本机绝对路径命中；legacy grep 仅命中兼容 alias/migration 和计划说明。 | 提交 Step 07 后启动 Step 08 |
-| 08 | pending | `feature/release-0526/codex-plugin-cli-rs2`、可能涉及 `awiki-system-test` | 待记录 | 待记录 | 待记录 | 待记录 | 待记录 | 等 Step 07 |
-| 最终全局 Review | pending | 同上 | 待记录 | 待记录 | 如有文件变更则记录 | 待记录 | 待记录 | 所有步骤 done 后执行 |
+| 07 | done | `feature/release-0526/codex-plugin-cli-rs2` | 2026-06-01 18:36:02 +0800 | 2026-06-01 18:56:04 +0800 | 步骤提交：`daemon: track cli run workspace metadata`，hash `57d11bd` | 自查发现并修复 4 项：workspace instance 准备应只作用于 `generic-cli`，避免影响 Hermes/native；`runtime_temp_dir` 必须从 `DaemonConfig` 显式传入，不能从 socket path 推断；无 workspace instance 的 metadata path 需尽量 canonicalize；worktree 测试需要静默 git 输出并检查命令成功。确认 `worktree-per-task` 仍只作为变更隔离，不作为安全边界。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --test state_bootstrap --locked`：2 passed；`cargo test -p awiki-deamon --locked codex`：7 passed；`cargo test -p awiki-deamon --test generic_cli_runtime_mvp --locked`：21 passed；`cargo test -p awiki-deamon --locked`：unit 29 passed，integration 10/21/5/6+1 ignored/8/3/13/2 passed；`git diff --check` 通过；secret/sandbox grep 仅命中测试断言、token 类型实现、Hermes fake token、redaction 词表和 `env_remove`；path grep 无本机绝对路径命中；legacy grep 仅命中兼容 alias/migration 和计划说明。 | 启动 Step 08 |
+| 08 | done | `feature/release-0526/codex-plugin-cli-rs2`；`awiki-system-test` 分支 `release/0526` 未修改 | 2026-06-01 18:57:28 +0800 | 2026-06-01 20:28:21 +0800 | 步骤提交：`docs: record generic cli codex validation`，hash 以 `git log` 为准 | 已完成最终全局 Review；发现 remote full system test 未通过和 service-run hang 干预，均已记录为剩余风险；未发现当前 generic-cli/Codex 实现阻塞问题 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`cargo test --workspace --locked` 通过；daemon acceptance wrapper 重跑后 3 passed；remote full system test 已执行但未通过：89 passed / 47 failed / 59 skipped；Goal 完成审计又用当前 checkout 重跑 format、daemon crate、workspace、legacy/security grep 和 `git diff --check`，均通过 | 后续优先处理 remote suite 剩余失败域，或在环境恢复后重跑验收 |
+| 最终全局 Review | done | `feature/release-0526/codex-plugin-cli-rs2`；`awiki-system-test` 未修改 | 2026-06-01 19:20:00 +0800 | 2026-06-01 20:28:21 +0800 | 随 Step 08 文档收口提交，hash 以 `git log` 为准 | 已检查跨步骤一致性、schema v10、DID 路由、`generic-cli` type 语义、local RPC security、recipient policy、Codex prompt/env/token/sandbox、文档漂移和未提交变更 | 见第 17 节最终证据；remote full suite 未通过，作为剩余风险保留 | 等待后续修复 remote suite 失败域或重跑验收 |
 
 ## 8. Codex Goal 执行协议
 
@@ -297,13 +297,38 @@ Harness：`awiki-harness`
 
 ## 17. 最终全局 Review 与整体验证
 
-- 触发条件：所有步骤完成、Review、验证并提交后执行。
+- 触发条件：所有实现步骤完成、Review、验证并提交后执行；Step 08 作为文档收口和最终 Review 步骤，提交信息为 `docs: record generic cli codex validation`，hash 以 `git log` 为准。
 - Review 范围：`codex-plugin-cli-rs2`、如有修改则包括 `awiki-system-test`；覆盖 runtime create 契约、state migration、local RPC、outbox、Codex driver、workspace metadata、文档和执行台账。
 - 重点关注：跨步骤一致性、回归风险、兼容性、安全/隐私、文档漂移、未提交变更、每个步骤 Review 发现是否已解决或记录。
 - 整体验证命令 / 检查：至少执行 `cargo fmt --all --check`、`cargo test -p awiki-deamon --locked`、`cargo test --workspace --locked`、daemon acceptance wrapper、remote `AWIKI_SYSTEM_TEST_MODE=remote` 完整系统测试。
-- Review 发现：待执行后记录。
-- 已修复问题：待执行后记录。
-- 剩余风险：待执行后记录。
-- 最终证据：待执行后记录实际命令、通过/失败/跳过数量、失败或跳过原因和关键环境配置。
-- 最终 `git status`：待执行后记录。
-- 如果本阶段修改文件：记录 Review、验证和最终集成 commit。
+- Review 发现：
+  - `generic-cli` 按本方案已经落为 runtime plugin type / discriminator，消息入口仍按 Runtime Agent DID 路由；未发现新建路径写入新的 `runtime.cli.*` type。
+  - Codex/command driver 已移除真实 run 的 `AWIKI_DAEMON_TASK_TEXT` 注入，真实 status/final/msg.send 主链路走 daemon CLI wrapper + local RPC；未发现 token 进入 prompt/stdout/stderr/JSONL/final output 的生产路径。
+  - `msg.send` 已支持授权 DID/handle、handle resolve、resolved DID 授权、security mode 和 send audit；剩余缺口是独立 send result 表和更多 remote E2E 证据。
+  - 文档中旧的 CLI runtime 示例已修正为 `generic-cli + driver_id`；`generic-cli` 未再描述为消息 routing key。
+  - remote full system test 已执行但未通过；其中一个 service-run 用例发生长时间挂起，需要人工 `SIGTERM` 才产出最终 summary。
+- 已修复问题：
+  - 更新 `crates/awiki-deamon/docs/cli-plugin/generic_cli_runtime_plugin_design.md`，把状态从 draft 调整为 implementation checkpoint，准确标注已实现 MVP、部分实现和仍未实现项。
+  - 更新 `crates/awiki-deamon/docs/local-dev.md`，补充 CLI alias、`cli_runtime_profile`、`cli_driver_run`、Codex env、`msg.send` recipient policy 和相对系统测试命令。
+  - 更新 `crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md`，删除旧 `runtime.cli.claude-code` / `runtime.cli/` 示例，改成 `generic-cli` 与 `driver_id=claude-code`。
+  - 更新本 Plan 和 Step 08 文档，记录 remote full system test 实际 pass/fail/skip、失败域、跳过原因、关键环境配置和 hang 干预。
+- 剩余风险：
+  - remote full system test 未通过：`89 passed / 47 failed / 59 skipped in 959.46s`。失败集中在 direct secure/attachment、group/group E2EE、host notify probes、runtime listener/service-run、secure init/repair/retry、core output/debug/identity/runtime/page/tenant CLI contract drift。
+  - remote suite 期间 `tests_v2/cli/test_awiki_cli_service_run_local.py::test_awiki_cli_runtime_listener_service_run_starts_and_exposes_runtime_artifacts` 启动的 `awiki-cli runtime listener service-run` 约 12 分钟无进展，已发送 `SIGTERM` 后才继续。
+  - 真实远端 Codex smoke、direct-e2ee `msg.send` 端到端、container/sandbox 硬隔离、worktree cleanup job、完整 Codex JSONL parser、failed final 仍需后续步骤补强。
+- 最终证据：
+  - `cargo fmt --all --check`：通过。
+  - `cargo test -p awiki-deamon --locked`：通过；unit 29 passed；integration `agent_registration_management` 10 passed、`generic_cli_runtime_mvp` 21 passed、`hermes_contracts` 5 passed、`hermes_gateway` 6 passed + 1 ignored、`hermes_message` 8 passed、`hermes_profile` 3 passed、`local_rpc_security` 13 passed、`state_bootstrap` 2 passed。
+  - `cargo test --workspace --locked`：通过；覆盖 `awiki-cli`、`awiki-deamon`、`im-core`、`im-core-dart` 和 doc-tests，无失败。
+  - daemon acceptance wrapper：首次因磁盘空间不足失败；清理生成的 build artifacts 后重跑同一命令，通过 `3 passed in 321.42s`。
+  - remote full system test：`cd ../awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info AWIKI_DAEMON_RUST_REPO=../codex-plugin-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync awiki-system-test`，结果 `89 passed / 47 failed / 59 skipped in 959.46s`。
+  - 关键 remote 配置：`AWIKI_SYSTEM_TEST_MODE=remote`、`E2E_DID_DOMAIN=awiki.info`、user-service `https://awiki.info`、message-service WebSocket `wss://awiki.info/im/ws`、`AWIKI_DAEMON_RUST_REPO=../codex-plugin-cli-rs2`、`CARGO_BUILD_JOBS=1`。
+  - legacy grep：剩余命中均为 legacy migration、alias、兼容测试或文档说明。
+  - secret/sandbox grep：剩余命中为测试断言、字段名、redaction/secret handling、Hermes fake token 或文档说明；未发现真实 Codex run 生产路径泄漏。
+  - path grep：本步骤相关 docs/source/tests 没有本机绝对路径、file/vscode URI 或工作区目录名命中。
+  - `git diff --check`：通过。
+- Goal 完成审计补充证据：
+  - `CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked`：当前 checkout 重跑通过，unit 29 passed，integration `agent_registration_management` 10 passed、`generic_cli_runtime_mvp` 21 passed、`hermes_contracts` 5 passed、`hermes_gateway` 6 passed + 1 ignored、`hermes_message` 8 passed、`hermes_profile` 3 passed、`local_rpc_security` 13 passed、`state_bootstrap` 2 passed。
+  - `CARGO_BUILD_JOBS=1 cargo test --workspace --locked`：当前 checkout 重跑通过。重跑前一次 workspace 验证因本机磁盘空间被旧 checkout 构建产物占满，在 `awiki-cli` test binary 链接阶段报 `No space left on device`；清理 sibling repo 生成目录后，同一单 job workspace 命令通过。
+- 最终 `git status`：本仓 `feature/release-0526/codex-plugin-cli-rs2...origin/feature/release-0526/codex-plugin-cli-rs2 [ahead 9]`，无未提交文件；`awiki-system-test` 为 `release/0526...origin/release/0526`，无未提交文件。
+- 如果本阶段修改文件：创建 Step 08 文档收口 commit，提交信息为 `docs: record generic cli codex validation`，hash 以 `git log` 为准。
