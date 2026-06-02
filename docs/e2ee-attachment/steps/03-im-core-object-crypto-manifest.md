@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |
-| Started |  |
-| Completed |  |
-| Commit |  |
-| Review evidence |  |
-| Verification evidence |  |
-| Next action | 等 Step 01 或并行完成设计后启动 |
+| Started | 2026-06-02 09:51 CST |
+| Completed | 2026-06-02 10:38 CST |
+| Commit | `e2ee-attachment-cli-rs2:91a9da2` |
+| Review evidence | Review 覆盖 AEAD、manifest full/redacted、控制面禁密钥、public DTO 脱敏、plain 兼容和下游 Rust DTO 编译影响；发现并修复公开 prepared/descriptor 曾持有 key/nonce 的泄漏风险，改为 internal-only secrets；移除 compat 解密 helper。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo test -p im-core attachment_object_crypto --locked` 2 passed；`cargo test -p im-core attachment_manifest --locked` lib 2 passed、attachment_api 2 passed；`cargo test -p im-core attachment_api --locked` 1 passed；`cargo check -p im-core` 通过；`cargo check -p im-core-dart` 通过；`git diff --check` 通过；secret grep 已复核。 |
+| Next action | Step 04：接入 secure attachment send |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -79,13 +79,13 @@ Step index：03
 
 ## 7. 验收标准
 
-- [ ] 对象加密使用随机 32 字节 key 和 12 字节 nonce。
-- [ ] `size`/`digest` 指向密文字节，`plaintext_size` 指向明文字节。
-- [ ] full E2EE manifest 只在 internal 路径使用。
-- [ ] public result / redacted manifest / CLI-ready DTO 不包含 key/nonce。
-- [ ] plain attachment manifest 不回归。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] 对象加密使用随机 32 字节 key 和 12 字节 nonce。
+- [x] `size`/`digest` 指向密文字节，`plaintext_size` 指向明文字节。
+- [x] full E2EE manifest 只在 internal 路径使用。
+- [x] public result / redacted manifest / CLI-ready DTO 不包含 key/nonce。
+- [x] plain attachment manifest 不回归。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
