@@ -12,7 +12,7 @@ Step index：07
 | Branch | `awiki-system-test: release/0526`，实现仓库分支同前序步骤 |
 | Started | 2026-06-02 13:20 CST |
 | Completed |  |
-| Commit | `e2ee-attachment-cli-rs2:5520adb`、`e2ee-attachment-cli-rs2:1745f72`、`awiki-system-test:145d920`、`awiki-system-test:d17e03a`；文档收口 commit 由当前仓库 `git log` 和最终响应记录，避免文档自引用导致 commit hash 循环。 |
+| Commit | `e2ee-attachment-cli-rs2:5520adb`、`e2ee-attachment-cli-rs2:1745f72`、`e2ee-attachment-cli-rs2:34ac61c`、`awiki-system-test:145d920`、`awiki-system-test:d17e03a`、`awiki-system-test:1a196fa`、`anp/anp:1b83488`、`message-service:bb06bdf`；文档收口 commit 由当前仓库 `git log` 和最终响应记录，避免文档自引用导致 commit hash 循环。 |
 | Review evidence | 已完成 Step 07 阶段性 Review：发现并修复 public projection 泄漏、direct async attachment unsupported、direct async attachment init 缺失、系统测试选择器在显式 repo override 下误报、ANP typed group payload 还原、端侧 internal-only group manifest cache，以及服务端 group attachment grant 使用 raw `meta.message_id` 导致取票 6005 的 canonical message id 绑定问题；本轮补充 forwarded accepted response 的 `group_did` 校验，避免远端返回其他 group 时写入本地 grant；剩余 critical finding 为远端 `awiki.info` message-service 尚未部署本轮 canonical grant 修复。 |
 | Verification evidence | focused direct secure attachment 已通过；focused group secure attachment 已越过 6013、MLS 重复解密和 public projection 泄漏问题，Bob 能读到 redacted manifest，但下载取票仍因远端未部署 canonical grant 修复返回 `6005 no access grant matched the requested attachment context`。本地 `message-service`、ANP 和 im-core focused tests 已通过，且 forwarded remote group mismatch guard 已通过，具体命令见 9.1。 |
 | Next action | 部署包含本轮 `message-service` group attachment canonical grant 修复的版本到 `awiki.info` 后，重跑 focused group 和最终 remote full。 |
