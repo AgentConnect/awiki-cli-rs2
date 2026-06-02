@@ -435,6 +435,120 @@ fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
 }
 
 #[test]
+fn attachment_manifest_object_e2ee_redacted_and_grant_ref_contract() {
+    let descriptor = im_core::compat::attachments::AttachmentDescriptor {
+        attachment_id: "att-e2ee-1".to_string(),
+        filename: "secret.pdf".to_string(),
+        mime_type: "application/pdf".to_string(),
+        size: "33".to_string(),
+        digest_b64u: "ciphertext-digest".to_string(),
+        object_uri: "https://objects.example/att-e2ee-1".to_string(),
+        encryption_mode: "object-e2ee".to_string(),
+        object_cipher: Some("chacha20-poly1305".to_string()),
+        plaintext_size: Some("16".to_string()),
+    };
+
+    let redacted =
+        im_core::compat::attachments::build_attachment_manifest_internal(&descriptor, "secret");
+    assert_eq!(redacted["primary_attachment_id"], "att-e2ee-1");
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"]["mode"],
+        "object-e2ee"
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"]["object_cipher"],
+        "chacha20-poly1305"
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"]["plaintext_size"],
+        "16"
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"].get("object_key_b64u"),
+        None
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"].get("nonce_b64u"),
+        None
+    );
+
+    let default_public =
+        im_core::compat::attachments::build_attachment_manifest(&descriptor, "secret");
+    assert_eq!(default_public, redacted);
+
+    let parsed = im_core::compat::attachments::parse_attachment_manifest(&redacted)
+        .expect("manifest parses");
+    let parsed_descriptor = &parsed.attachments[0];
+    assert_eq!(parsed_descriptor.encryption_mode, "object-e2ee");
+    assert_eq!(parsed_descriptor.plaintext_size.as_deref(), Some("16"));
+
+    let grant_ref =
+        im_core::compat::attachments::build_attachment_grant_ref(&descriptor).expect("grant ref");
+    assert_eq!(grant_ref["attachment_id"], "att-e2ee-1");
+    assert_eq!(
+        grant_ref["object_uri"],
+        "https://objects.example/att-e2ee-1"
+    );
+    assert_eq!(grant_ref["object_encryption_mode"], "object-e2ee");
+    assert_eq!(grant_ref["plaintext_size"], "16");
+    assert_eq!(grant_ref["digest"]["value_b64u"], "ciphertext-digest");
+    assert_eq!(grant_ref.get("object_key_b64u"), None);
+    assert_eq!(grant_ref.get("nonce_b64u"), None);
+}
+
+#[test]
+fn attachment_manifest_plain_mode_remains_redacted_compatible() {
+    let prepared = im_core::compat::attachments::prepare_attachment_payload(
+        "hello.txt",
+        "",
+        b"hello".to_vec(),
+    )
+    .expect("plain prepared");
+    let descriptor = im_core::compat::attachments::AttachmentDescriptor::from_prepared(
+        &prepared,
+        "att-plain-1",
+        "https://objects.example/att-plain-1",
+    );
+
+    let manifest =
+        im_core::compat::attachments::build_attachment_manifest_internal(&descriptor, "hello");
+    assert_eq!(
+        manifest["attachments"][0]["encryption_info"],
+        json!({"mode": "none"})
+    );
+    assert_eq!(
+        im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello"),
+        manifest
+    );
+    let grant_ref =
+        im_core::compat::attachments::build_attachment_grant_ref(&descriptor).expect("grant ref");
+    assert_eq!(grant_ref["object_encryption_mode"], "none");
+    assert_eq!(grant_ref.get("plaintext_size"), None);
+}
+
+#[test]
+fn attachment_api_uploaded_attachment_public_dto_never_exposes_key_nonce() {
+    let attachment = UploadedAttachment {
+        attachment_id: "att-e2ee-1".to_string(),
+        filename: "secret.pdf".to_string(),
+        mime_type: "application/pdf".to_string(),
+        size_bytes: 33,
+        size: "33".to_string(),
+        digest_b64u: "ciphertext-digest".to_string(),
+        object_uri: "https://objects.example/att-e2ee-1".to_string(),
+        object_encryption_mode: "object-e2ee".to_string(),
+        plaintext_size_bytes: Some(16),
+    };
+
+    let value = serde_json::to_value(&attachment).expect("uploaded attachment serializes");
+    assert_eq!(value["object_encryption_mode"], "object-e2ee");
+    assert_eq!(value["plaintext_size_bytes"], 16);
+    assert_eq!(value.get("object_key_b64u"), None);
+    assert_eq!(value.get("nonce_b64u"), None);
+    assert!(!value.to_string().contains("BASE64URL_32_BYTES_OBJECT_KEY"));
+}
+
+#[test]
 fn attachments_selection_matches_visible_or_raw_message_id() {
     let messages = vec![json!({
         "id": "did:wba:awiki.ai:groups:test:e1_group:7",
@@ -707,6 +821,9 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     assert_eq!(commit["body"]["commit_token"], "commit-token");
     assert_eq!(commit["body"]["size"], "5");
     assert_eq!(commit["body"]["digest"]["value_b64u"], "digest");
+    assert_eq!(commit["body"]["object_encryption_mode"], "none");
+    assert_eq!(commit["body"].get("object_key_b64u"), None);
+    assert_eq!(commit["body"].get("nonce_b64u"), None);
 
     let selection = im_core::compat::attachments::AttachmentSelection {
         attachment_id: "att-1".to_string(),
@@ -784,6 +901,81 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         group["auth"]["scheme"],
         im_core::compat::proof::ORIGIN_PROOF_SCHEME
     );
+}
+
+#[test]
+fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
+    let prepared = im_core::compat::attachments::PreparedAttachment {
+        filename: "hello.txt".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_bytes: 33,
+        size_string: "33".to_string(),
+        digest_b64u: "ciphertext-digest".to_string(),
+        payload: b"ciphertext bytes with auth tag".to_vec(),
+        object_encryption_mode: "object-e2ee".to_string(),
+        object_cipher: Some("chacha20-poly1305".to_string()),
+        plaintext_size_bytes: Some(12),
+        plaintext_size_string: Some("12".to_string()),
+    };
+
+    let err = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        "agent",
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        &prepared,
+    )
+    .expect_err("plain control profile should reject object-e2ee");
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "message_security_profile" && message.contains("object-e2ee")
+    ));
+
+    let create_slot =
+        im_core::compat::attachments::build_attachment_create_slot_rpc_params_with_security_profile(
+            "did:wba:awiki.ai:user:alice:e1_alice",
+            "did:wba:awiki.ai:services:message:e1",
+            "agent",
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "direct-e2ee",
+            &prepared,
+        )
+        .expect("e2ee create-slot params");
+    assert_eq!(
+        create_slot["body"]["intended_message_security_profile"],
+        "direct-e2ee"
+    );
+    assert_eq!(create_slot["body"]["object_encryption_mode"], "object-e2ee");
+    assert_eq!(create_slot["body"]["expected_size"], prepared.size_string);
+    assert_eq!(
+        create_slot["body"]["expected_digest"]["value_b64u"],
+        prepared.digest_b64u
+    );
+    assert_eq!(create_slot["body"].get("object_key_b64u"), None);
+    assert_eq!(create_slot["body"].get("nonce_b64u"), None);
+
+    let slot = im_core::compat::attachments::AttachmentCreateSlotResult {
+        attachment_id: "att-1".to_string(),
+        slot_id: "slot-1".to_string(),
+        commit_token: "commit-token".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
+        ..im_core::compat::attachments::AttachmentCreateSlotResult::default()
+    };
+    let commit = im_core::compat::attachments::build_attachment_commit_object_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        &prepared,
+        &slot,
+    )
+    .expect("e2ee commit params");
+    assert_eq!(commit["body"]["object_encryption_mode"], "object-e2ee");
+    assert_eq!(
+        commit["body"]["plaintext_size"],
+        prepared.plaintext_size_string.as_deref().unwrap()
+    );
+    assert_eq!(commit["body"].get("object_key_b64u"), None);
+    assert_eq!(commit["body"].get("nonce_b64u"), None);
 }
 
 #[test]

@@ -30,6 +30,8 @@ pub struct UploadedAttachment {
     pub size: String,
     pub digest_b64u: String,
     pub object_uri: String,
+    pub object_encryption_mode: String,
+    pub plaintext_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +80,8 @@ impl AttachmentSendResult {
     pub(crate) fn from_upload_result(
         result: crate::internal::attachment_runtime::upload::AttachmentUploadResult,
     ) -> Self {
+        let object_encryption_mode = result.prepared.object_encryption_mode();
+        let plaintext_size_bytes = result.prepared.plaintext_size_bytes;
         Self {
             message: result.sdk_result,
             target_kind: result.target_kind.to_string(),
@@ -90,6 +94,8 @@ impl AttachmentSendResult {
                 size: result.prepared.size_string,
                 digest_b64u: result.prepared.digest_b64u,
                 object_uri: result.slot.object_uri,
+                object_encryption_mode,
+                plaintext_size_bytes,
             },
             manifest: result.manifest,
         }

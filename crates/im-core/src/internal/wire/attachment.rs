@@ -51,6 +51,24 @@ pub(crate) fn build_attachment_create_slot_rpc_params(
     target_did: &str,
     prepared: &crate::attachments::manifest::PreparedAttachment,
 ) -> crate::ImResult<Value> {
+    build_attachment_create_slot_rpc_params_with_security_profile(
+        sender_did,
+        service_did,
+        target_kind,
+        target_did,
+        "transport-protected",
+        prepared,
+    )
+}
+
+pub(crate) fn build_attachment_create_slot_rpc_params_with_security_profile(
+    sender_did: &str,
+    service_did: &str,
+    target_kind: &str,
+    target_did: &str,
+    message_security_profile: &str,
+    prepared: &crate::attachments::manifest::PreparedAttachment,
+) -> crate::ImResult<Value> {
     if prepared.filename.trim().is_empty() && prepared.size_string.trim().is_empty() {
         return Err(crate::ImError::invalid_input(
             Some("file_path".to_string()),
@@ -69,6 +87,19 @@ pub(crate) fn build_attachment_create_slot_rpc_params(
             "direct message target is required",
         ));
     }
+    let message_security_profile = message_security_profile.trim();
+    if message_security_profile.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("message_security_profile".to_string()),
+            "message security profile is required",
+        ));
+    }
+    if prepared.is_object_e2ee() && message_security_profile == "transport-protected" {
+        return Err(crate::ImError::invalid_input(
+            Some("message_security_profile".to_string()),
+            "object-e2ee attachments require direct-e2ee or group-e2ee message security profile",
+        ));
+    }
     Ok(json!({
         "meta": super::common::message_meta(sender_did, service_did, ATTACHMENT_PROFILE),
         "body": {
@@ -79,12 +110,12 @@ pub(crate) fn build_attachment_create_slot_rpc_params(
             },
             "mime_type": prepared.mime_type,
             "filename": prepared.filename,
-            "intended_message_security_profile": "transport-protected",
+            "intended_message_security_profile": message_security_profile,
             "intended_target": {
                 "kind": target_kind,
                 "did": target_did,
             },
-            "object_encryption_mode": "none",
+            "object_encryption_mode": prepared.object_encryption_mode(),
         },
     }))
 }
@@ -101,19 +132,40 @@ pub(crate) fn build_attachment_commit_object_rpc_params(
             "attachment file path is required",
         ));
     }
+    let mut body = Map::new();
+    body.insert(
+        "attachment_id".to_string(),
+        Value::String(slot.attachment_id.clone()),
+    );
+    body.insert("slot_id".to_string(), Value::String(slot.slot_id.clone()));
+    body.insert(
+        "commit_token".to_string(),
+        Value::String(slot.commit_token.clone()),
+    );
+    body.insert(
+        "size".to_string(),
+        Value::String(prepared.size_string.clone()),
+    );
+    body.insert(
+        "object_encryption_mode".to_string(),
+        Value::String(prepared.object_encryption_mode()),
+    );
+    body.insert(
+        "digest".to_string(),
+        json!({
+            "alg": "sha-256",
+            "value_b64u": prepared.digest_b64u,
+        }),
+    );
+    if let Some(plaintext_size) = prepared.plaintext_size_string.as_ref() {
+        body.insert(
+            "plaintext_size".to_string(),
+            Value::String(plaintext_size.clone()),
+        );
+    }
     Ok(json!({
         "meta": super::common::message_meta(sender_did, service_did, ATTACHMENT_PROFILE),
-        "body": {
-            "attachment_id": slot.attachment_id,
-            "slot_id": slot.slot_id,
-            "commit_token": slot.commit_token,
-            "size": prepared.size_string,
-            "object_encryption_mode": "none",
-            "digest": {
-                "alg": "sha-256",
-                "value_b64u": prepared.digest_b64u,
-            },
-        },
+        "body": Value::Object(body),
     }))
 }
 

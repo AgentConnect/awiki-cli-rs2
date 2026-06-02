@@ -86,6 +86,8 @@ fn attachment_send_result_preserves_upload_metadata_for_dart() {
             size: "5".to_string(),
             digest_b64u: "digest".to_string(),
             object_uri: "object://att-1".to_string(),
+            object_encryption_mode: "none".to_string(),
+            plaintext_size_bytes: None,
         },
         manifest: serde_json::json!({
             "attachments": [{
