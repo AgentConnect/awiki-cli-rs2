@@ -1,10 +1,10 @@
 # Plan：附件端到端加密传输
 
-状态：blocked
+状态：done
 DOC：`e2ee-attachment-cli-rs2/docs/e2ee-attachment/`  
 Harness：`awiki-harness`  
 创建时间：2026-06-02 08:00 CST  
-恢复指针：Step 07：系统测试、文档与集成收口
+恢复指针：全部步骤已完成，最终全局 Review 与 remote full 验证已完成
 
 ## 1. 目标
 
@@ -80,7 +80,7 @@ Harness：`awiki-harness`
 | 04 | im-core secure attachment send | Step 02、Step 03 | `MessageBody::Attachment + E2eeRequired` 发送 direct/group E2EE 附件 | [steps/04-im-core-secure-attachment-send.md](steps/04-im-core-secure-attachment-send.md) | 必须 | done |
 | 05 | im-core 下载校验与解密 | Step 02、Step 03 | E2EE 附件下载、ticket、digest、decrypt、plaintext write | [steps/05-im-core-download-decrypt.md](steps/05-im-core-download-decrypt.md) | 必须 | done |
 | 06 | CLI、Dart、data-rs2 高层接口 | Step 04、Step 05 | CLI UX、Dart DTO、data-rs2 对接结论和实现 | [steps/06-cli-dart-data-interfaces.md](steps/06-cli-dart-data-interfaces.md) | 必须 | done |
-| 07 | 系统测试、文档与集成收口 | Step 01-06 | system-test、文档同步、最终集成证据 | [steps/07-system-tests-docs-integration.md](steps/07-system-tests-docs-integration.md) | 必须 | blocked |
+| 07 | 系统测试、文档与集成收口 | Step 01-06 | system-test、文档同步、最终集成证据 | [steps/07-system-tests-docs-integration.md](steps/07-system-tests-docs-integration.md) | 必须 | done |
 
 ## 7. 执行台账
 
@@ -94,7 +94,7 @@ Harness：`awiki-harness`
 | 04 | done | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` | 2026-06-02 10:39 CST | 2026-06-02 11:58 CST | `e2ee-attachment-cli-rs2:5c97627` | Review 覆盖高层 Attachment + E2eeRequired 路由、object-e2ee upload/commit、direct/group inner plaintext、outer body/client refs 非秘密边界、本地 projection redaction、plain attachment 兼容和 no-`blocking` async direct 路径；发现并修复 async direct E2EE 附件在无 `blocking` feature 时先上传/commit 再返回 unsupported 的孤儿密文对象风险，补 `prepare_and_commit_object` focused test 验证 PUT 仅上传密文、控制面无 key/nonce、full/redacted/grant refs 边界。Secret grep 命中仅为测试断言和测试内读取 full manifest。 | `cargo fmt --all --check` 通过；`cargo check -p im-core` 通过；`cargo check -p im-core --features group-e2ee` 通过；`cargo test -p im-core attachments_upload_runtime_prepare_object_e2ee_uploads_ciphertext_only --locked` 1 passed；`cargo test -p im-core secure_attachment_send --locked` 1 passed；`cargo test -p im-core secure_attachment_send --features group-e2ee --locked` 2 passed；`cargo test -p im-core secure --locked` 66 lib passed，phase1a 2 passed，realtime_loop 2 passed，secure_api 10 passed；`cargo test -p im-core e2ee --locked` 21 lib passed，attachment_api 2 passed，phase1a 3 passed；`cargo test -p im-core attachment --locked` 23 lib passed，attachment_api 21 passed，phase1a 1 passed，realtime_projection 7 passed；`cargo test -p im-core e2ee --features group-e2ee --locked` 76 lib passed，attachment_api 2 passed，phase1a 3 passed；`cargo check -p im-core-dart` 通过；`git diff --check` 通过；secret grep 已复核。 | 启动 Step 05 |
 | 05 | done | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` | 2026-06-02 12:00 CST | 2026-06-02 12:03 CST | `e2ee-attachment-cli-rs2:e0670208d823c817261f17f5335eb8dbacca3b03` | Review 覆盖校验顺序、object-e2ee key/nonce 仅 internal selection 使用、public `DownloadedAttachment.selection` / `AttachmentDownloadResult.selection` redacted、ticket profile direct/group 推导、sync/async local-file 解密失败不写出、secure-aware history projection 和 plain attachment 兼容；未发现需修复问题。Secret grep 命中仅为 internal crypto/manifest/selection/download 解密逻辑和测试断言，Dart/public DTO 未新增 key/nonce 输出。 | `cargo fmt --all --check` 通过；`cargo check -p im-core` 通过；`cargo check -p im-core --features group-e2ee` 通过；`cargo test -p im-core attachments_download_runtime --locked` 13 passed, 0 failed, 235 filtered；`cargo test -p im-core attachment --locked` lib 29 passed、attachment_api 22 passed、phase1a 1 passed、realtime_projection 7 passed，0 failed；`cargo test -p im-core attachment_object_crypto --locked` 2 passed, 0 failed；`cargo test -p im-core secure --locked` 66 lib passed、phase1a 2 passed、realtime_loop 2 passed、secure_api 10 passed，0 failed；`cargo test -p im-core e2ee --locked` 24 lib passed、attachment_api 3 passed、phase1a 3 passed，0 failed；`cargo test -p im-core e2ee --features group-e2ee --locked` 79 lib passed、attachment_api 3 passed、phase1a 3 passed，0 failed；`cargo test -p im-core decrypt --locked` 4 passed, 0 failed；`cargo test -p im-core attachment_download --locked` 0 passed、0 failed、过滤词未命中实际下载测试，已用 `attachments_download_runtime` 覆盖；`cargo check -p im-core-dart` 通过；`git diff --check` 通过；secret grep 已复核。 | 启动 Step 06 |
 | 06 | done | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2`，`data-rs2: 未检出` | 2026-06-02 12:06 CST | 2026-06-02 13:03 CST | `e2ee-attachment-cli-rs2:e10a74b` | Review 覆盖 CLI 只解析参数并调用 SDK、Dart/Flutter DTO 不暴露 key/nonce/ticket、secure attachment 便捷 API 复用 `MessageBody::Attachment + security` 高层路径、`manifestJson`/CLI 输出为 redacted projection、plain attachment 兼容和 filename override 在 secure 便捷路径保留；发现并修复 `attachments().send_async -> messages().send_async -> attachments().send_async` async 递归 future 风险，改为 crate 内 `send_secure_attachment*` 专用入口；发现并修复 `MessageBody::Attachment` 缺少 `filename` 导致 secure 便捷路径丢失 filename override 的兼容风险。`data-rs2` 重新定位仍未检出，只记录外部待办，不伪造实现。Secret grep 命中仅为测试脱敏断言和 attachment live 测试 fixture 中的 download ticket 模拟值。 | `cargo fmt --all --check` 通过；`cargo check -p im-core-dart --locked` 通过；`cargo check -p im-core --features group-e2ee --locked` 通过；`cargo test -p awiki-cli --test msg_attachment_contract --locked` 3 passed, 0 failed；`cargo test -p awiki-cli --locked msg_secure` 6 matched tests passed、其余 filtered；`cargo test -p awiki-cli --test attachment_live_contract --locked` 4 passed, 0 failed；`cargo test -p im-core-dart --locked attachment` facade_contract 2 passed, 0 failed；`cargo test -p im-core attachment_api --locked` attachment_api 1 passed, 0 failed；`bash scripts/flutter/codegen-check.sh` 通过；`cd packages/awiki_im_core && dart test` 7 passed；`git diff --check` 通过；secret grep 已复核。`cargo test -p awiki-cli --locked msg_attachment` 曾卡在 unrelated `awiki-cli msg inbox --scope direct --unread --limit 20 --format json` 子进程，被终止后改用精确 `msg_attachment_contract` 覆盖本步骤附件合同；一次串联验证命令在 `msg_secure` 阶段长时间无输出被终止，已用单独通过的 `msg_secure` 证据替代。 | 启动 Step 07 |
-| 07 | blocked | `message-service: release/0526`、`e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2`、`awiki-system-test: release/0526`、`anp/anp: master` | 2026-06-02 13:20 CST |  | `e2ee-attachment-cli-rs2:5520adb`、`e2ee-attachment-cli-rs2:1745f72`、`e2ee-attachment-cli-rs2:34ac61c`、`awiki-system-test:145d920`、`awiki-system-test:d17e03a`、`awiki-system-test:1a196fa`、`anp/anp:1b83488`、`message-service:bb06bdf`；本轮 Plan 更新 commit 由当前仓库 `git log` 与最终响应记录，避免文档自引用导致 hash 循环。 | Review 发现并修复 public read/realtime projection 泄漏、direct async attachment follow-up 缺失、direct async attachment init 缺失、system-test repo override 误判、ANP typed group plaintext JSON payload 还原、端侧 internal-only group manifest cache、服务端 group attachment grant raw `meta.message_id` 与 canonical `{group_did}:{group_event_seq}` 不匹配导致取票 6005；本轮补充 forwarded accepted response 的 `group_did` 校验，避免远端返回其他 group 时写入本地 grant；剩余 critical finding 为远端 `awiki.info` message-service 尚未部署本轮 canonical grant 修复。 | direct focused remote 已通过：1 passed、9 deselected；group focused remote 已越过 6013 和 manifest projection，Bob 能读到 redacted manifest，但下载取票返回 6005。ANP typed payload、im-core cache/redaction/download、message-service canonical grant focused tests 和 forwarded remote group mismatch guard 均通过；历史 remote full 为 183 passed、2 failed、15 skipped，当时阻断为 6013，需在 canonical grant 修复部署后重跑。 | 部署包含本轮 `message-service` group attachment canonical grant 修复的版本到 `awiki.info` 后，重跑 group focused 和最终 remote full。 |
+| 07 | done | `message-service: release/0526`、`e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2`、`awiki-system-test: release/0526`、`anp/anp: master` | 2026-06-02 13:20 CST | 2026-06-02 19:24 CST | `e2ee-attachment-cli-rs2:5520adb`、`e2ee-attachment-cli-rs2:1745f72`、`e2ee-attachment-cli-rs2:34ac61c`、`e2ee-attachment-cli-rs2:535098c`、`awiki-system-test:145d920`、`awiki-system-test:d17e03a`、`awiki-system-test:1a196fa`、`anp/anp:1b83488`、`message-service:bb06bdf`、`message-service:e1a2a22`；本轮 Plan 更新 docs-only commit 由当前仓库 `git log` 与最终响应记录，避免文档自引用导致 hash 循环。 | Review 发现并修复 public read/realtime projection 泄漏、direct async attachment follow-up 缺失、direct async attachment init 缺失、system-test repo override 误判、ANP typed group plaintext JSON payload 还原、端侧 internal-only group manifest cache、服务端 group E2EE attachment grant raw `meta.message_id` 与 canonical `{group_did}:{group_event_seq}` 不匹配导致取票 6005；部署 `message-service:bb06bdf` 后 group secure attachment 通过，但 final remote full 暴露 plain/base group attachment 6005 回归；已在 `message-service:e1a2a22` 修复为仅 group E2EE grant 使用 canonical message id，plain/base group grant 保留 raw message id。最终 Review 未发现剩余 critical finding。 | `message-service` 已在当前服务器 build release 并用 `restart.sh` 重启，systemd `message-service.service` active/running，MainPID `3033121`，监听 `127.0.0.1:9900`。部署 `e1a2a22` 后 focused plain group attachment 1 passed、12 deselected；focused group secure attachment 1 passed、12 deselected；raw service group attachment 先遇到一次 transient 401，重跑 1 passed、1 deselected；Hermes bridge transient full failure focused 重跑 1 passed、22 deselected。最终 remote full：185 passed、15 skipped、0 failed，231.25s。 | 无，最终收口完成。 |
 
 ## 8. Codex Goal 执行协议
 
@@ -209,7 +209,7 @@ Harness：`awiki-harness`
 |---|---|---|---|---|---|
 | `data-rs2` 未检出 | 06 | 当前工作区未找到 `data-rs2` 路径 | 先按 Dart / high-level data facade 设计 | Step 06 | 执行时先定位仓库；找不到则记录为外部待办，不阻塞 CLI/Dart |
 | group 跨域 sender-home acceptance 链路不明确 | 02、07 | P7 不标准化 Access Grant 同步协议 | 采用 sender-home 本地 grant refs，要求发送路径经过 sender-home | group 跨域 E2E | 系统测试覆盖 AWiki 实际拓扑；若发现直连远端 group host，先更新 Plan |
-| 远端 `awiki.info` message-service 尚未部署 group attachment canonical grant 修复 | 07 | 历史 remote full 曾因 `attachment.create_slot` 返回 6013 导致 183 passed、2 failed、15 skipped；当前 direct focused remote 已通过，group focused remote 已越过 6013 和 Bob redacted projection，下载取票返回 `6005 no access grant matched the requested attachment context` | 已确认本地 `message-service` 修复 group base/group-e2ee accepted 后使用 `{group_did}:{group_event_seq}` 写 Access Grant，并补 forwarded accepted response `group_did` 不匹配时拒绝写 grant；`cargo test -p im-group forwarded_group_attachment_grants_use_canonical_group_message_id -- --nocapture`、`cargo test -p im-group forwarded_group_attachment_grants_reject_different_remote_group -- --nocapture`、`cargo test -p im-group group_e2ee_send_attachment_grant_refs_write_group_e2ee_grant_after_acceptance -- --nocapture`、`cargo test -p im-group group_e2ee -- --nocapture` 均通过 | Step 07 group remote E2E 和最终完成 | 部署包含本轮 `message-service` canonical grant 修复到 `awiki.info` 后，重跑 focused group 和 remote full；当前 Step 07 保持 blocked |
+| 已解决：远端 `awiki.info` message-service 部署缺少 group attachment canonical grant 修复 | 07 | 历史 remote full 曾因 `attachment.create_slot` 返回 6013 导致 183 passed、2 failed、15 skipped；部署 object-e2ee 策略后，group focused remote 越过 6013 和 Bob redacted projection，但下载取票返回 `6005 no access grant matched the requested attachment context` | 已确认本地 `message-service:bb06bdf` 修复 group E2EE accepted 后使用 `{group_did}:{group_event_seq}` 写 Access Grant，并补 forwarded accepted response `group_did` 不匹配时拒绝写 grant；随后直接部署到当前服务器并用 `restart.sh` 重启 | Step 07 group remote E2E 和最终完成 | 已解决：部署 `message-service:bb06bdf` 后 group secure attachment focused 通过；final remote full 又暴露 plain/base group attachment 6005 回归，已用 `message-service:e1a2a22` 修复并重新部署，最终 remote full 185 passed、15 skipped、0 failed |
 
 - 只有依赖允许且风险已记录时，才继续另一个 pending 步骤。
 - 只有没有安全假设、回退方案或独立下一步时，才询问用户。
@@ -237,60 +237,65 @@ Harness：`awiki-harness`
 ## 17. 最终全局 Review 与整体验证
 
 - 触发条件：所有步骤完成、Review、验证并提交后执行。
-- Review 范围：`message-service`、`e2ee-attachment-cli-rs2`、`awiki-system-test`、相关 docs、公开 DTO、CLI 输出、执行台账。
+- Review 范围：`message-service`、`e2ee-attachment-cli-rs2`、`awiki-system-test`、`anp/anp`、相关 docs、公开 DTO、CLI 输出、执行台账。
 - 重点关注：跨步骤一致性、plain 回归、ticket 绑定、grant refs 安全、Dart/data redaction、系统测试证据、未提交变更。
-- 整体验证命令 / 检查：按第 11 节执行，至少包含两个实现仓库 workspace tests 和 `awiki-system-test` remote/focused E2E。
-- 当前状态：已执行 Step 07 阶段性全局 Review 和 remote/focused 验证；direct E2EE 附件 remote focused 已通过，group E2EE 附件 remote focused 已越过 slot/commit、Bob redacted projection 和 MLS 重复解密问题，但取票仍因远端 `awiki.info` message-service 未部署本轮 canonical group grant 修复返回 6005。因此最终全局 Review 不能标记完成。
+- 整体验证命令 / 检查：按第 11 节执行，包含 focused remote E2E、服务端部署验证和 `awiki-system-test` remote full。
+- 当前状态：完成。`message-service:e1a2a22` 已部署到当前服务器并通过最终 remote full；无未处理 critical finding。
 - Review 发现：
   - 已修复 public read/realtime projection 泄漏 full E2EE attachment manifest 的风险，public projection 只返回 redacted manifest，internal download selection 保留 full manifest。
   - 已修复 direct async secure attachment follow-up 路径缺失和无本地 direct E2EE session 时 init 路径缺失。
   - 已修复 `awiki-system-test` 在显式 `AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2` 下 selection defaults 误判。
   - 已修复 ANP typed group plaintext JSON payload roundtrip，使 `application/anp-attachment-manifest+json` payload 解密后保持 JSON payload 结构，而不是退化为 `text/plain`。
   - 已修复 group E2EE 附件首次解密后 public projection 仍 redacted、重复 MLS application message 解密会因 forward secrecy secret 删除而无法再恢复 full manifest 的问题：端侧仅在 internal SQLite cache 保存 full manifest 用于下载 selection，public DTO/CLI 继续脱敏。
-  - 已修复服务端 group attachment grant 使用 raw `meta.message_id` 写入导致客户端下载使用 canonical `{group_did}:{group_event_seq}` 取票时返回 6005 的问题；group base/group-e2ee 本地 accepted 和 forwarded accepted 均在写 grant 前 canonical 化，并校验 forwarded accepted response 的 `group_did` 必须等于请求目标 group，避免远端返回其他 group 时写入错误 grant。
-  - 剩余 critical finding：`awiki.info` 当前部署尚未包含本轮服务端 canonical group grant 修复，focused group 下载取票仍返回 6005。
+  - 已修复服务端 group E2EE attachment grant 使用 raw `meta.message_id` 写入导致客户端下载使用 canonical `{group_did}:{group_event_seq}` 取票时返回 6005 的问题；同时保留 forwarded accepted response 的 `group_did` 校验，避免远端返回其他 group 时写入错误 grant。
+  - 部署 `message-service:bb06bdf` 后 group secure attachment focused 通过，但 final remote full 暴露 plain/base `group.send` 附件 6005 回归。根因是 plain/base group 历史和下载仍使用客户端 raw `meta.message_id`，不能被统一 canonical 化；已在 `message-service:e1a2a22` 修复为只有 `group-e2ee` grant 使用 canonical message id，`transport-protected` grant 保留 raw message id。
+  - final remote full 中 Hermes bridge contract 曾出现一次 `adapter marker: Os { code: 2, kind: NotFound, message: "No such file or directory" }`，focused 重跑通过，判定为 transient 非本任务失败。
 - 已修复问题对应 commit：
   - `e2ee-attachment-cli-rs2:5520adb`：public projection redaction、direct async attachment follow-up。
   - `e2ee-attachment-cli-rs2:1745f72`：direct async attachment init。
+  - `e2ee-attachment-cli-rs2:34ac61c`：internal manifest cache/redaction/download selection。
+  - `e2ee-attachment-cli-rs2:535098c`：记录 plain/base group grant 回归修复。
   - `awiki-system-test:145d920`：direct/group secure attachment system coverage 和 Rust wrapper 安全合同。
   - `awiki-system-test:d17e03a`：显式 Rust CLI repo override 的 selection defaults 测试修复。
-  - 已创建本轮聚焦 commit：`anp/anp:1b83488` typed group payload roundtrip、`e2ee-attachment-cli-rs2:34ac61c` internal manifest cache/redaction/download selection、`message-service:bb06bdf` canonical group grant、`awiki-system-test:1a196fa` focused diagnostic/JWT reload；Plan/Step 台账更新将创建 docs-only commit，hash 以当前仓库 `git log` 和最终响应为准。
+  - `awiki-system-test:1a196fa`：focused diagnostic/JWT reload。
+  - `anp/anp:1b83488`：typed group payload roundtrip。
+  - `message-service:bb06bdf`：group E2EE attachment grant canonical message id。
+  - `message-service:e1a2a22`：plain/base group attachment grant 保留 raw message id。
+  - 本 Plan/Step 台账最终 docs-only commit 由当前仓库 `git log` 与最终响应记录，避免文档自引用导致 hash 循环。
+- 部署证据：
+  - `cd message-service && cargo build -p message-service --release`：通过。
+  - `cd message-service && sudo bash restart.sh`：已执行。
+  - `systemctl show message-service.service -p ActiveState -p SubState -p MainPID -p ExecStart -p WorkingDirectory --no-pager`：`ActiveState=active`、`SubState=running`、`MainPID=3033121`，`ExecStart` 指向 `message-service/target/release/message-service`，`WorkingDirectory` 为 `message-service`。
+  - `ss -ltnp | rg '9900|message-service'`：`message-service` PID `3033121` 监听 `127.0.0.1:9900`。
 - 阶段性验证证据：
   - `cd e2ee-attachment-cli-rs2 && cargo fmt --all --check`：通过。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core async_direct_secure_attachment_sender --locked`：2 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core async_direct_secure_sender --locked`：3 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core attachments_download_runtime --locked`：13 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core attachment_projection --locked`：7 matched tests passed, 0 failed。
-  - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core realtime_notification_normalizer_redacts_attachment_manifest_secrets --locked`：1 passed, 0 failed。
-  - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core secure_group_attachment_public_projection_redacts_and_sets_group_profile --features group-e2ee --locked`：1 passed, 0 failed。
-  - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core realtime_notification_projection_redacts_attachment_manifest_secrets --features group-e2ee --locked`：1 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core attachment_manifest_cache --locked`：2 matched tests passed, 0 failed。
-  - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core local_state_schema --locked`：6 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache --locked`：1 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_redacts --locked`：1 passed, 0 failed。
   - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core group_result_projects_secure_attachment_manifest_payload --locked`：1 passed, 0 failed。
-  - `cd e2ee-attachment-cli-rs2 && cargo test -p im-core message_body_projects_attachment_manifest_as_payload --locked`：1 passed, 0 failed。
   - `cd anp/anp/rust && cargo fmt --all --check`：通过。
   - `cd anp/anp/rust && cargo test --features mls --test group_e2ee_typed_operations_tests typed_operations_create_finalize_add_finalize_without_binary_exec`：1 passed, 0 failed。
-  - `cd message-service && cargo test -p im-attachment attachment -- --nocapture`：12 passed, 0 failed。
   - `cd message-service && cargo fmt --all --check`：通过。
-  - `cd message-service && cargo test -p im-attachment grant -- --nocapture`：5 passed, 0 failed。
+  - `cd message-service && cargo test -p im-group group_attachment_grants_preserve_transport_protected_message_id -- --nocapture`：1 passed, 0 failed。
+  - `cd message-service && cargo test -p im-group forwarded_group_attachment_grants_preserve_transport_protected_message_id -- --nocapture`：1 passed, 0 failed。
   - `cd message-service && cargo test -p im-group forwarded_group_attachment_grants_use_canonical_group_message_id -- --nocapture`：1 passed, 0 failed。
-  - `cd message-service && cargo test -p im-group forwarded_group_attachment_grants_reject_different_remote_group -- --nocapture`：1 passed, 0 failed。
   - `cd message-service && cargo test -p im-group group_e2ee_send_attachment_grant_refs_write_group_e2ee_grant_after_acceptance -- --nocapture`：1 passed, 0 failed。
   - `cd message-service && cargo test -p im-group group_e2ee -- --nocapture`：22 passed, 0 failed。
+  - `cd message-service && cargo test -p im-attachment grant -- --nocapture`：5 passed, 0 failed。
   - `cd message-service && cargo check -p message-service`：通过。
-  - `cd awiki-system-test && uv run --no-sync python -m py_compile tests_v2/cli/test_awiki_cli_direct_local.py tests_v2/cli/test_awiki_cli_group_local.py tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py tests_v2/helpers/__init__.py tests_v2/helpers/awiki_cli.py tests_v2/helpers/awiki_cli_rust_contracts.py`：通过。
-  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py -q -rs`：2 passed, 0 failed。
-  - `cd awiki-system-test && uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_selection_defaults.py -q`：2 passed, 0 failed。
-  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_direct_local.py -k "secure_direct_attachments" -q -rs`：1 passed、9 deselected、0 skipped。
-- 阶段性失败证据：
-  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_group_local.py -k "group_secure_attachment" -q -rs`：1 failed、12 deselected、0 skipped；失败点为 `attachment.get_download_ticket` 返回 `service rpc error 6005: no access grant matched the requested attachment context`。Bob 已能读到 redacted group E2EE attachment manifest；本地服务端 canonical grant 修复已通过 focused tests，需部署后复测。
-  - 历史 remote full：`cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync awiki-system-test`：183 passed、2 failed、15 skipped、372.22s；两个失败当时分别为 direct/group secure attachment 用例，均由远端部署策略 6013 触发。当前 direct focused 已通过，remote full 需在 group canonical grant 修复部署后重跑。
-- 本轮提交后复测：`cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_group_local.py -k "group_secure_attachment" -q -rs`：1 failed、12 deselected、0 skipped、5.70s；失败仍为 `test_awiki_cli_group_secure_attachment_downloads_plaintext` 在 `attachment.get_download_ticket` 返回 `service rpc error 6005: no access grant matched the requested attachment context`。因此未继续执行 final remote full，避免把已知外部部署阻断扩大为重复失败。
-- 继续复测：`cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_group_local.py -k "group_secure_attachment" -q -rs`：1 failed、12 deselected、0 skipped、4.17s；失败仍为 `test_awiki_cli_group_secure_attachment_downloads_plaintext` 在 Bob 下载阶段调用 `attachment.get_download_ticket` 返回 `service rpc error 6005: no access grant matched the requested attachment context`。远端阻塞未变化，final remote full 仍需等 `awiki.info` 部署 `message-service:bb06bdf` 后执行。
-- 跳过原因：remote full 的 15 个 skipped 来自 local-only daemon/mail/message-service flag-off/multi-tenant 可选配置或已删除 store internal target，不属于 E2EE 附件功能本身的失败。
-- 剩余风险：在 `awiki.info` 部署包含本轮服务端 canonical group grant 修复前，无法证明真实 remote group E2EE 附件 Access Grant、ticket、下载、digest 校验和本地解密完整闭环。
-- 最终证据：未完成；当前只有阶段性通过和阻断证据。
-- 最终 `git status`：未完成；本次文档收口提交后复核各仓库工作区状态。当前已确认 `anp/anp` clean 且 ahead 1，`message-service` clean 且 ahead 3，`awiki-system-test` clean 且 ahead 3，`e2ee-attachment-cli-rs2` 仅剩 Plan/Step 台账更新待提交。
-- 如果本阶段修改文件：已创建 `e2ee-attachment-cli-rs2` 文档收口聚焦 commit；具体 hash 以当前仓库 `git log` 和最终响应为准，避免在文档中自引用导致 hash 循环。
+  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_group_local.py -k "can_send_and_download_group_attachments" -q -rs`：1 passed、12 deselected、0 skipped。
+  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_group_local.py -k "group_secure_attachment" -q -rs`：1 passed、12 deselected、0 skipped。
+  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/message_service/test_attachment_local.py -k "same_domain_group_attachment_ticket_and_download" -q -rs`：第一次遇到 `group.create` transient HTTP 401；重跑 1 passed、1 deselected、0 skipped。
+  - `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/runtime/test_runtime_cli.py -k "runtime_host_notify_hermes_bridge_platform_service_contracts" -q -rs`：1 passed、22 deselected、0 skipped。
+- 最终 remote full：
+  - 命令：`cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync awiki-system-test`。
+  - 结果：185 passed、15 skipped、0 failed，231.25s。
+  - 关键配置：`AWIKI_SYSTEM_TEST_MODE=remote`、`E2E_DID_DOMAIN=awiki.info`、`AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2`、`CARGO_BUILD_JOBS=1`。
+  - skip 原因：1 个 Rust store internal target 已从 `awiki-cli-rs2` 移除；1 个 daemon long-running E2E 需要 local `tests_v2` topology；3 个 daemon Rust contract 需要显式 `AWIKI_DAEMON_RUST_REPO`；4 个 mail tests 因 `awiki-mail-service /mail/health` 返回 HTTP 502 跳过；1 个 mail notification 需要 local topology；1 个 message-service direct local 需要 local topology；1 个 group E2EE flag-off guard 需要指定测试配置；3 个 multi-tenant admission tests 需要额外 DID-only/message-only 环境变量。
+- 最终 `git status` 记录：
+  - 收口文档提交前：`message-service` clean 且 `release/0526...origin/release/0526 [ahead 4]`；`anp/anp` clean 且 `master...origin/master [ahead 1]`；`awiki-system-test` clean 且 `release/0526...origin/release/0526 [ahead 3]`；`e2ee-attachment-cli-rs2` 仅本 Plan 和 Step 07 台账更新待提交。
+  - 本次文档收口提交后需要在最终响应记录各仓库最终状态；文档不自引用最终 commit hash。
