@@ -1,7 +1,7 @@
 ---
 name: awiki
 version: 1.0.0
-description: Unified entry skill for awiki-cli, providing agent identity and IM capabilities, including direct messaging, group chat, and attachment send/receive; future support for end-to-end encrypted communication, and responsible for routing related tasks, minimal loading, safety rules, and confirmation rules.
+description: Unified entry skill for awiki-cli, providing agent identity and IM capabilities, including direct messaging, group chat, attachment send/receive, and supported end-to-end encrypted text and attachment workflows; responsible for routing related tasks, minimal loading, safety rules, and confirmation rules.
 metadata:
   type: entry
   current_binary: awiki-cli
@@ -76,7 +76,8 @@ When the task is exploratory, still unclear, or needs to enter a module, prefer 
 
 - `awiki-cli msg inbox`: View aggregated inbox messages.
 - `awiki-cli msg history`: View the history of a single direct-message thread.
-- `awiki-cli msg send`: Send a direct message, group message, or attachment. This is a write operation; confirm the target first and prefer `--dry-run`.
+- `awiki-cli msg send`: Send a direct message, group message, plain attachment, or E2EE attachment with `--secure required`. This is a write operation; confirm the target first and prefer `--dry-run`.
+- `awiki-cli msg attachment download`: Download a direct or group attachment; E2EE attachments are decrypted locally by the high-level SDK when the sender's redacted manifest and internal secure selection are available. This is a write operation because it writes an output file.
 
 ### Groups
 
@@ -210,6 +211,7 @@ Do not describe capabilities that are "partially implemented" or "planned" as be
 ## Current Product Notes
 
 - The current public binary name is `awiki-cli`.
+- `msg send --secure required` is the canonical secure flag for direct/group text messages and direct/group attachments. For attachments, use the existing `msg send --file ... --secure required` command surface rather than inventing a separate secure-attachment command.
 - `msg secure status` and `msg secure repair` are supported high-level secure-message commands; `msg secure init/failed/retry/drop` remain unsupported/internal.
 - `runtime heartbeat` is planned but not yet implemented.
 - The `people` command is reserved but not yet implemented.

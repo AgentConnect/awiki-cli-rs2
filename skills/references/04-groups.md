@@ -45,7 +45,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Need secure group lifecycle -> use `--secure required` on `group create`, `group add`, `group remove`, or `group leave`
 - Need secure state health or recovery -> `group secure status` / `group secure repair`
 - Need to change the name, description, or policy -> `group update`
-- Need to send text to the group -> use `03-messaging.md`
+- Need to send text, plain attachments, or E2EE attachments to the group -> use `03-messaging.md`
 
 ## Canonical Commands
 
@@ -95,7 +95,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 ## Implementation Notes
 
 - In the current repository, `group` is an independent domain
-- `group messages` is a read-only inspection path; sending still happens through `msg send --group`
+- `group messages` is a read-only inspection path; sending still happens through `msg send --group`, including group E2EE attachments with `--file ... --secure required`.
 - `--e2ee` and `--message-security-profile group-e2ee` are deprecated aliases for `--secure required`; prefer the canonical flag.
 - Low-level `group e2ee publish-key-package/pending/process-leave-request/recover-member/update-key/rejoin` commands are hidden/internal or unsupported and should not be recommended as product workflows.
 
