@@ -37,6 +37,7 @@ class AttachmentSendRequest {
     this.caption,
     this.mimeType,
     this.filename,
+    this.security = MessageSecurityMode.defaultPlain,
     this.idempotencyKey,
     this.waitForFinalAcceptance = false,
   });
@@ -46,6 +47,7 @@ class AttachmentSendRequest {
   final String? caption;
   final String? mimeType;
   final String? filename;
+  final MessageSecurityMode security;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
 }
@@ -75,6 +77,8 @@ class UploadedAttachment {
     required this.size,
     required this.digestB64u,
     required this.objectUri,
+    this.objectEncryptionMode = 'none',
+    this.plaintextSizeBytes,
   });
 
   final String attachmentId;
@@ -84,6 +88,8 @@ class UploadedAttachment {
   final String size;
   final String digestB64u;
   final String objectUri;
+  final String objectEncryptionMode;
+  final int? plaintextSizeBytes;
 }
 
 sealed class AttachmentDestination {

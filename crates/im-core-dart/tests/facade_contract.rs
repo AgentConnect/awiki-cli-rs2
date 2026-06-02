@@ -29,6 +29,7 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
         caption: Some("caption".to_string()),
         mime_type: None,
         filename: None,
+        security: awiki_im_core::dto::message::DartMessageSecurityMode::E2eeRequired,
         idempotency_key: Some("idem-1".to_string()),
         wait_for_final_acceptance: true,
     };
@@ -44,6 +45,10 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
     ));
     assert_eq!(request.delivery.idempotency_key.as_deref(), Some("idem-1"));
     assert!(request.delivery.wait_for_final_acceptance);
+    assert!(matches!(
+        request.security,
+        im_core::messages::MessageSecurityMode::E2eeRequired
+    ));
 }
 
 #[test]
@@ -86,13 +91,18 @@ fn attachment_send_result_preserves_upload_metadata_for_dart() {
             size: "5".to_string(),
             digest_b64u: "digest".to_string(),
             object_uri: "object://att-1".to_string(),
-            object_encryption_mode: "none".to_string(),
-            plaintext_size_bytes: None,
+            object_encryption_mode: "object-e2ee".to_string(),
+            plaintext_size_bytes: Some(4),
         },
         manifest: serde_json::json!({
             "attachments": [{
-                "id": "att-1",
-                "filename": "note.txt"
+                "attachment_id": "att-1",
+                "filename": "note.txt",
+                "encryption_info": {
+                    "mode": "object-e2ee",
+                    "object_cipher": "chacha20-poly1305",
+                    "plaintext_size": "4"
+                }
             }]
         }),
     };
@@ -110,10 +120,24 @@ fn attachment_send_result_preserves_upload_metadata_for_dart() {
     assert_eq!(dart.attachment.size, "5");
     assert_eq!(dart.attachment.digest_b64u, "digest");
     assert_eq!(dart.attachment.object_uri, "object://att-1");
+    assert_eq!(dart.attachment.object_encryption_mode, "object-e2ee");
+    assert_eq!(dart.attachment.plaintext_size_bytes, Some(4));
 
     let manifest: serde_json::Value =
         serde_json::from_str(&dart.manifest_json).expect("manifest json is preserved");
-    assert_eq!(manifest["attachments"][0]["id"], "att-1");
+    assert_eq!(manifest["attachments"][0]["attachment_id"], "att-1");
+    assert_eq!(
+        manifest["attachments"][0]["encryption_info"]["mode"],
+        "object-e2ee"
+    );
+    assert_eq!(
+        manifest["attachments"][0]["encryption_info"].get("object_key_b64u"),
+        None
+    );
+    assert_eq!(
+        manifest["attachments"][0]["encryption_info"].get("nonce_b64u"),
+        None
+    );
 }
 
 #[test]

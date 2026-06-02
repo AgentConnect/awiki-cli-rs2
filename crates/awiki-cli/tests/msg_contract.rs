@@ -751,13 +751,14 @@ fn msg_validation_errors_match_go_handler_boundary() {
 }
 
 #[test]
-fn msg_unsupported_secure_mode_errors_match_cutover_boundary() {
+fn msg_secure_attachment_dry_run_uses_high_level_plan() {
     let workspace = TempDir::new().expect("workspace");
     let attachment = workspace.path().join("payload.txt");
     std::fs::write(&attachment, "attachment body").expect("write attachment");
 
-    let secure_attachment = awiki_cmd(
+    let secure_attachment = success_json(&awiki_cmd(
         &[
+            "--dry-run",
             "--identity",
             "alice",
             "msg",
@@ -772,11 +773,21 @@ fn msg_unsupported_secure_mode_errors_match_cutover_boundary() {
             "on",
         ],
         workspace.path(),
+    ));
+    assert_eq!(
+        secure_attachment["data"]["plan"]["action"],
+        "attachment.send"
     );
-    assert_code(&secure_attachment, 2);
-    let envelope = error_json(&secure_attachment);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_contains(&envelope["error"]["message"], "secure attachment");
+    assert_eq!(secure_attachment["data"]["plan"]["secure"], true);
+    assert_eq!(secure_attachment["data"]["plan"]["security"], "required");
+    assert_warning_contains(
+        &secure_attachment,
+        "--secure on is deprecated; use --secure required.",
+    );
+    let serialized = serde_json::to_string(&secure_attachment).expect("serialize envelope");
+    assert!(!serialized.contains("object_key_b64u"));
+    assert!(!serialized.contains("nonce_b64u"));
+    assert!(!serialized.contains("download_ticket"));
 }
 
 #[test]

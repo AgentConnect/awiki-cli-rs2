@@ -1504,6 +1504,7 @@ mod tests {
                 mime_type: None,
                 filename: None,
                 delivery: crate::messages::MessageDeliveryOptions::default(),
+                security: crate::messages::MessageSecurityMode::DefaultPlain,
             },
             resolved_target_did: None,
             credentials: Some(fixture.credentials()),
@@ -1550,6 +1551,7 @@ mod tests {
                 mime_type: None,
                 filename: None,
                 delivery: crate::messages::MessageDeliveryOptions::default(),
+                security: crate::messages::MessageSecurityMode::DefaultPlain,
             },
             resolved_target_did: None,
             credentials: Some(fixture.credentials()),
@@ -2220,6 +2222,7 @@ mod tests {
             mime_type: request_mime.map(ToOwned::to_owned),
             filename: request_filename.map(ToOwned::to_owned),
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            security: crate::messages::MessageSecurityMode::DefaultPlain,
         }
     }
 

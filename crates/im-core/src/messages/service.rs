@@ -329,6 +329,26 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    pub(crate) fn send_secure_attachment(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        validate_body(&request.body)?;
+        validate_send_mode(&request.target, &request.security)?;
+        validate_secure_attachment_request(&request.body, &request.security)?;
+        match (&request.target, &request.security) {
+            (
+                super::MessageTarget::Direct(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
+            ) => self.send_direct_e2ee(resolve_send_request(self.client, request)?),
+            (
+                super::MessageTarget::Group(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
+            ) => self.send_group_e2ee(request),
+            _ => Err(crate::ImError::unsupported("secure-attachment")),
+        }
+    }
+
     pub async fn send_async(
         &self,
         request: super::SendMessageRequest,
@@ -417,6 +437,29 @@ impl<'a> MessageService<'a> {
                 }
                 Ok(result.sdk_result)
             }
+        }
+    }
+
+    pub(crate) async fn send_secure_attachment_async(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        validate_body(&request.body)?;
+        validate_send_mode(&request.target, &request.security)?;
+        validate_secure_attachment_request(&request.body, &request.security)?;
+        match (&request.target, &request.security) {
+            (
+                super::MessageTarget::Direct(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
+            ) => {
+                self.send_direct_e2ee_async(resolve_send_request_async(self.client, request).await?)
+                    .await
+            }
+            (
+                super::MessageTarget::Group(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
+            ) => self.send_group_e2ee_async(request).await,
+            _ => Err(crate::ImError::unsupported("secure-attachment")),
         }
     }
 
@@ -1239,6 +1282,23 @@ fn validate_attachment_security(
     }
 }
 
+fn validate_secure_attachment_request(
+    body: &super::MessageBody,
+    security: &super::MessageSecurityMode,
+) -> crate::ImResult<()> {
+    if !matches!(body, super::MessageBody::Attachment { .. }) {
+        return Err(crate::ImError::unsupported("secure-attachment"));
+    }
+    match security {
+        super::MessageSecurityMode::E2eeRequired
+        | super::MessageSecurityMode::SecureDirect
+        | super::MessageSecurityMode::GroupE2ee => Ok(()),
+        super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain => {
+            Err(crate::ImError::unsupported("secure-attachment"))
+        }
+    }
+}
+
 fn attachment_request_from_message_request(
     request: super::SendMessageRequest,
 ) -> crate::ImResult<crate::attachments::AttachmentSendRequest> {
@@ -1247,12 +1307,14 @@ fn attachment_request_from_message_request(
             input,
             caption,
             mime_type,
+            filename,
         } => Ok(crate::attachments::AttachmentSendRequest {
             input,
             caption,
             mime_type,
-            filename: None,
+            filename,
             delivery: request.delivery,
+            security: crate::messages::MessageSecurityMode::DefaultPlain,
         }),
         _ => Err(crate::ImError::unsupported("attachments")),
     }

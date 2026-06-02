@@ -4078,6 +4078,8 @@ impl SseDecode for crate::dto::attachment::DartAttachmentSendRequest {
         let mut var_caption = <Option<String>>::sse_decode(deserializer);
         let mut var_mimeType = <Option<String>>::sse_decode(deserializer);
         let mut var_filename = <Option<String>>::sse_decode(deserializer);
+        let mut var_security =
+            <crate::dto::message::DartMessageSecurityMode>::sse_decode(deserializer);
         let mut var_idempotencyKey = <Option<String>>::sse_decode(deserializer);
         let mut var_waitForFinalAcceptance = <bool>::sse_decode(deserializer);
         return crate::dto::attachment::DartAttachmentSendRequest {
@@ -4086,6 +4088,7 @@ impl SseDecode for crate::dto::attachment::DartAttachmentSendRequest {
             caption: var_caption,
             mime_type: var_mimeType,
             filename: var_filename,
+            security: var_security,
             idempotency_key: var_idempotencyKey,
             wait_for_final_acceptance: var_waitForFinalAcceptance,
         };
@@ -5577,6 +5580,8 @@ impl SseDecode for crate::dto::attachment::DartUploadedAttachment {
         let mut var_size = <String>::sse_decode(deserializer);
         let mut var_digestB64U = <String>::sse_decode(deserializer);
         let mut var_objectUri = <String>::sse_decode(deserializer);
+        let mut var_objectEncryptionMode = <String>::sse_decode(deserializer);
+        let mut var_plaintextSizeBytes = <Option<u64>>::sse_decode(deserializer);
         return crate::dto::attachment::DartUploadedAttachment {
             attachment_id: var_attachmentId,
             filename: var_filename,
@@ -5585,6 +5590,8 @@ impl SseDecode for crate::dto::attachment::DartUploadedAttachment {
             size: var_size,
             digest_b64u: var_digestB64U,
             object_uri: var_objectUri,
+            object_encryption_mode: var_objectEncryptionMode,
+            plaintext_size_bytes: var_plaintextSizeBytes,
         };
     }
 }
@@ -6290,6 +6297,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::attachment::DartAttachmentSen
             self.caption.into_into_dart().into_dart(),
             self.mime_type.into_into_dart().into_dart(),
             self.filename.into_into_dart().into_dart(),
+            self.security.into_into_dart().into_dart(),
             self.idempotency_key.into_into_dart().into_dart(),
             self.wait_for_final_acceptance.into_into_dart().into_dart(),
         ]
@@ -8216,6 +8224,8 @@ impl flutter_rust_bridge::IntoDart for crate::dto::attachment::DartUploadedAttac
             self.size.into_into_dart().into_dart(),
             self.digest_b64u.into_into_dart().into_dart(),
             self.object_uri.into_into_dart().into_dart(),
+            self.object_encryption_mode.into_into_dart().into_dart(),
+            self.plaintext_size_bytes.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -8404,6 +8414,7 @@ impl SseEncode for crate::dto::attachment::DartAttachmentSendRequest {
         <Option<String>>::sse_encode(self.caption, serializer);
         <Option<String>>::sse_encode(self.mime_type, serializer);
         <Option<String>>::sse_encode(self.filename, serializer);
+        <crate::dto::message::DartMessageSecurityMode>::sse_encode(self.security, serializer);
         <Option<String>>::sse_encode(self.idempotency_key, serializer);
         <bool>::sse_encode(self.wait_for_final_acceptance, serializer);
     }
@@ -9439,6 +9450,8 @@ impl SseEncode for crate::dto::attachment::DartUploadedAttachment {
         <String>::sse_encode(self.size, serializer);
         <String>::sse_encode(self.digest_b64u, serializer);
         <String>::sse_encode(self.object_uri, serializer);
+        <String>::sse_encode(self.object_encryption_mode, serializer);
+        <Option<u64>>::sse_encode(self.plaintext_size_bytes, serializer);
     }
 }
 

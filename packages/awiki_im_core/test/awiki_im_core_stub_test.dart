@@ -83,13 +83,24 @@ void main() {
         size: '5',
         digestB64u: 'digest',
         objectUri: 'object://att-1',
+        objectEncryptionMode: 'object-e2ee',
+        plaintextSizeBytes: 4,
       ),
       manifestJson: '{"attachments":[{"id":"att-1"}]}',
     );
 
     expect(result.message.message.id, 'msg-1');
     expect(result.attachment.attachmentId, 'att-1');
+    expect(result.attachment.objectEncryptionMode, 'object-e2ee');
+    expect(result.attachment.plaintextSizeBytes, 4);
     expect(result.manifestJson, contains('att-1'));
+
+    const request = AttachmentSendRequest(
+      target: MessageTarget.direct('did:example:bob'),
+      input: AttachmentInput.localFile('secret.pdf'),
+      security: MessageSecurityMode.e2eeRequired,
+    );
+    expect(request.security, MessageSecurityMode.e2eeRequired);
   });
 
   test('secure e2ee API shape is stable', () {

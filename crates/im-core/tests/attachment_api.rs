@@ -46,6 +46,7 @@ fn attachments_input_is_the_canonical_message_body_input() {
         input: input.clone(),
         caption: Some("caption".to_string()),
         mime_type: Some("text/plain".to_string()),
+        filename: None,
     };
 
     assert!(matches!(
@@ -63,6 +64,7 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
         input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
         caption: Some("caption".to_string()),
         mime_type: Some("image/png".to_string()),
+        filename: Some("override.png".to_string()),
     };
 
     match body {
@@ -70,10 +72,12 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
             input: AttachmentInput::LocalFile(path),
             caption,
             mime_type,
+            filename,
         } => {
             assert_eq!(path, PathBuf::from("image.png"));
             assert_eq!(caption.as_deref(), Some("caption"));
             assert_eq!(mime_type.as_deref(), Some("image/png"));
+            assert_eq!(filename.as_deref(), Some("override.png"));
         }
         _ => panic!("expected attachment body"),
     }
@@ -98,6 +102,7 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
             mime_type: Some("image/png".to_string()),
             filename: None,
             delivery: MessageDeliveryOptions::default(),
+            security: MessageSecurityMode::DefaultPlain,
         },
     );
     assert!(matches!(
@@ -170,6 +175,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
                 mime_type: Some("application/custom".to_string()),
                 filename: Some("override.bin".to_string()),
                 delivery: MessageDeliveryOptions::default(),
+                security: MessageSecurityMode::DefaultPlain,
             },
         )
         .await

@@ -306,6 +306,7 @@ pub enum MessageBody {
         input: AttachmentInput,
         caption: Option<String>,
         mime_type: Option<String>,
+        filename: Option<String>,
     },
 }
 
@@ -501,8 +502,29 @@ pub struct AttachmentService<'a> {
 }
 
 impl AttachmentService<'_> {
-    pub fn send(&self, target: MessageTarget, request: AttachmentSendRequest) -> ImResult<SendMessageResult>;
+    pub fn send(&self, target: MessageTarget, request: AttachmentSendRequest) -> ImResult<AttachmentSendResult>;
     pub fn download(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
+}
+
+pub struct AttachmentSendRequest {
+    pub input: AttachmentInput,
+    pub caption: Option<String>,
+    pub mime_type: Option<String>,
+    pub filename: Option<String>,
+    pub delivery: MessageDeliveryOptions,
+    pub security: MessageSecurityMode,
+}
+
+pub struct UploadedAttachment {
+    pub attachment_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub size: String,
+    pub digest_b64u: String,
+    pub object_uri: String,
+    pub object_encryption_mode: String,
+    pub plaintext_size_bytes: Option<u64>,
 }
 
 pub enum AttachmentInput {
@@ -520,7 +542,10 @@ pub enum AttachmentDestination {
 }
 ```
 
-P1 不实现完整 upload/download。若调用 `MessageBody::Attachment`，返回 `UnsupportedCapability`。
+`AttachmentSendRequest.security = DefaultPlain | Plain` 保持 `transport-protected + encryption_info.mode=none`。
+`E2eeRequired | SecureDirect | GroupE2ee` 复用 `messages().send(MessageBody::Attachment, security)` 的高层 secure attachment 路径：对象上传前本地加密，返回的 `AttachmentSendResult.manifest` 是 redacted manifest。
+
+默认 public API 不暴露 `object_key_b64u`、`nonce_b64u`、download ticket、raw ciphertext、secure session state 或 MLS provider path。
 
 ## 13. realtime：P5+
 

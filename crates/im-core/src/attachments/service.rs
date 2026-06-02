@@ -12,6 +12,13 @@ impl<'a> AttachmentService<'a> {
         target: crate::messages::MessageTarget,
         request: super::AttachmentSendRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        if attachment_security_is_secure(&request.security) {
+            let result = self
+                .client
+                .messages()
+                .send_secure_attachment(message_request_from_attachment(target, request)?)?;
+            return attachment_send_result_from_secure_message(result);
+        }
         let resolved_target_did = resolve_direct_target_did(self.client, &target)?;
         let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
             self.client,
@@ -59,6 +66,14 @@ impl<'a> AttachmentService<'a> {
         target: crate::messages::MessageTarget,
         request: super::AttachmentSendRequest,
     ) -> crate::ImResult<super::AttachmentSendResult> {
+        if attachment_security_is_secure(&request.security) {
+            let result = self
+                .client
+                .messages()
+                .send_secure_attachment_async(message_request_from_attachment(target, request)?)
+                .await?;
+            return attachment_send_result_from_secure_message(result);
+        }
         let resolved_target_did = resolve_direct_target_did_async(self.client, &target).await?;
         let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
             self.client,
@@ -142,6 +157,152 @@ impl<'a> AttachmentService<'a> {
         )
         .await
         .map(|result| result.sdk_result)
+    }
+}
+
+fn attachment_security_is_secure(security: &crate::messages::MessageSecurityMode) -> bool {
+    matches!(
+        security,
+        crate::messages::MessageSecurityMode::E2eeRequired
+            | crate::messages::MessageSecurityMode::SecureDirect
+            | crate::messages::MessageSecurityMode::GroupE2ee
+    )
+}
+
+fn message_request_from_attachment(
+    target: crate::messages::MessageTarget,
+    request: super::AttachmentSendRequest,
+) -> crate::ImResult<crate::messages::SendMessageRequest> {
+    Ok(crate::messages::SendMessageRequest {
+        target,
+        body: crate::messages::MessageBody::Attachment {
+            input: request.input,
+            caption: request.caption,
+            mime_type: request.mime_type,
+            filename: request.filename,
+        },
+        security: request.security,
+        client_message_id: None,
+        delivery: request.delivery,
+    })
+}
+
+fn attachment_send_result_from_secure_message(
+    message: crate::messages::SendMessageResult,
+) -> crate::ImResult<super::AttachmentSendResult> {
+    let manifest = secure_attachment_manifest_from_message(&message)?;
+    let parsed = crate::attachments::manifest::parse_attachment_manifest(&manifest)?;
+    let descriptor = selected_attachment_descriptor(&parsed)?;
+    let target_kind = match &message.message.thread {
+        crate::messages::ThreadRef::Direct(_) => "agent".to_owned(),
+        crate::messages::ThreadRef::Group(_) => "group".to_owned(),
+        crate::messages::ThreadRef::Thread(_) => {
+            return Err(crate::ImError::unsupported("thread-attachment-send"));
+        }
+    };
+    let target_did = secure_attachment_target_did(&message);
+    let size_bytes = descriptor.size.trim().parse::<u64>().map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("size".to_owned()),
+            "attachment size must be an unsigned integer",
+        )
+    })?;
+    let plaintext_size_bytes = descriptor
+        .plaintext_size
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                crate::ImError::invalid_input(
+                    Some("plaintext_size".to_owned()),
+                    "attachment plaintext_size must be an unsigned integer",
+                )
+            })
+        })
+        .transpose()?;
+
+    Ok(super::AttachmentSendResult {
+        message,
+        target_kind,
+        target_did,
+        attachment: super::UploadedAttachment {
+            attachment_id: descriptor.attachment_id.clone(),
+            filename: descriptor.filename.clone(),
+            mime_type: descriptor.mime_type.clone(),
+            size_bytes,
+            size: descriptor.size.clone(),
+            digest_b64u: descriptor.digest_b64u.clone(),
+            object_uri: descriptor.object_uri.clone(),
+            object_encryption_mode: descriptor.object_encryption_mode(),
+            plaintext_size_bytes,
+        },
+        manifest,
+    })
+}
+
+fn secure_attachment_manifest_from_message(
+    message: &crate::messages::SendMessageResult,
+) -> crate::ImResult<serde_json::Value> {
+    let manifest = message
+        .message
+        .metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == "attachment_manifest")
+        .map(|attribute| attribute.value.as_str())
+        .ok_or_else(|| crate::ImError::Internal {
+            message: "secure attachment result missing redacted attachment manifest".to_owned(),
+        })?;
+    serde_json::from_str(manifest).map_err(|err| crate::ImError::Serialization {
+        detail: err.to_string(),
+    })
+}
+
+fn selected_attachment_descriptor(
+    manifest: &crate::attachments::manifest::AttachmentManifest,
+) -> crate::ImResult<&crate::attachments::manifest::AttachmentDescriptor> {
+    if !manifest.primary_attachment_id.trim().is_empty() {
+        return manifest
+            .attachments
+            .iter()
+            .find(|attachment| attachment.attachment_id == manifest.primary_attachment_id)
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("primary_attachment_id".to_owned()),
+                    "attachment manifest primary attachment is missing",
+                )
+            });
+    }
+    if manifest.attachments.len() == 1 {
+        return Ok(&manifest.attachments[0]);
+    }
+    Err(crate::ImError::invalid_input(
+        Some("attachment_id".to_owned()),
+        "attachment_id is required for messages with multiple attachments",
+    ))
+}
+
+fn secure_attachment_target_did(message: &crate::messages::SendMessageResult) -> String {
+    match &message.message.thread {
+        crate::messages::ThreadRef::Direct(peer) => message
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "resolved_target_did")
+            .map(|attribute| attribute.value.clone())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                message
+                    .message
+                    .receiver
+                    .as_ref()
+                    .map(|peer| peer.as_str().to_owned())
+            })
+            .unwrap_or_else(|| peer.as_str().to_owned()),
+        crate::messages::ThreadRef::Group(group) => group.as_str().to_owned(),
+        crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
     }
 }
 

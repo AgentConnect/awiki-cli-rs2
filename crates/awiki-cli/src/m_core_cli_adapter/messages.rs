@@ -44,9 +44,9 @@ pub fn send_message_request(
 pub fn send_attachment_request(
     command: &ParsedCommand,
     default_domain: &str,
-) -> Result<(MessageTarget, AttachmentSendRequest), ExitError> {
+) -> Result<(MessageTarget, AttachmentSendRequest, Vec<String>), ExitError> {
     let target = message_target(command, default_domain)?;
-    validate_attachment_security(command, &target)?;
+    let (security, warnings) = message_security(command, &target)?;
     let file_path = string_flag(command, "file");
     if file_path.trim().is_empty() {
         return Err(ExitError::new(
@@ -70,7 +70,9 @@ pub fn send_attachment_request(
                 .filter(|value| !value.trim().is_empty()),
             filename: None,
             delivery: MessageDeliveryOptions::default(),
+            security,
         },
+        warnings,
     ))
 }
 
@@ -845,6 +847,7 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
             caption: Some(text).filter(|value| !value.trim().is_empty()),
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
+            filename: None,
         });
     }
     let text = message_text(command, false)?;
@@ -884,53 +887,6 @@ fn message_text(command: &ParsedCommand, allow_empty: bool) -> Result<String, Ex
         ));
     }
     Ok(text)
-}
-
-fn validate_attachment_security(
-    command: &ParsedCommand,
-    target: &MessageTarget,
-) -> Result<(), ExitError> {
-    match string_flag(command, "secure")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "" | "default" | "plain" | "off" | "false" => Ok(()),
-        "direct" | "secure-direct" | "on" | "true" | "required" => match target {
-            MessageTarget::Direct(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "secure attachment messages are not supported by the Phase 4 IM Core adapter.",
-                "Use --secure off for attachment messages.",
-            )),
-            MessageTarget::Group(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
-                "Use --secure off for attachment messages.",
-            )),
-        },
-        "group-e2ee" | "e2ee" => match target {
-            MessageTarget::Direct(_) => Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "--secure group-e2ee can only be used with --group.",
-                "Use --secure required for direct E2EE text messages.",
-            )),
-            MessageTarget::Group(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
-                "Use --secure off for attachment messages.",
-            )),
-        },
-        value => Err(ExitError::new(
-            "invalid_argument",
-            2,
-            format!("unsupported --secure value {value:?}."),
-            "Use --secure plain, --secure off, or leave it unset for Phase 4 attachments.",
-        )),
-    }
 }
 
 fn message_kind(raw: &str) -> Result<MessageKind, ExitError> {
@@ -1323,7 +1279,12 @@ fn render_direct_attachment_result(
                 "handle": target.handle,
                 "kind": "direct",
             },
-            "message": attachment_message_value(&result.message_id, &result.accepted_at, &caption),
+            "message": attachment_message_value(
+                &result.message_id,
+                &result.accepted_at,
+                &caption,
+                attachment_result_is_secure(attachment_result),
+            ),
             "attachment": uploaded_attachment_value(&attachment_result.attachment),
             "delivery": result,
         }),
@@ -1354,7 +1315,12 @@ fn render_group_attachment_result(
                 "kind": "group",
                 "did": group_did,
             },
-            "message": attachment_message_value(&message_id, &result.accepted_at, &caption),
+            "message": attachment_message_value(
+                &message_id,
+                &result.accepted_at,
+                &caption,
+                attachment_result_is_secure(attachment_result),
+            ),
             "attachment": uploaded_attachment_value(&attachment_result.attachment),
             "delivery": result,
         }),
@@ -1363,13 +1329,13 @@ fn render_group_attachment_result(
     })
 }
 
-fn attachment_message_value(message_id: &str, sent_at: &str, caption: &str) -> Value {
+fn attachment_message_value(message_id: &str, sent_at: &str, caption: &str, secure: bool) -> Value {
     json!({
         "id": message_id,
         "type": "attachment_manifest",
         "content_type": im_core::attachments::attachment_manifest_content_type(),
         "caption": caption,
-        "secure": false,
+        "secure": secure,
         "sent_at": sent_at,
     })
 }
@@ -1385,6 +1351,8 @@ fn uploaded_attachment_value(attachment: &UploadedAttachment) -> Value {
             "value_b64u": attachment.digest_b64u,
         },
         "object_uri": attachment.object_uri,
+        "object_encryption_mode": attachment.object_encryption_mode,
+        "plaintext_size_bytes": attachment.plaintext_size_bytes,
     })
 }
 
@@ -1401,7 +1369,23 @@ fn attachment_selection_value(selection: &AttachmentSelection) -> Value {
         "object_uri": selection.object_uri,
         "sender_did": selection.sender_did,
         "caption": selection.caption,
+        "message_security_profile": selection.message_security_profile,
+        "object_encryption_mode": selection.object_encryption_mode,
+        "object_cipher": selection.object_cipher,
+        "plaintext_size": selection.plaintext_size,
     })
+}
+
+fn attachment_result_is_secure(attachment_result: &AttachmentSendResult) -> bool {
+    attachment_result
+        .message
+        .message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| {
+            attribute.key == "security" && attribute.value.to_ascii_lowercase().contains("e2ee")
+        })
 }
 
 fn clean_output_path(output_path: &str) -> PathBuf {

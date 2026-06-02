@@ -117,6 +117,14 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
         format!("{}/objects/att-live-1", server.base_url())
     );
     assert_eq!(
+        envelope["data"]["attachment"]["object_encryption_mode"],
+        "none"
+    );
+    assert_eq!(
+        envelope["data"]["attachment"]["plaintext_size_bytes"],
+        Value::Null
+    );
+    assert_eq!(
         envelope["data"]["attachment"]["digest"]["value_b64u"],
         digest_b64u(payload)
     );

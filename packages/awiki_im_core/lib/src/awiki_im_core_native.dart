@@ -1305,6 +1305,7 @@ extension on AttachmentSendRequest {
         caption: caption,
         mimeType: mimeType,
         filename: filename,
+        security: security._toGen(),
         idempotencyKey: idempotencyKey,
         waitForFinalAcceptance: waitForFinalAcceptance,
       );
@@ -1339,6 +1340,8 @@ extension on gen_attachment.DartUploadedAttachment {
     size: size,
     digestB64u: digestB64U,
     objectUri: objectUri,
+    objectEncryptionMode: objectEncryptionMode,
+    plaintextSizeBytes: plaintextSizeBytes?.toInt(),
   );
 }
 

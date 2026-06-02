@@ -74,6 +74,14 @@ WebSocket remains an `im-core` internal transport concern. Transport details suc
 
 Flutter Web still receives a stub and does not support native realtime.
 
+## Attachments And E2EE
+
+`client.attachments.send(AttachmentSendRequest(...))` is a high-level facade over `im-core` attachment sending. `AttachmentSendRequest.security` defaults to `MessageSecurityMode.defaultPlain`; callers can set `MessageSecurityMode.e2eeRequired` for direct or group E2EE attachment messages.
+
+Secure attachment sends do not expose P7 control-plane calls, download tickets, object keys, nonces, raw ciphertext, secure session state, or MLS provider paths to Dart. `AttachmentSendResult.manifestJson` is the public redacted manifest projection. For E2EE attachments it may include `encryption_info.mode = object-e2ee`, `object_cipher`, and `plaintext_size`, but must not contain `object_key_b64u` or `nonce_b64u`.
+
+`UploadedAttachment.sizeBytes` / `size` describe the uploaded object bytes. For `object-e2ee` this is ciphertext size. `UploadedAttachment.plaintextSizeBytes` carries the original plaintext size when available.
+
 ## Codegen
 
 Generated files are committed so the package can be checked out and analyzed without requiring codegen first:

@@ -552,6 +552,7 @@ fn send_message_request_builds_attachment_sdk_dto() {
             input: AttachmentInput::LocalFile(ref path),
             ref caption,
             mime_type: None,
+            filename: None,
         } if path == Path::new("a.png") && caption.as_deref() == Some("caption")
     ));
     assert_eq!(request.security, MessageSecurityMode::DefaultPlain);

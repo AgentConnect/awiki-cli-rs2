@@ -10,6 +10,7 @@ pub struct AttachmentSendRequest {
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub delivery: crate::messages::MessageDeliveryOptions,
+    pub security: crate::messages::MessageSecurityMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

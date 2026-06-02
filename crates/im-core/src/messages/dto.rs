@@ -28,6 +28,7 @@ pub enum MessageBody {
         input: crate::attachments::AttachmentInput,
         caption: Option<String>,
         mime_type: Option<String>,
+        filename: Option<String>,
     },
 }
 

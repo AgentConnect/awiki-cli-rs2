@@ -66,6 +66,7 @@ pub enum MessageBody {
         input: AttachmentInput,
         caption: Option<String>,
         mime_type: Option<String>,
+        filename: Option<String>,
     },
 }
 
@@ -135,6 +136,29 @@ debug adapter
 ```
 
 不能作为默认 `Message` 字段。
+
+### 当前 E2EE 附件更新
+
+当前实现已支持 `MessageBody::Attachment + MessageSecurityMode::E2eeRequired` 作为 canonical 高层入口：
+
+```rust
+client.messages().send(SendMessageRequest {
+    target,
+    body: MessageBody::Attachment {
+        input,
+        caption,
+        mime_type,
+        filename,
+    },
+    security: MessageSecurityMode::E2eeRequired,
+    client_message_id,
+    delivery,
+})
+```
+
+direct 目标映射到 `direct-e2ee`，group 目标映射到 `group-e2ee`。附件对象在 SDK 内部先做 `object-e2ee` 加密，完整 manifest 只进入 E2EE 内层 plaintext；public `SendMessageResult.metadata.attributes["attachment_manifest"]` 和 `AttachmentSendResult.manifest` 只保存 redacted manifest，不包含 `object_key_b64u` 或 `nonce_b64u`。
+
+CLI、Dart 和其他 facade 可以继续使用 `attachments().send(target, AttachmentSendRequest { security, ... })` 作为便捷入口；当 `security` 为 secure required 时，该入口内部复用上述 message high-level 路径，不拼 P7/P5/P6 wire。
 
 ## 4. Message DTO
 

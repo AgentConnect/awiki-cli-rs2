@@ -157,11 +157,18 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request) = crate::m_core_cli_adapter::messages::send_attachment_request(
-            command,
-            &resolved.did_domain,
-        )?;
+        let (target, request, request_warnings) =
+            crate::m_core_cli_adapter::messages::send_attachment_request(
+                command,
+                &resolved.did_domain,
+            )?;
         let caption = request.caption.clone().unwrap_or_default();
+        let secure = matches!(
+            request.security,
+            im_core::prelude::MessageSecurityMode::E2eeRequired
+                | im_core::prelude::MessageSecurityMode::SecureDirect
+                | im_core::prelude::MessageSecurityMode::GroupE2ee
+        );
         if self.globals.dry_run {
             return self.render_msg_send_plan(
                 resolved,
@@ -174,9 +181,9 @@ impl App {
                     file_path,
                     mime_type,
                     has_attachment: true,
-                    secure: false,
+                    secure,
                 },
-                Vec::new(),
+                request_warnings,
             );
         }
 
@@ -184,7 +191,7 @@ impl App {
             resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
+        let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
             resolved, &client, target, request,
         )
         .map_err(|err| {
@@ -193,6 +200,7 @@ impl App {
                 "Ensure the active identity is ready and the attachment service is reachable.",
             )
         })?;
+        result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", resolved, result)
     }
 
@@ -203,11 +211,18 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request) = crate::m_core_cli_adapter::messages::send_attachment_request(
-            command,
-            &resolved.did_domain,
-        )?;
+        let (target, request, request_warnings) =
+            crate::m_core_cli_adapter::messages::send_attachment_request(
+                command,
+                &resolved.did_domain,
+            )?;
         let caption = request.caption.clone().unwrap_or_default();
+        let secure = matches!(
+            request.security,
+            im_core::prelude::MessageSecurityMode::E2eeRequired
+                | im_core::prelude::MessageSecurityMode::SecureDirect
+                | im_core::prelude::MessageSecurityMode::GroupE2ee
+        );
         if self.globals.dry_run {
             return self.render_msg_send_plan(
                 resolved,
@@ -220,9 +235,9 @@ impl App {
                     file_path,
                     mime_type,
                     has_attachment: true,
-                    secure: false,
+                    secure,
                 },
-                Vec::new(),
+                request_warnings,
             );
         }
 
@@ -231,7 +246,7 @@ impl App {
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
         .await?;
-        let result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
+        let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
             resolved, &client, target, request,
         )
         .await
@@ -241,6 +256,7 @@ impl App {
                 "Ensure the active identity is ready and the attachment service is reachable.",
             )
         })?;
+        result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", resolved, result)
     }
 

@@ -576,6 +576,8 @@ impl From<im_core::attachments::UploadedAttachment> for DartUploadedAttachment {
             size: value.size,
             digest_b64u: value.digest_b64u,
             object_uri: value.object_uri,
+            object_encryption_mode: value.object_encryption_mode,
+            plaintext_size_bytes: value.plaintext_size_bytes,
         }
     }
 }
@@ -587,6 +589,8 @@ impl From<im_core::attachments::AttachmentSendResult> for DartAttachmentSendResu
             target_kind: value.target_kind,
             target_did: value.target_did,
             attachment: value.attachment.into(),
+            // `AttachmentSendResult.manifest` is already redacted by im-core for
+            // E2EE attachments; keep exposing only that public projection.
             manifest_json: value.manifest.to_string(),
         }
     }

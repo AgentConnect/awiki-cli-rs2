@@ -216,6 +216,7 @@ client.messages().send(SendMessageRequest {
         input,
         caption,
         mime_type,
+        filename,
     },
     security: MessageSecurityMode::E2eeRequired,
     client_message_id,

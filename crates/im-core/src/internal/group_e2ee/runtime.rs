@@ -2017,6 +2017,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 },
                 caption: Some("group caption".to_owned()),
                 mime_type: Some("application/pdf".to_owned()),
+                filename: None,
             },
             security: crate::messages::MessageSecurityMode::GroupE2ee,
             client_message_id: Some(

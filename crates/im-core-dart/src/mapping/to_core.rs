@@ -270,6 +270,7 @@ impl DartAttachmentSendRequest {
                     idempotency_key: self.idempotency_key,
                     wait_for_final_acceptance: self.wait_for_final_acceptance,
                 },
+                security: self.security.into(),
             },
         ))
     }
