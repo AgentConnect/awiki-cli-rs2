@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：02  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `message-service: release/0526` |
-| Started |  |
-| Completed |  |
-| Commit |  |
-| Review evidence |  |
-| Verification evidence |  |
-| Next action | 等 Step 01 完成后启动 |
+| Started | 2026-06-02 09:15 CST |
+| Completed | 2026-06-02 09:51 CST |
+| Commit | `message-service:938fcde85fc9a8ed859ed617ecf36ee5163ea1dc` |
+| Review evidence | Review 覆盖 `client.attachment_grant_refs` 非秘密字段、authoritative object 校验、direct/group accepted 后写 grant、跨域不转发 `client`、ticket 绑定和 group membership；发现并修复 group E2EE replay 在 refs 校验前未先命中 idempotency 的问题，补 group 服务级 accepted/replay 测试；secret grep 命中仅为 `plaintext_size` 元数据、key/nonce 拒绝逻辑和测试数据。 |
+| Verification evidence | `cd message-service && cargo fmt --all --check` 通过；`cargo test -p im-attachment grant -- --nocapture` 5 passed, 0 failed, 22 filtered；`cargo test -p im-direct direct_e2ee -- --nocapture` 6 passed, 0 failed, 27 filtered；`cargo test -p im-group group_e2ee -- --nocapture` 22 passed, 0 failed, 26 filtered；`cargo check -p message-service` 通过；`git diff --check` 通过；secret grep 已复核。 |
+| Next action | 启动 Step 03：im-core 对象加解密与 manifest 模型 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -79,13 +79,13 @@ Step index：02
 
 ## 7. 验收标准
 
-- [ ] direct E2EE 消息可基于 grant refs 创建 direct grants。
-- [ ] group E2EE 消息可基于 grant refs 创建 group grant。
-- [ ] grant refs 不含 key/nonce，且服务端会拒绝未知 key/nonce 字段。
-- [ ] `attachment.get_download_ticket` 对 direct-e2ee/group-e2ee 使用正确 grant 绑定。
-- [ ] `client` context 不跨域转发。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] direct E2EE 消息可基于 grant refs 创建 direct grants。
+- [x] group E2EE 消息可基于 grant refs 创建 group grant。
+- [x] grant refs 不含 key/nonce，且服务端会拒绝未知 key/nonce 字段。
+- [x] `attachment.get_download_ticket` 对 direct-e2ee/group-e2ee 使用正确 grant 绑定。
+- [x] `client` context 不跨域转发。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 

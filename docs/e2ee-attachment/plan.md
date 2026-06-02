@@ -75,7 +75,7 @@ Harness：`awiki-harness`
 | Step | 标题 | 依赖 | 产出 | 小 Plan 文档 | Commit gate | 状态 |
 |---|---|---|---|---|---|---|
 | 01 | 服务端 P7 object-e2ee 控制面 | 无 | message-service 支持 `object-e2ee` slot/commit/ticket 基础策略 | [steps/01-service-object-e2ee-control.md](steps/01-service-object-e2ee-control.md) | 必须 | done |
-| 02 | 服务端 E2EE Access Grant | Step 01 | direct/group E2EE accepted 后基于非秘密 grant refs 建 grant | [steps/02-service-e2ee-access-grants.md](steps/02-service-e2ee-access-grants.md) | 必须 | pending |
+| 02 | 服务端 E2EE Access Grant | Step 01 | direct/group E2EE accepted 后基于非秘密 grant refs 建 grant | [steps/02-service-e2ee-access-grants.md](steps/02-service-e2ee-access-grants.md) | 必须 | done |
 | 03 | im-core 对象加解密与 manifest 模型 | Step 01 | 客户端 object crypto、manifest、redacted DTO 基础 | [steps/03-im-core-object-crypto-manifest.md](steps/03-im-core-object-crypto-manifest.md) | 必须 | pending |
 | 04 | im-core secure attachment send | Step 02、Step 03 | `MessageBody::Attachment + E2eeRequired` 发送 direct/group E2EE 附件 | [steps/04-im-core-secure-attachment-send.md](steps/04-im-core-secure-attachment-send.md) | 必须 | pending |
 | 05 | im-core 下载校验与解密 | Step 02、Step 03 | E2EE 附件下载、ticket、digest、decrypt、plaintext write | [steps/05-im-core-download-decrypt.md](steps/05-im-core-download-decrypt.md) | 必须 | pending |
@@ -89,8 +89,8 @@ Harness：`awiki-harness`
 | Step | 状态 | 分支 | 开始时间 | 完成时间 | Commit | Review 证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
 | 01 | done | `message-service: release/0526` | 2026-06-02 09:06 CST | 2026-06-02 09:13 CST | `message-service:b93964bfe59bcdd200375c69a29f00ff0de55855` | Review 覆盖 policy 组合、key/nonce 不进入控制面、ticket 仍依赖 grant、commit 失败路径；发现并修复 focused test 未覆盖新增用例和 `plaintext_size` 解析时机。 | `cd message-service && cargo fmt --all --check` 通过；`cargo test -p im-attachment attachment -- --nocapture` 7 passed, 0 failed, 15 filtered；`cargo test -p im-types attachment -- --nocapture` 0 passed, 0 failed, 0 filtered；`cargo check -p message-service` 通过；`git diff --check` 通过。 | 启动 Step 02 |
-| 02 | pending | `message-service: release/0526` |  |  |  |  |  | 启动 Step 02 |
-| 03 | pending | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |  |  |  |  |  | 等 Step 01 |
+| 02 | done | `message-service: release/0526` | 2026-06-02 09:15 CST | 2026-06-02 09:51 CST | `message-service:938fcde85fc9a8ed859ed617ecf36ee5163ea1dc` | Review 覆盖 E2EE grant refs 非秘密字段、authoritative object 校验、direct/group accepted 后写 grant、跨域不转发 `client`、ticket 绑定和 group membership；发现并修复 group E2EE replay 在 refs 校验前未先命中 idempotency 的问题，补 group 服务级 accepted/replay 测试。Secret grep 命中仅为 `plaintext_size` 元数据、key/nonce 拒绝逻辑和测试数据，未发现生产路径保存对象 key/nonce/明文。 | `cd message-service && cargo fmt --all --check` 通过；`cargo test -p im-attachment grant -- --nocapture` 5 passed, 0 failed, 22 filtered；`cargo test -p im-direct direct_e2ee -- --nocapture` 6 passed, 0 failed, 27 filtered；`cargo test -p im-group group_e2ee -- --nocapture` 22 passed, 0 failed, 26 filtered；`cargo check -p message-service` 通过；`git diff --check` 通过；secret grep 已复核。 | 启动 Step 03 |
+| 03 | pending | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |  |  |  |  |  | 启动 Step 03 |
 | 04 | pending | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |  |  |  |  |  | 等 Step 02、03 |
 | 05 | pending | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |  |  |  |  |  | 等 Step 02、03 |
 | 06 | pending | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2`，`data-rs2: 待确认` |  |  |  |  |  | 等 Step 04、05 |
