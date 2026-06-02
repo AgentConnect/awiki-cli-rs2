@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：draft
+状态：in_progress
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | in_progress |
 | Branch | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |
-| Started |  |
+| Started | 2026-06-02 12:00 CST |
 | Completed |  |
 | Commit |  |
 | Review evidence |  |
 | Verification evidence |  |
-| Next action | 等 Step 02、03 完成后启动 |
+| Next action | 实现 E2EE 附件下载校验、解密和明文输出 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
