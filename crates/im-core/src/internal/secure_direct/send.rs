@@ -20,6 +20,14 @@ pub(crate) struct DirectSecureTextSend {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DirectSecureAttachmentSend {
+    pub(crate) request: crate::messages::SendMessageRequest,
+    pub(crate) resolved_target_did: Option<String>,
+    pub(crate) committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
+    pub(crate) local_persistence: DirectSecureLocalPersistence,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DirectSecureTextSendResult {
     pub(crate) sdk_result: crate::messages::SendMessageResult,
     pub(crate) queued_outbox_id: Option<String>,
@@ -28,6 +36,15 @@ pub(crate) struct DirectSecureTextSendResult {
     pub(crate) kind: crate::messages::MessageKind,
     pub(crate) raw: Option<Value>,
     pub(crate) local_effect: DirectSecureLocalEffect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DirectSecureAttachmentSendResult {
+    pub(crate) sdk_result: crate::messages::SendMessageResult,
+    pub(crate) target_did: String,
+    pub(crate) redacted_manifest: Value,
+    pub(crate) raw: Option<Value>,
+    pub(crate) local_effect: DirectSecureAttachmentLocalEffect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +58,12 @@ pub(crate) enum DirectSecureLocalEffect {
     None,
     PersistOutgoing,
     QueueOutbox(crate::internal::store::e2ee_outbox::E2eeOutboxRecord),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectSecureAttachmentLocalEffect {
+    None,
+    PersistOutgoing,
 }
 
 #[cfg(any(feature = "blocking", test))]
@@ -257,6 +280,159 @@ where
             Err(err) => Err(err),
         }
     }
+
+    pub(crate) fn send_attachment(
+        self,
+        input: DirectSecureAttachmentSend,
+    ) -> crate::ImResult<DirectSecureAttachmentSendResult> {
+        let (peer, target_did) = direct_target(&input.request.target, input.resolved_target_did)?;
+        validate_secure_direct_security(&input.request.security)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)?;
+
+        let runtime = self.client.runtime();
+        let local_did_document = read_json_file(&runtime.did_document_path, "did_document")?;
+        let signing_private_pem = read_text_file(&runtime.private_key_path, "private_key")?;
+        let agreement_private_pem = read_text_file(
+            &runtime.e2ee_agreement_private_key_path,
+            "e2ee_agreement_private_key",
+        )?;
+        let connection = crate::internal::local_state::open_writable(
+            &self.client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+
+        let operation_id = input
+            .request
+            .delivery
+            .idempotency_key
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                input
+                    .request
+                    .client_message_id
+                    .as_ref()
+                    .map(|message_id| message_id.as_str().to_owned())
+            })
+            .unwrap_or_else(generate_message_id);
+        let message_id = input
+            .request
+            .client_message_id
+            .as_ref()
+            .map(|message_id| message_id.as_str().to_owned())
+            .unwrap_or_else(|| operation_id.clone());
+        if operation_id != message_id {
+            return Err(crate::ImError::invalid_input(
+                Some("delivery.idempotency_key".to_owned()),
+                "direct E2EE requires delivery.idempotency_key to match client_message_id",
+            ));
+        }
+
+        let mut message_transport = self.message_transport;
+        let rpc = Box::new(move |method: &str, params: Map<String, Value>| {
+            let value = message_transport.authenticated_rpc(
+                MESSAGE_RPC_ENDPOINT,
+                method,
+                Value::Object(params),
+            )?;
+            object_result(value)
+        });
+        let mut directory_transport = self.directory_transport;
+        let local_document_for_resolver = local_did_document.clone();
+        let owner_did = self.client.did().as_str().to_owned();
+        let identity_paths = self.client.core_inner().sdk_paths().identities.clone();
+        let resolver = Box::new(move |did: &str| {
+            if did == owner_did {
+                return Ok(local_document_for_resolver.clone());
+            }
+            match resolve_did_document_with_transport(&mut directory_transport, did) {
+                Ok(document) => Ok(document),
+                Err(err) => {
+                    match crate::internal::identity_document_cache::load_local_did_document(
+                        &identity_paths,
+                        did,
+                    ) {
+                        Ok(Some(document)) => Ok(document),
+                        Ok(None) | Err(_) => Err(err),
+                    }
+                }
+            }
+        });
+        let mut direct_client = MessageServiceDirectSecureClient::new(
+            prepare_direct_secure_client(DirectSecureClientInput {
+                owner_identity_id: self.client.current_identity().id.as_str().to_owned(),
+                owner_did: self.client.did().as_str().to_owned(),
+                identity_name: self
+                    .client
+                    .current_identity()
+                    .local_alias
+                    .clone()
+                    .unwrap_or_else(|| self.client.current_identity().id.as_str().to_owned()),
+                signing_key_id: format!("{}#key-1", self.client.did().as_str()),
+                agreement_key_id: format!("{}#key-3", self.client.did().as_str()),
+                signing_private_pem,
+                agreement_private_pem,
+                local_did_document,
+                local_state: &connection,
+            })?,
+            rpc,
+            resolver,
+        );
+
+        let warnings = publish_prekeys_warnings(&mut direct_client);
+        let client_context = attachment_client_context(input.committed.grant_ref.clone());
+        match direct_client.send_json_with_client_context(
+            &target_did,
+            crate::attachments::manifest::attachment_manifest_content_type(),
+            input.committed.full_manifest,
+            &operation_id,
+            &message_id,
+            Some(client_context),
+        ) {
+            Ok(raw) => {
+                let mut sdk_result = sdk_result_from_secure_attachment_result(
+                    &raw,
+                    self.client.did().clone(),
+                    peer,
+                    &target_did,
+                    &input.committed.redacted_manifest,
+                    warnings,
+                )?;
+                let local_effect = match input.local_persistence {
+                    DirectSecureLocalPersistence::LegacySqlite => {
+                        if let Err(err) = crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing(
+                            &connection,
+                            self.client,
+                            &target_did,
+                            &input.committed.redacted_manifest,
+                            &sdk_result,
+                        ) {
+                            sdk_result.warnings.push(format!(
+                                "Failed to persist local secure direct attachment: {err}"
+                            ));
+                        }
+                        DirectSecureAttachmentLocalEffect::None
+                    }
+                    DirectSecureLocalPersistence::Deferred => {
+                        DirectSecureAttachmentLocalEffect::PersistOutgoing
+                    }
+                };
+                Ok(DirectSecureAttachmentSendResult {
+                    sdk_result,
+                    target_did,
+                    redacted_manifest: input.committed.redacted_manifest,
+                    raw: Some(Value::Object(raw)),
+                    local_effect,
+                })
+            }
+            Err(err) if super::control::is_pending_confirmation_error(Some(&err.to_string())) => {
+                Err(crate::ImError::LocalStateUnavailable {
+                    detail: "direct E2EE attachment send cannot be queued pending peer confirmation without persisting attachment keys".to_owned(),
+                })
+            }
+            Err(err) => Err(err),
+        }
+    }
 }
 
 #[cfg(any(feature = "blocking", test))]
@@ -454,6 +630,87 @@ pub(crate) fn sdk_result_from_secure_result(
         delivery,
         warnings,
     })
+}
+
+pub(crate) fn sdk_result_from_secure_attachment_result(
+    raw: &Map<String, Value>,
+    sender: crate::ids::Did,
+    peer: crate::ids::PeerRef,
+    target_did: &str,
+    redacted_manifest: &Value,
+    warnings: Vec<String>,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    let message_id = crate::ids::MessageId::parse(default_string(
+        &string_value(raw.get("message_id")),
+        &generate_message_id(),
+    ))?;
+    let operation_id = string_value(raw.get("operation_id"));
+    let accepted_at = string_value(raw.get("accepted_at"));
+    let delivery_state = string_value(raw.get("delivery_state"));
+    let delivery = delivery_state_from_result(raw);
+    let (send_state, retry_plan) =
+        crate::internal::message_runtime::state::send_state_from_delivery(
+            &delivery,
+            optional_string(&operation_id),
+            Some(message_id.clone()),
+            optional_string(&accepted_at),
+            None,
+        );
+    let attributes = secure_direct_attributes(
+        target_did,
+        &peer,
+        vec![crate::messages::MessageMetadataAttribute {
+            key: "attachment_manifest".to_owned(),
+            value: crate::attachments::manifest::manifest_content_string(redacted_manifest),
+        }],
+    );
+    Ok(crate::messages::SendMessageResult {
+        message: crate::messages::Message {
+            id: message_id,
+            thread: crate::messages::ThreadRef::Direct(peer.clone()),
+            direction: crate::messages::MessageDirection::Outgoing,
+            sender: crate::ids::PeerRef::parse(sender.as_str(), "")?,
+            receiver: Some(peer),
+            group: None,
+            body: crate::messages::MessageBodyView::Unsupported {
+                content_type: Some(
+                    crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+                ),
+            },
+            sent_at: optional_string(&accepted_at),
+            received_at: None,
+            metadata: crate::messages::MessageMetadata {
+                operation_id: optional_string(&operation_id),
+                delivery_state: optional_string(&delivery_state).or_else(|| {
+                    Some(
+                        crate::internal::message_runtime::state::send_state_label(
+                            &send_state.state,
+                        )
+                        .to_owned(),
+                    )
+                }),
+                send_state: Some(send_state),
+                retry_plan,
+                server_sequence: raw
+                    .get("server_seq")
+                    .or_else(|| raw.get("server_sequence"))
+                    .and_then(Value::as_i64),
+                content_type: Some(
+                    crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+                ),
+                attributes,
+            },
+        },
+        delivery,
+        warnings,
+    })
+}
+
+pub(crate) fn attachment_client_context(grant_ref: Value) -> Value {
+    Value::Object(Map::from_iter([(
+        "attachment_grant_refs".to_owned(),
+        Value::Array(vec![grant_ref]),
+    )]))
 }
 
 pub(crate) fn queued_sdk_result(
@@ -770,6 +1027,122 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
         }
     }
 
+    #[test]
+    fn secure_attachment_send_direct_sender_encrypts_manifest_and_sends_non_secret_grant_ref() {
+        let alice = TestIdentity::new("alice.example", "alice");
+        let bob = TestIdentity::new("bob.example", "bob");
+        let fixture = Fixture::new(&alice);
+        let client = fixture.client();
+        let bob_bundle = test_prekey_bundle(&bob);
+        let committed = committed_attachment("direct-secret.pdf", "direct caption");
+        let object_key = committed.full_manifest["attachments"][0]["encryption_info"]
+            ["object_key_b64u"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let nonce = committed.full_manifest["attachments"][0]["encryption_info"]["nonce_b64u"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let message_calls = Rc::new(RefCell::new(Vec::<RecordedCall>::new()));
+        let sender = DirectSecureTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingAuthenticatedTransport {
+                calls: message_calls.clone(),
+                responses: Rc::new(RefCell::new(vec![
+                    json!({}),
+                    json!({
+                        "prekey_bundle": bob_bundle.bundle,
+                        "one_time_prekey": bob_bundle.one_time_prekey,
+                    }),
+                    json!({
+                        "accepted": true,
+                        "message_id": "msg-secure-attachment",
+                        "operation_id": "msg-secure-attachment",
+                        "target_did": bob.did,
+                        "accepted_at": "2026-05-24T00:00:00Z",
+                        "delivery_state": "accepted"
+                    }),
+                ])),
+            },
+            StaticDirectoryTransport {
+                documents: vec![(bob.did.clone(), bob.document.clone())],
+            },
+        );
+
+        let result = sender
+            .send_attachment(DirectSecureAttachmentSend {
+                request: secure_direct_attachment_request(&bob.did),
+                resolved_target_did: None,
+                committed,
+                local_persistence: DirectSecureLocalPersistence::LegacySqlite,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            result.sdk_result.delivery,
+            crate::messages::DeliveryState::Accepted
+        ));
+        assert!(matches!(
+            result.sdk_result.message.body,
+            crate::messages::MessageBodyView::Unsupported { content_type }
+                if content_type.as_deref()
+                    == Some(crate::attachments::manifest::attachment_manifest_content_type())
+        ));
+
+        let calls = message_calls.borrow();
+        assert_eq!(calls[2].method, "direct.send");
+        assert!(
+            !calls[2].params["body"].to_string().contains(&object_key),
+            "direct E2EE outer body leaked object key"
+        );
+        assert!(
+            !calls[2].params["body"].to_string().contains(&nonce),
+            "direct E2EE outer body leaked nonce"
+        );
+        let grant_refs = calls[2].params["client"]["attachment_grant_refs"]
+            .as_array()
+            .unwrap();
+        assert_eq!(grant_refs.len(), 1);
+        assert_eq!(grant_refs[0]["attachment_id"], "att-secure-1");
+        assert_eq!(grant_refs[0]["object_encryption_mode"], "object-e2ee");
+        assert_eq!(grant_refs[0]["plaintext_size"], "24");
+        let grant_text = serde_json::to_string(&calls[2].params["client"]).unwrap();
+        assert!(!grant_text.contains("object_key_b64u"));
+        assert!(!grant_text.contains("nonce_b64u"));
+        assert!(!grant_text.contains(&object_key));
+        assert!(!grant_text.contains(&nonce));
+
+        let stored = rusqlite::Connection::open(fixture.root.join("local").join("im.sqlite"))
+            .unwrap()
+            .query_row(
+                r#"
+SELECT content, is_e2ee, metadata
+FROM messages
+WHERE owner_did = ?1 AND msg_id = ?2"#,
+                rusqlite::params![alice.did, "msg-secure-attachment"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.1, 1);
+        assert!(stored.0.contains("object-e2ee"));
+        assert!(!stored.0.contains("object_key_b64u"));
+        assert!(!stored.0.contains("nonce_b64u"));
+        assert!(!stored.0.contains(&object_key));
+        assert!(!stored.0.contains(&nonce));
+        assert!(!stored.2.contains("object_key_b64u"));
+        assert!(!stored.2.contains("nonce_b64u"));
+        assert!(!stored.2.contains(&object_key));
+        assert!(!stored.2.contains(&nonce));
+    }
+
     struct ReadySessionProvider;
 
     impl SessionProvider for ReadySessionProvider {
@@ -997,6 +1370,76 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 idempotency_key: Some("msg-secure-direct".to_owned()),
                 wait_for_final_acceptance: true,
             },
+        }
+    }
+
+    fn secure_direct_attachment_request(target: &str) -> crate::messages::SendMessageRequest {
+        crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Direct(
+                crate::ids::PeerRef::parse(target, "").unwrap(),
+            ),
+            body: crate::messages::MessageBody::Attachment {
+                input: crate::attachments::AttachmentInput::Bytes {
+                    filename: Some("direct-secret.pdf".to_owned()),
+                    mime_type: Some("application/pdf".to_owned()),
+                    bytes: b"direct attachment secret".to_vec(),
+                },
+                caption: Some("direct caption".to_owned()),
+                mime_type: Some("application/pdf".to_owned()),
+            },
+            security: crate::messages::MessageSecurityMode::SecureDirect,
+            client_message_id: Some(crate::ids::MessageId::parse("msg-secure-attachment").unwrap()),
+            delivery: crate::messages::MessageDeliveryOptions {
+                idempotency_key: Some("msg-secure-attachment".to_owned()),
+                wait_for_final_acceptance: true,
+            },
+        }
+    }
+
+    fn committed_attachment(
+        filename: &str,
+        caption: &str,
+    ) -> crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {
+        let e2ee = crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+            filename,
+            "application/pdf",
+            b"direct attachment secret".to_vec(),
+        )
+        .unwrap();
+        let slot = crate::internal::wire::attachment::AttachmentCreateSlotResult {
+            attachment_id: "att-secure-1".to_owned(),
+            slot_id: "slot-secure-1".to_owned(),
+            upload_uri: "https://upload.example/slot-secure-1".to_owned(),
+            upload_headers: serde_json::Map::new(),
+            object_uri: "https://objects.example/att-secure-1".to_owned(),
+            commit_token: "commit-secure-1".to_owned(),
+            expires_at: "2026-05-24T00:00:00Z".to_owned(),
+            request_service_did: "did:example:message-service".to_owned(),
+        };
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &e2ee.prepared,
+            slot.attachment_id.clone(),
+            slot.object_uri.clone(),
+        );
+        let redacted_manifest =
+            crate::attachments::manifest::build_attachment_manifest(&descriptor, caption);
+        let full_manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
+                &descriptor,
+                caption,
+                &e2ee.secrets,
+            );
+        let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)
+            .expect("grant ref");
+        crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {
+            target_kind: "agent",
+            target_did: "did:example:bob".to_owned(),
+            prepared: e2ee.prepared,
+            slot,
+            descriptor,
+            redacted_manifest,
+            full_manifest,
+            grant_ref,
         }
     }
 

@@ -89,12 +89,12 @@ fn message_security_mode_mismatches_fail_closed() {
     });
     assert!(matches!(
         attachment,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "attachments"
+        Err(ImError::InvalidInput { field: Some(field), .. }) if field == "service_did"
     ));
 }
 
 #[test]
-fn e2ee_required_attachment_reports_secure_attachment_boundary() {
+fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
@@ -114,7 +114,7 @@ fn e2ee_required_attachment_reports_secure_attachment_boundary() {
 
     assert!(matches!(
         result,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "secure-attachments"
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
     ));
 }
 

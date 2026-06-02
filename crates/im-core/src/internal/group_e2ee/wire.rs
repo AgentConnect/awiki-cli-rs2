@@ -384,6 +384,31 @@ pub(crate) fn build_group_e2ee_send_rpc_params(
     )
 }
 
+pub(crate) fn build_group_e2ee_send_rpc_params_with_client_context(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    group_did: &str,
+    cipher: &anp::group_e2ee::GroupCipherObject,
+    operation_id: &str,
+    message_id: &str,
+    client_context: Option<Value>,
+) -> crate::ImResult<Value> {
+    let mut params = build_group_e2ee_send_rpc_params(
+        credentials,
+        sender_did,
+        group_did,
+        cipher,
+        operation_id,
+        message_id,
+    )?;
+    if let Some(client_context) = client_context {
+        if let Some(object) = params.as_object_mut() {
+            object.insert("client".to_owned(), client_context);
+        }
+    }
+    Ok(params)
+}
+
 pub(crate) fn build_group_e2ee_notice_rpc_params(
     credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
     sender_did: &str,

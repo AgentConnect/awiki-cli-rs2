@@ -26,6 +26,13 @@ pub(crate) struct GroupE2eeTextSend {
     pub credentials: Option<GroupTextCredentials>,
 }
 
+pub(crate) struct GroupE2eeAttachmentSend {
+    pub request: crate::messages::SendMessageRequest,
+    pub group_state_ref: Option<GroupStateRef>,
+    pub credentials: Option<GroupTextCredentials>,
+    pub committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
+}
+
 pub(crate) struct GroupE2eeTextSendResult {
     pub sdk_result: crate::messages::SendMessageResult,
     pub group_did: String,
@@ -36,12 +43,123 @@ pub(crate) struct GroupE2eeTextSendResult {
 
 struct GroupE2eePreparedTextSend {
     group: crate::ids::GroupRef,
-    text: String,
-    kind: crate::messages::MessageKind,
+    body: GroupE2eeApplicationBody,
     operation_id: String,
     message_id: String,
     credentials: GroupTextCredentials,
     group_state_ref: Option<GroupStateRef>,
+    client_context: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum GroupE2eeApplicationBody {
+    Text {
+        text: String,
+        kind: crate::messages::MessageKind,
+    },
+    Attachment {
+        full_manifest: serde_json::Value,
+        redacted_manifest: serde_json::Value,
+    },
+}
+
+impl GroupE2eeApplicationBody {
+    fn application_plaintext(&self, group_did: &str) -> GroupApplicationPlaintext {
+        match self {
+            Self::Text { text, kind } => GroupApplicationPlaintext {
+                application_content_type: content_type_for_message_type(message_type(kind))
+                    .to_owned(),
+                thread_id: Some(group_did.to_owned()),
+                reply_to_message_id: None,
+                annotations: Default::default(),
+                text: Some(text.clone()),
+                payload: None,
+                payload_b64u: None,
+            },
+            Self::Attachment { full_manifest, .. } => GroupApplicationPlaintext {
+                application_content_type:
+                    crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+                thread_id: Some(group_did.to_owned()),
+                reply_to_message_id: None,
+                annotations: Default::default(),
+                text: None,
+                payload: Some(full_manifest.clone()),
+                payload_b64u: None,
+            },
+        }
+    }
+
+    fn sdk_result(
+        &self,
+        result: &GroupRpcResult,
+        sender: crate::ids::Did,
+        group: crate::ids::GroupRef,
+    ) -> crate::ImResult<crate::messages::SendMessageResult> {
+        match self {
+            Self::Text { text, kind } => {
+                sdk_text_result_from_group_result(result, sender, group, text, kind.clone())
+            }
+            Self::Attachment {
+                redacted_manifest, ..
+            } => sdk_attachment_result_from_group_result(result, sender, group, redacted_manifest),
+        }
+    }
+
+    fn persist_outgoing(
+        &self,
+        client: &crate::core::ImClient,
+        group_did: &str,
+        sdk_result: &crate::messages::SendMessageResult,
+    ) -> crate::ImResult<()> {
+        match self {
+            Self::Text { text, kind } => {
+                crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing(
+                    client,
+                    group_did,
+                    text,
+                    kind,
+                    sdk_result,
+                )
+            }
+            Self::Attachment {
+                redacted_manifest, ..
+            } => crate::internal::message_runtime::local_projection::persist_group_e2ee_attachment_outgoing(
+                client,
+                group_did,
+                redacted_manifest,
+                sdk_result,
+            ),
+        }
+    }
+
+    async fn persist_outgoing_async(
+        &self,
+        client: &crate::core::ImClient,
+        group_did: &str,
+        sdk_result: &crate::messages::SendMessageResult,
+    ) -> crate::ImResult<()> {
+        match self {
+            Self::Text { text, kind } => {
+                crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
+                    client,
+                    group_did,
+                    text,
+                    kind,
+                    sdk_result,
+                )
+                .await
+            }
+            Self::Attachment {
+                redacted_manifest, ..
+            } => crate::internal::message_runtime::local_projection::persist_group_e2ee_attachment_outgoing_async(
+                client,
+                group_did,
+                redacted_manifest,
+                sdk_result,
+            )
+            .await,
+        }
+    }
 }
 
 impl<'a, P, T, M> GroupE2eeTextSender<'a, P, T, M>
@@ -104,12 +222,85 @@ where
             });
         let prepared = GroupE2eePreparedTextSend {
             group,
-            text: text.to_owned(),
-            kind,
+            body: GroupE2eeApplicationBody::Text {
+                text: text.to_owned(),
+                kind,
+            },
             operation_id,
             message_id,
             credentials,
             group_state_ref: input.group_state_ref,
+            client_context: None,
+        };
+        self.send_prepared(&prepared, false).or_else(|err| {
+            if !is_group_e2ee_epoch_mismatch(&err) {
+                return Err(err);
+            }
+            let retry = self.repair_for_epoch_mismatch(&prepared.group, &prepared.credentials)?;
+            let retry_prepared = GroupE2eePreparedTextSend {
+                group_state_ref: None,
+                ..prepared
+            };
+            let mut result = self.send_prepared(&retry_prepared, true)?;
+            let mut warnings = retry.warnings;
+            warnings.extend(result.sdk_result.warnings);
+            result.sdk_result.warnings = compact_warnings(warnings);
+            Ok(result)
+        })
+    }
+
+    pub(crate) fn send_attachment(
+        mut self,
+        input: GroupE2eeAttachmentSend,
+    ) -> crate::ImResult<GroupE2eeTextSendResult> {
+        let group = group_target(&input.request.target)?;
+        validate_group_e2ee_security(&input.request.security)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials(self.client)?,
+        };
+        let operation_id = input
+            .request
+            .delivery
+            .idempotency_key
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "op-{}",
+                    crate::internal::wire::common::generate_operation_id()
+                )
+            });
+        let message_id = input
+            .request
+            .client_message_id
+            .as_ref()
+            .map(|value| value.as_str().to_owned())
+            .unwrap_or_else(|| {
+                format!(
+                    "msg-{}",
+                    crate::internal::wire::common::generate_operation_id()
+                )
+            });
+        let prepared = GroupE2eePreparedTextSend {
+            group,
+            body: GroupE2eeApplicationBody::Attachment {
+                full_manifest: input.committed.full_manifest,
+                redacted_manifest: input.committed.redacted_manifest,
+            },
+            operation_id,
+            message_id,
+            credentials,
+            group_state_ref: input.group_state_ref,
+            client_context: Some(
+                crate::internal::secure_direct::send::attachment_client_context(
+                    input.committed.grant_ref,
+                ),
+            ),
         };
         self.send_prepared(&prepared, false).or_else(|err| {
             if !is_group_e2ee_epoch_mismatch(&err) {
@@ -157,35 +348,27 @@ where
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
             .to_owned();
-        let content_type = content_type_for_message_type(message_type(&input.kind));
         let encrypted = self.mls_provider.encrypt(EncryptInput {
             sender_did: self.client.did().as_str().to_owned(),
             device_id,
             group_state_ref,
             message_id: input.message_id.clone(),
             operation_id: input.operation_id.clone(),
-            application_plaintext: GroupApplicationPlaintext {
-                application_content_type: content_type.to_owned(),
-                thread_id: Some(input.group.as_str().to_owned()),
-                reply_to_message_id: None,
-                annotations: Default::default(),
-                text: Some(input.text.clone()),
-                payload: None,
-                payload_b64u: None,
-            },
+            application_plaintext: input.body.application_plaintext(input.group.as_str()),
             request_id: if retry {
                 format!("group-e2ee-encrypt-retry-{}", input.operation_id)
             } else {
                 format!("group-e2ee-encrypt-{}", input.operation_id)
             },
         })?;
-        let params = super::wire::build_group_e2ee_send_rpc_params(
+        let params = super::wire::build_group_e2ee_send_rpc_params_with_client_context(
             &input.credentials,
             self.client.did().as_str(),
             input.group.as_str(),
             &encrypted.group_cipher_object,
             &input.operation_id,
             &input.message_id,
+            input.client_context.clone(),
         )?;
         let raw = self.transport.authenticated_rpc(
             crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
@@ -205,21 +388,14 @@ where
         if result.operation_id.trim().is_empty() {
             result.operation_id = input.operation_id.clone();
         }
-        let mut sdk_result = sdk_text_result_from_group_result(
-            &result,
-            self.client.did().clone(),
-            input.group.clone(),
-            &input.text,
-            input.kind.clone(),
-        )?;
+        let mut sdk_result =
+            input
+                .body
+                .sdk_result(&result, self.client.did().clone(), input.group.clone())?;
         if let Err(err) =
-            crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing(
-                self.client,
-                input.group.as_str(),
-                &input.text,
-                &input.kind,
-                &sdk_result,
-            )
+            input
+                .body
+                .persist_outgoing(self.client, input.group.as_str(), &sdk_result)
         {
             sdk_result
                 .warnings
@@ -308,12 +484,91 @@ where
             });
         let prepared = GroupE2eePreparedTextSend {
             group,
-            text: text.to_owned(),
-            kind,
+            body: GroupE2eeApplicationBody::Text {
+                text: text.to_owned(),
+                kind,
+            },
             operation_id,
             message_id,
             credentials,
             group_state_ref: input.group_state_ref,
+            client_context: None,
+        };
+        match self.send_prepared_async(&prepared, false).await {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                if !is_group_e2ee_epoch_mismatch(&err) {
+                    return Err(err);
+                }
+                let retry = self
+                    .repair_for_epoch_mismatch_async(&prepared.group, &prepared.credentials)
+                    .await?;
+                let retry_prepared = GroupE2eePreparedTextSend {
+                    group_state_ref: None,
+                    ..prepared
+                };
+                let mut result = self.send_prepared_async(&retry_prepared, true).await?;
+                let mut warnings = retry.warnings;
+                warnings.extend(result.sdk_result.warnings);
+                result.sdk_result.warnings = compact_warnings(warnings);
+                Ok(result)
+            }
+        }
+    }
+
+    pub(crate) async fn send_attachment_async(
+        mut self,
+        input: GroupE2eeAttachmentSend,
+    ) -> crate::ImResult<GroupE2eeTextSendResult> {
+        let group = group_target(&input.request.target)?;
+        validate_group_e2ee_security(&input.request.security)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let operation_id = input
+            .request
+            .delivery
+            .idempotency_key
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "op-{}",
+                    crate::internal::wire::common::generate_operation_id()
+                )
+            });
+        let message_id = input
+            .request
+            .client_message_id
+            .as_ref()
+            .map(|value| value.as_str().to_owned())
+            .unwrap_or_else(|| {
+                format!(
+                    "msg-{}",
+                    crate::internal::wire::common::generate_operation_id()
+                )
+            });
+        let prepared = GroupE2eePreparedTextSend {
+            group,
+            body: GroupE2eeApplicationBody::Attachment {
+                full_manifest: input.committed.full_manifest,
+                redacted_manifest: input.committed.redacted_manifest,
+            },
+            operation_id,
+            message_id,
+            credentials,
+            group_state_ref: input.group_state_ref,
+            client_context: Some(
+                crate::internal::secure_direct::send::attachment_client_context(
+                    input.committed.grant_ref,
+                ),
+            ),
         };
         match self.send_prepared_async(&prepared, false).await {
             Ok(result) => Ok(result),
@@ -367,22 +622,13 @@ where
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
             .to_owned();
-        let content_type = content_type_for_message_type(message_type(&input.kind));
         let encrypt_input = EncryptInput {
             sender_did: self.client.did().as_str().to_owned(),
             device_id,
             group_state_ref,
             message_id: input.message_id.clone(),
             operation_id: input.operation_id.clone(),
-            application_plaintext: GroupApplicationPlaintext {
-                application_content_type: content_type.to_owned(),
-                thread_id: Some(input.group.as_str().to_owned()),
-                reply_to_message_id: None,
-                annotations: Default::default(),
-                text: Some(input.text.clone()),
-                payload: None,
-                payload_b64u: None,
-            },
+            application_plaintext: input.body.application_plaintext(input.group.as_str()),
             request_id: if retry {
                 format!("group-e2ee-encrypt-retry-{}", input.operation_id)
             } else {
@@ -397,13 +643,14 @@ where
         .map_err(|err| crate::ImError::Internal {
             message: format!("group E2EE encrypt worker failed: {err}"),
         })??;
-        let params = super::wire::build_group_e2ee_send_rpc_params(
+        let params = super::wire::build_group_e2ee_send_rpc_params_with_client_context(
             &input.credentials,
             self.client.did().as_str(),
             input.group.as_str(),
             &encrypted.group_cipher_object,
             &input.operation_id,
             &input.message_id,
+            input.client_context.clone(),
         )?;
         let raw = self
             .transport
@@ -426,21 +673,13 @@ where
         if result.operation_id.trim().is_empty() {
             result.operation_id = input.operation_id.clone();
         }
-        let mut sdk_result = sdk_text_result_from_group_result(
-            &result,
-            self.client.did().clone(),
-            input.group.clone(),
-            &input.text,
-            input.kind.clone(),
-        )?;
-        if let Err(err) =
-            crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing_async(
-                self.client,
-                input.group.as_str(),
-                &input.text,
-                &input.kind,
-                &sdk_result,
-            )
+        let mut sdk_result =
+            input
+                .body
+                .sdk_result(&result, self.client.did().clone(), input.group.clone())?;
+        if let Err(err) = input
+            .body
+            .persist_outgoing_async(self.client, input.group.as_str(), &sdk_result)
             .await
         {
             sdk_result
@@ -516,6 +755,107 @@ fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
         compact.push(warning);
     }
     compact
+}
+
+fn sdk_attachment_result_from_group_result(
+    result: &GroupRpcResult,
+    sender: crate::ids::Did,
+    group: crate::ids::GroupRef,
+    redacted_manifest: &serde_json::Value,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    let message_id =
+        if !result.group_did.trim().is_empty() && !result.group_event_seq.trim().is_empty() {
+            crate::ids::MessageId::parse(format!(
+                "{}:{}",
+                result.group_did.trim(),
+                result.group_event_seq.trim()
+            ))?
+        } else if !result.group_event_seq.trim().is_empty() {
+            crate::ids::MessageId::parse(format!(
+                "{}:{}",
+                group.as_str().trim(),
+                result.group_event_seq.trim()
+            ))?
+        } else if !result.message_id.trim().is_empty() {
+            crate::ids::MessageId::parse(&result.message_id)?
+        } else {
+            crate::ids::MessageId::parse(format!(
+                "msg-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ))?
+        };
+    let delivery = if result.accepted || result.final_acceptance {
+        crate::messages::DeliveryState::Accepted
+    } else {
+        crate::messages::DeliveryState::Failed {
+            reason: "not accepted".to_owned(),
+        }
+    };
+    let (send_state, retry_plan) =
+        crate::internal::message_runtime::state::send_state_from_delivery(
+            &delivery,
+            Some(result.operation_id.clone()).filter(|value| !value.trim().is_empty()),
+            Some(message_id.clone()),
+            Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
+            None,
+        );
+    let mut attributes = Vec::new();
+    if !result.message_id.trim().is_empty() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "raw_message_id".to_string(),
+            value: result.message_id.clone(),
+        });
+    }
+    if !result.group_event_seq.trim().is_empty() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "group_event_seq".to_string(),
+            value: result.group_event_seq.clone(),
+        });
+    }
+    if !result.group_state_version.trim().is_empty() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "group_state_version".to_string(),
+            value: result.group_state_version.clone(),
+        });
+    }
+    attributes.push(crate::messages::MessageMetadataAttribute {
+        key: "attachment_manifest".to_string(),
+        value: crate::attachments::manifest::manifest_content_string(redacted_manifest),
+    });
+    Ok(crate::messages::SendMessageResult {
+        message: crate::messages::Message {
+            id: message_id,
+            thread: crate::messages::ThreadRef::Group(group.clone()),
+            direction: crate::messages::MessageDirection::Outgoing,
+            sender: crate::ids::PeerRef::parse(sender.as_str(), "")?,
+            receiver: None,
+            group: Some(group),
+            body: crate::messages::MessageBodyView::Unsupported {
+                content_type: Some(
+                    crate::attachments::manifest::attachment_manifest_content_type().to_string(),
+                ),
+            },
+            sent_at: Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
+            received_at: None,
+            metadata: crate::messages::MessageMetadata {
+                operation_id: Some(result.operation_id.clone())
+                    .filter(|value| !value.trim().is_empty()),
+                delivery_state: Some(
+                    crate::internal::message_runtime::state::send_state_label(&send_state.state)
+                        .to_string(),
+                ),
+                send_state: Some(send_state),
+                retry_plan,
+                server_sequence: result.group_event_seq.trim().parse().ok(),
+                content_type: Some(
+                    crate::attachments::manifest::attachment_manifest_content_type().to_string(),
+                ),
+                attributes,
+            },
+        },
+        delivery,
+        warnings: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -652,6 +992,124 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 "metadata leaked {forbidden}: {metadata_text}"
             );
         }
+    }
+
+    #[test]
+    fn secure_attachment_send_group_sender_encrypts_manifest_and_sends_non_secret_grant_ref() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group_did = "did:example:groups:e2ee";
+        let committed = committed_attachment("group-secret.pdf", "group caption");
+        let object_key = committed.full_manifest["attachments"][0]["encryption_info"]
+            ["object_key_b64u"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let nonce = committed.full_manifest["attachments"][0]["encryption_info"]["nonce_b64u"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let provider = AttachmentMlsProvider {
+            expected_object_key: object_key.clone(),
+            expected_nonce: nonce.clone(),
+        };
+        let sender = GroupE2eeTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "final_acceptance": true,
+                    "group_did": group_did,
+                    "message_id": "server-e2ee-attachment-id",
+                    "operation_id": "op-client-e2ee-attachment",
+                    "group_event_seq": "88",
+                    "group_state_version": "11",
+                    "accepted_at": "2026-05-21T00:00:00Z"
+                }),
+                responses: Vec::new(),
+            },
+            provider,
+        );
+
+        let result = sender
+            .send_attachment(GroupE2eeAttachmentSend {
+                request: group_e2ee_attachment_request(group_did),
+                group_state_ref: Some(GroupStateRef {
+                    group_did: group_did.to_owned(),
+                    group_state_version: "10".to_owned(),
+                    policy_hash: None,
+                }),
+                credentials: Some(fixture.credentials()),
+                committed,
+            })
+            .unwrap();
+
+        assert_eq!(result.group_did, group_did);
+        assert_eq!(result.operation_id, "op-client-e2ee-attachment");
+        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(88));
+        assert!(matches!(
+            result.sdk_result.message.body,
+            crate::messages::MessageBodyView::Unsupported { content_type }
+                if content_type.as_deref()
+                    == Some(crate::attachments::manifest::attachment_manifest_content_type())
+        ));
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0];
+        assert_eq!(call.method, "group.e2ee.send");
+        assert_eq!(
+            call.params["meta"]["content_type"],
+            anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
+        );
+        let outer_text = serde_json::to_string(&call.params["body"]).unwrap();
+        assert!(!outer_text.contains(&object_key));
+        assert!(!outer_text.contains(&nonce));
+        assert!(!outer_text.contains("object_key_b64u"));
+        assert!(!outer_text.contains("nonce_b64u"));
+        let grant_refs = call.params["client"]["attachment_grant_refs"]
+            .as_array()
+            .unwrap();
+        assert_eq!(grant_refs.len(), 1);
+        assert_eq!(grant_refs[0]["attachment_id"], "att-group-secure-1");
+        assert_eq!(grant_refs[0]["object_encryption_mode"], "object-e2ee");
+        assert_eq!(grant_refs[0]["plaintext_size"], "23");
+        let grant_text = serde_json::to_string(&call.params["client"]).unwrap();
+        assert!(!grant_text.contains(&object_key));
+        assert!(!grant_text.contains(&nonce));
+        assert!(!grant_text.contains("object_key_b64u"));
+        assert!(!grant_text.contains("nonce_b64u"));
+
+        let stored = rusqlite::Connection::open(fixture.root.join("local").join("im.sqlite"))
+            .unwrap()
+            .query_row(
+                r#"
+SELECT content, is_e2ee, metadata
+FROM messages
+WHERE owner_did = ?1 AND msg_id = ?2"#,
+                rusqlite::params![client.did().as_str(), "did:example:groups:e2ee:88"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.1, 1);
+        assert!(stored.0.contains("object-e2ee"));
+        assert!(!stored.0.contains(&object_key));
+        assert!(!stored.0.contains(&nonce));
+        assert!(!stored.0.contains("object_key_b64u"));
+        assert!(!stored.0.contains("nonce_b64u"));
+        assert!(!stored.2.contains(&object_key));
+        assert!(!stored.2.contains(&nonce));
+        assert!(!stored.2.contains("object_key_b64u"));
+        assert!(!stored.2.contains("nonce_b64u"));
     }
 
     #[test]
@@ -958,6 +1416,128 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                     crypto_group_id_b64u: "Y3J5cHRvLWdyb3Vw".to_owned(),
                     epoch: "10".to_owned(),
                     private_message_b64u: "c2VhbGVkLW1scy1jaXBoZXI".to_owned(),
+                    group_state_ref: input.group_state_ref,
+                    epoch_authenticator: Some("YXV0aGVudGljYXRvcg".to_owned()),
+                    non_cryptographic: false,
+                    artifact_mode: None,
+                },
+                authenticated_data_sha256_b64u: "YWFkLWRpZ2VzdA".to_owned(),
+            })
+        }
+
+        fn generate_key_package(
+            &self,
+            _input: GenerateKeyPackageInput,
+        ) -> crate::ImResult<GroupKeyPackageOutput> {
+            unreachable!("send should not generate key packages")
+        }
+
+        fn create_group_prepare(
+            &self,
+            _input: CreateGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not create groups")
+        }
+
+        fn add_member_prepare(
+            &self,
+            _input: AddMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not add members")
+        }
+
+        fn remove_member_prepare(
+            &self,
+            _input: RemoveMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not remove members")
+        }
+
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not leave groups")
+        }
+
+        fn update_member_prepare(
+            &self,
+            _input: UpdateMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not update members")
+        }
+
+        fn recover_member_prepare(
+            &self,
+            _input: RecoverMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not recover members")
+        }
+
+        fn finalize_commit(
+            &self,
+            _input: FinalizeCommitInput,
+        ) -> crate::ImResult<FinalizeCommitOutput> {
+            unreachable!("send should not finalize commits")
+        }
+
+        fn abort_commit(&self, _input: AbortCommitInput) -> crate::ImResult<AbortCommitOutput> {
+            unreachable!("send should not abort commits")
+        }
+
+        fn process_welcome(
+            &self,
+            _input: ProcessWelcomeInput,
+        ) -> crate::ImResult<ProcessWelcomeOutput> {
+            unreachable!("send should not process welcomes")
+        }
+
+        fn process_notice(
+            &self,
+            _input: ProcessNoticeInput,
+        ) -> crate::ImResult<ProcessNoticeOutput> {
+            unreachable!("send should not process notices")
+        }
+
+        fn decrypt(&self, _input: DecryptInput) -> crate::ImResult<DecryptOutput> {
+            unreachable!("send should not decrypt")
+        }
+
+        fn status(&self, _input: StatusInput) -> crate::ImResult<StatusOutput> {
+            unreachable!("send should not read status")
+        }
+    }
+
+    struct AttachmentMlsProvider {
+        expected_object_key: String,
+        expected_nonce: String,
+    }
+
+    impl GroupMlsProvider for AttachmentMlsProvider {
+        fn encrypt(&self, input: EncryptInput) -> crate::ImResult<EncryptOutput> {
+            assert_eq!(input.sender_did, "did:example:alice");
+            assert_eq!(input.operation_id, "op-client-e2ee-attachment");
+            assert_eq!(input.message_id, "msg-client-e2ee-attachment");
+            assert_eq!(
+                input.application_plaintext.application_content_type,
+                crate::attachments::manifest::attachment_manifest_content_type()
+            );
+            assert!(input.application_plaintext.text.is_none());
+            let payload = input.application_plaintext.payload.as_ref().unwrap();
+            assert_eq!(payload["primary_attachment_id"], "att-group-secure-1");
+            assert_eq!(
+                payload["attachments"][0]["encryption_info"]["object_key_b64u"],
+                self.expected_object_key
+            );
+            assert_eq!(
+                payload["attachments"][0]["encryption_info"]["nonce_b64u"],
+                self.expected_nonce
+            );
+            Ok(EncryptOutput {
+                group_cipher_object: GroupCipherObject {
+                    crypto_group_id_b64u: "Y3J5cHRvLWdyb3Vw".to_owned(),
+                    epoch: "10".to_owned(),
+                    private_message_b64u: "YXR0YWNobWVudC1jaXBoZXI".to_owned(),
                     group_state_ref: input.group_state_ref,
                     epoch_authenticator: Some("YXV0aGVudGljYXRvcg".to_owned()),
                     non_cryptographic: false,
@@ -1421,6 +2001,78 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 idempotency_key: Some("op-client-e2ee".to_owned()),
                 wait_for_final_acceptance: true,
             },
+        }
+    }
+
+    fn group_e2ee_attachment_request(group: &str) -> crate::messages::SendMessageRequest {
+        crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Group(
+                crate::ids::GroupRef::parse(group).unwrap(),
+            ),
+            body: crate::messages::MessageBody::Attachment {
+                input: crate::attachments::AttachmentInput::Bytes {
+                    filename: Some("group-secret.pdf".to_owned()),
+                    mime_type: Some("application/pdf".to_owned()),
+                    bytes: b"group attachment secret".to_vec(),
+                },
+                caption: Some("group caption".to_owned()),
+                mime_type: Some("application/pdf".to_owned()),
+            },
+            security: crate::messages::MessageSecurityMode::GroupE2ee,
+            client_message_id: Some(
+                crate::ids::MessageId::parse("msg-client-e2ee-attachment").unwrap(),
+            ),
+            delivery: crate::messages::MessageDeliveryOptions {
+                idempotency_key: Some("op-client-e2ee-attachment".to_owned()),
+                wait_for_final_acceptance: true,
+            },
+        }
+    }
+
+    fn committed_attachment(
+        filename: &str,
+        caption: &str,
+    ) -> crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {
+        let e2ee = crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+            filename,
+            "application/pdf",
+            b"group attachment secret".to_vec(),
+        )
+        .unwrap();
+        let slot = crate::internal::wire::attachment::AttachmentCreateSlotResult {
+            attachment_id: "att-group-secure-1".to_owned(),
+            slot_id: "slot-group-secure-1".to_owned(),
+            upload_uri: "https://upload.example/slot-group-secure-1".to_owned(),
+            upload_headers: serde_json::Map::new(),
+            object_uri: "https://objects.example/att-group-secure-1".to_owned(),
+            commit_token: "commit-group-secure-1".to_owned(),
+            expires_at: "2026-05-24T00:00:00Z".to_owned(),
+            request_service_did: "did:example:message-service".to_owned(),
+        };
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &e2ee.prepared,
+            slot.attachment_id.clone(),
+            slot.object_uri.clone(),
+        );
+        let redacted_manifest =
+            crate::attachments::manifest::build_attachment_manifest(&descriptor, caption);
+        let full_manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
+                &descriptor,
+                caption,
+                &e2ee.secrets,
+            );
+        let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)
+            .expect("grant ref");
+        crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {
+            target_kind: "group",
+            target_did: "did:example:groups:e2ee".to_owned(),
+            prepared: e2ee.prepared,
+            slot,
+            descriptor,
+            redacted_manifest,
+            full_manifest,
+            grant_ref,
         }
     }
 

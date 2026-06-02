@@ -180,6 +180,24 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         )
     }
 
+    pub(crate) fn send_json_with_client_context(
+        &mut self,
+        peer_did: &str,
+        content_type: &str,
+        payload: Value,
+        operation_id: &str,
+        message_id: &str,
+        client_context: Option<Value>,
+    ) -> DirectSecureRpcResult {
+        self.send_application_plaintext_with_client_context(
+            peer_did,
+            ApplicationPlaintext::new_json(content_type, payload),
+            operation_id,
+            message_id,
+            client_context,
+        )
+    }
+
     pub(crate) fn process_incoming(
         &mut self,
         message: Map<String, Value>,
@@ -230,6 +248,23 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         operation_id: &str,
         message_id: &str,
     ) -> DirectSecureRpcResult {
+        self.send_application_plaintext_with_client_context(
+            peer_did,
+            plaintext,
+            operation_id,
+            message_id,
+            None,
+        )
+    }
+
+    fn send_application_plaintext_with_client_context(
+        &mut self,
+        peer_did: &str,
+        plaintext: ApplicationPlaintext,
+        operation_id: &str,
+        message_id: &str,
+        client_context: Option<Value>,
+    ) -> DirectSecureRpcResult {
         anp::direct_e2ee::validate_direct_send_ids(operation_id, message_id)
             .map_err(map_direct_error)?;
         let peer_did = required("peer_did", peer_did)?;
@@ -259,7 +294,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
                 &body,
             )
             .map_err(map_direct_error)?;
-            return self.call_request(request);
+            return self.call_request_with_client_context(request, client_context);
         }
 
         let verified = self.get_verified_prekey_bundle(&peer_did)?;
@@ -311,7 +346,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             &body,
         )
         .map_err(map_direct_error)?;
-        self.call_request(request)
+        self.call_request_with_client_context(request, client_context)
     }
 
     fn process_incoming_init(
@@ -556,9 +591,20 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
     }
 
     fn call_request(&mut self, request: Value) -> DirectSecureRpcResult {
+        self.call_request_with_client_context(request, None)
+    }
+
+    fn call_request_with_client_context(
+        &mut self,
+        request: Value,
+        client_context: Option<Value>,
+    ) -> DirectSecureRpcResult {
         let request = direct_secure_request_method_params(request)?;
         let method = request.method;
-        let params = request.params;
+        let mut params = request.params;
+        if let Some(client_context) = client_context {
+            params.insert("client".to_owned(), client_context);
+        }
         (self.rpc)(&method, params)
     }
 

@@ -255,6 +255,12 @@ impl<'a> MessageService<'a> {
                 super::MessageTarget::Direct(_),
                 super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
             ) => self.send_direct_e2ee(resolve_send_request(self.client, request)?),
+            (
+                super::MessageTarget::Direct(_),
+                super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain,
+            ) if matches!(request.body, super::MessageBody::Attachment { .. }) => {
+                self.send_plain_attachment(request)
+            }
             (super::MessageTarget::Direct(_), _) => {
                 let resolved = resolve_send_request(self.client, request)?;
                 let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
@@ -289,6 +295,12 @@ impl<'a> MessageService<'a> {
                 super::MessageTarget::Group(_),
                 super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
             ) => self.send_group_e2ee(request),
+            (
+                super::MessageTarget::Group(_),
+                super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain,
+            ) if matches!(request.body, super::MessageBody::Attachment { .. }) => {
+                self.send_plain_attachment(request)
+            }
             (super::MessageTarget::Group(_), _) => {
                 let mut result = crate::internal::message_runtime::group::GroupTextSender::new(
                     self.client,
@@ -332,6 +344,12 @@ impl<'a> MessageService<'a> {
                 self.send_direct_e2ee_async(resolve_send_request_async(self.client, request).await?)
                     .await
             }
+            (
+                super::MessageTarget::Direct(_),
+                super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain,
+            ) if matches!(request.body, super::MessageBody::Attachment { .. }) => {
+                self.send_plain_attachment_async(request).await
+            }
             (super::MessageTarget::Direct(_), _) => {
                 let resolved = resolve_send_request_async(self.client, request).await?;
                 let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
@@ -366,6 +384,12 @@ impl<'a> MessageService<'a> {
                 super::MessageTarget::Group(_),
                 super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
             ) => self.send_group_e2ee_async(request).await,
+            (
+                super::MessageTarget::Group(_),
+                super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain,
+            ) if matches!(request.body, super::MessageBody::Attachment { .. }) => {
+                self.send_plain_attachment_async(request).await
+            }
             (super::MessageTarget::Group(_), _) => {
                 let mut result = crate::internal::message_runtime::group::GroupTextSender::new(
                     self.client,
@@ -396,6 +420,31 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    fn send_plain_attachment(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        let target = request.target.clone();
+        let attachment = attachment_request_from_message_request(request)?;
+        self.client
+            .attachments()
+            .send(target, attachment)
+            .map(|result| result.message)
+    }
+
+    async fn send_plain_attachment_async(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        let target = request.target.clone();
+        let attachment = attachment_request_from_message_request(request)?;
+        self.client
+            .attachments()
+            .send_async(target, attachment)
+            .await
+            .map(|result| result.message)
+    }
+
     fn send_direct_e2ee(
         &self,
         resolved: ResolvedSendRequest,
@@ -421,6 +470,48 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
+            #[cfg(not(feature = "blocking"))]
+            {
+                let _ = resolved;
+                return Err(crate::ImError::unsupported(
+                    "async-secure-direct-attachment-send",
+                ));
+            }
+            #[cfg(feature = "blocking")]
+            let committed =
+                crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .prepare_and_commit_object_async(
+                    crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                        target: resolved.request.target.clone(),
+                        request: attachment_request_from_message_request(resolved.request.clone())?,
+                        resolved_target_did: resolved.target_did.clone(),
+                        message_security_profile: "direct-e2ee",
+                    },
+                )
+                .await?;
+            #[cfg(feature = "blocking")]
+            {
+                let client = self.client.clone();
+                let result = crate::internal::runtime::worker::run_blocking(move || {
+                    send_direct_e2ee_attachment_with_client_and_persistence(
+                        &client,
+                        resolved,
+                        committed,
+                        crate::internal::secure_direct::send::DirectSecureLocalPersistence::Deferred,
+                    )
+                })
+                .await
+                .map_err(|err| crate::ImError::Internal {
+                    message: err.to_string(),
+                })??;
+                return persist_deferred_direct_e2ee_attachment_effect(self.client, result).await;
+            }
+        }
         let async_input = crate::internal::secure_direct::send::DirectSecureTextSend {
             request: resolved.request.clone(),
             resolved_target_did: resolved.target_did.clone(),
@@ -500,6 +591,37 @@ impl<'a> MessageService<'a> {
             )?;
             let provider =
                 crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
+            if matches!(request.body, super::MessageBody::Attachment { .. }) {
+                let committed =
+                    crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+                        self.client,
+                        crate::internal::auth::session::FileSessionProvider::new(self.client),
+                        crate::internal::transport::CoreHttpTransport::new(self.client),
+                    )
+                    .prepare_and_commit_object(
+                        crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                            target: request.target.clone(),
+                            request: attachment_request_from_message_request(request.clone())?,
+                            resolved_target_did: None,
+                            message_security_profile: "group-e2ee",
+                        },
+                    )?;
+                return crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                    provider,
+                )
+                .send_attachment(
+                    crate::internal::group_e2ee::runtime::GroupE2eeAttachmentSend {
+                        request,
+                        group_state_ref: None,
+                        credentials: None,
+                        committed,
+                    },
+                )
+                .map(|result| result.sdk_result);
+            }
             crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -535,6 +657,39 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::SendMessageResult> {
         let provider =
             crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
+        if matches!(request.body, super::MessageBody::Attachment { .. }) {
+            let committed =
+                crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .prepare_and_commit_object_async(
+                    crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                        target: request.target.clone(),
+                        request: attachment_request_from_message_request(request.clone())?,
+                        resolved_target_did: None,
+                        message_security_profile: "group-e2ee",
+                    },
+                )
+                .await?;
+            return crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                provider,
+            )
+            .send_attachment_async(
+                crate::internal::group_e2ee::runtime::GroupE2eeAttachmentSend {
+                    request,
+                    group_state_ref: None,
+                    credentials: None,
+                    committed,
+                },
+            )
+            .await
+            .map(|result| result.sdk_result);
+        }
         match crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -811,12 +966,11 @@ fn send_direct_e2ee_with_client(
     client: &crate::core::ImClient,
     resolved: ResolvedSendRequest,
 ) -> crate::ImResult<super::SendMessageResult> {
-    send_direct_e2ee_with_client_and_persistence(
+    send_direct_e2ee_with_client_attachment_aware(
         client,
         resolved,
         crate::internal::secure_direct::send::DirectSecureLocalPersistence::LegacySqlite,
     )
-    .map(|result| result.sdk_result)
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]
@@ -825,6 +979,11 @@ fn send_direct_e2ee_with_client_and_persistence(
     resolved: ResolvedSendRequest,
     local_persistence: crate::internal::secure_direct::send::DirectSecureLocalPersistence,
 ) -> crate::ImResult<crate::internal::secure_direct::send::DirectSecureTextSendResult> {
+    if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
+        return Err(crate::ImError::unsupported(
+            "direct-e2ee-attachment-text-result",
+        ));
+    }
     crate::internal::secure_direct::send::DirectSecureTextSender::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
@@ -836,6 +995,61 @@ fn send_direct_e2ee_with_client_and_persistence(
         resolved_target_did: resolved.target_did,
         local_persistence,
     })
+}
+
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn send_direct_e2ee_with_client_attachment_aware(
+    client: &crate::core::ImClient,
+    resolved: ResolvedSendRequest,
+    local_persistence: crate::internal::secure_direct::send::DirectSecureLocalPersistence,
+) -> crate::ImResult<super::SendMessageResult> {
+    if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
+        let committed = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+            client,
+            crate::internal::auth::session::FileSessionProvider::new(client),
+            crate::internal::transport::CoreHttpTransport::new(client),
+        )
+        .prepare_and_commit_object(
+            crate::internal::attachment_runtime::upload::AttachmentPrepareObjectInput {
+                target: resolved.request.target.clone(),
+                request: attachment_request_from_message_request(resolved.request.clone())?,
+                resolved_target_did: resolved.target_did.clone(),
+                message_security_profile: "direct-e2ee",
+            },
+        )?;
+        return send_direct_e2ee_attachment_with_client_and_persistence(
+            client,
+            resolved,
+            committed,
+            local_persistence,
+        )
+        .map(|result| result.sdk_result);
+    }
+    send_direct_e2ee_with_client_and_persistence(client, resolved, local_persistence)
+        .map(|result| result.sdk_result)
+}
+
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn send_direct_e2ee_attachment_with_client_and_persistence(
+    client: &crate::core::ImClient,
+    resolved: ResolvedSendRequest,
+    committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
+    local_persistence: crate::internal::secure_direct::send::DirectSecureLocalPersistence,
+) -> crate::ImResult<crate::internal::secure_direct::send::DirectSecureAttachmentSendResult> {
+    crate::internal::secure_direct::send::DirectSecureTextSender::new(
+        client,
+        crate::internal::auth::session::FileSessionProvider::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+        crate::internal::transport::CoreHttpTransport::new(client),
+    )
+    .send_attachment(
+        crate::internal::secure_direct::send::DirectSecureAttachmentSend {
+            request: resolved.request,
+            resolved_target_did: resolved.target_did,
+            committed,
+            local_persistence,
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -869,6 +1083,33 @@ async fn persist_deferred_direct_e2ee_effect(
                 .await?
                 .queue_e2ee_outbox(record)
                 .await?;
+        }
+    }
+    Ok(result.sdk_result)
+}
+
+#[cfg(feature = "sqlite")]
+async fn persist_deferred_direct_e2ee_attachment_effect(
+    client: &crate::core::ImClient,
+    mut result: crate::internal::secure_direct::send::DirectSecureAttachmentSendResult,
+) -> crate::ImResult<super::SendMessageResult> {
+    match result.local_effect {
+        crate::internal::secure_direct::send::DirectSecureAttachmentLocalEffect::None => {}
+        crate::internal::secure_direct::send::DirectSecureAttachmentLocalEffect::PersistOutgoing => {
+            if let Err(err) =
+                crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing_async(
+                    client,
+                    &result.target_did,
+                    &result.redacted_manifest,
+                    &result.sdk_result,
+                )
+                .await
+            {
+                result
+                    .sdk_result
+                    .warnings
+                    .push(format!("Failed to persist local secure direct attachment: {err}"));
+            }
         }
     }
     Ok(result.sdk_result)
@@ -990,9 +1231,29 @@ fn validate_attachment_security(
         return Ok(());
     }
     match security {
-        super::MessageSecurityMode::E2eeRequired => {
-            Err(crate::ImError::unsupported("secure-attachments"))
-        }
+        super::MessageSecurityMode::DefaultPlain
+        | super::MessageSecurityMode::Plain
+        | super::MessageSecurityMode::E2eeRequired
+        | super::MessageSecurityMode::SecureDirect
+        | super::MessageSecurityMode::GroupE2ee => Ok(()),
+    }
+}
+
+fn attachment_request_from_message_request(
+    request: super::SendMessageRequest,
+) -> crate::ImResult<crate::attachments::AttachmentSendRequest> {
+    match request.body {
+        super::MessageBody::Attachment {
+            input,
+            caption,
+            mime_type,
+        } => Ok(crate::attachments::AttachmentSendRequest {
+            input,
+            caption,
+            mime_type,
+            filename: None,
+            delivery: request.delivery,
+        }),
         _ => Err(crate::ImError::unsupported("attachments")),
     }
 }
