@@ -514,19 +514,6 @@ impl<'a> MessageService<'a> {
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
         if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
-            #[cfg(not(feature = "blocking"))]
-            if !crate::internal::secure_direct::async_send::attachment_follow_up_ready(
-                self.client,
-                &resolved.request,
-                resolved.target_did.clone(),
-            )
-            .await?
-            {
-                return Err(crate::ImError::LocalStateUnavailable {
-                    detail: "direct E2EE async attachment send requires an established local session; sync compatibility fallback is disabled".to_owned(),
-                });
-            }
-
             let committed =
                 crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
                     self.client,
@@ -549,7 +536,7 @@ impl<'a> MessageService<'a> {
                     crate::internal::transport::CoreHttpTransport::new(self.client),
                     crate::internal::transport::CoreHttpTransport::new(self.client),
                 )
-                .send_attachment_follow_up_if_ready(
+                .send_attachment_async_if_ready(
                     crate::internal::secure_direct::send::DirectSecureAttachmentSend {
                         request: resolved.request.clone(),
                         resolved_target_did: resolved.target_did.clone(),

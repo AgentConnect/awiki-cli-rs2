@@ -412,34 +412,51 @@ where
             local_effect: DirectSecureAttachmentLocalEffect::PersistOutgoing,
         }))
     }
-}
 
-pub(crate) async fn attachment_follow_up_ready(
-    client: &crate::core::ImClient,
-    request: &crate::messages::SendMessageRequest,
-    resolved_target_did: Option<String>,
-) -> crate::ImResult<bool> {
-    let (_, target_did) = super::send::direct_target(&request.target, resolved_target_did)?;
-    super::send::validate_secure_direct_security(&request.security)?;
+    pub(crate) async fn send_attachment_async_if_ready(
+        self,
+        input: DirectSecureAttachmentSend,
+    ) -> crate::ImResult<Option<DirectSecureAttachmentSendResult>> {
+        let (peer, target_did) =
+            super::send::direct_target(&input.request.target, input.resolved_target_did.clone())?;
+        super::send::validate_secure_direct_security(&input.request.security)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
 
-    let operation_id = operation_id_for_request(request)?;
-    let message_id = message_id_for_request(request, &operation_id);
-    if operation_id != message_id {
-        return Err(crate::ImError::invalid_input(
-            Some("delivery.idempotency_key".to_owned()),
-            "direct E2EE requires delivery.idempotency_key to match client_message_id",
-        ));
+        let operation_id = operation_id_for_request(&input.request)?;
+        let message_id = message_id_for_request(&input.request, &operation_id);
+        if operation_id != message_id {
+            return Err(crate::ImError::invalid_input(
+                Some("delivery.idempotency_key".to_owned()),
+                "direct E2EE requires delivery.idempotency_key to match client_message_id",
+            ));
+        }
+
+        let db = self.client.core_inner().local_state_db().await?;
+        let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
+        if db
+            .get_direct_secure_session(owner_identity_id, target_did.clone())
+            .await?
+            .is_some()
+        {
+            return self.send_attachment_follow_up_if_ready(input).await;
+        }
+
+        let committed = input.committed;
+        send_attachment_init_if_ready(
+            self.client,
+            db,
+            self.message_transport,
+            self.directory_transport,
+            peer,
+            target_did,
+            operation_id,
+            message_id,
+            committed,
+        )
+        .await
     }
-
-    let db = client.core_inner().local_state_db().await?;
-    let owner_identity_id = client.current_identity().id.as_str().to_owned();
-    let Some(record) = db
-        .get_direct_secure_session(owner_identity_id, target_did)
-        .await?
-    else {
-        return Ok(false);
-    };
-    is_established_record(&record)
 }
 
 pub(crate) async fn send_established_follow_up_payload_async<M>(
@@ -571,7 +588,7 @@ struct AsyncInitEncryptInput {
     prekey: VerifiedPrekeyBundle,
     operation_id: String,
     message_id: String,
-    text: String,
+    plaintext: ApplicationPlaintext,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -607,9 +624,9 @@ where
     let owner_identity_id = client.current_identity().id.as_str().to_owned();
     let owner_did = client.did().as_str().to_owned();
     let target_did_for_crypto = target_did.clone();
-    let text_for_crypto = text.to_owned();
     let operation_id_for_crypto = operation_id.clone();
     let message_id_for_crypto = message_id.clone();
+    let plaintext = ApplicationPlaintext::new_text("text/plain", text);
     let encrypted = crate::internal::runtime::worker::run_blocking(move || {
         encrypt_init_from_prekey(AsyncInitEncryptInput {
             owner_identity_id,
@@ -620,7 +637,7 @@ where
             prekey,
             operation_id: operation_id_for_crypto,
             message_id: message_id_for_crypto,
-            text: text_for_crypto,
+            plaintext,
         })
     })
     .await
@@ -670,6 +687,106 @@ where
             local_effect: DirectSecureLocalEffect::PersistOutgoing,
         },
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_attachment_init_if_ready<M, D>(
+    client: &crate::core::ImClient,
+    db: crate::internal::local_state::actor::LocalStateDb,
+    mut message_transport: M,
+    mut directory_transport: D,
+    peer: crate::ids::PeerRef,
+    target_did: String,
+    operation_id: String,
+    message_id: String,
+    committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
+) -> crate::ImResult<Option<DirectSecureAttachmentSendResult>>
+where
+    M: AsyncAuthenticatedRpcTransport,
+    D: AsyncRpcTransport,
+{
+    let Some(prekey) = fetch_verified_prekey_bundle_async(
+        client,
+        &mut message_transport,
+        &mut directory_transport,
+        &target_did,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let local_material = async_init_local_material(client).await?;
+    let owner_identity_id = client.current_identity().id.as_str().to_owned();
+    let owner_did = client.did().as_str().to_owned();
+    let target_did_for_crypto = target_did.clone();
+    let operation_id_for_crypto = operation_id.clone();
+    let message_id_for_crypto = message_id.clone();
+    let full_manifest = committed.full_manifest.clone();
+    let redacted_manifest = committed.redacted_manifest.clone();
+    let grant_ref = committed.grant_ref.clone();
+    let encrypted = crate::internal::runtime::worker::run_blocking(move || {
+        encrypt_init_from_prekey(AsyncInitEncryptInput {
+            owner_identity_id,
+            owner_did,
+            agreement_key_id: local_material.agreement_key_id,
+            agreement_private_pem: local_material.agreement_private_pem,
+            target_did: target_did_for_crypto,
+            prekey,
+            operation_id: operation_id_for_crypto,
+            message_id: message_id_for_crypto,
+            plaintext: ApplicationPlaintext::new_json(
+                crate::attachments::manifest::attachment_manifest_content_type(),
+                full_manifest,
+            ),
+        })
+    })
+    .await
+    .map_err(|err| crate::ImError::Internal {
+        message: err.to_string(),
+    })??;
+
+    match db
+        .save_outgoing_direct_init_session(encrypted.commit)
+        .await?
+    {
+        DirectInitSessionCommitResult::Saved(_) => {}
+        DirectInitSessionCommitResult::Existing(_) => {}
+        DirectInitSessionCommitResult::Stale { .. } => {
+            return Err(crate::ImError::LocalStateUnavailable {
+                detail: "direct E2EE session changed before async attachment init send could persist mutation"
+                    .to_owned(),
+            });
+        }
+    }
+
+    let mut params = encrypted.request.params;
+    params.insert(
+        "client".to_owned(),
+        super::send::attachment_client_context(grant_ref),
+    );
+    let raw = <M as AsyncAuthenticatedRpcTransport>::authenticated_rpc(
+        &mut message_transport,
+        super::send::MESSAGE_RPC_ENDPOINT,
+        &encrypted.request.method,
+        Value::Object(params),
+    )
+    .await
+    .and_then(super::send::object_result)?;
+    let sdk_result = super::send::sdk_result_from_secure_attachment_result(
+        &raw,
+        client.did().clone(),
+        peer,
+        &target_did,
+        &redacted_manifest,
+        Vec::new(),
+    )?;
+    Ok(Some(DirectSecureAttachmentSendResult {
+        sdk_result,
+        target_did,
+        redacted_manifest,
+        raw: Some(Value::Object(raw)),
+        local_effect: DirectSecureAttachmentLocalEffect::PersistOutgoing,
+    }))
 }
 
 fn encrypt_follow_up_from_record(
@@ -788,7 +905,7 @@ fn encrypt_init_from_prekey(input: AsyncInitEncryptInput) -> crate::ImResult<Enc
         &recipient_signed_prekey_public,
         recipient_one_time_prekey_public.as_ref(),
         recipient_one_time_prekey_id,
-        &ApplicationPlaintext::new_text("text/plain", &input.text),
+        &input.plaintext,
     )
     .map_err(map_direct_error)?;
     let now = now_utc_like();
@@ -1377,6 +1494,87 @@ mod tests {
         assert!(!result_text.contains("nonce_b64u"));
         assert!(!result_text.contains(&object_key));
         assert!(!result_text.contains(&nonce));
+    }
+
+    #[tokio::test]
+    async fn async_direct_secure_attachment_sender_initializes_session_without_leaking_secrets() {
+        let alice = TestIdentity::new("alice.async-attachment-init.example", "alice");
+        let bob = TestIdentity::new("bob.async-attachment-init.example", "bob");
+        let fixture = Fixture::new(&alice);
+        let client = fixture.client();
+        let bob_bundle = test_prekey_bundle(&bob);
+        let committed = committed_attachment();
+        let object_key = committed.full_manifest["attachments"][0]["encryption_info"]
+            ["object_key_b64u"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let nonce = committed.full_manifest["attachments"][0]["encryption_info"]["nonce_b64u"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let calls = Arc::new(Mutex::new(Vec::<RecordedAsyncCall>::new()));
+
+        let result = AsyncDirectSecureTextSender::new(
+            &client,
+            ReadyAsyncSessionProvider,
+            RecordingAsyncTransport {
+                calls: Arc::clone(&calls),
+                prekey_response: Some(json!({
+                    "prekey_bundle": bob_bundle.bundle,
+                    "one_time_prekey": bob_bundle.one_time_prekey,
+                })),
+            },
+            StaticDirectoryTransport {
+                did: bob.did.clone(),
+                document: bob.document.clone(),
+            },
+        )
+        .send_attachment_async_if_ready(super::super::send::DirectSecureAttachmentSend {
+            request: secure_direct_attachment_request(&bob.did),
+            resolved_target_did: None,
+            committed,
+            local_persistence: super::super::send::DirectSecureLocalPersistence::Deferred,
+        })
+        .await
+        .unwrap()
+        .expect("missing session should send direct attachment init when prekey material exists");
+
+        assert_eq!(result.sdk_result.message.id.as_str(), "msg-async-direct");
+        assert_eq!(result.target_did, bob.did);
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "direct.e2ee.get_prekey_bundle");
+        assert_eq!(calls[1].method, "direct.send");
+        assert_eq!(
+            calls[1].params["meta"]["content_type"],
+            "application/anp-direct-init+json"
+        );
+        assert!(
+            !calls[1].params["body"].to_string().contains(&object_key),
+            "direct E2EE init outer body leaked object key"
+        );
+        assert!(
+            !calls[1].params["body"].to_string().contains(&nonce),
+            "direct E2EE init outer body leaked nonce"
+        );
+        let client_context_text = serde_json::to_string(&calls[1].params["client"]).unwrap();
+        assert!(!client_context_text.contains("object_key_b64u"));
+        assert!(!client_context_text.contains("nonce_b64u"));
+        assert!(!client_context_text.contains(&object_key));
+        assert!(!client_context_text.contains(&nonce));
+        let saved = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .get_direct_secure_session("alice-id", &bob.did)
+            .await
+            .unwrap()
+            .unwrap();
+        let saved_session = direct_session_from_blob(&saved.state_blob).unwrap();
+        assert_eq!(saved_session.status, SESSION_STATUS_PENDING_CONFIRMATION);
+        assert_eq!(saved_session.send_n, 1);
     }
 
     #[tokio::test]
