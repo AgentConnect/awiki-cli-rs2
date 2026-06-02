@@ -68,52 +68,48 @@ where
             input.request.message_id.as_str(),
             input.request.attachment_id.as_deref().unwrap_or_default(),
         )?;
-        if selection.sender_did.trim().is_empty() {
+        if selection.public.sender_did.trim().is_empty() {
             return Err(crate::ImError::invalid_input(
                 Some("sender_did".to_string()),
                 "attachment message sender_did is required",
             ));
         }
-        let attachment_service = self.resolve_attachment_service(&selection.sender_did)?;
-        let ticket = self.get_download_ticket(&target, &selection, &attachment_service)?;
+        let attachment_service = self.resolve_attachment_service(&selection.public.sender_did)?;
+        let ticket = self.get_download_ticket(&target, &selection.public, &attachment_service)?;
         let object = self
             .transport
-            .get_attachment_object(&selection.object_uri, &ticket.download_ticket_b64u)?;
-        let filename = Some(selection.filename.clone()).filter(|value| !value.trim().is_empty());
-        let mime_type = Some(selection.mime_type.clone())
+            .get_attachment_object(&selection.public.object_uri, &ticket.download_ticket_b64u)?;
+        let object_content_type = object.content_type.clone();
+        let plaintext = verified_download_body(&selection, object.body)?;
+        let filename =
+            Some(selection.public.filename.clone()).filter(|value| !value.trim().is_empty());
+        let mime_type = Some(selection.public.mime_type.clone())
             .filter(|value| !value.trim().is_empty())
-            .or(object.content_type.clone());
-        let size_bytes = selection
-            .size
-            .trim()
-            .parse()
-            .ok()
-            .or(Some(object.body.len() as u64));
+            .or(object_content_type);
+        let size_bytes = output_size_bytes(&selection, plaintext.len());
         let destination = match sink {
             crate::internal::blob::sink::AttachmentSink::Memory => {
-                crate::attachments::DownloadedAttachmentDestination::Memory(object.body)
+                crate::attachments::DownloadedAttachmentDestination::Memory(plaintext)
             }
             crate::internal::blob::sink::AttachmentSink::LocalFile { path, overwrite } => {
                 let path = crate::internal::attachment_runtime::atomic_write::write_bytes_atomic(
-                    &path,
-                    &object.body,
-                    overwrite,
+                    &path, &plaintext, overwrite,
                 )?;
                 crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
             }
         };
         let sdk_result = crate::attachments::DownloadedAttachment {
-            attachment_id: selection.attachment_id.clone(),
+            attachment_id: selection.public.attachment_id.clone(),
             filename,
             mime_type,
             size_bytes,
             destination,
-            selection: Some(selection.clone()),
+            selection: Some(selection.redacted_public()),
             warnings: Vec::new(),
         };
         Ok(AttachmentDownloadResult {
             sdk_result,
-            selection,
+            selection: selection.redacted_public(),
             ticket,
         })
     }
@@ -123,8 +119,8 @@ where
         target: &DownloadTarget,
         requested_message_id: &str,
         requested_attachment_id: &str,
-    ) -> crate::ImResult<crate::attachments::selection::AttachmentSelection> {
-        crate::attachments::selection::find_attachment_selection_with_paging(
+    ) -> crate::ImResult<crate::attachments::selection::InternalAttachmentSelection> {
+        crate::attachments::selection::find_internal_attachment_selection_with_paging(
             |skip| self.fetch_page(target, skip),
             requested_message_id,
             requested_attachment_id,
@@ -149,11 +145,12 @@ where
                         skip,
                     },
                 )?;
-                let raw = self.transport.authenticated_rpc(
+                let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "direct.get_history",
                     params,
                 )?;
+                project_secure_direct_messages_for_download(self.client, &mut raw);
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
@@ -167,11 +164,12 @@ where
                     None,
                     skip,
                 )?;
-                let raw = self.transport.authenticated_rpc(
+                let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "group.list_messages",
                     params,
                 )?;
+                project_group_e2ee_messages_for_download(self.client, &mut raw);
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
@@ -257,54 +255,64 @@ where
                 input.request.attachment_id.as_deref().unwrap_or_default(),
             )
             .await?;
-        if selection.sender_did.trim().is_empty() {
+        if selection.public.sender_did.trim().is_empty() {
             return Err(crate::ImError::invalid_input(
                 Some("sender_did".to_string()),
                 "attachment message sender_did is required",
             ));
         }
         let attachment_service = self
-            .resolve_attachment_service_async(&selection.sender_did)
+            .resolve_attachment_service_async(&selection.public.sender_did)
             .await?;
         let ticket = self
-            .get_download_ticket_async(&target, &selection, &attachment_service)
+            .get_download_ticket_async(&target, &selection.public, &attachment_service)
             .await?;
         let object = self
             .transport
-            .get_attachment_object_stream(&selection.object_uri, &ticket.download_ticket_b64u)
+            .get_attachment_object_stream(
+                &selection.public.object_uri,
+                &ticket.download_ticket_b64u,
+            )
             .await?;
-        let filename = Some(selection.filename.clone()).filter(|value| !value.trim().is_empty());
         let object_content_type = object.content_type().map(ToOwned::to_owned);
-        let mime_type = Some(selection.mime_type.clone())
+        let downloaded = object.into_bytes().await?;
+        let plaintext = verified_download_body(&selection, downloaded)?;
+        let filename =
+            Some(selection.public.filename.clone()).filter(|value| !value.trim().is_empty());
+        let mime_type = Some(selection.public.mime_type.clone())
             .filter(|value| !value.trim().is_empty())
             .or(object_content_type);
-        let size_bytes = selection.size.trim().parse().ok();
+        let size_bytes = output_size_bytes(&selection, plaintext.len());
         let destination = match sink {
             crate::internal::blob::sink::AttachmentSink::Memory => {
-                crate::attachments::DownloadedAttachmentDestination::Memory(
-                    object.into_bytes().await?,
-                )
+                crate::attachments::DownloadedAttachmentDestination::Memory(plaintext)
             }
             crate::internal::blob::sink::AttachmentSink::LocalFile { path, overwrite } => {
                 let path = crate::internal::attachment_runtime::atomic_write::write_stream_atomic(
-                    &path, object, overwrite,
+                    &path,
+                    crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
+                        body: plaintext,
+                        content_type: None,
+                        consumed: false,
+                    },
+                    overwrite,
                 )
                 .await?;
                 crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
             }
         };
         let sdk_result = crate::attachments::DownloadedAttachment {
-            attachment_id: selection.attachment_id.clone(),
+            attachment_id: selection.public.attachment_id.clone(),
             filename,
             mime_type,
             size_bytes,
             destination,
-            selection: Some(selection.clone()),
+            selection: Some(selection.redacted_public()),
             warnings: Vec::new(),
         };
         Ok(AttachmentDownloadResult {
             sdk_result,
-            selection,
+            selection: selection.redacted_public(),
             ticket,
         })
     }
@@ -314,11 +322,11 @@ where
         target: &DownloadTarget,
         requested_message_id: &str,
         requested_attachment_id: &str,
-    ) -> crate::ImResult<crate::attachments::selection::AttachmentSelection> {
+    ) -> crate::ImResult<crate::attachments::selection::InternalAttachmentSelection> {
         let mut skip = 0_i64;
         loop {
             let (messages, has_more) = self.fetch_page_async(target, skip).await?;
-            match crate::attachments::selection::find_attachment_selection(
+            match crate::attachments::selection::find_internal_attachment_selection(
                 &messages,
                 requested_message_id,
                 requested_attachment_id,
@@ -353,10 +361,11 @@ where
                         skip,
                     },
                 )?;
-                let raw = self
+                let mut raw = self
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
+                project_secure_direct_messages_for_download_async(self.client, &mut raw).await;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
@@ -370,10 +379,11 @@ where
                     None,
                     skip,
                 )?;
-                let raw = self
+                let mut raw = self
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                     .await?;
+                project_group_e2ee_messages_for_download_async(self.client, &mut raw).await;
                 Ok((
                     values_from_array(raw.get("messages")),
                     bool_from_value(raw.get("has_more")),
@@ -433,6 +443,207 @@ where
             detail: err.to_string(),
         })
     }
+}
+
+fn verified_download_body(
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+    downloaded: Vec<u8>,
+) -> crate::ImResult<Vec<u8>> {
+    verify_downloaded_ciphertext(selection, &downloaded)?;
+    if !selection.is_object_e2ee() {
+        return Ok(downloaded);
+    }
+    let object_key_b64u = selection
+        .object_key_b64u
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("object_key_b64u".to_string()),
+                "object_key_b64u is required for object-e2ee attachment download",
+            )
+        })?;
+    let nonce_b64u = selection
+        .nonce_b64u
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("nonce_b64u".to_string()),
+                "nonce_b64u is required for object-e2ee attachment download",
+            )
+        })?;
+    if selection
+        .public
+        .object_cipher
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|cipher| {
+            cipher != crate::internal::attachment_runtime::object_crypto::OBJECT_E2EE_CIPHER
+        })
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("object_cipher".to_string()),
+            "unsupported object-e2ee cipher",
+        ));
+    }
+    let plaintext = crate::internal::attachment_runtime::object_crypto::decrypt_object_e2ee(
+        &downloaded,
+        object_key_b64u,
+        nonce_b64u,
+    )?;
+    verify_plaintext_size(selection, plaintext.len())?;
+    Ok(plaintext)
+}
+
+fn verify_downloaded_ciphertext(
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+    downloaded: &[u8],
+) -> crate::ImResult<()> {
+    if let Some(expected_size) = parse_optional_u64(&selection.public.size, "size")? {
+        if downloaded.len() as u64 != expected_size {
+            return Err(attachment_service_error(
+                "anp.attachment.digest_mismatch",
+                format!(
+                    "attachment object size mismatch: expected {expected_size}, got {}",
+                    downloaded.len()
+                ),
+            ));
+        }
+    }
+    let expected_digest = selection.public.digest_b64u.trim();
+    if !expected_digest.is_empty() {
+        let actual = crate::internal::attachment_runtime::digest::sha256_digest_b64u(downloaded);
+        if actual != expected_digest {
+            return Err(attachment_service_error(
+                "anp.attachment.digest_mismatch",
+                "attachment object digest mismatch",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_plaintext_size(
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+    plaintext_len: usize,
+) -> crate::ImResult<()> {
+    let Some(expected_size) = parse_optional_u64(
+        selection
+            .public
+            .plaintext_size
+            .as_deref()
+            .unwrap_or_default(),
+        "plaintext_size",
+    )?
+    else {
+        return Err(crate::ImError::invalid_input(
+            Some("plaintext_size".to_string()),
+            "plaintext_size is required for object-e2ee attachment download",
+        ));
+    };
+    if plaintext_len as u64 != expected_size {
+        return Err(attachment_service_error(
+            "anp.attachment.decrypt_failed",
+            format!(
+                "attachment plaintext size mismatch: expected {expected_size}, got {plaintext_len}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn output_size_bytes(
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+    plaintext_len: usize,
+) -> Option<u64> {
+    if selection.is_object_e2ee() {
+        selection
+            .public
+            .plaintext_size
+            .as_deref()
+            .and_then(|value| value.trim().parse().ok())
+            .or(Some(plaintext_len as u64))
+    } else {
+        selection
+            .public
+            .size
+            .trim()
+            .parse()
+            .ok()
+            .or(Some(plaintext_len as u64))
+    }
+}
+
+fn parse_optional_u64(value: &str, field: &str) -> crate::ImResult<Option<u64>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.parse::<u64>().map(Some).map_err(|_| {
+        crate::ImError::invalid_input(Some(field.to_string()), format!("{field} must be a u64"))
+    })
+}
+
+fn attachment_service_error(code: &str, message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some(code.to_string()),
+        message: message.into(),
+    }
+}
+
+fn project_secure_direct_messages_for_download(client: &crate::core::ImClient, raw: &mut Value) {
+    #[cfg(all(feature = "sqlite", feature = "blocking"))]
+    {
+        let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+        crate::internal::message_runtime::read::project_secure_direct_messages_for_attachment_download(
+            client,
+            raw,
+            &mut directory_transport,
+        );
+    }
+    #[cfg(not(all(feature = "sqlite", feature = "blocking")))]
+    {
+        let _ = (client, raw);
+    }
+}
+
+async fn project_secure_direct_messages_for_download_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    #[cfg(feature = "sqlite")]
+    {
+        let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+        crate::internal::message_runtime::read::project_secure_direct_messages_for_attachment_download_async(
+            client,
+            raw,
+            &mut directory_transport,
+        )
+        .await;
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, raw);
+    }
+}
+
+fn project_group_e2ee_messages_for_download(client: &crate::core::ImClient, raw: &mut Value) {
+    crate::internal::message_runtime::read::project_group_e2ee_messages_for_attachment_download(
+        client, raw,
+    );
+}
+
+async fn project_group_e2ee_messages_for_download_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    crate::internal::message_runtime::read::project_group_e2ee_messages_for_attachment_download_async(
+        client, raw,
+    )
+    .await;
 }
 
 fn local_identity_document(
@@ -695,7 +906,7 @@ mod tests {
     use super::*;
     use crate::internal::transport::{
         AttachmentObjectResponse, AttachmentObjectTransport, AuthenticatedRpcTransport,
-        RawJsonTransport,
+        RawJsonTransport, RpcTransport,
     };
     use serde_json::{json, Value};
     use std::cell::RefCell;
@@ -1055,6 +1266,320 @@ mod tests {
         assert_eq!(object.ticket, "ticket-local");
     }
 
+    #[test]
+    fn attachments_download_runtime_object_e2ee_memory_returns_plaintext_and_redacts_selection() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let object = object_e2ee_case(b"e2ee plaintext".to_vec());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let result = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                object_body: object.ciphertext.clone(),
+                object_content_type: Some("application/octet-stream".to_string()),
+            },
+        )
+        .download(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::Memory,
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .unwrap();
+
+        assert_eq!(result.selection.attachment_id, "att-e2ee-1");
+        assert_eq!(result.selection.message_security_profile, "direct-e2ee");
+        assert_eq!(result.selection.object_encryption_mode, "object-e2ee");
+        assert_eq!(
+            result.selection.object_cipher.as_deref(),
+            Some("chacha20-poly1305")
+        );
+        let expected_plaintext_size = object.plaintext.len().to_string();
+        assert_eq!(
+            result.selection.plaintext_size.as_deref(),
+            Some(expected_plaintext_size.as_str())
+        );
+        assert_eq!(
+            result.sdk_result.size_bytes,
+            Some(object.plaintext.len() as u64)
+        );
+        assert!(matches!(
+            result.sdk_result.destination,
+            crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
+                if bytes == object.plaintext
+        ));
+
+        let public_selection = serde_json::to_string(&result.selection).unwrap();
+        assert!(!public_selection.contains("object_key_b64u"));
+        assert!(!public_selection.contains("nonce_b64u"));
+        assert!(!public_selection.contains(&object.object_key_b64u));
+        assert!(!public_selection.contains(&object.nonce_b64u));
+        let sdk_selection = serde_json::to_string(&result.sdk_result.selection).unwrap();
+        assert!(!sdk_selection.contains("object_key_b64u"));
+        assert!(!sdk_selection.contains("nonce_b64u"));
+        assert!(!sdk_selection.contains(&object.object_key_b64u));
+        assert!(!sdk_selection.contains(&object.nonce_b64u));
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 4);
+        let ticket = calls[2].rpc("attachment.get_download_ticket");
+        assert_eq!(
+            ticket.params["body"]["message_security_profile"],
+            "direct-e2ee"
+        );
+        assert_eq!(
+            ticket.params["body"]["message_target_did"],
+            "did:example:alice"
+        );
+        assert_eq!(ticket.params["body"].get("group_did"), None);
+        assert_eq!(
+            ticket.params["body"].get("object_key_b64u"),
+            None,
+            "download ticket body must not expose object key"
+        );
+        assert_eq!(
+            ticket.params["body"].get("nonce_b64u"),
+            None,
+            "download ticket body must not expose nonce"
+        );
+        calls[3].object_get("https://objects.example/att-e2ee-1");
+    }
+
+    #[test]
+    fn attachments_download_runtime_object_e2ee_local_file_writes_plaintext() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let object = object_e2ee_case(b"local e2ee plaintext".to_vec());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let output = fixture.root.join("downloads").join("secret.pdf");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let result = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                object_body: object.ciphertext.clone(),
+                object_content_type: Some("application/octet-stream".to_string()),
+            },
+        )
+        .download(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            result.sdk_result.destination,
+            crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
+                if path == output
+        ));
+        assert_eq!(fs::read(&output).unwrap(), object.plaintext);
+        assert_no_attachment_temp_files(output.parent().unwrap());
+        assert_eq!(calls.borrow().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn attachments_download_runtime_object_e2ee_local_file_async_writes_plaintext() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let object = object_e2ee_case(b"async local e2ee plaintext".to_vec());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let output = fixture.root.join("downloads").join("secret-async.pdf");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let result = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                object_body: object.ciphertext.clone(),
+                object_content_type: Some("application/octet-stream".to_string()),
+            },
+        )
+        .download_async(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            result.sdk_result.destination,
+            crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
+                if path == output
+        ));
+        assert_eq!(fs::read(&output).unwrap(), object.plaintext);
+        assert_no_attachment_temp_files(output.parent().unwrap());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 4);
+        calls[3].object_get_stream("https://objects.example/att-e2ee-1");
+    }
+
+    #[test]
+    fn attachments_download_runtime_rejects_digest_mismatch_without_writing() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let mut object = object_e2ee_case(b"secret with bad digest".to_vec());
+        object.full_manifest["attachments"][0]["digest"]["value_b64u"] =
+            Value::String("wrong-digest".to_string());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let output = fixture.root.join("downloads").join("bad-digest.pdf");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let err = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                object_body: object.ciphertext.clone(),
+                object_content_type: None,
+            },
+        )
+        .download(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .unwrap_err();
+
+        assert_service_error_code(err, "anp.attachment.digest_mismatch");
+        assert!(!output.exists());
+        assert_no_attachment_temp_files(output.parent().unwrap());
+        assert_eq!(calls.borrow().len(), 4);
+    }
+
+    #[test]
+    fn attachments_download_runtime_rejects_wrong_object_key_without_writing() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let mut object = object_e2ee_case(b"secret with wrong key".to_vec());
+        let other = object_e2ee_case(b"other secret".to_vec());
+        object.full_manifest["attachments"][0]["encryption_info"]["object_key_b64u"] =
+            Value::String(other.object_key_b64u);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let output = fixture.root.join("downloads").join("wrong-key.pdf");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let err = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                object_body: object.ciphertext.clone(),
+                object_content_type: None,
+            },
+        )
+        .download(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .unwrap_err();
+
+        assert_service_error_code(err, "anp.attachment.decrypt_failed");
+        assert!(!output.exists());
+        assert_no_attachment_temp_files(output.parent().unwrap());
+        assert_eq!(calls.borrow().len(), 4);
+    }
+
+    #[test]
+    fn attachments_download_runtime_rejects_plaintext_size_mismatch_without_writing() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let mut object = object_e2ee_case(b"secret with wrong plaintext size".to_vec());
+        object.full_manifest["attachments"][0]["encryption_info"]["plaintext_size"] =
+            Value::String((object.plaintext.len() + 1).to_string());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let output = fixture.root.join("downloads").join("wrong-size.pdf");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let err = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                object_body: object.ciphertext.clone(),
+                object_content_type: None,
+            },
+        )
+        .download(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-e2ee-1").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .unwrap_err();
+
+        assert_service_error_code(err, "anp.attachment.decrypt_failed");
+        assert!(!output.exists());
+        assert_no_attachment_temp_files(output.parent().unwrap());
+        assert_eq!(calls.borrow().len(), 4);
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider {
         scopes: Rc<RefCell<Vec<crate::auth::AuthScope>>>,
@@ -1164,6 +1689,12 @@ mod tests {
         }
     }
 
+    impl RpcTransport for RecordingTransport {
+        fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
     impl AttachmentObjectTransport for RecordingTransport {
         fn put_attachment_object(
             &mut self,
@@ -1208,6 +1739,17 @@ mod tests {
             headers: BTreeMap<String, String>,
         ) -> crate::ImResult<Value> {
             RawJsonTransport::get_json_url(self, url, headers)
+        }
+    }
+
+    impl crate::internal::transport::AsyncRpcTransport for RecordingTransport {
+        async fn rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            RpcTransport::rpc(self, endpoint, method, params)
         }
     }
 
@@ -1276,7 +1818,7 @@ mod tests {
                                 "filename": "local.txt",
                                 "mime_type": "text/plain",
                                 "size": "20",
-                                "digest": { "alg": "sha-256", "value_b64u": "digest-local" },
+                                "digest": { "alg": "sha-256", "value_b64u": "nckhHGQ875uyaFS-XN4okcnICwLgNUjey_suVwwrcNY" },
                                 "access_info": { "object_uri": "https://objects.example/att-local" }
                             }],
                             "primary_attachment_id": "att-local"
@@ -1314,6 +1856,12 @@ mod tests {
         }
     }
 
+    impl RpcTransport for LocalFallbackTransport {
+        fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
     impl AttachmentObjectTransport for LocalFallbackTransport {
         fn put_attachment_object(
             &mut self,
@@ -1337,6 +1885,167 @@ mod tests {
                 body: b"local document bytes".to_vec(),
                 content_type: Some("text/plain".to_string()),
             })
+        }
+    }
+
+    struct E2eeTransport {
+        calls: Rc<RefCell<Vec<RecordedCall>>>,
+        history: Value,
+        object_body: Vec<u8>,
+        object_content_type: Option<String>,
+    }
+
+    impl AuthenticatedRpcTransport for E2eeTransport {
+        fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            self.calls.borrow_mut().push(RecordedCall::Rpc {
+                endpoint: endpoint.to_string(),
+                method: method.to_string(),
+                params: params.clone(),
+            });
+            match method {
+                "direct.get_history" => Ok(self.history.clone()),
+                "attachment.get_download_ticket" => Ok(json!({
+                    "download_ticket_b64u": "ticket-e2ee",
+                    "expires_at": "2026-05-23T01:00:00Z",
+                    "ticket_binding": {
+                        "attachment_id": params["body"]["attachment_id"].clone()
+                    }
+                })),
+                _ => Err(crate::ImError::TransportUnavailable {
+                    detail: format!("unexpected rpc method {method} at {endpoint}"),
+                }),
+            }
+        }
+    }
+
+    impl RawJsonTransport for E2eeTransport {
+        fn get_json_url(
+            &mut self,
+            url: &str,
+            headers: BTreeMap<String, String>,
+        ) -> crate::ImResult<Value> {
+            self.calls.borrow_mut().push(RecordedCall::GetJson {
+                url: url.to_string(),
+                headers,
+            });
+            Ok(json!({
+                "id": "did:web:example.com:bob",
+                "service": [{
+                    "id": "#attachment",
+                    "type": "ANPMessageService",
+                    "serviceEndpoint": "https://attachment.example/rpc",
+                    "serviceDid": "did:web:attachment.example",
+                    "profiles": ["anp.attachment.v1"],
+                    "securityProfiles": ["transport-protected"],
+                    "priority": 1
+                }]
+            }))
+        }
+    }
+
+    impl RpcTransport for E2eeTransport {
+        fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
+    impl AttachmentObjectTransport for E2eeTransport {
+        fn put_attachment_object(
+            &mut self,
+            _upload_uri: &str,
+            _headers: BTreeMap<String, String>,
+            _body: Vec<u8>,
+        ) -> crate::ImResult<()> {
+            unreachable!("download runtime should not upload objects")
+        }
+
+        fn get_attachment_object(
+            &mut self,
+            object_uri: &str,
+            download_ticket: &str,
+        ) -> crate::ImResult<AttachmentObjectResponse> {
+            self.calls.borrow_mut().push(RecordedCall::GetObject {
+                object_uri: object_uri.to_string(),
+                ticket: download_ticket.to_string(),
+            });
+            Ok(AttachmentObjectResponse {
+                body: self.object_body.clone(),
+                content_type: self.object_content_type.clone(),
+            })
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for E2eeTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
+    impl crate::internal::transport::AsyncRawJsonTransport for E2eeTransport {
+        async fn get_json_url(
+            &mut self,
+            url: &str,
+            headers: BTreeMap<String, String>,
+        ) -> crate::ImResult<Value> {
+            RawJsonTransport::get_json_url(self, url, headers)
+        }
+    }
+
+    impl crate::internal::transport::AsyncRpcTransport for E2eeTransport {
+        async fn rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            RpcTransport::rpc(self, endpoint, method, params)
+        }
+    }
+
+    impl crate::internal::transport::AsyncAttachmentObjectTransport for E2eeTransport {
+        async fn put_attachment_object(
+            &mut self,
+            upload_uri: &str,
+            headers: BTreeMap<String, String>,
+            body: Vec<u8>,
+        ) -> crate::ImResult<()> {
+            AttachmentObjectTransport::put_attachment_object(self, upload_uri, headers, body)
+        }
+
+        async fn get_attachment_object(
+            &mut self,
+            object_uri: &str,
+            download_ticket: &str,
+        ) -> crate::ImResult<AttachmentObjectResponse> {
+            AttachmentObjectTransport::get_attachment_object(self, object_uri, download_ticket)
+        }
+
+        async fn get_attachment_object_stream(
+            &mut self,
+            object_uri: &str,
+            download_ticket: &str,
+        ) -> crate::ImResult<crate::internal::transport::AsyncAttachmentObjectResponse> {
+            self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
+                object_uri: object_uri.to_string(),
+                ticket: download_ticket.to_string(),
+            });
+            Ok(
+                crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
+                    body: self.object_body.clone(),
+                    content_type: self.object_content_type.clone(),
+                    consumed: false,
+                },
+            )
         }
     }
 
@@ -1433,7 +2142,7 @@ mod tests {
                             "filename": "report.txt",
                             "mime_type": "text/plain",
                             "size": "16",
-                            "digest": { "alg": "sha-256", "value_b64u": "digest-1" },
+                            "digest": { "alg": "sha-256", "value_b64u": "exNCHlmX3QP0Pkz7u3ndQu3b5zESko9lysH2TsoflvQ" },
                             "access_info": { "object_uri": "https://objects.example/att-1" }
                         }],
                         "primary_attachment_id": "att-1",
@@ -1454,7 +2163,7 @@ mod tests {
                             "filename": "second.txt",
                             "mime_type": "text/plain",
                             "size": "16",
-                            "digest": { "alg": "sha-256", "value_b64u": "digest-2" },
+                            "digest": { "alg": "sha-256", "value_b64u": "exNCHlmX3QP0Pkz7u3ndQu3b5zESko9lysH2TsoflvQ" },
                             "access_info": { "object_uri": "https://objects.example/att-2" }
                         }],
                         "primary_attachment_id": "att-2"
@@ -1477,12 +2186,60 @@ mod tests {
                         "filename": "group.txt",
                         "mime_type": "text/plain",
                         "size": "16",
-                        "digest": { "alg": "sha-256", "value_b64u": "digest-group" },
+                        "digest": { "alg": "sha-256", "value_b64u": "exNCHlmX3QP0Pkz7u3ndQu3b5zESko9lysH2TsoflvQ" },
                         "access_info": { "object_uri": "https://objects.example/att-1" }
                     }],
                     "primary_attachment_id": "att-group-1"
                 }))
                 .unwrap()
+            }],
+            "has_more": false
+        })
+    }
+
+    struct ObjectE2eeCase {
+        plaintext: Vec<u8>,
+        ciphertext: Vec<u8>,
+        full_manifest: Value,
+        object_key_b64u: String,
+        nonce_b64u: String,
+    }
+
+    fn object_e2ee_case(plaintext: Vec<u8>) -> ObjectE2eeCase {
+        let prepared = crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+            "secret.pdf",
+            "application/pdf",
+            plaintext.clone(),
+        )
+        .expect("object-e2ee attachment prepares");
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared.prepared,
+            "att-e2ee-1",
+            "https://objects.example/att-e2ee-1",
+        );
+        let full_manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
+                &descriptor,
+                "secret",
+                &prepared.secrets,
+            );
+        ObjectE2eeCase {
+            plaintext,
+            ciphertext: prepared.prepared.payload,
+            full_manifest,
+            object_key_b64u: prepared.secrets.object_key_b64u,
+            nonce_b64u: prepared.secrets.nonce_b64u,
+        }
+    }
+
+    fn e2ee_history_response(manifest: Value, message_security_profile: &str) -> Value {
+        json!({
+            "messages": [{
+                "id": "msg-e2ee-1",
+                "message_id": "msg-e2ee-1",
+                "sender_did": "did:web:example.com:bob",
+                "message_security_profile": message_security_profile,
+                "content": manifest
             }],
             "has_more": false
         })
@@ -1626,5 +2383,12 @@ mod tests {
             .filter(|name| name.contains(".awiki-attachment-download-"))
             .collect();
         assert_eq!(leftovers, Vec::<String>::new());
+    }
+
+    fn assert_service_error_code(err: crate::ImError, expected: &str) {
+        assert!(matches!(
+            err,
+            crate::ImError::Service { code: Some(code), .. } if code == expected
+        ));
     }
 }

@@ -591,6 +591,50 @@ fn attachments_selection_matches_visible_or_raw_message_id() {
 }
 
 #[test]
+fn attachments_selection_parses_object_e2ee_metadata_but_redacts_key_nonce() {
+    let messages = vec![json!({
+        "id": "msg-e2ee-1",
+        "sender_did": "did:wba:awiki.ai:user:alice:e1",
+        "security": "secure-direct",
+        "content": {
+            "attachments": [{
+                "attachment_id": "att-e2ee-1",
+                "filename": "secret.pdf",
+                "mime_type": "application/pdf",
+                "size": "33",
+                "digest": { "alg": "sha-256", "value_b64u": "ciphertext-digest" },
+                "access_info": { "object_uri": "https://objects.example/att-e2ee-1" },
+                "encryption_info": {
+                    "mode": "object-e2ee",
+                    "object_cipher": "chacha20-poly1305",
+                    "object_key_b64u": "BASE64URL_OBJECT_KEY",
+                    "nonce_b64u": "BASE64URL_NONCE",
+                    "plaintext_size": "16"
+                }
+            }],
+            "primary_attachment_id": "att-e2ee-1"
+        }
+    })];
+
+    let selection =
+        im_core::compat::attachments::find_attachment_selection(&messages, "msg-e2ee-1", "")
+            .expect("public selection");
+    assert_eq!(selection.message_security_profile, "direct-e2ee");
+    assert_eq!(selection.object_encryption_mode, "object-e2ee");
+    assert_eq!(
+        selection.object_cipher.as_deref(),
+        Some("chacha20-poly1305")
+    );
+    assert_eq!(selection.plaintext_size.as_deref(), Some("16"));
+
+    let public_json = serde_json::to_string(&selection).expect("selection serializes");
+    assert!(!public_json.contains("object_key_b64u"));
+    assert!(!public_json.contains("nonce_b64u"));
+    assert!(!public_json.contains("BASE64URL_OBJECT_KEY"));
+    assert!(!public_json.contains("BASE64URL_NONCE"));
+}
+
+#[test]
 fn attachments_selection_requires_id_for_multiple_attachments() {
     let messages = vec![json!({
         "id": "msg-1",
@@ -852,6 +896,52 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         "did:wba:awiki.ai:user:alice:e1_alice"
     );
     assert_eq!(ticket.get("auth"), None);
+
+    let direct_e2ee_selection = im_core::compat::attachments::AttachmentSelection {
+        attachment_id: "att-e2ee-1".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/e2ee-1".to_string(),
+        object_encryption_mode: "object-e2ee".to_string(),
+        ..im_core::compat::attachments::AttachmentSelection::default()
+    };
+    let direct_e2ee_ticket =
+        im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+            "did:wba:awiki.ai:user:alice:e1_alice",
+            "did:wba:awiki.ai",
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "msg-e2ee-1",
+            "",
+            &direct_e2ee_selection,
+        )
+        .expect("direct e2ee ticket params");
+    assert_eq!(
+        direct_e2ee_ticket["body"]["message_security_profile"],
+        "direct-e2ee"
+    );
+    assert_eq!(
+        direct_e2ee_ticket["body"]["message_target_did"],
+        "did:wba:awiki.ai:user:alice:e1_alice"
+    );
+    assert_eq!(direct_e2ee_ticket["body"].get("group_did"), None);
+
+    let group_e2ee_ticket =
+        im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+            "did:wba:awiki.ai:user:alice:e1_alice",
+            "did:wba:awiki.ai",
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "msg-e2ee-1",
+            "did:wba:awiki.ai:groups:test:e1_group",
+            &direct_e2ee_selection,
+        )
+        .expect("group e2ee ticket params");
+    assert_eq!(
+        group_e2ee_ticket["body"]["message_security_profile"],
+        "group-e2ee"
+    );
+    assert_eq!(
+        group_e2ee_ticket["body"]["group_did"],
+        "did:wba:awiki.ai:groups:test:e1_group"
+    );
+    assert_eq!(group_e2ee_ticket["body"].get("message_target_did"), None);
 
     let identity = generated_attachment_wire_identity();
     let manifest = json!({

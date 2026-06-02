@@ -342,6 +342,15 @@ fn project_secure_direct_messages(
     }
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) fn project_secure_direct_messages_for_attachment_download(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+) {
+    project_secure_direct_messages(client, raw, directory_transport);
+}
+
 async fn project_secure_direct_messages_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
@@ -515,6 +524,15 @@ async fn project_secure_direct_messages_async(
         *messages = filtered;
         append_secure_direct_warnings(raw, compact_secure_direct_warnings(async_warnings));
     }
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn project_secure_direct_messages_for_attachment_download_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+) {
+    project_secure_direct_messages_async(client, raw, directory_transport).await;
 }
 
 async fn resolve_direct_sender_document_async(
@@ -723,6 +741,13 @@ fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) 
 #[cfg(not(feature = "group-e2ee"))]
 fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
 
+pub(crate) fn project_group_e2ee_messages_for_attachment_download(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    project_group_e2ee_messages(client, raw);
+}
+
 #[cfg(feature = "group-e2ee")]
 async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: &mut Value) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
@@ -741,6 +766,13 @@ async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: 
 
 #[cfg(not(feature = "group-e2ee"))]
 async fn project_group_e2ee_messages_async(_client: &crate::core::ImClient, _raw: &mut Value) {}
+
+pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
+    project_group_e2ee_messages_async(client, raw).await;
+}
 
 fn message_from_value(
     value: &Value,

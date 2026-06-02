@@ -214,7 +214,10 @@ pub(crate) fn build_attachment_download_ticket_rpc_params(
     );
     body.insert(
         "message_security_profile".to_string(),
-        Value::String("transport-protected".to_string()),
+        Value::String(selection_message_security_profile(
+            selection,
+            !group_did.trim().is_empty(),
+        )),
     );
     body.insert(
         "message_id".to_string(),
@@ -236,6 +239,27 @@ pub(crate) fn build_attachment_download_ticket_rpc_params(
         "meta": super::common::message_meta(requester_did, service_did, ATTACHMENT_PROFILE),
         "body": body,
     }))
+}
+
+fn selection_message_security_profile(
+    selection: &crate::attachments::selection::AttachmentSelection,
+    is_group: bool,
+) -> String {
+    let explicit = selection.message_security_profile.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    if selection.object_encryption_mode.trim()
+        == crate::attachments::manifest::OBJECT_ENCRYPTION_MODE_E2EE
+    {
+        if is_group {
+            "group-e2ee".to_string()
+        } else {
+            "direct-e2ee".to_string()
+        }
+    } else {
+        "transport-protected".to_string()
+    }
 }
 
 pub(crate) fn build_direct_attachment_send_rpc_params(
