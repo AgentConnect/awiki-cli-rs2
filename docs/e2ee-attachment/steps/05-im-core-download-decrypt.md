@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：in_progress
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | in_progress |
+| Status | done |
 | Branch | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |
 | Started | 2026-06-02 12:00 CST |
-| Completed |  |
-| Commit |  |
-| Review evidence |  |
-| Verification evidence |  |
-| Next action | 实现 E2EE 附件下载校验、解密和明文输出 |
+| Completed | 2026-06-02 12:03 CST |
+| Commit | `e2ee-attachment-cli-rs2:e0670208d823c817261f17f5335eb8dbacca3b03` |
+| Review evidence | Review 覆盖校验顺序、public redaction、ticket profile、sync/async local-file 失败不写出、secure-aware history projection、plain 兼容和 secret grep；未发现需修复问题。 |
+| Verification evidence | `cargo fmt --all --check`、`cargo check -p im-core`、`cargo check -p im-core --features group-e2ee`、`cargo test -p im-core attachments_download_runtime --locked`、`cargo test -p im-core attachment --locked`、`cargo test -p im-core attachment_object_crypto --locked`、`cargo test -p im-core secure --locked`、`cargo test -p im-core e2ee --locked`、`cargo test -p im-core e2ee --features group-e2ee --locked`、`cargo test -p im-core decrypt --locked`、`cargo check -p im-core-dart`、`git diff --check` 均通过；`cargo test -p im-core attachment_download --locked` 过滤词 0 命中，已记录并用 `attachments_download_runtime` 覆盖。 |
+| Next action | 启动 Step 06：CLI、Dart、data-rs2 高层接口 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -81,13 +81,13 @@ Step index：05
 
 ## 7. 验收标准
 
-- [ ] plain 下载校验长度和 digest 后输出原字节。
-- [ ] E2EE 下载校验密文字节后输出明文。
-- [ ] digest mismatch / decrypt failed / plaintext_size mismatch 不写出有效附件。
-- [ ] ticket request 使用正确 message security profile。
-- [ ] public result 不含 key/nonce。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] plain 下载校验长度和 digest 后输出原字节。
+- [x] E2EE 下载校验密文字节后输出明文。
+- [x] digest mismatch / decrypt failed / plaintext_size mismatch 不写出有效附件。
+- [x] ticket request 使用正确 message security profile。
+- [x] public result 不含 key/nonce。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -99,6 +99,23 @@ Step index：05
 | Secure read regression | `cd e2ee-attachment-cli-rs2 && cargo test -p im-core secure --locked` | secure read/decrypt 回归通过。 |
 | Diff | `cd e2ee-attachment-cli-rs2 && git diff --check` | 无 whitespace 错误。 |
 
+实际验证记录：
+
+- `cargo fmt --all --check`：通过。
+- `cargo check -p im-core`：通过。
+- `cargo check -p im-core --features group-e2ee`：通过。
+- `cargo test -p im-core attachments_download_runtime --locked`：13 passed, 0 failed, 235 filtered。
+- `cargo test -p im-core attachment --locked`：lib 29 passed、attachment_api 22 passed、phase1a 1 passed、realtime_projection 7 passed，0 failed。
+- `cargo test -p im-core attachment_object_crypto --locked`：2 passed, 0 failed。
+- `cargo test -p im-core secure --locked`：lib 66 passed、phase1a 2 passed、realtime_loop 2 passed、secure_api 10 passed，0 failed。
+- `cargo test -p im-core e2ee --locked`：lib 24 passed、attachment_api 3 passed、phase1a 3 passed，0 failed。
+- `cargo test -p im-core e2ee --features group-e2ee --locked`：lib 79 passed、attachment_api 3 passed、phase1a 3 passed，0 failed。
+- `cargo test -p im-core decrypt --locked`：4 passed, 0 failed。
+- `cargo test -p im-core attachment_download --locked`：0 passed, 0 failed；过滤词未命中实际下载测试，保留为 Plan 原命令证据，实际下载覆盖使用 `attachments_download_runtime`。
+- `cargo check -p im-core-dart`：通过。
+- `git diff --check`：通过。
+- Secret grep：`object_key_b64u|nonce_b64u` 命中仅在 internal crypto/manifest/selection/download 解密逻辑和测试断言；Dart/public DTO 未新增密钥输出。
+
 ## 9. Review 环节
 
 Review 重点：
@@ -108,11 +125,25 @@ Review 重点：
 - public `DownloadedAttachment` 和 `AttachmentSelection` 是否 redacted。
 - E2EE ticket request 的 target service 是否仍按原消息 sender DID 解析。
 
+实际 Review 记录：
+
+- 校验顺序为 `verify_downloaded_ciphertext` 先校验下载字节长度和 sha-256，`object-e2ee` 再调用 `decrypt_object_e2ee`，最后校验 `plaintext_size`。
+- sync 和 async local-file 路径均在校验/解密成功后才调用 atomic write；digest mismatch、wrong key、plaintext_size mismatch 测试确认不写目标文件且无临时文件残留。
+- public `AttachmentSelection` 只保留 `message_security_profile`、`object_encryption_mode`、`object_cipher`、`plaintext_size` 等非秘密字段；key/nonce 只在 `InternalAttachmentSelection` 和 full manifest 测试内存在。
+- ticket request direct/group 分别使用 `direct-e2ee` / `group-e2ee`，并继续按原消息 `sender_did` 解析 attachment service。
+- 未发现需修复问题；剩余风险是 realtime projection 对 object-e2ee manifest 仍保留 warning UX，下载 runtime 已可处理，后续 Step 06/07 按 CLI/系统测试收口。
+
 ## 10. Commit 要求
 
 - Commit 前记录 `e2ee-attachment-cli-rs2` 的 `git status --short --branch`。
 - Commit 只包含 download/decrypt、selection、wire params 和 tests。
 - Commit 后记录 hash 和 post-commit status 到主 Plan 执行台账。
+
+实际 Commit 记录：
+
+- Pre-commit status：`crates/im-core/src/attachments/selection.rs`、`crates/im-core/src/internal/attachment_runtime/download.rs`、`crates/im-core/src/internal/message_runtime/read.rs`、`crates/im-core/src/internal/wire/attachment.rs`、`crates/im-core/tests/attachment_api.rs` modified。
+- Implementation commit：`e2ee-attachment-cli-rs2:e0670208d823c817261f17f5335eb8dbacca3b03`，commit message `支持 im-core E2EE 附件下载解密`。
+- Post-commit status：实现提交后工作区干净，随后仅回填本 Plan / Step 文档。
 
 ## 11. 风险、假设与回滚
 
