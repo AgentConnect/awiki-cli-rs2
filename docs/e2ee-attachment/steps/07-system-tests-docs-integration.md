@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：07  
-状态：draft
+状态：blocked
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | blocked |
 | Branch | `awiki-system-test: release/0526`，实现仓库分支同前序步骤 |
-| Started |  |
+| Started | 2026-06-02 13:20 CST |
 | Completed |  |
-| Commit |  |
-| Review evidence |  |
-| Verification evidence |  |
-| Next action | 等 Step 01-06 完成后启动 |
+| Commit | `e2ee-attachment-cli-rs2:5520adb`、`e2ee-attachment-cli-rs2:1745f72`、`awiki-system-test:145d920`、`awiki-system-test:d17e03a`；文档收口 commit 由当前仓库 `git log` 和最终响应记录，避免文档自引用导致 commit hash 循环。 |
+| Review evidence | 已完成 Step 07 Review：发现并修复 public projection 泄漏、direct async attachment unsupported、direct async attachment init 缺失和系统测试选择器在显式 repo override 下误报；剩余 critical finding 为远端 `awiki.info` message-service 未部署 `object-e2ee` 控制面策略。 |
+| Verification evidence | Rust/系统测试 wrapper 通过；remote full 失败 2、通过 183、跳过 15，两个失败均为 secure direct/group attachment 在 `attachment.create_slot` 返回 `6013 / current deployment only supports transport-protected attachments with mode=none`；文档收口后 focused direct/group 复核仍为同一 6013。 |
+| Next action | 等待或完成 `awiki.info` message-service 部署包含 Step 01/02 后，重跑 focused direct/group 和 remote full。 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -84,13 +84,13 @@ Step index：07
 
 ## 7. 验收标准
 
-- [ ] direct E2EE 附件 focused E2E 有证据。
-- [ ] group E2EE 附件 focused E2E 有证据，或记录 feature gate/环境原因。
-- [ ] negative tests 覆盖 grant、digest/decrypt、removed member 或安全边界。
-- [ ] 文档同步实际行为，不把 discovery 写成公开开启。
-- [ ] 最终 remote mode 使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `awiki.info` 并记录 passed/failed/skipped。
-- [ ] 全局 Review 发现已修复或记录。
-- [ ] 本步骤和最终文档变更创建聚焦 commit。
+- [x] direct E2EE 附件 focused E2E 有证据：用例已加入并通过 CLI 高层路径执行；当前远端在 `attachment.create_slot` 阶段因部署策略返回 6013，未跑通下载闭环。
+- [x] group E2EE 附件 focused E2E 有证据：用例已加入并通过 CLI 高层路径执行；当前远端在 `attachment.create_slot` 阶段因部署策略返回 6013，未跑通下载闭环。
+- [x] negative tests 覆盖 grant、digest/decrypt、removed member 或安全边界：`awiki-system-test` Rust wrapper 覆盖 im-core digest/key/plaintext_size negative、public/realtime redaction、wire 控制面不含 key/nonce；服务端 focused tests 覆盖 E2EE grant refs。
+- [x] 文档同步实际行为，不把 discovery 写成公开开启。
+- [x] 最终 remote mode 使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `awiki.info` 并记录 passed/failed/skipped。
+- [x] 全局 Review 发现已修复或记录。
+- [x] 本步骤代码、系统测试和文档变更创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -113,6 +113,38 @@ Review 重点：
 - negative tests 是否能证明服务端授权和客户端校验有效。
 - 文档是否和实现一致，且 discovery 仍关闭。
 - 各仓库 commit 是否聚焦，无无关修改。
+
+实际 Review 记录：
+
+- 发现 public read/realtime projection 曾把 direct/group E2EE 内层 attachment manifest 原样放入 public message/event，存在 `object_key_b64u` / `nonce_b64u` 泄漏风险；已在 `e2ee-attachment-cli-rs2:5520adb` 修复为 public projection redacted、internal download projection 保留 full manifest。
+- 发现 `MessageService::send_direct_e2ee_async` 在无 `blocking` feature 时对 direct secure attachment 返回 `unsupported capability: async-secure-direct-attachment-send`；已在 `e2ee-attachment-cli-rs2:5520adb` 增加 async direct attachment follow-up 路径。
+- remote full 进一步发现 direct secure attachment 在无本地 established session 时仍不能发 init；已在 `e2ee-attachment-cli-rs2:1745f72` 增加 async direct attachment init 路径，并补 init/follow-up 不泄漏 key/nonce 单测。
+- remote full 发现 `AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2` 下 selection defaults 测试仍固定断言 sibling `awiki-cli-rs2`；已在 `awiki-system-test:d17e03a` 修复为显式 repo override 时断言 override 路径。
+- 剩余 critical finding：`awiki.info` 当前 message-service 部署仍拒绝 direct/group `object-e2ee` attachment slot，返回 `6013 / current deployment only supports transport-protected attachments with mode=none`。本地 `message-service` 当前代码 focused tests 已支持该策略，需部署更新后重跑系统测试。
+
+## 9.1 实际验证证据
+
+通过：
+
+- `cd e2ee-attachment-cli-rs2 && cargo fmt --all --check`：通过。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core async_direct_secure_attachment_sender --locked`：2 passed, 0 failed；覆盖 direct attachment async init/follow-up，外层 body 和 `client.attachment_grant_refs` 不泄漏 key/nonce。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core async_direct_secure_sender --locked`：3 passed, 0 failed；覆盖 direct async text init/follow-up/queued 既有路径。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core attachments_download_runtime --locked`：13 passed, 0 failed；覆盖 object-e2ee 下载、digest/key/plaintext_size negative 和 local-file 不写出失败明文。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core attachment_projection --locked`：7 matched tests passed, 0 failed；覆盖 public direct E2EE attachment projection redaction 和 realtime attachment projection。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core realtime_notification_normalizer_redacts_attachment_manifest_secrets --locked`：1 passed, 0 failed。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core secure_group_attachment_public_projection_redacts_and_sets_group_profile --features group-e2ee --locked`：1 passed, 0 failed。
+- `cd e2ee-attachment-cli-rs2 && cargo test -p im-core realtime_notification_projection_redacts_attachment_manifest_secrets --features group-e2ee --locked`：1 passed, 0 failed。
+- `cd message-service && cargo test -p im-attachment attachment -- --nocapture`：12 passed, 0 failed；覆盖 object-e2ee control policy 和 E2EE grant refs。
+- `cd awiki-system-test && uv run --no-sync python -m py_compile tests_v2/cli/test_awiki_cli_direct_local.py tests_v2/cli/test_awiki_cli_group_local.py tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py tests_v2/helpers/__init__.py tests_v2/helpers/awiki_cli.py tests_v2/helpers/awiki_cli_rust_contracts.py`：通过。
+- `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py -q -rs`：2 passed, 0 failed。
+- `cd awiki-system-test && uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_selection_defaults.py -q`：2 passed, 0 failed。
+
+失败 / 阻断：
+
+- `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_direct_local.py -k "secure_direct_attachments" -q -rs`：1 failed, 9 deselected, 0 skipped；失败用例 `test_awiki_cli_can_send_and_download_secure_direct_attachments`，配置 `AWIKI_SYSTEM_TEST_MODE=remote`、`E2E_DID_DOMAIN=awiki.info`、message-service `https://awiki.info`，失败原因为 `attachment.create_slot` 返回 `6013 current deployment only supports transport-protected attachments with mode=none`。
+- `cd awiki-system-test && AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync python -m pytest tests_v2/cli/test_awiki_cli_group_local.py -k "group_secure_attachment" -q -rs`：1 failed, 12 deselected, 0 skipped；失败用例 `test_awiki_cli_group_secure_attachment_downloads_plaintext`，配置同上，失败原因为 `attachment.create_slot` 返回同一 6013。
+- 文档收口后再次复核上述 direct/group focused 命令，结果仍分别为 1 failed、9 deselected 和 1 failed、12 deselected，失败点仍为 `service rpc error 6013: current deployment only supports transport-protected attachments with mode=none`。
+- `cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info AWIKI_CLI_RUST_REPO=../e2ee-attachment-cli-rs2 CARGO_BUILD_JOBS=1 uv run --no-sync awiki-system-test`：183 passed, 2 failed, 15 skipped, 0 xfailed/xpassed, 372.22s；两个失败分别为 direct/group secure attachment 用例，均为远端 `awiki.info` message-service 未部署 `object-e2ee` attachment policy；跳过 15 个为 local-only daemon/mail/message-service flag-off/multi-tenant 可选配置或已删除 store internal target，不属于本功能失败。
 
 ## 10. Commit 要求
 
