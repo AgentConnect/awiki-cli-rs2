@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：04  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2` |
-| Started |  |
-| Completed |  |
-| Commit |  |
-| Review evidence |  |
-| Verification evidence |  |
-| Next action | 等 Step 02、03 完成后启动 |
+| Started | 2026-06-02 10:39 CST |
+| Completed | 2026-06-02 11:58 CST |
+| Commit | `e2ee-attachment-cli-rs2:5c97627` |
+| Review evidence | Review 覆盖高层 Attachment + E2eeRequired 路由、object-e2ee upload/commit、direct/group inner plaintext、outer body/client refs 非秘密边界、本地 projection redaction、plain attachment 兼容和 no-`blocking` async direct 路径；发现并修复 async direct E2EE 附件在无 `blocking` feature 时先上传/commit 再返回 unsupported 的孤儿密文对象风险，补 `prepare_and_commit_object` focused test 验证 PUT 仅上传密文、控制面无 key/nonce、full/redacted/grant refs 边界。Secret grep 命中仅为测试断言和测试内读取 full manifest。 |
+| Verification evidence | `cargo fmt --all --check` 通过；`cargo check -p im-core` 通过；`cargo check -p im-core --features group-e2ee` 通过；`cargo test -p im-core attachments_upload_runtime_prepare_object_e2ee_uploads_ciphertext_only --locked` 1 passed；`cargo test -p im-core secure_attachment_send --locked` 1 passed；`cargo test -p im-core secure_attachment_send --features group-e2ee --locked` 2 passed；`cargo test -p im-core secure --locked` 66 lib passed，phase1a 2 passed，realtime_loop 2 passed，secure_api 10 passed；`cargo test -p im-core e2ee --locked` 21 lib passed，attachment_api 2 passed，phase1a 3 passed；`cargo test -p im-core attachment --locked` 23 lib passed，attachment_api 21 passed，phase1a 1 passed，realtime_projection 7 passed；`cargo test -p im-core e2ee --features group-e2ee --locked` 76 lib passed，attachment_api 2 passed，phase1a 3 passed；`cargo check -p im-core-dart` 通过；`git diff --check` 通过；secret grep 已复核。 |
+| Next action | Step 05：im-core 下载校验与解密 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
