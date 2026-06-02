@@ -18,6 +18,7 @@ pub struct GroupReadResult {
 
 impl GroupReadResult {
     pub(crate) fn from_raw_response(raw: Value, warnings: Vec<String>) -> Self {
+        let warnings = merge_raw_warnings(raw.get("warnings"), warnings);
         let group = group_snapshot_from_value(raw.get("group").unwrap_or(&raw));
         let groups = values_from_array(raw.get("groups"))
             .into_iter()
@@ -842,7 +843,9 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
         .get("secure")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let body = if content_type.as_deref() == Some("application/json") {
+    let is_attachment_manifest = content_type.as_deref()
+        == Some(crate::attachments::manifest::attachment_manifest_content_type());
+    let body = if content_type.as_deref() == Some("application/json") || is_attachment_manifest {
         object
             .get("payload")
             .or_else(|| object.get("content"))
@@ -901,14 +904,36 @@ fn group_message_attributes(
             key: "security".to_owned(),
             value: "group-e2ee".to_owned(),
         });
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "message_security_profile".to_owned(),
+            value: "group-e2ee".to_owned(),
+        });
     }
-    for key in ["decryption_state", "secure_wire_content_type"] {
+    for key in [
+        "decryption_state",
+        "secure_wire_content_type",
+        "type",
+        "message_security_profile",
+        "security_profile",
+    ] {
         if let Some(value) = optional_string(object.get(key)) {
+            if attributes
+                .iter()
+                .any(|attribute| attribute.key == key && attribute.value == value)
+            {
+                continue;
+            }
             attributes.push(crate::messages::MessageMetadataAttribute {
                 key: key.to_owned(),
                 value,
             });
         }
+    }
+    if let Some(content_type) = optional_string(object.get("content_type")) {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "content_type".to_owned(),
+            value: content_type,
+        });
     }
     attributes
 }
@@ -957,6 +982,25 @@ fn i64_value(value: Option<&Value>) -> Option<i64> {
 
 fn bool_value(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn merge_raw_warnings(raw_warnings: Option<&Value>, mut warnings: Vec<String>) -> Vec<String> {
+    let Some(items) = raw_warnings.and_then(Value::as_array) else {
+        return warnings;
+    };
+    for item in items {
+        if let Some(warning) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let warning = warning.to_owned();
+            if !warnings.iter().any(|known| known == &warning) {
+                warnings.push(warning);
+            }
+        }
+    }
+    warnings
 }
 
 fn message_kind(content_type: Option<&str>) -> crate::messages::MessageKind {
@@ -1023,5 +1067,98 @@ mod tests {
             result.raw_response().and_then(|raw| raw.get("group_did")),
             Some(&json!("did:example:group"))
         );
+    }
+
+    #[test]
+    fn group_result_merges_raw_warnings() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "messages": [],
+                "warnings": [
+                    "Failed to decrypt group E2EE message did:example:group:3: aad_mismatch",
+                    "",
+                    42
+                ],
+                "has_more": false
+            }),
+            vec![
+                "existing warning".to_owned(),
+                "Failed to decrypt group E2EE message did:example:group:3: aad_mismatch".to_owned(),
+            ],
+        );
+
+        assert_eq!(
+            result.warnings,
+            vec![
+                "existing warning",
+                "Failed to decrypt group E2EE message did:example:group:3: aad_mismatch",
+            ]
+        );
+    }
+
+    #[test]
+    fn group_result_projects_secure_attachment_manifest_payload() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "messages": [{
+                    "id": "msg-secure-attachment",
+                    "group_did": "did:example:group",
+                    "sender_did": "did:example:alice",
+                    "type": "attachment_manifest",
+                    "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                    "secure": true,
+                    "content": {
+                        "attachments": [{
+                            "attachment_id": "att-group-secure",
+                            "size": "48",
+                            "digest": {
+                                "alg": "sha-256",
+                                "value_b64u": "digest"
+                            },
+                            "mime_type": "text/plain",
+                            "encryption_info": {
+                                "mode": "object-e2ee",
+                                "alg": "chacha20-poly1305",
+                                "plaintext_size": "31",
+                                "object_uri": "https://objects.example/secure"
+                            }
+                        }],
+                        "caption": "secure attachment",
+                        "primary_attachment_id": "att-group-secure"
+                    },
+                    "sent_at": "2026-01-01T00:00:00Z"
+                }],
+                "has_more": false
+            }),
+            Vec::new(),
+        );
+
+        let message = &result.messages.items[0];
+        assert!(matches!(
+            &message.body,
+            crate::messages::MessageBodyView::Payload { payload }
+                if payload["attachments"][0]["attachment_id"] == "att-group-secure"
+                    && payload["attachments"][0]["encryption_info"]["mode"] == "object-e2ee"
+                    && payload["attachments"][0]["encryption_info"].get("object_key_b64u").is_none()
+                    && payload["attachments"][0]["encryption_info"].get("nonce_b64u").is_none()
+        ));
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee"));
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "message_security_profile" && attribute.value == "group-e2ee"
+        }));
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "type" && attribute.value == "attachment_manifest"));
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "content_type"
+                && attribute.value
+                    == crate::attachments::manifest::attachment_manifest_content_type()
+        }));
     }
 }

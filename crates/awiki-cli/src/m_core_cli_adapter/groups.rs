@@ -1404,11 +1404,11 @@ fn group_message_to_json(message: &Message) -> Value {
     value
 }
 
-fn message_body_content(body: &im_core::prelude::MessageBodyView) -> String {
+fn message_body_content(body: &im_core::prelude::MessageBodyView) -> Value {
     match body {
-        im_core::prelude::MessageBodyView::Text { text, .. } => text.clone(),
-        im_core::prelude::MessageBodyView::Payload { payload } => payload.to_string(),
-        im_core::prelude::MessageBodyView::Unsupported { .. } => String::new(),
+        im_core::prelude::MessageBodyView::Text { text, .. } => json!(text),
+        im_core::prelude::MessageBodyView::Payload { payload } => payload.clone(),
+        im_core::prelude::MessageBodyView::Unsupported { .. } => json!(""),
     }
 }
 

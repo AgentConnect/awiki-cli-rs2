@@ -233,6 +233,21 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys (
 );
 "#;
 
+const ATTACHMENT_MANIFEST_CACHE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
+    owner_identity_id       TEXT NOT NULL,
+    owner_did               TEXT NOT NULL DEFAULT '',
+    thread_kind             TEXT NOT NULL,
+    thread_id               TEXT NOT NULL,
+    message_id              TEXT NOT NULL,
+    sender_did              TEXT,
+    message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
+    content                 TEXT NOT NULL,
+    stored_at               TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_kind, thread_id, message_id)
+);
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentityOwnedSchemaTableMode {
     Final,
@@ -286,6 +301,7 @@ pub(crate) enum IdentityOwnedMergeTarget {
     GroupMembers,
     RelationshipEvents,
     E2eeOutbox,
+    AttachmentManifestCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +363,18 @@ const IDENTITY_OWNED_MERGE_SPECS: &[IdentityOwnedMergeSpec] = &[
         key_columns: &["owner_identity_id", "outbox_id"],
         order_columns: &["updated_at", "created_at", "outbox_id"],
     },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::AttachmentManifestCache,
+        table: "attachment_manifest_cache",
+        staging_table: "attachment_manifest_cache_new",
+        key_columns: &[
+            "owner_identity_id",
+            "thread_kind",
+            "thread_id",
+            "message_id",
+        ],
+        order_columns: &["stored_at", "message_id"],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -400,6 +428,10 @@ const OWNER_KEY_SPECS_V17: &[IdentityOwnedKeySpec] = &[
         table: "direct_e2ee_one_time_prekeys",
         key_columns: &["key_id"],
     },
+    IdentityOwnedKeySpec {
+        table: "attachment_manifest_cache",
+        key_columns: &["thread_kind", "thread_id", "message_id"],
+    },
 ];
 
 const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
@@ -414,6 +446,7 @@ const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
     "direct_e2ee_sessions",
     "direct_e2ee_signed_prekeys",
     "direct_e2ee_one_time_prekeys",
+    "attachment_manifest_cache",
 ];
 
 const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
@@ -427,6 +460,7 @@ const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
     "direct_e2ee_sessions",
     "direct_e2ee_signed_prekeys",
     "direct_e2ee_one_time_prekeys",
+    "attachment_manifest_cache",
 ];
 
 const IDENTITY_OWNED_INDEX_TEMPLATES: &[&str] = &[
@@ -453,6 +487,7 @@ const IDENTITY_OWNED_INDEX_TEMPLATES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_sessions_owner_updated{s} ON direct_e2ee_sessions{s}(owner_identity_id, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_signed_prekeys_owner_status{s} ON direct_e2ee_signed_prekeys{s}(owner_identity_id, status, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_one_time_prekeys_owner_status{s} ON direct_e2ee_one_time_prekeys{s}(owner_identity_id, status, created_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_attachment_manifest_cache_owner_thread{s} ON attachment_manifest_cache{s}(owner_identity_id, thread_kind, thread_id, message_id)",
 ];
 
 const INDEX_STATEMENTS: &[&str] = &[
@@ -504,6 +539,7 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_sessions_owner_updated ON direct_e2ee_sessions(owner_identity_id, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_signed_prekeys_owner_status ON direct_e2ee_signed_prekeys(owner_identity_id, status, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_one_time_prekeys_owner_status ON direct_e2ee_one_time_prekeys(owner_identity_id, status, created_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_attachment_manifest_cache_owner_thread ON attachment_manifest_cache(owner_identity_id, thread_kind, thread_id, message_id)",
 ];
 
 const VIEW_STATEMENTS: &[&str] = &[
@@ -824,6 +860,9 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
 
 fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    connection
+        .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
+        .map_err(super::local_state_unavailable)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -1049,6 +1088,19 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys{suffix} (
     created_at        TEXT NOT NULL,
     consumed_at       TEXT,
     PRIMARY KEY (owner_identity_id, key_id)
+);
+
+CREATE TABLE IF NOT EXISTS attachment_manifest_cache{suffix} (
+    owner_identity_id       TEXT NOT NULL,
+    owner_did               TEXT NOT NULL DEFAULT '',
+    thread_kind             TEXT NOT NULL,
+    thread_id               TEXT NOT NULL,
+    message_id              TEXT NOT NULL,
+    sender_did              TEXT,
+    message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
+    content                 TEXT NOT NULL,
+    stored_at               TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_kind, thread_id, message_id)
 );
 "#
     )
@@ -1332,6 +1384,7 @@ mod tests {
             ("table", "direct_e2ee_sessions"),
             ("table", "direct_e2ee_signed_prekeys"),
             ("table", "direct_e2ee_one_time_prekeys"),
+            ("table", "attachment_manifest_cache"),
             ("view", "threads"),
             ("view", "inbox"),
             ("view", "outbox"),
@@ -1346,6 +1399,7 @@ mod tests {
         assert_index_exists(&db, "idx_direct_e2ee_sessions_owner_updated");
         assert_index_exists(&db, "idx_direct_e2ee_signed_prekeys_owner_status");
         assert_index_exists(&db, "idx_direct_e2ee_one_time_prekeys_owner_status");
+        assert_index_exists(&db, "idx_attachment_manifest_cache_owner_thread");
         for table in [
             "contacts",
             "contact_handle_bindings",
@@ -1358,6 +1412,7 @@ mod tests {
             "direct_e2ee_sessions",
             "direct_e2ee_signed_prekeys",
             "direct_e2ee_one_time_prekeys",
+            "attachment_manifest_cache",
         ] {
             assert_column_exists(&db, table, "owner_identity_id");
         }
@@ -1376,6 +1431,15 @@ mod tests {
             ),
             ("relationship_events", vec!["owner_identity_id", "event_id"]),
             ("e2ee_outbox", vec!["owner_identity_id", "outbox_id"]),
+            (
+                "attachment_manifest_cache",
+                vec![
+                    "owner_identity_id",
+                    "thread_kind",
+                    "thread_id",
+                    "message_id",
+                ],
+            ),
         ] {
             assert_primary_key_columns(&db, table, &key_columns);
         }
@@ -1403,6 +1467,15 @@ mod tests {
             ("relationship_events", vec!["owner_identity_id", "event_id"]),
             ("e2ee_outbox", vec!["owner_identity_id", "outbox_id"]),
             ("identity_did_history", vec!["owner_identity_id", "did"]),
+            (
+                "attachment_manifest_cache",
+                vec![
+                    "owner_identity_id",
+                    "thread_kind",
+                    "thread_id",
+                    "message_id",
+                ],
+            ),
         ] {
             assert_primary_key_columns(&db, table, &key_columns);
         }
@@ -1419,9 +1492,21 @@ mod tests {
 
         assert_schema_object_exists(&db, "table", "messages_new");
         assert_schema_object_exists(&db, "table", "identity_did_history_new");
+        assert_schema_object_exists(&db, "table", "attachment_manifest_cache_new");
         assert_primary_key_columns(&db, "messages_new", &["owner_identity_id", "msg_id"]);
+        assert_primary_key_columns(
+            &db,
+            "attachment_manifest_cache_new",
+            &[
+                "owner_identity_id",
+                "thread_kind",
+                "thread_id",
+                "message_id",
+            ],
+        );
         assert_index_exists(&db, "idx_messages_owner_identity_conversation_new");
         assert_index_exists(&db, "idx_identity_did_history_current_new");
+        assert_index_exists(&db, "idx_attachment_manifest_cache_owner_thread_new");
     }
 
     #[test]
@@ -1557,6 +1642,7 @@ VALUES ('alice-id', 'did:example:alice-2', 'current', '2026-05-30T00:00:00Z', '2
             "group_members",
             "relationship_events",
             "e2ee_outbox",
+            "attachment_manifest_cache",
         ] {
             assert!(
                 specs.iter().any(|spec| spec.table == table),

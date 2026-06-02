@@ -819,6 +819,14 @@ fn sdk_attachment_result_from_group_result(
         });
     }
     attributes.push(crate::messages::MessageMetadataAttribute {
+        key: "security".to_string(),
+        value: "group-e2ee".to_string(),
+    });
+    attributes.push(crate::messages::MessageMetadataAttribute {
+        key: "message_security_profile".to_string(),
+        value: "group-e2ee".to_string(),
+    });
+    attributes.push(crate::messages::MessageMetadataAttribute {
         key: "attachment_manifest".to_string(),
         value: crate::attachments::manifest::manifest_content_string(redacted_manifest),
     });
@@ -1050,6 +1058,21 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
         assert_eq!(result.group_did, group_did);
         assert_eq!(result.operation_id, "op-client-e2ee-attachment");
         assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(88));
+        assert!(result
+            .sdk_result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee"));
+        assert!(result
+            .sdk_result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "message_security_profile"
+                && attribute.value == "group-e2ee"));
         assert!(matches!(
             result.sdk_result.message.body,
             crate::messages::MessageBodyView::Unsupported { content_type }

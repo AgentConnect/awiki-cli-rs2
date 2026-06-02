@@ -769,6 +769,7 @@ fn project_group_e2ee_messages_impl(
             client,
             &mut message_values,
         );
+    cache_group_attachment_manifests_for_internal_download(client, &message_values);
     if redact_attachment_secrets {
         redact_attachment_manifests_for_public_projection(&mut message_values);
     }
@@ -810,6 +811,7 @@ async fn project_group_e2ee_messages_async_impl(
             &mut message_values,
         )
         .await;
+    cache_group_attachment_manifests_for_internal_download_async(client, &message_values).await;
     if redact_attachment_secrets {
         redact_attachment_manifests_for_public_projection(&mut message_values);
     }
@@ -830,7 +832,182 @@ pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
     project_group_e2ee_messages_async(client, raw).await;
 }
 
-fn redact_attachment_manifests_for_public_projection(messages: &mut [Value]) {
+pub(crate) fn cache_group_attachment_manifests_for_internal_download(
+    client: &crate::core::ImClient,
+    messages: &[Value],
+) {
+    #[cfg(feature = "sqlite")]
+    {
+        let records = attachment_manifest_cache_records(client, messages);
+        if records.is_empty() {
+            return;
+        }
+        let Ok(connection) = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        ) else {
+            return;
+        };
+        for record in records {
+            let _ =
+                crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(
+                    &connection,
+                    &record,
+                );
+        }
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, messages);
+    }
+}
+
+pub(crate) async fn cache_group_attachment_manifests_for_internal_download_async(
+    client: &crate::core::ImClient,
+    messages: &[Value],
+) {
+    #[cfg(feature = "sqlite")]
+    {
+        let records = attachment_manifest_cache_records(client, messages);
+        if records.is_empty() {
+            return;
+        }
+        let sqlite_path = client
+            .core_inner()
+            .sdk_paths()
+            .local_state
+            .sqlite_path
+            .clone();
+        let _ = crate::internal::runtime::worker::run_blocking(move || {
+            let connection = crate::internal::local_state::open_writable(&sqlite_path)?;
+            for record in records {
+                crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(
+                    &connection,
+                    &record,
+                )?;
+            }
+            Ok::<(), crate::ImError>(())
+        })
+        .await;
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, messages);
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_manifest_cache_records(
+    client: &crate::core::ImClient,
+    messages: &[Value],
+) -> Vec<crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord> {
+    messages
+        .iter()
+        .filter_map(|message| attachment_manifest_cache_record(client, message))
+        .collect()
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_manifest_cache_record(
+    client: &crate::core::ImClient,
+    message: &Value,
+) -> Option<crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord>
+{
+    let object = message.as_object()?;
+    if object.get("content_type").and_then(Value::as_str)
+        != Some(crate::attachments::manifest::attachment_manifest_content_type())
+    {
+        return None;
+    }
+    let content = decoded_attachment_manifest_content_for_cache(object.get("content")?)?;
+    if !attachment_manifest_contains_object_secrets(&content) {
+        return None;
+    }
+    let thread_id = first_non_empty_owned([
+        string_value(object.get("group_did")),
+        string_value(object.get("group")),
+    ])?;
+    let message_id = attachment_manifest_cache_message_id(object, &thread_id)?;
+    Some(
+        crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
+            owner_identity_id: client.current_identity().id.as_str().to_owned(),
+            owner_did: client.did().as_str().to_owned(),
+            thread_kind: "group".to_owned(),
+            thread_id,
+            message_id,
+            sender_did: string_value(object.get("sender_did")),
+            message_security_profile: secure_message_security_profile(object),
+            content: serde_json::to_string(&content).ok()?,
+            stored_at: first_non_empty_owned([
+                string_value(object.get("stored_at")),
+                string_value(object.get("received_at")),
+                string_value(object.get("sent_at")),
+                string_value(object.get("accepted_at")),
+            ])
+            .unwrap_or_default()
+            .to_owned(),
+        },
+    )
+}
+
+#[cfg(feature = "sqlite")]
+fn decoded_attachment_manifest_content_for_cache(content: &Value) -> Option<Value> {
+    match content {
+        Value::String(text) => serde_json::from_str::<Value>(text).ok(),
+        value if value.is_object() => Some(value.clone()),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_manifest_contains_object_secrets(manifest: &Value) -> bool {
+    manifest
+        .get("attachments")
+        .and_then(Value::as_array)
+        .map(|attachments| {
+            attachments.iter().any(|attachment| {
+                let encryption_info = attachment.get("encryption_info").and_then(Value::as_object);
+                encryption_info
+                    .and_then(|info| info.get("object_key_b64u"))
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .is_some()
+                    && encryption_info
+                        .and_then(|info| info.get("nonce_b64u"))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .is_some()
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "sqlite")]
+fn attachment_manifest_cache_message_id(
+    object: &serde_json::Map<String, Value>,
+    group_did: &str,
+) -> Option<String> {
+    first_non_empty_owned([
+        string_value(object.get("id")),
+        string_value(object.get("message_id")),
+        string_value(object.get("msg_id")),
+        string_value(object.get("client_msg_id")),
+    ])
+    .or_else(|| {
+        let group_event_seq = string_or_number_value(object.get("group_event_seq"));
+        (!group_did.trim().is_empty() && !group_event_seq.trim().is_empty())
+            .then(|| format!("{}:{}", group_did.trim(), group_event_seq.trim()))
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn first_non_empty_owned(values: impl IntoIterator<Item = String>) -> Option<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_owned())
+        .find(|value| !value.is_empty())
+}
+
+pub(crate) fn redact_attachment_manifests_for_public_projection(messages: &mut [Value]) {
     for message in messages {
         let content_type = message.get("content_type").and_then(Value::as_str);
         if content_type != Some(crate::attachments::manifest::attachment_manifest_content_type()) {
@@ -1058,7 +1235,10 @@ fn message_body(value: &Value) -> crate::messages::MessageBodyView {
     let Some(content) = value.get("content") else {
         return crate::messages::MessageBodyView::Unsupported { content_type };
     };
-    if content_type.as_deref() == Some("application/json") {
+    if content_type.as_deref() == Some("application/json")
+        || content_type.as_deref()
+            == Some(crate::attachments::manifest::attachment_manifest_content_type())
+    {
         let payload = match content {
             Value::String(value) => match serde_json::from_str::<Value>(value) {
                 Ok(value) => value,
@@ -1999,6 +2179,70 @@ mod tests {
         assert!(!public.contains("nonce_b64u"));
         assert!(!public.contains("OBJECT-KEY-SECRET"));
         assert!(!public.contains("NONCE-SECRET"));
+    }
+
+    #[test]
+    fn message_body_projects_attachment_manifest_as_payload() {
+        let body = message_body(&json!({
+            "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+            "content": direct_e2ee_attachment_manifest()
+        }));
+
+        assert!(matches!(
+            body,
+            crate::messages::MessageBodyView::Payload { payload }
+                if payload["attachments"][0]["attachment_id"] == "att-secure-1"
+        ));
+    }
+
+    #[test]
+    fn group_attachment_manifest_cache_keeps_internal_full_manifest_while_public_redacts() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let mut messages = vec![json!({
+            "id": "did:example:group:e2ee:9",
+            "message_id": "did:example:group:e2ee:9",
+            "sender_did": "did:example:alice",
+            "group_did": "did:example:group:e2ee",
+            "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+            "message_security_profile": "group-e2ee",
+            "secure": true,
+            "decryption_state": "decrypted",
+            "content": direct_e2ee_attachment_manifest()
+        })];
+
+        cache_group_attachment_manifests_for_internal_download(&client, &messages);
+        redact_attachment_manifests_for_public_projection(&mut messages);
+
+        let public = serde_json::to_string(&messages).unwrap();
+        assert!(!public.contains("object_key_b64u"));
+        assert!(!public.contains("nonce_b64u"));
+        assert!(!public.contains("OBJECT-KEY-SECRET"));
+        assert!(!public.contains("NONCE-SECRET"));
+
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )
+        .unwrap();
+        let cached =
+            crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+                &connection,
+                client.current_identity().id.as_str(),
+                "group",
+                "did:example:group:e2ee",
+                "did:example:group:e2ee:9",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached["message_security_profile"], "group-e2ee");
+        assert_eq!(
+            cached["content"]["attachments"][0]["encryption_info"]["object_key_b64u"],
+            "OBJECT-KEY-SECRET"
+        );
+        assert_eq!(
+            cached["content"]["attachments"][0]["encryption_info"]["nonce_b64u"],
+            "NONCE-SECRET"
+        );
     }
 
     fn direct_e2ee_attachment_plaintext() -> Value {

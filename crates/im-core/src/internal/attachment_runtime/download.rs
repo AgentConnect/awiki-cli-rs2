@@ -98,18 +98,19 @@ where
                 crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
             }
         };
+        let public_selection = public_selection_for_download(&target, &selection);
         let sdk_result = crate::attachments::DownloadedAttachment {
             attachment_id: selection.public.attachment_id.clone(),
             filename,
             mime_type,
             size_bytes,
             destination,
-            selection: Some(selection.redacted_public()),
+            selection: Some(public_selection.clone()),
             warnings: Vec::new(),
         };
         Ok(AttachmentDownloadResult {
             sdk_result,
-            selection: selection.redacted_public(),
+            selection: public_selection,
             ticket,
         })
     }
@@ -120,6 +121,17 @@ where
         requested_message_id: &str,
         requested_attachment_id: &str,
     ) -> crate::ImResult<crate::attachments::selection::InternalAttachmentSelection> {
+        if let Some(selection) =
+            find_cached_group_attachment_selection(self.client, target, requested_message_id)?
+        {
+            if let Ok(selection) = crate::attachments::selection::find_internal_attachment_selection(
+                &[selection],
+                requested_message_id,
+                requested_attachment_id,
+            ) {
+                return Ok(selection);
+            }
+        }
         crate::attachments::selection::find_internal_attachment_selection_with_paging(
             |skip| self.fetch_page(target, skip),
             requested_message_id,
@@ -301,18 +313,19 @@ where
                 crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
             }
         };
+        let public_selection = public_selection_for_download(&target, &selection);
         let sdk_result = crate::attachments::DownloadedAttachment {
             attachment_id: selection.public.attachment_id.clone(),
             filename,
             mime_type,
             size_bytes,
             destination,
-            selection: Some(selection.redacted_public()),
+            selection: Some(public_selection.clone()),
             warnings: Vec::new(),
         };
         Ok(AttachmentDownloadResult {
             sdk_result,
-            selection: selection.redacted_public(),
+            selection: public_selection,
             ticket,
         })
     }
@@ -323,6 +336,17 @@ where
         requested_message_id: &str,
         requested_attachment_id: &str,
     ) -> crate::ImResult<crate::attachments::selection::InternalAttachmentSelection> {
+        if let Some(selection) =
+            find_cached_group_attachment_selection(self.client, target, requested_message_id)?
+        {
+            if let Ok(selection) = crate::attachments::selection::find_internal_attachment_selection(
+                &[selection],
+                requested_message_id,
+                requested_attachment_id,
+            ) {
+                return Ok(selection);
+            }
+        }
         let mut skip = 0_i64;
         loop {
             let (messages, has_more) = self.fetch_page_async(target, skip).await?;
@@ -442,6 +466,34 @@ where
         serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })
+    }
+}
+
+fn find_cached_group_attachment_selection(
+    client: &crate::core::ImClient,
+    target: &DownloadTarget,
+    requested_message_id: &str,
+) -> crate::ImResult<Option<Value>> {
+    #[cfg(feature = "sqlite")]
+    {
+        let DownloadTarget::Group { group } = target else {
+            return Ok(None);
+        };
+        let connection = crate::internal::local_state::open_writable(
+            &client.core_inner().sdk_paths().local_state.sqlite_path,
+        )?;
+        crate::internal::local_state::attachment_manifest_cache::get_attachment_manifest_cache_message(
+            &connection,
+            client.current_identity().id.as_str(),
+            "group",
+            group.as_str(),
+            requested_message_id,
+        )
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, target, requested_message_id);
+        Ok(None)
     }
 }
 
@@ -573,6 +625,35 @@ fn output_size_bytes(
             .parse()
             .ok()
             .or(Some(plaintext_len as u64))
+    }
+}
+
+fn public_selection_for_download(
+    target: &DownloadTarget,
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+) -> crate::attachments::selection::AttachmentSelection {
+    let mut public = selection.redacted_public();
+    if public.message_security_profile.trim().is_empty() {
+        public.message_security_profile = effective_message_security_profile(target, selection);
+    }
+    public
+}
+
+fn effective_message_security_profile(
+    target: &DownloadTarget,
+    selection: &crate::attachments::selection::InternalAttachmentSelection,
+) -> String {
+    let explicit = selection.message_security_profile();
+    if !explicit.is_empty() {
+        return explicit.to_owned();
+    }
+    if selection.is_object_e2ee() {
+        match target {
+            DownloadTarget::Direct { .. } => "direct-e2ee".to_owned(),
+            DownloadTarget::Group { .. } => "group-e2ee".to_owned(),
+        }
+    } else {
+        "transport-protected".to_owned()
     }
 }
 
@@ -1280,7 +1361,9 @@ mod tests {
             },
             E2eeTransport {
                 calls: Rc::clone(&calls),
-                history: e2ee_history_response(object.full_manifest.clone(), "direct-e2ee"),
+                history: e2ee_history_response_with_legacy_missing_profile(
+                    object.full_manifest.clone(),
+                ),
                 object_body: object.ciphertext.clone(),
                 object_content_type: Some("application/octet-stream".to_string()),
             },
@@ -1301,6 +1384,15 @@ mod tests {
 
         assert_eq!(result.selection.attachment_id, "att-e2ee-1");
         assert_eq!(result.selection.message_security_profile, "direct-e2ee");
+        assert_eq!(
+            result
+                .sdk_result
+                .selection
+                .as_ref()
+                .unwrap()
+                .message_security_profile,
+            "direct-e2ee"
+        );
         assert_eq!(result.selection.object_encryption_mode, "object-e2ee");
         assert_eq!(
             result.selection.object_cipher.as_deref(),
@@ -1355,6 +1447,90 @@ mod tests {
             "download ticket body must not expose nonce"
         );
         calls[3].object_get("https://objects.example/att-e2ee-1");
+    }
+
+    #[test]
+    fn attachments_download_runtime_group_object_e2ee_uses_internal_manifest_cache() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let object = object_e2ee_case(b"group cached plaintext".to_vec());
+        {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            crate::internal::local_state::attachment_manifest_cache::upsert_attachment_manifest_cache(
+                &connection,
+                &crate::internal::local_state::attachment_manifest_cache::AttachmentManifestCacheRecord {
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    thread_kind: "group".to_owned(),
+                    thread_id: "did:example:group:e2ee".to_owned(),
+                    message_id: "did:example:group:e2ee:7".to_owned(),
+                    sender_did: "did:web:example.com:bob".to_owned(),
+                    message_security_profile: "group-e2ee".to_owned(),
+                    content: serde_json::to_string(&object.full_manifest).unwrap(),
+                    stored_at: "2026-06-02T00:00:00Z".to_owned(),
+                },
+            )
+            .unwrap();
+        }
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let result = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            E2eeTransport {
+                calls: Rc::clone(&calls),
+                history: json!({
+                    "messages": [],
+                    "has_more": false
+                }),
+                object_body: object.ciphertext.clone(),
+                object_content_type: Some("application/octet-stream".to_string()),
+            },
+        )
+        .download(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse("did:example:group:e2ee").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("did:example:group:e2ee:7").unwrap(),
+                attachment_id: Some("att-e2ee-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::Memory,
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .unwrap();
+
+        assert_eq!(result.selection.message_security_profile, "group-e2ee");
+        assert_eq!(result.selection.object_encryption_mode, "object-e2ee");
+        assert!(matches!(
+            result.sdk_result.destination,
+            crate::attachments::DownloadedAttachmentDestination::Memory(bytes)
+                if bytes == object.plaintext
+        ));
+        let public_selection = serde_json::to_string(&result.selection).unwrap();
+        assert!(!public_selection.contains("object_key_b64u"));
+        assert!(!public_selection.contains("nonce_b64u"));
+        assert!(!public_selection.contains(&object.object_key_b64u));
+        assert!(!public_selection.contains(&object.nonce_b64u));
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 3);
+        calls[0].get_json("https://example.com/bob/did.json");
+        let ticket = calls[1].rpc("attachment.get_download_ticket");
+        assert_eq!(
+            ticket.params["body"]["message_security_profile"],
+            "group-e2ee"
+        );
+        assert_eq!(ticket.params["body"]["group_did"], "did:example:group:e2ee");
+        assert_eq!(ticket.params["body"].get("object_key_b64u"), None);
+        assert_eq!(ticket.params["body"].get("nonce_b64u"), None);
+        calls[2].object_get("https://objects.example/att-e2ee-1");
     }
 
     #[test]
@@ -2233,12 +2409,27 @@ mod tests {
     }
 
     fn e2ee_history_response(manifest: Value, message_security_profile: &str) -> Value {
+        let mut message = json!({
+            "id": "msg-e2ee-1",
+            "message_id": "msg-e2ee-1",
+            "sender_did": "did:web:example.com:bob",
+            "content": manifest
+        });
+        if !message_security_profile.trim().is_empty() {
+            message["message_security_profile"] = json!(message_security_profile);
+        }
+        json!({
+            "messages": [message],
+            "has_more": false
+        })
+    }
+
+    fn e2ee_history_response_with_legacy_missing_profile(manifest: Value) -> Value {
         json!({
             "messages": [{
                 "id": "msg-e2ee-1",
                 "message_id": "msg-e2ee-1",
                 "sender_did": "did:web:example.com:bob",
-                "message_security_profile": message_security_profile,
                 "content": manifest
             }],
             "has_more": false
