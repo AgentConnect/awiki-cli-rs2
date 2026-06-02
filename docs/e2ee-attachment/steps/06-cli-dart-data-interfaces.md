@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：06  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2`，`data-rs2: 待确认` |
-| Started |  |
-| Completed |  |
-| Commit |  |
-| Review evidence |  |
-| Verification evidence |  |
-| Next action | 等 Step 04、05 完成后启动 |
+| Status | done |
+| Branch | `e2ee-attachment-cli-rs2: feature/release-0526/e2ee-attachment-cli-rs2`，`data-rs2: 未检出` |
+| Started | 2026-06-02 12:06 CST |
+| Completed | 2026-06-02 13:03 CST |
+| Commit | `e2ee-attachment-cli-rs2:e10a74b` |
+| Review evidence | Review 覆盖 CLI 薄壳边界、Dart/Flutter DTO 脱敏、secure 便捷 API 高层复用、plain 兼容、filename override、generated bridge、文档同步和 `data-rs2` 未检出记录；修复 async secure attachment 便捷发送递归 future 风险和 secure 便捷路径 filename override 丢失风险。 |
+| Verification evidence | `cargo fmt --all --check`、`cargo check -p im-core-dart --locked`、`cargo check -p im-core --features group-e2ee --locked`、`cargo test -p awiki-cli --test msg_attachment_contract --locked`、`cargo test -p awiki-cli --locked msg_secure`、`cargo test -p awiki-cli --test attachment_live_contract --locked`、`cargo test -p im-core-dart --locked attachment`、`cargo test -p im-core attachment_api --locked`、`bash scripts/flutter/codegen-check.sh`、`cd packages/awiki_im_core && dart test`、`git diff --check`、secret grep 通过或已复核；宽过滤 `cargo test -p awiki-cli --locked msg_attachment` 因 unrelated `msg inbox` 子进程阻塞改用精确测试替代。 |
+| Next action | 启动 Step 07：系统测试、文档与集成收口 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -81,13 +81,13 @@ Step index：06
 
 ## 7. 验收标准
 
-- [ ] CLI `msg send --file --secure required` 使用 `im-core` high-level API。
-- [ ] CLI download 输出明文文件/memory，不输出 ticket/key/nonce。
-- [ ] Dart DTO 支持 secure attachment request 和 redacted result。
-- [ ] data-rs2 若存在，接口按同一高层边界实现；若不存在，记录 blocker 和后续动作。
-- [ ] 文档同步 public API 和 Flutter SDK。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] CLI `msg send --file --secure required` 使用 `im-core` high-level API。
+- [x] CLI download 输出明文文件/memory，不输出 ticket/key/nonce。
+- [x] Dart DTO 支持 secure attachment request 和 redacted result。
+- [x] data-rs2 若存在，接口按同一高层边界实现；若不存在，记录 blocker 和后续动作。
+- [x] 文档同步 public API 和 Flutter SDK。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -110,6 +110,41 @@ Review 重点：
 - `manifestJson` 是否 redacted 或废弃，不泄漏 full manifest。
 - 错误提示是否足够诊断但不暴露秘密。
 - data-rs2 未检出时是否明确记录而非假实现。
+
+Review 结果：
+
+- CLI 仅解析 `--file`、`--mime-type`、caption 和 `--secure`，发送和下载都通过 `im-core` 高层 API；未新增 raw P7/P5/P6 wire 拼装。
+- `AttachmentSendRequest.security` 支持 plain 默认和 secure required；secure 便捷路径内部复用 `MessageBody::Attachment + security`，返回 `AttachmentSendResult` 时从 redacted manifest 还原 public `UploadedAttachment`。
+- Dart / Flutter DTO 增加 `security`、`objectEncryptionMode`、`plaintextSizeBytes`；`manifestJson` 仍只承接 im-core public redacted manifest。
+- 修复发现：
+  - `attachments().send_async` 直接调 `messages().send_async` 会形成 async recursive future；改为 `MessageService` crate 内 `send_secure_attachment*` 专用入口。
+  - secure 便捷路径可能丢失 `filename` override；将 `MessageBody::Attachment` 扩展为包含 `filename`，保持 canonical message send 与 attachment convenience API 语义一致。
+- `data-rs2` 重新定位未找到实际仓库：`find .. -maxdepth 2 -type d \( -name '*data*rs2*' -o -name 'data-rs2' -o -name '*data*' \) -print` 仅发现通用 `data` 目录，未发现 `data-rs2`；记录为外部待办，不伪造实现。
+- Secret grep 命中仅为测试脱敏断言和 attachment live 测试 fixture 中的 `download_ticket_b64u` 模拟值；CLI/Dart/Flutter public 输出代码未新增 key/nonce/ticket 泄漏。
+
+验证结果：
+
+- `cargo fmt --all --check` 通过。
+- `cargo check -p im-core-dart --locked` 通过。
+- `cargo check -p im-core --features group-e2ee --locked` 通过。
+- `cargo test -p awiki-cli --test msg_attachment_contract --locked`：3 passed, 0 failed。
+- `cargo test -p awiki-cli --locked msg_secure`：6 个匹配测试通过，其余 filtered。
+- `cargo test -p awiki-cli --test attachment_live_contract --locked`：4 passed, 0 failed。
+- `cargo test -p im-core-dart --locked attachment`：facade_contract 2 passed, 0 failed。
+- `cargo test -p im-core attachment_api --locked`：attachment_api 1 passed, 0 failed。
+- `bash scripts/flutter/codegen-check.sh` 通过。
+- `cd packages/awiki_im_core && dart test`：7 passed。
+- `git diff --check` 通过。
+- `rg -n "object_key_b64u|nonce_b64u|download_ticket" crates/awiki-cli crates/im-core-dart packages/awiki_im_core` 已复核，命中仅为测试脱敏断言和 live fixture。
+- `cargo test -p awiki-cli --locked msg_attachment` 曾卡在 unrelated `awiki-cli msg inbox --scope direct --unread --limit 20 --format json` 子进程，已终止并用精确 `msg_attachment_contract` 覆盖本步骤附件合同。
+- 一次串联验证命令在 `msg_secure` 阶段长时间无输出被终止，已用单独通过的 `msg_secure`、`attachment_live_contract`、Dart tests 和 secret grep 证据替代。
+
+提交记录：
+
+- 实现提交：`e2ee-attachment-cli-rs2:e10a74b`。
+- Commit 前状态：仅本步骤实现文件、API/Flutter/design 文档和 Step 台账文档有未提交修改。
+- 实现提交包含：CLI、im-core、im-core-dart、Flutter generated/model/tests、API/Flutter/design 文档；不包含主 Plan/Step 台账回填。
+- 后续台账提交：本文件与主 Plan 回填。
 
 ## 10. Commit 要求
 
