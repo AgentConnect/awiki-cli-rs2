@@ -1683,6 +1683,10 @@ fn apply_plaintext_to_realtime_notification(
 
 fn plaintext_body_to_notification_body(plaintext: &Map<String, Value>) -> Map<String, Value> {
     let mut body = Map::new();
+    let application_content_type = plaintext
+        .get("application_content_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     for key in ["conversation_id", "reply_to_message_id", "annotations"] {
         if let Some(value) = plaintext.get(key).filter(|value| !value.is_null()) {
             body.insert(key.to_owned(), value.clone());
@@ -1696,7 +1700,12 @@ fn plaintext_body_to_notification_body(plaintext: &Map<String, Value>) -> Map<St
         body.insert("text".to_owned(), Value::String(text.to_owned()));
     }
     if let Some(payload) = plaintext.get("payload").filter(|value| !value.is_null()) {
-        body.insert("payload".to_owned(), payload.clone());
+        let payload = if application_content_type == ATTACHMENT_MANIFEST_CONTENT_TYPE {
+            crate::attachments::manifest::redact_attachment_manifest(payload)
+        } else {
+            payload.clone()
+        };
+        body.insert("payload".to_owned(), payload);
     }
     if let Some(payload_b64u) = plaintext
         .get("payload_b64u")
@@ -2010,6 +2019,69 @@ mod tests {
         assert!(!encoded.contains("SECRET-CIPHER"));
         assert!(!encoded.contains("ratchet_header"));
         assert!(!encoded.contains("session_id"));
+    }
+
+    #[test]
+    fn realtime_notification_normalizer_redacts_attachment_manifest_secrets() {
+        let projection = maybe_normalize_direct_e2ee_notification_with_processor(
+            secure_direct_notification("secure-attachment-rt", "SECRET-CIPHER"),
+            DirectDecryptMode::ReadOnly,
+            |_params| {
+                Ok(Map::from_iter([
+                    ("state".to_owned(), json!("decrypted")),
+                    (
+                        "plaintext".to_owned(),
+                        json!({
+                            "application_content_type": ATTACHMENT_MANIFEST_CONTENT_TYPE,
+                            "payload": {
+                                "attachments": [{
+                                    "attachment_id": "att-secure-rt",
+                                    "filename": "secret.txt",
+                                    "mime_type": "text/plain",
+                                    "size": "27",
+                                    "digest": {
+                                        "alg": "sha-256",
+                                        "value_b64u": "ciphertext-digest"
+                                    },
+                                    "access_info": {
+                                        "object_uri": "https://objects.example/secure"
+                                    },
+                                    "encryption_info": {
+                                        "mode": "object-e2ee",
+                                        "object_cipher": "chacha20-poly1305",
+                                        "object_key_b64u": "OBJECT-KEY-SECRET",
+                                        "nonce_b64u": "NONCE-SECRET",
+                                        "plaintext_size": "11"
+                                    }
+                                }],
+                                "caption": "secure attachment",
+                                "primary_attachment_id": "att-secure-rt"
+                            }
+                        }),
+                    ),
+                ]))
+            },
+        );
+
+        assert_eq!(
+            projection.decision,
+            DirectRealtimeNotificationDecision::Normalized
+        );
+        let notification = projection.notification.unwrap();
+        let encoded = serde_json::to_string(&notification).unwrap();
+        assert!(!encoded.contains("object_key_b64u"));
+        assert!(!encoded.contains("nonce_b64u"));
+        assert!(!encoded.contains("OBJECT-KEY-SECRET"));
+        assert!(!encoded.contains("NONCE-SECRET"));
+        assert_eq!(
+            notification.pointer("/params/body/payload/attachments/0/encryption_info/mode"),
+            Some(&json!("object-e2ee"))
+        );
+        assert_eq!(
+            notification
+                .pointer("/params/body/payload/attachments/0/encryption_info/plaintext_size"),
+            Some(&json!("11"))
+        );
     }
 
     #[test]

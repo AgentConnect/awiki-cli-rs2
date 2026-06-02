@@ -316,9 +316,18 @@ fn project_secure_direct_messages(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
 ) {
+    project_secure_direct_messages_impl(client, raw, directory_transport, true);
+}
+
+fn project_secure_direct_messages_impl(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+    redact_attachment_secrets: bool,
+) {
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, raw, directory_transport);
+        let _ = (client, raw, directory_transport, redact_attachment_secrets);
     }
     #[cfg(feature = "sqlite")]
     {
@@ -337,6 +346,10 @@ fn project_secure_direct_messages(
             crate::internal::secure_direct::incoming::filter_displayable_direct_e2ee_messages(
                 message_values,
             );
+        let mut filtered = filtered;
+        if redact_attachment_secrets {
+            redact_attachment_manifests_for_public_projection(&mut filtered);
+        }
         *messages = filtered;
         append_secure_direct_warnings(raw, warnings);
     }
@@ -348,7 +361,7 @@ pub(crate) fn project_secure_direct_messages_for_attachment_download(
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
 ) {
-    project_secure_direct_messages(client, raw, directory_transport);
+    project_secure_direct_messages_impl(client, raw, directory_transport, false);
 }
 
 async fn project_secure_direct_messages_async(
@@ -356,9 +369,18 @@ async fn project_secure_direct_messages_async(
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
 ) {
+    project_secure_direct_messages_async_impl(client, raw, directory_transport, true).await;
+}
+
+async fn project_secure_direct_messages_async_impl(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+    redact_attachment_secrets: bool,
+) {
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = (client, raw, directory_transport);
+        let _ = (client, raw, directory_transport, redact_attachment_secrets);
     }
     #[cfg(feature = "sqlite")]
     {
@@ -521,6 +543,10 @@ async fn project_secure_direct_messages_async(
             crate::internal::secure_direct::incoming::filter_displayable_direct_e2ee_messages(
                 message_values,
             );
+        let mut filtered = filtered;
+        if redact_attachment_secrets {
+            redact_attachment_manifests_for_public_projection(&mut filtered);
+        }
         *messages = filtered;
         append_secure_direct_warnings(raw, compact_secure_direct_warnings(async_warnings));
     }
@@ -532,7 +558,7 @@ pub(crate) async fn project_secure_direct_messages_for_attachment_download_async
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
 ) {
-    project_secure_direct_messages_async(client, raw, directory_transport).await;
+    project_secure_direct_messages_async_impl(client, raw, directory_transport, false).await;
 }
 
 async fn resolve_direct_sender_document_async(
@@ -725,6 +751,15 @@ fn append_secure_direct_warnings(raw: &mut Value, warnings: Vec<String>) {
 
 #[cfg(feature = "group-e2ee")]
 fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
+    project_group_e2ee_messages_impl(client, raw, true);
+}
+
+#[cfg(feature = "group-e2ee")]
+fn project_group_e2ee_messages_impl(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    redact_attachment_secrets: bool,
+) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
@@ -734,6 +769,9 @@ fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) 
             client,
             &mut message_values,
         );
+    if redact_attachment_secrets {
+        redact_attachment_manifests_for_public_projection(&mut message_values);
+    }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
 }
@@ -745,11 +783,23 @@ pub(crate) fn project_group_e2ee_messages_for_attachment_download(
     client: &crate::core::ImClient,
     raw: &mut Value,
 ) {
+    #[cfg(feature = "group-e2ee")]
+    project_group_e2ee_messages_impl(client, raw, false);
+    #[cfg(not(feature = "group-e2ee"))]
     project_group_e2ee_messages(client, raw);
 }
 
 #[cfg(feature = "group-e2ee")]
 async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: &mut Value) {
+    project_group_e2ee_messages_async_impl(client, raw, true).await;
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn project_group_e2ee_messages_async_impl(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    redact_attachment_secrets: bool,
+) {
     let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
@@ -760,6 +810,9 @@ async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: 
             &mut message_values,
         )
         .await;
+    if redact_attachment_secrets {
+        redact_attachment_manifests_for_public_projection(&mut message_values);
+    }
     *messages = message_values;
     append_secure_direct_warnings(raw, warnings);
 }
@@ -771,7 +824,39 @@ pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
 ) {
+    #[cfg(feature = "group-e2ee")]
+    project_group_e2ee_messages_async_impl(client, raw, false).await;
+    #[cfg(not(feature = "group-e2ee"))]
     project_group_e2ee_messages_async(client, raw).await;
+}
+
+fn redact_attachment_manifests_for_public_projection(messages: &mut [Value]) {
+    for message in messages {
+        let content_type = message.get("content_type").and_then(Value::as_str);
+        if content_type != Some(crate::attachments::manifest::attachment_manifest_content_type()) {
+            continue;
+        }
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        let Some(content) = object.get("content").cloned() else {
+            continue;
+        };
+        object.insert(
+            "content".to_owned(),
+            redact_attachment_manifest_content(content),
+        );
+    }
+}
+
+fn redact_attachment_manifest_content(content: Value) -> Value {
+    match content {
+        Value::String(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(value) => crate::attachments::manifest::redact_attachment_manifest(&value),
+            Err(_) => Value::String(text),
+        },
+        value => crate::attachments::manifest::redact_attachment_manifest(&value),
+    }
 }
 
 fn message_from_value(
@@ -1044,7 +1129,7 @@ fn secure_message_attributes(
     }
     let mut attributes = vec![crate::messages::MessageMetadataAttribute {
         key: "security".to_owned(),
-        value: "direct-e2ee".to_owned(),
+        value: secure_message_security_profile(object),
     }];
     for key in ["decryption_state", "secure_wire_content_type"] {
         let value = string_value(object.get(key));
@@ -1056,6 +1141,28 @@ fn secure_message_attributes(
         }
     }
     attributes
+}
+
+fn secure_message_security_profile(object: &serde_json::Map<String, Value>) -> String {
+    for key in ["message_security_profile", "security_profile", "security"] {
+        let value = string_value(object.get(key));
+        if !value.trim().is_empty() {
+            return normalize_secure_message_security_profile(&value);
+        }
+    }
+    if string_value(object.get("group_did")).trim().is_empty() {
+        "direct-e2ee".to_owned()
+    } else {
+        "group-e2ee".to_owned()
+    }
+}
+
+fn normalize_secure_message_security_profile(value: &str) -> String {
+    match value.trim() {
+        "secure-direct" | "direct" | "direct_e2ee" | "e2ee" => "direct-e2ee".to_owned(),
+        "group" | "group_e2ee" => "group-e2ee".to_owned(),
+        value => value.to_owned(),
+    }
 }
 
 fn string_value(value: Option<&Value>) -> String {
@@ -1728,6 +1835,51 @@ mod tests {
     }
 
     #[test]
+    fn public_direct_e2ee_attachment_projection_redacts_object_key_nonce() {
+        let messages = vec![json!({
+            "id": "msg-secure-attachment",
+            "sender_did": "did:example:bob",
+            "receiver_did": "did:example:alice",
+            "content_type": "application/anp-direct-cipher+json",
+            "server_seq": 1,
+            "content": {
+                "session_id": "session-1",
+                "ratchet_header": {"dh_pub_b64u": "dh", "pn": "0", "n": "1"},
+                "ciphertext_b64u": "ATTACHMENT-CIPHER"
+            }
+        })];
+        let (mut projected, warnings) =
+            crate::internal::secure_direct::incoming::project_direct_e2ee_message_values_with_processor(
+                messages,
+                |_notification| {
+                    Ok(serde_json::Map::from_iter([
+                        ("state".to_owned(), json!("decrypted")),
+                        ("plaintext".to_owned(), direct_e2ee_attachment_plaintext()),
+                    ]))
+                },
+            );
+
+        assert!(warnings.is_empty());
+        let full = serde_json::to_string(&projected).unwrap();
+        assert!(full.contains("object_key_b64u"));
+        assert!(full.contains("nonce_b64u"));
+        redact_attachment_manifests_for_public_projection(&mut projected);
+        let public = serde_json::to_string(&projected).unwrap();
+        assert!(!public.contains("object_key_b64u"));
+        assert!(!public.contains("nonce_b64u"));
+        assert!(!public.contains("OBJECT-KEY-SECRET"));
+        assert!(!public.contains("NONCE-SECRET"));
+        assert_eq!(
+            projected[0]["content"]["attachments"][0]["encryption_info"]["mode"],
+            "object-e2ee"
+        );
+        assert_eq!(
+            projected[0]["content"]["attachments"][0]["encryption_info"]["plaintext_size"],
+            "11"
+        );
+    }
+
+    #[test]
     fn inbox_projection_preserves_attachment_manifest_content() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -1799,6 +1951,88 @@ mod tests {
         let content: Value = serde_json::from_str(&raw_content.value).unwrap();
         assert_eq!(content["attachments"][0]["attachment_id"], "att-1");
         assert_eq!(content["caption"], "direct attachment");
+    }
+
+    #[test]
+    fn secure_group_attachment_public_projection_redacts_and_sets_group_profile() {
+        let mut messages = vec![json!({
+            "id": "msg-group-attachment",
+            "sender_did": "did:example:bob",
+            "group_did": "did:example:group:e2ee",
+            "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+            "secure": true,
+            "decryption_state": "decrypted",
+            "content": direct_e2ee_attachment_manifest()
+        })];
+
+        let page_full = page_from_raw_with_group(
+            &json!({
+                "messages": messages.clone(),
+                "has_more": false
+            }),
+            crate::ids::PageLimit(20),
+            Some(&crate::ids::GroupRef::parse("did:example:group:e2ee").unwrap()),
+        )
+        .unwrap();
+        let full = serde_json::to_string(&page_full).unwrap();
+        assert!(full.contains("object_key_b64u"));
+        assert!(full.contains("OBJECT-KEY-SECRET"));
+
+        redact_attachment_manifests_for_public_projection(&mut messages);
+        let page_public = page_from_raw_with_group(
+            &json!({
+                "messages": messages,
+                "has_more": false
+            }),
+            crate::ids::PageLimit(20),
+            Some(&crate::ids::GroupRef::parse("did:example:group:e2ee").unwrap()),
+        )
+        .unwrap();
+        assert_eq!(page_public.items.len(), 1);
+        assert!(page_public.items[0]
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee"));
+        let public = serde_json::to_string(&page_public).unwrap();
+        assert!(!public.contains("object_key_b64u"));
+        assert!(!public.contains("nonce_b64u"));
+        assert!(!public.contains("OBJECT-KEY-SECRET"));
+        assert!(!public.contains("NONCE-SECRET"));
+    }
+
+    fn direct_e2ee_attachment_plaintext() -> Value {
+        json!({
+            "application_content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+            "payload": direct_e2ee_attachment_manifest()
+        })
+    }
+
+    fn direct_e2ee_attachment_manifest() -> Value {
+        json!({
+            "attachments": [{
+                "attachment_id": "att-secure-1",
+                "filename": "secret.txt",
+                "mime_type": "text/plain",
+                "size": "27",
+                "digest": {
+                    "alg": "sha-256",
+                    "value_b64u": "ciphertext-digest"
+                },
+                "access_info": {
+                    "object_uri": "https://objects.example/secure"
+                },
+                "encryption_info": {
+                    "mode": "object-e2ee",
+                    "object_cipher": "chacha20-poly1305",
+                    "object_key_b64u": "OBJECT-KEY-SECRET",
+                    "nonce_b64u": "NONCE-SECRET",
+                    "plaintext_size": "11"
+                }
+            }],
+            "caption": "secure attachment",
+            "primary_attachment_id": "att-secure-1"
+        })
     }
 
     #[tokio::test]

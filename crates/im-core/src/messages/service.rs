@@ -515,13 +515,18 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::SendMessageResult> {
         if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
             #[cfg(not(feature = "blocking"))]
+            if !crate::internal::secure_direct::async_send::attachment_follow_up_ready(
+                self.client,
+                &resolved.request,
+                resolved.target_did.clone(),
+            )
+            .await?
             {
-                let _ = resolved;
-                return Err(crate::ImError::unsupported(
-                    "async-secure-direct-attachment-send",
-                ));
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "direct E2EE async attachment send requires an established local session; sync compatibility fallback is disabled".to_owned(),
+                });
             }
-            #[cfg(feature = "blocking")]
+
             let committed =
                 crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
                     self.client,
@@ -537,6 +542,26 @@ impl<'a> MessageService<'a> {
                     },
                 )
                 .await?;
+            let async_result =
+                crate::internal::secure_direct::async_send::AsyncDirectSecureTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .send_attachment_follow_up_if_ready(
+                    crate::internal::secure_direct::send::DirectSecureAttachmentSend {
+                        request: resolved.request.clone(),
+                        resolved_target_did: resolved.target_did.clone(),
+                        committed: committed.clone(),
+                        local_persistence:
+                            crate::internal::secure_direct::send::DirectSecureLocalPersistence::Deferred,
+                    },
+                )
+                .await?;
+            if let Some(result) = async_result {
+                return persist_deferred_direct_e2ee_attachment_effect(self.client, result).await;
+            }
             #[cfg(feature = "blocking")]
             {
                 let client = self.client.clone();
@@ -553,6 +578,13 @@ impl<'a> MessageService<'a> {
                     message: err.to_string(),
                 })??;
                 return persist_deferred_direct_e2ee_attachment_effect(self.client, result).await;
+            }
+            #[cfg(not(feature = "blocking"))]
+            {
+                let _ = committed;
+                return Err(crate::ImError::LocalStateUnavailable {
+                    detail: "direct E2EE async attachment send requires an established local session; sync compatibility fallback is disabled".to_owned(),
+                });
             }
         }
         let async_input = crate::internal::secure_direct::send::DirectSecureTextSend {
