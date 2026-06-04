@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -987,7 +988,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -1064,12 +1070,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-identity-live-test-{}-{nanos}",
+            "awiki-cli-rs2-identity-live-test-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

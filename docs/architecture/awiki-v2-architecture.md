@@ -186,8 +186,8 @@ Host notification 是 runtime 的宿主集成层：
 发布模型：
 
 - Rust release artifact：多平台原生二进制。
-- npm wrapper：`@awiki/cli` 负责安装和转发到本地二进制。
-- release scripts：`scripts/release/*` 负责版本一致性、构建、tag、GitHub/Gitee/npm 发布。
+- awiki daemon artifact：客户端安装/升级使用的 `awiki-deamon-<os>-<arch>.tar.gz`。
+- release scripts：`scripts/release/*` 负责版本一致性、本地/服务器构建、daemon manifest 和文件服务目录 staging。
 
 发布手册见 `docs/publish.md`。
 

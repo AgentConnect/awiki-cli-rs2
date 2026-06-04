@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use crate::local_rpc::{call_uds_once, RuntimeRpcRequest, RuntimeRpcResponse};
@@ -81,6 +81,68 @@ impl CliWrapperRequest {
         }
     }
 
+    pub fn outbound_send(
+        runtime_rpc_token: impl Into<String>,
+        target: OutboundMessageTarget,
+        text: impl Into<String>,
+        file_path: Option<impl Into<String>>,
+        display_filename: Option<impl Into<String>>,
+        mime_type: Option<impl Into<String>>,
+        security: Option<impl Into<String>>,
+    ) -> Self {
+        let mut params = json!({
+            "text": text.into(),
+        });
+        match target {
+            OutboundMessageTarget::Handle(handle) => {
+                params["to"] = Value::String(handle);
+            }
+            OutboundMessageTarget::Group(group) => {
+                params["group"] = Value::String(group);
+            }
+        }
+        if let Some(file_path) = file_path {
+            params["file_path"] = Value::String(file_path.into());
+        }
+        if let Some(display_filename) = display_filename {
+            params["display_filename"] = Value::String(display_filename.into());
+        }
+        if let Some(mime_type) = mime_type {
+            params["mime_type"] = Value::String(mime_type.into());
+        }
+        if let Some(security) = security {
+            params["security"] = Value::String(security.into());
+        }
+        Self {
+            runtime_rpc_token: runtime_rpc_token.into(),
+            method: "msg.send".to_string(),
+            params,
+        }
+    }
+
+    pub fn attachment_send(
+        runtime_rpc_token: impl Into<String>,
+        file_path: impl Into<String>,
+        display_filename: Option<impl Into<String>>,
+        caption: Option<impl Into<String>>,
+    ) -> Self {
+        let mut params = json!({
+            "target": "current_conversation",
+            "file_path": file_path.into(),
+        });
+        if let Some(display_filename) = display_filename {
+            params["display_filename"] = Value::String(display_filename.into());
+        }
+        if let Some(caption) = caption {
+            params["caption"] = Value::String(caption.into());
+        }
+        Self {
+            runtime_rpc_token: runtime_rpc_token.into(),
+            method: "attachment.send".to_string(),
+            params,
+        }
+    }
+
     pub fn into_rpc_request(self) -> RuntimeRpcRequest {
         RuntimeRpcRequest {
             runtime_rpc_token: self.runtime_rpc_token,
@@ -93,4 +155,146 @@ impl CliWrapperRequest {
 
 pub fn call(socket_path: &Path, request: CliWrapperRequest) -> Result<RuntimeRpcResponse> {
     call_uds_once(socket_path, &request.into_rpc_request())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundMessageTarget {
+    Handle(String),
+    Group(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliWrapperCommand {
+    Send {
+        socket_path: std::path::PathBuf,
+        runtime_rpc_token: String,
+        target: OutboundMessageTarget,
+        text: String,
+        file_path: Option<String>,
+        display_filename: Option<String>,
+        mime_type: Option<String>,
+    },
+    SendMessage {
+        socket_path: std::path::PathBuf,
+        runtime_rpc_token: String,
+        to_handle: String,
+        text: String,
+    },
+    SendAttachment {
+        socket_path: std::path::PathBuf,
+        runtime_rpc_token: String,
+        file_path: String,
+        display_filename: Option<String>,
+        caption: Option<String>,
+    },
+}
+
+pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcResponse> {
+    match command {
+        CliWrapperCommand::Send {
+            socket_path,
+            runtime_rpc_token,
+            target,
+            text,
+            file_path,
+            display_filename,
+            mime_type,
+        } => {
+            let target = normalize_outbound_target(target)?;
+            let security = match target {
+                OutboundMessageTarget::Handle(_) => "direct_e2ee",
+                OutboundMessageTarget::Group(_) => "group_e2ee",
+            };
+            let text = text.trim();
+            if text.is_empty() {
+                bail!("text is required");
+            }
+            call(
+                &socket_path,
+                CliWrapperRequest::outbound_send(
+                    runtime_rpc_token,
+                    target,
+                    text.to_string(),
+                    file_path,
+                    display_filename,
+                    mime_type,
+                    Some(security),
+                ),
+            )
+        }
+        CliWrapperCommand::SendMessage {
+            socket_path,
+            runtime_rpc_token,
+            to_handle,
+            text,
+        } => {
+            let to_handle = normalize_product_handle(&to_handle)?;
+            let text = text.trim();
+            if text.is_empty() {
+                bail!("text is required");
+            }
+            call(
+                &socket_path,
+                CliWrapperRequest::msg_send_with_security(
+                    runtime_rpc_token,
+                    to_handle,
+                    text.to_string(),
+                    Some("direct_e2ee"),
+                ),
+            )
+        }
+        CliWrapperCommand::SendAttachment {
+            socket_path,
+            runtime_rpc_token,
+            file_path,
+            display_filename,
+            caption,
+        } => call(
+            &socket_path,
+            CliWrapperRequest::attachment_send(
+                runtime_rpc_token,
+                file_path,
+                display_filename,
+                caption,
+            ),
+        ),
+    }
+}
+
+fn normalize_outbound_target(target: OutboundMessageTarget) -> Result<OutboundMessageTarget> {
+    match target {
+        OutboundMessageTarget::Handle(handle) => Ok(OutboundMessageTarget::Handle(
+            normalize_product_handle(&handle)?,
+        )),
+        OutboundMessageTarget::Group(group) => {
+            let group = group.trim();
+            if group.is_empty() {
+                bail!("group is required");
+            }
+            Ok(OutboundMessageTarget::Group(group.to_string()))
+        }
+    }
+}
+
+pub fn socket_from_env_or_arg(socket: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> {
+    socket
+        .or_else(|| std::env::var_os("AWIKI_DAEMON_RPC_SOCKET").map(std::path::PathBuf::from))
+        .context("--socket or AWIKI_DAEMON_RPC_SOCKET is required")
+}
+
+pub fn runtime_token_from_env_or_arg(token: Option<String>) -> Result<String> {
+    token
+        .or_else(|| std::env::var("AWIKI_RUNTIME_RPC_TOKEN").ok())
+        .context("--token or AWIKI_RUNTIME_RPC_TOKEN is required")
+}
+
+pub fn normalize_product_handle(input: &str) -> Result<String> {
+    let value = input.trim();
+    if value.is_empty() {
+        bail!("to_handle is required");
+    }
+    if value.starts_with("did:") {
+        bail!("recipient_must_be_handle");
+    }
+    Ok(value.trim_start_matches('@').to_string())
 }

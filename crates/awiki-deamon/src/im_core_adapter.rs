@@ -115,6 +115,17 @@ pub fn sync_agent_identity_to_im_core(
     Ok(())
 }
 
+pub fn agent_identity_auth_paths(
+    config: &DaemonConfig,
+    agent_did: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let identity_dir = config.identity_root_dir.join(identity_alias(agent_did));
+    (
+        identity_dir.join("did.json"),
+        identity_dir.join("private.key"),
+    )
+}
+
 fn identity_summaries_from_registry(config: &DaemonConfig) -> Result<Vec<IdentitySummary>> {
     if !config.identity_registry_path.exists() {
         return Ok(Vec::new());

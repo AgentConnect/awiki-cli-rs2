@@ -1,14 +1,107 @@
 use awiki_deamon::inbox::ControllerTextMessage;
-use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+use awiki_deamon::outbox::{
+    MemoryRuntimeOutbox, OutboxRecordKind, RuntimeAttachmentSend, RuntimeAttachmentSendResult,
+    RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageSendResult, RuntimeOutbox,
+};
 use awiki_deamon::plugins::hermes::{
     reset_hermes_session_by_route, FakeHermesBehavior, FakeHermesGateway, HermesPromptWrapper,
-    HermesRuntimePlugin, HERMES_RUNTIME_PLUGIN_ID,
+    HermesRuntimePlugin, AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID,
 };
-use awiki_deamon::runtime::host::run_controller_text_task;
-use awiki_deamon::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
+use awiki_deamon::runtime::host::{flush_runtime_final_outbox, run_controller_text_task};
+use awiki_deamon::runtime::{
+    RuntimeAgentProfile, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
+    RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
+};
 use awiki_deamon::state::{HermesProfileRecord, HermesSessionRoute};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
+
+#[derive(Debug, Clone)]
+struct FlakyFinalOutbox {
+    inner: MemoryRuntimeOutbox,
+    fail_next_message: Arc<AtomicBool>,
+}
+
+impl FlakyFinalOutbox {
+    fn new() -> Self {
+        Self {
+            inner: MemoryRuntimeOutbox::default(),
+            fail_next_message: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn records(&self) -> Vec<awiki_deamon::outbox::OutboxRecord> {
+        self.inner.records()
+    }
+}
+
+impl RuntimeOutbox for FlakyFinalOutbox {
+    fn resolve_recipient_did(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.inner.resolve_recipient_did(context, recipient)
+    }
+
+    fn send_status(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_status(context, state, text)
+    }
+
+    fn send_status_with_detail(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_status_with_detail(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+        )
+    }
+
+    fn send_final(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_final(context, text)
+    }
+
+    fn send_message(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
+    ) -> anyhow::Result<RuntimeMessageSendResult> {
+        if self.fail_next_message.swap(false, Ordering::SeqCst) {
+            anyhow::bail!("temporary message service unavailable");
+        }
+        self.inner.send_message(context, message)
+    }
+
+    fn send_attachment(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        attachment: &RuntimeAttachmentSend,
+    ) -> anyhow::Result<RuntimeAttachmentSendResult> {
+        self.inner.send_attachment(context, attachment)
+    }
+}
 
 fn fixture() -> (tempfile::TempDir, DaemonState) {
     let root = tempfile::tempdir().unwrap();
@@ -39,7 +132,7 @@ fn hermes_record(home: std::path::PathBuf) -> HermesProfileRecord {
         hermes_profile: "awiki_alice_hermes".to_string(),
         hermes_home: home,
         hermes_version: None,
-        awiki_skills_version: "awiki-hermes-skills-v1".to_string(),
+        awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
         status: "ready".to_string(),
     }
 }
@@ -71,23 +164,33 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     .unwrap();
 
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
-    assert_eq!(result.launch_outcome.callbacks.len(), 2);
+    assert!(result.launch_outcome.callbacks.is_empty());
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
 
     let records = outbox.records();
     assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("running"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
-    assert_eq!(records[1].state.as_deref(), Some("finished"));
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[0].text.as_deref(), Some("fake complete"));
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[1].text.as_deref(), Some("Hermes response sent"));
 
     let prompts = gateway.submitted_prompts();
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0].run_id, "run_task_msg_001");
     assert!(prompts[0].prompt.contains("controller_verified: true"));
     assert!(prompts[0].prompt.contains("run_id: run_task_msg_001"));
-    assert!(prompts[0].prompt.contains("finish-message"));
-    assert!(prompts[0].prompt.contains("send-message"));
+    assert!(prompts[0].prompt.contains("outbound-send"));
+    assert!(prompts[0]
+        .prompt
+        .contains("daemon sends it back to the APP automatically"));
+    assert!(!prompts[0].prompt.contains("finish-message"));
+    assert!(!prompts[0].prompt.contains("send-attachment"));
     assert!(prompts[0].prompt.contains("请处理这条消息"));
     assert!(!prompts[0].prompt.contains("auth_private_key"));
     assert!(!prompts[0].prompt.contains("jwt_token"));
@@ -122,9 +225,307 @@ fn hermes_message_failed_status_does_not_send_success_final() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 3);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(
+        records[1].text.as_deref(),
+        Some("Hermes 运行失败：fake failure")
+    );
+    assert_eq!(
+        records[1].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("failed"));
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+}
+
+#[test]
+fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent() {
+    let (root, state) = fixture();
+    let outbox = FlakyFinalOutbox::new();
+    let gateway = FakeHermesGateway::default();
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_retry_final".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "请处理这条消息".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Running);
+    let pending = state
+        .load_runtime_final_outbox_by_run("run_task_msg_retry_final")
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.status, "pending");
+    assert_eq!(pending.attempt_count, 1);
+    assert_eq!(
+        pending.conversation_id.as_deref(),
+        Some("direct:did:human:alice")
+    );
+    assert_eq!(
+        pending.last_error_code.as_deref(),
+        Some("final_delivery_retry")
+    );
+    assert!(pending
+        .idempotency_key
+        .contains("runtime-final:did:agent:hermes"));
+    assert_eq!(
+        state
+            .load_runtime_run("run_task_msg_retry_final")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Running
+    );
+
+    rusqlite::Connection::open(root.path().join("daemon.db"))
+        .unwrap()
+        .execute(
+            "UPDATE runtime_final_outbox SET next_attempt_at_ms = 0 WHERE run_id = ?1",
+            ["run_task_msg_retry_final"],
+        )
+        .unwrap();
+
+    let sent = flush_runtime_final_outbox(&state, &outbox, 10).unwrap();
+    assert_eq!(sent, 1);
+    let stored = state
+        .load_runtime_final_outbox_by_run("run_task_msg_retry_final")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "sent");
+    assert_eq!(stored.attempt_count, 2);
+    assert!(stored.sent_at_ms.is_some());
+    assert_eq!(
+        state
+            .load_runtime_run("run_task_msg_retry_final")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Finished
+    );
+
+    let records = outbox.records();
+    let final_messages = records
+        .iter()
+        .filter(|record| {
+            record.kind == OutboxRecordKind::Message
+                && record.text.as_deref() == Some("fake complete")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(final_messages.len(), 1);
+    assert_eq!(
+        final_messages[0].idempotency_key.as_deref(),
+        Some(stored.idempotency_key.as_str())
+    );
+    assert!(records.iter().any(|record| {
+        record.kind == OutboxRecordKind::Status
+            && record.state.as_deref() == Some("running")
+            && record.text.as_deref() == Some("Hermes response is ready; delivery is retrying")
+    }));
+    assert!(records.iter().any(|record| {
+        record.kind == OutboxRecordKind::Status
+            && record.state.as_deref() == Some("succeeded")
+            && record.text.as_deref() == Some("Hermes response sent")
+    }));
+}
+
+#[test]
+fn hermes_message_empty_final_fails_without_success_outbox() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::CompleteWithoutText);
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_empty_final".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "返回空结果".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("Hermes run completed without final text"));
+    assert_eq!(
+        state
+            .load_runtime_run("run_task_msg_empty_final")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+    assert!(state
+        .load_runtime_final_outbox_by_run("run_task_msg_empty_final")
+        .unwrap()
+        .is_none());
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(
+        records[0].text.as_deref(),
+        Some("Hermes 运行失败：Hermes run completed without final text")
+    );
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("final_text_missing")
+    );
+    assert_eq!(
+        records[1].last_error_summary.as_deref(),
+        Some("Hermes run completed without final text")
+    );
+}
+
+#[test]
+fn hermes_message_unsupported_interaction_uses_documented_error_code() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ApprovalRequest);
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_approval".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "触发 approval.request".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(
+        records[0].text.as_deref(),
+        Some("Hermes 运行失败：approval_not_supported: unsupported Hermes interaction approval.request")
+    );
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("approval_not_supported")
+    );
+    assert_eq!(
+        records[1].last_error_summary.as_deref(),
+        Some("approval_not_supported: unsupported Hermes interaction approval.request")
+    );
+}
+
+#[derive(Debug)]
+struct MissingGatewayHermesPlugin;
+
+impl RuntimePlugin for MissingGatewayHermesPlugin {
+    fn plugin_id(&self) -> &str {
+        HERMES_RUNTIME_PLUGIN_ID
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: false,
+            detail: Some("AWIKI_HERMES_BIN is not set".to_string()),
+        })
+    }
+
+    fn launch_run(&self, _context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        unreachable!("install status should fail before launch")
+    }
+}
+
+#[test]
+fn hermes_message_missing_gateway_uses_documented_error_code() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let profile = profile(root.path().join("workspace"));
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &MissingGatewayHermesPlugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_missing_gateway".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "触发 missing gateway".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("not installed"));
+    let run = state
+        .load_runtime_run("run_task_msg_missing_gateway")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(
+        records[0].text.as_deref(),
+        Some("Hermes 运行失败：Hermes gateway command is not configured")
+    );
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("gateway_command_missing")
+    );
+    assert_eq!(
+        records[1].last_error_summary.as_deref(),
+        Some("Hermes gateway command is not configured")
+    );
 }
 
 #[test]
@@ -154,9 +555,9 @@ fn hermes_message_send_message_callback_records_direct_message() {
     .unwrap();
 
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
-    assert_eq!(result.run.status, RuntimeRunStatus::Pending);
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 3);
     assert_eq!(records[0].kind, OutboxRecordKind::Message);
     assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(records[0].text.as_deref(), Some("Hermes says hello"));
@@ -164,6 +565,66 @@ fn hermes_message_send_message_callback_records_direct_message() {
         records[0].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
+    assert_eq!(
+        records[1].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+}
+
+#[test]
+fn hermes_message_send_message_callback_allows_active_handle_lookup() {
+    let (root, state) = fixture();
+    let outbox =
+        MemoryRuntimeOutbox::default().with_handle_resolution("bob", "did:human:bob-resolved");
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::SendHandleMessage);
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_send_handle".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "请给 bob 发消息".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let records = outbox.records();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(
+        records[0].recipient.as_deref(),
+        Some("did:human:bob-resolved")
+    );
+    assert_eq!(records[0].raw_recipient.as_deref(), Some("bob"));
+    assert_eq!(
+        records[0].resolved_did.as_deref(),
+        Some("did:human:bob-resolved")
+    );
+    assert_eq!(records[0].text.as_deref(), Some("Hermes says hello Bob"));
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
 }
 
 #[test]

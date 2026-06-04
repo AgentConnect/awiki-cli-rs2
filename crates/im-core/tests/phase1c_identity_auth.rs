@@ -2,11 +2,14 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use im_core::prelude::*;
 use serde_json::{json, Value};
+
+static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn identity_registry_lists_default_and_resolves_selectors() {
@@ -626,7 +629,11 @@ fn unique_temp_root() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("im-core-phase1c-{}-{nanos}", std::process::id()))
+    let counter = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "im-core-phase1c-{}-{nanos}-{counter}",
+        std::process::id()
+    ))
 }
 
 struct TestServer {
@@ -700,7 +707,10 @@ impl CapturedHttp {
 fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(Instant::now() < deadline, "timed out waiting for request");
                 thread::sleep(Duration::from_millis(10));

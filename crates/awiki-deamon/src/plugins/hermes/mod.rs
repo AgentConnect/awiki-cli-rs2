@@ -12,9 +12,10 @@ pub mod prompt;
 pub mod runner;
 
 pub use gateway::{
-    FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesPromptOutcome,
-    HermesPromptSubmitRequest, HermesRunnerRef, HermesRuntimeEvent, HermesRuntimeEventKind,
-    HermesSessionCreateRequest, HermesSessionRef, StdioHermesGateway,
+    FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesGatewayCommandStatus,
+    HermesGatewayTimeouts, HermesPromptOutcome, HermesPromptSubmitRequest, HermesRunnerRef,
+    HermesRuntimeEvent, HermesRuntimeEventKind, HermesSessionCreateRequest, HermesSessionRef,
+    StdioHermesGateway,
 };
 pub use prompt::HermesPromptWrapper;
 pub use runner::{reset_hermes_session_by_route, HermesRunner, HermesRuntimePlugin};
@@ -22,7 +23,7 @@ pub use runner::{reset_hermes_session_by_route, HermesRunner, HermesRuntimePlugi
 pub const HERMES_RUNTIME_NAME: &str = "hermes";
 pub const HERMES_RUNTIME_PLUGIN_ID: &str = "runtime.hermes";
 
-pub const AWIKI_SKILLS_VERSION: &str = "awiki-hermes-skills-v1";
+pub const AWIKI_SKILLS_VERSION: &str = "awiki-hermes-skills-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HermesProfileInstallResult {
@@ -145,11 +146,14 @@ pub fn hermes_profile_name(handle: &str) -> Result<String> {
 
 fn install_skills(hermes_home: &Path) -> Result<Vec<PathBuf>> {
     let skills_root = hermes_home.join("skills");
-    let skills = [
-        ("awiki-runtime", runtime_skill()),
-        ("awiki-messaging", messaging_skill()),
-        ("awiki-collaboration", collaboration_skill()),
-    ];
+    for legacy in ["awiki-runtime", "awiki-messaging", "awiki-collaboration"] {
+        let legacy_path = skills_root.join(legacy);
+        if legacy_path.exists() {
+            std::fs::remove_dir_all(&legacy_path)
+                .with_context(|| format!("remove legacy Hermes Skill {}", legacy_path.display()))?;
+        }
+    }
+    let skills = [("awiki-outbound-messaging", outbound_messaging_skill())];
     let mut paths = Vec::new();
     for (name, content) in skills {
         let path = skills_root.join(name).join("SKILL.md");
@@ -223,41 +227,26 @@ fn soul_content(profile: &RuntimeAgentProfile, hermes_profile: &str) -> String {
     )
 }
 
-fn runtime_skill() -> &'static str {
-    r#"# Awiki Runtime
+fn outbound_messaging_skill() -> &'static str {
+    r#"# Awiki Outbound Messaging
 
-当你处理由 daemon 校验后的 controller message 时，使用 message/run 语义描述进度。
+Use this Skill only when the controller explicitly asks you to send a separate message to another human handle or group. Do not use it for your ordinary final answer to the controller; daemon automatically sends Hermes final output back to the APP as the Runtime Agent.
 
-- 需要报告进度时，调用 daemon wrapper 的 `report-status` 能力。
-- 完成回复时，调用 daemon wrapper 的 `finish-message` 能力。
-- 首版失败结果使用 failed status；不要把失败包装成 success final。
-- local RPC 当前兼容方法名仍可能是 `task.status` / `task.finish`，这不代表产品层 task workflow。
-- run token 只由 daemon 在本次 message run 前注入，不得写入 profile 或日志。
-"#
-}
+Supported outbound sends:
 
-fn messaging_skill() -> &'static str {
-    r#"# Awiki Messaging
+- Direct text: `awiki-deamon-runtime send --to-handle <handle> --text <text>`
+- Direct attachment with caption: `awiki-deamon-runtime send --to-handle <handle> --text <caption> --file <path> --display-filename <name> --mime-type <mime>`
+- Group text: `awiki-deamon-runtime send --group <group_did> --text <text>`
+- Group attachment with caption: `awiki-deamon-runtime send --group <group_did> --text <caption> --file <path> --display-filename <name> --mime-type <mime>`
 
-当你需要联系 human 或其他 agent 时，必须通过 daemon wrapper 的 `send-message` 能力。
+Rules:
 
-- daemon 会校验 run token、method scope 和 recipient scope。
-- 只有 wrapper 返回成功后，才可以声称消息已经发送。
-- 不直接连接 message-service。
-- 不伪造 DID，不读取 DID 私钥。
-- `msg.send` 的目标语义是真实 ANP direct/direct-e2ee 外发消息，不是状态消息。
-- `send-message` 必须提供目标 DID、非空文本；`security` 可为 `default_plain` 或 `direct_e2ee`。
-"#
-}
-
-fn collaboration_skill() -> &'static str {
-    r#"# Awiki Collaboration
-
-agent-to-agent 协作仍然通过 Awiki messaging 能力完成。
-
-- 非 controller 消息不自动进入执行链。
-- 需要协作时，通过 `awiki-messaging` 的 `send-message` 发送给目标 DID。
-- 不读取 inbox、conversation history 或 handle resolver；这些能力不属于 Hermes MVP。
+- Use human handles with `--to-handle`; do not pass DIDs for direct recipients.
+- Use an existing group DID or group id with `--group`.
+- Use exactly one target: either `--to-handle` or `--group`.
+- For attachment sends, put the user-visible message in `--text`; it becomes the attachment caption in the same outbound message.
+- Only say the outbound message was sent after the wrapper returns success.
+- Do not include tokens, socket paths, private keys, API keys, auth caches, or local log paths in outbound message text, captions, filenames, or visible status.
 "#
 }
 
@@ -283,18 +272,28 @@ fn stable_segment(input: &str) -> Result<String> {
 }
 
 fn ensure_child_path(path: &Path, root: &Path) -> Result<()> {
-    let path = path
-        .canonicalize()
-        .or_else(|_| {
-            path.parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| path.to_path_buf())
-                .canonicalize()
-        })
-        .unwrap_or_else(|_| path.to_path_buf());
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = canonicalize_existing_prefix(path);
+    let root = canonicalize_existing_prefix(root);
     if !path.starts_with(&root) {
         bail!("Hermes profile path must stay under daemon state_root");
     }
     Ok(())
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    let Some(parent) = path.parent() else {
+        return path.to_path_buf();
+    };
+    let canonical_parent = if parent == path {
+        parent.to_path_buf()
+    } else {
+        canonicalize_existing_prefix(parent)
+    };
+    match path.file_name() {
+        Some(file_name) => canonical_parent.join(file_name),
+        None => canonical_parent,
+    }
 }

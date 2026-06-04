@@ -138,7 +138,11 @@ where
             status: RuntimeRunStatus::Running,
             exit_code: None,
             callbacks,
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({
+                "events": outcome.events,
+                "final_text": outcome.final_text,
+                "error": outcome.error,
+            }),
         })
     }
 }

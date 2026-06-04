@@ -8,7 +8,7 @@
 2. `architecture/im-core-sdk-architecture.md`：`im-core` SDK 架构、CLI thin shell 边界、模块职责、路径/依赖约束。
 3. `architecture/awiki-command-v2.md` 与 `architecture/output-format.md`：CLI 命令面与结构化输出契约。
 4. `installation.md`：本地构建、配置、工作区和常见运行方式。
-5. `publish.md`：发布、tag、npm wrapper 和回滚流程。
+5. `publish.md`：本地/服务器构建、文件服务 staging 和回滚流程。
 6. `api/im-core-public-api.md` 与 `api/im-core-interface/*`：SDK API / interface 规格；只有 API 变化时才修改。
 
 ## 稳定文档分区

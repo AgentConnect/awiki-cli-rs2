@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'generated/api/auth.dart' as gen_auth;
@@ -440,6 +441,18 @@ class MessageApi {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_messages.sendText(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<SendMessageResult> sendPayload(SendPayloadRequest request) async {
+    _client._ensureNotDisposed();
+    _validatePayloadJson(request.payloadJson);
+    final result = await _mapNativeErrors(
+      () => gen_messages.sendPayload(
         client: _client._inner,
         request: request._toGen(),
       ),
@@ -1284,6 +1297,50 @@ extension on SendTextRequest {
   );
 }
 
+extension on SendPayloadRequest {
+  gen_message.DartSendPayloadRequest _toGen() =>
+      gen_message.DartSendPayloadRequest(
+        target: target._toGen(),
+        payloadJson: payloadJson,
+        security: security._toGen(),
+        clientMessageId: clientMessageId,
+        idempotencyKey: idempotencyKey,
+        waitForFinalAcceptance: waitForFinalAcceptance,
+      );
+}
+
+void _validatePayloadJson(String payloadJson) {
+  if (utf8.encode(payloadJson).length > 64 * 1024) {
+    throw const AwikiImCoreException(
+      code: 'invalid_payload',
+      message: 'payloadJson must not exceed 64 KB',
+    );
+  }
+  try {
+    final decoded = jsonDecode(payloadJson);
+    if (decoded is! Map) {
+      throw const AwikiImCoreException(
+        code: 'invalid_payload',
+        message: 'payloadJson must be a JSON object',
+      );
+    }
+    final schema = decoded['schema'];
+    if (schema is! String || schema.trim().isEmpty) {
+      throw const AwikiImCoreException(
+        code: 'invalid_payload',
+        message: 'payloadJson must contain a non-empty string schema',
+      );
+    }
+  } on AwikiImCoreException {
+    rethrow;
+  } on Object {
+    throw const AwikiImCoreException(
+      code: 'invalid_payload',
+      message: 'payloadJson must be valid JSON',
+    );
+  }
+}
+
 extension on AttachmentInput {
   gen_attachment.DartAttachmentInput _toGen() => switch (this) {
     LocalFileAttachmentInput(:final path) =>
@@ -1501,6 +1558,7 @@ extension on gen_message.DartMessageBodyView {
   MessageBodyView _toModel() => MessageBodyView(
     text: text,
     kind: kind,
+    payloadJson: payloadJson,
     unsupportedContentType: unsupportedContentType,
   );
 }

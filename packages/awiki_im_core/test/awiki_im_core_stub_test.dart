@@ -127,10 +127,7 @@ void main() {
         hasLocalState: true,
         hasActiveMembership: true,
       ),
-      pendingWork: GroupSecurePendingWork(
-        pendingNotices: 0,
-        pendingCommits: 0,
-      ),
+      pendingWork: GroupSecurePendingWork(pendingNotices: 0, pendingCommits: 0),
     );
     expect(group.pendingWork.pendingNotices, 0);
 

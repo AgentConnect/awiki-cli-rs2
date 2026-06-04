@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_status;
 pub mod cli_wrapper;
 pub mod commands;
 pub mod config;
@@ -11,8 +12,11 @@ pub mod outbox;
 pub mod plugins;
 pub mod registration;
 pub mod runtime;
+pub mod runtime_inbox;
 pub mod security;
+pub mod service;
 pub mod state;
+pub mod upgrade;
 pub mod workspace;
 
 use std::path::PathBuf;
@@ -37,6 +41,9 @@ pub enum DaemonCommand {
     Foreground {
         options: crate::foreground::ForegroundOptions,
     },
+    Install {
+        options: crate::daemon_cli::InstallOptions,
+    },
     InitState {
         state_root: PathBuf,
     },
@@ -46,6 +53,10 @@ pub enum DaemonCommand {
     SetupDaemonAgent {
         state_root: PathBuf,
         options: crate::daemon_cli::SetupDaemonAgentOptions,
+    },
+    Service {
+        state_root: PathBuf,
+        action: crate::service::ServiceAction,
     },
     Status {
         state_root: PathBuf,
@@ -59,8 +70,10 @@ pub enum DaemonCommandOutput {
     AgentList(crate::daemon_cli::AgentListOutput),
     AgentStatus(crate::daemon_cli::AgentStatusOutput),
     Foreground(crate::foreground::ForegroundRunSummary),
+    Install(crate::daemon_cli::InstallOutput),
     RuntimeList(crate::daemon_cli::AgentListOutput),
     SetupDaemonAgent(crate::daemon_cli::SetupDaemonAgentOutput),
+    Service(crate::service::ServiceStatus),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +114,9 @@ fn command_output_json(output: DaemonCommandOutput) -> Result<Value> {
         }
         DaemonCommandOutput::AgentStatus(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::Foreground(output) => Ok(serde_json::to_value(output)?),
+        DaemonCommandOutput::Install(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::SetupDaemonAgent(output) => Ok(serde_json::to_value(output)?),
+        DaemonCommandOutput::Service(output) => Ok(serde_json::to_value(output)?),
     }
 }
 
@@ -110,6 +125,10 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
         DaemonCommand::Foreground { options } => Ok(DaemonCommandOutput::Foreground(
             crate::foreground::run_foreground(options).await?,
         )),
+        DaemonCommand::Install { options } => {
+            let output = crate::daemon_cli::install_product_daemon(options).await?;
+            Ok(DaemonCommandOutput::Install(output))
+        }
         DaemonCommand::InitState { state_root } | DaemonCommand::Status { state_root } => Ok(
             DaemonCommandOutput::Status(initialize_and_report(state_root).await?),
         ),
@@ -139,6 +158,12 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
             let output =
                 crate::daemon_cli::setup_daemon_agent_from_token(&config, &state, options)?;
             Ok(DaemonCommandOutput::SetupDaemonAgent(output))
+        }
+        DaemonCommand::Service { state_root, action } => {
+            let (config, _state, _status) = initialize_state_for_management(state_root).await?;
+            let executable = crate::service::default_executable_path()?;
+            let output = crate::service::manage_service(&config, &executable, action)?;
+            Ok(DaemonCommandOutput::Service(output))
         }
     }
 }

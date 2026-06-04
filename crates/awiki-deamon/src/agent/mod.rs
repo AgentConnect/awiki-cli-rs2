@@ -187,6 +187,27 @@ pub fn normalize_handle(input: &str) -> Result<String> {
     Ok(value)
 }
 
+pub fn generate_product_handle(prefix: &str) -> Result<String> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        bail!("handle prefix must not be empty");
+    }
+    if !prefix
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        bail!("handle prefix contains unsupported characters");
+    }
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut random = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut random);
+    let suffix = random
+        .iter()
+        .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()] as char)
+        .collect::<String>();
+    normalize_handle(&format!("{prefix}{suffix}"))
+}
+
 pub fn resolve_runtime(
     runtime: &str,
     driver_id_override: Option<&str>,

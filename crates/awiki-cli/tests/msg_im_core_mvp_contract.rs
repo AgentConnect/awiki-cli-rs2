@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -10,6 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod support;
 
 use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn msg_send_default_cutover_direct_text_posts_im_core_rpc() {
@@ -669,7 +672,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -750,9 +758,10 @@ impl TempDir {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-msg-im-core-cutover-test-{}-{nanos}",
-            std::process::id()
+            "awiki-cli-rs2-msg-im-core-cutover-test-{}-{counter}-{nanos}",
+            std::process::id(),
         ));
         std::fs::create_dir_all(&path)?;
         Ok(Self { path })

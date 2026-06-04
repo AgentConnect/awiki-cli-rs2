@@ -4,7 +4,7 @@ use awiki_deamon::agent::AgentKind;
 use awiki_deamon::cli_wrapper::CliWrapperRequest;
 use awiki_deamon::commands::{
     handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
-    IncomingAgentPayloadMessage,
+    IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
 };
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
@@ -55,6 +55,13 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     (root, config, state)
 }
 
+fn expect_created(outcome: AgentCommandOutcome) -> RuntimeAgentCreateOutcome {
+    match outcome {
+        AgentCommandOutcome::RuntimeAgentCreated(created) => created,
+        other => panic!("expected runtime agent create outcome, got {other:?}"),
+    }
+}
+
 #[test]
 fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
     let (root, config, state) = fixture();
@@ -95,7 +102,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 10);
+    assert_eq!(summary.schema_version, 14);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
@@ -105,6 +112,15 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         )
         .unwrap();
     assert_eq!(table_count, 1);
+    let create_request_table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_agent_create_request'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(create_request_table_count, 1);
 
     let current_table_count: i64 = Connection::open(&config.daemon_db_path)
         .unwrap()
@@ -159,7 +175,7 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     )
     .unwrap();
 
-    let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
+    let created = expect_created(outcome);
     assert_eq!(created.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
     assert_eq!(created.runtime_profile_id, "profile_hermes_alice_hermes");
 
@@ -180,15 +196,10 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     let soul = std::fs::read_to_string(hermes.hermes_home.join("SOUL.md")).unwrap();
     let profile_json =
         std::fs::read_to_string(hermes.hermes_home.join("awiki-profile.json")).unwrap();
-    let runtime_skill =
-        std::fs::read_to_string(hermes.hermes_home.join("skills/awiki-runtime/SKILL.md")).unwrap();
-    let messaging_skill =
-        std::fs::read_to_string(hermes.hermes_home.join("skills/awiki-messaging/SKILL.md"))
-            .unwrap();
-    let collaboration_skill = std::fs::read_to_string(
+    let outbound_skill = std::fs::read_to_string(
         hermes
             .hermes_home
-            .join("skills/awiki-collaboration/SKILL.md"),
+            .join("skills/awiki-outbound-messaging/SKILL.md"),
     )
     .unwrap();
 
@@ -196,15 +207,25 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(profile_json.contains("\"run_capability_token_persisted\": false"));
     assert!(profile_json.contains("library:awiki_deamon::cli_wrapper"));
     assert!(profile_json.contains("process wrapper wired in Step 07"));
-    assert!(runtime_skill.contains("finish-message"));
-    assert!(messaging_skill.contains("send-message"));
-    assert!(messaging_skill.contains("default_plain"));
-    assert!(messaging_skill.contains("direct_e2ee"));
-    assert!(collaboration_skill.contains("非 controller 消息不自动进入执行链"));
+    assert!(outbound_skill.contains("awiki-deamon-runtime send"));
+    assert!(outbound_skill.contains("--to-handle"));
+    assert!(outbound_skill.contains("--group"));
+    assert!(outbound_skill.contains("--file"));
+    assert!(outbound_skill.contains("--display-filename"));
+    assert!(outbound_skill.contains("--mime-type"));
+    assert!(outbound_skill.contains("same outbound message"));
+    assert!(outbound_skill.contains("Do not use it for your ordinary final answer"));
+    assert!(!outbound_skill.contains("finish-message"));
+    assert!(!outbound_skill.contains("send-message"));
+    assert!(!outbound_skill.contains("send-attachment"));
+    assert!(!hermes.hermes_home.join("skills/awiki-runtime").exists());
+    assert!(!hermes.hermes_home.join("skills/awiki-messaging").exists());
+    assert!(!hermes
+        .hermes_home
+        .join("skills/awiki-collaboration")
+        .exists());
 
-    let profile_dump = format!(
-        "{soul}\n{profile_json}\n{runtime_skill}\n{messaging_skill}\n{collaboration_skill}"
-    );
+    let profile_dump = format!("{soul}\n{profile_json}\n{outbound_skill}");
     assert!(!profile_dump.contains("tok_runtime_secret_value"));
     assert!(!profile_dump.contains("tok_daemon_secret_value"));
     assert!(!profile_dump.contains("rtok_"));

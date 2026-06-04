@@ -11,7 +11,7 @@
 ## 1. 环境要求
 
 - Rust toolchain：使用仓库根目录 `rust-toolchain.toml` 固定版本。
-- Node.js 18+：用于 npm wrapper、install script 和发布流程。
+- Node.js 18+：用于本地脚本、install script 和 release manifest 生成。
 - 同级 ANP Rust SDK：`Cargo.toml` 通过 path dependency 读取 `../anp/anp/rust`。
 - Flutter SDK：仅在修改 `packages/awiki_im_core` 或 `crates/im-core-dart` 时需要。
 
@@ -57,6 +57,20 @@ cargo run -p xtask -- check-version
 scripts/release/build-release-artifact.sh --os linux --arch amd64
 scripts/release/build-release-artifact.sh --os darwin --arch arm64
 ```
+
+Daemon 发布包使用单独脚本构建：
+
+```bash
+scripts/release/build-daemon-artifact.sh --os linux --arch amd64
+scripts/release/stage-daemon-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --base-url https://awiki.ai \
+  --download-base-url https://awiki.ai/daemon
+```
+
+`--base-url` 是 daemon 连接 user-service/message-service/mail-service/ANP 的后端服务根地址。`--download-base-url` 是 Nginx 或其他静态文件服务暴露 daemon 安装脚本与 release 包的根路径，默认生产约定为 `https://awiki.ai/daemon`；未来线上测试环境可对应改成 `https://anpclaw.com` 和 `https://anpclaw.com/daemon`。
 
 Flutter SDK 变更还需要：
 

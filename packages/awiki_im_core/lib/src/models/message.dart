@@ -68,11 +68,35 @@ class SendTextRequest {
   final bool waitForFinalAcceptance;
 }
 
+class SendPayloadRequest {
+  const SendPayloadRequest({
+    required this.target,
+    required this.payloadJson,
+    this.security = MessageSecurityMode.secureDirect,
+    this.clientMessageId,
+    this.idempotencyKey,
+    this.waitForFinalAcceptance = false,
+  });
+
+  final MessageTarget target;
+  final String payloadJson;
+  final MessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+}
+
 class MessageBodyView {
-  const MessageBodyView({this.text, this.kind, this.unsupportedContentType});
+  const MessageBodyView({
+    this.text,
+    this.kind,
+    this.payloadJson,
+    this.unsupportedContentType,
+  });
 
   final String? text;
   final String? kind;
+  final String? payloadJson;
   final String? unsupportedContentType;
 }
 

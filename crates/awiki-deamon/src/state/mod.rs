@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 10;
+const DAEMON_SCHEMA_VERSION: i64 = 14;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -291,6 +291,148 @@ pub struct HermesNativeSessionRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeDaemonBindingRecord {
+    pub runtime_agent_did: String,
+    pub daemon_agent_did: String,
+    pub controller_did: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeRetryQueueRecord {
+    pub retry_id: String,
+    pub original_run_id: String,
+    pub task_id: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub runtime_plugin_id: String,
+    pub workspace_id: Option<String>,
+    pub status: String,
+    pub requested_by_command_id: String,
+    pub attempts: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeFinalOutboxRecord {
+    pub idempotency_key: String,
+    pub run_id: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub controller_did: String,
+    pub conversation_id: Option<String>,
+    pub final_text: String,
+    pub security: String,
+    pub status: String,
+    pub attempt_count: i64,
+    pub next_attempt_at_ms: i64,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+    pub message_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub sent_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAgentCreateRequestRecord {
+    pub daemon_agent_did: String,
+    pub controller_did: String,
+    pub client_request_id: String,
+    pub runtime_agent_did: String,
+    pub command_id: String,
+    pub outcome_json: Value,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl RuntimeRetryQueueRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("retry_id", self.retry_id.as_str()),
+            ("original_run_id", self.original_run_id.as_str()),
+            ("task_id", self.task_id.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("runtime_plugin_id", self.runtime_plugin_id.as_str()),
+            (
+                "requested_by_command_id",
+                self.requested_by_command_id.as_str(),
+            ),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeFinalOutboxRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("idempotency_key", self.idempotency_key.as_str()),
+            ("run_id", self.run_id.as_str()),
+            ("agent_did", self.agent_did.as_str()),
+            ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("controller_did", self.controller_did.as_str()),
+            ("final_text", self.final_text.as_str()),
+            ("security", self.security.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !matches!(
+            self.status.as_str(),
+            "pending" | "sending" | "sent" | "failed_terminal"
+        ) {
+            bail!("runtime final outbox status is unsupported");
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeAgentCreateRequestRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("controller_did", self.controller_did.as_str()),
+            ("client_request_id", self.client_request_id.as_str()),
+            ("runtime_agent_did", self.runtime_agent_did.as_str()),
+            ("command_id", self.command_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.outcome_json.is_object() {
+            bail!("runtime agent create outcome must be a JSON object");
+        }
+        Ok(())
+    }
+}
+
+impl RuntimeDaemonBindingRecord {
+    pub fn validate(&self) -> Result<()> {
+        if self.runtime_agent_did.trim().is_empty() {
+            bail!("runtime_agent_did must not be empty");
+        }
+        if self.daemon_agent_did.trim().is_empty() {
+            bail!("daemon_agent_did must not be empty");
+        }
+        if self.controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        Ok(())
+    }
+}
+
 impl HermesNativeSessionRecord {
     pub fn active(
         route: &HermesSessionRoute,
@@ -358,6 +500,15 @@ fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> 
     let digest = Sha256::digest(route_key.as_bytes());
     let digest = Sha256::digest([digest.as_slice(), hermes_session_id.as_bytes()].concat());
     format!("hns_{:x}", digest)
+}
+
+fn stable_id_suffix(input: &str) -> String {
+    let digest = Sha256::digest(input.as_bytes());
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn normalize_cli_driver_id_for_storage(input: &str) -> Result<String> {
@@ -1073,6 +1224,287 @@ WHERE route_key = ?2
         Ok(updated)
     }
 
+    pub fn reset_active_hermes_sessions_for_runtime_controller(
+        &self,
+        agent_did: &str,
+        runtime_profile_id: &str,
+        controller_did: &str,
+    ) -> Result<usize> {
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        if controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET status = 'reset',
+    updated_at_ms = ?1
+WHERE agent_did = ?2
+  AND runtime_profile_id = ?3
+  AND controller_did = ?4
+  AND status = 'active'
+"#,
+            rusqlite::params![
+                current_time_millis()?,
+                agent_did,
+                runtime_profile_id,
+                controller_did,
+            ],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn upsert_runtime_daemon_binding(
+        &self,
+        runtime_agent_did: &str,
+        daemon_agent_did: &str,
+        controller_did: &str,
+    ) -> Result<()> {
+        let record = RuntimeDaemonBindingRecord {
+            runtime_agent_did: runtime_agent_did.to_string(),
+            daemon_agent_did: daemon_agent_did.to_string(),
+            controller_did: controller_did.to_string(),
+            created_at_ms: current_time_millis()?,
+            updated_at_ms: current_time_millis()?,
+        };
+        record.validate()?;
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_daemon_binding (
+    runtime_agent_did,
+    daemon_agent_did,
+    controller_did,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(runtime_agent_did) DO UPDATE SET
+    daemon_agent_did = excluded.daemon_agent_did,
+    controller_did = excluded.controller_did,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                record.runtime_agent_did,
+                record.daemon_agent_did,
+                record.controller_did,
+                record.created_at_ms,
+                record.updated_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_runtime_daemon_binding(
+        &self,
+        runtime_agent_did: &str,
+    ) -> Result<Option<RuntimeDaemonBindingRecord>> {
+        if runtime_agent_did.trim().is_empty() {
+            bail!("runtime_agent_did must not be empty");
+        }
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT runtime_agent_did, daemon_agent_did, controller_did, created_at_ms, updated_at_ms
+FROM runtime_daemon_binding
+WHERE runtime_agent_did = ?1
+"#,
+                [runtime_agent_did],
+                |row| {
+                    Ok(RuntimeDaemonBindingRecord {
+                        runtime_agent_did: row.get(0)?,
+                        daemon_agent_did: row.get(1)?,
+                        controller_did: row.get(2)?,
+                        created_at_ms: row.get(3)?,
+                        updated_at_ms: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("load runtime daemon binding")
+    }
+
+    pub fn runtime_agent_belongs_to_daemon(
+        &self,
+        runtime_agent_did: &str,
+        daemon_agent_did: &str,
+        controller_did: &str,
+    ) -> Result<bool> {
+        let Some(binding) = self.load_runtime_daemon_binding(runtime_agent_did)? else {
+            return Ok(false);
+        };
+        Ok(
+            binding.daemon_agent_did == daemon_agent_did
+                && binding.controller_did == controller_did,
+        )
+    }
+
+    pub fn store_runtime_agent_create_request(
+        &self,
+        record: &RuntimeAgentCreateRequestRecord,
+    ) -> Result<()> {
+        record.validate()?;
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_agent_create_request (
+    daemon_agent_did,
+    controller_did,
+    client_request_id,
+    runtime_agent_did,
+    command_id,
+    outcome_json,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+ON CONFLICT(daemon_agent_did, controller_did, client_request_id) DO UPDATE SET
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                record.daemon_agent_did,
+                record.controller_did,
+                record.client_request_id,
+                record.runtime_agent_did,
+                record.command_id,
+                record.outcome_json.to_string(),
+                record.created_at_ms,
+                record.updated_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_runtime_agent_create_request(
+        &self,
+        daemon_agent_did: &str,
+        controller_did: &str,
+        client_request_id: &str,
+    ) -> Result<Option<RuntimeAgentCreateRequestRecord>> {
+        if daemon_agent_did.trim().is_empty() {
+            bail!("daemon_agent_did must not be empty");
+        }
+        if controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        if client_request_id.trim().is_empty() {
+            bail!("client_request_id must not be empty");
+        }
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    daemon_agent_did,
+    controller_did,
+    client_request_id,
+    runtime_agent_did,
+    command_id,
+    outcome_json,
+    created_at_ms,
+    updated_at_ms
+FROM runtime_agent_create_request
+WHERE daemon_agent_did = ?1
+  AND controller_did = ?2
+  AND client_request_id = ?3
+"#,
+                rusqlite::params![daemon_agent_did, controller_did, client_request_id],
+                runtime_agent_create_request_record_from_row,
+            )
+            .optional()
+            .context("load runtime agent create request")
+    }
+
+    pub fn list_runtime_agent_definitions_for_daemon(
+        &self,
+        daemon_agent_did: &str,
+    ) -> Result<Vec<AgentDefinition>> {
+        if daemon_agent_did.trim().is_empty() {
+            bail!("daemon_agent_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    agent_definition.agent_did,
+    agent_definition.handle,
+    agent_definition.agent_kind,
+    agent_definition.controller_did,
+    agent_definition.runtime_plugin_id,
+    agent_definition.runtime_profile_id,
+    agent_definition.workspace_id,
+    agent_definition.policy_id,
+    agent_definition.local_agent_db_path,
+    agent_definition.message_db_path,
+    agent_definition.status
+FROM agent_definition
+INNER JOIN runtime_daemon_binding
+    ON runtime_daemon_binding.runtime_agent_did = agent_definition.agent_did
+WHERE agent_definition.agent_kind = 'runtime'
+  AND runtime_daemon_binding.daemon_agent_did = ?1
+ORDER BY agent_definition.updated_at DESC, agent_definition.agent_did ASC
+"#,
+        )?;
+        let rows = statement.query_map([daemon_agent_did], agent_definition_from_row)?;
+        let mut definitions = Vec::new();
+        for row in rows {
+            definitions.push(row?);
+        }
+        Ok(definitions)
+    }
+
+    pub fn should_emit_agent_status_query_snapshot(
+        &self,
+        daemon_agent_did: &str,
+        controller_did: &str,
+        min_interval_ms: i64,
+    ) -> Result<bool> {
+        if daemon_agent_did.trim().is_empty() {
+            bail!("daemon_agent_did must not be empty");
+        }
+        if controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        if min_interval_ms < 0 {
+            bail!("min_interval_ms must not be negative");
+        }
+        let connection = self.connection()?;
+        let last_snapshot_at_ms = connection
+            .query_row(
+                r#"
+SELECT last_snapshot_at_ms
+FROM agent_status_query_throttle
+WHERE daemon_agent_did = ?1
+  AND controller_did = ?2
+"#,
+                rusqlite::params![daemon_agent_did, controller_did],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let now = current_time_millis()?;
+        if last_snapshot_at_ms.is_some_and(|last| now.saturating_sub(last) < min_interval_ms) {
+            return Ok(false);
+        }
+        connection.execute(
+            r#"
+INSERT INTO agent_status_query_throttle (
+    daemon_agent_did,
+    controller_did,
+    last_snapshot_at_ms
+) VALUES (?1, ?2, ?3)
+ON CONFLICT(daemon_agent_did, controller_did) DO UPDATE SET
+    last_snapshot_at_ms = excluded.last_snapshot_at_ms
+"#,
+            rusqlite::params![daemon_agent_did, controller_did, now],
+        )?;
+        Ok(true)
+    }
+
     pub fn count_active_hermes_sessions_for_agent(&self, agent_did: &str) -> Result<usize> {
         if agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
@@ -1385,6 +1817,416 @@ INSERT INTO runtime_run (
                 now,
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn insert_runtime_retry_request(
+        &self,
+        original_run: &RuntimeRun,
+        command_id: &str,
+    ) -> Result<RuntimeRetryQueueRecord> {
+        if original_run.status != RuntimeRunStatus::Failed {
+            bail!("only failed runs can be retried");
+        }
+        let command_id = command_id.trim();
+        if command_id.is_empty() {
+            bail!("command_id must not be empty");
+        }
+        let now = current_time_millis()?;
+        let retry_id = format!("retry_{}_{}", now, stable_id_suffix(&original_run.run_id));
+        let record = RuntimeRetryQueueRecord {
+            retry_id,
+            original_run_id: original_run.run_id.clone(),
+            task_id: original_run.task_id.clone(),
+            agent_did: original_run.agent_did.clone(),
+            runtime_profile_id: original_run.runtime_profile_id.clone(),
+            runtime_plugin_id: original_run.runtime_plugin_id.clone(),
+            workspace_id: original_run.workspace_id.clone(),
+            status: "queued".to_string(),
+            requested_by_command_id: command_id.to_string(),
+            attempts: 0,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        record.validate()?;
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_retry_queue (
+    retry_id,
+    original_run_id,
+    task_id,
+    agent_did,
+    runtime_profile_id,
+    runtime_plugin_id,
+    workspace_id,
+    status,
+    requested_by_command_id,
+    attempts,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', ?8, 0, ?9, ?9)
+"#,
+            rusqlite::params![
+                record.retry_id,
+                record.original_run_id,
+                record.task_id,
+                record.agent_did,
+                record.runtime_profile_id,
+                record.runtime_plugin_id,
+                record.workspace_id,
+                record.requested_by_command_id,
+                now,
+            ],
+        )?;
+        Ok(record)
+    }
+
+    pub fn load_runtime_retry_request(&self, retry_id: &str) -> Result<RuntimeRetryQueueRecord> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    retry_id,
+    original_run_id,
+    task_id,
+    agent_did,
+    runtime_profile_id,
+    runtime_plugin_id,
+    workspace_id,
+    status,
+    requested_by_command_id,
+    attempts,
+    created_at_ms,
+    updated_at_ms
+FROM runtime_retry_queue
+WHERE retry_id = ?1
+"#,
+                [retry_id],
+                runtime_retry_queue_record_from_row,
+            )
+            .context("load runtime retry request")
+    }
+
+    pub fn list_queued_runtime_retries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RuntimeRetryQueueRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    retry_id,
+    original_run_id,
+    task_id,
+    agent_did,
+    runtime_profile_id,
+    runtime_plugin_id,
+    workspace_id,
+    status,
+    requested_by_command_id,
+    attempts,
+    created_at_ms,
+    updated_at_ms
+FROM runtime_retry_queue
+WHERE status = 'queued'
+ORDER BY created_at_ms ASC, retry_id ASC
+LIMIT ?1
+"#,
+        )?;
+        let rows =
+            statement.query_map([limit.max(1) as i64], runtime_retry_queue_record_from_row)?;
+        let mut retries = Vec::new();
+        for row in rows {
+            retries.push(row?);
+        }
+        Ok(retries)
+    }
+
+    pub fn mark_runtime_retry_status(&self, retry_id: &str, status: &str) -> Result<()> {
+        if retry_id.trim().is_empty() {
+            bail!("retry_id must not be empty");
+        }
+        if status.trim().is_empty() {
+            bail!("retry status must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = ?1,
+    attempts = attempts + CASE WHEN ?1 = 'running' THEN 1 ELSE 0 END,
+    updated_at_ms = ?2
+WHERE retry_id = ?3
+"#,
+            rusqlite::params![status, current_time_millis()?, retry_id],
+        )?;
+        if updated == 0 {
+            bail!("runtime retry request does not exist: {retry_id}");
+        }
+        Ok(())
+    }
+
+    pub fn upsert_runtime_final_outbox_pending(
+        &self,
+        record: &RuntimeFinalOutboxRecord,
+    ) -> Result<()> {
+        record.validate()?;
+        if record.status != "pending" {
+            bail!("runtime final outbox upsert requires pending status");
+        }
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_final_outbox (
+    idempotency_key,
+    run_id,
+    agent_did,
+    runtime_profile_id,
+    controller_did,
+    conversation_id,
+    final_text,
+    security,
+    status,
+    attempt_count,
+    next_attempt_at_ms,
+    last_error_code,
+    last_error_summary,
+    message_id,
+    created_at_ms,
+    updated_at_ms,
+    sent_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, NULL, NULL, NULL, ?10, ?10, NULL)
+ON CONFLICT(idempotency_key) DO UPDATE SET
+    final_text = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
+    security = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.security ELSE excluded.security END,
+    status = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.status ELSE 'pending' END,
+    next_attempt_at_ms = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
+    last_error_code = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_code ELSE NULL END,
+    last_error_summary = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_summary ELSE NULL END,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                record.idempotency_key,
+                record.run_id,
+                record.agent_did,
+                record.runtime_profile_id,
+                record.controller_did,
+                record.conversation_id,
+                record.final_text,
+                record.security,
+                record.next_attempt_at_ms,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_runtime_final_outbox_by_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<RuntimeFinalOutboxRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    idempotency_key,
+    run_id,
+    agent_did,
+    runtime_profile_id,
+    controller_did,
+    conversation_id,
+    final_text,
+    security,
+    status,
+    attempt_count,
+    next_attempt_at_ms,
+    last_error_code,
+    last_error_summary,
+    message_id,
+    created_at_ms,
+    updated_at_ms,
+    sent_at_ms
+FROM runtime_final_outbox
+WHERE run_id = ?1
+"#,
+                [run_id],
+                runtime_final_outbox_record_from_row,
+            )
+            .optional()
+            .context("load runtime final outbox by run")
+    }
+
+    pub fn list_due_runtime_final_outbox(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<RuntimeFinalOutboxRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    idempotency_key,
+    run_id,
+    agent_did,
+    runtime_profile_id,
+    controller_did,
+    conversation_id,
+    final_text,
+    security,
+    status,
+    attempt_count,
+    next_attempt_at_ms,
+    last_error_code,
+    last_error_summary,
+    message_id,
+    created_at_ms,
+    updated_at_ms,
+    sent_at_ms
+FROM runtime_final_outbox
+WHERE status = 'pending'
+  AND next_attempt_at_ms <= ?1
+ORDER BY created_at_ms ASC, idempotency_key ASC
+LIMIT ?2
+"#,
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![now_ms, limit.max(1) as i64],
+            runtime_final_outbox_record_from_row,
+        )?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    pub fn mark_runtime_final_outbox_sending(&self, idempotency_key: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_final_outbox
+SET status = 'sending',
+    attempt_count = attempt_count + 1,
+    updated_at_ms = ?1
+WHERE idempotency_key = ?2
+  AND status = 'pending'
+"#,
+            rusqlite::params![current_time_millis()?, idempotency_key],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn mark_runtime_final_outbox_sent(
+        &self,
+        idempotency_key: &str,
+        message_id: Option<&str>,
+    ) -> Result<()> {
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_final_outbox
+SET status = 'sent',
+    message_id = ?1,
+    sent_at_ms = ?2,
+    updated_at_ms = ?2,
+    last_error_code = NULL,
+    last_error_summary = NULL
+WHERE idempotency_key = ?3
+"#,
+            rusqlite::params![message_id, now, idempotency_key],
+        )?;
+        if updated == 0 {
+            bail!("runtime final outbox does not exist: {idempotency_key}");
+        }
+        Ok(())
+    }
+
+    pub fn mark_runtime_final_outbox_retry(
+        &self,
+        idempotency_key: &str,
+        next_attempt_at_ms: i64,
+        error_code: &str,
+        error_summary: &str,
+    ) -> Result<()> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_final_outbox
+SET status = 'pending',
+    next_attempt_at_ms = ?1,
+    last_error_code = ?2,
+    last_error_summary = ?3,
+    updated_at_ms = ?4
+WHERE idempotency_key = ?5
+  AND status = 'sending'
+"#,
+            rusqlite::params![
+                next_attempt_at_ms,
+                error_code,
+                error_summary,
+                current_time_millis()?,
+                idempotency_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("runtime final outbox is not sending: {idempotency_key}");
+        }
+        Ok(())
+    }
+
+    pub fn recover_stale_runtime_final_outbox_sending(
+        &self,
+        stale_before_ms: i64,
+        next_attempt_at_ms: i64,
+    ) -> Result<usize> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_final_outbox
+SET status = 'pending',
+    next_attempt_at_ms = ?1,
+    last_error_code = COALESCE(last_error_code, 'final_delivery_recovered'),
+    last_error_summary = COALESCE(last_error_summary, 'Recovered stale final delivery attempt'),
+    updated_at_ms = ?2
+WHERE status = 'sending'
+  AND updated_at_ms <= ?3
+"#,
+            rusqlite::params![next_attempt_at_ms, current_time_millis()?, stale_before_ms],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn mark_runtime_final_outbox_failed_terminal(
+        &self,
+        idempotency_key: &str,
+        error_code: &str,
+        error_summary: &str,
+    ) -> Result<()> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_final_outbox
+SET status = 'failed_terminal',
+    last_error_code = ?1,
+    last_error_summary = ?2,
+    updated_at_ms = ?3
+WHERE idempotency_key = ?4
+"#,
+            rusqlite::params![
+                error_code,
+                error_summary,
+                current_time_millis()?,
+                idempotency_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("runtime final outbox does not exist: {idempotency_key}");
+        }
         Ok(())
     }
 
@@ -1829,6 +2671,34 @@ INSERT INTO audit_log (
         )?;
         Ok(())
     }
+
+    pub fn audit_event_exists(
+        &self,
+        event_type: &str,
+        agent_did: Option<&str>,
+        detail_contains: Option<&str>,
+    ) -> Result<bool> {
+        if event_type.trim().is_empty() {
+            bail!("event_type must not be empty");
+        }
+        let connection = self.connection()?;
+        let mut sql = "SELECT COUNT(*) FROM audit_log WHERE event_type = ?1".to_string();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(event_type.to_string())];
+        if let Some(agent_did) = agent_did {
+            sql.push_str(" AND agent_did = ?");
+            params.push(Box::new(agent_did.to_string()));
+        }
+        if let Some(detail_contains) = detail_contains {
+            sql.push_str(" AND COALESCE(detail_json, '') LIKE ?");
+            params.push(Box::new(format!("%{detail_contains}%")));
+        }
+        let count: i64 = connection.query_row(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(|value| value.as_ref())),
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
 }
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
@@ -2033,6 +2903,80 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         ON hermes_native_sessions(route_key)
         WHERE status = 'active';
 
+        CREATE TABLE IF NOT EXISTS runtime_daemon_binding (
+            runtime_agent_did TEXT PRIMARY KEY,
+            daemon_agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_daemon_binding_daemon
+        ON runtime_daemon_binding(daemon_agent_did, controller_did);
+
+        CREATE TABLE IF NOT EXISTS agent_status_query_throttle (
+            daemon_agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            last_snapshot_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_did)
+        );
+
+        CREATE TABLE IF NOT EXISTS runtime_retry_queue (
+            retry_id TEXT PRIMARY KEY,
+            original_run_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            runtime_plugin_id TEXT NOT NULL,
+            workspace_id TEXT,
+            status TEXT NOT NULL,
+            requested_by_command_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
+        ON runtime_retry_queue(status, created_at_ms);
+
+        CREATE TABLE IF NOT EXISTS runtime_agent_create_request (
+            daemon_agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            client_request_id TEXT NOT NULL,
+            runtime_agent_did TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            outcome_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_did, client_request_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_agent_create_request_runtime
+        ON runtime_agent_create_request(runtime_agent_did);
+
+        CREATE TABLE IF NOT EXISTS runtime_final_outbox (
+            idempotency_key TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT,
+            final_text TEXT NOT NULL,
+            security TEXT NOT NULL DEFAULT 'direct_e2ee',
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            message_id TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            sent_at_ms INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
+        ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -2048,6 +2992,10 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_cli_runtime_profile_v8(connection)?;
     migrate_runtime_rpc_tokens_v9(connection)?;
     migrate_cli_driver_run_v10(connection)?;
+    migrate_agent_management_v11(connection)?;
+    migrate_runtime_retry_queue_v12(connection)?;
+    migrate_runtime_agent_create_request_v13(connection)?;
+    migrate_runtime_final_outbox_v14(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -2055,6 +3003,133 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_retry_queue (
+            retry_id TEXT PRIMARY KEY,
+            original_run_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            runtime_plugin_id TEXT NOT NULL,
+            workspace_id TEXT,
+            status TEXT NOT NULL,
+            requested_by_command_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
+        ON runtime_retry_queue(status, created_at_ms);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_agent_create_request_v13(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_agent_create_request (
+            daemon_agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            client_request_id TEXT NOT NULL,
+            runtime_agent_did TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            outcome_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_did, client_request_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_agent_create_request_runtime
+        ON runtime_agent_create_request(runtime_agent_did);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_final_outbox (
+            idempotency_key TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT,
+            final_text TEXT NOT NULL,
+            security TEXT NOT NULL DEFAULT 'direct_e2ee',
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            message_id TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            sent_at_ms INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
+        ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_agent_management_v11(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_daemon_binding (
+            runtime_agent_did TEXT PRIMARY KEY,
+            daemon_agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_daemon_binding_daemon
+        ON runtime_daemon_binding(daemon_agent_did, controller_did);
+
+        CREATE TABLE IF NOT EXISTS agent_status_query_throttle (
+            daemon_agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            last_snapshot_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_did)
+        );
+
+        INSERT OR IGNORE INTO runtime_daemon_binding (
+            runtime_agent_did,
+            daemon_agent_did,
+            controller_did,
+            created_at_ms,
+            updated_at_ms
+        )
+        SELECT
+            runtime.agent_did,
+            daemon.agent_did,
+            runtime.controller_did,
+            0,
+            0
+        FROM agent_definition AS runtime
+        INNER JOIN agent_definition AS daemon
+            ON daemon.agent_kind = 'daemon'
+           AND daemon.controller_did = runtime.controller_did
+        WHERE runtime.agent_kind = 'runtime'
+          AND (
+              SELECT COUNT(*)
+              FROM agent_definition AS daemon_count
+              WHERE daemon_count.agent_kind = 'daemon'
+                AND daemon_count.controller_did = runtime.controller_did
+          ) = 1;
+        "#,
     )?;
     Ok(())
 }
@@ -2699,6 +3774,75 @@ fn hermes_native_session_from_row(
     })
 }
 
+fn runtime_retry_queue_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RuntimeRetryQueueRecord> {
+    Ok(RuntimeRetryQueueRecord {
+        retry_id: row.get(0)?,
+        original_run_id: row.get(1)?,
+        task_id: row.get(2)?,
+        agent_did: row.get(3)?,
+        runtime_profile_id: row.get(4)?,
+        runtime_plugin_id: row.get(5)?,
+        workspace_id: row.get(6)?,
+        status: row.get(7)?,
+        requested_by_command_id: row.get(8)?,
+        attempts: row.get(9)?,
+        created_at_ms: row.get(10)?,
+        updated_at_ms: row.get(11)?,
+    })
+}
+
+fn runtime_final_outbox_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RuntimeFinalOutboxRecord> {
+    Ok(RuntimeFinalOutboxRecord {
+        idempotency_key: row.get(0)?,
+        run_id: row.get(1)?,
+        agent_did: row.get(2)?,
+        runtime_profile_id: row.get(3)?,
+        controller_did: row.get(4)?,
+        conversation_id: row.get(5)?,
+        final_text: row.get(6)?,
+        security: row.get(7)?,
+        status: row.get(8)?,
+        attempt_count: row.get(9)?,
+        next_attempt_at_ms: row.get(10)?,
+        last_error_code: row.get(11)?,
+        last_error_summary: row.get(12)?,
+        message_id: row.get(13)?,
+        created_at_ms: row.get(14)?,
+        updated_at_ms: row.get(15)?,
+        sent_at_ms: row.get(16)?,
+    })
+}
+
+fn runtime_agent_create_request_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RuntimeAgentCreateRequestRecord> {
+    let outcome_json: String = row.get(5)?;
+    let outcome_json = serde_json::from_str(&outcome_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            outcome_json.len(),
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    Ok(RuntimeAgentCreateRequestRecord {
+        daemon_agent_did: row.get(0)?,
+        controller_did: row.get(1)?,
+        client_request_id: row.get(2)?,
+        runtime_agent_did: row.get(3)?,
+        command_id: row.get(4)?,
+        outcome_json,
+        created_at_ms: row.get(6)?,
+        updated_at_ms: row.get(7)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2726,6 +3870,11 @@ mod tests {
             "cli_driver_run",
             "hermes_profiles",
             "hermes_native_sessions",
+            "runtime_daemon_binding",
+            "agent_status_query_throttle",
+            "runtime_retry_queue",
+            "runtime_agent_create_request",
+            "runtime_final_outbox",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -2736,6 +3885,96 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing table {table}");
         }
+    }
+
+    #[test]
+    fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        let now = current_time_millis().unwrap();
+        let record = RuntimeFinalOutboxRecord {
+            idempotency_key: "runtime-final:did:agent:hermes:run_1:did:human:alice".to_string(),
+            run_id: "run_1".to_string(),
+            agent_did: "did:agent:hermes".to_string(),
+            runtime_profile_id: "profile_hermes".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            final_text: "final text".to_string(),
+            security: "direct_e2ee".to_string(),
+            status: "pending".to_string(),
+            attempt_count: 0,
+            next_attempt_at_ms: now,
+            last_error_code: None,
+            last_error_summary: None,
+            message_id: None,
+            created_at_ms: now,
+            updated_at_ms: now,
+            sent_at_ms: None,
+        };
+
+        state.upsert_runtime_final_outbox_pending(&record).unwrap();
+        let due = state.list_due_runtime_final_outbox(now, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].final_text, "final text");
+        assert!(state
+            .mark_runtime_final_outbox_sending(&record.idempotency_key)
+            .unwrap());
+        state
+            .mark_runtime_final_outbox_retry(
+                &record.idempotency_key,
+                now + 10_000,
+                "final_delivery_retry",
+                "temporary unavailable",
+            )
+            .unwrap();
+        let stored = state
+            .load_runtime_final_outbox_by_run("run_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "pending");
+        assert_eq!(stored.attempt_count, 1);
+        assert_eq!(
+            stored.last_error_code.as_deref(),
+            Some("final_delivery_retry")
+        );
+        assert!(state
+            .list_due_runtime_final_outbox(now + 9_999, 10)
+            .unwrap()
+            .is_empty());
+
+        assert!(state
+            .mark_runtime_final_outbox_sending(&record.idempotency_key)
+            .unwrap());
+        let recovered = state
+            .recover_stale_runtime_final_outbox_sending(now + 60_000, now)
+            .unwrap();
+        assert_eq!(recovered, 1);
+        let due = state.list_due_runtime_final_outbox(now, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].status, "pending");
+        assert_eq!(due[0].attempt_count, 2);
+
+        assert!(state
+            .mark_runtime_final_outbox_sending(&record.idempotency_key)
+            .unwrap());
+        state
+            .mark_runtime_final_outbox_sent(&record.idempotency_key, Some("msg_final_1"))
+            .unwrap();
+        let stored = state
+            .load_runtime_final_outbox_by_run("run_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "sent");
+        assert_eq!(stored.attempt_count, 3);
+        assert_eq!(stored.message_id.as_deref(), Some("msg_final_1"));
+        assert!(stored.sent_at_ms.is_some());
+        assert!(state
+            .list_due_runtime_final_outbox(now + 60_000, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -3024,6 +4263,47 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
             .unwrap();
         assert_eq!(audit_count, 0);
+    }
+
+    #[test]
+    fn runtime_daemon_binding_and_status_query_throttle_roundtrip() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        state
+            .upsert_runtime_daemon_binding(
+                "did:agent:runtime",
+                "did:agent:daemon",
+                "did:human:alice",
+            )
+            .unwrap();
+
+        assert!(state
+            .runtime_agent_belongs_to_daemon(
+                "did:agent:runtime",
+                "did:agent:daemon",
+                "did:human:alice",
+            )
+            .unwrap());
+        assert!(!state
+            .runtime_agent_belongs_to_daemon(
+                "did:agent:runtime",
+                "did:agent:other-daemon",
+                "did:human:alice",
+            )
+            .unwrap());
+
+        assert!(state
+            .should_emit_agent_status_query_snapshot("did:agent:daemon", "did:human:alice", 10_000,)
+            .unwrap());
+        assert!(!state
+            .should_emit_agent_status_query_snapshot("did:agent:daemon", "did:human:alice", 10_000,)
+            .unwrap());
+        assert!(state
+            .should_emit_agent_status_query_snapshot("did:agent:daemon", "did:human:alice", 0,)
+            .unwrap());
     }
 
     #[test]

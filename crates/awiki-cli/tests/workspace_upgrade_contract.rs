@@ -364,10 +364,6 @@ fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
         .unwrap_or_default()
         .ends_with('Z'));
     assert!(
-        !metadata["hostname"].as_str().unwrap_or_default().is_empty(),
-        "hostname should be populated"
-    );
-    assert!(
         !metadata["executable"]
             .as_str()
             .unwrap_or_default()

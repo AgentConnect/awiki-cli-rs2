@@ -11,10 +11,10 @@
 
 本方案以当前 `awiki-deamon` 的实现为基线，而不是以一个理想化目标架构为基线。
 
-Hermes 接入分成两条方向不同的链路：
+Hermes 接入分成三条必须区分的链路：
 
 ```text
-上行：daemon 控制 Hermes
+控制执行链路：daemon 控制 Hermes
 
 App / message-service
   -> awiki daemon
@@ -25,15 +25,25 @@ App / message-service
 ```
 
 ```text
-下行：Hermes 回调 daemon
+controller 结果回传链路：daemon host 自动发送
 
-Hermes
-  -> Awiki Skills 指导
-  -> daemon CLI wrapper
-  -> daemon local RPC
+Hermes final output / message.complete
+  -> daemon host 读取结果
   -> daemon runtime / IM Core SDK
   -> message-service
-  -> 目标 DID
+  -> controller DID
+```
+
+```text
+主动外发链路：Hermes 调 Awiki 能力
+
+Hermes
+  -> awiki-outbound-messaging Skill 指导
+  -> awiki-deamon-runtime send
+  -> daemon local RPC msg.send
+  -> daemon runtime / IM Core SDK
+  -> message-service
+  -> 其他用户或群
 ```
 
 核心决策：
@@ -45,7 +55,7 @@ Hermes
 5. **Hermes 调用 Awiki 能力时走 daemon CLI wrapper + local RPC。** 真实能力仍在 daemon 中实现。
 6. **MVP 采用消息驱动，不新增产品层 task 概念。** Controller DID 发来的可执行消息进入 Hermes；结果和外发协作也以消息为主。
 7. **当前代码中已有 `RuntimeTask` / `runtime_task` / `task.status` / `task.finish`。** 这些是 Generic CLI MVP 阶段的内部命名和兼容 RPC 名称。本 Hermes 方案不继续扩大 task 概念；后续代码可以把它们收敛为 message/run 语义。
-8. **`awiki_send_message` 的契约必须是真正发送 ANP direct/direct-e2ee 消息。** 如果当前实现仍以 status payload 模拟外发消息，这是实现缺口，后续代码必须修正。
+8. **`msg.send` / outbound-send 的契约必须是真正发送 ANP direct/direct-e2ee 或 group/group-e2ee 消息。** 直聊/群聊文本和“caption + 附件”都走同一个主动外发出口，不能实现成 status payload 或 controller 回传。
 9. **MVP 暂不支持 approval 和 sandbox。** 相关能力不进入本版设计主链路。
 
 ---
@@ -58,8 +68,8 @@ Hermes 作为 native runtime 接入 daemon 后，用户可以：
 
 1. 在 App 中创建或绑定一个 Hermes Runtime Agent。
 2. 通过 ANP direct / direct-e2ee 消息向该 Agent 发送可执行消息。
-3. Hermes 在执行过程中可以通过 daemon 发送真正的 ANP direct/direct-e2ee 消息给 human 或其他 agent。
-4. Hermes 可以向 controller 回传执行进度和最终回复。
+3. Hermes 在执行过程中可以通过 daemon 主动发送真正的 ANP direct/direct-e2ee 或 group/group-e2ee 消息给 human、其他 agent 或群，并支持同一条消息内携带附件 caption。
+4. Hermes 可以通过 daemon 上报执行进度；最终回复由 daemon host 读取 Hermes final output 后自动发送给 controller。
 5. daemon 统一管理 Agent DID、controller 校验、Hermes profile、Hermes session、run token、local RPC、audit 和消息投递。
 
 ### 1.2 非目标
@@ -89,9 +99,9 @@ MVP 不做：
 | RuntimePlugin v1 | 已有 | `plugin_id` / `check_install_status` / `launch_run` |
 | Runtime run 状态 | 已有 | `pending` / `running` / `finished` / `failed` |
 | local RPC token | 已有 | 绑定 `agent_did` / `runtime_profile_id` / `run_id` / methods / recipients / TTL |
-| local RPC 方法 | 已有 | `rpc.ping` / `task.status` / `task.finish` / `msg.send` / `artifact.created` |
+| local RPC 方法 | 已有 | `rpc.ping` / `task.status` / `task.finish` / `msg.send` / `attachment.send` / `artifact.created` |
 | `task.finish` failed final | 未实现 | 当前 `task.finish` 总是落到 `finished` |
-| `msg.send` 真实 ANP direct send | 需要核对/补齐 | 本方案要求它必须是真实 direct send，不是状态消息模拟 |
+| `msg.send` 真实外发 | 已实现 | 统一支持直聊文本、直聊附件、群聊文本、群聊附件；不是状态消息模拟 |
 | runtime session 表 | 未实现 | 当前没有通用 `runtime_session_mapping` |
 | Hermes native session 表 | 未实现 | 本方案建议新增 `hermes_native_sessions` |
 | approval | 未实现 | 本版删除 |
@@ -186,6 +196,7 @@ daemon
   -> session.create
   -> prompt.submit
   -> message.delta / message.complete observation
+  -> runtime_final_outbox durable send to controller
 ```
 
 选择 TUI Gateway 的原因：
@@ -307,12 +318,16 @@ Awiki Skills 由 daemon 自动安装到 Hermes profile，例如：
 
 ```text
 <HERMES_PROFILE_HOME>/skills/
-├── awiki-runtime/
-│   └── SKILL.md
-├── awiki-messaging/
-│   └── SKILL.md
-└── awiki-collaboration/
+└── awiki-outbound-messaging/
     └── SKILL.md
+```
+
+安装时 daemon 会清理旧目录：
+
+```text
+skills/awiki-runtime/
+skills/awiki-messaging/
+skills/awiki-collaboration/
 ```
 
 MVP 不需要 Hermes plugin 目录：
@@ -333,80 +348,48 @@ hook
 
 ### 7.2 Skill 必须具备的核心能力
 
-#### `awiki-runtime`
+#### `awiki-outbound-messaging`
 
-职责：让 Hermes 理解自己正在处理一条由 daemon 校验过的 controller message，并通过 daemon CLI wrapper 回传执行状态和最终回复。
+职责：当 controller 明确要求 Runtime Agent 向其他用户或群发送消息时，指导 Hermes 调用 daemon CLI wrapper 的统一 `send` 命令。它不用于回复 controller 的普通最终答案。
 
 核心规则：
 
 ```text
-- 收到 prompt wrapper 后，读取 message_id、run_id、controller_did、conversation_id。
-- 执行开始和关键阶段可调用 daemon CLI wrapper 上报状态。
-- 完成后必须通过 daemon CLI wrapper 提交最终回复。
-- 不要只在自然语言中声称“完成了”；最终回复必须通过 wrapper 返回 daemon。
-- 如果执行失败，当前版本先上报 failed 状态；不要调用会被 daemon 记为成功 finished 的 final 接口。
+- 普通 controller final output 由 daemon host 自动读取并发回 App，不调用 Skill/CLI。
+- 直聊文本：awiki-deamon-runtime send --to-handle <handle> --text <text>
+- 直聊附件：awiki-deamon-runtime send --to-handle <handle> --text <caption> --file <path> --display-filename <name> --mime-type <mime>
+- 群聊文本：awiki-deamon-runtime send --group <group_did_or_id> --text <text>
+- 群聊附件：awiki-deamon-runtime send --group <group_did_or_id> --text <caption> --file <path> --display-filename <name> --mime-type <mime>
+- --to-handle 和 --group 必须二选一。
+- 带附件时，--text 是同一条附件消息的 caption，不拆成两条消息。
+- 只有 wrapper 返回成功后，才可以声称消息已发送。
+- Hermes 不直接连接 message-service，不伪造 DID，不读取 DID 私钥。
 ```
 
 当前实现匹配度：
 
 | 需求 | 当前实现 | 结论 |
 |---|---|---|
-| 状态上报 | `task.status` | 可用，但名称是历史 task 命名 |
-| 成功 final | `task.finish` | 可用，但只支持 successful finish |
-| failed final | 未实现 | MVP 用 failed status 替代 |
-| 幂等 final | 未实现 | Skill 必须避免重复 final |
-
-#### `awiki-messaging`
-
-职责：让 Hermes 在需要联系 human 或其他 agent 时，通过 daemon 发送真正的 ANP direct/direct-e2ee 消息。
-
-核心规则：
-
-```text
-- 需要外发消息时调用 daemon CLI wrapper 的 send-message 能力。
-- send-message 必须落到 daemon local RPC `msg.send`。
-- `msg.send` 的语义必须是真正 ANP direct/direct-e2ee 发送，不是状态 payload 模拟。
-- Hermes 不直接连接 message-service。
-- Hermes 不伪造 DID，不读取 DID 私钥。
-- 不要把消息写进普通回答里假装已经发送。
-- 如果 recipient 不在 run token 允许范围内，daemon 必须拒绝。
-```
-
-当前实现匹配度：
-
-| 需求 | 当前实现 | 结论 |
-|---|---|---|
-| `msg.send` 方法名 | 已有 | 可作为入口 |
-| recipient scope | token 中已有 `allowed_recipients` | 可作为基础 |
-| 真实 direct send | 需要核对/补齐 | 若当前只是 status payload，后续必须改代码 |
-| handle.resolve | 未实现 | MVP 不要求 |
-| inbox.list / conversation.read | 未实现 | MVP 不要求 |
-
-#### `awiki-collaboration`
-
-职责：让 Hermes 理解 agent-to-agent 协作也必须通过 daemon 消息能力完成。
-
-核心规则：
-
-```text
-- 可以根据需要联系其他 agent。
-- 联系其他 agent 必须通过 awiki-messaging 的 send-message 能力。
-- 协作消息要写清楚上下文、预期输出和回复方式。
-- 当前版本只有 controller_did 发来的消息会自动进入执行链。
-- 非 controller DID 发来的普通消息默认只进入 inbox/projection，不自动执行。
-```
+| 单 Skill 安装 | `skills/awiki-outbound-messaging/SKILL.md` | 已实现 |
+| 旧 Skill 清理 | 安装时删除 `awiki-runtime` / `awiki-messaging` / `awiki-collaboration` | 已实现 |
+| 统一 wrapper | `awiki-deamon-runtime send` | 已实现 |
+| direct/group 外发 | `msg.send` 支持 `to` 或 `group` | 已实现 |
+| 附件同条消息 | `msg.send` 支持 `file_path` + caption text | 已实现 |
 
 ### 7.3 Skills 与当前 RPC 的映射
 
-Skill 面向 Hermes 使用 message/run 语义；daemon 当前 local RPC 方法名仍是历史 task 命名。
+Skill 面向 Hermes 使用 message/run 语义；daemon 当前 local RPC 方法名仍有历史 task 命名。
 
 | Skill 能力 | MVP 语义 | 当前 daemon RPC | 备注 |
 |---|---|---|---|
 | `report-status` | 上报当前消息执行状态 | `task.status` | 兼容名，后续可迁移到 `message.status` |
-| `finish-message` | 提交当前消息最终回复 | `task.finish` | 兼容名，当前只支持成功 final |
-| `send-message` | 发送真正 ANP direct/direct-e2ee 消息 | `msg.send` | 必须是真实外发 |
+| `outbound-send` | 主动向其他用户或群发送文本/附件消息 | `msg.send` | 必须是真实外发 |
 | `artifact-created` | 上报产物 | `artifact.created` | 可选 |
 | `ping` | local RPC 连通性检查 | `rpc.ping` | smoke test 首选 |
+
+controller final output 不属于 Skill 能力：daemon host 从 Hermes Gateway outcome 读取 final text 后自动以 Runtime Agent DID 发回 controller DID。
+
+controller final 回传的基础可靠性由 daemon host 内部的 `runtime_final_outbox` 提供：拿到非空 final text 后先持久化 pending 记录，再发送 direct/direct_e2ee 普通消息；发送成功后标记 outbox `sent` 并把 run 标记为 `Finished`。如果发送临时失败，foreground 启动和循环 flush 会继续补发。该 outbox 只覆盖 controller final reply，不覆盖 Skill/CLI 主动外发。
 
 MVP 不提供：
 
@@ -707,10 +690,10 @@ content_type: text/plain
 
 【Allowed actions】
 - You may use the Awiki CLI wrapper to report status.
-- You may use the Awiki CLI wrapper to finish this message with a final reply.
-- You may use the Awiki CLI wrapper to send ANP direct messages.
+- You may use outbound-send only when the controller asks you to send a separate direct or group message outside the controller reply path.
 - Do not directly connect to message-service.
-- Do not claim that a message was sent unless send-message succeeded.
+- Do not use Skill/CLI for the ordinary final answer to the controller; daemon sends Hermes final output back automatically.
+- Do not claim that an outbound message was sent unless the wrapper succeeded.
 
 【User message】
 帮我联系 Bob 的 agent，让他整理明天会议材料。
@@ -744,20 +727,21 @@ flowchart LR
     M --> T["目标 DID"]
 ```
 
-### 13.2 发送真正 ANP 消息
+### 13.2 主动发送真正 ANP 消息
 
 ```text
 Hermes
-  -> skill_view("awiki-messaging")
-  -> daemon CLI wrapper send-message --to <did-or-handle> --text "..."
+  -> skill_view("awiki-outbound-messaging")
+  -> daemon CLI wrapper awiki-deamon-runtime send --to-handle <handle> --text "..."
+     或 awiki-deamon-runtime send --group <group> --text "..." --file <path> ...
   -> daemon local RPC msg.send
-  -> daemon 校验 run token / method / recipient scope
-  -> IM Core SDK direct.send 或 direct-e2ee send
+  -> daemon 校验 run token / method / recipient/group scope / file path
+  -> IM Core SDK direct/group message send
   -> message-service
-  -> 目标 DID
+  -> 目标 DID 或群
 ```
 
-这是 `awiki_send_message` 的必须语义。不能把 `msg.send` 实现成仅向 controller 发送 status payload。
+这是 outbound-send 的必须语义。不能把 `msg.send` 实现成仅向 controller 发送 status payload。带附件时，caption 和附件必须在同一条消息里发送。
 
 ### 13.3 回传状态
 
@@ -774,16 +758,15 @@ Hermes
 ### 13.4 回传最终回复
 
 ```text
-Hermes
-  -> daemon CLI wrapper finish-message --text "..."
-  -> daemon local RPC task.finish
+Hermes final output / message.complete
+  -> daemon host 读取 final text
   -> daemon 标记 run finished
-  -> daemon 向 controller 发送最终回复消息
+  -> daemon 以 Runtime Agent DID 向 controller DID 发送最终回复消息
 ```
 
-不要设计 `task.result` 作为 MVP 对外协议。首版只需要 controller 发消息，Hermes 回消息。
+不要设计 `task.result` 作为 MVP 对外协议。controller 普通最终回复不走 Skill/CLI，也不要求 Hermes 调 `task.finish`。
 
-当前 `task.finish` 只表示 successful finish。失败时先使用 status 上报 failed，直到 daemon 支持 failed final。
+当前 `task.finish` 作为 local RPC 兼容方法保留，主要服务旧 generic-cli/fake callback 路径；Hermes final path 以 daemon host output 为准。失败时先使用 status 上报 failed。
 
 ---
 
@@ -855,6 +838,7 @@ rpc.ping
 task.status
 task.finish
 msg.send
+attachment.send
 artifact.created
 ```
 
@@ -862,10 +846,11 @@ Hermes Skill / wrapper 可以用 message 语义封装这些方法：
 
 ```text
 report-status   -> task.status
-finish-message  -> task.finish
-send-message    -> msg.send
+outbound-send   -> msg.send
 ping            -> rpc.ping
 ```
+
+controller final output 由 daemon host 自动发送，不映射为 Skill 能力。`task.finish` 和 `attachment.send` 作为兼容方法保留，但不是当前 Hermes Outbound Messaging Skill 的新路径。
 
 后续代码重构时，可以新增更准确的名称：
 
@@ -1038,7 +1023,7 @@ POST /user-service/agent-registration/rpc
 ```text
 1. 创建 Hermes profile。
 2. 写 SOUL.md / profile config。
-3. 安装 awiki-runtime / awiki-messaging / awiki-collaboration skills。
+3. 安装 awiki-outbound-messaging skill，并清理旧 awiki-runtime / awiki-messaging / awiki-collaboration 目录。
 4. smoke test: TUI ready + rpc.ping。
 ```
 
@@ -1057,13 +1042,13 @@ POST /user-service/agent-registration/rpc
 1. controller text/plain message 进入 Hermes。
 2. daemon 构造 message prompt wrapper。
 3. 每次消息创建 run token。
-4. Hermes 使用 wrapper report-status / finish-message。
+4. Hermes 可使用 wrapper report-status；controller final 由 daemon host 自动发送。
 ```
 
 ### Phase 4：真实外发消息
 
 ```text
-1. wrapper send-message。
+1. wrapper awiki-deamon-runtime send。
 2. local RPC msg.send。
 3. daemon 校验 token allowed_recipients。
 4. im-core direct/direct-e2ee send。
@@ -1131,28 +1116,27 @@ flowchart TD
     L --> M["Hermes Engine"]
 ```
 
-### 20.3 Hermes 外发消息
+### 20.3 Hermes 主动外发消息
 
 ```mermaid
 flowchart LR
-    A["Hermes"] --> B["awiki-messaging skill"]
-    B --> C["daemon CLI wrapper send-message"]
+    A["Hermes"] --> B["awiki-outbound-messaging skill"]
+    B --> C["awiki-deamon-runtime send"]
     C --> D["daemon local RPC msg.send"]
-    D --> E["token / recipient 校验"]
-    E --> F["IM Core direct/direct-e2ee send"]
+    D --> E["token / recipient / group / file 校验"]
+    E --> F["IM Core direct/group message send"]
     F --> G["message-service"]
-    G --> H["目标 DID"]
+    G --> H["目标 DID 或群"]
 ```
 
 ### 20.4 Hermes 回传最终回复
 
 ```mermaid
 flowchart LR
-    A["Hermes"] --> B["awiki-runtime skill"]
-    B --> C["daemon CLI wrapper finish-message"]
-    C --> D["daemon local RPC task.finish"]
-    D --> E["run finished"]
-    E --> F["向 controller DID 发送最终回复消息"]
+    A["Hermes final output"] --> B["daemon host"]
+    B --> C["run finished"]
+    C --> D["IM Core direct/direct-e2ee send"]
+    D --> E["向 controller DID 发送最终回复消息"]
 ```
 
 ---

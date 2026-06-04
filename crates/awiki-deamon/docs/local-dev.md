@@ -16,10 +16,17 @@
 
 ## 状态目录
 
+产品安装默认使用：
+
+```text
+~/.awiki-daemon/deamon/state/
+```
+
 给定 `--state-root /path/to/state` 后，首版布局如下：
 
 ```text
 /path/to/state/
+  config.json
   daemon.db
   im-core/local-state.sqlite
   identity/registry.json
@@ -28,6 +35,37 @@
   runtime/tmp/
   rpc/awiki-deamon.sock
   audit/audit.log
+```
+
+`config.json` 是 daemon 的持久配置文件。安装命令会写入后端根地址、daemon 下载根地址、DID domain、ANP endpoint 等解析后的配置；后续 foreground、service、upgrade 等命令会从同一状态目录读取。默认只需要配置一个后端根地址，其他字段会按规则派生：
+
+```text
+base_url = https://awiki.ai
+user_service_base_url = base_url
+message_service_base_url = base_url
+mail_service_base_url = base_url
+download_base_url = <base_url>/daemon
+did_domain = base_url host
+anp_service_endpoint = <base_url>/anp-im/rpc
+anp_service_did = did:wba:<did_domain>
+```
+
+支持的环境变量覆盖：
+
+- `AWIKI_DAEMON_BASE_URL`
+- `AWIKI_DAEMON_SERVICE_BASE_URL`
+- `AWIKI_DAEMON_USER_SERVICE_BASE_URL`
+- `AWIKI_DAEMON_MESSAGE_SERVICE_BASE_URL`
+- `AWIKI_DAEMON_MAIL_SERVICE_BASE_URL`
+- `AWIKI_DAEMON_DOWNLOAD_BASE_URL`
+- `AWIKI_DAEMON_DID_DOMAIN`
+- `AWIKI_DAEMON_ANP_SERVICE_URL`
+- `AWIKI_DAEMON_ANP_SERVICE_DID`
+
+安装包默认写入：
+
+```text
+~/.awiki-daemon/deamon/bin/
 ```
 
 `daemon.db` 是 daemon 自己的状态库，首版包含 agent、runtime profile、workspace binding、runtime run、runtime RPC token 占位表和 audit 表。`im-core/local-state.sqlite` 由 `im-core` 自己初始化和维护。
@@ -40,6 +78,7 @@
 - `runtime_profile`：runtime agent 绑定的 runtime plugin type、展示名和状态。CLI 家族新数据统一使用 `runtime_plugin_id=generic-cli`。
 - `cli_runtime_profile`：`generic-cli` 插件内部 profile，保存 `driver_id`、binary/config、默认 sandbox、默认 workspace mode、`msg.send` recipient policy 和 driver-specific config。
 - `cli_driver_run`：CLI run 的 route/session/workspace/output metadata，包括 workspace instance、command、stdout/stderr/JSONL/final output 路径和 fallback final 来源。
+- `runtime_final_outbox`：Hermes controller final reply 专用持久 outbox。daemon 拿到 Hermes final text 后先写入该表，发送成功后才把 run 标记为 finished；foreground 启动和循环会补发 due pending 记录。
 - `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
 
 首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
@@ -53,6 +92,22 @@ cargo test -p awiki-deamon --locked
 ```
 
 步骤 01 不启动真实 runtime，也不连接远端 message-service。
+
+本地模拟安装脚本可使用 `file://` 下载根，不需要公网 CDN：
+
+```bash
+scripts/release/stage-daemon-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir /tmp/awiki-daemon-downloads \
+  --base-url https://awiki.ai \
+  --download-base-url file:///tmp/awiki-daemon-downloads
+
+sh /tmp/awiki-daemon-downloads/install.sh \
+  --token <install-token> \
+  --state-root /tmp/awiki-deamon-state \
+  --foreground
+```
 
 ## 本地 RPC 安全模型
 
@@ -187,6 +242,65 @@ runtime agent 的最小创建流程：
 - daemon 不定义 command/status/result/task 专用 JSON content type。
 - `payload.schema`、`payload.command`、`payload.state`、`payload.result` 是 daemon 上层业务语义，不是 message-service 的传输语义。
 
+## Runtime Agent 收件箱查询
+
+Runtime Agent 收件箱查询是 App <-> Daemon 控制链路，不是 Hermes Skill / runtime 推理链路。App 只在 Runtime Agent 会话中展示入口，向 Daemon Agent DID 发送 `awiki.agent.command.v1` payload；daemon 校验 controller 和 Runtime Agent 归属后，以 Runtime Agent 身份读取它自己的 IM 本地投影，再用 `awiki.agent.status.v1` payload 回传结果。
+
+当前实现的控制命令：
+
+- `runtime.inbox.query`：查询收件箱会话摘要，`status_scope = "runtime_inbox"`。
+- `runtime.inbox.thread.query`：查询某个 direct/group 线程正文和附件元信息，`status_scope = "runtime_inbox_thread"`。
+
+两个命令都必须使用 `target_agent_kind = "daemon"`。daemon 会继续复用现有 command 校验，要求目标消息投递给 Daemon Agent，且 `sender_did == daemon_agent.controller_did`；然后再校验 `runtime_agent_did` 属于当前 daemon、同一 controller 且 agent kind 为 runtime。校验失败时只返回 failed status，不读取消息。
+
+列表请求参数：
+
+```json
+{
+  "schema": "awiki.agent.command.v1",
+  "command_id": "cmd_runtime_inbox_001",
+  "command": "runtime.inbox.query",
+  "target_agent_kind": "daemon",
+  "args": {
+    "runtime_agent_did": "did:example:runtime",
+    "scope": "all",
+    "limit": 30,
+    "cursor": null
+  }
+}
+```
+
+线程请求参数：
+
+```json
+{
+  "schema": "awiki.agent.command.v1",
+  "command_id": "cmd_runtime_inbox_thread_001",
+  "command": "runtime.inbox.thread.query",
+  "target_agent_kind": "daemon",
+  "args": {
+    "runtime_agent_did": "did:example:runtime",
+    "thread_id": "group:did:example:team",
+    "kind": "group",
+    "group_did": "did:example:team",
+    "limit": 50,
+    "cursor": null
+  }
+}
+```
+
+限制和安全边界：
+
+- `scope` 只支持 `all`、`direct`、`group`。
+- `kind` 只支持 `direct`、`group`。
+- 列表默认 limit 30，线程默认 limit 50，最大 100。
+- 列表只返回最近消息 preview，线程详情才返回正文。
+- 单条正文最多返回 4000 字符，超出时设置 `truncated = true`。
+- 附件只返回 `attachment_id`、`filename`、`mime_type`、`size_bytes`、`download_state` 元信息。
+- 响应不能包含本机路径、JWT、runtime RPC token、私钥、API key 或 Hermes profile 路径。
+
+当前 daemon 会先通过 `im-core` inbox/history 做 best-effort 远端刷新，再读取 `im-core/local-state.sqlite` 中 Runtime Agent owner identity 对应的本地 projection。这样控制查询不会因为一次远端 history refresh 不可用而直接失败。这个实现依赖当前 im-core 本地 projection schema，后续如果 im-core 暴露稳定的 local-read API，应优先收敛到 im-core 公共接口。
+
 ## 长驻 foreground E2E
 
 当前 `foreground` 不再只是初始化状态后返回，它会作为长驻 daemon 进程运行：
@@ -201,7 +315,7 @@ runtime agent 的最小创建流程：
 8. 测试 runtime 通过 UDS local RPC 回传 `task.status` 和 `task.finish`。
 9. daemon 通过 `im-core` 发回 `awiki.agent.status.v1` payload。
 
-系统测试使用这些控制参数让长驻进程稳定退出：
+系统测试使用这些控制参数让长驻进程稳定退出。`--max-processed-messages` 只统计真实处理的 inbox command 和 retry queue 工作项，心跳/status latest 同步不计入这个退出条件：
 
 ```bash
 awiki-deamon foreground \
@@ -212,15 +326,17 @@ awiki-deamon foreground \
   --poll-interval-ms 100
 ```
 
-本地同域 E2E 需要 message-service 能解析本地 user-service 刚注册的 agent DID。运行 `tests_v2/daemon/test_awiki_daemon_long_running_e2e.py` 前，确认本地 message-service 的运行配置等价于：
+本地同域 E2E 需要 message-service 能通过公开 DID 地址解析刚注册的 agent DID。运行 `tests_v2/daemon/test_awiki_daemon_long_running_e2e.py` 前，确认 `E2E_DID_DOMAIN` 及 message-service 节点域名能按当前环境解析到 user-service 公开 DID 文档；本地不再依赖 message-service 内部旁路配置。
 
 ```toml
 [did_resolution]
-base_url = "http://127.0.0.1:9891"
 verify_ssl = false
+timeout_seconds = 10.0
 ```
 
-否则 runtime agent DID 会被解析到公网域名，本地刚注册的 DID 文档不可见，status/final 发送会失败。
+否则 runtime agent DID 会被解析到不可访问的公网域名，本地刚注册的 DID 文档不可见，status/final 发送会失败。
+
+控制状态 payload 的生产默认安全模式是 secure direct。当前本地 E2E 环境如果还没有满足 secure-direct payload 的前置能力，需要显式设置 `AWIKI_DAEMON_ALLOW_PLAIN_CONTROL=1` 才允许控制面降级为 plain；生产环境不要设置该变量。Daemon 本地状态仍固定使用 `daemon.db` 和 `im-core/local-state.sqlite` 两个 SQLite 文件，MySQL 只用于本地 `user-service`。
 
 本地 daemon E2E 系统测试入口位于：
 
@@ -228,12 +344,25 @@ verify_ssl = false
 cd ../awiki-system-test
 AWIKI_SYSTEM_TEST_MODE=local \
 E2E_USER_SERVICE_URL=http://127.0.0.1:9891 \
-E2E_MESSAGE_SERVICE_URL=http://127.0.0.1:9900 \
-E2E_MESSAGE_SERVICE_WS_URL=ws://127.0.0.1:9900/im/ws \
-E2E_DID_DOMAIN=awiki.info \
-AWIKI_DAEMON_RUST_REPO=../codex-plugin-cli-rs2 \
+E2E_DID_DOMAIN=awiki.test \
+E2E_MESSAGE_SERVICE_URL=http://127.0.0.1:18080 \
+E2E_MESSAGE_SERVICE_WS_URL=ws://127.0.0.1:18080/im/ws \
+E2E_MESSAGE_V2_USER_SERVICE_URL=http://127.0.0.1:9891 \
+E2E_MESSAGE_V2_NODE_A_DOMAIN=msg-a.awiki.test \
+E2E_MESSAGE_V2_NODE_A_PUBLIC_BASE_URL=http://127.0.0.1:18080 \
+E2E_MESSAGE_V2_NODE_A_RPC_URL=http://127.0.0.1:18080/im/rpc \
+E2E_MESSAGE_V2_NODE_A_WS_URL=ws://127.0.0.1:18080/im/ws \
+E2E_MESSAGE_V2_DATABASE_A_URL=postgresql://message_service:message_service@127.0.0.1:5432/message_service_a \
+E2E_MESSAGE_V2_NODE_B_DOMAIN=msg-b.awiki.test \
+E2E_MESSAGE_V2_NODE_B_PUBLIC_BASE_URL=http://127.0.0.1:18081 \
+E2E_MESSAGE_V2_NODE_B_RPC_URL=http://127.0.0.1:18081/im/rpc \
+E2E_MESSAGE_V2_NODE_B_WS_URL=ws://127.0.0.1:18081/im/ws \
+E2E_MESSAGE_V2_DATABASE_B_URL=postgresql://message_service:message_service@127.0.0.1:5432/message_service_b \
+DB_HOST=127.0.0.1 DB_PORT=3306 DB_USER=awiki DB_PASSWORD=123456 DB_NAME=awikidb-dev DB_CHARSET=utf8mb4 \
+USER_SERVICE_DATABASE_URL='mysql+aiomysql://awiki:123456@127.0.0.1:3306/awikidb-dev?charset=utf8mb4&connect_timeout=5' \
+AWIKI_DAEMON_RUST_REPO=../awiki-cli-rs2 \
 CARGO_BUILD_JOBS=1 \
-uv run --no-project --python .venv/bin/python -m pytest \
+uv run --no-sync pytest \
   tests_v2/daemon/test_awiki_daemon_long_running_e2e.py -q -rs
 ```
 

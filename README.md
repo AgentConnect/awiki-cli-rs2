@@ -1,8 +1,6 @@
 # awiki-cli
 
 [![Rust Version](https://img.shields.io/badge/rust-%3E%3D1.78-blue.svg)](https://www.rust-lang.org/)
-[![npm version](https://img.shields.io/npm/v/@awiki/cli.svg)](https://www.npmjs.com/package/@awiki/cli)
-
 English
 
 awiki-cli is the official Awiki command-line client and Skill backend. This repository contains the Rust CLI port of the Awiki CLI contract, preserving the command surface and release artifact naming inherited from the earlier Go design while using a Rust workspace for the current implementation.
@@ -18,22 +16,23 @@ Quick links: [Onboarding](./onboarding.md) · [Command Tree](./docs/architecture
 
 ## Installation & Onboarding
 
-Basic requirements:
+Basic development requirements:
 
-- Node.js 18+ and `npm` / `npx`
+- Rust toolchain from `rust-toolchain.toml`
+- Node.js 18+
+- Sibling ANP Rust SDK at `../anp/anp/rust`
 - Network access to the Awiki backend (e.g. `https://awiki.ai` or an internal test environment)
 
-Install the CLI and Skills:
+Build the CLI locally:
 
 ```bash
-npm install -g @awiki/cli@latest
-npx skills add agentconnect/awiki-cli -y -g
+cargo build -p awiki-cli --bin awiki-cli --release --locked
 ```
 
-If `registry.npmjs.org` is unreachable, install the package from npmmirror instead:
+Build a release archive:
 
 ```bash
-npm install -g @awiki/cli@latest --registry=https://registry.npmmirror.com
+scripts/release/build-release-artifact.sh --os linux --arch amd64
 ```
 
 Initialize the workspace:

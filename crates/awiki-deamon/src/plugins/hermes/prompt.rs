@@ -55,11 +55,7 @@ impl HermesPromptWrapper {
             run_id: run.run_id.clone(),
             conversation_id: task.conversation_id.clone(),
             content_type: "text/plain".to_string(),
-            allowed_actions: vec![
-                "report-status".to_string(),
-                "finish-message".to_string(),
-                "send-message".to_string(),
-            ],
+            allowed_actions: vec!["report-status".to_string(), "outbound-send".to_string()],
             user_message: task.text.clone(),
         }
     }
@@ -88,15 +84,17 @@ message:
 
 allowed_actions:
   - report-status
-  - finish-message
-  - send-message
+  - outbound-send
 
 rules:
   - Use message/run semantics, not product task workflow.
   - Use daemon wrapper/local RPC for Awiki capabilities.
   - Do not connect to message-service directly.
-  - Do not claim a message was sent unless daemon wrapper reports success.
-  - Streaming message.complete is observation only; successful final must go through finish-message.
+  - Your ordinary final answer to the controller is returned by Hermes to daemon; daemon sends it back to the APP automatically as the Runtime Agent.
+  - Do not use outbound messaging Skill/CLI to reply to the controller unless the controller explicitly asks you to send a separate message to another handle or group.
+  - Use outbound-send only when the controller asks you to send a direct or group message, with or without an attachment, to someone outside the controller reply path.
+  - Do not claim an outbound message was sent unless daemon wrapper reports success.
+  - Streaming message.complete is observation only; successful final is handled by daemon host output.
   - Failed execution should report failed status; do not call success final for failures.
 
 user_message:

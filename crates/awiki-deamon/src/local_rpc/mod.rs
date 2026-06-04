@@ -1,11 +1,14 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
-use crate::outbox::{RuntimeMessageSend, RuntimeOutbox};
+use crate::outbox::{
+    RuntimeAttachmentSend, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
+};
 use crate::runtime::RuntimeRunStatus;
 use crate::security::runtime_token::{RpcMethod, RuntimeRpcToken};
 use crate::state::{AuthorizedRuntimeContext, DaemonState};
@@ -109,8 +112,8 @@ pub fn execute_runtime_rpc_request(
     request: RuntimeRpcRequest,
 ) -> Result<RuntimeRpcResponse> {
     let method = RpcMethod::parse(&request.method)?;
-    if method == RpcMethod::MsgSend {
-        bail!("msg.send requires runtime outbox side effects");
+    if matches!(method, RpcMethod::MsgSend | RpcMethod::SendAttachment) {
+        bail!("message RPC methods require runtime outbox side effects");
     }
     let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
     let recipient = rpc_recipient(&method, &request.params);
@@ -133,24 +136,55 @@ pub fn execute_runtime_rpc_request_with_outbox(
 ) -> Result<RuntimeRpcResponse> {
     let method = RpcMethod::parse(&request.method)?;
     let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
-    let context = if method == RpcMethod::MsgSend {
-        let message = RuntimeMessageSend::from_params(&request.params)?;
-        let preliminary_context =
-            state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
-        let message = resolve_message_recipient(outbox, &preliminary_context, message)?;
-        let context = state.authorize_runtime_rpc_with_message_policy(
-            &token,
-            &method,
-            message.recipient_candidates(),
-            Some(message.security.as_str()),
-        )?;
-        apply_msg_send_side_effect(state, outbox, &context, &message)?;
-        context
-    } else {
-        let recipient = rpc_recipient(&method, &request.params);
-        let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
-        apply_runtime_rpc_side_effects(state, outbox, &context, &method, &request.params)?;
-        context
+    let context = match method {
+        RpcMethod::MsgSend => {
+            let message = RuntimeMessageSend::from_params(&request.params)?;
+            let preliminary_context =
+                state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
+            if let Some(file_path) = message.file_path.as_ref() {
+                ensure_attachment_under_allowed_roots(
+                    state,
+                    &preliminary_context.run_id,
+                    &preliminary_context.agent_did,
+                    file_path,
+                )?;
+            }
+            let message = resolve_message_recipient(outbox, &preliminary_context, message)?;
+            let context = state.authorize_runtime_rpc_with_message_policy(
+                &token,
+                &method,
+                message.recipient_candidates(),
+                Some(message.security.as_str()),
+            )?;
+            apply_msg_send_side_effect(state, outbox, &context, &message)?;
+            context
+        }
+        RpcMethod::SendAttachment => {
+            let preliminary_context =
+                state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
+            let task = state
+                .load_runtime_task_for_run(&preliminary_context.run_id)
+                .context("attachment.send requires a runtime task context")?;
+            let attachment = RuntimeAttachmentSend::from_params(
+                &request.params,
+                Some(task.sender_did.as_str()),
+            )?;
+            ensure_attachment_under_allowed_roots(
+                state,
+                &preliminary_context.run_id,
+                &preliminary_context.agent_did,
+                &attachment.file_path,
+            )?;
+            let context = state.authorize_runtime_rpc(&token, &method, None)?;
+            apply_attachment_send_side_effect(state, outbox, &context, &attachment)?;
+            context
+        }
+        _ => {
+            let recipient = rpc_recipient(&method, &request.params);
+            let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
+            apply_runtime_rpc_side_effects(state, outbox, &context, &method, &request.params)?;
+            context
+        }
     };
 
     RuntimeRpcResponse::success(RuntimeRpcExecution::from(context))
@@ -251,7 +285,7 @@ fn apply_runtime_rpc_side_effects(
             state.update_runtime_run_status(&context.run_id, RuntimeRunStatus::Finished)?;
             outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
         }
-        RpcMethod::MsgSend => {}
+        RpcMethod::MsgSend | RpcMethod::SendAttachment => {}
         RpcMethod::RpcPing | RpcMethod::ArtifactCreated => {}
     }
     Ok(())
@@ -262,13 +296,122 @@ fn resolve_message_recipient(
     context: &AuthorizedRuntimeContext,
     message: RuntimeMessageSend,
 ) -> Result<RuntimeMessageSend> {
+    let RuntimeMessageTarget::Direct { recipient, .. } = &message.target else {
+        return Ok(message);
+    };
     let resolved = outbox
-        .resolve_recipient_did(context, &message.recipient)
-        .with_context(|| format!("resolve msg.send recipient {}", message.recipient))?;
+        .resolve_recipient_did(context, recipient)
+        .with_context(|| format!("resolve msg.send recipient {recipient}"))?;
     let Some(resolved_did) = resolved else {
         bail!("msg.send recipient could not be resolved");
     };
     Ok(message.with_resolved_recipient(resolved_did))
+}
+
+fn apply_attachment_send_side_effect(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    context: &AuthorizedRuntimeContext,
+    attachment: &RuntimeAttachmentSend,
+) -> Result<()> {
+    let (file_sha256, file_size_bytes) = attachment_file_audit(&attachment.file_path)?;
+    let result = outbox.send_attachment(context, attachment);
+    match result {
+        Ok(send_result) => {
+            state.insert_audit_event_json(
+                "runtime.attachment_send.sent",
+                Some(&context.agent_did),
+                Some(&context.runtime_profile_id),
+                Some(&context.run_id),
+                Some(&context.token_id),
+                serde_json::json!({
+                    "target": send_result.target,
+                    "display_filename": send_result.display_filename,
+                    "size_bytes": send_result.size_bytes.unwrap_or(file_size_bytes),
+                    "file_sha256": file_sha256,
+                    "message_id": send_result.message_id,
+                }),
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            state.insert_audit_event_json(
+                "runtime.attachment_send.failed",
+                Some(&context.agent_did),
+                Some(&context.runtime_profile_id),
+                Some(&context.run_id),
+                Some(&context.token_id),
+                serde_json::json!({
+                    "target": attachment.target,
+                    "display_filename": attachment.display_filename,
+                    "size_bytes": file_size_bytes,
+                    "file_sha256": file_sha256,
+                    "reason": error.to_string(),
+                }),
+            )?;
+            Err(error).context("send runtime attachment")
+        }
+    }
+}
+
+fn attachment_file_audit(path: &Path) -> Result<(String, u64)> {
+    let bytes = std::fs::read(path).with_context(|| "read attachment file for audit hash")?;
+    let digest = Sha256::digest(&bytes);
+    let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok((hash, bytes.len() as u64))
+}
+
+fn ensure_attachment_under_allowed_roots(
+    state: &DaemonState,
+    run_id: &str,
+    agent_did: &str,
+    file_path: &Path,
+) -> Result<()> {
+    let file_path = file_path
+        .canonicalize()
+        .with_context(|| "canonicalize attachment file")?;
+    let allowed_roots = attachment_allowed_roots(state, run_id, agent_did)?;
+    if allowed_roots.is_empty() {
+        bail!("attachment.send requires a runtime workspace");
+    }
+    if allowed_roots.iter().any(|root| file_path.starts_with(root)) {
+        return Ok(());
+    }
+    bail!("attachment file must be inside the runtime workspace");
+}
+
+fn attachment_allowed_roots(
+    state: &DaemonState,
+    run_id: &str,
+    agent_did: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    if let Ok(record) = state.load_cli_driver_run(run_id) {
+        roots.extend(record.workspace_instance_path);
+        roots.extend(record.workspace_root);
+        if let Some(final_output_path) = record.final_output_path {
+            if let Some(parent) = final_output_path.parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
+    if roots.is_empty() {
+        let profile = state.load_runtime_agent_profile(agent_did)?;
+        if let Some(workspace_root) = profile.workspace_root {
+            roots.push(workspace_root);
+        }
+    }
+
+    let mut canonical_roots = Vec::new();
+    for root in roots {
+        let canonical = root
+            .canonicalize()
+            .with_context(|| "canonicalize runtime workspace")?;
+        if !canonical_roots.contains(&canonical) {
+            canonical_roots.push(canonical);
+        }
+    }
+    Ok(canonical_roots)
 }
 
 fn apply_msg_send_side_effect(
@@ -289,8 +432,10 @@ fn apply_msg_send_side_effect(
                 serde_json::json!({
                     "raw_recipient": send_result.raw_recipient,
                     "resolved_did": send_result.resolved_did,
+                    "target_kind": send_result.target_kind,
                     "security": send_result.security.as_str(),
                     "message_id": send_result.message_id,
+                    "has_attachment": message.file_path.is_some(),
                 }),
             )?;
             Ok(())
@@ -303,9 +448,11 @@ fn apply_msg_send_side_effect(
                 Some(&context.run_id),
                 Some(&context.token_id),
                 serde_json::json!({
-                    "raw_recipient": message.raw_recipient,
-                    "resolved_did": message.resolved_did,
+                    "raw_recipient": message.raw_recipient(),
+                    "resolved_did": message.resolved_recipient(),
+                    "target_kind": message.target_kind(),
                     "security": message.security.as_str(),
+                    "has_attachment": message.file_path.is_some(),
                     "reason": error.to_string(),
                 }),
             )?;

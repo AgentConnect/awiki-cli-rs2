@@ -411,7 +411,10 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
 fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {

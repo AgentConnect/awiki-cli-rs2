@@ -2119,8 +2119,9 @@ mod tests {
             Some("application/anp-attachment-manifest+json")
         );
         assert!(matches!(
-            message.body,
-            crate::messages::MessageBodyView::Unsupported { .. }
+            &message.body,
+            crate::messages::MessageBodyView::Payload { payload }
+                if payload["attachments"][0]["attachment_id"] == "att-1"
         ));
         let raw_content = message
             .metadata

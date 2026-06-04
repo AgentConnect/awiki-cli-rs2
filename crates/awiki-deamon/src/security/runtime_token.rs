@@ -26,6 +26,7 @@ pub enum RpcMethod {
     TaskStatus,
     TaskFinish,
     MsgSend,
+    SendAttachment,
     ArtifactCreated,
 }
 
@@ -47,6 +48,9 @@ pub struct IssuedRuntimeToken {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct RuntimeRpcToken(String);
+
+pub const ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE: &str = "@active_handle_lookup";
+pub const ANY_GROUP_RECIPIENT_SCOPE: &str = "@any_group";
 
 impl RuntimeRpcToken {
     pub fn generate() -> Self {
@@ -100,6 +104,7 @@ impl RpcMethod {
             Self::TaskStatus => "task.status",
             Self::TaskFinish => "task.finish",
             Self::MsgSend => "msg.send",
+            Self::SendAttachment => "attachment.send",
             Self::ArtifactCreated => "artifact.created",
         }
     }
@@ -110,6 +115,7 @@ impl RpcMethod {
             "task.status" => Ok(Self::TaskStatus),
             "task.finish" => Ok(Self::TaskFinish),
             "msg.send" => Ok(Self::MsgSend),
+            "attachment.send" => Ok(Self::SendAttachment),
             "artifact.created" => Ok(Self::ArtifactCreated),
             other => bail!("unsupported RPC method: {other}"),
         }
@@ -119,7 +125,7 @@ impl RpcMethod {
         match self {
             Self::RpcPing => RpcMethodLevel::Read,
             Self::TaskStatus | Self::TaskFinish => RpcMethodLevel::Status,
-            Self::MsgSend | Self::ArtifactCreated => RpcMethodLevel::Message,
+            Self::MsgSend | Self::SendAttachment | Self::ArtifactCreated => RpcMethodLevel::Message,
         }
     }
 }
@@ -201,7 +207,37 @@ impl RuntimeTokenScope {
         let Some(allowed) = self.allowed_recipients.as_ref() else {
             return true;
         };
-        recipients.into_iter().any(|recipient| {
+        let recipients = recipients
+            .into_iter()
+            .filter_map(|recipient| {
+                let recipient = recipient.trim();
+                (!recipient.is_empty()).then_some(recipient)
+            })
+            .collect::<Vec<_>>();
+
+        if allowed.iter().any(|known| {
+            normalize_recipient_for_scope(known) == ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE
+        }) && recipients
+            .iter()
+            .any(|recipient| normalized_recipient_is_handle(recipient))
+            && recipients
+                .iter()
+                .any(|recipient| recipient.trim().starts_with("did:"))
+        {
+            return true;
+        }
+
+        if allowed
+            .iter()
+            .any(|known| normalize_recipient_for_scope(known) == ANY_GROUP_RECIPIENT_SCOPE)
+            && recipients
+                .iter()
+                .any(|recipient| normalized_recipient_is_group(recipient))
+        {
+            return true;
+        }
+
+        recipients.iter().any(|recipient| {
             let candidate = normalize_recipient_for_scope(recipient);
             allowed
                 .iter()
@@ -225,11 +261,26 @@ fn normalize_recipient_for_scope(input: &str) -> String {
     let value = input.trim();
     if value.starts_with("did:") {
         value.to_string()
+    } else if value == ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE || value == ANY_GROUP_RECIPIENT_SCOPE {
+        value.to_string()
     } else if value.starts_with('@') {
         value.to_ascii_lowercase()
     } else {
         format!("@{}", value.to_ascii_lowercase())
     }
+}
+
+fn normalized_recipient_is_handle(input: &str) -> bool {
+    let value = input.trim();
+    !value.is_empty() && !value.starts_with("did:")
+}
+
+fn normalized_recipient_is_group(input: &str) -> bool {
+    let value = input.trim().to_ascii_lowercase();
+    value.starts_with("did:group:")
+        || value.starts_with("group:")
+        || value.starts_with("grp_")
+        || value.starts_with("group_")
 }
 
 pub fn issue_runtime_token(scope: RuntimeTokenScope) -> Result<IssuedRuntimeToken> {
@@ -299,5 +350,18 @@ mod tests {
         assert!(!scope.allows_recipient_candidates(["@mallory", "did:human:mallory"]));
         assert!(scope.allows_message_security(Some("default_plain")));
         assert!(!scope.allows_message_security(Some("direct_e2ee")));
+
+        let handle_lookup_scope = RuntimeTokenScope::new(
+            "did:agent:test",
+            "profile_1",
+            "run_2",
+            vec![RpcMethod::MsgSend],
+            Some(vec![ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE.to_string()]),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(handle_lookup_scope.allows_recipient_candidates(["alice", "did:human:alice"]));
+        assert!(!handle_lookup_scope.allows_recipient(Some("did:human:alice")));
+        assert!(!handle_lookup_scope.allows_recipient(Some("alice")));
     }
 }

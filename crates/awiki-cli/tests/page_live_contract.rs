@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread;
@@ -228,6 +228,9 @@ impl TestServer {
                     }
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            stream
+                                .set_nonblocking(false)
+                                .expect("set test stream blocking");
                             handle_connection(stream, &server_requests, response);
                             break;
                         }
@@ -330,12 +333,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-page-live-cutover-test-{}-{nanos}",
+            "awiki-cli-rs2-page-live-cutover-test-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

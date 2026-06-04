@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -16,7 +17,9 @@ fn foreground_listener_exits_and_cleans_runtime_artifacts_on_sigint_like_go() {
 
 fn foreground_listener_exits_and_cleans_runtime_artifacts_on_signal(signal: std::os::raw::c_int) {
     let workspace = TempDir::new("listener-signal").expect("temp workspace");
-    write_runtime_config(workspace.path());
+    let socket_dir = TempDir::new_short("awls").expect("temp socket dir");
+    let socket_path = socket_dir.path().join("s.sock");
+    write_runtime_config(workspace.path(), &socket_path);
     let mut child = awiki_command(workspace.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -26,7 +29,6 @@ fn foreground_listener_exits_and_cleans_runtime_artifacts_on_signal(signal: std:
     let runtime_dir = workspace.path().join("runtime");
     let pid_file = runtime_dir.join("listener.pid");
     let status_file = runtime_dir.join("listener.status.json");
-    let socket_path = runtime_dir.join("message-daemon.sock");
 
     wait_for_path(&pid_file);
     wait_for_path(&status_file);
@@ -68,11 +70,14 @@ fn awiki_command(workspace: &Path) -> Command {
     command
 }
 
-fn write_runtime_config(workspace: &Path) {
+fn write_runtime_config(workspace: &Path, socket_path: &Path) {
     std::fs::create_dir_all(workspace).expect("workspace dir");
     std::fs::write(
         workspace.join("config.yaml"),
-        "runtime:\n  mode: websocket\n  listener:\n    enabled: true\n  host_notify:\n    enabled: true\n    sink: log\n",
+        format!(
+            "runtime:\n  mode: websocket\n  socket_path: {}\n  listener:\n    enabled: true\n  host_notify:\n    enabled: true\n    sink: log\n",
+            socket_path.to_string_lossy()
+        ),
     )
     .expect("write config");
 }
@@ -144,12 +149,26 @@ struct TempDir {
 
 impl TempDir {
     fn new(name: &str) -> std::io::Result<Self> {
+        Self::new_under(&std::env::temp_dir(), &format!("awiki-cli-rs2-{name}"))
+    }
+
+    fn new_short(name: &str) -> std::io::Result<Self> {
+        Self::new_under(Path::new("/tmp"), name)
+    }
+
+    fn new_under(root: &Path, prefix: &str) -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-{name}-{}-{nanos}",
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
+        let path = root.join(format!(
+            "{prefix}-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

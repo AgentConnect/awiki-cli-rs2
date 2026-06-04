@@ -5,7 +5,11 @@ use awiki_cli::host_runtime::host_notify_sink::{
 };
 use awiki_cli::workspace_config::{Paths, Resolved, ValueSource};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn file_host_notify_sink_rejects_blank_path_like_go() {
@@ -76,6 +80,7 @@ fn file_host_notify_sink_appends_to_existing_file_like_go() {
 
 #[test]
 fn file_host_notify_sink_accepts_bare_relative_file_name_like_go() {
+    let _guard = CURRENT_DIR_LOCK.lock().expect("current dir lock");
     let workspace = TempDir::new().expect("temp workspace");
     let previous_dir = std::env::current_dir().expect("current dir");
     std::env::set_current_dir(workspace.path()).expect("chdir workspace");
@@ -285,12 +290,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-host-notify-sink-test-{}-{nonce}",
+            "awiki-cli-rs2-host-notify-sink-test-{}-{nonce}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

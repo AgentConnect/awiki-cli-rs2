@@ -172,6 +172,54 @@ impl RuntimePlugin for MsgSendCallbackPlugin {
 }
 
 #[derive(Debug, Clone)]
+struct AttachmentSendCallbackPlugin;
+
+impl RuntimePlugin for AttachmentSendCallbackPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("attachment.send callback test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        let workspace = context
+            .workspace_root
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("workspace_root is required"))?;
+        std::fs::create_dir_all(workspace)?;
+        let report_path = workspace.join("report.txt");
+        std::fs::write(&report_path, "small report")?;
+        let token = context.runtime_rpc_token.as_str().to_string();
+        Ok(RuntimeLaunchOutcome {
+            run_id: context.run.run_id,
+            status: RuntimeRunStatus::Running,
+            exit_code: Some(0),
+            callbacks: vec![
+                awiki_deamon::cli_wrapper::CliWrapperRequest::attachment_send(
+                    token.clone(),
+                    report_path.to_string_lossy().to_string(),
+                    Some("report.txt"),
+                    Some("report ready"),
+                )
+                .into_rpc_request(),
+                awiki_deamon::cli_wrapper::CliWrapperRequest::task_finish(
+                    token,
+                    context.task.task_id,
+                    "done",
+                )
+                .into_rpc_request(),
+            ],
+            metadata: json!({"driver_id": "codex"}),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct DuplicateFinishCallbackPlugin;
 
 impl RuntimePlugin for DuplicateFinishCallbackPlugin {
@@ -327,6 +375,60 @@ fn generic_cli_runtime_profile_policy_allows_non_controller_msg_send() {
         )
         .unwrap();
     assert_eq!(sent_count, 1);
+}
+
+#[test]
+fn runtime_run_token_allows_current_conversation_attachment_send() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = AttachmentSendCallbackPlugin;
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_attachment_policy".to_string(),
+            conversation_id: Some("conv_attachment_policy".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "send current conversation attachment".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(
+        records[0].raw_recipient.as_deref(),
+        Some("current_conversation")
+    );
+    assert_eq!(records[0].text.as_deref(), Some("report ready"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let allowed_methods_json: String = connection
+        .query_row(
+            "SELECT allowed_methods_json FROM runtime_rpc_tokens WHERE token_id = ?1",
+            [&result.token_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(allowed_methods_json.contains("send_attachment"));
+    let audit_dump: String = connection
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime.attachment_send.sent' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audit_dump.contains("report.txt"));
+    assert!(!audit_dump.contains(root.path().to_string_lossy().as_ref()));
 }
 
 #[test]
@@ -1006,7 +1108,11 @@ PY
     assert!(!run_record.is_security_boundary);
     assert_eq!(
         run_record.workspace_instance_path.as_deref(),
-        profile.workspace_root.as_deref()
+        profile
+            .workspace_root
+            .as_ref()
+            .map(|path| path.canonicalize().unwrap())
+            .as_deref()
     );
     assert_eq!(
         run_record.final_output_path,
@@ -1203,7 +1309,12 @@ exit 0
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
     let instance_path = run_record.workspace_instance_path.unwrap();
-    assert!(instance_path.starts_with(config.runtime_temp_dir.join("worktrees")));
+    let worktrees_root = config
+        .runtime_temp_dir
+        .join("worktrees")
+        .canonicalize()
+        .unwrap();
+    assert!(instance_path.starts_with(worktrees_root));
     assert_ne!(instance_path, workspace.canonicalize().unwrap());
     assert_eq!(
         run_record.workspace_mode,
