@@ -253,6 +253,83 @@ class DaemonReleaseContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("missing daemon package", result.stderr)
 
+    def test_generate_daemon_manifest_can_allow_partial_existing_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            package_path = create_fake_daemon_package(temp_dir, "linux", "amd64")
+
+            run_command(
+                [
+                    "node",
+                    "scripts/release/generate-daemon-manifest.js",
+                    "--version",
+                    "1.2.3",
+                    "--dist",
+                    str(temp_dir),
+                    "--base-url",
+                    "https://anpclaw.com/daemon/releases",
+                    "--output",
+                    str(temp_dir / "manifest.json"),
+                    "--allow-partial",
+                ]
+            )
+
+            manifest = json.loads((temp_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["latest"], "1.2.3")
+            self.assertEqual(manifest["min_supported"], "1.2.3")
+            self.assertEqual(
+                manifest["packages"],
+                [
+                    {
+                        "version": "1.2.3",
+                        "os": "linux",
+                        "arch": "amd64",
+                        "url": "https://anpclaw.com/daemon/releases/1.2.3/awiki-deamon-linux-amd64.tar.gz",
+                        "sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
+                    }
+                ],
+            )
+
+    def test_stage_daemon_downloads_can_publish_partial_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            source_dir = temp_dir / "source"
+            source_dir.mkdir()
+            create_fake_daemon_package(source_dir, "linux", "amd64")
+
+            output_dir = temp_dir / "daemon"
+            run_command(
+                [
+                    "scripts/release/stage-daemon-downloads.sh",
+                    "--version",
+                    "1.2.3",
+                    "--source-dir",
+                    str(source_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--base-url",
+                    "https://anpclaw.com",
+                    "--download-base-url",
+                    "https://anpclaw.com/daemon",
+                    "--allow-partial",
+                ]
+            )
+
+            manifest = json.loads(
+                (output_dir / "releases" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(manifest["packages"]), 1)
+            self.assertEqual(manifest["packages"][0]["os"], "linux")
+            self.assertEqual(manifest["packages"][0]["arch"], "amd64")
+            self.assertTrue(
+                (
+                    output_dir
+                    / "releases"
+                    / "1.2.3"
+                    / "awiki-deamon-linux-amd64.tar.gz"
+                ).is_file()
+            )
+
     def test_installer_downloads_verifies_extracts_and_execs_token_only_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)

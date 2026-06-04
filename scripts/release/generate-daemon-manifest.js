@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 function usage() {
   console.error(`Usage:
-  node scripts/release/generate-daemon-manifest.js --version VERSION [--min-supported VERSION] [--dist DIR] [--base-url URL] [--output FILE]`);
+  node scripts/release/generate-daemon-manifest.js --version VERSION [--min-supported VERSION] [--dist DIR] [--base-url URL] [--output FILE] [--allow-partial]`);
 }
 
 function die(message) {
@@ -24,6 +24,7 @@ let minSupported = '';
 let distDir = path.join(process.cwd(), 'dist', 'daemon');
 let baseUrl = 'https://awiki.ai/daemon/releases';
 let output = '';
+let allowPartial = false;
 
 for (let i = 2; i < process.argv.length; i += 1) {
   const arg = process.argv[i];
@@ -49,6 +50,9 @@ for (let i = 2; i < process.argv.length; i += 1) {
       break;
     case '--output':
       output = next();
+      break;
+    case '--allow-partial':
+      allowPartial = true;
       break;
     case '-h':
     case '--help':
@@ -79,8 +83,41 @@ const targets = [
   ['linux', 'arm64'],
 ];
 
-const packages = targets.map(([os, arch]) => {
-  const fileName = `awiki-deamon-${os}-${arch}.tar.gz`;
+function expectedPackageName(os, arch) {
+  return `awiki-deamon-${os}-${arch}.tar.gz`;
+}
+
+function discoverTargetsFromExistingPackages() {
+  if (!fs.existsSync(distDir)) {
+    die(`dist directory does not exist: ${distDir}`);
+  }
+  const supportedKeys = new Set(targets.map(([os, arch]) => `${os}/${arch}`));
+  const discovered = new Set();
+  for (const entry of fs.readdirSync(distDir)) {
+    if (!entry.startsWith('awiki-deamon-') || !entry.endsWith('.tar.gz')) {
+      continue;
+    }
+    const match = entry.match(/^awiki-deamon-([A-Za-z0-9_-]+)-([A-Za-z0-9_-]+)\.tar\.gz$/);
+    if (!match) {
+      die(`unsupported daemon package name: ${entry}`);
+    }
+    const key = `${match[1]}/${match[2]}`;
+    if (!supportedKeys.has(key)) {
+      die(`unsupported daemon package target: ${entry}`);
+    }
+    discovered.add(key);
+  }
+  const selected = targets.filter(([os, arch]) => discovered.has(`${os}/${arch}`));
+  if (selected.length === 0) {
+    die(`no daemon packages found in ${distDir}`);
+  }
+  return selected;
+}
+
+const selectedTargets = allowPartial ? discoverTargetsFromExistingPackages() : targets;
+
+const packages = selectedTargets.map(([os, arch]) => {
+  const fileName = expectedPackageName(os, arch);
   const filePath = path.join(distDir, fileName);
   if (!fs.existsSync(filePath)) {
     die(`missing daemon package: ${filePath}`);

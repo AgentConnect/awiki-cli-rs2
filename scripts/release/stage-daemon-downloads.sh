@@ -10,7 +10,7 @@ usage() {
 Stage daemon installer files into the official download-service layout.
 
 Usage:
-  scripts/release/stage-daemon-downloads.sh --version VERSION --base-url URL --download-base-url URL [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR]
+  scripts/release/stage-daemon-downloads.sh --version VERSION --base-url URL --download-base-url URL [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
 
 Options:
   --version VERSION   Daemon release version, with or without a leading v.
@@ -21,6 +21,7 @@ Options:
                       Minimum supported daemon version written to manifest. Defaults to --version.
   --source-dir DIR    Directory containing awiki-deamon-*.tar.gz packages. Defaults to dist.
   --output-dir DIR    Download-service root for /daemon. Defaults to dist/daemon.
+  --allow-partial     Generate manifest from packages that exist in --source-dir instead of requiring all supported OS/arch packages.
 USAGE
 }
 
@@ -61,6 +62,7 @@ SOURCE_DIR="${ROOT_DIR}/dist"
 OUTPUT_DIR="${ROOT_DIR}/dist/daemon"
 BASE_URL=""
 DOWNLOAD_BASE_URL=""
+ALLOW_PARTIAL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -93,6 +95,10 @@ while [[ $# -gt 0 ]]; do
       MIN_SUPPORTED="${2:-}"
       [[ -n "${MIN_SUPPORTED}" ]] || die "--min-supported requires a value"
       shift 2
+      ;;
+    --allow-partial)
+      ALLOW_PARTIAL=1
+      shift
       ;;
     -h|--help)
       usage
@@ -157,6 +163,9 @@ manifest_args=(
 )
 if [[ -n "${MIN_SUPPORTED}" ]]; then
   manifest_args+=(--min-supported "${MIN_SUPPORTED}")
+fi
+if [[ "${ALLOW_PARTIAL}" == "1" ]]; then
+  manifest_args+=(--allow-partial)
 fi
 "${manifest_args[@]}"
 
