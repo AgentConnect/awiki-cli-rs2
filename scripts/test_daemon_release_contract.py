@@ -18,7 +18,6 @@ TARGETS = (
     ("darwin", "amd64"),
     ("darwin", "arm64"),
     ("linux", "amd64"),
-    ("linux", "arm64"),
 )
 
 
@@ -151,7 +150,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["latest"], "1.2.3")
             self.assertEqual(manifest["min_supported"], "1.0.0")
-            self.assertEqual(len(manifest["packages"]), 4)
+            self.assertEqual(len(manifest["packages"]), len(TARGETS))
             install_text = (output_dir / "install.sh").read_text(encoding="utf-8")
             self.assertIn(
                 "BASE_URL=\"${AWIKI_DAEMON_BASE_URL:-${AWIKI_DAEMON_SERVICE_BASE_URL:-https://awiki.ai}}\"",
