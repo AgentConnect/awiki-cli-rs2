@@ -9,7 +9,7 @@ use crate::dto::{
 };
 
 pub async fn send_attachment(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartAttachmentSendRequest,
 ) -> Result<DartAttachmentSendResult, DartImError> {
     let inner = client.clone_inner()?;
@@ -23,7 +23,7 @@ pub async fn send_attachment(
 }
 
 pub async fn download_attachment(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartDownloadAttachmentRequest,
 ) -> Result<DartDownloadedAttachment, DartImError> {
     let inner = client.clone_inner()?;

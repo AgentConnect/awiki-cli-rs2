@@ -10,7 +10,7 @@ use crate::dto::{
 };
 
 pub async fn secure_direct_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectSecureStatus, DartImError> {
     let inner = client.clone_inner()?;
@@ -25,7 +25,7 @@ pub async fn secure_direct_status(
 }
 
 pub async fn secure_direct_prepare(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectSecurePrepareResult, DartImError> {
     let inner = client.clone_inner()?;
@@ -40,7 +40,7 @@ pub async fn secure_direct_prepare(
 }
 
 pub async fn secure_direct_repair(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectSecureRepairResult, DartImError> {
     let inner = client.clone_inner()?;
@@ -55,7 +55,7 @@ pub async fn secure_direct_repair(
 }
 
 pub async fn secure_group_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group: String,
 ) -> Result<DartGroupSecureStatus, DartImError> {
     let inner = client.clone_inner()?;
@@ -70,7 +70,7 @@ pub async fn secure_group_status(
 }
 
 pub async fn secure_group_prepare(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group: String,
 ) -> Result<DartGroupSecurePrepareResult, DartImError> {
     let inner = client.clone_inner()?;
@@ -85,7 +85,7 @@ pub async fn secure_group_prepare(
 }
 
 pub async fn secure_group_repair(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group: String,
 ) -> Result<DartGroupSecureRepairResult, DartImError> {
     let inner = client.clone_inner()?;
@@ -100,7 +100,7 @@ pub async fn secure_group_repair(
 }
 
 pub async fn secure_outbox_list_failed(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<Vec<DartSecureOutboxEntry>, DartImError> {
     let inner = client.clone_inner()?;
     inner
@@ -113,7 +113,7 @@ pub async fn secure_outbox_list_failed(
 }
 
 pub async fn secure_outbox_retry(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     outbox_id: String,
 ) -> Result<DartSecureOutboxResult, DartImError> {
     let inner = client.clone_inner()?;
@@ -128,7 +128,7 @@ pub async fn secure_outbox_retry(
 }
 
 pub async fn secure_outbox_drop(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     outbox_id: String,
 ) -> Result<DartSecureOutboxResult, DartImError> {
     let inner = client.clone_inner()?;
