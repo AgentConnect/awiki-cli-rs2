@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,8 @@ use crate::runtime::{
 };
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
+const SECURE_PREKEY_PREPARE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
     pub state_root: PathBuf,
@@ -63,6 +65,12 @@ pub struct ForegroundRunSummary {
     pub status_message_ids: Vec<String>,
     pub runtime_ms: u128,
     pub exit_reason: String,
+}
+
+#[derive(Debug, Default)]
+struct SecurePrekeyPreparationState {
+    prepared: HashSet<String>,
+    last_attempt_at: HashMap<String, Instant>,
 }
 
 impl ForegroundOptions {
@@ -104,6 +112,9 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         store_agent_token_for_configured_agents(&state, token)?;
     }
     sync_configured_agent_identities(&config, &state, &im_core)?;
+    let mut secure_prekey_state = SecurePrekeyPreparationState::default();
+    prepare_configured_agent_secure_prekeys(&config, &state, &im_core, &mut secure_prekey_state)
+        .await?;
 
     let rpc_outbox =
         runtime_callback_outbox(&config, &state, &im_core, options.mock_status_outbox)?;
@@ -142,6 +153,13 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
+        prepare_configured_agent_secure_prekeys(
+            &config,
+            &state,
+            &im_core,
+            &mut secure_prekey_state,
+        )
+        .await?;
         let newly_processed = process_inbox_once(&config, &state, &im_core, &mut processed).await?;
         let retry_processed = {
             let outbox = rpc_outbox
@@ -1526,6 +1544,93 @@ fn sync_configured_agent_identities(
         let _client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
     }
     Ok(())
+}
+
+async fn prepare_configured_agent_secure_prekeys(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    preparation: &mut SecurePrekeyPreparationState,
+) -> Result<()> {
+    for agent in state.list_agent_definitions()? {
+        if preparation.prepared.contains(&agent.agent_did) {
+            continue;
+        }
+        let now = Instant::now();
+        if preparation
+            .last_attempt_at
+            .get(&agent.agent_did)
+            .is_some_and(|last| now.duration_since(*last) < SECURE_PREKEY_PREPARE_RETRY_INTERVAL)
+        {
+            continue;
+        }
+        preparation
+            .last_attempt_at
+            .insert(agent.agent_did.clone(), now);
+        let identity = match state.load_agent_identity(&agent.agent_did) {
+            Ok(identity) => identity,
+            Err(_) => continue,
+        };
+        let jwt_token = state.load_agent_auth_token(&agent.agent_did)?;
+        let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+        match prepare_agent_secure_prekeys(&client, &agent).await {
+            Ok(result) => {
+                preparation.prepared.insert(agent.agent_did.clone());
+                state.insert_audit_event_json(
+                    "agent.secure_direct.prekeys.prepared",
+                    Some(&agent.agent_did),
+                    agent.runtime_profile_id.as_deref(),
+                    None,
+                    None,
+                    json!({
+                        "peer": result.peer.as_str(),
+                        "state": format!("{:?}", result.state),
+                        "can_send_secure": result.can_send_secure,
+                        "warning_count": result.warnings.len(),
+                    }),
+                )?;
+            }
+            Err(error) => {
+                state.insert_audit_event_json(
+                    "agent.secure_direct.prekeys.prepare_failed",
+                    Some(&agent.agent_did),
+                    agent.runtime_profile_id.as_deref(),
+                    None,
+                    None,
+                    json!({
+                        "peer": agent.controller_did,
+                        "error": sanitize_error_message(&error.to_string()),
+                    }),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn prepare_agent_secure_prekeys(
+    client: &im_core::ImClient,
+    agent: &crate::agent::AgentDefinition,
+) -> Result<im_core::secure::DirectSecurePrepareResult> {
+    ensure_agent_messaging_session(client, &agent.agent_did).await?;
+    let controller = im_core::ids::PeerRef::parse(&agent.controller_did, "")
+        .with_context(|| format!("parse controller DID for agent {}", agent.agent_did))?;
+    Ok(client
+        .secure()
+        .direct(controller)
+        .prepare_async()
+        .await
+        .with_context(|| format!("prepare direct E2EE prekeys for agent {}", agent.agent_did))
+        .and_then(|result| {
+            if result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("prekey bundle publish failed"))
+            {
+                bail!("direct E2EE prekey bundle publish failed");
+            }
+            Ok(result)
+        })?)
 }
 
 async fn ensure_agent_messaging_session(client: &im_core::ImClient, agent_did: &str) -> Result<()> {
