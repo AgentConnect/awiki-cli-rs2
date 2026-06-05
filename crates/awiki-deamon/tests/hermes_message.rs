@@ -174,7 +174,7 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     assert_eq!(records[0].text.as_deref(), Some("fake complete"));
     assert_eq!(
         records[0].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
     assert_eq!(records[1].state.as_deref(), Some("succeeded"));
@@ -273,7 +273,7 @@ fn hermes_message_failed_status_does_not_send_success_final() {
     );
     assert_eq!(
         records[1].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("failed"));
@@ -435,7 +435,7 @@ fn hermes_message_empty_final_fails_without_success_outbox() {
     );
     assert_eq!(
         records[0].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
     assert_eq!(records[1].state.as_deref(), Some("failed"));
@@ -486,7 +486,7 @@ fn hermes_message_unsupported_interaction_uses_documented_error_code() {
     );
     assert_eq!(
         records[0].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
     assert_eq!(records[1].state.as_deref(), Some("failed"));
@@ -606,7 +606,7 @@ fn hermes_message_send_message_callback_records_direct_message() {
     assert_eq!(records[1].text.as_deref(), Some("fake complete"));
     assert_eq!(
         records[1].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("succeeded"));
@@ -655,7 +655,7 @@ fn hermes_message_send_message_callback_allows_active_handle_lookup() {
     assert_eq!(records[0].text.as_deref(), Some("Hermes says hello Bob"));
     assert_eq!(
         records[0].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[1].kind, OutboxRecordKind::Message);
     assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));

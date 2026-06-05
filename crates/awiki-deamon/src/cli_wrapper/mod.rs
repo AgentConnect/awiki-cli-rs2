@@ -201,10 +201,6 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
             mime_type,
         } => {
             let target = normalize_outbound_target(target)?;
-            let security = match target {
-                OutboundMessageTarget::Handle(_) => "direct_e2ee",
-                OutboundMessageTarget::Group(_) => "group_e2ee",
-            };
             let text = text.trim();
             if text.is_empty() {
                 bail!("text is required");
@@ -218,7 +214,7 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
                     file_path,
                     display_filename,
                     mime_type,
-                    Some(security),
+                    Some("default_plain"),
                 ),
             )
         }
@@ -239,7 +235,7 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
                     runtime_rpc_token,
                     to_handle,
                     text.to_string(),
-                    Some("direct_e2ee"),
+                    Some("default_plain"),
                 ),
             )
         }

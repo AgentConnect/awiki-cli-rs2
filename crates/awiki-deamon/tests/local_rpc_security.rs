@@ -40,11 +40,7 @@ fn issue(
         Duration::from_secs(60),
     )
     .unwrap();
-    scope.allowed_message_security = Some(vec![
-        "default_plain".to_string(),
-        "direct_e2ee".to_string(),
-        "group_e2ee".to_string(),
-    ]);
+    scope.allowed_message_security = Some(vec!["default_plain".to_string()]);
     let issued = issue_runtime_token(scope).unwrap();
     state.store_runtime_token(&issued).unwrap();
     issued
@@ -249,7 +245,7 @@ fn msg_send_records_direct_message_side_effect_with_security_mode() {
             params: json!({
                 "to": "did:human:alice",
                 "text": "hello from Hermes",
-                "security": "direct_e2ee",
+                "security": "default_plain",
                 "agent_did": "did:agent:spoofed",
                 "run_id": "run_spoofed"
             }),
@@ -277,7 +273,7 @@ fn msg_send_records_direct_message_side_effect_with_security_mode() {
     assert_eq!(records[0].text.as_deref(), Some("hello from Hermes"));
     assert_eq!(
         records[0].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
 }
 
@@ -308,7 +304,7 @@ fn msg_send_records_direct_attachment_in_single_outbound_message() {
                 "file_path": file_path,
                 "display_filename": "report.txt",
                 "mime_type": "text/plain",
-                "security": "direct_e2ee"
+                "security": "default_plain"
             }),
             debug: None,
         },
@@ -326,7 +322,7 @@ fn msg_send_records_direct_attachment_in_single_outbound_message() {
     assert!(records[0].file_path.is_some());
     assert_eq!(
         records[0].security,
-        Some(RuntimeMessageSecurity::DirectE2ee)
+        Some(RuntimeMessageSecurity::DefaultPlain)
     );
 }
 
@@ -351,8 +347,7 @@ fn msg_send_records_group_text_and_attachment_messages() {
             method: "msg.send".to_string(),
             params: json!({
                 "group": "did:group:team",
-                "text": "hello group",
-                "security": "group_e2ee"
+                "text": "hello group"
             }),
             debug: None,
         },
@@ -372,8 +367,7 @@ fn msg_send_records_group_text_and_attachment_messages() {
                 "text": "group attachment caption",
                 "file_path": file_path,
                 "display_filename": "group-report.txt",
-                "mime_type": "text/plain",
-                "security": "group_e2ee"
+                "mime_type": "text/plain"
             }),
             debug: None,
         },
@@ -386,7 +380,10 @@ fn msg_send_records_group_text_and_attachment_messages() {
     assert_eq!(records[0].raw_recipient.as_deref(), Some("did:group:team"));
     assert_eq!(records[0].resolved_did, None);
     assert_eq!(records[0].text.as_deref(), Some("hello group"));
-    assert_eq!(records[0].security, Some(RuntimeMessageSecurity::GroupE2ee));
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DefaultPlain)
+    );
     assert!(records[0].file_path.is_none());
 
     assert_eq!(records[1].recipient.as_deref(), Some("did:group:team"));
@@ -396,7 +393,10 @@ fn msg_send_records_group_text_and_attachment_messages() {
         Some("group-report.txt")
     );
     assert!(records[1].file_path.is_some());
-    assert_eq!(records[1].security, Some(RuntimeMessageSecurity::GroupE2ee));
+    assert_eq!(
+        records[1].security,
+        Some(RuntimeMessageSecurity::DefaultPlain)
+    );
 }
 
 #[test]
@@ -553,20 +553,13 @@ fn msg_send_rejects_unresolved_or_unauthorized_handle_without_side_effect() {
 }
 
 #[test]
-fn msg_send_rejects_policy_disallowed_security_without_side_effect() {
+fn msg_send_rejects_non_plain_security_without_side_effect() {
     let (_root, state) = fixture();
-    let mut scope = RuntimeTokenScope::new(
-        "did:agent:test",
-        "profile_1",
-        "run_1",
+    let issued = issue(
+        &state,
         vec![RpcMethod::MsgSend],
         Some(vec!["did:human:alice".to_string()]),
-        Duration::from_secs(60),
-    )
-    .unwrap();
-    scope.allowed_message_security = Some(vec!["default_plain".to_string()]);
-    let issued = issue_runtime_token(scope).unwrap();
-    state.store_runtime_token(&issued).unwrap();
+    );
     let outbox = MemoryRuntimeOutbox::default();
 
     let error = execute_runtime_rpc_request_with_outbox(
@@ -585,7 +578,9 @@ fn msg_send_rejects_policy_disallowed_security_without_side_effect() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("message security not allowed"));
+    assert!(error
+        .to_string()
+        .contains("only default_plain is supported"));
     assert!(outbox.records().is_empty());
 }
 
@@ -840,7 +835,7 @@ fn cli_wrapper_request_only_uses_token_as_authorization_material() {
         "rtok_test_secret_value_123456789",
         "@alice",
         "hi",
-        Some("direct_e2ee"),
+        Some("default_plain"),
     )
     .into_rpc_request();
 
@@ -850,7 +845,7 @@ fn cli_wrapper_request_only_uses_token_as_authorization_material() {
     );
     assert_eq!(request.method, "msg.send");
     assert_eq!(request.params["to"], "@alice");
-    assert_eq!(request.params["security"], "direct_e2ee");
+    assert_eq!(request.params["security"], "default_plain");
     assert!(request.debug.is_none());
 }
 
@@ -883,7 +878,7 @@ fn cli_wrapper_outbound_send_supports_group_attachment_message() {
         Some("/tmp/group-report.txt"),
         Some("group-report.txt"),
         Some("text/plain"),
-        Some("group_e2ee"),
+        Some("default_plain"),
     )
     .into_rpc_request();
 
@@ -893,7 +888,7 @@ fn cli_wrapper_outbound_send_supports_group_attachment_message() {
     assert_eq!(request.params["file_path"], "/tmp/group-report.txt");
     assert_eq!(request.params["display_filename"], "group-report.txt");
     assert_eq!(request.params["mime_type"], "text/plain");
-    assert_eq!(request.params["security"], "group_e2ee");
+    assert_eq!(request.params["security"], "default_plain");
     assert!(request.debug.is_none());
 }
 

@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 14;
+const DAEMON_SCHEMA_VERSION: i64 = 15;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -3039,7 +3039,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             final_text TEXT NOT NULL,
-            security TEXT NOT NULL DEFAULT 'direct_e2ee',
+            security TEXT NOT NULL DEFAULT 'default_plain',
             status TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
             next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
@@ -3073,6 +3073,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_retry_queue_v12(connection)?;
     migrate_runtime_agent_create_request_v13(connection)?;
     migrate_runtime_final_outbox_v14(connection)?;
+    migrate_runtime_final_plain_delivery_v15(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -3142,7 +3143,7 @@ fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             final_text TEXT NOT NULL,
-            security TEXT NOT NULL DEFAULT 'direct_e2ee',
+            security TEXT NOT NULL DEFAULT 'default_plain',
             status TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
             next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
@@ -3156,6 +3157,24 @@ fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
         ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_final_plain_delivery_v15(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        UPDATE runtime_final_outbox
+        SET security = 'default_plain',
+            status = CASE WHEN status = 'sent' THEN status ELSE 'pending' END,
+            attempt_count = CASE WHEN status = 'sent' THEN attempt_count ELSE 0 END,
+            next_attempt_at_ms = CASE WHEN status = 'sent' THEN next_attempt_at_ms ELSE 0 END,
+            last_error_code = CASE WHEN status = 'sent' THEN last_error_code ELSE NULL END,
+            last_error_summary = CASE WHEN status = 'sent' THEN last_error_summary ELSE NULL END,
+            updated_at_ms = strftime('%s','now') * 1000
+        WHERE security = 'direct_e2ee'
+          AND status != 'sent';
         "#,
     )?;
     Ok(())
@@ -3980,7 +3999,7 @@ mod tests {
             controller_did: "did:human:alice".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             final_text: "final text".to_string(),
-            security: "direct_e2ee".to_string(),
+            security: "default_plain".to_string(),
             status: "pending".to_string(),
             attempt_count: 0,
             next_attempt_at_ms: now,

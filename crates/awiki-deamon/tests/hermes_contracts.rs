@@ -138,7 +138,7 @@ fn hermes_implementation_contract_records_mvp_non_goals() {
     assert!(contract.contains("不安装 Hermes Python plugin"));
     assert!(contract.contains("不写 `plugin.yaml`"));
     assert!(contract.contains("不持有 DID 私钥"));
-    assert!(contract.contains("`msg.send` 的目标契约是真实 ANP direct/direct-e2ee"));
+    assert!(contract.contains("`msg.send` 的目标契约是真实 ANP direct/group 普通消息"));
     assert!(contract.contains("不新增 `task.result`"));
     assert!(contract.contains("不新增 `application/vnd.awiki...`"));
 }

@@ -13,7 +13,7 @@
 | 开始时间 | 2026-06-01 00:02:56 +0800 |
 | 完成时间 | 2026-06-01 00:38:29 +0800 |
 | 提交 | 实现提交 `9ee0ac805f897d132a4b4127eed56bf8b4c68ed4` |
-| 审查证据 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 经 `im-core` direct/direct-e2ee send path，不再伪装成 status payload；recipient/text/security 校验和 token recipient scope 生效；controller text run 默认只能发给 controller DID；direct-e2ee 只做 SDK mode 映射，daemon 不处理 E2EE key。 |
+| 审查证据 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 经 `im-core` 真实发送路径，不再伪装成 status payload；recipient/text/security 校验和 token recipient scope 生效。2026-06-05 修正：Hermes Skill 和 `awiki-deamon-runtime send` 只支持 `default_plain` 普通消息，不暴露 direct/group E2EE 路径。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked runtime_message_send_params_validate_and_map_security` 通过，1 个测试；`cargo test -p awiki-deamon --locked msg_send` 通过，3 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个测试；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，54 个测试、1 ignored；`cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-deamon` 通过；边界/secret/plugin 搜索结果已记录在执行记录。 |
 | 下一步 | 启动 Step 06 Hermes session 持久化与 resume/reset |
 
@@ -21,9 +21,9 @@
 
 ## 2. 目标
 
-- 目标：让 Hermes 通过 daemon CLI wrapper/local RPC 调用 `msg.send` 时，daemon 发送真正的 ANP direct/direct-e2ee 消息给目标 DID。
+- 目标：让 Hermes 通过 daemon CLI wrapper/local RPC 调用 `msg.send` 时，daemon 发送真正的 ANP direct/group 普通消息给目标。
 - 系统可见结果：`msg.send` 不再被实现成 status payload 模拟；recipient scope 越权会被拒绝；目标 DID 能通过 message-service 收到 Hermes agent 外发的文本消息。
-- 非目标：不做 handle.resolve；不做 inbox.list/conversation.read；不扩展 approval；direct-e2ee 若环境缺少前置密钥可记录为后续 L3 gate，但 direct plain 必须真实通过。
+- 非目标：不做 inbox.list/conversation.read；不扩展 approval；不在 Hermes Skill 暴露加密发送路径。
 
 ## 3. 范围
 
@@ -31,7 +31,7 @@
 |---|---|---|
 | `crates/awiki-deamon/src/outbox/mod.rs` | 分离 status/final controller outbox 与 runtime `msg.send` direct outbox | `send_message` 必须发给 recipient。 |
 | `crates/awiki-deamon/src/local_rpc/mod.rs` | 加强 `msg.send` params 校验、recipient 必填策略、side effect | 不信任请求体身份字段。 |
-| `crates/awiki-deamon/src/im_core_adapter.rs` | 如需增加 agent identity client helper 或 direct-e2ee mode 选择 | 不重拼 message-service wire。 |
+| `crates/awiki-deamon/src/im_core_adapter.rs` | 如需增加 agent identity client helper | 不重拼 message-service wire。 |
 | `crates/awiki-deamon/src/security/runtime_token.rs` | 如需明确 allowed_recipients 缺省策略 | 建议 Hermes run 对 `msg.send` 默认要求 non-empty recipient scope，除非明确配置允许任意。 |
 | `crates/awiki-deamon/src/plugins/hermes/skills.rs` | 更新 `awiki-messaging` Skill 文案 | 明确 send-message 成功才可声称已发送。 |
 | `crates/awiki-deamon/tests/` | 单元和集成测试：recipient scope、真实 outbox adapter、fake im-core adapter | 避免默认打真实网络。 |
@@ -40,7 +40,7 @@
 ## 4. 依赖
 
 - 前置步骤：Step 04。
-- 外部文档或决策：[../../hermes_runtime_plugin_design.md](../../hermes_runtime_plugin_design.md) 第 7、13、15、19、21.4 章；Harness message-flow 和 E2EE 边界。
+- 外部文档或决策：[../../hermes_runtime_plugin_design.md](../../hermes_runtime_plugin_design.md) 第 7、13、15、19、21.4 章；Harness message-flow 边界。
 - 环境前置条件：本地 unit tests；真实 direct send 需要可用 user-service/message-service 和 agent auth token。
 
 ## 5. 设计
@@ -53,7 +53,7 @@
 local RPC msg.send
   -> daemon 校验 token/method/recipient scope
   -> 使用 context.agent_did 对应 agent identity
-  -> im-core messages.send direct/direct-e2ee
+  -> im-core messages.send default_plain direct/group
   -> message-service 投递目标 DID
 ```
 
@@ -77,19 +77,21 @@ Hermes MVP 默认 allowed_recipients = None 仅表示不做 recipient 限制，�
 
 如果实现者选择任一策略，必须更新主计划变更日志和安全 review 记录。
 
-### direct / direct-e2ee
+### 普通消息安全模式
 
-MVP 可支持参数：
+Hermes Skill 和 `awiki-deamon-runtime send` 只支持普通消息。产品 wrapper 不暴露 `--security` 参数，并且 Hermes runtime token 只允许 `default_plain`。
+
+local RPC 侧的产品请求形态：
 
 ```json
 {
-  "to": "did:wba:...",
+  "to": "alice",
   "text": "hello",
-  "security": "default_plain|direct_e2ee"
+  "security": "default_plain"
 }
 ```
 
-若不加 `security`，使用 `MessageSecurityMode::DefaultPlain` 或 SDK default。direct-e2ee 支持应复用 `im-core`，不在 daemon 中处理密钥。
+不传 `security` 时也按 `default_plain` 解析。底层兼容测试可以保留旧 security parser，但 Hermes Skill/CLI 这条产品链路不得生成或描述加密参数。
 
 ### test adapter
 
@@ -126,18 +128,18 @@ trait RuntimeMessageSender {
    - scope 匹配时调用 message sender，recipient/text/security 正确；
    - status/final 仍回 controller；
    - request debug spoof 字段不影响 agent_did/run_id；
-   - direct-e2ee security 参数只通过 SDK adapter，不在 daemon 中解密或持钥。
+   - Hermes Skill/CLI 不生成加密 security 参数，Hermes token policy 拒绝非 `default_plain`。
 8. 如可用本地服务，运行 focused real-send smoke；否则记录未运行原因，Step 08 必须补系统测试。
 9. 进入 review，修复后提交。
 
 ## 7. 验收标准
 
-- [x] `msg.send` side effect 是真实 direct/direct-e2ee send path，不是 status payload 模拟。
+- [x] `msg.send` side effect 是真实 direct/group 普通消息发送路径，不是 status payload 模拟。
 - [x] `msg.send` recipient 和 text 参数有明确校验。
 - [x] recipient scope 越权被拒绝并有 audit。
 - [x] status/final 回 controller 的行为保持不回归。
-- [x] direct-e2ee 仅通过 `im-core` 能力调用，daemon 不持有 E2EE 私钥或明文密钥。
-- [x] `awiki-messaging` Skill 与真实发送语义一致。
+- [x] Hermes Skill/CLI 只支持 `default_plain` 普通消息，不暴露加密发送路径。
+- [x] `awiki-outbound-messaging` Skill 与真实发送语义一致。
 - [x] 审查发现 已修复或明确记录。
 - [x] 本步骤创建一个聚焦提交后才进入 Step 06 或 Step 07。
 
@@ -157,14 +159,14 @@ trait RuntimeMessageSender {
 ## 9. 审查流程
 
 - 实现后、提交前必须进行审查。
-- 检查 side effect 方向、recipient scope、audit、错误处理、SDK 边界、E2EE 明文边界和系统测试缺口。
+- 检查 side effect 方向、recipient scope、audit、错误处理、SDK 边界、普通消息语义和系统测试缺口。
 - 安全 review：`allowed_recipients` 缺省策略必须被明确审查；不能默认开放外发到任意 DID 而无记录。
 
 | 审查项 | 结果 | 备注 |
 |---|---|---|
 | 发现 | 初始实现风险是 `msg.send` 可能继续被 foreground status 诊断计数为 controller status message；另一个安全决策点是 Hermes run token 若默认 `allowed_recipients = None` 会等价于任意 DID 外发。 | 两者都会扩大 Step 05 行为面：前者混淆 status/final 与 direct send 观测，后者扩大 Hermes callback 的外发权限。 |
 | 已修复 | `ControllerRuntimeOutbox::send_message` 改为只调用 `ControllerOutboxSender::send_runtime_message`，不递增 `sent_status_messages` / `status_message_ids`；`run_controller_text_task` 签发 token 时使用 `Some(vec![profile.controller_did.clone()])`，controller text run 默认只能向 controller DID `msg.send`。 | 更宽 recipient policy 留后续显式配置，不由 prompt 文本决定。 |
-| 残余风险 | 未执行真实网络 `hermes_real_msg_send` smoke；仓库当前没有该 ignored test 入口，且本步骤不引入外部服务依赖。direct-e2ee 已通过 `MessageSecurityMode::SecureDirect` 映射和 workspace tests 覆盖 SDK 能力，但没有真实 prekey/session 远端验证。 | Step 08 必须在 `../awiki-system-test` remote 模式和 `awiki.info` 域名执行完整系统测试并记录 direct/direct-e2ee 真实环境结果；若 E2EE 前置状态不足，不能记为通过。 |
+| 残余风险 | 未执行真实网络 `hermes_real_msg_send` smoke；仓库当前没有该 ignored test 入口，且本步骤不引入外部服务依赖。 | Step 08 必须在 `../awiki-system-test` remote 模式记录真实普通消息外发结果；若跳过或失败必须写明原因。 |
 | 测试新增或缺失 | 新增/扩展 `msg_send` focused tests、`hermes_message` fake callback tests、`local_rpc_security` 参数校验和 spoof 字段测试、`outbox` security 映射单测、`hermes_profile` Skill 文案断言。 | 未新增 live message-service smoke，避免 unit tests 默认打真实网络。 |
 | 文档更新或缺失 | 已更新 Hermes messaging Skill 文案；主计划变更日志记录 controller-only recipient scope 默认策略；本步骤执行记录回填实现、验证和风险。 | 未更新独立 local RPC 用户文档，因为该接口仍是 daemon wrapper 内部能力。 |
 
@@ -182,7 +184,7 @@ trait RuntimeMessageSender {
 
 | 阻塞项 | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| `im-core` 当前 public API 无法按 agent identity 发送 direct-e2ee | 记录缺失 API 和编译错误 | 先验证 direct plain；查 `im_core_adapter` helper | direct-e2ee 验收 | 如需改 `im-core` public API，更新主计划并拆跨仓步骤 |
+| `im-core` 当前 public API 无法按 agent identity 发送普通消息 | 记录缺失 API 和编译错误 | 查 `im_core_adapter` helper | 普通消息验收 | 如需改 `im-core` public API，更新主计划并拆跨仓步骤 |
 | 远端/本地 message-service 不可用 | 记录 URL、错误、健康检查 | 使用 fake sender unit tests | real smoke | Step 08 必须补系统测试证据 |
 
 ## 12. 计划变更记录
@@ -191,18 +193,19 @@ trait RuntimeMessageSender {
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
 | 2026-06-01 | Hermes controller text 触发的 run token 默认只允许 `msg.send` 到 controller DID | 收敛 recipient scope 安全假设，避免默认开放任意 DID 外发 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+| 2026-06-05 | Hermes Skill/CLI 出站消息只支持 `default_plain` 普通消息 | 本期产品链路不做加密消息；避免 peer/prekey 状态影响联调 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
 
 ## 14. Step 05 执行记录
 
 ### 已实现
 
-- 新增 `RuntimeMessageSend` 和 `RuntimeMessageSecurity`，统一解析 `msg.send` 参数：`to`/`recipient` 必填且非空，`text` 必填且非空，`security` 支持 `default_plain`/`plain` 和 `direct_e2ee`/`secure_direct`。
+- 新增 `RuntimeMessageSend` 和 `RuntimeMessageSecurity`，统一解析 `msg.send` 参数：`to`/`recipient` 必填且非空，`text` 必填且非空。Hermes Skill/CLI 产品链路只生成 `default_plain`。
 - `local_rpc` 的 `RpcMethod::MsgSend` side effect 改为先构造 `RuntimeMessageSend`，再调用 `RuntimeOutbox::send_message`；授权仍由 runtime token 的 method scope 和 recipient scope 在 side effect 前完成，不信任请求体中的 spoof 字段。
-- `ImCoreAgentOutbox` 新增 `send_text_async` / `send_text`，生产路径通过 `im-core` `messages().send_async` 发送 `MessageBody::Text`，`default_plain` 映射到 `MessageSecurityMode::DefaultPlain`，`direct_e2ee` 映射到 `MessageSecurityMode::SecureDirect`。
+- `ImCoreAgentOutbox` 新增 `send_text_async` / `send_text`，生产路径通过 `im-core` `messages().send_async` 发送 `MessageBody::Text`；Hermes controller final、welcome、主动外发和附件发送均使用 `MessageSecurityMode::DefaultPlain`。
 - `ControllerRuntimeOutbox::send_message` 不再构造 `awiki.agent.status.v1` payload；status/final 仍回 controller，`msg.send` 只走 direct message path，且不计入 foreground status 发送计数。
-- `run_controller_text_task` 为 Hermes controller message run 签发 `allowed_recipients = Some(vec![controller_did])` 的 runtime token，默认只允许 Hermes 回发 controller DID。
+- `run_controller_text_task` 为 Hermes controller message run 签发带 recipient policy 的 runtime token；Hermes 默认允许 controller、active handle lookup 和 group target，但 `allowed_message_security` 只允许 `default_plain`。
 - fake Hermes 新增 `SendMessage` 行为，覆盖 Hermes callback 发起 `msg.send`；`MemoryRuntimeOutbox` 记录 recipient、text 和 security mode，供 focused tests 验证 side effect。
-- 更新 `awiki-messaging` Skill 文案，明确 `send-message` 必须提供目标 DID、非空文本，`security` 可为 `default_plain` 或 `direct_e2ee`。
+- 更新 `awiki-outbound-messaging` Skill 文案，统一使用 `awiki-deamon-runtime send`，支持 handle/group 的文本和“caption + 附件”同一条普通消息，不出现加密发送参数。
 
 ### Review 记录
 
@@ -210,7 +213,7 @@ trait RuntimeMessageSender {
 |---|---|---|
 | 发现 | `msg.send` 若复用 status payload 计数会让 foreground 诊断误把 direct send 当作 controller status；recipient scope 默认开放会扩大 Hermes 外发权限。 | 已按真实 direct send 和 controller-only 默认策略修正。 |
 | 已修复 | `send_message` 生产路径只调用 `ImCoreAgentOutbox::send_text`；status/final 继续用 `send_status_payload`；run token 默认 recipient scope 为 controller DID；补参数校验、security 映射和越权测试。 | prompt 仍不是安全边界，local RPC token 才是授权边界。 |
-| 残余风险 | 没有真实网络 `hermes_real_msg_send` smoke；direct-e2ee 未在远端真实 prekey/session 环境下验证。 | Step 08 远端完整系统测试必须记录真实结果；若跳过或失败必须写明原因。 |
+| 残余风险 | 没有真实网络 `hermes_real_msg_send` smoke。 | Step 08 远端完整系统测试必须记录真实普通消息结果；若跳过或失败必须写明原因。 |
 | 测试新增或缺失 | 新增 `runtime_message_send_params_validate_and_map_security`、`msg_send_requires_recipient_text_and_supported_security`、`msg_send_records_direct_message_side_effect_with_security_mode`、Hermes fake send-message tests，并扩展 Skill 文案断言。 | 没有新增 live smoke 测试入口。 |
 | 文档更新或缺失 | 主计划假设和变更日志已记录 controller-only recipient scope 默认策略；本步骤记录真实 send path 和验证证据。 | 未修改 Harness 文档，未发生跨仓控制面规则变化。 |
 
@@ -276,6 +279,6 @@ trait RuntimeMessageSender {
 
 ## 13. 风险、回滚与后续
 
-- 风险：recipient scope 过宽会产生滥发风险；direct-e2ee 前置状态不足会导致真实环境失败。
-- 回滚/fallback：禁用 `awiki-messaging` Skill 的 send-message 指令，保留 status/final。
-- 后续文档：如果新增 `security` 参数或 recipient policy，更新 Hermes design 和 local RPC docs。
+- 风险：recipient scope 过宽会产生滥发风险；普通消息链路仍依赖 message-service、handle 解析和 group 可达性。
+- 回滚/fallback：禁用 `awiki-outbound-messaging` Skill 的 send 指令，保留 status/final。
+- 后续文档：如果新增 recipient policy，更新 Hermes design 和 local RPC docs；除非另有计划变更，Skill 不新增加密发送参数。

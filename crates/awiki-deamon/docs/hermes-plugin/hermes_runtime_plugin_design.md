@@ -55,7 +55,7 @@ Hermes
 5. **Hermes 调用 Awiki 能力时走 daemon CLI wrapper + local RPC。** 真实能力仍在 daemon 中实现。
 6. **MVP 采用消息驱动，不新增产品层 task 概念。** Controller DID 发来的可执行消息进入 Hermes；结果和外发协作也以消息为主。
 7. **当前代码中已有 `RuntimeTask` / `runtime_task` / `task.status` / `task.finish`。** 这些是 Generic CLI MVP 阶段的内部命名和兼容 RPC 名称。本 Hermes 方案不继续扩大 task 概念；后续代码可以把它们收敛为 message/run 语义。
-8. **`msg.send` / outbound-send 的契约必须是真正发送 ANP direct/direct-e2ee 或 group/group-e2ee 消息。** 直聊/群聊文本和“caption + 附件”都走同一个主动外发出口，不能实现成 status payload 或 controller 回传。
+8. **`msg.send` / outbound-send 的契约必须是真正发送 ANP direct/group 普通消息。** 本期 Runtime Agent 外发只支持 `default_plain`；直聊/群聊文本和“caption + 附件”都走同一个主动外发出口，不能实现成 status payload 或 controller 回传。
 9. **MVP 暂不支持 approval 和 sandbox。** 相关能力不进入本版设计主链路。
 
 ---
@@ -67,8 +67,8 @@ Hermes
 Hermes 作为 native runtime 接入 daemon 后，用户可以：
 
 1. 在 App 中创建或绑定一个 Hermes Runtime Agent。
-2. 通过 ANP direct / direct-e2ee 消息向该 Agent 发送可执行消息。
-3. Hermes 在执行过程中可以通过 daemon 主动发送真正的 ANP direct/direct-e2ee 或 group/group-e2ee 消息给 human、其他 agent 或群，并支持同一条消息内携带附件 caption。
+2. 通过普通 Awiki direct 消息向该 Agent 发送可执行消息。
+3. Hermes 在执行过程中可以通过 daemon 主动发送真正的 ANP direct/group 普通消息给 human、其他 agent 或群，并支持同一条消息内携带附件 caption。
 4. Hermes 可以通过 daemon 上报执行进度；最终回复由 daemon host 读取 Hermes final output 后自动发送给 controller。
 5. daemon 统一管理 Agent DID、controller 校验、Hermes profile、Hermes session、run token、local RPC、audit 和消息投递。
 
@@ -389,7 +389,7 @@ Skill 面向 Hermes 使用 message/run 语义；daemon 当前 local RPC 方法�
 
 controller final output 不属于 Skill 能力：daemon host 从 Hermes Gateway outcome 读取 final text 后自动以 Runtime Agent DID 发回 controller DID。
 
-controller final 回传的基础可靠性由 daemon host 内部的 `runtime_final_outbox` 提供：拿到非空 final text 后先持久化 pending 记录，再发送 direct/direct_e2ee 普通消息；发送成功后标记 outbox `sent` 并把 run 标记为 `Finished`。如果发送临时失败，foreground 启动和循环 flush 会继续补发。该 outbox 只覆盖 controller final reply，不覆盖 Skill/CLI 主动外发。
+controller final 回传的基础可靠性由 daemon host 内部的 `runtime_final_outbox` 提供：拿到非空 final text 后先持久化 pending 记录，再发送 `default_plain` 普通消息；发送成功后标记 outbox `sent` 并把 run 标记为 `Finished`。如果发送临时失败，foreground 启动和循环 flush 会继续补发。该 outbox 只覆盖 controller final reply，不覆盖 Skill/CLI 主动外发。
 
 MVP 不提供：
 
@@ -1015,7 +1015,7 @@ POST /user-service/agent-registration/rpc
 2. 删除 Awiki Hermes Plugin 层。
 3. 明确 Skills 由 daemon 自动安装。
 4. 明确当前 `task.status` / `task.finish` 是兼容 RPC 名称。
-5. 明确 `msg.send` 必须是真实 ANP direct/direct-e2ee send。
+5. 明确 `msg.send` 必须是真实 ANP direct/group 普通消息发送。
 ```
 
 ### Phase 1：Hermes profile + Skills
@@ -1051,7 +1051,7 @@ POST /user-service/agent-registration/rpc
 1. wrapper awiki-deamon-runtime send。
 2. local RPC msg.send。
 3. daemon 校验 token allowed_recipients。
-4. im-core direct/direct-e2ee send。
+4. im-core default_plain direct/group send。
 5. message-service 投递目标 DID。
 ```
 
@@ -1135,7 +1135,7 @@ flowchart LR
 flowchart LR
     A["Hermes final output"] --> B["daemon host"]
     B --> C["run finished"]
-    C --> D["IM Core direct/direct-e2ee send"]
+    C --> D["IM Core default_plain send"]
     D --> E["向 controller DID 发送最终回复消息"]
 ```
 
@@ -1183,7 +1183,7 @@ Hermes 必须有 `hermes_native_sessions`，因为 Hermes session id、profile�
 
 ### 21.4 `msg.send` 的实现缺口
 
-方案明确要求 `msg.send` 是真实 ANP direct/direct-e2ee send。如果当前代码路径仍把 `msg.send` 实现成向 controller 发送 status payload，那么代码需要后续修改。
+方案明确要求 `msg.send` 是真实 ANP direct/group 普通消息发送。如果当前代码路径仍把 `msg.send` 实现成向 controller 发送 status payload，那么代码需要后续修改。
 
 这次按用户要求不改代码，只在设计中把目标契约写清楚。
 
@@ -1211,7 +1211,7 @@ runtime.agent.create
   -> daemon 校验 controller_did
   -> daemon 通过 TUI Gateway 投递给 Hermes
   -> Hermes 通过 CLI wrapper/local RPC 回传状态和最终回复
-  -> Hermes 通过 msg.send 发送真正 ANP direct/direct-e2ee 消息
+  -> Hermes 通过 msg.send 发送真正 ANP direct/group 普通消息
 ```
 
 本版方案删除了 Awiki Hermes Plugin、approval、sandbox、task.result 和完整 task state machine，把 Hermes 接入收敛为当前实现可以逐步落地的消息驱动 native runtime。

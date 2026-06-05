@@ -22,7 +22,7 @@
 
 - `runtime: "hermes"` 的 daemon runtime plugin id 固定为 `runtime.hermes`。
 - `task.status` 和 `task.finish` 作为 local RPC 兼容方法保留；Hermes controller final 当前由 daemon host 自动发送，不要求 Hermes 通过 `task.finish` 回传普通最终回复。后续如果新增 `message.status` / `message.finish`，必须通过计划变更日志和独立步骤引入。
-- `msg.send` 的目标契约是真实 ANP direct/direct-e2ee 外发消息；当前也承载 group/group-e2ee 外发以及“文本 caption + 附件”的同一条消息发送。把 `msg.send` 做成 status payload 或只发回 controller 的行为不得被记录为完成语义。
+- `msg.send` 的目标契约是真实 ANP direct/group 普通消息；当前也承载“文本 caption + 附件”的同一条消息发送。Hermes Skill 和 `awiki-deamon-runtime send` 只支持普通消息，不暴露加密发送路径。把 `msg.send` 做成 status payload 或只发回 controller 的行为不得被记录为完成语义。
 - local RPC 授权只信任 runtime RPC token 反查到的 `agent_did`、`runtime_profile_id`、`run_id`、允许方法和 recipient scope；请求体或 debug 字段中的同名字段不能参与授权。
 - `allowed_recipients = Some([...])` 时，`msg.send` 必须限制目标；`allowed_recipients = None` 目前表示不限制 recipient，但 Hermes 后续步骤必须在 profile/policy 或 run 构造处明确是否允许开放发送。
 
@@ -43,7 +43,7 @@
 | runtime token | `RuntimeTokenScope`、`authorize_runtime_rpc`、audit log 已存在 | local RPC 可信上下文来自 token，不能信任请求体自报身份。 |
 | 兼容 RPC 名称 | `RpcMethod::parse` 支持 `rpc.ping`、`task.status`、`task.finish`、`msg.send`、`artifact.created` | Step 04/05 可继续用兼容名，但文档和 prompt 使用 message/run 语义。 |
 | `task.finish` failed final | `apply_runtime_rpc_side_effects` 当前把 `task.finish` 固定落到 `finished` | 属于后续缺口，不在 Step 01 修复。 |
-| `msg.send` 真实外发 | `RuntimeMessageSend` 支持 direct/group target、文本、附件、direct_e2ee/group_e2ee；`ImCoreAgentOutbox` 转成 im-core `SendMessageRequest` | 已作为主动外发统一出口；controller final 仍由 daemon host 自动发回 controller。 |
+| `msg.send` 真实外发 | `RuntimeMessageSend` 支持 direct/group target、文本、附件；Hermes 默认 recipient policy 只允许 `default_plain`；`ImCoreAgentOutbox` 转成 im-core `SendMessageRequest` | 已作为主动外发统一出口；controller final 仍由 daemon host 自动发回 controller。 |
 | 长驻 runtime 路由 | foreground 文本消息仍使用 `UdsTestRuntimePlugin` | Step 07 才切换 `runtime.hermes` 路由。 |
 | Hermes profile/Skills/TUI Gateway/session | 当前无 `hermes_profiles`、`hermes_native_sessions`、TUI Gateway runner 或 profile installer | 分别由 Step 02、03、06 实现。 |
 | controller final durable outbox | `runtime_final_outbox` 持久化 final，`flush_runtime_final_outbox` 负责启动/循环补发，final 消息带稳定 idempotency key | 已作为 Hermes controller final 回传基础可靠性机制。 |
@@ -53,7 +53,7 @@
 - Step 02 只能安装 Hermes profile 与 Awiki Skills，不得安装 Hermes Python plugin 或写长期可写 token；当前只安装 `awiki-outbound-messaging`。
 - Step 03 只能通过 trait/adapter 隔离 TUI Gateway 协议差异，真实 Hermes 不存在时用 fake gateway 验证 daemon 行为。
 - Step 04 负责把 controller text/plain 包装为 message/run prompt，继续使用兼容 local RPC 方法名，但不引入 product task protocol。
-- Step 05 必须把 `msg.send` 收敛为真实 ANP direct/direct-e2ee 与 group/group-e2ee 外发，并支持文本与“caption + 附件”同一条消息；记录 recipient scope、安全 review 和系统测试证据。
+- Step 05 必须把 `msg.send` 收敛为真实 ANP direct/group 普通消息外发，并支持文本与“caption + 附件”同一条消息；Hermes Skill 不得描述或暴露加密发送路径；记录 recipient scope、安全 review 和系统测试证据。
 - Step 06 负责 Hermes native session 持久化，至少保存可提升为通用 session mapping 的 `runtime_session_id`。
 - Step 07 才把 foreground runtime 路由从测试 runtime 切到 `runtime.hermes`。
 - Step 08 必须在 `../awiki-system-test` 使用 remote 模式和 `awiki.info` 域名执行完整系统测试并记录统计。

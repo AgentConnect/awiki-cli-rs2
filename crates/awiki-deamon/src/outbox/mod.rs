@@ -130,7 +130,7 @@ impl ImCoreAgentOutbox {
                     mime_type: None,
                     filename: attachment.display_filename.clone(),
                     delivery: MessageDeliveryOptions::default(),
-                    security: MessageSecurityMode::SecureDirect,
+                    security: MessageSecurityMode::DefaultPlain,
                 },
             )
             .await?;
@@ -447,16 +447,15 @@ pub enum OutboxRecordKind {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMessageSecurity {
     DefaultPlain,
-    DirectE2ee,
-    GroupE2ee,
 }
 
 impl RuntimeMessageSecurity {
     pub fn parse(input: Option<&str>) -> Result<Self> {
         match input.unwrap_or("default_plain").trim() {
             "" | "default_plain" | "plain" => Ok(Self::DefaultPlain),
-            "direct_e2ee" | "secure_direct" => Ok(Self::DirectE2ee),
-            "group_e2ee" | "group-e2ee" | "secure_group" => Ok(Self::GroupE2ee),
+            "direct_e2ee" | "secure_direct" | "group_e2ee" | "group-e2ee" | "secure_group" => {
+                anyhow::bail!("unsupported msg.send security: only default_plain is supported")
+            }
             other => anyhow::bail!("unsupported msg.send security: {other}"),
         }
     }
@@ -464,35 +463,15 @@ impl RuntimeMessageSecurity {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::DefaultPlain => "default_plain",
-            Self::DirectE2ee => "direct_e2ee",
-            Self::GroupE2ee => "group_e2ee",
         }
     }
 
-    fn to_im_core(self, target: &RuntimeMessageTarget) -> Result<MessageSecurityMode> {
-        match (target, self) {
-            (_, Self::DefaultPlain) => Ok(MessageSecurityMode::DefaultPlain),
-            (RuntimeMessageTarget::Direct { .. }, Self::DirectE2ee) => {
-                Ok(MessageSecurityMode::SecureDirect)
-            }
-            (RuntimeMessageTarget::Group { .. }, Self::GroupE2ee) => {
-                Ok(MessageSecurityMode::GroupE2ee)
-            }
-            (RuntimeMessageTarget::Group { .. }, Self::DirectE2ee) => {
-                anyhow::bail!("direct_e2ee can only be used with direct messages")
-            }
-            (RuntimeMessageTarget::Direct { .. }, Self::GroupE2ee) => {
-                anyhow::bail!("group_e2ee can only be used with group messages")
-            }
-        }
+    fn to_im_core(self, _target: &RuntimeMessageTarget) -> Result<MessageSecurityMode> {
+        Ok(MessageSecurityMode::DefaultPlain)
     }
 
     fn to_im_core_direct(self) -> Result<MessageSecurityMode> {
-        match self {
-            Self::DefaultPlain => Ok(MessageSecurityMode::DefaultPlain),
-            Self::DirectE2ee => Ok(MessageSecurityMode::SecureDirect),
-            Self::GroupE2ee => anyhow::bail!("group_e2ee can only be used with group messages"),
-        }
+        Ok(MessageSecurityMode::DefaultPlain)
     }
 }
 
@@ -1106,7 +1085,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             resolved_did: attachment.target_did.clone(),
             message_id: Some(message_id.clone()),
             text: attachment.caption.clone(),
-            security: Some(RuntimeMessageSecurity::DirectE2ee),
+            security: Some(RuntimeMessageSecurity::DefaultPlain),
             file_path: Some(attachment.file_path.clone()),
             display_filename: attachment.display_filename.clone(),
             mime_type: None,
@@ -1140,7 +1119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_message_send_params_validate_and_map_security() {
+    fn runtime_message_send_params_validate_plain_security_only() {
         let plain = RuntimeMessageSend::from_params(&json!({
             "to": "did:human:alice",
             "text": "  hello  "
@@ -1161,24 +1140,20 @@ mod tests {
             "text": "secure hello",
             "security": "direct_e2ee"
         }))
-        .unwrap();
-        assert_eq!(secure.security, RuntimeMessageSecurity::DirectE2ee);
-        assert_eq!(
-            secure.security.to_im_core(&secure.target).unwrap(),
-            MessageSecurityMode::SecureDirect
-        );
+        .unwrap_err();
+        assert!(secure
+            .to_string()
+            .contains("only default_plain is supported"));
 
         let group = RuntimeMessageSend::from_params(&json!({
             "group": "did:group:team",
             "text": "group hello",
             "security": "group_e2ee"
         }))
-        .unwrap();
-        assert_eq!(group.target_kind(), "group");
-        assert_eq!(
-            group.security.to_im_core(&group.target).unwrap(),
-            MessageSecurityMode::GroupE2ee
-        );
+        .unwrap_err();
+        assert!(group
+            .to_string()
+            .contains("only default_plain is supported"));
     }
 
     #[test]

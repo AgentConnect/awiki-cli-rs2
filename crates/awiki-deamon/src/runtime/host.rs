@@ -34,11 +34,7 @@ impl RecipientPolicy {
     fn controller_only(controller_did: &str) -> Self {
         Self {
             allowed_recipients: vec![controller_did.to_string()],
-            allowed_message_security: vec![
-                "default_plain".to_string(),
-                "direct_e2ee".to_string(),
-                "group_e2ee".to_string(),
-            ],
+            allowed_message_security: vec!["default_plain".to_string()],
         }
     }
 
@@ -49,11 +45,7 @@ impl RecipientPolicy {
                 ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE.to_string(),
                 ANY_GROUP_RECIPIENT_SCOPE.to_string(),
             ],
-            allowed_message_security: vec![
-                "default_plain".to_string(),
-                "direct_e2ee".to_string(),
-                "group_e2ee".to_string(),
-            ],
+            allowed_message_security: vec!["default_plain".to_string()],
         }
     }
 
@@ -85,8 +77,6 @@ impl RecipientPolicy {
         )?;
         if allowed_message_security.is_empty() {
             allowed_message_security.push("default_plain".to_string());
-            allowed_message_security.push("direct_e2ee".to_string());
-            allowed_message_security.push("group_e2ee".to_string());
         }
         if allowed_recipients.is_empty() {
             anyhow::bail!("recipient policy must allow at least one recipient");
@@ -625,7 +615,7 @@ fn runtime_final_outbox_record(
         controller_did: profile.controller_did.clone(),
         conversation_id: conversation_id.map(str::to_string),
         final_text: final_text.to_string(),
-        security: "direct_e2ee".to_string(),
+        security: "default_plain".to_string(),
         status: "pending".to_string(),
         attempt_count: 0,
         next_attempt_at_ms: now,
@@ -717,7 +707,7 @@ fn emit_hermes_failure_outputs(
             display_filename: None,
             mime_type: None,
             idempotency_key: None,
-            security: RuntimeMessageSecurity::DirectE2ee,
+            security: RuntimeMessageSecurity::DefaultPlain,
         },
     );
     state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;

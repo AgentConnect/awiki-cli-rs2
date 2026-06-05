@@ -1373,7 +1373,7 @@ fn fake_callbacks(
             runtime_rpc_token,
             "bob",
             "Hermes says hello Bob",
-            Some("direct_e2ee"),
+            Some("default_plain"),
         )
         .into_rpc_request()],
     }

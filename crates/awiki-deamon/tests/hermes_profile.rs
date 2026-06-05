@@ -140,7 +140,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 14);
+    assert_eq!(summary.schema_version, 15);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
@@ -274,7 +274,13 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(outbound_skill.contains("--display-filename"));
     assert!(outbound_skill.contains("--mime-type"));
     assert!(outbound_skill.contains("same outbound message"));
+    assert!(outbound_skill.contains("ordinary Awiki messages"));
+    assert!(outbound_skill.contains("do not add security or encryption parameters"));
     assert!(outbound_skill.contains("Do not use it for your ordinary final answer"));
+    assert!(!outbound_skill.contains("direct_e2ee"));
+    assert!(!outbound_skill.contains("group_e2ee"));
+    assert!(!outbound_skill.contains("secure_direct"));
+    assert!(!outbound_skill.contains("secure_group"));
     assert!(!outbound_skill.contains("finish-message"));
     assert!(!outbound_skill.contains("send-message"));
     assert!(!outbound_skill.contains("send-attachment"));
