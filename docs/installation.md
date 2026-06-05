@@ -66,11 +66,10 @@ scripts/release/stage-daemon-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --base-url https://awiki.ai \
   --download-base-url https://awiki.ai/daemon
 ```
 
-`--base-url` 是 daemon 连接 user-service/message-service/mail-service/ANP 的后端服务根地址。`--download-base-url` 是 Nginx 或其他静态文件服务暴露 daemon 安装脚本与 release 包的根路径，默认生产约定为 `https://awiki.ai/daemon`；未来线上测试环境可对应改成 `https://anpclaw.com` 和 `https://anpclaw.com/daemon`。
+`--download-base-url` 是 Nginx 或其他静态文件服务暴露 daemon 安装脚本与 release 包的根路径。标准线上路由约定为 `<后端服务根地址>/daemon`，所以只传 `https://awiki.ai/daemon` 时，发布脚本会自动推导 `--base-url https://awiki.ai`。未来线上测试环境可对应改成 `https://anpclaw.com/daemon`。如果下载服务和后端 API 不在同一个域名，或者使用 `file://` / 本地路径测试，则需要同时显式传入 `--base-url`。
 
 Flutter SDK 变更还需要：
 

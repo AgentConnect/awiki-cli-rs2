@@ -10,13 +10,17 @@ usage() {
 Stage daemon installer files into the official download-service layout.
 
 Usage:
-  scripts/release/stage-daemon-downloads.sh --version VERSION --base-url URL --download-base-url URL [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
+  scripts/release/stage-daemon-downloads.sh --version VERSION (--base-url URL | --download-base-url URL) [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
 
 Options:
   --version VERSION   Daemon release version, with or without a leading v.
-  --base-url URL      Awiki backend service base URL embedded in install.sh.
+  --base-url URL      Awiki backend service base URL embedded in install.sh. When
+                      --download-base-url is omitted, it defaults to URL/daemon.
   --download-base-url URL
-                      Daemon static download root embedded in install.sh, e.g. https://awiki.ai/daemon.
+                      Daemon static download root embedded in install.sh, e.g.
+                      https://awiki.ai/daemon. When --base-url is omitted, URL
+                      must end with /daemon so the backend service base can be
+                      inferred safely.
   --min-supported VERSION
                       Minimum supported daemon version written to manifest. Defaults to --version.
   --source-dir DIR    Directory containing awiki-deamon-*.tar.gz packages. Defaults to dist.
@@ -53,6 +57,54 @@ resolve_path_arg() {
   case "$1" in
     /*) printf '%s\n' "$1" ;;
     *) printf '%s\n' "${CALLER_DIR}/$1" ;;
+  esac
+}
+
+trim_trailing_slash() {
+  local value="$1"
+  while [[ "${value%/}" != "${value}" ]]; do
+    value="${value%/}"
+  done
+  printf '%s\n' "${value}"
+}
+
+infer_base_url_from_download_base_url() {
+  local download_base
+  download_base="$(trim_trailing_slash "$1")"
+  case "${download_base}" in
+    http://*/daemon|https://*/daemon)
+      printf '%s\n' "${download_base%/daemon}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+infer_download_base_url_from_base_url() {
+  local base
+  base="$(trim_trailing_slash "$1")"
+  case "${base}" in
+    http://*|https://*)
+      printf '%s\n' "${base}/daemon"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_base_url() {
+  case "$1" in
+    http://*|https://*) ;;
+    *) die "--base-url must start with http:// or https://" ;;
+  esac
+}
+
+validate_download_base_url() {
+  case "$1" in
+    http://*|https://*|file://*|/*|./*|../*) ;;
+    *) die "--download-base-url must be a URL or local path" ;;
   esac
 }
 
@@ -117,10 +169,21 @@ MIN_SUPPORTED="${MIN_SUPPORTED#v}"
 if [[ -n "${MIN_SUPPORTED}" ]]; then
   validate_version_segment "${MIN_SUPPORTED}"
 fi
-[[ -n "${BASE_URL}" ]] || die "--base-url is required"
-[[ -n "${DOWNLOAD_BASE_URL}" ]] || die "--download-base-url is required"
-BASE_URL="${BASE_URL%/}"
-DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL%/}"
+[[ -n "${BASE_URL}" || -n "${DOWNLOAD_BASE_URL}" ]] || die "--base-url or --download-base-url is required"
+if [[ -n "${BASE_URL}" ]]; then
+  BASE_URL="$(trim_trailing_slash "${BASE_URL}")"
+fi
+if [[ -n "${DOWNLOAD_BASE_URL}" ]]; then
+  DOWNLOAD_BASE_URL="$(trim_trailing_slash "${DOWNLOAD_BASE_URL}")"
+fi
+if [[ -z "${BASE_URL}" ]]; then
+  BASE_URL="$(infer_base_url_from_download_base_url "${DOWNLOAD_BASE_URL}")" || die "--base-url is required unless --download-base-url ends with /daemon"
+fi
+if [[ -z "${DOWNLOAD_BASE_URL}" ]]; then
+  DOWNLOAD_BASE_URL="$(infer_download_base_url_from_base_url "${BASE_URL}")" || die "--download-base-url is required unless --base-url is http:// or https://"
+fi
+validate_base_url "${BASE_URL}"
+validate_download_base_url "${DOWNLOAD_BASE_URL}"
 SOURCE_DIR="$(resolve_path_arg "${SOURCE_DIR}")"
 OUTPUT_DIR="$(resolve_path_arg "${OUTPUT_DIR}")"
 [[ -d "${SOURCE_DIR}" ]] || die "source directory does not exist: ${SOURCE_DIR}"

@@ -135,8 +135,6 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     str(source_dir),
                     "--output-dir",
                     str(output_dir),
-                    "--base-url",
-                    backend_base_url,
                     "--download-base-url",
                     download_base_url,
                     "--min-supported",
@@ -204,8 +202,6 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "download-root",
                     "--base-url",
                     "https://awiki.ai",
-                    "--download-base-url",
-                    "https://awiki.ai/daemon",
                 ],
                 cwd=caller_dir,
             )
@@ -224,6 +220,34 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     / "awiki-deamon-darwin-arm64.tar.gz"
                 ).is_file()
             )
+
+    def test_stage_daemon_downloads_rejects_implicit_base_for_nonstandard_download_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            source_dir = temp_dir / "source"
+            source_dir.mkdir()
+
+            result = subprocess.run(
+                [
+                    "scripts/release/stage-daemon-downloads.sh",
+                    "--version",
+                    "1.2.3",
+                    "--source-dir",
+                    str(source_dir),
+                    "--output-dir",
+                    str(temp_dir / "daemon"),
+                    "--download-base-url",
+                    "https://cdn.awiki.ai/static/daemon-assets",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--base-url is required unless --download-base-url ends with /daemon", result.stderr)
 
     def test_generate_daemon_manifest_requires_all_supported_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -513,6 +537,63 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "http://127.0.0.1:9999",
                     "--download-base-url",
                     base_url,
+                ],
+            )
+
+    def test_installer_template_can_infer_service_base_url_from_standard_download_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            source_dir = temp_dir / "source"
+            source_dir.mkdir()
+            for os_name, arch in TARGETS:
+                create_fake_daemon_package(source_dir, os_name, arch)
+
+            download_root = temp_dir / "download-root"
+            output_dir = download_root / "daemon"
+            with serve_directory(download_root) as base_url:
+                download_base_url = f"{base_url}/daemon"
+                run_command(
+                    [
+                        "scripts/release/stage-daemon-downloads.sh",
+                        "--version",
+                        "1.2.3",
+                        "--source-dir",
+                        str(source_dir),
+                        "--output-dir",
+                        str(output_dir),
+                        "--download-base-url",
+                        download_base_url,
+                    ]
+                )
+
+                home = temp_dir / "home"
+                home.mkdir()
+                env = {
+                    **os.environ,
+                    "HOME": str(home),
+                    "AWIKI_DAEMON_DOWNLOAD_BASE_URL": download_base_url,
+                }
+                run_command(
+                    [
+                        "sh",
+                        "scripts/daemon/install.sh",
+                        "--token",
+                        "test-install-token",
+                    ],
+                    env=env,
+                )
+
+            args_path = home / "fake-awiki-deamon-args.txt"
+            self.assertEqual(
+                args_path.read_text(encoding="utf-8").splitlines(),
+                [
+                    "install",
+                    "--token",
+                    "test-install-token",
+                    "--base-url",
+                    base_url,
+                    "--download-base-url",
+                    download_base_url,
                 ],
             )
 

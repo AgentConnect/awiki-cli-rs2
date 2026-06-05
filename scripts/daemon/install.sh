@@ -20,6 +20,39 @@ die() {
   exit 1
 }
 
+normalize_config_value() {
+  base_placeholder="__AWIKI_DAEMON_""BASE_URL__"
+  download_placeholder="__AWIKI_DAEMON_""DOWNLOAD_BASE_URL__"
+  case "$1" in
+    "$base_placeholder"|"$download_placeholder")
+      printf '\n'
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+trim_trailing_slash() {
+  value="$1"
+  while [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  printf '%s\n' "$value"
+}
+
+infer_base_url_from_download_base_url() {
+  download_base="$(trim_trailing_slash "$1")"
+  case "$download_base" in
+    http://*/daemon|https://*/daemon)
+      printf '%s\n' "${download_base%/daemon}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 validate_version_segment() {
   [ -n "$1" ] || die "daemon package version is empty"
   case "$1" in
@@ -59,6 +92,20 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+BASE_URL="$(normalize_config_value "$BASE_URL")"
+DOWNLOAD_BASE_URL="$(normalize_config_value "$DOWNLOAD_BASE_URL")"
+if [ -n "$DOWNLOAD_BASE_URL" ]; then
+  DOWNLOAD_BASE_URL="$(trim_trailing_slash "$DOWNLOAD_BASE_URL")"
+fi
+if [ -z "$BASE_URL" ] && [ -n "$DOWNLOAD_BASE_URL" ]; then
+  if inferred_base_url="$(infer_base_url_from_download_base_url "$DOWNLOAD_BASE_URL")"; then
+    BASE_URL="$inferred_base_url"
+  fi
+fi
+if [ -n "$BASE_URL" ]; then
+  BASE_URL="$(trim_trailing_slash "$BASE_URL")"
+fi
 
 [ -n "$TOKEN" ] || die "--token is required"
 [ -n "$BASE_URL" ] || die "daemon base URL is not configured"

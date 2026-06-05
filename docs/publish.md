@@ -130,14 +130,13 @@ scripts/release/stage-daemon-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --base-url https://awiki.ai \
   --download-base-url https://awiki.ai/daemon
 ```
 
 参数含义：
 
-- `--base-url`：daemon 持久配置中的后端服务根地址，默认派生 user-service、message-service、mail-service、DID domain 和 ANP service。
-- `--download-base-url`：安装脚本、manifest 和 release tar 包的静态下载根地址。脚本会从这里读取 `releases/manifest.json`，manifest 中的包 URL 也会从这里派生。
+- `--download-base-url`：安装脚本、manifest 和 release tar 包的静态下载根地址。脚本会从这里读取 `releases/manifest.json`，manifest 中的包 URL 也会从这里派生。标准线上路由必须使用 `<后端服务根地址>/daemon`，发布脚本会据此推导 daemon 持久配置中的后端服务根地址。
+- `--base-url`：daemon 持久配置中的后端服务根地址，默认派生 user-service、message-service、mail-service、DID domain 和 ANP service。标准线上路由下可省略；如果下载域名和后端 API 域名不同，或者使用 `file://` / 本地路径测试，则必须显式传入。
 
 生产环境当前约定为：
 
@@ -146,7 +145,6 @@ scripts/release/stage-daemon-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --base-url https://awiki.ai \
   --download-base-url https://awiki.ai/daemon
 ```
 
@@ -157,8 +155,18 @@ scripts/release/stage-daemon-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --base-url https://anpclaw.com \
   --download-base-url https://anpclaw.com/daemon
+```
+
+如果后续采用 CDN/API 分离部署，则同时传两个 URL，避免发布脚本按 `/daemon` 路由推导：
+
+```bash
+scripts/release/stage-daemon-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --base-url https://api.awiki.ai \
+  --download-base-url https://cdn.awiki.ai/daemon
 ```
 
 输出目录结构：
