@@ -89,30 +89,12 @@ impl ImCoreAgentOutbox {
         payload: serde_json::Value,
     ) -> Result<SendMessageResult> {
         ensure_messaging_session(&self.client).await?;
-        let fallback_payload = payload.clone();
-        match self
-            .send_payload_with_security_async(
-                recipient_did,
-                payload,
-                management_payload_security_mode(),
-            )
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(error) if plain_control_fallback_enabled() => self
-                .send_payload_with_security_async(
-                    recipient_did,
-                    fallback_payload,
-                    MessageSecurityMode::DefaultPlain,
-                )
-                .await
-                .map_err(|fallback_error| {
-                    fallback_error.context(format!(
-                        "secure control payload failed before plain fallback: {error}"
-                    ))
-                }),
-            Err(error) => Err(error),
-        }
+        self.send_payload_with_security_async(
+            recipient_did,
+            payload,
+            management_payload_security_mode(),
+        )
+        .await
     }
 
     async fn send_payload_with_security_async(
@@ -412,22 +394,7 @@ fn block_on_runtime_message_send(
 }
 
 fn management_payload_security_mode() -> MessageSecurityMode {
-    MessageSecurityMode::SecureDirect
-}
-
-fn plain_control_fallback_enabled() -> bool {
-    plain_control_fallback_enabled_from_env_value(
-        std::env::var("AWIKI_DAEMON_ALLOW_PLAIN_CONTROL")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn plain_control_fallback_enabled_from_env_value(value: Option<&str>) -> bool {
-    matches!(
-        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    )
+    MessageSecurityMode::DefaultPlain
 }
 
 async fn ensure_messaging_session(client: &im_core::ImClient) -> Result<()> {
@@ -1215,21 +1182,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_management_payloads_default_to_secure_direct() {
+    fn agent_management_payloads_use_plain_direct_control_channel() {
         assert_eq!(
             management_payload_security_mode(),
-            MessageSecurityMode::SecureDirect
+            MessageSecurityMode::DefaultPlain
         );
-    }
-
-    #[test]
-    fn plain_control_fallback_requires_explicit_dev_env_value() {
-        assert!(!plain_control_fallback_enabled_from_env_value(None));
-        assert!(!plain_control_fallback_enabled_from_env_value(Some("")));
-        assert!(!plain_control_fallback_enabled_from_env_value(Some("0")));
-        assert!(plain_control_fallback_enabled_from_env_value(Some("1")));
-        assert!(plain_control_fallback_enabled_from_env_value(Some("true")));
-        assert!(plain_control_fallback_enabled_from_env_value(Some("YES")));
     }
 
     #[test]

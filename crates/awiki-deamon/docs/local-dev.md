@@ -351,7 +351,7 @@ timeout_seconds = 10.0
 
 否则 runtime agent DID 会被解析到不可访问的公网域名，本地刚注册的 DID 文档不可见，status/final 发送会失败。
 
-控制状态 payload 的生产默认安全模式是 secure direct。当前本地 E2E 环境如果还没有满足 secure-direct payload 的前置能力，需要显式设置 `AWIKI_DAEMON_ALLOW_PLAIN_CONTROL=1` 才允许控制面降级为 plain；生产环境不要设置该变量。Daemon 本地状态仍固定使用 `daemon.db` 和 `im-core/local-state.sqlite` 两个 SQLite 文件，MySQL 只用于本地 `user-service`。
+控制状态 payload 使用非加密 direct 通道，范围仅限 App <-> daemon 的管理 JSON payload，例如 `agent.status.query` 和 daemon 回传的 `awiki.agent.status.v1`。Runtime Agent 代表用户向外发送的普通消息、附件、群聊消息仍按对应 CLI 参数和消息类型选择安全模式，不受这个控制面策略影响。Daemon 本地状态仍固定使用 `daemon.db` 和 `im-core/local-state.sqlite` 两个 SQLite 文件，MySQL 只用于本地 `user-service`。
 
 本地 daemon E2E 系统测试入口位于：
 
