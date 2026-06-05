@@ -4,7 +4,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::agent::{AgentDefinition, AgentKind};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
-use crate::plugins::hermes::HermesGatewayCommandStatus;
+use crate::plugins::hermes::{HermesGatewayCommandStatus, StdioHermesGateway};
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
     UserServiceAgentRegistrationClient,
@@ -371,9 +371,19 @@ fn runtime_status_summary(
     runtime: &AgentDefinition,
 ) -> RuntimeStatusSummary {
     runtime_status_summary_with_gateway_status(state, runtime, || {
-        crate::plugins::hermes::StdioHermesGateway::from_config_without_detection(config)
-            .gateway_command_status()
+        hermes_gateway_command_status(config)
     })
+}
+
+fn hermes_gateway_command_status(config: &DaemonConfig) -> HermesGatewayCommandStatus {
+    let status = StdioHermesGateway::from_config_without_detection(config).gateway_command_status();
+    if status != HermesGatewayCommandStatus::Missing {
+        return status;
+    }
+    let Ok(Some(_detected)) = StdioHermesGateway::ensure_detected_config(config) else {
+        return status;
+    };
+    StdioHermesGateway::from_config_without_detection(config).gateway_command_status()
 }
 
 fn runtime_status_summary_with_gateway_status(
@@ -587,6 +597,44 @@ mod tests {
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
     use crate::state::HermesProfileRecord;
     use std::collections::BTreeSet;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        values: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn clear(keys: &[&'static str]) -> Self {
+            let lock = ENV_LOCK.lock().unwrap();
+            let values = keys
+                .iter()
+                .map(|key| {
+                    let value = std::env::var(key).ok();
+                    std::env::remove_var(key);
+                    (*key, value)
+                })
+                .collect();
+            Self {
+                _lock: lock,
+                values,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.values {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
 
     fn daemon() -> AgentDefinition {
         AgentDefinition {
@@ -787,6 +835,68 @@ mod tests {
     }
 
     #[test]
+    fn latest_status_items_auto_detects_missing_hermes_gateway_command() {
+        let _env = EnvGuard::clear(&["AWIKI_HERMES_GATEWAY_CMD", "AWIKI_HERMES_BIN", "HOME"]);
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let fake_python = home
+            .join(".hermes")
+            .join("hermes-agent")
+            .join("venv")
+            .join("bin")
+            .join("python");
+        write_fake_ready_gateway_executable(&fake_python).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let state_root = root.path().join("state");
+        let config = DaemonConfig::for_state_root(&state_root).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon = daemon();
+        let runtime = hermes_runtime();
+        state.upsert_agent_definition(&daemon).unwrap();
+        state.upsert_agent_definition(&runtime).unwrap();
+        state
+            .upsert_runtime_daemon_binding(
+                &runtime.agent_did,
+                &daemon.agent_did,
+                &daemon.controller_did,
+            )
+            .unwrap();
+        state
+            .upsert_hermes_profile(&HermesProfileRecord {
+                agent_did: runtime.agent_did.clone(),
+                runtime_profile_id: runtime.runtime_profile_id.clone().unwrap(),
+                hermes_profile: "awiki_alice_hermes".to_string(),
+                hermes_home: root.path().join("runtime/hermes/profile"),
+                hermes_version: Some("1.2.3".to_string()),
+                awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
+                status: "ready".to_string(),
+            })
+            .unwrap();
+
+        let items = latest_status_items(&config, &state, &daemon, 1_700_000_000_000).unwrap();
+        let runtime_item = items
+            .iter()
+            .find(|item| item.agent_kind == AgentKind::Runtime)
+            .unwrap();
+
+        assert_eq!(runtime_item.status, "ready");
+        assert!(!runtime_item.needs_config);
+        assert!(runtime_item.last_error_code.is_none());
+        assert_eq!(
+            runtime_item.diagnostics_summary["config_summary"]["gateway_command"],
+            "configured"
+        );
+        let loaded = DaemonConfig::for_state_root(&state_root).unwrap();
+        assert_eq!(
+            loaded.hermes_gateway_cmd.as_deref(),
+            Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
+        );
+    }
+
+    #[test]
     fn latest_status_response_can_rotate_local_controller_did() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -854,4 +964,28 @@ mod tests {
             Some(true)
         );
     }
+}
+
+#[cfg(test)]
+fn write_fake_ready_gateway_executable(path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        path,
+        r#"#!/bin/sh
+printf '{"method":"gateway.ready","params":{"version":"test"}}\n'
+while IFS= read -r _line; do
+  :
+done
+"#,
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
 }
