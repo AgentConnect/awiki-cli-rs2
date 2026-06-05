@@ -4,7 +4,10 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::agent::{AgentDefinition, AgentKind};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
-use crate::plugins::hermes::{HermesGatewayCommandStatus, StdioHermesGateway};
+use crate::plugins::hermes::{
+    ensure_runtime_model_config, hermes_runtime_model_config_status, HermesGatewayCommandStatus,
+    HermesRuntimeModelConfigStatus, StdioHermesGateway,
+};
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
     UserServiceAgentRegistrationClient,
@@ -363,6 +366,7 @@ struct RuntimeStatusSummary {
     needs_config: bool,
     last_error_code: Option<String>,
     gateway_command_status: Option<HermesGatewayCommandStatus>,
+    model_config_status: Option<HermesRuntimeModelConfigStatus>,
 }
 
 fn runtime_status_summary(
@@ -399,18 +403,32 @@ fn runtime_status_summary_with_gateway_status(
             needs_config: false,
             last_error_code: None,
             gateway_command_status: None,
+            model_config_status: None,
         };
     }
-    let profile_needs_config = state
-        .load_hermes_profile(&runtime.agent_did)
-        .map(|profile| profile.status != "ready")
-        .unwrap_or(true);
+    let (profile_needs_config, model_config_status) =
+        match state.load_hermes_profile(&runtime.agent_did) {
+            Ok(profile) => {
+                let _ = ensure_runtime_model_config(&profile.hermes_home);
+                let model_config_status = hermes_runtime_model_config_status(&profile.hermes_home);
+                (
+                    profile.status != "ready" || model_config_status.needs_config(),
+                    Some(model_config_status),
+                )
+            }
+            Err(_) => (true, None),
+        };
     let gateway_command_status = gateway_status();
+    let last_error_code = gateway_command_status
+        .error_code()
+        .or_else(|| model_config_status.and_then(HermesRuntimeModelConfigStatus::error_code))
+        .map(str::to_string);
     RuntimeStatusSummary {
         is_hermes,
         needs_config: profile_needs_config || gateway_command_status.needs_config(),
-        last_error_code: gateway_command_status.error_code().map(str::to_string),
+        last_error_code,
         gateway_command_status: Some(gateway_command_status),
+        model_config_status,
     }
 }
 
@@ -434,6 +452,10 @@ fn runtime_diagnostics_summary(
                     .gateway_command_status
                     .map(HermesGatewayCommandStatus::as_str)
                     .unwrap_or("unknown"),
+                "model_config": runtime_status
+                    .model_config_status
+                    .map(HermesRuntimeModelConfigStatus::as_str)
+                    .unwrap_or("unknown"),
             },
         }),
         Err(_) => json!({
@@ -442,6 +464,10 @@ fn runtime_diagnostics_summary(
                 "gateway_command": runtime_status
                     .gateway_command_status
                     .map(HermesGatewayCommandStatus::as_str)
+                    .unwrap_or("unknown"),
+                "model_config": runtime_status
+                    .model_config_status
+                    .map(HermesRuntimeModelConfigStatus::as_str)
                     .unwrap_or("unknown"),
             },
         }),
@@ -787,7 +813,17 @@ mod tests {
 
     #[test]
     fn hermes_runtime_status_requires_gateway_command_even_when_profile_is_ready() {
+        let _env = EnvGuard::clear(&["AWIKI_HERMES_BASE_CONFIG_PATH", "HOME"]);
         let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let base_hermes_home = home.join(".hermes");
+        std::fs::create_dir_all(&base_hermes_home).unwrap();
+        std::fs::write(
+            base_hermes_home.join("config.yaml"),
+            "model:\n  provider: custom\n  default: gpt-5.2\n",
+        )
+        .unwrap();
+        std::env::set_var("HOME", &home);
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open(&config).unwrap();
@@ -805,6 +841,8 @@ mod tests {
                 status: "ready".to_string(),
             })
             .unwrap();
+        let hermes_home = root.path().join("runtime/hermes/profile");
+        assert!(!hermes_home.join("config.yaml").exists());
 
         let missing_gateway = runtime_status_summary_with_gateway_status(&state, &runtime, || {
             HermesGatewayCommandStatus::Missing
@@ -819,6 +857,11 @@ mod tests {
             missing_diagnostics["config_summary"]["gateway_command"],
             "missing"
         );
+        assert_eq!(
+            missing_diagnostics["config_summary"]["model_config"],
+            "configured"
+        );
+        assert!(hermes_home.join("config.yaml").exists());
 
         let configured_gateway =
             runtime_status_summary_with_gateway_status(&state, &runtime, || {
@@ -830,6 +873,10 @@ mod tests {
             runtime_diagnostics_summary(&state, &runtime, &configured_gateway);
         assert_eq!(
             configured_diagnostics["config_summary"]["gateway_command"],
+            "configured"
+        );
+        assert_eq!(
+            configured_diagnostics["config_summary"]["model_config"],
             "configured"
         );
     }
@@ -846,6 +893,11 @@ mod tests {
             .join("bin")
             .join("python");
         write_fake_ready_gateway_executable(&fake_python).unwrap();
+        std::fs::write(
+            home.join(".hermes").join("config.yaml"),
+            "model:\n  provider: custom\n  default: gpt-5.2\n",
+        )
+        .unwrap();
         std::env::set_var("HOME", &home);
 
         let state_root = root.path().join("state");

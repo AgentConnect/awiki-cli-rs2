@@ -24,12 +24,15 @@ pub const HERMES_RUNTIME_NAME: &str = "hermes";
 pub const HERMES_RUNTIME_PLUGIN_ID: &str = "runtime.hermes";
 
 pub const AWIKI_SKILLS_VERSION: &str = "awiki-hermes-skills-v2";
+const HERMES_BASE_CONFIG_PATH_ENV: &str = "AWIKI_HERMES_BASE_CONFIG_PATH";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HermesProfileInstallResult {
     pub record: HermesProfileRecord,
     pub soul_path: PathBuf,
     pub profile_config_path: PathBuf,
+    pub model_config_path: Option<PathBuf>,
+    pub dotenv_path: Option<PathBuf>,
     pub skill_paths: Vec<PathBuf>,
 }
 
@@ -92,6 +95,7 @@ pub fn initialize_hermes_profile(
     )
     .with_context(|| format!("write {}", profile_config_path.display()))?;
 
+    let runtime_config = ensure_runtime_model_config(&hermes_home)?;
     let skill_paths = install_skills(&hermes_home)?;
     smoke_check_profile(&hermes_home, &soul_path, &profile_config_path, &skill_paths)?;
 
@@ -109,6 +113,8 @@ pub fn initialize_hermes_profile(
         record,
         soul_path,
         profile_config_path,
+        model_config_path: runtime_config.model_config_path,
+        dotenv_path: runtime_config.dotenv_path,
         skill_paths,
     })
 }
@@ -142,6 +148,132 @@ pub fn hermes_home(config: &DaemonConfig, agent_did: &str) -> Result<PathBuf> {
 
 pub fn hermes_profile_name(handle: &str) -> Result<String> {
     Ok(format!("awiki_{}", stable_segment(handle)?))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HermesRuntimeConfigProvisionResult {
+    pub model_config_path: Option<PathBuf>,
+    pub dotenv_path: Option<PathBuf>,
+}
+
+pub fn ensure_runtime_model_config(
+    hermes_home: &Path,
+) -> Result<HermesRuntimeConfigProvisionResult> {
+    std::fs::create_dir_all(hermes_home)
+        .with_context(|| format!("create Hermes profile home {}", hermes_home.display()))?;
+
+    let model_config_path = copy_runtime_config_file(
+        &base_hermes_config_path(),
+        &hermes_home.join("config.yaml"),
+        true,
+    )?;
+    let dotenv_path =
+        copy_runtime_config_file(&base_hermes_dotenv_path(), &hermes_home.join(".env"), false)?;
+    Ok(HermesRuntimeConfigProvisionResult {
+        model_config_path,
+        dotenv_path,
+    })
+}
+
+pub fn hermes_runtime_model_config_status(hermes_home: &Path) -> HermesRuntimeModelConfigStatus {
+    let config_path = hermes_home.join("config.yaml");
+    if ensure_non_empty_file(&config_path).is_ok() {
+        HermesRuntimeModelConfigStatus::Configured
+    } else if base_hermes_config_path().is_some() {
+        HermesRuntimeModelConfigStatus::Repairable
+    } else {
+        HermesRuntimeModelConfigStatus::MissingBaseConfig
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HermesRuntimeModelConfigStatus {
+    Configured,
+    Repairable,
+    MissingBaseConfig,
+}
+
+impl HermesRuntimeModelConfigStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configured => "configured",
+            Self::Repairable => "repairable",
+            Self::MissingBaseConfig => "missing_base_config",
+        }
+    }
+
+    pub fn needs_config(self) -> bool {
+        self != Self::Configured
+    }
+
+    pub fn error_code(self) -> Option<&'static str> {
+        match self {
+            Self::Configured => None,
+            Self::Repairable => Some("hermes_model_config_repairable"),
+            Self::MissingBaseConfig => Some("hermes_model_config_missing"),
+        }
+    }
+}
+
+fn base_hermes_config_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(HERMES_BASE_CONFIG_PATH_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| non_empty_file(path))
+    {
+        return Some(path);
+    }
+    default_hermes_home()
+        .map(|home| home.join("config.yaml"))
+        .filter(|path| non_empty_file(path))
+}
+
+fn base_hermes_dotenv_path() -> Option<PathBuf> {
+    base_hermes_config_path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .map(|home| home.join(".env"))
+        .filter(|path| non_empty_file(path))
+}
+
+fn default_hermes_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".hermes"))
+}
+
+fn copy_runtime_config_file(
+    source: &Option<PathBuf>,
+    destination: &Path,
+    required: bool,
+) -> Result<Option<PathBuf>> {
+    if non_empty_file(destination) {
+        return Ok(Some(destination.to_path_buf()));
+    }
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create Hermes config directory {}", parent.display()))?;
+    }
+    std::fs::copy(source, destination).with_context(|| {
+        format!(
+            "copy Hermes runtime config {} -> {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    if required {
+        ensure_non_empty_file(destination)?;
+    }
+    Ok(Some(destination.to_path_buf()))
+}
+
+fn non_empty_file(path: &Path) -> bool {
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false)
 }
 
 fn install_skills(hermes_home: &Path) -> Result<Vec<PathBuf>> {

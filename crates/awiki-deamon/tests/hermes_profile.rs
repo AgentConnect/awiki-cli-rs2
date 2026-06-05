@@ -16,6 +16,44 @@ use awiki_deamon::state::HermesProfileRecord;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
 use serde_json::json;
+use std::sync::MutexGuard;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    values: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn clear(keys: &[&'static str]) -> Self {
+        let lock = ENV_LOCK.lock().unwrap();
+        let values = keys
+            .iter()
+            .map(|key| {
+                let value = std::env::var(key).ok();
+                std::env::remove_var(key);
+                (*key, value)
+            })
+            .collect();
+        Self {
+            _lock: lock,
+            values,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.values {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 struct MockRegistrationClient {
@@ -135,7 +173,23 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
 
 #[test]
 fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
+    let _env = EnvGuard::clear(&["AWIKI_HERMES_BASE_CONFIG_PATH", "HOME"]);
     let (root, config, state) = fixture();
+    let home = root.path().join("home");
+    let base_hermes_home = home.join(".hermes");
+    std::fs::create_dir_all(&base_hermes_home).unwrap();
+    std::fs::write(
+        base_hermes_home.join("config.yaml"),
+        "model:\n  provider: custom\n  default: gpt-5.2\n  base_url: https://example.test/v1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        base_hermes_home.join(".env"),
+        "OPENAI_API_KEY=sk-test-secret\n",
+    )
+    .unwrap();
+    std::env::set_var("HOME", &home);
+
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,
@@ -192,10 +246,14 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert_eq!(hermes.status, "ready");
     assert_eq!(hermes.awiki_skills_version, AWIKI_SKILLS_VERSION);
     assert!(hermes.hermes_home.starts_with(root.path()));
+    assert!(hermes.hermes_home.join("config.yaml").exists());
+    assert!(hermes.hermes_home.join(".env").exists());
 
     let soul = std::fs::read_to_string(hermes.hermes_home.join("SOUL.md")).unwrap();
     let profile_json =
         std::fs::read_to_string(hermes.hermes_home.join("awiki-profile.json")).unwrap();
+    let runtime_model_config =
+        std::fs::read_to_string(hermes.hermes_home.join("config.yaml")).unwrap();
     let outbound_skill = std::fs::read_to_string(
         hermes
             .hermes_home
@@ -204,6 +262,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     .unwrap();
 
     assert!(soul.contains("Awiki Hermes Runtime Agent"));
+    assert!(runtime_model_config.contains("provider: custom"));
+    assert!(runtime_model_config.contains("default: gpt-5.2"));
     assert!(profile_json.contains("\"run_capability_token_persisted\": false"));
     assert!(profile_json.contains("library:awiki_deamon::cli_wrapper"));
     assert!(profile_json.contains("process wrapper wired in Step 07"));
@@ -228,6 +288,7 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     let profile_dump = format!("{soul}\n{profile_json}\n{outbound_skill}");
     assert!(!profile_dump.contains("tok_runtime_secret_value"));
     assert!(!profile_dump.contains("tok_daemon_secret_value"));
+    assert!(!profile_dump.contains("sk-test-secret"));
     assert!(!profile_dump.contains("rtok_"));
     assert!(!profile_dump.contains("runtime_rpc_token"));
     assert!(!profile_dump.contains("jwt_token"));

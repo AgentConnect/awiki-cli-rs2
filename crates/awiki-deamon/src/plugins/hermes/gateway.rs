@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::config::DaemonConfig;
 use crate::local_rpc::RuntimeRpcRequest;
+use crate::plugins::hermes::ensure_runtime_model_config;
 use crate::runtime::RuntimeInstallStatus;
 use crate::state::HermesProfileRecord;
 
@@ -425,6 +426,7 @@ impl HermesGateway for StdioHermesGateway {
     }
 
     fn start(&self, profile: &HermesProfileRecord) -> Result<HermesRunnerRef> {
+        ensure_runtime_model_config(&profile.hermes_home)?;
         let runner = HermesRunnerRef {
             runner_id: format!("stdio:{}", profile.hermes_profile),
             agent_did: profile.agent_did.clone(),
@@ -766,6 +768,7 @@ fn smoke_test_gateway_command(gateway_cmd: &str, config: &DaemonConfig) -> Resul
         awiki_skills_version: "detect".to_string(),
         status: "probe".to_string(),
     };
+    ensure_runtime_model_config(&profile.hermes_home)?;
     let mut process = spawn_gateway_process(gateway_cmd, &profile)?;
     let ready = process.wait_for_ready(HERMES_GATEWAY_DETECTION_READY_TIMEOUT);
     process.terminate();
