@@ -220,8 +220,6 @@ where
     if run_id.trim().is_empty() {
         anyhow::bail!("run_id must not be empty");
     }
-    state.upsert_runtime_agent_profile(profile)?;
-    state.insert_runtime_task(&task)?;
 
     let run = RuntimeRun {
         run_id,
@@ -232,7 +230,16 @@ where
         workspace_id: profile.workspace_id.clone(),
         status: RuntimeRunStatus::Pending,
     };
-    state.insert_runtime_run(&run)?;
+    if let Some(existing) = existing_runtime_run(state, &run)? {
+        return Ok(existing);
+    }
+    state.upsert_runtime_agent_profile(profile)?;
+    state.insert_runtime_task(&task)?;
+    if !state.try_insert_runtime_run(&run)? {
+        if let Some(existing) = existing_runtime_run(state, &run)? {
+            return Ok(existing);
+        }
+    }
     let task_conversation_id = task.conversation_id.clone();
 
     let recipient_policy = runtime_recipient_policy(state, profile)?;
@@ -430,6 +437,41 @@ where
         launch_outcome,
         token_id: issued.token_id,
     })
+}
+
+fn existing_runtime_run(
+    state: &DaemonState,
+    expected: &RuntimeRun,
+) -> Result<Option<RuntimeTaskRunResult>> {
+    let existing = match state.load_runtime_run(&expected.run_id) {
+        Ok(run) => run,
+        Err(_) => return Ok(None),
+    };
+    if existing.task_id != expected.task_id
+        || existing.agent_did != expected.agent_did
+        || existing.runtime_profile_id != expected.runtime_profile_id
+        || existing.runtime_plugin_id != expected.runtime_plugin_id
+        || existing.workspace_id != expected.workspace_id
+    {
+        anyhow::bail!(
+            "runtime run id collision for {} does not match expected binding",
+            expected.run_id
+        );
+    }
+    Ok(Some(RuntimeTaskRunResult {
+        launch_outcome: RuntimeLaunchOutcome {
+            run_id: existing.run_id.clone(),
+            status: existing.status.clone(),
+            exit_code: None,
+            callbacks: Vec::new(),
+            metadata: serde_json::json!({
+                "deduplicated": true,
+                "reason": "runtime_run_already_exists",
+            }),
+        },
+        run: existing,
+        token_id: String::new(),
+    }))
 }
 
 pub fn flush_runtime_final_outbox(

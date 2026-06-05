@@ -1840,7 +1840,6 @@ INSERT INTO runtime_task (
     updated_at_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?7)
 ON CONFLICT(task_id) DO UPDATE SET
-    status = excluded.status,
     task_text = excluded.task_text,
     updated_at_ms = excluded.updated_at_ms
 "#,
@@ -1857,12 +1856,12 @@ ON CONFLICT(task_id) DO UPDATE SET
         Ok(())
     }
 
-    pub fn insert_runtime_run(&self, run: &RuntimeRun) -> Result<()> {
+    pub fn try_insert_runtime_run(&self, run: &RuntimeRun) -> Result<bool> {
         let connection = self.connection()?;
         let now = current_time_millis()?;
-        connection.execute(
+        let inserted = connection.execute(
             r#"
-INSERT INTO runtime_run (
+INSERT OR IGNORE INTO runtime_run (
     run_id,
     task_id,
     agent_did,
@@ -1888,6 +1887,13 @@ INSERT INTO runtime_run (
                 now,
             ],
         )?;
+        Ok(inserted > 0)
+    }
+
+    pub fn insert_runtime_run(&self, run: &RuntimeRun) -> Result<()> {
+        if !self.try_insert_runtime_run(run)? {
+            bail!("runtime run already exists: {}", run.run_id);
+        }
         Ok(())
     }
 

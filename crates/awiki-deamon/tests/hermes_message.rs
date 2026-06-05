@@ -198,6 +198,43 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
 }
 
 #[test]
+fn hermes_message_duplicate_controller_text_reuses_existing_run_without_relaunch() {
+    let (root, state) = fixture();
+    let first_outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::default();
+    let plugin = HermesRuntimePlugin::new(
+        gateway.clone(),
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+    let message = ControllerTextMessage {
+        message_id: "msg_duplicate_inbox".to_string(),
+        conversation_id: Some("direct:did:human:alice".to_string()),
+        sender_did: "did:human:alice".to_string(),
+        target_agent_did: "did:agent:hermes".to_string(),
+        text: "重复投递只处理一次".to_string(),
+    };
+
+    let first = run_controller_text_task(&state, &profile, &plugin, &first_outbox, message.clone())
+        .unwrap();
+    assert_eq!(first.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(gateway.submitted_prompts().len(), 1);
+    assert_eq!(first_outbox.records().len(), 2);
+
+    let second_outbox = MemoryRuntimeOutbox::default();
+    let second =
+        run_controller_text_task(&state, &profile, &plugin, &second_outbox, message).unwrap();
+
+    assert_eq!(second.run.run_id, "run_task_msg_duplicate_inbox");
+    assert_eq!(second.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(second.launch_outcome.status, RuntimeRunStatus::Finished);
+    assert_eq!(second.launch_outcome.metadata["deduplicated"], true);
+    assert_eq!(second.token_id, "");
+    assert_eq!(gateway.submitted_prompts().len(), 1);
+    assert!(second_outbox.records().is_empty());
+}
+
+#[test]
 fn hermes_message_failed_status_does_not_send_success_final() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
