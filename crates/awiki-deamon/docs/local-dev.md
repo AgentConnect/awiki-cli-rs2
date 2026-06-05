@@ -61,6 +61,21 @@ anp_service_did = did:wba:<did_domain>
 - `AWIKI_DAEMON_DID_DOMAIN`
 - `AWIKI_DAEMON_ANP_SERVICE_URL`
 - `AWIKI_DAEMON_ANP_SERVICE_DID`
+- `AWIKI_HERMES_GATEWAY_CMD`
+
+Hermes Runtime 使用 Hermes TUI Gateway 的 stdio JSON-RPC 入口，不是普通 messaging gateway。官方 TUI Gateway 入口形态是：
+
+```text
+python -m tui_gateway.entry
+```
+
+但这个命令只有在对应 `python` 可以 import Hermes 的 `tui_gateway` 模块时才可用。daemon 的优先级是：
+
+1. `AWIKI_HERMES_GATEWAY_CMD` 显式覆盖。
+2. `config.json` 中已持久化的 `hermes_gateway_cmd`。
+3. 自动探测 `~/.hermes/hermes-agent/venv/bin/python -m tui_gateway.entry`、`~/.hermes/hermes-agent/.venv/bin/python -m tui_gateway.entry`，再尝试 PATH 中的 `python3` / `python`。
+
+自动探测会用 daemon 的临时 Hermes home 启动候选命令，只有在短超时内收到 `gateway.ready` 才会认为可用并写入 `config.json`。探测失败不会阻止 daemon foreground、状态上报或非 Hermes runtime 运行；只有真实执行 Hermes runtime 消息时才会返回 gateway 配置缺失/不可用错误。`AWIKI_HERMES_BIN` 仅用于旧的安装存在性检查，不会被当成 TUI Gateway 启动命令。
 
 安装包默认写入：
 

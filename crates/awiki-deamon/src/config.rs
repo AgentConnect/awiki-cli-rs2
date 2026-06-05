@@ -31,6 +31,7 @@ pub struct DaemonConfig {
     pub did_domain: String,
     pub anp_service_endpoint: String,
     pub anp_service_did: String,
+    pub hermes_gateway_cmd: Option<String>,
     pub identity_selector: IdentitySelectorConfig,
 }
 
@@ -46,6 +47,7 @@ pub struct DaemonConfigFile {
     pub did_domain: Option<String>,
     pub anp_service_endpoint: Option<String>,
     pub anp_service_did: Option<String>,
+    pub hermes_gateway_cmd: Option<String>,
     pub identity_selector: Option<IdentitySelectorConfig>,
 }
 
@@ -69,6 +71,8 @@ pub struct DaemonPersistentConfig {
     pub anp_service_endpoint: Option<String>,
     #[serde(default)]
     pub anp_service_did: Option<String>,
+    #[serde(default)]
+    pub hermes_gateway_cmd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +148,10 @@ impl DaemonConfig {
             persisted.anp_service_did.clone(),
             Some(format!("did:wba:{did_domain}")),
         ])?;
+        let hermes_gateway_cmd = first_optional_non_empty([
+            env_value("AWIKI_HERMES_GATEWAY_CMD"),
+            persisted.hermes_gateway_cmd.clone(),
+        ]);
         Ok(Self {
             config_file_path,
             daemon_db_path: state_root.join("daemon.db"),
@@ -163,6 +171,7 @@ impl DaemonConfig {
             did_domain,
             anp_service_endpoint,
             anp_service_did,
+            hermes_gateway_cmd,
             identity_selector: IdentitySelectorConfig::Default,
             state_root,
         })
@@ -216,6 +225,9 @@ impl DaemonConfig {
         }
         if let Some(anp_service_did) = file.anp_service_did {
             config.anp_service_did = anp_service_did.trim().to_string();
+        }
+        if let Some(hermes_gateway_cmd) = file.hermes_gateway_cmd {
+            config.hermes_gateway_cmd = normalize_optional_string(Some(hermes_gateway_cmd));
         }
         if let Some(identity_selector) = file.identity_selector {
             config.identity_selector = identity_selector;
@@ -300,11 +312,29 @@ impl DaemonConfig {
     }
 
     pub fn write_persistent_config(&self) -> Result<()> {
+        self.write_persistent_config_value(&DaemonPersistentConfig::from_resolved(self))
+    }
+
+    pub fn write_persistent_hermes_gateway_cmd(&self, gateway_cmd: Option<String>) -> Result<()> {
+        let mut persisted = DaemonPersistentConfig::read_optional(&self.config_file_path)?;
+        if persisted.schema_version == 0 {
+            persisted.schema_version = 1;
+        }
+        persisted.hermes_gateway_cmd = normalize_optional_string(gateway_cmd);
+        self.write_persistent_config_value(&persisted)
+    }
+
+    pub fn read_persistent_hermes_gateway_cmd(&self) -> Result<Option<String>> {
+        let persisted = DaemonPersistentConfig::read_optional(&self.config_file_path)?;
+        Ok(normalize_optional_string(persisted.hermes_gateway_cmd))
+    }
+
+    fn write_persistent_config_value(&self, value: &DaemonPersistentConfig) -> Result<()> {
         if let Some(parent) = self.config_file_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create daemon config directory {}", parent.display()))?;
         }
-        let text = serde_json::to_string_pretty(&DaemonPersistentConfig::from_resolved(self))?;
+        let text = serde_json::to_string_pretty(value)?;
         std::fs::write(&self.config_file_path, format!("{text}\n"))
             .with_context(|| format!("write daemon config {}", self.config_file_path.display()))
     }
@@ -395,6 +425,7 @@ impl DaemonPersistentConfig {
             did_domain: Some(config.did_domain.clone()),
             anp_service_endpoint: Some(config.anp_service_endpoint.clone()),
             anp_service_did: Some(config.anp_service_did.clone()),
+            hermes_gateway_cmd: config.hermes_gateway_cmd.clone(),
         }
     }
 }
@@ -406,6 +437,12 @@ fn env_value(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn first_non_empty(values: impl IntoIterator<Item = Option<String>>) -> Result<String> {
     values
         .into_iter()
@@ -413,6 +450,14 @@ fn first_non_empty(values: impl IntoIterator<Item = Option<String>>) -> Result<S
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
         .context("daemon base configuration is empty")
+}
+
+fn first_optional_non_empty(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
 }
 
 fn normalize_base_url(value: &str) -> String {
@@ -541,6 +586,7 @@ mod tests {
         "AWIKI_DAEMON_DID_DOMAIN",
         "AWIKI_DAEMON_ANP_SERVICE_URL",
         "AWIKI_DAEMON_ANP_SERVICE_DID",
+        "AWIKI_HERMES_GATEWAY_CMD",
     ];
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -689,6 +735,7 @@ mod tests {
         config.did_domain = "anpclaw.com".to_string();
         config.anp_service_endpoint = "https://anpclaw.com/anp-im/rpc".to_string();
         config.anp_service_did = "did:wba:anpclaw.com".to_string();
+        config.hermes_gateway_cmd = Some("python -m tui_gateway.entry".to_string());
         config.write_persistent_config().unwrap();
 
         let loaded = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -704,6 +751,30 @@ mod tests {
         assert_eq!(loaded.download_base_url, "file:///tmp/awiki-daemon");
         assert_eq!(loaded.did_domain, "anpclaw.com");
         assert_eq!(loaded.anp_service_did, "did:wba:anpclaw.com");
+        assert_eq!(
+            loaded.hermes_gateway_cmd.as_deref(),
+            Some("python -m tui_gateway.entry")
+        );
+    }
+
+    #[test]
+    fn hermes_gateway_env_overrides_persistent_config() {
+        let _env = EnvGuard::clear();
+        let root = tempfile::tempdir().unwrap();
+        let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.hermes_gateway_cmd = Some("persisted-python -m tui_gateway.entry".to_string());
+        config.write_persistent_config().unwrap();
+
+        std::env::set_var(
+            "AWIKI_HERMES_GATEWAY_CMD",
+            "env-python -m tui_gateway.entry",
+        );
+        let loaded = DaemonConfig::for_state_root(root.path()).unwrap();
+
+        assert_eq!(
+            loaded.hermes_gateway_cmd.as_deref(),
+            Some("env-python -m tui_gateway.entry")
+        );
     }
 
     #[test]

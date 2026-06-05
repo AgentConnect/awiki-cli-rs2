@@ -141,7 +141,7 @@ pub fn daemon_snapshot_payload(
     let runtimes = state
         .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)?
         .into_iter()
-        .map(|agent| runtime_status_payload(state, daemon, agent, &now))
+        .map(|agent| runtime_status_payload(config, state, daemon, agent, &now))
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({
         "command": "agent.status.query",
@@ -208,7 +208,7 @@ pub fn latest_status_items(
         }),
     }];
     for runtime in state.list_runtime_agent_definitions_for_daemon(&daemon.agent_did)? {
-        let runtime_status = runtime_status_summary(state, &runtime);
+        let runtime_status = runtime_status_summary(config, state, &runtime);
         items.push(AgentLatestStatusUpdateItem {
             agent_did: runtime.agent_did.clone(),
             agent_kind: AgentKind::Runtime,
@@ -272,12 +272,13 @@ where
 }
 
 fn runtime_status_payload(
+    config: &DaemonConfig,
     state: &DaemonState,
     daemon: &AgentDefinition,
     runtime: AgentDefinition,
     now: &str,
 ) -> Result<Value> {
-    let runtime_status = runtime_status_summary(state, &runtime);
+    let runtime_status = runtime_status_summary(config, state, &runtime);
     Ok(json!({
         "agent_did": runtime.agent_did,
         "daemon_agent_did": daemon.agent_did,
@@ -318,9 +319,14 @@ struct RuntimeStatusSummary {
     gateway_command_status: Option<HermesGatewayCommandStatus>,
 }
 
-fn runtime_status_summary(state: &DaemonState, runtime: &AgentDefinition) -> RuntimeStatusSummary {
+fn runtime_status_summary(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    runtime: &AgentDefinition,
+) -> RuntimeStatusSummary {
     runtime_status_summary_with_gateway_status(state, runtime, || {
-        crate::plugins::hermes::StdioHermesGateway::from_env().gateway_command_status()
+        crate::plugins::hermes::StdioHermesGateway::from_config_without_detection(config)
+            .gateway_command_status()
     })
 }
 

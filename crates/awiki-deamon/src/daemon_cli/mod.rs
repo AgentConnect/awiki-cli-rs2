@@ -83,13 +83,17 @@ pub fn list_agents(state: &DaemonState) -> Result<AgentListOutput> {
     })
 }
 
-pub fn agent_status(state: &DaemonState, agent_did: &str) -> Result<AgentStatusOutput> {
+pub fn agent_status(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    agent_did: &str,
+) -> Result<AgentStatusOutput> {
     if agent_did.trim().is_empty() {
         bail!("--agent-did is required");
     }
     let agent = state.load_agent_definition(agent_did)?;
     let hermes = if agent.runtime_plugin_id.as_deref() == Some(HERMES_RUNTIME_PLUGIN_ID) {
-        Some(hermes_status_for_agent(state, agent_did)?)
+        Some(hermes_status_for_agent(config, state, agent_did)?)
     } else {
         None
     };
@@ -102,10 +106,14 @@ pub fn list_runtime_agents(state: &DaemonState) -> Result<AgentListOutput> {
     })
 }
 
-fn hermes_status_for_agent(state: &DaemonState, agent_did: &str) -> Result<HermesAgentStatus> {
+fn hermes_status_for_agent(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    agent_did: &str,
+) -> Result<HermesAgentStatus> {
     let profile = state.load_hermes_profile(agent_did)?;
     let installation =
-        crate::plugins::hermes::StdioHermesGateway::from_env().check_installation()?;
+        crate::plugins::hermes::StdioHermesGateway::from_config(config).check_installation()?;
     Ok(HermesAgentStatus {
         agent_did: profile.agent_did.clone(),
         runtime_profile_id: profile.runtime_profile_id.clone(),

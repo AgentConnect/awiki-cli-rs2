@@ -353,7 +353,7 @@ fn run_runtime_retry(
         HERMES_RUNTIME_PLUGIN_ID => {
             let hermes_profile = state.load_hermes_profile(&profile.agent_did)?;
             let plugin = HermesRuntimePlugin::with_state(
-                StdioHermesGateway::from_env(),
+                StdioHermesGateway::from_config(config),
                 hermes_profile,
                 state.clone(),
             );
@@ -503,7 +503,7 @@ fn route_message(
                     target_agent_did: target_agent_did.to_string(),
                     text: text.clone(),
                 },
-                StdioHermesGateway::from_env,
+                || StdioHermesGateway::from_config(config),
             )?;
             Ok(true)
         }

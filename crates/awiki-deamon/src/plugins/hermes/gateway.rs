@@ -11,9 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::cli_wrapper::CliWrapperRequest;
+use crate::config::DaemonConfig;
 use crate::local_rpc::RuntimeRpcRequest;
 use crate::runtime::RuntimeInstallStatus;
 use crate::state::HermesProfileRecord;
+
+const HERMES_GATEWAY_CMD_ENV: &str = "AWIKI_HERMES_GATEWAY_CMD";
+const HERMES_BIN_ENV: &str = "AWIKI_HERMES_BIN";
+const HERMES_GATEWAY_DETECTION_READY_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub trait HermesGateway {
     fn check_installation(&self) -> Result<RuntimeInstallStatus>;
@@ -160,11 +165,35 @@ pub struct StdioHermesGateway {
 impl StdioHermesGateway {
     pub fn from_env() -> Self {
         Self {
-            gateway_cmd: std::env::var("AWIKI_HERMES_GATEWAY_CMD")
+            gateway_cmd: std::env::var(HERMES_GATEWAY_CMD_ENV)
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
-            hermes_bin: std::env::var_os("AWIKI_HERMES_BIN").map(PathBuf::from),
+            hermes_bin: std::env::var_os(HERMES_BIN_ENV).map(PathBuf::from),
+            processes: Arc::new(Mutex::new(BTreeMap::new())),
+            timeouts: HermesGatewayTimeouts::default(),
+        }
+    }
+
+    pub fn from_config(config: &DaemonConfig) -> Self {
+        let gateway_cmd = configured_gateway_command(config).or_else(|| {
+            detect_hermes_gateway_command(config).map(|detected| {
+                let _ = config.write_persistent_hermes_gateway_cmd(Some(detected.command.clone()));
+                detected.command
+            })
+        });
+        Self {
+            gateway_cmd,
+            hermes_bin: std::env::var_os(HERMES_BIN_ENV).map(PathBuf::from),
+            processes: Arc::new(Mutex::new(BTreeMap::new())),
+            timeouts: HermesGatewayTimeouts::default(),
+        }
+    }
+
+    pub fn from_config_without_detection(config: &DaemonConfig) -> Self {
+        Self {
+            gateway_cmd: configured_gateway_command(config),
+            hermes_bin: std::env::var_os(HERMES_BIN_ENV).map(PathBuf::from),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             timeouts: HermesGatewayTimeouts::default(),
         }
@@ -207,6 +236,113 @@ impl StdioHermesGateway {
             Err(_) => HermesGatewayCommandStatus::Unavailable,
         }
     }
+
+    pub fn gateway_cmd(&self) -> Option<&str> {
+        self.gateway_cmd.as_deref()
+    }
+
+    pub fn ensure_detected_config(
+        config: &DaemonConfig,
+    ) -> Result<Option<DetectedHermesGatewayCommand>> {
+        if configured_gateway_command(config).is_some() {
+            return Ok(None);
+        }
+        let Some(detected) = detect_hermes_gateway_command(config) else {
+            return Ok(None);
+        };
+        config.write_persistent_hermes_gateway_cmd(Some(detected.command.clone()))?;
+        Ok(Some(detected))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectedHermesGatewayCommand {
+    pub command: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HermesGatewayCommandCandidate {
+    parts: Vec<String>,
+    source: String,
+}
+
+fn configured_gateway_command(config: &DaemonConfig) -> Option<String> {
+    normalize_gateway_command(std::env::var(HERMES_GATEWAY_CMD_ENV).ok())
+        .or_else(|| normalize_gateway_command(config.hermes_gateway_cmd.clone()))
+        .or_else(|| config.read_persistent_hermes_gateway_cmd().ok().flatten())
+}
+
+fn normalize_gateway_command(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn detect_hermes_gateway_command(config: &DaemonConfig) -> Option<DetectedHermesGatewayCommand> {
+    hermes_gateway_command_candidates()
+        .into_iter()
+        .filter(|candidate| candidate_executable_is_available(candidate))
+        .find_map(|candidate| {
+            let command = gateway_command_from_parts(&candidate.parts);
+            smoke_test_gateway_command(&command, config).ok().map(|_| {
+                DetectedHermesGatewayCommand {
+                    command,
+                    source: candidate.source,
+                }
+            })
+        })
+}
+
+fn hermes_gateway_command_candidates() -> Vec<HermesGatewayCommandCandidate> {
+    let mut candidates = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        let home = PathBuf::from(home);
+        for relative in [
+            ".hermes/hermes-agent/venv/bin/python",
+            ".hermes/hermes-agent/.venv/bin/python",
+        ] {
+            candidates.push(python_gateway_candidate(
+                home.join(relative),
+                format!("home:{relative}"),
+            ));
+        }
+    }
+    candidates.push(python_gateway_candidate("python3", "path:python3"));
+    candidates.push(python_gateway_candidate("python", "path:python"));
+    dedupe_gateway_candidates(candidates)
+}
+
+fn python_gateway_candidate(
+    python: impl Into<PathBuf>,
+    source: impl Into<String>,
+) -> HermesGatewayCommandCandidate {
+    HermesGatewayCommandCandidate {
+        parts: vec![
+            python.into().display().to_string(),
+            "-m".to_string(),
+            "tui_gateway.entry".to_string(),
+        ],
+        source: source.into(),
+    }
+}
+
+fn dedupe_gateway_candidates(
+    candidates: Vec<HermesGatewayCommandCandidate>,
+) -> Vec<HermesGatewayCommandCandidate> {
+    let mut seen = std::collections::BTreeSet::new();
+    candidates
+        .into_iter()
+        .filter(|candidate| seen.insert(candidate.parts.clone()))
+        .collect()
+}
+
+fn candidate_executable_is_available(candidate: &HermesGatewayCommandCandidate) -> bool {
+    candidate
+        .parts
+        .first()
+        .map(String::as_str)
+        .is_some_and(executable_is_available)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,6 +539,14 @@ struct StdioGatewayProcess {
 impl StdioGatewayProcess {
     fn is_running(&mut self) -> bool {
         self.child.try_wait().ok().flatten().is_none()
+    }
+
+    fn terminate(&mut self) {
+        if self.child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     fn wait_for_ready(&mut self, timeout: Duration) -> Result<()> {
@@ -602,6 +746,61 @@ fn spawn_gateway_process(
         stderr_lines,
         next_id: 1,
     })
+}
+
+fn smoke_test_gateway_command(gateway_cmd: &str, config: &DaemonConfig) -> Result<()> {
+    let probe_home = gateway_detection_probe_home(config)?;
+    if let Some(parent) = probe_home.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("create Hermes gateway probe directory {}", parent.display())
+        })?;
+    }
+    std::fs::create_dir_all(&probe_home)
+        .with_context(|| format!("create Hermes gateway probe home {}", probe_home.display()))?;
+    let profile = HermesProfileRecord {
+        agent_did: "did:awiki:hermes-gateway-detect".to_string(),
+        runtime_profile_id: "hermes_gateway_detect".to_string(),
+        hermes_profile: "awiki_gateway_detect".to_string(),
+        hermes_home: probe_home.clone(),
+        hermes_version: None,
+        awiki_skills_version: "detect".to_string(),
+        status: "probe".to_string(),
+    };
+    let mut process = spawn_gateway_process(gateway_cmd, &profile)?;
+    let ready = process.wait_for_ready(HERMES_GATEWAY_DETECTION_READY_TIMEOUT);
+    process.terminate();
+    let _ = std::fs::remove_dir_all(&probe_home);
+    ready
+}
+
+fn gateway_detection_probe_home(config: &DaemonConfig) -> Result<PathBuf> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    Ok(config
+        .runtime_temp_dir
+        .join("hermes-gateway-detect")
+        .join(format!("probe-{now}-{}", std::process::id())))
+}
+
+fn gateway_command_from_parts(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|part| shell_quote_arg(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote_arg(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn split_gateway_command(command: &str) -> Result<Vec<String>> {

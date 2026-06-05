@@ -8,9 +8,48 @@ use awiki_deamon::runtime::{
 };
 use awiki_deamon::security::runtime_token::{issue_runtime_token, RpcMethod, RuntimeTokenScope};
 use awiki_deamon::state::HermesProfileRecord;
+use awiki_deamon::DaemonConfig;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    values: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn clear(keys: &[&'static str]) -> Self {
+        let lock = ENV_LOCK.lock().unwrap();
+        let values = keys
+            .iter()
+            .map(|key| {
+                let value = std::env::var(key).ok();
+                std::env::remove_var(key);
+                (*key, value)
+            })
+            .collect();
+        Self {
+            _lock: lock,
+            values,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.values {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+    }
+}
 
 fn hermes_record() -> HermesProfileRecord {
     HermesProfileRecord {
@@ -219,6 +258,96 @@ fn hermes_gateway_stdio_installation_reports_missing_env_without_failing_tests()
             Some("AWIKI_HERMES_BIN is not set")
         );
     }
+}
+
+#[test]
+fn hermes_gateway_from_config_detects_home_venv_and_persists_command() {
+    let _env = EnvGuard::clear(&["AWIKI_HERMES_GATEWAY_CMD", "AWIKI_HERMES_BIN", "HOME"]);
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let state_root = root.path().join("state");
+    let fake_python = home
+        .join(".hermes")
+        .join("hermes-agent")
+        .join("venv")
+        .join("bin")
+        .join("python");
+    write_fake_ready_gateway_executable(&fake_python).unwrap();
+    std::env::set_var("HOME", &home);
+
+    let config = DaemonConfig::for_state_root(&state_root).unwrap();
+    config.ensure_state_layout().unwrap();
+    let gateway = StdioHermesGateway::from_config(&config);
+
+    assert_eq!(
+        gateway.gateway_cmd(),
+        Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
+    );
+    assert_eq!(
+        gateway.gateway_command_status(),
+        awiki_deamon::plugins::hermes::HermesGatewayCommandStatus::Configured
+    );
+    let loaded = DaemonConfig::for_state_root(&state_root).unwrap();
+    assert_eq!(
+        loaded.hermes_gateway_cmd.as_deref(),
+        Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
+    );
+    std::fs::remove_file(&fake_python).unwrap();
+
+    let reused_gateway = StdioHermesGateway::from_config(&config);
+    assert_eq!(
+        reused_gateway.gateway_cmd(),
+        Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
+    );
+}
+
+#[test]
+fn hermes_gateway_from_config_keeps_missing_when_detection_fails() {
+    let _env = EnvGuard::clear(&["AWIKI_HERMES_GATEWAY_CMD", "AWIKI_HERMES_BIN", "HOME"]);
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let state_root = root.path().join("state");
+    let fake_python = home
+        .join(".hermes")
+        .join("hermes-agent")
+        .join("venv")
+        .join("bin")
+        .join("python");
+    write_fake_non_ready_gateway_executable(&fake_python).unwrap();
+    std::env::set_var("HOME", &home);
+
+    let config = DaemonConfig::for_state_root(&state_root).unwrap();
+    config.ensure_state_layout().unwrap();
+    let gateway = StdioHermesGateway::from_config(&config);
+
+    assert!(gateway.gateway_cmd().is_none());
+    let loaded = DaemonConfig::for_state_root(&state_root).unwrap();
+    assert!(loaded.hermes_gateway_cmd.is_none());
+}
+
+#[test]
+#[ignore]
+fn hermes_real_gateway_auto_detect_uses_local_installation() {
+    let _env = EnvGuard::clear(&["AWIKI_HERMES_GATEWAY_CMD", "AWIKI_HERMES_BIN"]);
+    let root = tempfile::tempdir().unwrap();
+    let state_root = root.path().join("state");
+    let config = DaemonConfig::for_state_root(&state_root).unwrap();
+    config.ensure_state_layout().unwrap();
+
+    let gateway = StdioHermesGateway::from_config(&config);
+    let command = gateway
+        .gateway_cmd()
+        .expect("local Hermes TUI Gateway command was not auto-detected")
+        .to_string();
+
+    eprintln!("auto-detected Hermes TUI Gateway command: {command}");
+    assert!(command.contains("tui_gateway.entry"));
+    assert_eq!(
+        gateway.gateway_command_status(),
+        awiki_deamon::plugins::hermes::HermesGatewayCommandStatus::Configured
+    );
+    let loaded = DaemonConfig::for_state_root(&state_root).unwrap();
+    assert_eq!(loaded.hermes_gateway_cmd.as_deref(), Some(command.as_str()));
 }
 
 #[test]
@@ -938,6 +1067,43 @@ fn write_hermes_smoke_model_config(
         hermes_home.join("config.yaml"),
         serde_json::to_string_pretty(&config).expect("serialize Hermes smoke config"),
     )
+}
+
+fn write_fake_ready_gateway_executable(path: &Path) -> std::io::Result<()> {
+    write_fake_gateway_executable(
+        path,
+        r#"#!/bin/sh
+printf '{"method":"gateway.ready","params":{"version":"test"}}\n'
+while IFS= read -r _line; do
+  :
+done
+"#,
+    )
+}
+
+fn write_fake_non_ready_gateway_executable(path: &Path) -> std::io::Result<()> {
+    write_fake_gateway_executable(
+        path,
+        r#"#!/bin/sh
+printf '{"method":"not.ready","params":{}}\n'
+sleep 10
+"#,
+    )
+}
+
+fn write_fake_gateway_executable(path: &Path, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
 }
 
 fn write_hermes_smoke_model_config_from_env(hermes_home: &Path) -> std::io::Result<()> {

@@ -120,7 +120,7 @@ audit 不记录 prompt 全文、token secret、private key、JWT。可记录 mes
 3. 引入 Hermes plugin factory：
    - 从 config/state/gateway factory 创建；
    - 支持 fake mode 用于 tests；
-   - 支持 real mode 用 `AWIKI_HERMES_BIN`。
+   - 支持 real mode 通过 `AWIKI_HERMES_GATEWAY_CMD` 显式覆盖或自动探测 TUI Gateway 命令。
 4. 调整 `process_inbox_once` / `route_message`：
    - daemon agent JSON command 流程保持不变；
    - runtime agent text/plain 走 `runtime_plugin_id`；
@@ -212,7 +212,7 @@ audit 不记录 prompt 全文、token secret、private key、JWT。可记录 mes
 ### 已实现
 
 - `foreground.rs` 的 text/plain runtime route 改为先读取 `RuntimeAgentProfile`，当 `runtime_plugin_id == "runtime.hermes"` 时加载 `hermes_profiles` 并创建 `HermesRuntimePlugin::with_state`；其他 runtime 保留 `UdsTestRuntimePlugin` 旧路径。
-- production foreground 使用 `StdioHermesGateway::from_env` 作为 Hermes gateway factory；测试通过 `run_runtime_text_message_with_gateway` 注入 `FakeHermesGateway`，避免默认依赖真实 Hermes binary 或真实网络。
+- production foreground 使用 `StdioHermesGateway::from_config` 作为 Hermes gateway factory，按环境变量、持久配置、自动探测的顺序解析 TUI Gateway 命令；测试通过 `run_runtime_text_message_with_gateway` 注入 `FakeHermesGateway`，避免默认依赖真实 Hermes binary 或真实网络。
 - Hermes foreground fake route 能通过 `run_controller_text_task` 签发 run token、提交 prompt、执行 fake callback，并经 `MemoryRuntimeOutbox` 观察 status/final；同一路由会写入 `hermes_native_sessions` active session。
 - 非 controller text 使用既有 `controller_did` 校验，在创建 Hermes session 或提交 prompt 前失败；fake gateway create/submit 计数保持为空。
 - `conversation_id` 对 direct message 只投影 peer DID，不复制 prompt 文本或 message body。

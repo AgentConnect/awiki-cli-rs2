@@ -141,8 +141,8 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
             state_root,
             agent_did,
         } => {
-            let (_config, state, _status) = initialize_state_for_management(state_root).await?;
-            let output = crate::daemon_cli::agent_status(&state, &agent_did)?;
+            let (config, state, _status) = initialize_state_for_management(state_root).await?;
+            let output = crate::daemon_cli::agent_status(&config, &state, &agent_did)?;
             Ok(DaemonCommandOutput::AgentStatus(output))
         }
         DaemonCommand::RuntimeList { state_root } => {
