@@ -903,3 +903,49 @@ fn hermes_session_mapping_reset_archives_old_session_and_creates_replacement() {
         .unwrap()
         .is_some());
 }
+
+#[test]
+fn hermes_session_missing_recreates_session_and_retries_prompt_once() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::FailOnceWithMissingSession);
+    let hermes = hermes_record(root.path().join("runtime/hermes/profile"));
+    let plugin = HermesRuntimePlugin::with_state(gateway.clone(), hermes, state.clone());
+    let profile = profile(root.path().join("workspace"));
+    let route = HermesSessionRoute::new(
+        "did:agent:hermes",
+        "profile_hermes_alice",
+        "did:human:alice",
+        Some("direct:did:human:alice".to_string()),
+        "conversation",
+    );
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_session_missing".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "旧 Hermes session 失效后自动恢复".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(gateway.created_sessions().len(), 2);
+    assert_eq!(gateway.submitted_prompts().len(), 2);
+    let active = state
+        .load_active_hermes_session_by_route(&route)
+        .unwrap()
+        .unwrap();
+    assert!(active.hermes_session_id.ends_with("-2"));
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].text.as_deref(), Some("fake complete"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+}

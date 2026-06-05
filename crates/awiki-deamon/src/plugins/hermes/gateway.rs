@@ -1144,6 +1144,7 @@ pub struct FakeHermesGateway {
     observed_events: Arc<Mutex<Vec<HermesRuntimeEvent>>>,
     submitted_prompts: Arc<Mutex<Vec<HermesPromptSubmitRequest>>>,
     created_sessions: Arc<Mutex<Vec<HermesSessionCreateRequest>>>,
+    prompt_attempts: Arc<Mutex<usize>>,
     behavior: FakeHermesBehavior,
 }
 
@@ -1157,6 +1158,7 @@ pub enum FakeHermesBehavior {
     SendMessage,
     SendHandleMessage,
     ApprovalRequest,
+    FailOnceWithMissingSession,
 }
 
 impl FakeHermesGateway {
@@ -1165,6 +1167,7 @@ impl FakeHermesGateway {
             observed_events: Arc::new(Mutex::new(Vec::new())),
             submitted_prompts: Arc::new(Mutex::new(Vec::new())),
             created_sessions: Arc::new(Mutex::new(Vec::new())),
+            prompt_attempts: Arc::new(Mutex::new(0)),
             behavior,
         }
     }
@@ -1258,10 +1261,21 @@ impl HermesGateway for FakeHermesGateway {
         session: &HermesSessionRef,
         request: HermesPromptSubmitRequest,
     ) -> Result<HermesPromptOutcome> {
+        let prompt_attempt = {
+            let mut attempts = self
+                .prompt_attempts
+                .lock()
+                .expect("fake Hermes gateway prompt attempts lock poisoned");
+            *attempts += 1;
+            *attempts
+        };
         self.submitted_prompts
             .lock()
             .expect("fake Hermes gateway prompts lock poisoned")
             .push(request.clone());
+        if self.behavior == FakeHermesBehavior::FailOnceWithMissingSession && prompt_attempt == 1 {
+            anyhow::bail!("Hermes gateway prompt.submit failed: session not found");
+        }
         let run_id = request.run_id.clone();
         let message_id = request.message_id.clone();
         let fake_token = "rtok_fake_hermes_runtime_token_placeholder_123456789".to_string();
@@ -1348,6 +1362,7 @@ fn fake_callbacks(
         FakeHermesBehavior::ObserveOnly => Vec::new(),
         FakeHermesBehavior::CompleteWithoutText => Vec::new(),
         FakeHermesBehavior::ApprovalRequest => Vec::new(),
+        FakeHermesBehavior::FailOnceWithMissingSession => Vec::new(),
         FakeHermesBehavior::SendMessage => vec![CliWrapperRequest::msg_send(
             runtime_rpc_token,
             "did:human:alice",
