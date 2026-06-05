@@ -21,6 +21,7 @@ pub struct AgentRegistrationExchangeRequest {
     pub endpoint_url: Option<String>,
     pub key_algorithm: String,
     pub public_key: String,
+    pub allow_existing_agent_did: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +375,7 @@ fn exchange_token_body(request: AgentRegistrationExchangeRequest) -> Value {
             "endpoint_url": request.endpoint_url,
             "key_algorithm": request.key_algorithm,
             "public_key": request.public_key,
+            "allow_existing_agent_did": request.allow_existing_agent_did,
         },
         "id": 1
     })

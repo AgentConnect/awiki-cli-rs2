@@ -4,12 +4,13 @@ use serde_json::{json, Value};
 
 use std::path::PathBuf;
 
-use crate::agent::{generate_product_handle, AgentDefinition, AgentKind};
+use crate::agent::{agent_data_paths, generate_product_handle, AgentDefinition, AgentKind};
 use crate::commands::setup_daemon_agent;
 use crate::plugins::hermes::{HermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 use crate::registration::{
-    AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial, RegistrationToken,
-    RegistrationTokenMetadata, UserServiceAgentRegistrationClient,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationExchangeRequest,
+    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
+    UserServiceAgentRegistrationClient,
 };
 use crate::runtime::RuntimeInstallStatus;
 use crate::service::{
@@ -333,10 +334,7 @@ where
     daemon_token_metadata_is_valid(&metadata)?;
 
     if let Some(existing) = existing {
-        if existing.controller_did != metadata.controller_did {
-            return Ok(existing);
-        }
-        return Ok(existing);
+        return recover_existing_daemon_agent(state, client, existing, metadata, token);
     }
 
     let handle = metadata
@@ -355,6 +353,51 @@ where
         &metadata.controller_did,
         token,
     )
+}
+
+fn recover_existing_daemon_agent<C>(
+    state: &DaemonState,
+    client: &C,
+    mut existing: AgentDefinition,
+    metadata: RegistrationTokenMetadata,
+    token: RegistrationToken,
+) -> Result<AgentDefinition>
+where
+    C: crate::registration::AgentRegistrationClient,
+{
+    let identity = state.load_agent_identity(&existing.agent_did)?;
+    let exchange = client.exchange_token(AgentRegistrationExchangeRequest {
+        token,
+        agent_kind: AgentKind::Daemon,
+        controller_did: metadata.controller_did.clone(),
+        handle: metadata
+            .handle
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| existing.handle.clone()),
+        did_document: identity.did_document.clone(),
+        endpoint_url: identity.endpoint_url.clone(),
+        key_algorithm: identity.key_algorithm.clone(),
+        public_key: identity.public_key.clone(),
+        allow_existing_agent_did: true,
+    })?;
+    if exchange.did != existing.agent_did {
+        bail!("registration token exchange returned a different DID");
+    }
+    if exchange.agent_kind != AgentKind::Daemon {
+        bail!("registration token exchange returned a non-daemon agent kind");
+    }
+    if exchange.controller_did.trim().is_empty() {
+        bail!("registration token exchange returned an empty controller_did");
+    }
+    let (local_agent_db_path, message_db_path) = agent_data_paths(&existing.agent_did)?;
+    existing.handle = exchange.handle;
+    existing.controller_did = exchange.controller_did;
+    existing.local_agent_db_path = local_agent_db_path;
+    existing.message_db_path = message_db_path;
+    existing.status = "active".to_string();
+    state.upsert_agent_definition(&existing)?;
+    Ok(existing)
 }
 
 fn existing_daemon_agent(state: &DaemonState) -> Result<Option<AgentDefinition>> {
@@ -550,6 +593,39 @@ mod tests {
         assert_eq!(agent.controller_did, "did:human:alice");
         assert_eq!(agent.handle, "alice-mac-daemon");
         assert_eq!(client.exchange_count(), 1);
+    }
+
+    #[test]
+    fn product_install_recovers_existing_daemon_with_new_token() {
+        let (_root, config, state) = fixture();
+        let existing = store_existing_daemon(&config, &state);
+        let client = MockInstallClient::active_daemon_token();
+
+        let agent = install_or_recover_product_daemon_agent_for_test(
+            &config,
+            &state,
+            &client,
+            RegistrationToken::new("raw-token-long-enough").unwrap(),
+        )
+        .unwrap();
+
+        let requests = client.exchange_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].allow_existing_agent_did);
+        assert_eq!(requests[0].agent_kind, AgentKind::Daemon);
+        assert_eq!(requests[0].controller_did, "did:human:alice");
+        assert_eq!(
+            requests[0].did_document.get("id").and_then(Value::as_str),
+            Some(existing.agent_did.as_str())
+        );
+        assert_eq!(agent.agent_did, existing.agent_did);
+        assert_eq!(
+            state
+                .load_agent_definition(&existing.agent_did)
+                .unwrap()
+                .controller_did,
+            "did:human:alice"
+        );
     }
 
     #[test]

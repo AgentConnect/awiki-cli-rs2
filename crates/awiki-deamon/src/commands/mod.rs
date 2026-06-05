@@ -332,6 +332,7 @@ where
         endpoint_url: identity.endpoint_url.clone(),
         key_algorithm: identity.key_algorithm.clone(),
         public_key: identity.public_key.clone(),
+        allow_existing_agent_did: false,
     })?;
     verify_exchange_result(&exchange, AgentKind::Daemon, controller_did, &handle)?;
     if exchange.did != identity.did {
@@ -411,6 +412,7 @@ where
         endpoint_url: identity.endpoint_url.clone(),
         key_algorithm: identity.key_algorithm.clone(),
         public_key: identity.public_key.clone(),
+        allow_existing_agent_did: false,
     })?;
     verify_exchange_result(&exchange, AgentKind::Runtime, controller_did, &handle)?;
     if exchange.did != identity.did {
