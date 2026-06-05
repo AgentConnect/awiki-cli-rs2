@@ -503,6 +503,7 @@ mod tests {
                 scope,
                 expires_at: None,
                 refreshed: false,
+                bearer_token: None,
             })
         }
 

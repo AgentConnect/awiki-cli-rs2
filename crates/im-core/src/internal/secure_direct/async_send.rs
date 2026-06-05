@@ -1827,6 +1827,7 @@ mod tests {
                 scope,
                 expires_at: None,
                 refreshed: false,
+                bearer_token: None,
             })
         }
 
@@ -1836,6 +1837,7 @@ mod tests {
                 previous_expires_at: None,
                 new_expires_at: None,
                 refreshed: true,
+                bearer_token: None,
             })
         }
 

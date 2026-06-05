@@ -865,6 +865,7 @@ impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSession {
             scope: AuthScope::UserProfile,
             expires_at: None,
             refreshed: false,
+            bearer_token: None,
         })
     }
 }

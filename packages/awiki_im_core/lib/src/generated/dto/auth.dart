@@ -48,12 +48,14 @@ class DartSessionBundle {
   final DartAuthScope scope;
   final String? expiresAt;
   final bool refreshed;
+  final String? bearerToken;
 
   const DartSessionBundle({
     required this.subject,
     required this.scope,
     this.expiresAt,
     required this.refreshed,
+    this.bearerToken,
   });
 
   @override
@@ -61,7 +63,8 @@ class DartSessionBundle {
       subject.hashCode ^
       scope.hashCode ^
       expiresAt.hashCode ^
-      refreshed.hashCode;
+      refreshed.hashCode ^
+      bearerToken.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -71,7 +74,8 @@ class DartSessionBundle {
           subject == other.subject &&
           scope == other.scope &&
           expiresAt == other.expiresAt &&
-          refreshed == other.refreshed;
+          refreshed == other.refreshed &&
+          bearerToken == other.bearerToken;
 }
 
 class DartSessionUpdate {
@@ -79,12 +83,14 @@ class DartSessionUpdate {
   final String? previousExpiresAt;
   final String? newExpiresAt;
   final bool refreshed;
+  final String? bearerToken;
 
   const DartSessionUpdate({
     required this.subject,
     this.previousExpiresAt,
     this.newExpiresAt,
     required this.refreshed,
+    this.bearerToken,
   });
 
   @override
@@ -92,7 +98,8 @@ class DartSessionUpdate {
       subject.hashCode ^
       previousExpiresAt.hashCode ^
       newExpiresAt.hashCode ^
-      refreshed.hashCode;
+      refreshed.hashCode ^
+      bearerToken.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -102,5 +109,6 @@ class DartSessionUpdate {
           subject == other.subject &&
           previousExpiresAt == other.previousExpiresAt &&
           newExpiresAt == other.newExpiresAt &&
-          refreshed == other.refreshed;
+          refreshed == other.refreshed &&
+          bearerToken == other.bearerToken;
 }

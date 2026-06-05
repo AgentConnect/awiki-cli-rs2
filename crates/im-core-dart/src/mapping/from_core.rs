@@ -321,6 +321,7 @@ impl From<im_core::auth::SessionBundle> for DartSessionBundle {
             scope: value.scope.into(),
             expires_at: value.expires_at,
             refreshed: value.refreshed,
+            bearer_token: value.bearer_token,
         }
     }
 }
@@ -332,6 +333,7 @@ impl From<im_core::auth::SessionUpdate> for DartSessionUpdate {
             previous_expires_at: value.previous_expires_at,
             new_expires_at: value.new_expires_at,
             refreshed: value.refreshed,
+            bearer_token: value.bearer_token,
         }
     }
 }

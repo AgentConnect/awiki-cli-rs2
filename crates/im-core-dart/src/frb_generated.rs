@@ -5519,11 +5519,13 @@ impl SseDecode for crate::dto::auth::DartSessionBundle {
         let mut var_scope = <crate::dto::auth::DartAuthScope>::sse_decode(deserializer);
         let mut var_expiresAt = <Option<String>>::sse_decode(deserializer);
         let mut var_refreshed = <bool>::sse_decode(deserializer);
+        let mut var_bearerToken = <Option<String>>::sse_decode(deserializer);
         return crate::dto::auth::DartSessionBundle {
             subject: var_subject,
             scope: var_scope,
             expires_at: var_expiresAt,
             refreshed: var_refreshed,
+            bearer_token: var_bearerToken,
         };
     }
 }
@@ -5535,11 +5537,13 @@ impl SseDecode for crate::dto::auth::DartSessionUpdate {
         let mut var_previousExpiresAt = <Option<String>>::sse_decode(deserializer);
         let mut var_newExpiresAt = <Option<String>>::sse_decode(deserializer);
         let mut var_refreshed = <bool>::sse_decode(deserializer);
+        let mut var_bearerToken = <Option<String>>::sse_decode(deserializer);
         return crate::dto::auth::DartSessionUpdate {
             subject: var_subject,
             previous_expires_at: var_previousExpiresAt,
             new_expires_at: var_newExpiresAt,
             refreshed: var_refreshed,
+            bearer_token: var_bearerToken,
         };
     }
 }
@@ -8145,6 +8149,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::auth::DartSessionBundle {
             self.scope.into_into_dart().into_dart(),
             self.expires_at.into_into_dart().into_dart(),
             self.refreshed.into_into_dart().into_dart(),
+            self.bearer_token.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -8168,6 +8173,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::auth::DartSessionUpdate {
             self.previous_expires_at.into_into_dart().into_dart(),
             self.new_expires_at.into_into_dart().into_dart(),
             self.refreshed.into_into_dart().into_dart(),
+            self.bearer_token.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -9404,6 +9410,7 @@ impl SseEncode for crate::dto::auth::DartSessionBundle {
         <crate::dto::auth::DartAuthScope>::sse_encode(self.scope, serializer);
         <Option<String>>::sse_encode(self.expires_at, serializer);
         <bool>::sse_encode(self.refreshed, serializer);
+        <Option<String>>::sse_encode(self.bearer_token, serializer);
     }
 }
 
@@ -9414,6 +9421,7 @@ impl SseEncode for crate::dto::auth::DartSessionUpdate {
         <Option<String>>::sse_encode(self.previous_expires_at, serializer);
         <Option<String>>::sse_encode(self.new_expires_at, serializer);
         <bool>::sse_encode(self.refreshed, serializer);
+        <Option<String>>::sse_encode(self.bearer_token, serializer);
     }
 }
 

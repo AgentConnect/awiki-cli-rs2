@@ -4586,13 +4586,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartSessionBundle dco_decode_dart_session_bundle(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartSessionBundle(
       subject: dco_decode_String(arr[0]),
       scope: dco_decode_dart_auth_scope(arr[1]),
       expiresAt: dco_decode_opt_String(arr[2]),
       refreshed: dco_decode_bool(arr[3]),
+      bearerToken: dco_decode_opt_String(arr[4]),
     );
   }
 
@@ -4600,13 +4601,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartSessionUpdate dco_decode_dart_session_update(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return DartSessionUpdate(
       subject: dco_decode_String(arr[0]),
       previousExpiresAt: dco_decode_opt_String(arr[1]),
       newExpiresAt: dco_decode_opt_String(arr[2]),
       refreshed: dco_decode_bool(arr[3]),
+      bearerToken: dco_decode_opt_String(arr[4]),
     );
   }
 
@@ -6719,11 +6721,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_scope = sse_decode_dart_auth_scope(deserializer);
     var var_expiresAt = sse_decode_opt_String(deserializer);
     var var_refreshed = sse_decode_bool(deserializer);
+    var var_bearerToken = sse_decode_opt_String(deserializer);
     return DartSessionBundle(
       subject: var_subject,
       scope: var_scope,
       expiresAt: var_expiresAt,
       refreshed: var_refreshed,
+      bearerToken: var_bearerToken,
     );
   }
 
@@ -6736,11 +6740,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_previousExpiresAt = sse_decode_opt_String(deserializer);
     var var_newExpiresAt = sse_decode_opt_String(deserializer);
     var var_refreshed = sse_decode_bool(deserializer);
+    var var_bearerToken = sse_decode_opt_String(deserializer);
     return DartSessionUpdate(
       subject: var_subject,
       previousExpiresAt: var_previousExpiresAt,
       newExpiresAt: var_newExpiresAt,
       refreshed: var_refreshed,
+      bearerToken: var_bearerToken,
     );
   }
 
@@ -8649,6 +8655,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_dart_auth_scope(self.scope, serializer);
     sse_encode_opt_String(self.expiresAt, serializer);
     sse_encode_bool(self.refreshed, serializer);
+    sse_encode_opt_String(self.bearerToken, serializer);
   }
 
   @protected
@@ -8661,6 +8668,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.previousExpiresAt, serializer);
     sse_encode_opt_String(self.newExpiresAt, serializer);
     sse_encode_bool(self.refreshed, serializer);
+    sse_encode_opt_String(self.bearerToken, serializer);
   }
 
   @protected

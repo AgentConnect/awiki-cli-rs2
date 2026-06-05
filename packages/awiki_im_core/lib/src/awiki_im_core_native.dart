@@ -1163,6 +1163,7 @@ extension on gen_auth_dto.DartSessionBundle {
     scope: scope._toModel(),
     expiresAt: expiresAt,
     refreshed: refreshed,
+    bearerToken: bearerToken,
   );
 }
 
@@ -1172,6 +1173,7 @@ extension on gen_auth_dto.DartSessionUpdate {
     previousExpiresAt: previousExpiresAt,
     newExpiresAt: newExpiresAt,
     refreshed: refreshed,
+    bearerToken: bearerToken,
   );
 }
 

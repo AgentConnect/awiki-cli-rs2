@@ -24,12 +24,14 @@ class SessionBundle {
     required this.scope,
     this.expiresAt,
     required this.refreshed,
+    this.bearerToken,
   });
 
   final String subject;
   final AuthScope scope;
   final String? expiresAt;
   final bool refreshed;
+  final String? bearerToken;
 }
 
 class SessionUpdate {
@@ -38,10 +40,12 @@ class SessionUpdate {
     this.previousExpiresAt,
     this.newExpiresAt,
     required this.refreshed,
+    this.bearerToken,
   });
 
   final String subject;
   final String? previousExpiresAt;
   final String? newExpiresAt;
   final bool refreshed;
+  final String? bearerToken;
 }

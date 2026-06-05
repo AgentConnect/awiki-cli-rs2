@@ -78,6 +78,7 @@ impl SessionProvider for FileSessionProvider<'_> {
             scope,
             expires_at: snapshot.auth_state.expires_at.clone(),
             refreshed: false,
+            bearer_token: snapshot.auth_state.bearer_token,
         })
     }
 
@@ -92,6 +93,7 @@ impl SessionProvider for FileSessionProvider<'_> {
             previous_expires_at: snapshot.auth_state.expires_at.clone(),
             new_expires_at: refreshed.auth_state.expires_at,
             refreshed: true,
+            bearer_token: refreshed.auth_state.bearer_token,
         })
     }
 
@@ -145,6 +147,7 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
             scope,
             expires_at: snapshot.auth_state.expires_at.clone(),
             refreshed: false,
+            bearer_token: snapshot.auth_state.bearer_token,
         })
     }
 
@@ -159,6 +162,7 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
             previous_expires_at: snapshot.auth_state.expires_at.clone(),
             new_expires_at: refreshed.auth_state.expires_at,
             refreshed: true,
+            bearer_token: refreshed.auth_state.bearer_token,
         })
     }
 
@@ -279,6 +283,7 @@ impl SessionSnapshot {
 #[derive(Default)]
 struct AuthStateSnapshot {
     has_token: bool,
+    bearer_token: Option<String>,
     expires_at: Option<String>,
 }
 
@@ -311,11 +316,14 @@ fn read_auth_state(path: &std::path::Path) -> crate::ImResult<AuthStateSnapshot>
         serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
+    let bearer_token = first_non_empty_token([
+        parsed.jwt_token.as_deref(),
+        parsed.token.as_deref(),
+        parsed.access_token.as_deref(),
+    ]);
     Ok(AuthStateSnapshot {
-        has_token: [parsed.jwt_token, parsed.token, parsed.access_token]
-            .into_iter()
-            .flatten()
-            .any(|token| !token.trim().is_empty()),
+        has_token: bearer_token.is_some(),
+        bearer_token,
         expires_at: parsed
             .expires_at
             .filter(|expires_at| !expires_at.trim().is_empty()),
@@ -339,13 +347,25 @@ async fn read_auth_state_async(path: std::path::PathBuf) -> crate::ImResult<Auth
         serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
+    let bearer_token = first_non_empty_token([
+        parsed.jwt_token.as_deref(),
+        parsed.token.as_deref(),
+        parsed.access_token.as_deref(),
+    ]);
     Ok(AuthStateSnapshot {
-        has_token: [parsed.jwt_token, parsed.token, parsed.access_token]
-            .into_iter()
-            .flatten()
-            .any(|token| !token.trim().is_empty()),
+        has_token: bearer_token.is_some(),
+        bearer_token,
         expires_at: parsed
             .expires_at
             .filter(|expires_at| !expires_at.trim().is_empty()),
     })
+}
+
+fn first_non_empty_token<'a>(tokens: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    tokens
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
 }
