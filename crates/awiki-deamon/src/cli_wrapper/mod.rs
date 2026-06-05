@@ -58,26 +58,13 @@ impl CliWrapperRequest {
         to: impl Into<String>,
         text: impl Into<String>,
     ) -> Self {
-        Self::msg_send_with_security(runtime_rpc_token, to, text, None::<String>)
-    }
-
-    pub fn msg_send_with_security(
-        runtime_rpc_token: impl Into<String>,
-        to: impl Into<String>,
-        text: impl Into<String>,
-        security: Option<impl Into<String>>,
-    ) -> Self {
-        let mut params = json!({
-            "to": to.into(),
-            "text": text.into(),
-        });
-        if let Some(security) = security {
-            params["security"] = Value::String(security.into());
-        }
         Self {
             runtime_rpc_token: runtime_rpc_token.into(),
             method: "msg.send".to_string(),
-            params,
+            params: json!({
+                "to": to.into(),
+                "text": text.into(),
+            }),
         }
     }
 
@@ -88,7 +75,6 @@ impl CliWrapperRequest {
         file_path: Option<impl Into<String>>,
         display_filename: Option<impl Into<String>>,
         mime_type: Option<impl Into<String>>,
-        security: Option<impl Into<String>>,
     ) -> Self {
         let mut params = json!({
             "text": text.into(),
@@ -109,9 +95,6 @@ impl CliWrapperRequest {
         }
         if let Some(mime_type) = mime_type {
             params["mime_type"] = Value::String(mime_type.into());
-        }
-        if let Some(security) = security {
-            params["security"] = Value::String(security.into());
         }
         Self {
             runtime_rpc_token: runtime_rpc_token.into(),
@@ -214,7 +197,6 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
                     file_path,
                     display_filename,
                     mime_type,
-                    Some("default_plain"),
                 ),
             )
         }
@@ -231,12 +213,7 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
             }
             call(
                 &socket_path,
-                CliWrapperRequest::msg_send_with_security(
-                    runtime_rpc_token,
-                    to_handle,
-                    text.to_string(),
-                    Some("default_plain"),
-                ),
+                CliWrapperRequest::msg_send(runtime_rpc_token, to_handle, text.to_string()),
             )
         }
         CliWrapperCommand::SendAttachment {

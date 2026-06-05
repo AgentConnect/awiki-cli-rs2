@@ -43,7 +43,7 @@
 | runtime token | `RuntimeTokenScope`、`authorize_runtime_rpc`、audit log 已存在 | local RPC 可信上下文来自 token，不能信任请求体自报身份。 |
 | 兼容 RPC 名称 | `RpcMethod::parse` 支持 `rpc.ping`、`task.status`、`task.finish`、`msg.send`、`artifact.created` | Step 04/05 可继续用兼容名，但文档和 prompt 使用 message/run 语义。 |
 | `task.finish` failed final | `apply_runtime_rpc_side_effects` 当前把 `task.finish` 固定落到 `finished` | 属于后续缺口，不在 Step 01 修复。 |
-| `msg.send` 真实外发 | `RuntimeMessageSend` 支持 direct/group target、文本、附件；Hermes 默认 recipient policy 只允许 `default_plain`；`ImCoreAgentOutbox` 转成 im-core `SendMessageRequest` | 已作为主动外发统一出口；controller final 仍由 daemon host 自动发回 controller。 |
+| `msg.send` 真实外发 | `RuntimeMessageSend` 支持 direct/group target、文本、附件；Hermes recipient policy 只允许普通消息；`ImCoreAgentOutbox` 转成 im-core `SendMessageRequest` | 已作为主动外发统一出口；controller final 仍由 daemon host 自动发回 controller。 |
 | 长驻 runtime 路由 | foreground 文本消息仍使用 `UdsTestRuntimePlugin` | Step 07 才切换 `runtime.hermes` 路由。 |
 | Hermes profile/Skills/TUI Gateway/session | 当前无 `hermes_profiles`、`hermes_native_sessions`、TUI Gateway runner 或 profile installer | 分别由 Step 02、03、06 实现。 |
 | controller final durable outbox | `runtime_final_outbox` 持久化 final，`flush_runtime_final_outbox` 负责启动/循环补发，final 消息带稳定 idempotency key | 已作为 Hermes controller final 回传基础可靠性机制。 |

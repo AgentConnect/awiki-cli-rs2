@@ -55,7 +55,7 @@ Hermes
 5. **Hermes 调用 Awiki 能力时走 daemon CLI wrapper + local RPC。** 真实能力仍在 daemon 中实现。
 6. **MVP 采用消息驱动，不新增产品层 task 概念。** Controller DID 发来的可执行消息进入 Hermes；结果和外发协作也以消息为主。
 7. **当前代码中已有 `RuntimeTask` / `runtime_task` / `task.status` / `task.finish`。** 这些是 Generic CLI MVP 阶段的内部命名和兼容 RPC 名称。本 Hermes 方案不继续扩大 task 概念；后续代码可以把它们收敛为 message/run 语义。
-8. **`msg.send` / outbound-send 的契约必须是真正发送 ANP direct/group 普通消息。** 本期 Runtime Agent 外发只支持 `default_plain`；直聊/群聊文本和“caption + 附件”都走同一个主动外发出口，不能实现成 status payload 或 controller 回传。
+8. **`msg.send` / outbound-send 的契约必须是真正发送 ANP direct/group 普通消息。** 本期 Runtime Agent 外发只支持普通消息；直聊/群聊文本和“caption + 附件”都走同一个主动外发出口，不能实现成 status payload 或 controller 回传。
 9. **MVP 暂不支持 approval 和 sandbox。** 相关能力不进入本版设计主链路。
 
 ---

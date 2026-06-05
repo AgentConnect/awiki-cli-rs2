@@ -1369,12 +1369,11 @@ fn fake_callbacks(
             "Hermes says hello",
         )
         .into_rpc_request()],
-        FakeHermesBehavior::SendHandleMessage => vec![CliWrapperRequest::msg_send_with_security(
-            runtime_rpc_token,
-            "bob",
-            "Hermes says hello Bob",
-            Some("default_plain"),
-        )
-        .into_rpc_request()],
+        FakeHermesBehavior::SendHandleMessage => {
+            vec![
+                CliWrapperRequest::msg_send(runtime_rpc_token, "bob", "Hermes says hello Bob")
+                    .into_rpc_request(),
+            ]
+        }
     }
 }

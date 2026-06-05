@@ -831,13 +831,8 @@ fn audit_records_token_id_not_token_secret() {
 
 #[test]
 fn cli_wrapper_request_only_uses_token_as_authorization_material() {
-    let request = CliWrapperRequest::msg_send_with_security(
-        "rtok_test_secret_value_123456789",
-        "@alice",
-        "hi",
-        Some("default_plain"),
-    )
-    .into_rpc_request();
+    let request = CliWrapperRequest::msg_send("rtok_test_secret_value_123456789", "@alice", "hi")
+        .into_rpc_request();
 
     assert_eq!(
         request.runtime_rpc_token,
@@ -845,7 +840,7 @@ fn cli_wrapper_request_only_uses_token_as_authorization_material() {
     );
     assert_eq!(request.method, "msg.send");
     assert_eq!(request.params["to"], "@alice");
-    assert_eq!(request.params["security"], "default_plain");
+    assert!(request.params.get("security").is_none());
     assert!(request.debug.is_none());
 }
 
@@ -878,7 +873,6 @@ fn cli_wrapper_outbound_send_supports_group_attachment_message() {
         Some("/tmp/group-report.txt"),
         Some("group-report.txt"),
         Some("text/plain"),
-        Some("default_plain"),
     )
     .into_rpc_request();
 
@@ -888,7 +882,7 @@ fn cli_wrapper_outbound_send_supports_group_attachment_message() {
     assert_eq!(request.params["file_path"], "/tmp/group-report.txt");
     assert_eq!(request.params["display_filename"], "group-report.txt");
     assert_eq!(request.params["mime_type"], "text/plain");
-    assert_eq!(request.params["security"], "default_plain");
+    assert!(request.params.get("security").is_none());
     assert!(request.debug.is_none());
 }
 

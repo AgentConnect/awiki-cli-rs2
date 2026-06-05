@@ -275,8 +275,9 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(outbound_skill.contains("--mime-type"));
     assert!(outbound_skill.contains("same outbound message"));
     assert!(outbound_skill.contains("ordinary Awiki messages"));
-    assert!(outbound_skill.contains("do not add security or encryption parameters"));
     assert!(outbound_skill.contains("Do not use it for your ordinary final answer"));
+    assert!(!outbound_skill.contains("security"));
+    assert!(!outbound_skill.contains("encryption"));
     assert!(!outbound_skill.contains("direct_e2ee"));
     assert!(!outbound_skill.contains("group_e2ee"));
     assert!(!outbound_skill.contains("secure_direct"));

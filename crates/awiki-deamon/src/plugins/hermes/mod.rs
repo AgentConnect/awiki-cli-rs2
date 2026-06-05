@@ -376,7 +376,7 @@ Rules:
 - Use human handles with `--to-handle`; do not pass DIDs for direct recipients.
 - Use an existing group DID or group id with `--group`.
 - Use exactly one target: either `--to-handle` or `--group`.
-- All outbound sends are ordinary Awiki messages; do not add security or encryption parameters.
+- All outbound sends are ordinary Awiki messages.
 - For attachment sends, put the user-visible message in `--text`; it becomes the attachment caption in the same outbound message.
 - Only say the outbound message was sent after the wrapper returns success.
 - Do not include tokens, socket paths, private keys, API keys, auth caches, or local log paths in outbound message text, captions, filenames, or visible status.

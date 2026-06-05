@@ -13,7 +13,7 @@
 | 开始时间 | 2026-06-01 00:02:56 +0800 |
 | 完成时间 | 2026-06-01 00:38:29 +0800 |
 | 提交 | 实现提交 `9ee0ac805f897d132a4b4127eed56bf8b4c68ed4` |
-| 审查证据 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 经 `im-core` 真实发送路径，不再伪装成 status payload；recipient/text/security 校验和 token recipient scope 生效。2026-06-05 修正：Hermes Skill 和 `awiki-deamon-runtime send` 只支持 `default_plain` 普通消息，不暴露 direct/group E2EE 路径。 |
+| 审查证据 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 经 `im-core` 真实发送路径，不再伪装成 status payload；recipient/text/security 校验和 token recipient scope 生效。2026-06-05 修正：Hermes Skill 和 `awiki-deamon-runtime send` 只支持普通消息，不暴露 direct/group E2EE 路径。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked runtime_message_send_params_validate_and_map_security` 通过，1 个测试；`cargo test -p awiki-deamon --locked msg_send` 通过，3 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个测试；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，54 个测试、1 ignored；`cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-deamon` 通过；边界/secret/plugin 搜索结果已记录在执行记录。 |
 | 下一步 | 启动 Step 06 Hermes session 持久化与 resume/reset |
 
@@ -53,7 +53,7 @@
 local RPC msg.send
   -> daemon 校验 token/method/recipient scope
   -> 使用 context.agent_did 对应 agent identity
-  -> im-core messages.send default_plain direct/group
+  -> im-core 普通 direct/group message send
   -> message-service 投递目标 DID
 ```
 
@@ -79,19 +79,18 @@ Hermes MVP 默认 allowed_recipients = None 仅表示不做 recipient 限制，�
 
 ### 普通消息安全模式
 
-Hermes Skill 和 `awiki-deamon-runtime send` 只支持普通消息。产品 wrapper 不暴露 `--security` 参数，并且 Hermes runtime token 只允许 `default_plain`。
+Hermes Skill 和 `awiki-deamon-runtime send` 只支持普通消息。产品 wrapper 不暴露 `--security` 参数；daemon 侧保持防御校验，手写 local RPC 若传入非普通 security 会被拒绝。
 
 local RPC 侧的产品请求形态：
 
 ```json
 {
   "to": "alice",
-  "text": "hello",
-  "security": "default_plain"
+  "text": "hello"
 }
 ```
 
-不传 `security` 时也按 `default_plain` 解析。底层兼容测试可以保留旧 security parser，但 Hermes Skill/CLI 这条产品链路不得生成或描述加密参数。
+产品请求不传 `security`。底层兼容测试可以保留旧 security parser，但 Hermes Skill/CLI 这条产品链路不得生成或描述加密参数。
 
 ### test adapter
 
@@ -128,7 +127,7 @@ trait RuntimeMessageSender {
    - scope 匹配时调用 message sender，recipient/text/security 正确；
    - status/final 仍回 controller；
    - request debug spoof 字段不影响 agent_did/run_id；
-   - Hermes Skill/CLI 不生成加密 security 参数，Hermes token policy 拒绝非 `default_plain`。
+   - Hermes Skill/CLI 不生成 security 参数，Hermes token policy 拒绝非普通消息。
 8. 如可用本地服务，运行 focused real-send smoke；否则记录未运行原因，Step 08 必须补系统测试。
 9. 进入 review，修复后提交。
 
@@ -138,7 +137,7 @@ trait RuntimeMessageSender {
 - [x] `msg.send` recipient 和 text 参数有明确校验。
 - [x] recipient scope 越权被拒绝并有 audit。
 - [x] status/final 回 controller 的行为保持不回归。
-- [x] Hermes Skill/CLI 只支持 `default_plain` 普通消息，不暴露加密发送路径。
+- [x] Hermes Skill/CLI 只支持普通消息，不暴露加密发送路径。
 - [x] `awiki-outbound-messaging` Skill 与真实发送语义一致。
 - [x] 审查发现 已修复或明确记录。
 - [x] 本步骤创建一个聚焦提交后才进入 Step 06 或 Step 07。
@@ -193,13 +192,13 @@ trait RuntimeMessageSender {
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
 | 2026-06-01 | Hermes controller text 触发的 run token 默认只允许 `msg.send` 到 controller DID | 收敛 recipient scope 安全假设，避免默认开放任意 DID 外发 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
-| 2026-06-05 | Hermes Skill/CLI 出站消息只支持 `default_plain` 普通消息 | 本期产品链路不做加密消息；避免 peer/prekey 状态影响联调 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+| 2026-06-05 | Hermes Skill/CLI 出站消息只支持普通消息 | 本期产品链路不做加密消息；避免 peer/prekey 状态影响联调 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
 
 ## 14. Step 05 执行记录
 
 ### 已实现
 
-- 新增 `RuntimeMessageSend` 和 `RuntimeMessageSecurity`，统一解析 `msg.send` 参数：`to`/`recipient` 必填且非空，`text` 必填且非空。Hermes Skill/CLI 产品链路只生成 `default_plain`。
+- 新增 `RuntimeMessageSend` 和 `RuntimeMessageSecurity`，统一解析 `msg.send` 参数：`to`/`recipient` 必填且非空，`text` 必填且非空。Hermes Skill/CLI 产品链路只生成普通消息请求，不生成 security 参数。
 - `local_rpc` 的 `RpcMethod::MsgSend` side effect 改为先构造 `RuntimeMessageSend`，再调用 `RuntimeOutbox::send_message`；授权仍由 runtime token 的 method scope 和 recipient scope 在 side effect 前完成，不信任请求体中的 spoof 字段。
 - `ImCoreAgentOutbox` 新增 `send_text_async` / `send_text`，生产路径通过 `im-core` `messages().send_async` 发送 `MessageBody::Text`；Hermes controller final、welcome、主动外发和附件发送均使用 `MessageSecurityMode::DefaultPlain`。
 - `ControllerRuntimeOutbox::send_message` 不再构造 `awiki.agent.status.v1` payload；status/final 仍回 controller，`msg.send` 只走 direct message path，且不计入 foreground status 发送计数。
