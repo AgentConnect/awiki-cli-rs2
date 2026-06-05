@@ -244,7 +244,7 @@ async fn process_inbox_once(
             if !processed.insert(message_key) {
                 continue;
             }
-            if route_message(
+            match route_message(
                 config,
                 state,
                 im_core,
@@ -252,8 +252,23 @@ async fn process_inbox_once(
                 &client,
                 &agent.agent_did,
                 &message,
-            )? {
-                processed_count += 1;
+            ) {
+                Ok(true) => {
+                    processed_count += 1;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    let sanitized = sanitize_error_message(&error.to_string());
+                    eprintln!("warning: daemon inbox message route failed: {sanitized}");
+                    if let Err(audit_error) =
+                        record_inbox_route_error(state, &agent.agent_did, &message, &error)
+                    {
+                        eprintln!(
+                            "warning: daemon inbox route error audit failed: {}",
+                            sanitize_error_message(&audit_error.to_string())
+                        );
+                    }
+                }
             }
         }
     }
@@ -445,26 +460,35 @@ fn route_message(
 ) -> Result<bool> {
     let sender_did = message.sender.as_str().to_string();
     let conversation_id = conversation_id(message);
-    let outbox = ImCoreAgentOutbox::new(target_client.clone());
     match &message.body {
         MessageBodyView::Payload { payload } => {
+            let content_type = message
+                .metadata
+                .content_type
+                .clone()
+                .unwrap_or_else(|| "application/json".to_string());
+            if !is_awiki_agent_command_payload(payload) {
+                record_ignored_non_command_payload(
+                    state,
+                    target_agent_did,
+                    message,
+                    &content_type,
+                    payload,
+                )?;
+                return Ok(false);
+            }
             let payload_message = IncomingAgentPayloadMessage {
                 message_id: message.id.as_str().to_string(),
                 conversation_id,
                 sender_did,
                 target_agent_did: target_agent_did.to_string(),
-                content_type: message
-                    .metadata
-                    .content_type
-                    .clone()
-                    .unwrap_or_else(|| "application/json".to_string()),
+                content_type,
                 payload: payload.clone(),
             };
-            if payload.get("schema").and_then(Value::as_str) == Some("awiki.agent.command.v1")
-                && payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit")
-            {
+            if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
                 run_runtime_task_command(config, state, im_core, payload_message)?;
             } else {
+                let outbox = ImCoreAgentOutbox::new(target_client.clone());
                 let outcome = handle_agent_payload_message(
                     config,
                     state,
@@ -480,6 +504,7 @@ fn route_message(
             Ok(true)
         }
         MessageBodyView::Text { text, .. } => {
+            let outbox = ImCoreAgentOutbox::new(target_client.clone());
             let status_sender =
                 runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
             let runtime_outbox = ControllerRuntimeOutbox::new(
@@ -509,6 +534,56 @@ fn route_message(
         }
         MessageBodyView::Unsupported { .. } => Ok(false),
     }
+}
+
+fn is_awiki_agent_command_payload(payload: &Value) -> bool {
+    payload.get("schema").and_then(Value::as_str) == Some("awiki.agent.command.v1")
+}
+
+fn record_ignored_non_command_payload(
+    state: &DaemonState,
+    target_agent_did: &str,
+    message: &Message,
+    content_type: &str,
+    payload: &Value,
+) -> Result<()> {
+    state.insert_audit_event_json(
+        "daemon.inbox.payload.ignored",
+        Some(target_agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "reason": "not_awiki_agent_command",
+            "message_id": message.id.as_str(),
+            "sender_did": message.sender.as_str(),
+            "target_agent_did": target_agent_did,
+            "content_type": content_type,
+            "schema": payload.get("schema").and_then(Value::as_str),
+        }),
+    )
+}
+
+fn record_inbox_route_error(
+    state: &DaemonState,
+    target_agent_did: &str,
+    message: &Message,
+    error: &anyhow::Error,
+) -> Result<()> {
+    state.insert_audit_event_json(
+        "daemon.inbox.message.route.failed",
+        Some(target_agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "message_id": message.id.as_str(),
+            "sender_did": message.sender.as_str(),
+            "target_agent_did": target_agent_did,
+            "content_type": message.metadata.content_type.as_deref().unwrap_or(""),
+            "error": sanitize_error_message(&error.to_string()),
+        }),
+    )
 }
 
 fn send_runtime_agent_welcome_message(
@@ -2194,5 +2269,72 @@ mod tests {
             conversation_id(&message).as_deref(),
             Some("direct:did:human:alice")
         );
+    }
+
+    #[test]
+    fn attachment_manifest_payload_is_ignored_without_auditing_content() {
+        let (_root, config, state) = fixture();
+        let payload = json!({
+            "schema": "anp.attachment.manifest.v1",
+            "caption": "secret caption from controller",
+            "attachments": [{
+                "attachment_id": "att_secret_manifest",
+                "filename": "secret-plan.md",
+                "mime_type": "text/markdown",
+                "size_bytes": 42
+            }]
+        });
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
+            thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata {
+                content_type: Some(
+                    im_core::attachments::attachment_manifest_content_type().to_string(),
+                ),
+                ..im_core::messages::MessageMetadata::default()
+            },
+        };
+        let content_type = message
+            .metadata
+            .content_type
+            .as_deref()
+            .expect("fixture content type");
+
+        assert!(!is_awiki_agent_command_payload(&payload));
+        record_ignored_non_command_payload(
+            &state,
+            "did:agent:hermes",
+            &message,
+            content_type,
+            &payload,
+        )
+        .unwrap();
+
+        let connection = rusqlite::Connection::open(&config.daemon_db_path).unwrap();
+        let detail_json: String = connection
+            .query_row(
+                "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'daemon.inbox.payload.ignored' ORDER BY created_at_ms DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(detail_json.contains("not_awiki_agent_command"));
+        assert!(detail_json.contains("msg_attachment_manifest"));
+        assert!(detail_json.contains("did:human:alice"));
+        assert!(detail_json.contains("did:agent:hermes"));
+        assert!(detail_json.contains(im_core::attachments::attachment_manifest_content_type()));
+        assert!(detail_json.contains("anp.attachment.manifest.v1"));
+        assert!(!detail_json.contains("secret caption"));
+        assert!(!detail_json.contains("secret-plan.md"));
+        assert!(!detail_json.contains("att_secret_manifest"));
     }
 }
