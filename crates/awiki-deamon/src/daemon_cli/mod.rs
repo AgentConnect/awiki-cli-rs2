@@ -334,7 +334,7 @@ where
 
     if let Some(existing) = existing {
         if existing.controller_did != metadata.controller_did {
-            bail!("existing daemon agent controller_did does not match registration token");
+            return Ok(existing);
         }
         return Ok(existing);
     }
@@ -485,12 +485,18 @@ mod tests {
 
         fn update_latest_status(
             &self,
-            _daemon_agent_did: &str,
+            daemon_agent_did: &str,
             statuses: Vec<AgentLatestStatusUpdateItem>,
             _auth: &DidAuthMaterial,
         ) -> Result<Value> {
             self.latest_items.lock().unwrap().extend(statuses);
-            Ok(json!({"ok": true}))
+            Ok(json!({
+                "updated": [{
+                    "agent_did": daemon_agent_did,
+                    "controller_did": "did:human:alice",
+                    "status": "ready",
+                }]
+            }))
         }
     }
 
@@ -625,7 +631,7 @@ fn update_daemon_latest_status(
         private_key_path: auth_paths.1,
         bearer_token: state.load_agent_auth_token(&agent.agent_did)?,
     };
-    client.update_latest_status(
+    let response = client.update_latest_status(
         &agent.agent_did,
         vec![AgentLatestStatusUpdateItem {
             agent_did: agent.agent_did.clone(),
@@ -657,6 +663,11 @@ fn update_daemon_latest_status(
             }),
         }],
         &auth,
+    )?;
+    crate::agent_status::sync_controller_did_from_latest_response(
+        state,
+        &agent.agent_did,
+        &response,
     )?;
     Ok(())
 }

@@ -769,6 +769,77 @@ ON CONFLICT(agent_did) DO UPDATE SET
         Ok(())
     }
 
+    pub fn update_controller_did_for_agent_family(
+        &self,
+        daemon_agent_did: &str,
+        controller_did: &str,
+    ) -> Result<usize> {
+        if daemon_agent_did.trim().is_empty() {
+            bail!("daemon_agent_did must not be empty");
+        }
+        if controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let mut updated = 0usize;
+        updated += connection.execute(
+            r#"
+UPDATE agent_definition
+SET controller_did = ?1,
+    updated_at = ?2
+WHERE agent_did = ?3
+   OR agent_did IN (
+       SELECT runtime_agent_did
+       FROM runtime_daemon_binding
+       WHERE daemon_agent_did = ?3
+   )
+"#,
+            rusqlite::params![controller_did, now.to_string(), daemon_agent_did],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_daemon_binding
+SET controller_did = ?1,
+    updated_at_ms = ?2
+WHERE daemon_agent_did = ?3
+"#,
+            rusqlite::params![controller_did, now, daemon_agent_did],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_task
+SET controller_did = ?1,
+    updated_at_ms = ?2
+WHERE agent_did IN (
+    SELECT runtime_agent_did
+    FROM runtime_daemon_binding
+    WHERE daemon_agent_did = ?3
+)
+  AND status IN ('pending', 'running')
+"#,
+            rusqlite::params![controller_did, now, daemon_agent_did],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_agent_create_request
+SET controller_did = ?1,
+    updated_at_ms = ?2
+WHERE daemon_agent_did = ?3
+"#,
+            rusqlite::params![controller_did, now, daemon_agent_did],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE agent_status_query_throttle
+SET controller_did = ?1
+WHERE daemon_agent_did = ?2
+"#,
+            rusqlite::params![controller_did, daemon_agent_did],
+        )?;
+        Ok(updated)
+    }
+
     pub fn store_agent_identity(&self, identity: &AgentIdentityRecord) -> Result<()> {
         if identity.agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");

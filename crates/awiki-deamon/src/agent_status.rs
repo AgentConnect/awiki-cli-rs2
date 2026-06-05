@@ -246,8 +246,54 @@ pub fn update_user_service_latest(
         private_key_path: auth_paths.1,
         bearer_token: state.load_agent_auth_token(&daemon.agent_did)?,
     };
-    client.update_latest_status(&daemon.agent_did, items, &auth)?;
+    let response = client.update_latest_status(&daemon.agent_did, items, &auth)?;
+    sync_controller_did_from_latest_response(state, &daemon.agent_did, &response)?;
     Ok(())
+}
+
+pub fn sync_controller_did_from_latest_response(
+    state: &DaemonState,
+    daemon_agent_did: &str,
+    response: &Value,
+) -> Result<()> {
+    let Some(controller_did) = controller_did_from_latest_response(daemon_agent_did, response)
+    else {
+        return Ok(());
+    };
+    let local = state.load_agent_definition(daemon_agent_did)?;
+    if local.controller_did == controller_did {
+        return Ok(());
+    }
+    state.update_controller_did_for_agent_family(daemon_agent_did, &controller_did)?;
+    state.insert_audit_event_json(
+        "daemon.controller_did.synced",
+        Some(daemon_agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "old_controller_did": local.controller_did,
+            "new_controller_did": controller_did,
+        }),
+    )?;
+    Ok(())
+}
+
+fn controller_did_from_latest_response(daemon_agent_did: &str, response: &Value) -> Option<String> {
+    response
+        .get("updated")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|item| {
+            item.get("agent_did")
+                .and_then(Value::as_str)
+                .map(|did| did == daemon_agent_did)
+                .unwrap_or(false)
+        })
+        .find_map(|item| item.get("controller_did").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn emit_daemon_heartbeat<O>(
@@ -737,6 +783,62 @@ mod tests {
         assert_eq!(
             configured_diagnostics["config_summary"]["gateway_command"],
             "configured"
+        );
+    }
+
+    #[test]
+    fn latest_status_response_can_rotate_local_controller_did() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon = daemon();
+        let runtime = hermes_runtime();
+        state.upsert_agent_definition(&daemon).unwrap();
+        state.upsert_agent_definition(&runtime).unwrap();
+        state
+            .upsert_runtime_daemon_binding(
+                &runtime.agent_did,
+                &daemon.agent_did,
+                &daemon.controller_did,
+            )
+            .unwrap();
+
+        sync_controller_did_from_latest_response(
+            &state,
+            &daemon.agent_did,
+            &json!({
+                "updated": [{
+                    "agent_did": daemon.agent_did,
+                    "controller_did": "did:human:alice-new",
+                    "status": "ready",
+                }]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            state
+                .load_agent_definition(&daemon.agent_did)
+                .unwrap()
+                .controller_did,
+            "did:human:alice-new"
+        );
+        assert_eq!(
+            state
+                .load_agent_definition(&runtime.agent_did)
+                .unwrap()
+                .controller_did,
+            "did:human:alice-new"
+        );
+        assert_eq!(
+            state
+                .load_runtime_daemon_binding(&runtime.agent_did)
+                .unwrap()
+                .unwrap()
+                .controller_did,
+            "did:human:alice-new"
         );
     }
 
