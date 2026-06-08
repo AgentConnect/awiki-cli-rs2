@@ -256,7 +256,9 @@ async fn process_inbox_once(
                 &client,
                 &agent.agent_did,
                 &message,
-            ) {
+            )
+            .await
+            {
                 Ok(true) => {
                     processed_count += 1;
                 }
@@ -453,7 +455,7 @@ fn sanitize_error_message(message: &str) -> String {
     sanitized
 }
 
-fn route_message(
+async fn route_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
@@ -480,7 +482,8 @@ fn route_message(
                     message,
                     &sender_did,
                     payload,
-                )?;
+                )
+                .await?;
                 route_runtime_controller_text(
                     config,
                     state,
@@ -623,7 +626,7 @@ struct RuntimeInboundAttachment {
     error: Option<String>,
 }
 
-fn attachment_runtime_prompt_text(
+async fn attachment_runtime_prompt_text(
     config: &DaemonConfig,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -635,14 +638,17 @@ fn attachment_runtime_prompt_text(
     let attachments = attachment_items_from_payload(payload)?;
     let mut resolved = Vec::new();
     for attachment in attachments {
-        resolved.push(resolve_inbound_attachment(
-            config,
-            target_client,
-            target_agent_did,
-            message,
-            sender_did,
-            attachment,
-        ));
+        resolved.push(
+            resolve_inbound_attachment(
+                config,
+                target_client,
+                target_agent_did,
+                message,
+                sender_did,
+                attachment,
+            )
+            .await,
+        );
     }
     Ok(render_attachment_runtime_prompt(&caption, &resolved))
 }
@@ -689,7 +695,7 @@ fn attachment_items_from_payload(payload: &Value) -> Result<Vec<RuntimeInboundAt
     Ok(items)
 }
 
-fn resolve_inbound_attachment(
+async fn resolve_inbound_attachment(
     config: &DaemonConfig,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -704,7 +710,9 @@ fn resolve_inbound_attachment(
         message,
         sender_did,
         &attachment,
-    ) {
+    )
+    .await
+    {
         Ok(path) => {
             attachment.local_path = Some(path);
             attachment.download_status = "downloaded".to_string();
@@ -717,7 +725,7 @@ fn resolve_inbound_attachment(
     attachment
 }
 
-fn download_inbound_attachment(
+async fn download_inbound_attachment(
     config: &DaemonConfig,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -739,13 +747,14 @@ fn download_inbound_attachment(
     let message_id = MessageId::parse(message.id.as_str())?;
     let downloaded = target_client
         .attachments()
-        .download(DownloadAttachmentRequest {
+        .download_async(DownloadAttachmentRequest {
             thread: message.thread.clone(),
             message_id,
             attachment_id: Some(attachment.attachment_id.clone()),
             destination: AttachmentDestination::LocalFile(destination.clone()),
             overwrite: false,
-        })?;
+        })
+        .await?;
     match downloaded.destination {
         DownloadedAttachmentDestination::LocalFile(path) => {
             set_private_file_permissions(&path)?;
