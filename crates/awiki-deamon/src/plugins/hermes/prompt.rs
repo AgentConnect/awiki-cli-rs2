@@ -94,6 +94,7 @@ rules:
   - Do not use outbound messaging Skill/CLI to reply to the controller unless the controller explicitly asks you to send a separate message to another handle or group.
   - Use outbound-send only when the controller asks you to send a direct or group message, with or without an attachment, to someone outside the controller reply path.
   - Do not claim an outbound message was sent unless daemon wrapper reports success.
+  - Controller attachments are listed as resources with daemon-local paths. Use those paths only when the controller message or conversation context indicates the file should be inspected.
   - Streaming message.complete is observation only; successful final is handled by daemon host output.
   - Failed execution should report failed status; do not call success final for failures.
 
