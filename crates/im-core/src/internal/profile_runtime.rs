@@ -181,11 +181,7 @@ pub(crate) fn profile_from_value(
         .map(crate::ids::Did::parse)
         .transpose()?
         .unwrap_or_else(|| client.did().clone());
-    let handle = string_value(raw, &["handle", "full_handle"])
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| crate::ids::Handle::parse(&value, ""))
-        .transpose()?
-        .or_else(|| client.handle().cloned());
+    let handle = profile_handle_from_value(client, raw, &subject)?;
     let display_name = string_value(raw, &["display_name", "nick_name", "name"]);
     let bio = string_value(raw, &["bio"]);
     let tags = tags_value(raw.get("tags"));
@@ -214,6 +210,70 @@ fn string_value(raw: &Value, keys: &[&str]) -> Option<String> {
             Value::String(value) if !value.trim().is_empty() => Some(value.clone()),
             _ => None,
         })
+}
+
+fn profile_handle_from_value(
+    client: &crate::core::ImClient,
+    raw: &Value,
+    subject: &crate::ids::Did,
+) -> crate::ImResult<Option<crate::ids::Handle>> {
+    let full_handle = string_value(raw, &["full_handle"]);
+    let handle = string_value(raw, &["handle"]);
+    let handle = full_handle
+        .as_deref()
+        .filter(|value| handle_has_domain(value))
+        .or_else(|| handle.as_deref().filter(|value| handle_has_domain(value)))
+        .or(full_handle.as_deref())
+        .or(handle.as_deref());
+    let Some(handle) = handle else {
+        return Ok(client.handle().cloned());
+    };
+    let default_domain = profile_handle_default_domain(client, raw, subject);
+    crate::ids::Handle::parse(handle, &default_domain).map(Some)
+}
+
+fn handle_has_domain(value: &str) -> bool {
+    value.contains('.') || value.contains('@')
+}
+
+fn profile_handle_default_domain(
+    client: &crate::core::ImClient,
+    raw: &Value,
+    subject: &crate::ids::Did,
+) -> String {
+    string_value(raw, &["domain", "did_domain"])
+        .as_deref()
+        .and_then(normalize_domain)
+        .or_else(|| did_wba_domain(subject.as_str()))
+        .unwrap_or_else(|| {
+            client
+                .core_inner()
+                .sdk_config()
+                .did_domain
+                .trim()
+                .trim_end_matches('.')
+                .to_ascii_lowercase()
+        })
+}
+
+fn did_wba_domain(did: &str) -> Option<String> {
+    let mut parts = did.trim().split(':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("did"), Some("wba"), Some(domain)) => normalize_domain(domain),
+        _ => None,
+    }
+}
+
+fn normalize_domain(value: &str) -> Option<String> {
+    let domain = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if domain.is_empty()
+        || domain.contains('/')
+        || domain.contains('@')
+        || domain.contains(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(domain)
 }
 
 fn tags_value(value: Option<&Value>) -> Vec<String> {
