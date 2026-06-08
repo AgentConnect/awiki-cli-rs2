@@ -5851,6 +5851,7 @@ impl SseDecode for crate::dto::profile::DartUserProfile {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_subject = <String>::sse_decode(deserializer);
         let mut var_handle = <Option<String>>::sse_decode(deserializer);
+        let mut var_fullHandle = <Option<String>>::sse_decode(deserializer);
         let mut var_displayName = <Option<String>>::sse_decode(deserializer);
         let mut var_bio = <Option<String>>::sse_decode(deserializer);
         let mut var_tags = <Vec<String>>::sse_decode(deserializer);
@@ -5860,6 +5861,7 @@ impl SseDecode for crate::dto::profile::DartUserProfile {
         return crate::dto::profile::DartUserProfile {
             subject: var_subject,
             handle: var_handle,
+            full_handle: var_fullHandle,
             display_name: var_displayName,
             bio: var_bio,
             tags: var_tags,
@@ -8499,6 +8501,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::profile::DartUserProfile {
         [
             self.subject.into_into_dart().into_dart(),
             self.handle.into_into_dart().into_dart(),
+            self.full_handle.into_into_dart().into_dart(),
             self.display_name.into_into_dart().into_dart(),
             self.bio.into_into_dart().into_dart(),
             self.tags.into_into_dart().into_dart(),
@@ -9714,6 +9717,7 @@ impl SseEncode for crate::dto::profile::DartUserProfile {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.subject, serializer);
         <Option<String>>::sse_encode(self.handle, serializer);
+        <Option<String>>::sse_encode(self.full_handle, serializer);
         <Option<String>>::sse_encode(self.display_name, serializer);
         <Option<String>>::sse_encode(self.bio, serializer);
         <Vec<String>>::sse_encode(self.tags, serializer);

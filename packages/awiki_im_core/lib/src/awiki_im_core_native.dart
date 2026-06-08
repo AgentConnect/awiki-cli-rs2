@@ -1239,6 +1239,7 @@ extension on gen_profile_dto.DartUserProfile {
   UserProfile _toModel() => UserProfile(
     subject: subject,
     handle: handle,
+    fullHandle: fullHandle,
     displayName: displayName,
     bio: bio,
     tags: tags,

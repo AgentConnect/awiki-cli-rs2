@@ -2,6 +2,7 @@
 pub struct DartUserProfile {
     pub subject: String,
     pub handle: Option<String>,
+    pub full_handle: Option<String>,
     pub display_name: Option<String>,
     pub bio: Option<String>,
     pub tags: Vec<String>,

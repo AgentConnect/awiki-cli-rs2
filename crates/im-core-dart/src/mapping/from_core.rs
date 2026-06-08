@@ -340,9 +340,11 @@ impl From<im_core::auth::SessionUpdate> for DartSessionUpdate {
 
 impl From<im_core::identity::Profile> for DartUserProfile {
     fn from(value: im_core::identity::Profile) -> Self {
+        let full_handle = value.handle.map(|handle| handle.as_str().to_string());
         Self {
             subject: value.subject.as_str().to_string(),
-            handle: value.handle.map(|handle| handle.as_str().to_string()),
+            handle: full_handle.clone(),
+            full_handle,
             display_name: value.display_name,
             bio: value.bio,
             tags: value.tags,

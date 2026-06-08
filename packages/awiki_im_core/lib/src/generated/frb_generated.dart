@@ -4650,17 +4650,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartUserProfile dco_decode_dart_user_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return DartUserProfile(
       subject: dco_decode_String(arr[0]),
       handle: dco_decode_opt_String(arr[1]),
-      displayName: dco_decode_opt_String(arr[2]),
-      bio: dco_decode_opt_String(arr[3]),
-      tags: dco_decode_list_String(arr[4]),
-      markdown: dco_decode_opt_String(arr[5]),
-      avatarUrl: dco_decode_opt_String(arr[6]),
-      updatedAt: dco_decode_opt_String(arr[7]),
+      fullHandle: dco_decode_opt_String(arr[2]),
+      displayName: dco_decode_opt_String(arr[3]),
+      bio: dco_decode_opt_String(arr[4]),
+      tags: dco_decode_list_String(arr[5]),
+      markdown: dco_decode_opt_String(arr[6]),
+      avatarUrl: dco_decode_opt_String(arr[7]),
+      updatedAt: dco_decode_opt_String(arr[8]),
     );
   }
 
@@ -6802,6 +6803,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_subject = sse_decode_String(deserializer);
     var var_handle = sse_decode_opt_String(deserializer);
+    var var_fullHandle = sse_decode_opt_String(deserializer);
     var var_displayName = sse_decode_opt_String(deserializer);
     var var_bio = sse_decode_opt_String(deserializer);
     var var_tags = sse_decode_list_String(deserializer);
@@ -6811,6 +6813,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return DartUserProfile(
       subject: var_subject,
       handle: var_handle,
+      fullHandle: var_fullHandle,
       displayName: var_displayName,
       bio: var_bio,
       tags: var_tags,
@@ -8715,6 +8718,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.subject, serializer);
     sse_encode_opt_String(self.handle, serializer);
+    sse_encode_opt_String(self.fullHandle, serializer);
     sse_encode_opt_String(self.displayName, serializer);
     sse_encode_opt_String(self.bio, serializer);
     sse_encode_list_String(self.tags, serializer);
