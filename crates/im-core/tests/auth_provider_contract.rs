@@ -2,12 +2,16 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use im_core::prelude::*;
 use serde_json::Value;
+
+static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn file_session_provider_ensures_session_from_runtime_auth_state() {
@@ -18,7 +22,7 @@ fn file_session_provider_ensures_session_from_runtime_auth_state() {
     let session = client.auth().ensure_session(AuthScope::Messaging).unwrap();
     assert_eq!(session.subject.as_str(), "did:example:alice");
     assert_eq!(session.scope, AuthScope::Messaging);
-    assert_eq!(session.expires_at.as_deref(), Some("2026-05-21T00:00:00Z"));
+    assert_eq!(session.expires_at.as_deref(), Some("2099-05-21T00:00:00Z"));
     assert!(!session.refreshed);
 
     let status = client.auth().status().unwrap();
@@ -60,13 +64,14 @@ async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_tok
     assert_eq!(update.subject.as_str(), "did:example:alice");
     assert_eq!(
         update.previous_expires_at.as_deref(),
-        Some("2026-05-21T00:00:00Z")
+        Some("2099-05-21T00:00:00Z")
     );
     assert_eq!(update.new_expires_at, None);
     assert!(update.refreshed);
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
     assert_eq!(auth["jwt_token"], "fresh-token");
+    assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
@@ -99,6 +104,7 @@ async fn file_session_provider_refreshes_jwt_from_response_authorization_header(
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
     assert_eq!(auth["jwt_token"], "fresh-header-token");
+    assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(
@@ -122,12 +128,13 @@ async fn async_file_session_provider_refreshes_jwt_with_async_transport() {
     assert_eq!(update.subject.as_str(), "did:example:alice");
     assert_eq!(
         update.previous_expires_at.as_deref(),
-        Some("2026-05-21T00:00:00Z")
+        Some("2099-05-21T00:00:00Z")
     );
     assert!(update.refreshed);
     let auth: Value =
         serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
     assert_eq!(auth["jwt_token"], "fresh-token");
+    assert_eq!(auth["token_type"], "Bearer");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
@@ -152,6 +159,54 @@ fn file_session_provider_respects_messaging_readiness_for_message_scopes() {
         client.auth().ensure_session(AuthScope::Messaging),
         Err(ImError::IdentityNotReady { .. })
     ));
+}
+
+#[test]
+fn file_session_provider_reports_expired_token_as_refreshable_session() {
+    let fixture = AuthFixture::new();
+    fixture.write_runtime_with_expires_at(
+        "alice",
+        "did:example:alice",
+        Some("expired-token"),
+        true,
+        "2000-01-01T00:00:00Z",
+    );
+    let client = fixture.client("alice");
+
+    assert!(matches!(
+        client.auth().ensure_session(AuthScope::Messaging),
+        Err(ImError::SessionExpired)
+    ));
+    let status = client.auth().status().unwrap();
+    assert!(!status.has_session);
+    assert!(status.needs_refresh);
+    assert!(status
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("expired")));
+}
+
+#[test]
+fn file_session_provider_reads_legacy_jwt_token_exp_claim_when_metadata_is_missing() {
+    let fixture = AuthFixture::new();
+    let token = unsigned_jwt(serde_json::json!({
+        "sub": "did:example:alice",
+        "iat": 4070908800_i64,
+        "exp": 4102444800_i64
+    }));
+    fixture.write_runtime_auth_json(
+        "alice",
+        "did:example:alice",
+        &format!(r#"{{"jwt_token":"{token}"}}"#),
+        true,
+    );
+    let client = fixture.client("alice");
+
+    let status = client.auth().status().unwrap();
+    assert!(status.has_session);
+    assert!(!status.needs_refresh);
+    assert_eq!(status.expires_at.as_deref(), Some("2100-01-01T00:00:00Z"));
+    assert!(status.warnings.is_empty());
 }
 
 struct AuthFixture {
@@ -180,6 +235,41 @@ impl AuthFixture {
         alias: &str,
         did: &str,
         token: Option<&str>,
+        ready_for_messaging: bool,
+    ) {
+        self.write_runtime_with_expires_at(
+            alias,
+            did,
+            token,
+            ready_for_messaging,
+            "2099-05-21T00:00:00Z",
+        );
+    }
+
+    fn write_runtime_with_expires_at(
+        &self,
+        alias: &str,
+        did: &str,
+        token: Option<&str>,
+        ready_for_messaging: bool,
+        expires_at: &str,
+    ) {
+        let token_field = token
+            .map(|token| format!(r#""jwt_token":"{token}","#))
+            .unwrap_or_default();
+        self.write_runtime_auth_json(
+            alias,
+            did,
+            &format!(r#"{{{token_field}"expires_at":"{expires_at}"}}"#),
+            ready_for_messaging,
+        );
+    }
+
+    fn write_runtime_auth_json(
+        &self,
+        alias: &str,
+        did: &str,
+        auth_json: &str,
         ready_for_messaging: bool,
     ) {
         let identities = self.root.join("identities");
@@ -214,14 +304,7 @@ impl AuthFixture {
             bundle.private_key_pem("key-1").unwrap(),
         )
         .unwrap();
-        let token_field = token
-            .map(|token| format!(r#""jwt_token":"{token}","#))
-            .unwrap_or_default();
-        fs::write(
-            identity_dir.join("auth.json"),
-            format!(r#"{{{token_field}"expires_at":"2026-05-21T00:00:00Z"}}"#),
-        )
-        .unwrap();
+        fs::write(identity_dir.join("auth.json"), auth_json).unwrap();
     }
 
     fn auth_path(&self, alias: &str) -> PathBuf {
@@ -330,13 +413,15 @@ fn rewrite_did_references(value: Option<&mut Value>, did: &str) {
 
 fn unique_temp_root() -> PathBuf {
     let mut path = std::env::temp_dir();
+    let sequence = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
     path.push(format!(
-        "im-core-auth-provider-{}-{}",
+        "im-core-auth-provider-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        sequence
     ));
     fs::create_dir_all(&path).unwrap();
     path
@@ -472,4 +557,13 @@ fn contains_header(raw: &str, name: &str) -> bool {
     raw.lines()
         .filter_map(|line| line.split_once(':').map(|(header, _)| header))
         .any(|header| header.eq_ignore_ascii_case(name))
+}
+
+fn unsigned_jwt(payload: Value) -> String {
+    let header = serde_json::json!({"alg":"none","typ":"JWT"});
+    format!(
+        "{}.{}.signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap()),
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+    )
 }

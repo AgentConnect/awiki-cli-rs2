@@ -2,6 +2,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::internal::auth::state::{persist_jwt_token, read_jwt_token};
+
 pub(crate) trait AuthenticatedRpcTransport {
     fn authenticated_rpc(
         &mut self,
@@ -1476,44 +1478,6 @@ fn reqwest_transport_unavailable(err: reqwest::Error) -> crate::ImError {
     crate::ImError::TransportUnavailable {
         detail: err.to_string(),
     }
-}
-
-fn read_jwt_token(path: &std::path::Path) -> crate::ImResult<Option<String>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(crate::ImError::from(err)),
-    };
-    let value: Value =
-        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })?;
-    Ok(value
-        .get("jwt_token")
-        .or_else(|| value.get("token"))
-        .or_else(|| value.get("access_token"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(ToOwned::to_owned))
-}
-
-fn persist_jwt_token(path: &std::path::Path, token: &str) -> crate::ImResult<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| crate::ImError::PathUnavailable {
-            path_kind: "auth_state".to_string(),
-            detail: "auth state path has no parent".to_string(),
-        })?;
-    std::fs::create_dir_all(parent)?;
-    let body =
-        serde_json::to_vec_pretty(&serde_json::json!({ "jwt_token": token })).map_err(|err| {
-            crate::ImError::Serialization {
-                detail: err.to_string(),
-            }
-        })?;
-    std::fs::write(path, body)?;
-    Ok(())
 }
 
 impl RpcTransport for UnavailableTransport {
