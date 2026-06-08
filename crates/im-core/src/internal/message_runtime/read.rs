@@ -68,7 +68,7 @@ where
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
         project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
-        let page = page_from_raw(&raw, input.query.limit)?;
+        let page = page_from_raw(self.client, &raw, input.query.limit)?;
         persist_projection_best_effort(self.client, &page.items);
         Ok(ReadPageResult { page, raw })
     }
@@ -100,7 +100,7 @@ where
                     &mut raw,
                     &mut self.directory_transport,
                 );
-                let page = page_from_raw(&raw, input.query.limit)?;
+                let page = page_from_raw(self.client, &raw, input.query.limit)?;
                 persist_projection_best_effort(self.client, &page.items);
                 Ok(ReadPageResult { page, raw })
             }
@@ -120,7 +120,8 @@ where
                     params,
                 )?;
                 project_group_e2ee_messages(self.client, &mut raw);
-                let page = page_from_raw_with_group(&raw, input.query.limit, Some(&group))?;
+                let page =
+                    page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
                 persist_projection_best_effort(self.client, &page.items);
                 Ok(ReadPageResult { page, raw })
             }
@@ -154,7 +155,7 @@ where
             .await?;
         project_secure_direct_messages_async(self.client, &mut raw, &mut self.directory_transport)
             .await;
-        let page = page_from_raw(&raw, input.query.limit)?;
+        let page = page_from_raw(self.client, &raw, input.query.limit)?;
         persist_projection_best_effort_async(self.client, &page.items).await;
         Ok(ReadPageResult { page, raw })
     }
@@ -190,7 +191,7 @@ where
                     &mut self.directory_transport,
                 )
                 .await;
-                let page = page_from_raw(&raw, input.query.limit)?;
+                let page = page_from_raw(self.client, &raw, input.query.limit)?;
                 persist_projection_best_effort_async(self.client, &page.items).await;
                 Ok(ReadPageResult { page, raw })
             }
@@ -210,7 +211,8 @@ where
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                     .await?;
                 project_group_e2ee_messages_async(self.client, &mut raw).await;
-                let page = page_from_raw_with_group(&raw, input.query.limit, Some(&group))?;
+                let page =
+                    page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
                 persist_projection_best_effort_async(self.client, &page.items).await;
                 Ok(ReadPageResult { page, raw })
             }
@@ -270,13 +272,15 @@ fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
 }
 
 fn page_from_raw(
+    client: &crate::core::ImClient,
     raw: &Value,
     requested_limit: crate::ids::PageLimit,
 ) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
-    page_from_raw_with_group(raw, requested_limit, None)
+    page_from_raw_with_group(client, raw, requested_limit, None)
 }
 
 fn page_from_raw_with_group(
+    client: &crate::core::ImClient,
     raw: &Value,
     requested_limit: crate::ids::PageLimit,
     group: Option<&crate::ids::GroupRef>,
@@ -287,7 +291,7 @@ fn page_from_raw_with_group(
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| message_from_value(item, group).transpose())
+                .filter_map(|item| message_from_value(client, item, group).transpose())
                 .collect::<crate::ImResult<Vec<_>>>()
         })
         .transpose()?
@@ -1037,6 +1041,7 @@ fn redact_attachment_manifest_content(content: Value) -> Value {
 }
 
 fn message_from_value(
+    client: &crate::core::ImClient,
     value: &Value,
     fallback_group: Option<&crate::ids::GroupRef>,
 ) -> crate::ImResult<Option<crate::messages::Message>> {
@@ -1067,11 +1072,7 @@ fn message_from_value(
     let thread = if !group_did.trim().is_empty() {
         crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&group_did)?)
     } else {
-        let peer = if !receiver_did.trim().is_empty() {
-            receiver_did.as_str()
-        } else {
-            sender_did.as_str()
-        };
+        let peer = direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did);
         crate::messages::ThreadRef::Direct(crate::ids::PeerRef::parse(peer, "")?)
     };
     Ok(Some(crate::messages::Message {
@@ -1091,6 +1092,26 @@ fn message_from_value(
             .filter(|value| !value.trim().is_empty()),
         metadata,
     }))
+}
+
+fn direct_peer_did_for_message<'a>(
+    owner_did: &str,
+    sender_did: &'a str,
+    receiver_did: &'a str,
+) -> &'a str {
+    let owner = owner_did.trim();
+    let sender = sender_did.trim();
+    let receiver = receiver_did.trim();
+    if !sender.is_empty() && sender != owner {
+        return sender_did;
+    }
+    if !receiver.is_empty() && receiver != owner {
+        return receiver_did;
+    }
+    if !receiver.is_empty() {
+        return receiver_did;
+    }
+    sender_did
 }
 
 fn message_metadata_from_object(
@@ -1452,6 +1473,60 @@ mod tests {
         assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["user_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["limit"], 20);
+    }
+
+    #[test]
+    fn messages_read_runtime_projects_direct_thread_as_current_identity_peer() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [
+                        {
+                            "id": "msg-incoming",
+                            "sender_did": "did:example:bob",
+                            "receiver_did": "did:example:alice",
+                            "content": "hello alice",
+                            "content_type": "text/plain"
+                        },
+                        {
+                            "id": "msg-outgoing",
+                            "sender_did": "did:example:alice",
+                            "receiver_did": "did:example:bob",
+                            "content": "hello bob",
+                            "content_type": "text/plain",
+                            "direction": 1
+                        }
+                    ],
+                    "has_more": false
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::DirectOnly,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                },
+            })
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 2);
+        for message in &result.page.items {
+            assert!(matches!(
+                &message.thread,
+                crate::messages::ThreadRef::Direct(peer)
+                    if peer.as_str() == "did:example:bob"
+            ));
+        }
     }
 
     #[test]
@@ -1945,6 +2020,7 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(projected.len(), 1);
         let page = page_from_raw(
+            &Fixture::new().client(),
             &json!({
                 "messages": projected,
                 "has_more": false
@@ -1997,6 +2073,7 @@ mod tests {
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0]["content"], Value::Null);
         let page = page_from_raw(
+            &Fixture::new().client(),
             &json!({
                 "messages": projected,
                 "has_more": false
@@ -2136,6 +2213,8 @@ mod tests {
 
     #[test]
     fn secure_group_attachment_public_projection_redacts_and_sets_group_profile() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
         let mut messages = vec![json!({
             "id": "msg-group-attachment",
             "sender_did": "did:example:bob",
@@ -2147,6 +2226,7 @@ mod tests {
         })];
 
         let page_full = page_from_raw_with_group(
+            &client,
             &json!({
                 "messages": messages.clone(),
                 "has_more": false
@@ -2161,6 +2241,7 @@ mod tests {
 
         redact_attachment_manifests_for_public_projection(&mut messages);
         let page_public = page_from_raw_with_group(
+            &client,
             &json!({
                 "messages": messages,
                 "has_more": false
