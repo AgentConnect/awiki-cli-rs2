@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：committed
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | committed |
+| Status | done |
 | Branch | `feature/release-0526/agent-im-hutong` |
 | Started | 2026-06-09T14:16:19Z |
 | Completed | 2026-06-09T15:33:31Z |
-| Commit | 待提交后回填 |
+| Commit | `59ec9b2 awiki-deamon: sync user delegated inbox` |
 | Review evidence | 2026-06-09 Review：检查 cursor/processed message、dispatch 失败、E2EE opaque、system/control payload、prompt 包装、message_event retention、runtime status/final outbox、delegated key material 和 DID shadow。发现并修复：失败 dispatch 后 `processed_message` 必须进入 retryable 且 cursor 不前移；message_event 必须在 dispatch 成功后写入；生产 dispatcher 不能只插入 runtime_task，必须实际运行 Runtime Host；failed prior runtime run 需要 retry run id；`private_key_multibase` 需要规范化为 im-core 可解析 PEM；delegated DID shadow 必须随当前 identity 刷新；runtime status/final 需要进入 `message_sync_outbox` 且不保存 final 明文。 |
 | Verification evidence | `cargo check -p awiki-deamon --locked`：通过；`cargo test -p awiki-deamon --lib --locked -j1 user_delegated -- --nocapture`：11 passed；`cargo test -p awiki-deamon --lib --locked -j1 delegated_inbox_sync_state -- --nocapture`：1 passed；`cargo test -p awiki-deamon --locked -j1`：lib 88 passed；main 0 passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。 |
-| Next action | 创建 Step 05 聚焦 commit 并回填 commit hash |
+| Next action | 启动 Step 06：awiki-me bootstrap UI 与 service |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
