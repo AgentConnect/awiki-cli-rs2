@@ -49,6 +49,15 @@ pub struct SendMessageRequest {
     pub security: MessageSecurityPolicy,
     pub client_message_id: Option<crate::ids::MessageId>,
     pub delivery: MessageDeliveryOptions,
+    pub delegated_signing: Option<DelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegatedSigningOptions {
+    pub logical_sender_did: Option<String>,
+    pub signing_verification_method: Option<String>,
+    pub signing_key_ref: Option<String>,
+    pub actor_agent_did: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +114,27 @@ pub enum AttachmentInput {
 ```
 
 P1 `AttachmentInput` 只作为 reserved enum 形态存在。不要在 P1 实现 upload/download。
+
+### 2.1 Delegated Signing Optional 扩展
+
+当前 Agent IM MVP 在不改变 ANP `origin_proof` 结构的前提下，为普通 direct/default plain 发送增加 `delegated_signing` optional 参数。调用方不传该字段时，SDK 继续使用当前 identity/session 默认 sender 与默认 authentication key，老 Rust/Dart 调用行为不变。
+
+`delegated_signing` 的字段语义：
+
+| 字段 | 语义 |
+|---|---|
+| `logical_sender_did` | 消息业务发送者 DID，MVP 为用户 DID，例如 `did:wba:...:user:e1_xxx`。SDK 会把它写入 `meta.sender_did`。 |
+| `signing_verification_method` | 用于签 `auth.origin_proof` 的 verification method，MVP 为 `user_did#daemon-key-1`。 |
+| `signing_key_ref` | SDK 本地可解析的子私钥引用，例如 `file:/.../daemon-key-1.pem` 或 `local:daemon-key-1`。 |
+| `actor_agent_did` | 可选审计字段，标识实际发起能力调用的 daemon/runtime agent；不改变 ANP proof 结构。 |
+
+SDK 本地校验：
+
+1. `logical_sender_did` 必须与 `signing_verification_method` 的 DID owner 一致。
+2. `signing_verification_method` 必须能在对应 DID Document 的 `authentication` 或兼容 verification method 中找到。
+3. `signing_key_ref` 必须能在本地解析到私钥。
+4. Delegated send 只允许 direct 普通非 E2EE 消息：`DefaultPlain` / `Plain`。
+5. Delegated send 对 group、attachment、`E2eeRequired`、`SecureDirect`、`GroupE2ee` 返回 `UnsupportedCapability`，防止 Agent IM MVP 绕过 E2EE 边界。
 
 ## 3. Send Result
 
@@ -226,6 +256,7 @@ pub struct InboxQuery {
     pub limit: crate::ids::PageLimit,
     pub cursor: Option<crate::ids::Cursor>,
     pub unread_only: bool,
+    pub inbox_history_options: Option<InboxHistoryOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,10 +270,50 @@ pub enum InboxScope {
 pub struct HistoryQuery {
     pub limit: crate::ids::PageLimit,
     pub cursor: Option<crate::ids::Cursor>,
+    pub inbox_history_options: Option<InboxHistoryOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxHistoryOptions {
+    pub inbox_owner_did: Option<String>,
+    pub inbox_auth_verification_method: Option<String>,
+    pub inbox_auth_key_ref: Option<String>,
+    pub inbox_auth: Option<InboxAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InboxAuth {
+    ScopedInboxToken { token: ScopedInboxToken },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedInboxToken {
+    pub token: String,
 }
 ```
 
 P1 不把 `mark_read` 放进 `InboxQuery`。当前 CLI 若有 `--mark-read`，P1 adapter 可以继续走旧逻辑或返回 unsupported；完整 mark-read 放 Phase 3。
+
+### 5.1 Delegated Inbox / History Optional 扩展
+
+`InboxHistoryOptions` 是 Step 02 新增的 optional 参数，供 Daemon 使用 `user_did#daemon-key-1` 证明自己有权读取用户普通 inbox/history。调用方不传 `inbox_history_options` 时，SDK 继续走当前 identity/session 默认 inbox/history 读取逻辑，老调用行为不变。
+
+MVP DID proof 主路径：
+
+| 字段 | 语义 |
+|---|---|
+| `inbox_owner_did` | 被读取 inbox/history 的用户 DID。 |
+| `inbox_auth_verification_method` | 用于签读取 proof 的用户 DID authentication key，MVP 为 `user_did#daemon-key-1`。 |
+| `inbox_auth_key_ref` | SDK 本地可解析的子私钥引用。 |
+| `inbox_auth` | 后续 token 路径预留。MVP 中传 `ScopedInboxToken` 会返回明确 unsupported，不影响 DID proof 主路径。 |
+
+SDK 本地校验：
+
+1. `inbox_owner_did` 必须与 `inbox_auth_verification_method` 的 DID owner 一致。
+2. `inbox_auth_verification_method` 必须在 DID Document `authentication` 中有效。
+3. `inbox_auth_key_ref` 必须能在本地解析到私钥。
+4. Delegated inbox/history 只投影普通非 E2EE 消息。SDK 会过滤 direct/group E2EE opaque 消息，不返回 E2EE 明文、metadata projection 或 private state。
+5. `ScopedInboxToken` 为后续优化，MVP 不作为主路径。
 
 ## 6. P1 Behavior
 
@@ -275,3 +346,34 @@ P1 不把 `mark_read` 放进 `InboxQuery`。当前 CLI 若有 `--mark-read`，P1
 5. normalize 成 Page<Message>。
 6. 不在 P1 强制做 conversation projection。
 ```
+
+## 7. Dart / Flutter Binding
+
+`packages/awiki_im_core` 公开 API 与 Rust DTO 保持同名 optional 参数：
+
+```dart
+const SendTextRequest(
+  target: MessageTarget.direct('did:example:bob'),
+  text: 'hello',
+  delegatedSigning: DelegatedSigningOptions(
+    logicalSenderDid: 'did:wba:...:user:e1_xxx',
+    signingVerificationMethod: 'did:wba:...:user:e1_xxx#daemon-key-1',
+    signingKeyRef: 'local:daemon-key-1',
+  ),
+);
+
+await client.messages.inbox(
+  limit: 20,
+  inboxHistoryOptions: const InboxHistoryOptions(
+    inboxOwnerDid: 'did:wba:...:user:e1_xxx',
+    inboxAuthVerificationMethod: 'did:wba:...:user:e1_xxx#daemon-key-1',
+    inboxAuthKeyRef: 'local:daemon-key-1',
+  ),
+);
+```
+
+兼容性要求：
+
+- `SendTextRequest` / `SendPayloadRequest` 的 `delegatedSigning` 默认 `null`。
+- `MessageApi.inbox` / `MessageApi.history` 的 `inboxHistoryOptions` 默认 `null`。
+- 老 Dart 调用不需要补参数；FRB 生成 DTO/API 只增加 nullable 字段和 nullable 函数参数。

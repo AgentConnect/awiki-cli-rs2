@@ -1132,6 +1132,10 @@ fn wire__crate__api__messages__history_impl(
             let api_thread = <crate::dto::message::DartThreadRef>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_cursor = <Option<String>>::sse_decode(&mut deserializer);
+            let api_inbox_history_options =
+                <Option<crate::dto::message::DartInboxHistoryOptions>>::sse_decode(
+                    &mut deserializer,
+                );
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::dto::error::DartImError>(
@@ -1160,6 +1164,7 @@ fn wire__crate__api__messages__history_impl(
                             api_thread,
                             api_limit,
                             api_cursor,
+                            api_inbox_history_options,
                         )
                         .await?;
                         Ok(output_ok)
@@ -1266,6 +1271,10 @@ fn wire__crate__api__messages__inbox_impl(
             let api_limit = <u32>::sse_decode(&mut deserializer);
             let api_cursor = <Option<String>>::sse_decode(&mut deserializer);
             let api_unread_only = <bool>::sse_decode(&mut deserializer);
+            let api_inbox_history_options =
+                <Option<crate::dto::message::DartInboxHistoryOptions>>::sse_decode(
+                    &mut deserializer,
+                );
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::dto::error::DartImError>(
@@ -1294,6 +1303,7 @@ fn wire__crate__api__messages__inbox_impl(
                             api_limit,
                             api_cursor,
                             api_unread_only,
+                            api_inbox_history_options,
                         )
                         .await?;
                         Ok(output_ok)
@@ -4486,6 +4496,22 @@ impl SseDecode for crate::dto::identity::DartDefaultIdentityChange {
     }
 }
 
+impl SseDecode for crate::dto::message::DartDelegatedSigningOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_logicalSenderDid = <Option<String>>::sse_decode(deserializer);
+        let mut var_signingVerificationMethod = <Option<String>>::sse_decode(deserializer);
+        let mut var_signingKeyRef = <Option<String>>::sse_decode(deserializer);
+        let mut var_actorAgentDid = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartDelegatedSigningOptions {
+            logical_sender_did: var_logicalSenderDid,
+            signing_verification_method: var_signingVerificationMethod,
+            signing_key_ref: var_signingKeyRef,
+            actor_agent_did: var_actorAgentDid,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::identity::DartDeleteLocalIdentityResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5197,6 +5223,40 @@ impl SseDecode for crate::dto::error::DartImError {
     }
 }
 
+impl SseDecode for crate::dto::message::DartInboxAuth {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_token =
+                    <crate::dto::message::DartScopedInboxToken>::sse_decode(deserializer);
+                return crate::dto::message::DartInboxAuth::ScopedInboxToken { token: var_token };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::dto::message::DartInboxHistoryOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_inboxOwnerDid = <Option<String>>::sse_decode(deserializer);
+        let mut var_inboxAuthVerificationMethod = <Option<String>>::sse_decode(deserializer);
+        let mut var_inboxAuthKeyRef = <Option<String>>::sse_decode(deserializer);
+        let mut var_inboxAuth =
+            <Option<crate::dto::message::DartInboxAuth>>::sse_decode(deserializer);
+        return crate::dto::message::DartInboxHistoryOptions {
+            inbox_owner_did: var_inboxOwnerDid,
+            inbox_auth_verification_method: var_inboxAuthVerificationMethod,
+            inbox_auth_key_ref: var_inboxAuthKeyRef,
+            inbox_auth: var_inboxAuth,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::identity::DartInitialProfile {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5566,6 +5626,14 @@ impl SseDecode for crate::dto::directory::DartRelationshipPage {
     }
 }
 
+impl SseDecode for crate::dto::message::DartScopedInboxToken {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_token = <String>::sse_decode(deserializer);
+        return crate::dto::message::DartScopedInboxToken { token: var_token };
+    }
+}
+
 impl SseDecode for crate::dto::secure::DartSecureDelivery {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5724,6 +5792,8 @@ impl SseDecode for crate::dto::message::DartSendPayloadRequest {
         let mut var_clientMessageId = <Option<String>>::sse_decode(deserializer);
         let mut var_idempotencyKey = <Option<String>>::sse_decode(deserializer);
         let mut var_waitForFinalAcceptance = <bool>::sse_decode(deserializer);
+        let mut var_delegatedSigning =
+            <Option<crate::dto::message::DartDelegatedSigningOptions>>::sse_decode(deserializer);
         return crate::dto::message::DartSendPayloadRequest {
             target: var_target,
             payload_json: var_payloadJson,
@@ -5731,6 +5801,7 @@ impl SseDecode for crate::dto::message::DartSendPayloadRequest {
             client_message_id: var_clientMessageId,
             idempotency_key: var_idempotencyKey,
             wait_for_final_acceptance: var_waitForFinalAcceptance,
+            delegated_signing: var_delegatedSigning,
         };
     }
 }
@@ -5746,6 +5817,8 @@ impl SseDecode for crate::dto::message::DartSendTextRequest {
         let mut var_clientMessageId = <Option<String>>::sse_decode(deserializer);
         let mut var_idempotencyKey = <Option<String>>::sse_decode(deserializer);
         let mut var_waitForFinalAcceptance = <bool>::sse_decode(deserializer);
+        let mut var_delegatedSigning =
+            <Option<crate::dto::message::DartDelegatedSigningOptions>>::sse_decode(deserializer);
         return crate::dto::message::DartSendTextRequest {
             target: var_target,
             text: var_text,
@@ -5754,6 +5827,7 @@ impl SseDecode for crate::dto::message::DartSendTextRequest {
             client_message_id: var_clientMessageId,
             idempotency_key: var_idempotencyKey,
             wait_for_final_acceptance: var_waitForFinalAcceptance,
+            delegated_signing: var_delegatedSigning,
         };
     }
 }
@@ -6105,6 +6179,19 @@ impl SseDecode for Option<crate::dto::identity::DartDefaultIdentityChange> {
     }
 }
 
+impl SseDecode for Option<crate::dto::message::DartDelegatedSigningOptions> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::dto::message::DartDelegatedSigningOptions>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::group::DartGroupSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -6123,6 +6210,32 @@ impl SseDecode for Option<crate::dto::identity::DartIdentitySummary> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::dto::identity::DartIdentitySummary>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::message::DartInboxAuth> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::message::DartInboxAuth>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::message::DartInboxHistoryOptions> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::message::DartInboxHistoryOptions>::sse_decode(
                 deserializer,
             ));
         } else {
@@ -6740,6 +6853,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartDefaultIdentity
     for crate::dto::identity::DartDefaultIdentityChange
 {
     fn into_into_dart(self) -> crate::dto::identity::DartDefaultIdentityChange {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartDelegatedSigningOptions {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.logical_sender_did.into_into_dart().into_dart(),
+            self.signing_verification_method
+                .into_into_dart()
+                .into_dart(),
+            self.signing_key_ref.into_into_dart().into_dart(),
+            self.actor_agent_did.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartDelegatedSigningOptions
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartDelegatedSigningOptions>
+    for crate::dto::message::DartDelegatedSigningOptions
+{
+    fn into_into_dart(self) -> crate::dto::message::DartDelegatedSigningOptions {
         self
     }
 }
@@ -7637,6 +7775,55 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::error::DartImError>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartInboxAuth {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::dto::message::DartInboxAuth::ScopedInboxToken { token } => {
+                [0.into_dart(), token.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartInboxAuth
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartInboxAuth>
+    for crate::dto::message::DartInboxAuth
+{
+    fn into_into_dart(self) -> crate::dto::message::DartInboxAuth {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartInboxHistoryOptions {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.inbox_owner_did.into_into_dart().into_dart(),
+            self.inbox_auth_verification_method
+                .into_into_dart()
+                .into_dart(),
+            self.inbox_auth_key_ref.into_into_dart().into_dart(),
+            self.inbox_auth.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartInboxHistoryOptions
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartInboxHistoryOptions>
+    for crate::dto::message::DartInboxHistoryOptions
+{
+    fn into_into_dart(self) -> crate::dto::message::DartInboxHistoryOptions {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartInitialProfile {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -8124,6 +8311,23 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::directory::DartRelationshipPa
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartScopedInboxToken {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.token.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartScopedInboxToken
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartScopedInboxToken>
+    for crate::dto::message::DartScopedInboxToken
+{
+    fn into_into_dart(self) -> crate::dto::message::DartScopedInboxToken {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::secure::DartSecureDelivery {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -8346,6 +8550,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSendPayloadReque
             self.client_message_id.into_into_dart().into_dart(),
             self.idempotency_key.into_into_dart().into_dart(),
             self.wait_for_final_acceptance.into_into_dart().into_dart(),
+            self.delegated_signing.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -8372,6 +8577,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSendTextRequest 
             self.client_message_id.into_into_dart().into_dart(),
             self.idempotency_key.into_into_dart().into_dart(),
             self.wait_for_final_acceptance.into_into_dart().into_dart(),
+            self.delegated_signing.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -8762,6 +8968,16 @@ impl SseEncode for crate::dto::identity::DartDefaultIdentityChange {
         <crate::dto::identity::DartIdentitySummary>::sse_encode(self.next, serializer);
         <bool>::sse_encode(self.requires_default_identity_write, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartDelegatedSigningOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.logical_sender_did, serializer);
+        <Option<String>>::sse_encode(self.signing_verification_method, serializer);
+        <Option<String>>::sse_encode(self.signing_key_ref, serializer);
+        <Option<String>>::sse_encode(self.actor_agent_did, serializer);
     }
 }
 
@@ -9250,6 +9466,31 @@ impl SseEncode for crate::dto::error::DartImError {
     }
 }
 
+impl SseEncode for crate::dto::message::DartInboxAuth {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::dto::message::DartInboxAuth::ScopedInboxToken { token } => {
+                <i32>::sse_encode(0, serializer);
+                <crate::dto::message::DartScopedInboxToken>::sse_encode(token, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::dto::message::DartInboxHistoryOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.inbox_owner_did, serializer);
+        <Option<String>>::sse_encode(self.inbox_auth_verification_method, serializer);
+        <Option<String>>::sse_encode(self.inbox_auth_key_ref, serializer);
+        <Option<crate::dto::message::DartInboxAuth>>::sse_encode(self.inbox_auth, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::identity::DartInitialProfile {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9512,6 +9753,13 @@ impl SseEncode for crate::dto::directory::DartRelationshipPage {
     }
 }
 
+impl SseEncode for crate::dto::message::DartScopedInboxToken {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.token, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::secure::DartSecureDelivery {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9633,6 +9881,10 @@ impl SseEncode for crate::dto::message::DartSendPayloadRequest {
         <Option<String>>::sse_encode(self.client_message_id, serializer);
         <Option<String>>::sse_encode(self.idempotency_key, serializer);
         <bool>::sse_encode(self.wait_for_final_acceptance, serializer);
+        <Option<crate::dto::message::DartDelegatedSigningOptions>>::sse_encode(
+            self.delegated_signing,
+            serializer,
+        );
     }
 }
 
@@ -9646,6 +9898,10 @@ impl SseEncode for crate::dto::message::DartSendTextRequest {
         <Option<String>>::sse_encode(self.client_message_id, serializer);
         <Option<String>>::sse_encode(self.idempotency_key, serializer);
         <bool>::sse_encode(self.wait_for_final_acceptance, serializer);
+        <Option<crate::dto::message::DartDelegatedSigningOptions>>::sse_encode(
+            self.delegated_signing,
+            serializer,
+        );
     }
 }
 
@@ -9907,6 +10163,16 @@ impl SseEncode for Option<crate::dto::identity::DartDefaultIdentityChange> {
     }
 }
 
+impl SseEncode for Option<crate::dto::message::DartDelegatedSigningOptions> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::message::DartDelegatedSigningOptions>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<crate::dto::group::DartGroupSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -9923,6 +10189,26 @@ impl SseEncode for Option<crate::dto::identity::DartIdentitySummary> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::identity::DartIdentitySummary>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::message::DartInboxAuth> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::message::DartInboxAuth>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::message::DartInboxHistoryOptions> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::message::DartInboxHistoryOptions>::sse_encode(value, serializer);
         }
     }
 }

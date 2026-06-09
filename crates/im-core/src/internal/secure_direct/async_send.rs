@@ -2119,6 +2119,7 @@ mod tests {
                 idempotency_key: Some("msg-async-direct".to_owned()),
                 wait_for_final_acceptance: true,
             },
+            delegated_signing: None,
         }
     }
 
@@ -2143,6 +2144,7 @@ mod tests {
                 idempotency_key: Some("msg-async-direct".to_owned()),
                 wait_for_final_acceptance: true,
             },
+            delegated_signing: None,
         }
     }
 

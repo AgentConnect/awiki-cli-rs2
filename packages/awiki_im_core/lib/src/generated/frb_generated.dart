@@ -187,6 +187,7 @@ abstract class RustLibApi extends BaseApi {
     required DartThreadRef thread,
     required int limit,
     String? cursor,
+    DartInboxHistoryOptions? inboxHistoryOptions,
   });
 
   Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
@@ -202,6 +203,7 @@ abstract class RustLibApi extends BaseApi {
     required int limit,
     String? cursor,
     required bool unreadOnly,
+    DartInboxHistoryOptions? inboxHistoryOptions,
   });
 
   Future<DartGroupReadResult> crateApiGroupsJoinGroup({
@@ -1148,6 +1150,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required DartThreadRef thread,
     required int limit,
     String? cursor,
+    DartInboxHistoryOptions? inboxHistoryOptions,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1160,6 +1163,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_box_autoadd_dart_thread_ref(thread, serializer);
           sse_encode_u_32(limit, serializer);
           sse_encode_opt_String(cursor, serializer);
+          sse_encode_opt_box_autoadd_dart_inbox_history_options(
+            inboxHistoryOptions,
+            serializer,
+          );
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1172,7 +1179,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiMessagesHistoryConstMeta,
-        argValues: [client, thread, limit, cursor],
+        argValues: [client, thread, limit, cursor, inboxHistoryOptions],
         apiImpl: this,
       ),
     );
@@ -1180,7 +1187,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMessagesHistoryConstMeta => const TaskConstMeta(
     debugName: "history",
-    argNames: ["client", "thread", "limit", "cursor"],
+    argNames: ["client", "thread", "limit", "cursor", "inboxHistoryOptions"],
   );
 
   @override
@@ -1232,6 +1239,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required int limit,
     String? cursor,
     required bool unreadOnly,
+    DartInboxHistoryOptions? inboxHistoryOptions,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1244,6 +1252,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(limit, serializer);
           sse_encode_opt_String(cursor, serializer);
           sse_encode_bool(unreadOnly, serializer);
+          sse_encode_opt_box_autoadd_dart_inbox_history_options(
+            inboxHistoryOptions,
+            serializer,
+          );
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1256,7 +1268,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiMessagesInboxConstMeta,
-        argValues: [client, limit, cursor, unreadOnly],
+        argValues: [client, limit, cursor, unreadOnly, inboxHistoryOptions],
         apiImpl: this,
       ),
     );
@@ -1264,7 +1276,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMessagesInboxConstMeta => const TaskConstMeta(
     debugName: "inbox",
-    argNames: ["client", "limit", "cursor", "unreadOnly"],
+    argNames: [
+      "client",
+      "limit",
+      "cursor",
+      "unreadOnly",
+      "inboxHistoryOptions",
+    ],
   );
 
   @override
@@ -3280,6 +3298,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDelegatedSigningOptions
+  dco_decode_box_autoadd_dart_delegated_signing_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_delegated_signing_options(raw);
+  }
+
+  @protected
   DartDownloadAttachmentRequest
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -3329,6 +3354,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartInboxAuth dco_decode_box_autoadd_dart_inbox_auth(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_inbox_auth(raw);
+  }
+
+  @protected
+  DartInboxHistoryOptions dco_decode_box_autoadd_dart_inbox_history_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_inbox_history_options(raw);
+  }
+
+  @protected
   DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_dart_initial_profile(raw);
@@ -3352,6 +3391,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_dart_realtime_options(raw);
+  }
+
+  @protected
+  DartScopedInboxToken dco_decode_box_autoadd_dart_scoped_inbox_token(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_scoped_inbox_token(raw);
   }
 
   @protected
@@ -3585,6 +3632,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       next: dco_decode_dart_identity_summary(arr[1]),
       requiresDefaultIdentityWrite: dco_decode_bool(arr[2]),
       warnings: dco_decode_list_String(arr[3]),
+    );
+  }
+
+  @protected
+  DartDelegatedSigningOptions dco_decode_dart_delegated_signing_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartDelegatedSigningOptions(
+      logicalSenderDid: dco_decode_opt_String(arr[0]),
+      signingVerificationMethod: dco_decode_opt_String(arr[1]),
+      signingKeyRef: dco_decode_opt_String(arr[2]),
+      actorAgentDid: dco_decode_opt_String(arr[3]),
     );
   }
 
@@ -4155,6 +4218,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartInboxAuth dco_decode_dart_inbox_auth(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return DartInboxAuth_ScopedInboxToken(
+          token: dco_decode_box_autoadd_dart_scoped_inbox_token(raw[1]),
+        );
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
+  DartInboxHistoryOptions dco_decode_dart_inbox_history_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartInboxHistoryOptions(
+      inboxOwnerDid: dco_decode_opt_String(arr[0]),
+      inboxAuthVerificationMethod: dco_decode_opt_String(arr[1]),
+      inboxAuthKeyRef: dco_decode_opt_String(arr[2]),
+      inboxAuth: dco_decode_opt_box_autoadd_dart_inbox_auth(arr[3]),
+    );
+  }
+
+  @protected
   DartInitialProfile dco_decode_dart_initial_profile(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -4440,6 +4530,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartScopedInboxToken dco_decode_dart_scoped_inbox_token(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return DartScopedInboxToken(token: dco_decode_String(arr[0]));
+  }
+
+  @protected
   DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -4553,8 +4652,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartSendPayloadRequest dco_decode_dart_send_payload_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return DartSendPayloadRequest(
       target: dco_decode_dart_message_target(arr[0]),
       payloadJson: dco_decode_String(arr[1]),
@@ -4562,6 +4661,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       clientMessageId: dco_decode_opt_String(arr[3]),
       idempotencyKey: dco_decode_opt_String(arr[4]),
       waitForFinalAcceptance: dco_decode_bool(arr[5]),
+      delegatedSigning:
+          dco_decode_opt_box_autoadd_dart_delegated_signing_options(arr[6]),
     );
   }
 
@@ -4569,8 +4670,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartSendTextRequest(
       target: dco_decode_dart_message_target(arr[0]),
       text: dco_decode_String(arr[1]),
@@ -4579,6 +4680,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       clientMessageId: dco_decode_opt_String(arr[4]),
       idempotencyKey: dco_decode_opt_String(arr[5]),
       waitForFinalAcceptance: dco_decode_bool(arr[6]),
+      delegatedSigning:
+          dco_decode_opt_box_autoadd_dart_delegated_signing_options(arr[7]),
     );
   }
 
@@ -4806,6 +4909,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDelegatedSigningOptions?
+  dco_decode_opt_box_autoadd_dart_delegated_signing_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_delegated_signing_options(raw);
+  }
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
     dynamic raw,
   ) {
@@ -4821,6 +4933,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_dart_identity_summary(raw);
+  }
+
+  @protected
+  DartInboxAuth? dco_decode_opt_box_autoadd_dart_inbox_auth(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_dart_inbox_auth(raw);
+  }
+
+  @protected
+  DartInboxHistoryOptions?
+  dco_decode_opt_box_autoadd_dart_inbox_history_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_inbox_history_options(raw);
   }
 
   @protected
@@ -5085,6 +5212,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDelegatedSigningOptions
+  sse_decode_box_autoadd_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_delegated_signing_options(deserializer));
+  }
+
+  @protected
   DartDownloadAttachmentRequest
   sse_decode_box_autoadd_dart_download_attachment_request(
     SseDeserializer deserializer,
@@ -5142,6 +5278,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartInboxAuth sse_decode_box_autoadd_dart_inbox_auth(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_inbox_auth(deserializer));
+  }
+
+  @protected
+  DartInboxHistoryOptions sse_decode_box_autoadd_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_inbox_history_options(deserializer));
+  }
+
+  @protected
   DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(
     SseDeserializer deserializer,
   ) {
@@ -5171,6 +5323,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_realtime_options(deserializer));
+  }
+
+  @protected
+  DartScopedInboxToken sse_decode_box_autoadd_dart_scoped_inbox_token(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_scoped_inbox_token(deserializer));
   }
 
   @protected
@@ -5457,6 +5617,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       next: var_next,
       requiresDefaultIdentityWrite: var_requiresDefaultIdentityWrite,
       warnings: var_warnings,
+    );
+  }
+
+  @protected
+  DartDelegatedSigningOptions sse_decode_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_logicalSenderDid = sse_decode_opt_String(deserializer);
+    var var_signingVerificationMethod = sse_decode_opt_String(deserializer);
+    var var_signingKeyRef = sse_decode_opt_String(deserializer);
+    var var_actorAgentDid = sse_decode_opt_String(deserializer);
+    return DartDelegatedSigningOptions(
+      logicalSenderDid: var_logicalSenderDid,
+      signingVerificationMethod: var_signingVerificationMethod,
+      signingKeyRef: var_signingKeyRef,
+      actorAgentDid: var_actorAgentDid,
     );
   }
 
@@ -6167,6 +6344,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartInboxAuth sse_decode_dart_inbox_auth(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        var var_token = sse_decode_box_autoadd_dart_scoped_inbox_token(
+          deserializer,
+        );
+        return DartInboxAuth_ScopedInboxToken(token: var_token);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
+  DartInboxHistoryOptions sse_decode_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_inboxOwnerDid = sse_decode_opt_String(deserializer);
+    var var_inboxAuthVerificationMethod = sse_decode_opt_String(deserializer);
+    var var_inboxAuthKeyRef = sse_decode_opt_String(deserializer);
+    var var_inboxAuth = sse_decode_opt_box_autoadd_dart_inbox_auth(
+      deserializer,
+    );
+    return DartInboxHistoryOptions(
+      inboxOwnerDid: var_inboxOwnerDid,
+      inboxAuthVerificationMethod: var_inboxAuthVerificationMethod,
+      inboxAuthKeyRef: var_inboxAuthKeyRef,
+      inboxAuth: var_inboxAuth,
+    );
+  }
+
+  @protected
   DartInitialProfile sse_decode_dart_initial_profile(
     SseDeserializer deserializer,
   ) {
@@ -6531,6 +6743,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartScopedInboxToken sse_decode_dart_scoped_inbox_token(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_token = sse_decode_String(deserializer);
+    return DartScopedInboxToken(token: var_token);
+  }
+
+  @protected
   DartSecureDelivery sse_decode_dart_secure_delivery(
     SseDeserializer deserializer,
   ) {
@@ -6679,6 +6900,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_clientMessageId = sse_decode_opt_String(deserializer);
     var var_idempotencyKey = sse_decode_opt_String(deserializer);
     var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
+    var var_delegatedSigning =
+        sse_decode_opt_box_autoadd_dart_delegated_signing_options(deserializer);
     return DartSendPayloadRequest(
       target: var_target,
       payloadJson: var_payloadJson,
@@ -6686,6 +6909,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       clientMessageId: var_clientMessageId,
       idempotencyKey: var_idempotencyKey,
       waitForFinalAcceptance: var_waitForFinalAcceptance,
+      delegatedSigning: var_delegatedSigning,
     );
   }
 
@@ -6701,6 +6925,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_clientMessageId = sse_decode_opt_String(deserializer);
     var var_idempotencyKey = sse_decode_opt_String(deserializer);
     var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
+    var var_delegatedSigning =
+        sse_decode_opt_box_autoadd_dart_delegated_signing_options(deserializer);
     return DartSendTextRequest(
       target: var_target,
       text: var_text,
@@ -6709,6 +6935,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       clientMessageId: var_clientMessageId,
       idempotencyKey: var_idempotencyKey,
       waitForFinalAcceptance: var_waitForFinalAcceptance,
+      delegatedSigning: var_delegatedSigning,
     );
   }
 
@@ -7056,6 +7283,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDelegatedSigningOptions?
+  sse_decode_opt_box_autoadd_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_delegated_signing_options(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   ) {
@@ -7076,6 +7319,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_dart_identity_summary(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  DartInboxAuth? sse_decode_opt_box_autoadd_dart_inbox_auth(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_inbox_auth(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  DartInboxHistoryOptions?
+  sse_decode_opt_box_autoadd_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_inbox_history_options(deserializer));
     } else {
       return null;
     }
@@ -7412,6 +7682,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_delegated_signing_options(
+    DartDelegatedSigningOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_delegated_signing_options(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_download_attachment_request(
     DartDownloadAttachmentRequest self,
     SseSerializer serializer,
@@ -7475,6 +7754,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_inbox_auth(
+    DartInboxAuth self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_inbox_auth(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_inbox_history_options(
+    DartInboxHistoryOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_inbox_history_options(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_initial_profile(
     DartInitialProfile self,
     SseSerializer serializer,
@@ -7508,6 +7805,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_realtime_options(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_scoped_inbox_token(
+    DartScopedInboxToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_scoped_inbox_token(self, serializer);
   }
 
   @protected
@@ -7748,6 +8054,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_dart_identity_summary(self.next, serializer);
     sse_encode_bool(self.requiresDefaultIdentityWrite, serializer);
     sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_delegated_signing_options(
+    DartDelegatedSigningOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.logicalSenderDid, serializer);
+    sse_encode_opt_String(self.signingVerificationMethod, serializer);
+    sse_encode_opt_String(self.signingKeyRef, serializer);
+    sse_encode_opt_String(self.actorAgentDid, serializer);
   }
 
   @protected
@@ -8253,6 +8571,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_inbox_auth(
+    DartInboxAuth self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case DartInboxAuth_ScopedInboxToken(token: final token):
+        sse_encode_i_32(0, serializer);
+        sse_encode_box_autoadd_dart_scoped_inbox_token(token, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_dart_inbox_history_options(
+    DartInboxHistoryOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.inboxOwnerDid, serializer);
+    sse_encode_opt_String(self.inboxAuthVerificationMethod, serializer);
+    sse_encode_opt_String(self.inboxAuthKeyRef, serializer);
+    sse_encode_opt_box_autoadd_dart_inbox_auth(self.inboxAuth, serializer);
+  }
+
+  @protected
   void sse_encode_dart_initial_profile(
     DartInitialProfile self,
     SseSerializer serializer,
@@ -8515,6 +8858,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_scoped_inbox_token(
+    DartScopedInboxToken self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.token, serializer);
+  }
+
+  @protected
   void sse_encode_dart_secure_delivery(
     DartSecureDelivery self,
     SseSerializer serializer,
@@ -8628,6 +8980,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.clientMessageId, serializer);
     sse_encode_opt_String(self.idempotencyKey, serializer);
     sse_encode_bool(self.waitForFinalAcceptance, serializer);
+    sse_encode_opt_box_autoadd_dart_delegated_signing_options(
+      self.delegatedSigning,
+      serializer,
+    );
   }
 
   @protected
@@ -8643,6 +8999,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.clientMessageId, serializer);
     sse_encode_opt_String(self.idempotencyKey, serializer);
     sse_encode_bool(self.waitForFinalAcceptance, serializer);
+    sse_encode_opt_box_autoadd_dart_delegated_signing_options(
+      self.delegatedSigning,
+      serializer,
+    );
   }
 
   @protected
@@ -8932,6 +9292,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_delegated_signing_options(
+    DartDelegatedSigningOptions? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_delegated_signing_options(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot? self,
     SseSerializer serializer,
@@ -8954,6 +9327,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_identity_summary(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_inbox_auth(
+    DartInboxAuth? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_inbox_auth(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_inbox_history_options(
+    DartInboxHistoryOptions? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_inbox_history_options(self, serializer);
     }
   }
 

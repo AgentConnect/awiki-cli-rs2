@@ -8,6 +8,14 @@ pub(crate) struct HistoryWireRequest {
     pub limit: i64,
     pub cursor: Option<String>,
     pub skip: i64,
+    pub auth: Option<HistoryWireAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HistoryWireAuth {
+    pub inbox_owner_did: String,
+    pub inbox_auth_verification_method: String,
+    pub service_did: String,
 }
 
 pub(crate) fn build_history_rpc_params(
@@ -26,7 +34,14 @@ pub(crate) fn build_history_rpc_params(
         request.limit
     };
     let mut body = Map::new();
-    body.insert("user_did".to_string(), Value::String(identity.did.clone()));
+    let owner_did = request
+        .auth
+        .as_ref()
+        .map(|auth| auth.inbox_owner_did.clone())
+        .unwrap_or_else(|| identity.did.clone());
+    let service_did = request.auth.as_ref().map(|auth| auth.service_did.clone());
+    let delegated = request.auth.is_some();
+    body.insert("user_did".to_string(), Value::String(owner_did.clone()));
     body.insert("peer_did".to_string(), Value::String(request.peer_did));
     body.insert("limit".to_string(), json!(limit));
     if let Some(cursor) = request.cursor.filter(|cursor| !cursor.is_empty()) {
@@ -35,8 +50,26 @@ pub(crate) fn build_history_rpc_params(
     if request.skip > 0 {
         body.insert("skip".to_string(), json!(request.skip));
     }
+    if let Some(auth) = request.auth {
+        body.insert(
+            "inbox_owner_did".to_string(),
+            Value::String(auth.inbox_owner_did),
+        );
+        body.insert(
+            "inbox_auth_verification_method".to_string(),
+            Value::String(auth.inbox_auth_verification_method),
+        );
+    }
     Ok(json!({
-        "meta": common::local_meta(&identity.did, "anp.direct.local.v1"),
+        "meta": if delegated {
+            common::delegated_local_meta(
+                &owner_did,
+                service_did.as_deref().unwrap_or(""),
+                "anp.direct.local.v1",
+            )
+        } else {
+            common::local_meta(&owner_did, "anp.direct.local.v1")
+        },
         "body": body,
     }))
 }

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     message::{
-        DartConversationPage, DartMarkReadResult, DartMessagePage, DartSendMessageResult,
-        DartSendPayloadRequest, DartSendTextRequest, DartThreadRef,
+        DartConversationPage, DartInboxHistoryOptions, DartMarkReadResult, DartMessagePage,
+        DartSendMessageResult, DartSendPayloadRequest, DartSendTextRequest, DartThreadRef,
     },
 };
 
@@ -43,6 +43,7 @@ pub async fn inbox(
     limit: u32,
     cursor: Option<String>,
     unread_only: bool,
+    inbox_history_options: Option<DartInboxHistoryOptions>,
 ) -> Result<DartMessagePage, DartImError> {
     let inner = client.clone_inner()?;
     let query = im_core::messages::InboxQuery {
@@ -53,6 +54,7 @@ pub async fn inbox(
             .transpose()
             .map_err(DartImError::from)?,
         unread_only,
+        inbox_history_options: inbox_history_options.map(Into::into),
     };
     inner
         .messages()
@@ -67,6 +69,7 @@ pub async fn history(
     thread: DartThreadRef,
     limit: u32,
     cursor: Option<String>,
+    inbox_history_options: Option<DartInboxHistoryOptions>,
 ) -> Result<DartMessagePage, DartImError> {
     let inner = client.clone_inner()?;
     let query = im_core::messages::HistoryQuery {
@@ -75,6 +78,7 @@ pub async fn history(
             .map(im_core::ids::Cursor::parse)
             .transpose()
             .map_err(DartImError::from)?,
+        inbox_history_options: inbox_history_options.map(Into::into),
     };
     inner
         .messages()

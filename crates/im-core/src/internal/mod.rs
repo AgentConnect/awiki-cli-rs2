@@ -2,6 +2,7 @@ pub(crate) mod attachment_runtime;
 pub(crate) mod auth;
 pub(crate) mod blob;
 pub(crate) mod contact_store;
+pub(crate) mod delegated_identity;
 pub(crate) mod directory_runtime;
 pub(crate) mod discovery;
 pub(crate) mod email_runtime;

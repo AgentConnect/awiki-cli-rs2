@@ -160,6 +160,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
+                verification_method: None,
             },
             &payload,
         )?;
@@ -309,6 +310,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
+                verification_method: None,
             },
             &payload,
         )?;

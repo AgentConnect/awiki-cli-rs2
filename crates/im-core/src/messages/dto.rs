@@ -7,6 +7,20 @@ pub struct SendMessageRequest {
     pub security: MessageSecurityMode,
     pub client_message_id: Option<crate::ids::MessageId>,
     pub delivery: MessageDeliveryOptions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_signing: Option<DelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegatedSigningOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_sender_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_verification_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_agent_did: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +206,8 @@ pub struct InboxQuery {
     pub limit: crate::ids::PageLimit,
     pub cursor: Option<crate::ids::Cursor>,
     pub unread_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_history_options: Option<InboxHistoryOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +221,31 @@ pub enum InboxScope {
 pub struct HistoryQuery {
     pub limit: crate::ids::PageLimit,
     pub cursor: Option<crate::ids::Cursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_history_options: Option<InboxHistoryOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxHistoryOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_owner_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_auth_verification_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_auth_key_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_auth: Option<InboxAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InboxAuth {
+    ScopedInboxToken { token: ScopedInboxToken },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedInboxToken {
+    pub token: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -137,6 +137,7 @@ fn refresh_projection_from_inbox(
         limit: crate::ids::PageLimit(limit),
         cursor: None,
         unread_only: false,
+        inbox_history_options: None,
     })?;
     Ok(())
 }
@@ -172,6 +173,7 @@ async fn refresh_projection_from_inbox_async(
             limit: crate::ids::PageLimit(limit),
             cursor: None,
             unread_only: false,
+            inbox_history_options: None,
         })
         .await?;
     Ok(())
@@ -192,6 +194,7 @@ fn refresh_projection_from_contact_history(
             crate::messages::HistoryQuery {
                 limit: crate::ids::PageLimit(1),
                 cursor: None,
+                inbox_history_options: None,
             },
         );
     }
@@ -223,6 +226,7 @@ async fn refresh_projection_from_contact_history_async(
                 crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(1),
                     cursor: None,
+                    inbox_history_options: None,
                 },
             )
             .await;
@@ -246,6 +250,7 @@ fn refresh_projection_from_group_history(
             crate::messages::HistoryQuery {
                 limit: crate::ids::PageLimit(1),
                 cursor: None,
+                inbox_history_options: None,
             },
         );
     }
@@ -278,6 +283,7 @@ async fn refresh_projection_from_group_history_async(
                 crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(1),
                     cursor: None,
+                    inbox_history_options: None,
                 },
             )
             .await;

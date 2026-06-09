@@ -55,6 +55,7 @@ fn message_security_mode_mismatches_fail_closed() {
         security: MessageSecurityMode::SecureDirect,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
     assert!(matches!(
         secure,
@@ -70,6 +71,7 @@ fn message_security_mode_mismatches_fail_closed() {
         security: MessageSecurityMode::GroupE2ee,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
     assert!(matches!(
         group_e2ee,
@@ -87,6 +89,7 @@ fn message_security_mode_mismatches_fail_closed() {
         security: MessageSecurityMode::Plain,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
     assert!(matches!(
         attachment,
@@ -112,6 +115,7 @@ fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
         security: MessageSecurityPolicy::E2eeRequired,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
 
     assert!(matches!(
@@ -137,6 +141,7 @@ fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
         security: MessageSecurityPolicy::E2eeRequired,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
 
     assert!(matches!(
@@ -162,6 +167,7 @@ fn empty_text_returns_invalid_input() {
         security: MessageSecurityMode::Plain,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
 
     assert!(matches!(

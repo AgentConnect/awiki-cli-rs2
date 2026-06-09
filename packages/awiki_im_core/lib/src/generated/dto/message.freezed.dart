@@ -12,6 +12,257 @@ part of 'message.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$DartInboxAuth {
+
+ DartScopedInboxToken get token;
+/// Create a copy of DartInboxAuth
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartInboxAuthCopyWith<DartInboxAuth> get copyWith => _$DartInboxAuthCopyWithImpl<DartInboxAuth>(this as DartInboxAuth, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartInboxAuth&&(identical(other.token, token) || other.token == token));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,token);
+
+@override
+String toString() {
+  return 'DartInboxAuth(token: $token)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartInboxAuthCopyWith<$Res>  {
+  factory $DartInboxAuthCopyWith(DartInboxAuth value, $Res Function(DartInboxAuth) _then) = _$DartInboxAuthCopyWithImpl;
+@useResult
+$Res call({
+ DartScopedInboxToken token
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartInboxAuthCopyWithImpl<$Res>
+    implements $DartInboxAuthCopyWith<$Res> {
+  _$DartInboxAuthCopyWithImpl(this._self, this._then);
+
+  final DartInboxAuth _self;
+  final $Res Function(DartInboxAuth) _then;
+
+/// Create a copy of DartInboxAuth
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? token = null,}) {
+  return _then(_self.copyWith(
+token: null == token ? _self.token : token // ignore: cast_nullable_to_non_nullable
+as DartScopedInboxToken,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [DartInboxAuth].
+extension DartInboxAuthPatterns on DartInboxAuth {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DartInboxAuth_ScopedInboxToken value)?  scopedInboxToken,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case DartInboxAuth_ScopedInboxToken() when scopedInboxToken != null:
+return scopedInboxToken(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DartInboxAuth_ScopedInboxToken value)  scopedInboxToken,}){
+final _that = this;
+switch (_that) {
+case DartInboxAuth_ScopedInboxToken():
+return scopedInboxToken(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DartInboxAuth_ScopedInboxToken value)?  scopedInboxToken,}){
+final _that = this;
+switch (_that) {
+case DartInboxAuth_ScopedInboxToken() when scopedInboxToken != null:
+return scopedInboxToken(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( DartScopedInboxToken token)?  scopedInboxToken,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case DartInboxAuth_ScopedInboxToken() when scopedInboxToken != null:
+return scopedInboxToken(_that.token);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( DartScopedInboxToken token)  scopedInboxToken,}) {final _that = this;
+switch (_that) {
+case DartInboxAuth_ScopedInboxToken():
+return scopedInboxToken(_that.token);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( DartScopedInboxToken token)?  scopedInboxToken,}) {final _that = this;
+switch (_that) {
+case DartInboxAuth_ScopedInboxToken() when scopedInboxToken != null:
+return scopedInboxToken(_that.token);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class DartInboxAuth_ScopedInboxToken extends DartInboxAuth {
+  const DartInboxAuth_ScopedInboxToken({required this.token}): super._();
+
+
+@override final  DartScopedInboxToken token;
+
+/// Create a copy of DartInboxAuth
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartInboxAuth_ScopedInboxTokenCopyWith<DartInboxAuth_ScopedInboxToken> get copyWith => _$DartInboxAuth_ScopedInboxTokenCopyWithImpl<DartInboxAuth_ScopedInboxToken>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartInboxAuth_ScopedInboxToken&&(identical(other.token, token) || other.token == token));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,token);
+
+@override
+String toString() {
+  return 'DartInboxAuth.scopedInboxToken(token: $token)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartInboxAuth_ScopedInboxTokenCopyWith<$Res> implements $DartInboxAuthCopyWith<$Res> {
+  factory $DartInboxAuth_ScopedInboxTokenCopyWith(DartInboxAuth_ScopedInboxToken value, $Res Function(DartInboxAuth_ScopedInboxToken) _then) = _$DartInboxAuth_ScopedInboxTokenCopyWithImpl;
+@override @useResult
+$Res call({
+ DartScopedInboxToken token
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartInboxAuth_ScopedInboxTokenCopyWithImpl<$Res>
+    implements $DartInboxAuth_ScopedInboxTokenCopyWith<$Res> {
+  _$DartInboxAuth_ScopedInboxTokenCopyWithImpl(this._self, this._then);
+
+  final DartInboxAuth_ScopedInboxToken _self;
+  final $Res Function(DartInboxAuth_ScopedInboxToken) _then;
+
+/// Create a copy of DartInboxAuth
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? token = null,}) {
+  return _then(DartInboxAuth_ScopedInboxToken(
+token: null == token ? _self.token : token // ignore: cast_nullable_to_non_nullable
+as DartScopedInboxToken,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$DartMessageTarget {
 
 

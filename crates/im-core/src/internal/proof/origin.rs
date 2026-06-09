@@ -13,6 +13,7 @@ pub(crate) struct OriginProofIdentity {
     pub identity_name: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 pub(crate) fn load_private_key_material(pem_text: &str) -> crate::ImResult<PrivateKeyMaterial> {
@@ -47,8 +48,19 @@ pub(crate) fn build_origin_proof(
         .did_document
         .as_ref()
         .ok_or_else(|| missing_verification_method_error(identity))?;
-    let key_id = verification_method_id_from_document(did_document)
-        .ok_or_else(|| missing_verification_method_error(identity))?;
+    let key_id = match identity
+        .verification_method
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(method) => {
+            validate_verification_method_in_document(did_document, method, identity)?;
+            method.to_string()
+        }
+        None => verification_method_id_from_document(did_document)
+            .ok_or_else(|| missing_verification_method_error(identity))?,
+    };
     if key_id.is_empty() {
         return Err(missing_verification_method_error(identity));
     }
@@ -64,6 +76,58 @@ pub(crate) fn build_origin_proof(
     .map_err(|err| crate::ImError::Serialization {
         detail: format!("generate origin proof: {err}"),
     })
+}
+
+pub(crate) fn validate_verification_method_in_document(
+    did_document: &Value,
+    verification_method: &str,
+    identity: &OriginProofIdentity,
+) -> crate::ImResult<()> {
+    let method = verification_method.trim();
+    if method.is_empty() {
+        return Err(missing_verification_method_error(identity));
+    }
+    if authentication_contains_method(did_document, method)
+        || verification_methods_contains_method(did_document, method)
+    {
+        return Ok(());
+    }
+    Err(crate::ImError::invalid_input(
+        Some("verification_method".to_string()),
+        format!(
+            "verification method {method} is not present in DID Document for identity {}",
+            identity.identity_name
+        ),
+    ))
+}
+
+fn authentication_contains_method(did_document: &Value, method: &str) -> bool {
+    did_document
+        .get("authentication")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.as_str()
+                    .is_some_and(|candidate| candidate.trim() == method)
+                    || item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|candidate| candidate.trim() == method)
+            })
+        })
+}
+
+fn verification_methods_contains_method(did_document: &Value, method: &str) -> bool {
+    did_document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|candidate| candidate.trim() == method)
+            })
+        })
 }
 
 pub(crate) fn origin_auth_value(origin_proof: &Rfc9421OriginProof) -> Value {

@@ -1371,6 +1371,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 idempotency_key: Some("msg-secure-direct".to_owned()),
                 wait_for_final_acceptance: true,
             },
+            delegated_signing: None,
         }
     }
 
@@ -1395,6 +1396,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 idempotency_key: Some("msg-secure-attachment".to_owned()),
                 wait_for_final_acceptance: true,
             },
+            delegated_signing: None,
         }
     }
 

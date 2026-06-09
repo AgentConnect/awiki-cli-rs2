@@ -493,6 +493,7 @@ async fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
             HistoryQuery {
                 limit: PageLimit(5),
                 cursor: None,
+                inbox_history_options: None,
             },
         )
         .await

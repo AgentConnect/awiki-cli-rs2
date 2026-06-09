@@ -13,8 +13,9 @@ use crate::dto::{
     group::DartCreateGroupRequest,
     identity::DartIdentitySelector,
     message::{
-        DartMessageSecurityMode, DartMessageTarget, DartSendPayloadRequest, DartSendTextRequest,
-        DartThreadRef,
+        DartDelegatedSigningOptions, DartInboxAuth, DartInboxHistoryOptions,
+        DartMessageSecurityMode, DartMessageTarget, DartScopedInboxToken, DartSendPayloadRequest,
+        DartSendTextRequest, DartThreadRef,
     },
     profile::DartProfilePatch,
     realtime::DartRealtimeOptions,
@@ -327,6 +328,7 @@ impl TryFrom<DartSendTextRequest> for im_core::messages::SendMessageRequest {
                 idempotency_key: value.idempotency_key,
                 wait_for_final_acceptance: value.wait_for_final_acceptance,
             },
+            delegated_signing: value.delegated_signing.map(Into::into),
         })
     }
 }
@@ -361,7 +363,46 @@ impl TryFrom<DartSendPayloadRequest> for im_core::messages::SendMessageRequest {
                 idempotency_key: value.idempotency_key,
                 wait_for_final_acceptance: value.wait_for_final_acceptance,
             },
+            delegated_signing: value.delegated_signing.map(Into::into),
         })
+    }
+}
+
+impl From<DartDelegatedSigningOptions> for im_core::messages::DelegatedSigningOptions {
+    fn from(value: DartDelegatedSigningOptions) -> Self {
+        Self {
+            logical_sender_did: value.logical_sender_did,
+            signing_verification_method: value.signing_verification_method,
+            signing_key_ref: value.signing_key_ref,
+            actor_agent_did: value.actor_agent_did,
+        }
+    }
+}
+
+impl From<DartInboxHistoryOptions> for im_core::messages::InboxHistoryOptions {
+    fn from(value: DartInboxHistoryOptions) -> Self {
+        Self {
+            inbox_owner_did: value.inbox_owner_did,
+            inbox_auth_verification_method: value.inbox_auth_verification_method,
+            inbox_auth_key_ref: value.inbox_auth_key_ref,
+            inbox_auth: value.inbox_auth.map(Into::into),
+        }
+    }
+}
+
+impl From<DartInboxAuth> for im_core::messages::InboxAuth {
+    fn from(value: DartInboxAuth) -> Self {
+        match value {
+            DartInboxAuth::ScopedInboxToken { token } => Self::ScopedInboxToken {
+                token: token.into(),
+            },
+        }
+    }
+}
+
+impl From<DartScopedInboxToken> for im_core::messages::ScopedInboxToken {
+    fn from(value: DartScopedInboxToken) -> Self {
+        Self { token: value.token }
     }
 }
 

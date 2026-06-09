@@ -11,6 +11,36 @@ void main() {
 
     expect(request.security, MessageSecurityMode.secureDirect);
     expect(request.waitForFinalAcceptance, isFalse);
+    expect(request.delegatedSigning, isNull);
+  });
+
+  test('message delegated options remain optional and constructible', () {
+    const delegated = DelegatedSigningOptions(
+      logicalSenderDid: 'did:example:alice',
+      signingVerificationMethod: 'did:example:alice#daemon-key-1',
+      signingKeyRef: 'local:daemon-key-1',
+      actorAgentDid: 'did:example:daemon',
+    );
+    const send = SendTextRequest(
+      target: MessageTarget.direct('did:example:bob'),
+      text: 'hello',
+      delegatedSigning: delegated,
+    );
+    const inbox = InboxHistoryOptions(
+      inboxOwnerDid: 'did:example:alice',
+      inboxAuthVerificationMethod: 'did:example:alice#daemon-key-1',
+      inboxAuthKeyRef: 'local:daemon-key-1',
+    );
+    const tokenAuth = InboxAuth.scopedInboxToken(
+      ScopedInboxToken(token: 'token-1'),
+    );
+
+    expect(
+      send.delegatedSigning?.signingVerificationMethod,
+      endsWith('#daemon-key-1'),
+    );
+    expect(inbox.inboxOwnerDid, 'did:example:alice');
+    expect(tokenAuth, isA<ScopedInboxTokenAuth>());
   });
 
   test('MessageBodyView exposes payloadJson', () {

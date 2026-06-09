@@ -22,6 +22,13 @@ pub struct BridgeWireIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboxWireRequest {
     pub limit: i64,
+    pub auth: Option<InboxWireAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxWireAuth {
+    pub inbox_owner_did: String,
+    pub inbox_auth_verification_method: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +37,13 @@ pub struct HistoryWireRequest {
     pub limit: i64,
     pub cursor: Option<String>,
     pub skip: i64,
+    pub auth: Option<HistoryWireAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryWireAuth {
+    pub inbox_owner_did: String,
+    pub inbox_auth_verification_method: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +447,15 @@ pub fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWireRequest
         &to_internal_identity(identity),
         crate::internal::wire::inbox::InboxWireRequest {
             limit: request.limit,
+            auth: request
+                .auth
+                .map(|auth| crate::internal::wire::inbox::InboxWireAuth {
+                    inbox_owner_did: auth.inbox_owner_did,
+                    inbox_auth_verification_method: auth.inbox_auth_verification_method,
+                    service_did:
+                        crate::internal::wire::common::DEFAULT_DELEGATED_MESSAGE_SERVICE_DID
+                            .to_owned(),
+                }),
         },
     )
 }
@@ -449,6 +472,15 @@ pub fn build_history_rpc_params(
             limit: request.limit,
             cursor: request.cursor,
             skip: request.skip,
+            auth: request
+                .auth
+                .map(|auth| crate::internal::wire::history::HistoryWireAuth {
+                    inbox_owner_did: auth.inbox_owner_did,
+                    inbox_auth_verification_method: auth.inbox_auth_verification_method,
+                    service_did:
+                        crate::internal::wire::common::DEFAULT_DELEGATED_MESSAGE_SERVICE_DID
+                            .to_owned(),
+                }),
         },
     )
 }
@@ -503,6 +535,7 @@ fn signed_bridge_params(
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
             key1_private_pem: identity.key1_private_pem.clone(),
+            verification_method: None,
         },
         &payload,
     )?;

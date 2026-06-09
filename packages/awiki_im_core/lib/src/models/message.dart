@@ -57,6 +57,7 @@ class SendTextRequest {
     this.clientMessageId,
     this.idempotencyKey,
     this.waitForFinalAcceptance = false,
+    this.delegatedSigning,
   });
 
   final MessageTarget target;
@@ -66,6 +67,7 @@ class SendTextRequest {
   final String? clientMessageId;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
+  final DelegatedSigningOptions? delegatedSigning;
 }
 
 class SendPayloadRequest {
@@ -76,6 +78,7 @@ class SendPayloadRequest {
     this.clientMessageId,
     this.idempotencyKey,
     this.waitForFinalAcceptance = false,
+    this.delegatedSigning,
   });
 
   final MessageTarget target;
@@ -84,6 +87,54 @@ class SendPayloadRequest {
   final String? clientMessageId;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
+  final DelegatedSigningOptions? delegatedSigning;
+}
+
+class DelegatedSigningOptions {
+  const DelegatedSigningOptions({
+    this.logicalSenderDid,
+    this.signingVerificationMethod,
+    this.signingKeyRef,
+    this.actorAgentDid,
+  });
+
+  final String? logicalSenderDid;
+  final String? signingVerificationMethod;
+  final String? signingKeyRef;
+  final String? actorAgentDid;
+}
+
+class InboxHistoryOptions {
+  const InboxHistoryOptions({
+    this.inboxOwnerDid,
+    this.inboxAuthVerificationMethod,
+    this.inboxAuthKeyRef,
+    this.inboxAuth,
+  });
+
+  final String? inboxOwnerDid;
+  final String? inboxAuthVerificationMethod;
+  final String? inboxAuthKeyRef;
+  final InboxAuth? inboxAuth;
+}
+
+sealed class InboxAuth {
+  const InboxAuth();
+
+  const factory InboxAuth.scopedInboxToken(ScopedInboxToken token) =
+      ScopedInboxTokenAuth;
+}
+
+class ScopedInboxTokenAuth extends InboxAuth {
+  const ScopedInboxTokenAuth(this.token);
+
+  final ScopedInboxToken token;
+}
+
+class ScopedInboxToken {
+  const ScopedInboxToken({required this.token});
+
+  final String token;
 }
 
 class MessageBodyView {

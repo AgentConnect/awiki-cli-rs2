@@ -470,6 +470,7 @@ fn build_signed_group_e2ee_params(
             identity_name: credentials.identity_name.clone(),
             did_document: credentials.did_document.clone(),
             key1_private_pem: credentials.key1_private_pem.clone(),
+            verification_method: None,
         },
         &payload,
     )?;

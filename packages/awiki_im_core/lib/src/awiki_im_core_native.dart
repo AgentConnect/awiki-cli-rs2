@@ -464,6 +464,7 @@ class MessageApi {
     required int limit,
     String? cursor,
     bool unreadOnly = false,
+    InboxHistoryOptions? inboxHistoryOptions,
   }) async {
     _client._ensureNotDisposed();
     final page = await _mapNativeErrors(
@@ -472,6 +473,7 @@ class MessageApi {
         limit: limit,
         cursor: cursor,
         unreadOnly: unreadOnly,
+        inboxHistoryOptions: inboxHistoryOptions?._toGen(),
       ),
     );
     return page._toModel();
@@ -481,6 +483,7 @@ class MessageApi {
     ThreadRef thread, {
     required int limit,
     String? cursor,
+    InboxHistoryOptions? inboxHistoryOptions,
   }) async {
     _client._ensureNotDisposed();
     final page = await _mapNativeErrors(
@@ -489,6 +492,7 @@ class MessageApi {
         thread: thread._toGen(),
         limit: limit,
         cursor: cursor,
+        inboxHistoryOptions: inboxHistoryOptions?._toGen(),
       ),
     );
     return page._toModel();
@@ -1296,6 +1300,7 @@ extension on SendTextRequest {
     clientMessageId: clientMessageId,
     idempotencyKey: idempotencyKey,
     waitForFinalAcceptance: waitForFinalAcceptance,
+    delegatedSigning: delegatedSigning?._toGen(),
   );
 }
 
@@ -1308,7 +1313,40 @@ extension on SendPayloadRequest {
         clientMessageId: clientMessageId,
         idempotencyKey: idempotencyKey,
         waitForFinalAcceptance: waitForFinalAcceptance,
+        delegatedSigning: delegatedSigning?._toGen(),
       );
+}
+
+extension on DelegatedSigningOptions {
+  gen_message.DartDelegatedSigningOptions _toGen() =>
+      gen_message.DartDelegatedSigningOptions(
+        logicalSenderDid: logicalSenderDid,
+        signingVerificationMethod: signingVerificationMethod,
+        signingKeyRef: signingKeyRef,
+        actorAgentDid: actorAgentDid,
+      );
+}
+
+extension on InboxHistoryOptions {
+  gen_message.DartInboxHistoryOptions _toGen() =>
+      gen_message.DartInboxHistoryOptions(
+        inboxOwnerDid: inboxOwnerDid,
+        inboxAuthVerificationMethod: inboxAuthVerificationMethod,
+        inboxAuthKeyRef: inboxAuthKeyRef,
+        inboxAuth: inboxAuth?._toGen(),
+      );
+}
+
+extension on InboxAuth {
+  gen_message.DartInboxAuth _toGen() => switch (this) {
+    ScopedInboxTokenAuth(:final token) =>
+      gen_message.DartInboxAuth.scopedInboxToken(token: token._toGen()),
+  };
+}
+
+extension on ScopedInboxToken {
+  gen_message.DartScopedInboxToken _toGen() =>
+      gen_message.DartScopedInboxToken(token: token);
 }
 
 void _validatePayloadJson(String payloadJson) {

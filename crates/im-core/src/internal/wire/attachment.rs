@@ -329,6 +329,7 @@ fn build_signed_attachment_send_rpc_params(
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
             key1_private_pem: identity.key1_private_pem.clone(),
+            verification_method: None,
         },
         &payload,
     )?;

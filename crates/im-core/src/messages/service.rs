@@ -250,6 +250,7 @@ impl<'a> MessageService<'a> {
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
+        validate_delegated_send_scope(&request)?;
         match (&request.target, &request.security) {
             (
                 super::MessageTarget::Direct(_),
@@ -356,6 +357,7 @@ impl<'a> MessageService<'a> {
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
         validate_attachment_security(&request.body, &request.security)?;
+        validate_delegated_send_scope(&request)?;
         match (&request.target, &request.security) {
             (
                 super::MessageTarget::Direct(_),
@@ -1298,6 +1300,27 @@ fn validate_attachment_security(
         | super::MessageSecurityMode::E2eeRequired
         | super::MessageSecurityMode::SecureDirect
         | super::MessageSecurityMode::GroupE2ee => Ok(()),
+    }
+}
+
+fn validate_delegated_send_scope(request: &super::SendMessageRequest) -> crate::ImResult<()> {
+    if request.delegated_signing.is_none() {
+        return Ok(());
+    }
+    if !matches!(request.target, super::MessageTarget::Direct(_)) {
+        return Err(crate::ImError::unsupported("delegated-group-send"));
+    }
+    if matches!(request.body, super::MessageBody::Attachment { .. }) {
+        return Err(crate::ImError::unsupported("delegated-attachment-send"));
+    }
+    match request.security {
+        super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain => Ok(()),
+        super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect => {
+            Err(crate::ImError::unsupported("delegated-e2ee-send"))
+        }
+        super::MessageSecurityMode::GroupE2ee => {
+            Err(crate::ImError::unsupported("delegated-group-e2ee-send"))
+        }
     }
 }
 

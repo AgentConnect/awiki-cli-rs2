@@ -140,6 +140,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDelegatedSigningOptions
+  dco_decode_box_autoadd_dart_delegated_signing_options(dynamic raw);
+
+  @protected
   DartDownloadAttachmentRequest
   dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
@@ -164,6 +168,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw);
 
   @protected
+  DartInboxAuth dco_decode_box_autoadd_dart_inbox_auth(dynamic raw);
+
+  @protected
+  DartInboxHistoryOptions dco_decode_box_autoadd_dart_inbox_history_options(
+    dynamic raw,
+  );
+
+  @protected
   DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
 
   @protected
@@ -174,6 +186,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
+
+  @protected
+  DartScopedInboxToken dco_decode_box_autoadd_dart_scoped_inbox_token(
+    dynamic raw,
+  );
 
   @protected
   DartSecureDelivery dco_decode_box_autoadd_dart_secure_delivery(dynamic raw);
@@ -245,6 +262,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDefaultIdentityChange dco_decode_dart_default_identity_change(
+    dynamic raw,
+  );
+
+  @protected
+  DartDelegatedSigningOptions dco_decode_dart_delegated_signing_options(
     dynamic raw,
   );
 
@@ -384,6 +406,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartImError dco_decode_dart_im_error(dynamic raw);
 
   @protected
+  DartInboxAuth dco_decode_dart_inbox_auth(dynamic raw);
+
+  @protected
+  DartInboxHistoryOptions dco_decode_dart_inbox_history_options(dynamic raw);
+
+  @protected
   DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
 
   @protected
@@ -446,6 +474,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
+
+  @protected
+  DartScopedInboxToken dco_decode_dart_scoped_inbox_token(dynamic raw);
 
   @protected
   DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw);
@@ -564,6 +595,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw);
 
   @protected
+  DartDelegatedSigningOptions?
+  dco_decode_opt_box_autoadd_dart_delegated_signing_options(dynamic raw);
+
+  @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
     dynamic raw,
   );
@@ -572,6 +607,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
     dynamic raw,
   );
+
+  @protected
+  DartInboxAuth? dco_decode_opt_box_autoadd_dart_inbox_auth(dynamic raw);
+
+  @protected
+  DartInboxHistoryOptions?
+  dco_decode_opt_box_autoadd_dart_inbox_history_options(dynamic raw);
 
   @protected
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
@@ -708,6 +750,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDelegatedSigningOptions
+  sse_decode_box_autoadd_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDownloadAttachmentRequest
   sse_decode_box_autoadd_dart_download_attachment_request(
     SseDeserializer deserializer,
@@ -744,6 +792,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartInboxAuth sse_decode_box_autoadd_dart_inbox_auth(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxHistoryOptions sse_decode_box_autoadd_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(
     SseDeserializer deserializer,
   );
@@ -758,6 +816,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRealtimeOptions sse_decode_box_autoadd_dart_realtime_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartScopedInboxToken sse_decode_box_autoadd_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   );
 
@@ -849,6 +912,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDefaultIdentityChange sse_decode_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDelegatedSigningOptions sse_decode_dart_delegated_signing_options(
     SseDeserializer deserializer,
   );
 
@@ -1020,6 +1088,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartImError sse_decode_dart_im_error(SseDeserializer deserializer);
 
   @protected
+  DartInboxAuth sse_decode_dart_inbox_auth(SseDeserializer deserializer);
+
+  @protected
+  DartInboxHistoryOptions sse_decode_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartInitialProfile sse_decode_dart_initial_profile(
     SseDeserializer deserializer,
   );
@@ -1110,6 +1186,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRelationshipPage sse_decode_dart_relationship_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartScopedInboxToken sse_decode_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   );
 
@@ -1270,12 +1351,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDelegatedSigningOptions?
+  sse_decode_opt_box_autoadd_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   );
 
   @protected
   DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxAuth? sse_decode_opt_box_autoadd_dart_inbox_auth(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxHistoryOptions?
+  sse_decode_opt_box_autoadd_dart_inbox_history_options(
     SseDeserializer deserializer,
   );
 
@@ -1435,6 +1533,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_delegated_signing_options(
+    DartDelegatedSigningOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_download_attachment_request(
     DartDownloadAttachmentRequest self,
     SseSerializer serializer,
@@ -1477,6 +1581,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_inbox_auth(
+    DartInboxAuth self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_inbox_history_options(
+    DartInboxHistoryOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_initial_profile(
     DartInitialProfile self,
     SseSerializer serializer,
@@ -1497,6 +1613,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_realtime_options(
     DartRealtimeOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_scoped_inbox_token(
+    DartScopedInboxToken self,
     SseSerializer serializer,
   );
 
@@ -1611,6 +1733,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_default_identity_change(
     DartDefaultIdentityChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_delegated_signing_options(
+    DartDelegatedSigningOptions self,
     SseSerializer serializer,
   );
 
@@ -1828,6 +1956,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_dart_im_error(DartImError self, SseSerializer serializer);
 
   @protected
+  void sse_encode_dart_inbox_auth(DartInboxAuth self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_dart_inbox_history_options(
+    DartInboxHistoryOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_initial_profile(
     DartInitialProfile self,
     SseSerializer serializer,
@@ -1941,6 +2078,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_relationship_page(
     DartRelationshipPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_scoped_inbox_token(
+    DartScopedInboxToken self,
     SseSerializer serializer,
   );
 
@@ -2137,6 +2280,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_delegated_signing_options(
+    DartDelegatedSigningOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot? self,
     SseSerializer serializer,
@@ -2145,6 +2294,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_identity_summary(
     DartIdentitySummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_inbox_auth(
+    DartInboxAuth? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_inbox_history_options(
+    DartInboxHistoryOptions? self,
     SseSerializer serializer,
   );
 

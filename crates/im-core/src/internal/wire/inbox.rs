@@ -5,6 +5,14 @@ use super::common::{self, WireIdentity};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InboxWireRequest {
     pub limit: i64,
+    pub auth: Option<InboxWireAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InboxWireAuth {
+    pub inbox_owner_did: String,
+    pub inbox_auth_verification_method: String,
+    pub service_did: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +26,21 @@ pub(crate) fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWire
     } else {
         request.limit
     };
+    if let Some(auth) = request.auth {
+        return json!({
+            "meta": common::delegated_local_meta(
+                &auth.inbox_owner_did,
+                &auth.service_did,
+                "anp.inbox.local.v1",
+            ),
+            "body": {
+                "user_did": auth.inbox_owner_did,
+                "limit": limit,
+                "inbox_owner_did": auth.inbox_owner_did,
+                "inbox_auth_verification_method": auth.inbox_auth_verification_method,
+            },
+        });
+    }
     json!({
         "meta": common::local_meta(&identity.did, "anp.inbox.local.v1"),
         "body": {

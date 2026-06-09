@@ -29,6 +29,7 @@ pub struct DartSendTextRequest {
     pub client_message_id: Option<String>,
     pub idempotency_key: Option<String>,
     pub wait_for_final_acceptance: bool,
+    pub delegated_signing: Option<DartDelegatedSigningOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,33 @@ pub struct DartSendPayloadRequest {
     pub client_message_id: Option<String>,
     pub idempotency_key: Option<String>,
     pub wait_for_final_acceptance: bool,
+    pub delegated_signing: Option<DartDelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDelegatedSigningOptions {
+    pub logical_sender_did: Option<String>,
+    pub signing_verification_method: Option<String>,
+    pub signing_key_ref: Option<String>,
+    pub actor_agent_did: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartInboxHistoryOptions {
+    pub inbox_owner_did: Option<String>,
+    pub inbox_auth_verification_method: Option<String>,
+    pub inbox_auth_key_ref: Option<String>,
+    pub inbox_auth: Option<DartInboxAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DartInboxAuth {
+    ScopedInboxToken { token: DartScopedInboxToken },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartScopedInboxToken {
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

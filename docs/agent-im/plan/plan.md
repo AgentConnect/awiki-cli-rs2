@@ -4,7 +4,7 @@
 DOC：`awiki-cli-rs2/docs/agent-im/plan`  
 Harness：`awiki-harness`  
 创建时间：2026-06-09  
-恢复指针：Step 01 已完成；恢复时从 Step 02 开始，或从第一个状态不是 `done` 的 Step 继续。
+恢复指针：Step 01、Step 02 已完成；恢复时从 Step 03 开始，或从第一个状态不是 `done` 的 Step 继续。
 
 ## 1. 目标
 
@@ -80,7 +80,7 @@ Harness：`awiki-harness`
 | Step | 标题 | 依赖 | 产出 | 小 Plan 文档 | Commit gate | 状态 |
 |---|---|---|---|---|---|---|
 | 01 | user-service DID delegated subkey | 无 | APP 侧生成 daemon key；user-service 登记 public key；冻结 key package/schema fixture；registry/revoke/query 契约 | [steps/01-user-service-did-delegated-subkey.md](steps/01-user-service-did-delegated-subkey.md) | 必须 | done |
-| 02 | ANP SDK / im-core optional params | Step 01 契约草案 | delegated signing 与 `InboxHistoryOptions` optional API | [steps/02-im-core-delegated-signing-inbox-options.md](steps/02-im-core-delegated-signing-inbox-options.md) | 必须 | pending |
+| 02 | ANP SDK / im-core optional params | Step 01 契约草案 | delegated signing 与 `InboxHistoryOptions` optional API | [steps/02-im-core-delegated-signing-inbox-options.md](steps/02-im-core-delegated-signing-inbox-options.md) | 必须 | in_progress |
 | 03 | awiki-deamon bootstrap 与 user delegated identity state | Step 01、Step 02 契约 | 从普通消息发送接收 `awiki.daemon.bootstrap.v1` 明文 JSON body、明文 key package 存储、幂等状态 | [steps/03-awiki-deamon-bootstrap-state.md](steps/03-awiki-deamon-bootstrap-state.md) | 必须 | pending |
 | 04 | awiki-deamon message agent binding | Step 03 | `ensure_app_message_agent` 与 `app_message_agent_binding` | [steps/04-awiki-deamon-message-agent-binding.md](steps/04-awiki-deamon-message-agent-binding.md) | 必须 | pending |
 | 05 | awiki-deamon delegated inbox sync | Step 02、Step 04、Step 07 契约 | durable cursor、processed message、普通消息投递、E2EE opaque ignore | [steps/05-awiki-deamon-user-delegated-inbox-sync.md](steps/05-awiki-deamon-user-delegated-inbox-sync.md) | 必须 | pending |
@@ -96,8 +96,8 @@ Harness：`awiki-harness`
 | Step | 状态 | 分支 | 开始时间 | 完成时间 | Commit | Review 证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
 | 01 | done | `feature/release-0526/agent-im-hutong` | 2026-06-09T10:06:33Z | 2026-06-09T10:38:54Z | `user-service` `b3f4c59` | Review 发现并修复：撤销缺失 registry 时先改 DID Document 的部分写入风险；revoked registry record 被当作 active 幂等返回的风险；模型重复唯一约束风险。剩余风险：MVP 撤销实时性仍依赖 message-service DID Document cache 刷新；Step 01 未实现独立 rotate endpoint。 | `cd user-service && uv run python -m pytest tests/app/did -v`：32 passed；`cd user-service && uv run ruff check src/user_service/app/did src/user_service/storage tests/app/did/test_service_managed.py tests/conftest.py`：All checks passed；`cd user-service && uv run python -m py_compile ...`：通过；`cd user-service && uv run python scripts/gen_openapi.py`：生成 `docs/openapi.json`；`cd user-service && git diff --check`：通过。 | 启动 Step 02：ANP SDK / im-core optional params |
-| 02 | pending | 待执行者填写 | - | - | - | - | - | 等 Step 01 契约确认后启动 |
-| 03 | pending | 待执行者填写 | - | - | - | - | - | 等 Step 01-02 契约确认后启动 |
+| 02 | done | `feature/release-0526/agent-im-hutong` | 2026-06-09T10:39:30Z | 2026-06-09T12:28:11Z | `0ba6e52 im-core: add delegated inbox signing options` | 2026-06-09 Review：检查 optional 参数兼容、ANP proof 语义、owner/key 校验、Dart binding 同步、E2EE projection 拒绝、错误命名残留。发现并修复：`history.rs` move/borrow 风险；delegated inbox/history proof target 需使用配置化 service DID；delegated group history 不应静默忽略 `InboxHistoryOptions`；Plan/设计文档 registry/device/default 旧措辞残留。剩余风险：`ScopedInboxToken` 为 MVP 后路径，Step 07 才实现服务端策略。 | `cd awiki-cli-rs2 && cargo test -p im-core --locked`：267 lib tests passed，所有 integration/doc tests passed；`cd awiki-cli-rs2 && cargo test -p im-core-dart --locked`：6 unit + 13 facade + 0 doc tests passed；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh`：Done；`cd awiki-cli-rs2/packages/awiki_im_core && flutter test`：12 tests passed；`cd awiki-cli-rs2 && git diff --check`：通过；Step 02 naming check 和设计残留检查：无命中。 | 启动 Step 03：awiki-deamon bootstrap 与 user delegated identity state |
+| 03 | pending | 待执行者填写 | - | - | - | - | - | 启动 awiki-deamon bootstrap 与 user delegated identity state |
 | 04 | pending | 待执行者填写 | - | - | - | - | - | 等 Step 03 完成后启动 |
 | 05 | pending | 待执行者填写 | - | - | - | - | - | 等 Step 02、04、07 契约可用后启动 |
 | 06 | pending | 待执行者填写 | - | - | - | - | - | 等 Step 01、03、04 可用后启动 |
@@ -143,7 +143,7 @@ Harness：`awiki-harness`
 - 设计方法：把 daemon key 当作用户 DID 下的附属 authentication key；APP 拥有 private material，user-service 只保存 public key 和 registry record。
 - 实现方法：冻结 key package/schema fixture，扩展 DID 创建服务、storage model、API schema、测试和文档；bootstrap 不再追加 DID key。
 - 路径：`user-service/src/user_service/app/did/*`、`user-service/src/user_service/storage/sqlmodel/models/did.py`。
-- 验证方式：`cd user-service && uv run pytest tests/app/did -v`，并补充 public registration、幂等/conflict、delegated key registry 测试。
+- 验证方式：`cd user-service && uv run pytest tests/app/did -v`，并补充 public registration、幂等/conflict、public verification method 状态/撤销测试。
 - Review 环节：重点看 DID Document 兼容性、APP 侧 private key ownership、撤销语义、老客户端默认行为和 key material 泄露。
 - Commit 要求：一个 user-service 聚焦 commit。
 - 风险：`authentication` key 权限偏大；依靠 registry/policy、撤销和审计缓解。
@@ -297,6 +297,7 @@ Harness：`awiki-harness`
 | 2026-06-09 | 创建 MVP 实施 Plan 和 9 个 Step 小 Plan | 用户要求根据两篇设计文档生成可落地方案 | Step 01-09 | 是 |
 | 2026-06-09 | 修正 Step 01/02/03/05/06/07 关键契约 | Review 发现 user-service 生成/返回 daemon 私钥风险、key package 契约未冻结、SDK 验证矩阵过弱、普通消息投递给 Agent 的 prompt/retention 边界不足；用户确认 APP 侧生成私钥、单 APP 单 daemon key、不带设备信息 | Step 01、02、03、05、06、07、09 | 是 |
 | 2026-06-09 | Step 01 public registration 允许省略完整 `verification_method` | 当前 user-service DID 创建由服务端 factory 生成最终 key-bound DID，APP 在请求前可能不知道最终 DID URL；服务端仍不生成 daemon 私钥，只在 DID 生成后把 `key_fragment=#daemon-key-1` 补成 `did#daemon-key-1` 并校验公钥 | Step 01、02、03、06、07 | 是 |
+| 2026-06-09 | Step 02 Review 后收紧 delegated inbox/history SDK 边界 | 实现 Review 发现 delegated inbox/history proof target 不能硬编码，delegated group history 不能静默进入 group/E2EE projection；同时清理 Plan/设计文档中 user-service registry、device key 和默认生成残留 | Step 01、02、03、07 | 是 |
 
 ## 16. 风险与回滚
 

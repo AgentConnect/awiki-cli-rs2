@@ -162,6 +162,7 @@ fn payload_request_and_body_view_preserve_json_for_dart() {
         client_message_id: None,
         idempotency_key: Some("op-payload".to_string()),
         wait_for_final_acceptance: true,
+        delegated_signing: None,
     };
 
     let core: im_core::messages::SendMessageRequest =
@@ -190,6 +191,81 @@ fn payload_request_and_body_view_preserve_json_for_dart() {
     assert_eq!(payload["schema"], "awiki.agent.status.v1");
     assert_eq!(payload["state"], "running");
     assert!(dart_body.unsupported_content_type.is_none());
+}
+
+#[test]
+fn dart_delegated_message_options_map_to_im_core_optional_params() {
+    let request = awiki_im_core::dto::message::DartSendTextRequest {
+        target: awiki_im_core::dto::message::DartMessageTarget::Direct {
+            peer: "did:example:bob".to_string(),
+        },
+        text: "hello".to_string(),
+        markdown: false,
+        security: awiki_im_core::dto::message::DartMessageSecurityMode::DefaultPlain,
+        client_message_id: None,
+        idempotency_key: None,
+        wait_for_final_acceptance: false,
+        delegated_signing: Some(awiki_im_core::dto::message::DartDelegatedSigningOptions {
+            logical_sender_did: Some("did:example:alice".to_string()),
+            signing_verification_method: Some("did:example:alice#daemon-key-1".to_string()),
+            signing_key_ref: Some("local:daemon-key-1".to_string()),
+            actor_agent_did: Some("did:example:daemon".to_string()),
+        }),
+    };
+
+    let core: im_core::messages::SendMessageRequest =
+        request.try_into().expect("text request maps");
+    let delegated = core
+        .delegated_signing
+        .expect("delegated signing is preserved");
+    assert_eq!(
+        delegated.logical_sender_did.as_deref(),
+        Some("did:example:alice")
+    );
+    assert_eq!(
+        delegated.signing_verification_method.as_deref(),
+        Some("did:example:alice#daemon-key-1")
+    );
+    assert_eq!(
+        delegated.signing_key_ref.as_deref(),
+        Some("local:daemon-key-1")
+    );
+    assert_eq!(
+        delegated.actor_agent_did.as_deref(),
+        Some("did:example:daemon")
+    );
+}
+
+#[test]
+fn dart_inbox_history_options_map_to_im_core_optional_params() {
+    let options = awiki_im_core::dto::message::DartInboxHistoryOptions {
+        inbox_owner_did: Some("did:example:alice".to_string()),
+        inbox_auth_verification_method: Some("did:example:alice#daemon-key-1".to_string()),
+        inbox_auth_key_ref: Some("local:daemon-key-1".to_string()),
+        inbox_auth: Some(
+            awiki_im_core::dto::message::DartInboxAuth::ScopedInboxToken {
+                token: awiki_im_core::dto::message::DartScopedInboxToken {
+                    token: "token-1".to_string(),
+                },
+            },
+        ),
+    };
+
+    let core: im_core::messages::InboxHistoryOptions = options.into();
+    assert_eq!(core.inbox_owner_did.as_deref(), Some("did:example:alice"));
+    assert_eq!(
+        core.inbox_auth_verification_method.as_deref(),
+        Some("did:example:alice#daemon-key-1")
+    );
+    assert_eq!(
+        core.inbox_auth_key_ref.as_deref(),
+        Some("local:daemon-key-1")
+    );
+    assert!(matches!(
+        core.inbox_auth,
+        Some(im_core::messages::InboxAuth::ScopedInboxToken { token })
+            if token.token == "token-1"
+    ));
 }
 
 #[test]

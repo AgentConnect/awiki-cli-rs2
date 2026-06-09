@@ -131,8 +131,8 @@ user-service 保存和返回的 registry record：
 1. 阅读现有 DID 创建链路，确认 `user-service/src/user_service/app/did/service.py`、`schemas.py`、`repository.py` 和 `router.py` 的职责边界。
 2. 在 DID 创建请求/响应 schema 中新增兼容字段，用于接收 APP 侧生成的 `DaemonDelegatedKeyPublicRegistration`；字段必须 optional，且不得包含 private key 字段。`verification_method` 可以由服务端在 DID 生成后根据 `key_fragment` 补全。
 3. 在 DID Document 构造逻辑里把 APP 提交的 `#daemon-key-1` public verification method 加入 `verificationMethod` 与 `authentication`。
-4. 在 storage model 中新增 delegated key registry 数据结构；如果现有 DID model 可承载，优先扩展现有模型，否则新增表和 repository 方法。
-5. 实现 query/revoke/rotate 或至少 query/revoke 的 MVP 服务方法。撤销必须让 key 不再通过 policy 校验；跨服务 registry 查询暂不在 MVP 实现，但 registry record 要为后续 message-service 查询预留。
+4. 在 storage model 中新增 daemon delegated public verification method 状态数据结构；如果现有 DID model 可承载，优先扩展现有模型，否则新增表和 repository 方法。
+5. 实现 query/revoke/rotate 或至少 query/revoke 的 MVP 服务方法。撤销必须把 public verification method 从 DID Document `authentication` 移除或标记不可用；撤销对 message-service MVP 运行时授权的生效通过 DID Document `authentication` 更新和 DID Document cache 刷新体现。
 6. 更新 API 文档，明确：bootstrap 不创建 DID key；user-service 不生成、不返回 daemon subkey private key；private package 只存在于 APP 本地和后续 APP -> Daemon bootstrap。
 7. 增加测试：APP 提交 public registration 后 DID Document authentication 包含 daemon key、老请求兼容、重复同 public key 幂等、重复不同 public key conflict、registry 状态、revoke 后不可用、private key 字段在 user-service request/response/普通查询中都不存在。
 
@@ -144,7 +144,7 @@ user-service 保存和返回的 registry record：
 |---|---|---|
 | `user-service/src/user_service/app/did/service.py` | DID 创建时登记 APP 侧生成的 daemon delegated public key | 重点实现入口 |
 | `user-service/src/user_service/app/did/schemas.py` | 新增兼容 request/response schema | 字段 optional 或默认兼容 |
-| `user-service/src/user_service/app/did/repository.py` | delegated key registry 读写 | 视现有 repository 边界调整 |
+| `user-service/src/user_service/app/did/repository.py` | daemon delegated public verification method 状态读写 | 视现有 repository 边界调整 |
 | `user-service/src/user_service/app/did/router.py` | 暴露 query/revoke/rotate API 或 RPC | 避免破坏旧 endpoint |
 | `user-service/src/user_service/storage/sqlmodel/models/did.py` | 增加 registry 存储模型或字段 | 需要迁移时同步 storage 初始化 |
 | `user-service/docs/api/*` | 更新 DID 创建和 delegated key 文档 | 说明 bootstrap 不再修改 DID Document |
@@ -176,7 +176,7 @@ user-service 保存和返回的 registry record：
 | Unit | `cd user-service && uv run pytest tests/app/did -v` | public registration、DID 创建、幂等/conflict、registry、revoke 测试通过；记录通过/失败/跳过数量。 |
 | API schema | 检查新增字段默认值和旧 fixture | 老客户端请求不失败，新响应字段符合文档。 |
 | Security | 搜索 daemon delegated key API 中是否存在 private key 字段 | user-service daemon delegated key request/response/普通查询不含 private key；如存在必须修复。 |
-| Docs | 检查 `user-service/docs/api/*` | 明确 daemon key 默认创建和 bootstrap 边界。 |
+| Docs | 检查 `user-service/docs/api/*` | 明确 APP 本地生成 key package、user-service 只登记 public verification method，以及 bootstrap 边界。 |
 
 如果某个命令不能运行，必须记录原因、影响和替代证据。
 

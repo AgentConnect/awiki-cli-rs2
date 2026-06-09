@@ -30,6 +30,7 @@ fn origin_proof_matches_rfc9421_contract_and_uses_auth_verification_method() {
         identity_name: "alice".to_string(),
         did_document: Some(generated.did_document.clone()),
         key1_private_pem: generated.key1_private_pem.clone(),
+        verification_method: None,
     };
     let origin_proof =
         compat::proof::build_origin_proof(&identity, &payload).expect("origin proof should build");
@@ -92,6 +93,7 @@ fn origin_proof_reports_missing_verification_method_like_go_contract() {
         identity_name: "broken".to_string(),
         did_document: Some(json!({ "id": generated.did })),
         key1_private_pem: generated.key1_private_pem.clone(),
+        verification_method: None,
     };
     let error = compat::proof::build_origin_proof(&broken, &payload).unwrap_err();
     assert_eq!(
@@ -124,12 +126,61 @@ fn origin_proof_reports_missing_verification_method_like_go_contract() {
         identity_name: "empty-auth".to_string(),
         did_document: Some(empty_auth_takes_precedence),
         key1_private_pem: generated.key1_private_pem,
+        verification_method: None,
     };
     let error = compat::proof::build_origin_proof(&empty_auth, &payload).unwrap_err();
     assert_eq!(
         error.to_string(),
         "serialization error: identity empty-auth is missing an authentication verification method"
     );
+}
+
+#[test]
+fn origin_proof_can_use_explicit_delegated_authentication_method() {
+    let generated = generated_identity();
+    let delegated_method = format!("{}#daemon-key-1", generated.did);
+    let mut delegated_document = generated.did_document.clone();
+    let mut delegated_key = delegated_document["verificationMethod"][0].clone();
+    delegated_key["id"] = json!(delegated_method);
+    delegated_document["verificationMethod"]
+        .as_array_mut()
+        .expect("verification methods")
+        .push(delegated_key);
+    delegated_document["authentication"]
+        .as_array_mut()
+        .expect("authentication")
+        .push(json!(delegated_method));
+    let payload = compat::wire::build_direct_text_payload(
+        &generated.did,
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        "hello delegated",
+        "text/plain",
+    )
+    .expect("direct payload");
+
+    let identity = compat::proof::OriginProofIdentity {
+        identity_name: "alice-daemon".to_string(),
+        did_document: Some(delegated_document.clone()),
+        key1_private_pem: generated.key1_private_pem,
+        verification_method: Some(delegated_method.clone()),
+    };
+    let origin_proof =
+        compat::proof::build_origin_proof(&identity, &payload).expect("delegated proof");
+    assert!(origin_proof
+        .signature_input
+        .contains(&format!("keyid=\"{delegated_method}\"")));
+    verify_rfc9421_origin_proof(
+        &origin_proof,
+        &payload.method,
+        &payload.meta,
+        &payload.body,
+        Rfc9421OriginProofVerificationOptions {
+            did_document: Some(delegated_document),
+            expected_signer_did: Some(generated.did),
+            ..Rfc9421OriginProofVerificationOptions::default()
+        },
+    )
+    .expect("delegated origin proof verifies");
 }
 
 struct GeneratedIdentity {

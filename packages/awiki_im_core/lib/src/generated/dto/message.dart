@@ -79,6 +79,77 @@ class DartConversationPage {
           hasMore == other.hasMore;
 }
 
+class DartDelegatedSigningOptions {
+  final String? logicalSenderDid;
+  final String? signingVerificationMethod;
+  final String? signingKeyRef;
+  final String? actorAgentDid;
+
+  const DartDelegatedSigningOptions({
+    this.logicalSenderDid,
+    this.signingVerificationMethod,
+    this.signingKeyRef,
+    this.actorAgentDid,
+  });
+
+  @override
+  int get hashCode =>
+      logicalSenderDid.hashCode ^
+      signingVerificationMethod.hashCode ^
+      signingKeyRef.hashCode ^
+      actorAgentDid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDelegatedSigningOptions &&
+          runtimeType == other.runtimeType &&
+          logicalSenderDid == other.logicalSenderDid &&
+          signingVerificationMethod == other.signingVerificationMethod &&
+          signingKeyRef == other.signingKeyRef &&
+          actorAgentDid == other.actorAgentDid;
+}
+
+@freezed
+sealed class DartInboxAuth with _$DartInboxAuth {
+  const DartInboxAuth._();
+
+  const factory DartInboxAuth.scopedInboxToken({
+    required DartScopedInboxToken token,
+  }) = DartInboxAuth_ScopedInboxToken;
+}
+
+class DartInboxHistoryOptions {
+  final String? inboxOwnerDid;
+  final String? inboxAuthVerificationMethod;
+  final String? inboxAuthKeyRef;
+  final DartInboxAuth? inboxAuth;
+
+  const DartInboxHistoryOptions({
+    this.inboxOwnerDid,
+    this.inboxAuthVerificationMethod,
+    this.inboxAuthKeyRef,
+    this.inboxAuth,
+  });
+
+  @override
+  int get hashCode =>
+      inboxOwnerDid.hashCode ^
+      inboxAuthVerificationMethod.hashCode ^
+      inboxAuthKeyRef.hashCode ^
+      inboxAuth.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartInboxHistoryOptions &&
+          runtimeType == other.runtimeType &&
+          inboxOwnerDid == other.inboxOwnerDid &&
+          inboxAuthVerificationMethod == other.inboxAuthVerificationMethod &&
+          inboxAuthKeyRef == other.inboxAuthKeyRef &&
+          inboxAuth == other.inboxAuth;
+}
+
 class DartMarkReadResult {
   final int updatedCount;
   final List<String> messageIds;
@@ -303,6 +374,22 @@ sealed class DartMessageTarget with _$DartMessageTarget {
       DartMessageTarget_Group;
 }
 
+class DartScopedInboxToken {
+  final String token;
+
+  const DartScopedInboxToken({required this.token});
+
+  @override
+  int get hashCode => token.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartScopedInboxToken &&
+          runtimeType == other.runtimeType &&
+          token == other.token;
+}
+
 class DartSendMessageResult {
   final DartMessage message;
   final String deliveryState;
@@ -335,6 +422,7 @@ class DartSendPayloadRequest {
   final String? clientMessageId;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
 
   const DartSendPayloadRequest({
     required this.target,
@@ -343,6 +431,7 @@ class DartSendPayloadRequest {
     this.clientMessageId,
     this.idempotencyKey,
     required this.waitForFinalAcceptance,
+    this.delegatedSigning,
   });
 
   @override
@@ -352,7 +441,8 @@ class DartSendPayloadRequest {
       security.hashCode ^
       clientMessageId.hashCode ^
       idempotencyKey.hashCode ^
-      waitForFinalAcceptance.hashCode;
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -364,7 +454,8 @@ class DartSendPayloadRequest {
           security == other.security &&
           clientMessageId == other.clientMessageId &&
           idempotencyKey == other.idempotencyKey &&
-          waitForFinalAcceptance == other.waitForFinalAcceptance;
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
 }
 
 class DartSendTextRequest {
@@ -375,6 +466,7 @@ class DartSendTextRequest {
   final String? clientMessageId;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
 
   const DartSendTextRequest({
     required this.target,
@@ -384,6 +476,7 @@ class DartSendTextRequest {
     this.clientMessageId,
     this.idempotencyKey,
     required this.waitForFinalAcceptance,
+    this.delegatedSigning,
   });
 
   @override
@@ -394,7 +487,8 @@ class DartSendTextRequest {
       security.hashCode ^
       clientMessageId.hashCode ^
       idempotencyKey.hashCode ^
-      waitForFinalAcceptance.hashCode;
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -407,7 +501,8 @@ class DartSendTextRequest {
           security == other.security &&
           clientMessageId == other.clientMessageId &&
           idempotencyKey == other.idempotencyKey &&
-          waitForFinalAcceptance == other.waitForFinalAcceptance;
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
 }
 
 @freezed

@@ -184,6 +184,7 @@ fn message_request_from_attachment(
         security: request.security,
         client_message_id: None,
         delivery: request.delivery,
+        delegated_signing: None,
     })
 }
 

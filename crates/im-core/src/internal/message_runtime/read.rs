@@ -6,6 +6,7 @@ use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::transport::{
     AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
 };
+use crate::internal::wire::direct::DirectPayload;
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -58,16 +59,42 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)?;
         let limit = page_limit(input.query.limit, 20);
-        let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        let delegated = delegated_inbox_context(
+            self.client,
+            input.query.inbox_history_options.as_ref(),
+            limit,
+        )?;
+        let service_did = delegated
+            .as_ref()
+            .map(|_| delegated_message_service_did(self.client));
+        let mut params = crate::internal::wire::inbox::build_inbox_rpc_params(
             &crate::internal::wire::common::WireIdentity {
                 did: self.client.did().as_str().to_string(),
             },
-            crate::internal::wire::inbox::InboxWireRequest { limit },
+            crate::internal::wire::inbox::InboxWireRequest {
+                limit,
+                auth: delegated.as_ref().map(|context| {
+                    crate::internal::wire::inbox::InboxWireAuth {
+                        inbox_owner_did: context.inbox_owner_did.clone(),
+                        inbox_auth_verification_method: context
+                            .inbox_auth_verification_method
+                            .clone(),
+                        service_did: service_did.clone().unwrap_or_default(),
+                    }
+                }),
+            },
         );
+        if let Some(context) = delegated.as_ref() {
+            attach_inbox_origin_proof(&mut params, "inbox.get", context)?;
+        }
         let mut raw =
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
-        project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
+        if delegated.is_some() {
+            filter_delegated_e2ee_messages(&mut raw);
+        } else {
+            project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
+        }
         let page = page_from_raw(&raw, input.query.limit)?;
         persist_projection_best_effort(self.client, &page.items);
         Ok(ReadPageResult { page, raw })
@@ -79,7 +106,15 @@ where
                 self.session_provider
                     .ensure_session(crate::auth::AuthScope::Messaging)?;
                 let peer = direct_thread(peer, input.resolved_peer_did)?;
-                let params = crate::internal::wire::history::build_history_rpc_params(
+                let delegated = delegated_inbox_context(
+                    self.client,
+                    input.query.inbox_history_options.as_ref(),
+                    page_limit(input.query.limit, 50),
+                )?;
+                let service_did = delegated
+                    .as_ref()
+                    .map(|_| delegated_message_service_did(self.client));
+                let mut params = crate::internal::wire::history::build_history_rpc_params(
                     &crate::internal::wire::common::WireIdentity {
                         did: self.client.did().as_str().to_string(),
                     },
@@ -88,23 +123,42 @@ where
                         limit: page_limit(input.query.limit, 50),
                         cursor: input.query.cursor.map(|cursor| cursor.as_str().to_string()),
                         skip: 0,
+                        auth: delegated.as_ref().map(|context| {
+                            crate::internal::wire::history::HistoryWireAuth {
+                                inbox_owner_did: context.inbox_owner_did.clone(),
+                                inbox_auth_verification_method: context
+                                    .inbox_auth_verification_method
+                                    .clone(),
+                                service_did: service_did.clone().unwrap_or_default(),
+                            }
+                        }),
                     },
                 )?;
+                if let Some(context) = delegated.as_ref() {
+                    attach_inbox_origin_proof(&mut params, "direct.get_history", context)?;
+                }
                 let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "direct.get_history",
                     params,
                 )?;
-                project_secure_direct_messages(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                );
+                if delegated.is_some() {
+                    filter_delegated_e2ee_messages(&mut raw);
+                } else {
+                    project_secure_direct_messages(
+                        self.client,
+                        &mut raw,
+                        &mut self.directory_transport,
+                    );
+                }
                 let page = page_from_raw(&raw, input.query.limit)?;
                 persist_projection_best_effort(self.client, &page.items);
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Group(group) => {
+                if input.query.inbox_history_options.is_some() {
+                    return Err(crate::ImError::unsupported("delegated-group-history"));
+                }
                 self.session_provider
                     .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
                 let params = crate::internal::wire::group::build_group_messages_rpc_params(
@@ -142,18 +196,49 @@ where
             .ensure_session(crate::auth::AuthScope::Messaging)
             .await?;
         let limit = page_limit(input.query.limit, 20);
-        let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+        let delegated = delegated_inbox_context_async(
+            self.client,
+            input.query.inbox_history_options.as_ref(),
+            limit,
+        )
+        .await?;
+        let service_did = delegated
+            .as_ref()
+            .map(|_| delegated_message_service_did(self.client));
+        let mut params = crate::internal::wire::inbox::build_inbox_rpc_params(
             &crate::internal::wire::common::WireIdentity {
                 did: self.client.did().as_str().to_string(),
             },
-            crate::internal::wire::inbox::InboxWireRequest { limit },
+            crate::internal::wire::inbox::InboxWireRequest {
+                limit,
+                auth: delegated.as_ref().map(|context| {
+                    crate::internal::wire::inbox::InboxWireAuth {
+                        inbox_owner_did: context.inbox_owner_did.clone(),
+                        inbox_auth_verification_method: context
+                            .inbox_auth_verification_method
+                            .clone(),
+                        service_did: service_did.clone().unwrap_or_default(),
+                    }
+                }),
+            },
         );
+        if let Some(context) = delegated.as_ref() {
+            attach_inbox_origin_proof(&mut params, "inbox.get", context)?;
+        }
         let mut raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
             .await?;
-        project_secure_direct_messages_async(self.client, &mut raw, &mut self.directory_transport)
+        if delegated.is_some() {
+            filter_delegated_e2ee_messages(&mut raw);
+        } else {
+            project_secure_direct_messages_async(
+                self.client,
+                &mut raw,
+                &mut self.directory_transport,
+            )
             .await;
+        }
         let page = page_from_raw(&raw, input.query.limit)?;
         persist_projection_best_effort_async(self.client, &page.items).await;
         Ok(ReadPageResult { page, raw })
@@ -169,7 +254,16 @@ where
                     .ensure_session(crate::auth::AuthScope::Messaging)
                     .await?;
                 let peer = direct_thread(peer, input.resolved_peer_did)?;
-                let params = crate::internal::wire::history::build_history_rpc_params(
+                let delegated = delegated_inbox_context_async(
+                    self.client,
+                    input.query.inbox_history_options.as_ref(),
+                    page_limit(input.query.limit, 50),
+                )
+                .await?;
+                let service_did = delegated
+                    .as_ref()
+                    .map(|_| delegated_message_service_did(self.client));
+                let mut params = crate::internal::wire::history::build_history_rpc_params(
                     &crate::internal::wire::common::WireIdentity {
                         did: self.client.did().as_str().to_string(),
                     },
@@ -178,23 +272,42 @@ where
                         limit: page_limit(input.query.limit, 50),
                         cursor: input.query.cursor.map(|cursor| cursor.as_str().to_string()),
                         skip: 0,
+                        auth: delegated.as_ref().map(|context| {
+                            crate::internal::wire::history::HistoryWireAuth {
+                                inbox_owner_did: context.inbox_owner_did.clone(),
+                                inbox_auth_verification_method: context
+                                    .inbox_auth_verification_method
+                                    .clone(),
+                                service_did: service_did.clone().unwrap_or_default(),
+                            }
+                        }),
                     },
                 )?;
+                if let Some(context) = delegated.as_ref() {
+                    attach_inbox_origin_proof(&mut params, "direct.get_history", context)?;
+                }
                 let mut raw = self
                     .transport
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
                     .await?;
-                project_secure_direct_messages_async(
-                    self.client,
-                    &mut raw,
-                    &mut self.directory_transport,
-                )
-                .await;
+                if delegated.is_some() {
+                    filter_delegated_e2ee_messages(&mut raw);
+                } else {
+                    project_secure_direct_messages_async(
+                        self.client,
+                        &mut raw,
+                        &mut self.directory_transport,
+                    )
+                    .await;
+                }
                 let page = page_from_raw(&raw, input.query.limit)?;
                 persist_projection_best_effort_async(self.client, &page.items).await;
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Group(group) => {
+                if input.query.inbox_history_options.is_some() {
+                    return Err(crate::ImError::unsupported("delegated-group-history"));
+                }
                 self.session_provider
                     .ensure_session(crate::auth::AuthScope::GroupMessaging)
                     .await?;
@@ -238,6 +351,21 @@ async fn persist_projection_best_effort_async(
     .await;
 }
 
+fn delegated_message_service_did(client: &crate::core::ImClient) -> String {
+    client
+        .core_inner()
+        .sdk_config()
+        .anp_service_did
+        .as_ref()
+        .map(|did| did.as_str().to_owned())
+        .unwrap_or_else(|| {
+            format!(
+                "did:wba:{}",
+                client.core_inner().sdk_config().did_domain.trim()
+            )
+        })
+}
+
 struct DirectThread {
     resolved_did: String,
 }
@@ -267,6 +395,152 @@ fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
     } else {
         i64::from(limit.0)
     }
+}
+
+#[derive(Debug, Clone)]
+struct DelegatedInboxContext {
+    inbox_owner_did: String,
+    inbox_auth_verification_method: String,
+    did_document: Value,
+    private_key_pem: String,
+}
+
+fn delegated_inbox_context(
+    client: &crate::core::ImClient,
+    options: Option<&crate::messages::InboxHistoryOptions>,
+    _limit: i64,
+) -> crate::ImResult<Option<DelegatedInboxContext>> {
+    let Some(options) = options else {
+        return Ok(None);
+    };
+    if options.inbox_auth.is_some() {
+        return Err(crate::ImError::unsupported("scoped-inbox-token"));
+    }
+    let owner = required_inbox_option(options.inbox_owner_did.as_deref(), "inbox_owner_did")?;
+    let method = required_inbox_option(
+        options.inbox_auth_verification_method.as_deref(),
+        "inbox_auth_verification_method",
+    )?;
+    let key_ref =
+        required_inbox_option(options.inbox_auth_key_ref.as_deref(), "inbox_auth_key_ref")?;
+    crate::internal::delegated_identity::require_method_owner(
+        &owner,
+        &method,
+        "inbox_owner_did",
+        "inbox_auth_verification_method",
+    )?;
+    let did_document =
+        crate::internal::delegated_identity::load_did_document_for_owner(client, &owner, None)?;
+    crate::internal::delegated_identity::require_authentication_method(
+        &did_document,
+        &method,
+        "inbox_auth_verification_method",
+    )?;
+    let private_key_pem =
+        crate::internal::delegated_identity::load_private_key_ref(client, &key_ref)?;
+    Ok(Some(DelegatedInboxContext {
+        inbox_owner_did: owner,
+        inbox_auth_verification_method: method,
+        did_document,
+        private_key_pem,
+    }))
+}
+
+async fn delegated_inbox_context_async(
+    client: &crate::core::ImClient,
+    options: Option<&crate::messages::InboxHistoryOptions>,
+    _limit: i64,
+) -> crate::ImResult<Option<DelegatedInboxContext>> {
+    let Some(options) = options else {
+        return Ok(None);
+    };
+    if options.inbox_auth.is_some() {
+        return Err(crate::ImError::unsupported("scoped-inbox-token"));
+    }
+    let owner = required_inbox_option(options.inbox_owner_did.as_deref(), "inbox_owner_did")?;
+    let method = required_inbox_option(
+        options.inbox_auth_verification_method.as_deref(),
+        "inbox_auth_verification_method",
+    )?;
+    let key_ref =
+        required_inbox_option(options.inbox_auth_key_ref.as_deref(), "inbox_auth_key_ref")?;
+    crate::internal::delegated_identity::require_method_owner(
+        &owner,
+        &method,
+        "inbox_owner_did",
+        "inbox_auth_verification_method",
+    )?;
+    let did_document = crate::internal::delegated_identity::load_did_document_for_owner_async(
+        client, &owner, None,
+    )
+    .await?;
+    crate::internal::delegated_identity::require_authentication_method(
+        &did_document,
+        &method,
+        "inbox_auth_verification_method",
+    )?;
+    let private_key_pem =
+        crate::internal::delegated_identity::load_private_key_ref_async(client, &key_ref).await?;
+    Ok(Some(DelegatedInboxContext {
+        inbox_owner_did: owner,
+        inbox_auth_verification_method: method,
+        did_document,
+        private_key_pem,
+    }))
+}
+
+fn required_inbox_option(value: Option<&str>, field: &str) -> crate::ImResult<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some(field.to_owned()),
+                format!("{field} is required when InboxHistoryOptions is set"),
+            )
+        })
+}
+
+fn attach_inbox_origin_proof(
+    params: &mut Value,
+    method: &str,
+    context: &DelegatedInboxContext,
+) -> crate::ImResult<()> {
+    let payload = DirectPayload {
+        method: method.to_owned(),
+        meta: params
+            .get("meta")
+            .cloned()
+            .ok_or_else(|| crate::ImError::Internal {
+                message: "inbox/history params missing meta".to_owned(),
+            })?,
+        body: params
+            .get("body")
+            .cloned()
+            .ok_or_else(|| crate::ImError::Internal {
+                message: "inbox/history params missing body".to_owned(),
+            })?,
+    };
+    let origin_proof = crate::internal::proof::origin::build_origin_proof(
+        &crate::internal::proof::origin::OriginProofIdentity {
+            identity_name: format!("delegated-inbox:{}", context.inbox_auth_verification_method),
+            did_document: Some(context.did_document.clone()),
+            key1_private_pem: context.private_key_pem.clone(),
+            verification_method: Some(context.inbox_auth_verification_method.clone()),
+        },
+        &payload,
+    )?;
+    let Some(object) = params.as_object_mut() else {
+        return Err(crate::ImError::Internal {
+            message: "inbox/history params must be a JSON object".to_owned(),
+        });
+    };
+    object.insert(
+        "auth".to_owned(),
+        crate::internal::proof::origin::origin_auth_value(&origin_proof),
+    );
+    Ok(())
 }
 
 fn page_from_raw(
@@ -317,6 +591,33 @@ fn project_secure_direct_messages(
     directory_transport: &mut impl RpcTransport,
 ) {
     project_secure_direct_messages_impl(client, raw, directory_transport, true);
+}
+
+fn filter_delegated_e2ee_messages(raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    messages.retain(|message| !is_delegated_e2ee_message(message));
+}
+
+fn is_delegated_e2ee_message(message: &Value) -> bool {
+    let content_type = direct_message_content_type(message);
+    if anp::direct_e2ee::is_direct_e2ee_wire_content_type(&content_type) {
+        return true;
+    }
+    #[cfg(feature = "group-e2ee")]
+    {
+        if content_type == crate::internal::group_e2ee::wire::GROUP_E2EE_CIPHER_CONTENT_TYPE {
+            return true;
+        }
+    }
+    let security = message
+        .get("message_security_profile")
+        .or_else(|| message.get("security_profile"))
+        .or_else(|| message.get("security"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    matches!(security, "direct-e2ee" | "group-e2ee")
 }
 
 fn project_secure_direct_messages_impl(
@@ -1438,6 +1739,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: false,
+                    inbox_history_options: None,
                 },
             })
             .unwrap();
@@ -1452,6 +1754,260 @@ mod tests {
         assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["user_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["limit"], 20);
+    }
+
+    #[test]
+    fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "messages": [
+                        {
+                            "id": "msg-plain-delegated",
+                            "sender_did": "did:example:bob",
+                            "receiver_did": delegated.user_did,
+                            "content": "plain delegated",
+                            "content_type": "text/plain",
+                            "server_seq": 8
+                        },
+                        {
+                            "id": "msg-e2ee-delegated",
+                            "sender_did": "did:example:bob",
+                            "receiver_did": delegated.user_did,
+                            "content_type": "application/anp-direct-cipher+json",
+                            "security_profile": "direct-e2ee",
+                            "content": {"ciphertext": "opaque"}
+                        }
+                    ],
+                    "has_more": false
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                        inbox_owner_did: Some(delegated.user_did.clone()),
+                        inbox_auth_verification_method: Some(delegated.verification_method.clone()),
+                        inbox_auth_key_ref: Some(format!(
+                            "file:{}",
+                            delegated.private_key_path.display()
+                        )),
+                        inbox_auth: None,
+                    }),
+                },
+            })
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 1);
+        assert_eq!(result.page.items[0].id.as_str(), "msg-plain-delegated");
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "inbox.get");
+        assert_eq!(calls[0].params["meta"]["sender_did"], delegated.user_did);
+        assert_eq!(calls[0].params["body"]["user_did"], delegated.user_did);
+        assert_eq!(
+            calls[0].params["body"]["inbox_auth_verification_method"],
+            delegated.verification_method
+        );
+        assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
+            .as_str()
+            .expect("signature input")
+            .contains(&format!("keyid=\"{}\"", delegated.verification_method)));
+    }
+
+    #[test]
+    fn messages_read_runtime_rejects_wrong_delegated_history_owner_locally() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let error = runtime
+            .history(HistoryRead {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(5),
+                    cursor: None,
+                    inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                        inbox_owner_did: Some("did:example:other".to_owned()),
+                        inbox_auth_verification_method: Some(delegated.verification_method),
+                        inbox_auth_key_ref: Some(format!(
+                            "file:{}",
+                            delegated.private_key_path.display()
+                        )),
+                        inbox_auth: None,
+                    }),
+                },
+                resolved_peer_did: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::InvalidInput {
+                field: Some(field),
+                ..
+            } if field == "inbox_owner_did"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn messages_read_runtime_rejects_missing_delegated_inbox_key_locally() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let error = runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                        inbox_owner_did: Some(delegated.user_did),
+                        inbox_auth_verification_method: Some(delegated.verification_method),
+                        inbox_auth_key_ref: Some("local:missing-daemon-key".to_owned()),
+                        inbox_auth: None,
+                    }),
+                },
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::CredentialFileUnreadable { path_kind, .. }
+                if path_kind == "delegated_private_key"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn messages_read_runtime_rejects_delegated_group_history_locally() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let error = runtime
+            .history(HistoryRead {
+                thread: crate::messages::ThreadRef::Group(
+                    crate::ids::GroupRef::parse("did:example:groups:team").unwrap(),
+                ),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(5),
+                    cursor: None,
+                    inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                        inbox_owner_did: Some(delegated.user_did),
+                        inbox_auth_verification_method: Some(delegated.verification_method),
+                        inbox_auth_key_ref: Some(format!(
+                            "file:{}",
+                            delegated.private_key_path.display()
+                        )),
+                        inbox_auth: None,
+                    }),
+                },
+                resolved_peer_did: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::UnsupportedCapability { capability }
+                if capability == "delegated-group-history"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn messages_read_runtime_rejects_scoped_inbox_token_until_enabled() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({}),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let error = runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                        inbox_owner_did: Some(delegated.user_did),
+                        inbox_auth_verification_method: Some(delegated.verification_method),
+                        inbox_auth_key_ref: Some(format!(
+                            "file:{}",
+                            delegated.private_key_path.display()
+                        )),
+                        inbox_auth: Some(crate::messages::InboxAuth::ScopedInboxToken {
+                            token: crate::messages::ScopedInboxToken {
+                                token: "token".to_owned(),
+                            },
+                        }),
+                    }),
+                },
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::UnsupportedCapability { capability }
+                if capability == "scoped-inbox-token"
+        ));
     }
 
     #[test]
@@ -1484,6 +2040,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: false,
+                    inbox_history_options: None,
                 },
             })
             .unwrap();
@@ -1548,6 +2105,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: false,
+                    inbox_history_options: None,
                 },
             })
             .unwrap();
@@ -1601,6 +2159,7 @@ mod tests {
                 query: crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(5),
                     cursor: None,
+                    inbox_history_options: None,
                 },
                 resolved_peer_did: None,
             })
@@ -1653,6 +2212,7 @@ mod tests {
                 query: crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(5),
                     cursor: Some(crate::ids::Cursor::parse("42").unwrap()),
+                    inbox_history_options: None,
                 },
                 resolved_peer_did: Some("did:example:bob".to_string()),
             })
@@ -1698,6 +2258,7 @@ mod tests {
                 query: crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(5),
                     cursor: None,
+                    inbox_history_options: None,
                 },
                 resolved_peer_did: None,
             })
@@ -1743,6 +2304,7 @@ mod tests {
                 query: crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(5),
                     cursor: None,
+                    inbox_history_options: None,
                 },
                 resolved_peer_did: None,
             })
@@ -1794,6 +2356,7 @@ mod tests {
                 query: crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(5),
                     cursor: Some(crate::ids::Cursor::parse("42").unwrap()),
+                    inbox_history_options: None,
                 },
                 resolved_peer_did: None,
             })
@@ -1861,6 +2424,7 @@ mod tests {
                 query: crate::messages::HistoryQuery {
                     limit: crate::ids::PageLimit(6),
                     cursor: Some(crate::ids::Cursor::parse("43").unwrap()),
+                    inbox_history_options: None,
                 },
                 resolved_peer_did: None,
             })
@@ -2109,6 +2673,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: true,
+                    inbox_history_options: None,
                 },
             })
             .unwrap();
@@ -2319,6 +2884,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: false,
+                    inbox_history_options: None,
                 },
             })
             .await
@@ -2423,6 +2989,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: false,
+                    inbox_history_options: None,
                 },
             })
             .await
@@ -2628,6 +3195,12 @@ mod tests {
         root: PathBuf,
     }
 
+    struct DelegatedIdentityFixture {
+        user_did: String,
+        verification_method: String,
+        private_key_path: PathBuf,
+    }
+
     impl Fixture {
         fn new() -> Self {
             let root = unique_temp_root();
@@ -2816,7 +3389,63 @@ mod tests {
                         consumed_at: String::new(),
                     },
                 )
-                .unwrap();
+            .unwrap();
+        }
+
+        fn write_delegated_identity(&self) -> DelegatedIdentityFixture {
+            let bundle = anp::authentication::create_did_wba_document(
+                "awiki.test",
+                anp::authentication::DidDocumentOptions {
+                    path_segments: vec!["user".to_owned()],
+                    domain: Some("awiki.test".to_owned()),
+                    challenge: Some("read-delegated-test".to_owned()),
+                    ..anp::authentication::DidDocumentOptions::default()
+                },
+            )
+            .unwrap();
+            let user_did = bundle.did().unwrap().to_owned();
+            let delegated_private_key = bundle.private_key_pem("key-1").unwrap().to_owned();
+            let verification_method = format!("{user_did}#daemon-key-1");
+            let mut did_document = bundle.did_document;
+            let mut delegated_method = did_document["verificationMethod"][0].clone();
+            delegated_method["id"] = json!(verification_method);
+            did_document["verificationMethod"]
+                .as_array_mut()
+                .unwrap()
+                .push(delegated_method);
+            did_document["authentication"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(verification_method));
+            let identity_dir = self.identity_dir();
+            fs::write(
+                identity_dir.join("did.json"),
+                serde_json::to_vec_pretty(&did_document).unwrap(),
+            )
+            .unwrap();
+            let private_key_path = identity_dir.join("daemon-key-1.pem");
+            fs::write(&private_key_path, delegated_private_key).unwrap();
+            fs::write(
+                self.root.join("identities").join("registry.json"),
+                json!({
+                    "default_identity": "alice",
+                    "identities": [{
+                        "id": "alice-id",
+                        "did": user_did,
+                        "local_alias": "alice",
+                        "ready_for_auth": true,
+                        "ready_for_messaging": true,
+                        "missing": []
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            DelegatedIdentityFixture {
+                user_did,
+                verification_method,
+                private_key_path,
+            }
         }
     }
 

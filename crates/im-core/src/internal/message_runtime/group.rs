@@ -69,6 +69,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
+                verification_method: None,
             },
             &payload,
         )?;
@@ -125,6 +126,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
+                verification_method: None,
             },
             &payload,
         )?;
@@ -1001,6 +1003,7 @@ mod tests {
             security: crate::messages::MessageSecurityMode::Plain,
             client_message_id: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
         }
     }
 
@@ -1013,6 +1016,7 @@ mod tests {
             security: crate::messages::MessageSecurityMode::Plain,
             client_message_id: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
         }
     }
 
@@ -1028,6 +1032,7 @@ mod tests {
             security: crate::messages::MessageSecurityMode::Plain,
             client_message_id: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
         }
     }
 

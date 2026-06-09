@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：02  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 对齐 im-core message send、inbox、history API，设计 optional DTO |
+| Status | done |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T10:39:30Z |
+| Completed | 2026-06-09T12:28:11Z |
+| Commit | `0ba6e52 im-core: add delegated inbox signing options` |
+| Review evidence | 2026-06-09 Review：检查 optional 参数兼容、ANP proof keyid / target DID、owner/key 本地校验、Dart binding 同步、delegated E2EE 边界、错误命名残留和两篇设计文档边界。发现并修复 4 项：`history.rs` delegated auth 被 move 后又借用的编译风险；delegated inbox/history local proof target 原先缺少配置化 service DID；delegated group history 会静默忽略 `InboxHistoryOptions` 并进入 group/E2EE projection 路径；Plan/设计文档中 user-service registry / device key / 默认生成措辞残留。 |
+| Verification evidence | `cd awiki-cli-rs2 && cargo test -p im-core --locked`：267 lib tests passed，所有 integration/doc tests passed；`cd awiki-cli-rs2 && cargo test -p im-core-dart --locked`：6 unit + 13 facade + 0 doc tests passed；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh`：Done；`cd awiki-cli-rs2/packages/awiki_im_core && flutter test`：12 tests passed；`cd awiki-cli-rs2 && git diff --check`：通过；Step 02 naming check 和设计残留检查：无命中。 |
+| Next action | 创建 Step 02 聚焦 commit；随后从 Step 03 继续 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -78,15 +78,15 @@ Step index：02
 
 ## 7. 验收标准
 
-- [ ] send optional 参数能生成 `meta.sender_did = user_did` 且 `keyid = user_did#daemon-key-1` 的 proof。
-- [ ] inbox/history optional 参数能以 `inbox_owner_did` 和 `inbox_auth_verification_method` 发起普通消息读取请求。
-- [ ] `ScopedInboxToken` 类型或预留路径不影响 MVP DID proof 主路径。
-- [ ] 老 send/inbox/history 调用不传参数时行为与改动前一致。
-- [ ] SDK 本地拒绝错误 owner/key 组合和 E2EE projection/private state 请求。
-- [ ] 上述 SDK 测试矩阵全部有 Rust 测试；Dart API 变更时有对应 Dart 测试或 fixture。
-- [ ] Dart binding 如有变化已经同步。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] send optional 参数能生成 `meta.sender_did = user_did` 且 `keyid = user_did#daemon-key-1` 的 proof。
+- [x] inbox/history optional 参数能以 `inbox_owner_did` 和 `inbox_auth_verification_method` 发起普通消息读取请求。
+- [x] `ScopedInboxToken` 类型或预留路径不影响 MVP DID proof 主路径。
+- [x] 老 send/inbox/history 调用不传参数时行为与改动前一致。
+- [x] SDK 本地拒绝错误 owner/key 组合和 E2EE projection/private state 请求。
+- [x] 上述 SDK 测试矩阵全部有 Rust 测试；Dart API 变更时有对应 Dart 测试或 fixture。
+- [x] Dart binding 如有变化已经同步。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -107,20 +107,20 @@ Step index：02
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 4 项 | `history.rs` move/borrow 编译风险；delegated inbox/history proof target 需要使用配置化 message-service DID；delegated group history 不应静默忽略 `InboxHistoryOptions`；Plan/设计文档有 registry/device/default 旧措辞残留。 |
+| 已修复问题 | 已修复 | `history.rs` 先保存 `service_did` 再消费 auth；wire auth 增加 `service_did` 并从 `anp_service_did` 或 `did:wba:<did_domain>` 生成；group history 携带 delegated options 时本地返回 `delegated-group-history` unsupported；文档残留已清理。 |
+| 剩余风险 | 已记录 | `ScopedInboxToken` 仍是 MVP 后路径，当前传入会明确 unsupported；最终撤销实时性仍依赖 message-service DID Document cache 刷新；Step 02 只实现 SDK/bridge optional 参数，服务端策略在 Step 07 落地。 |
+| 新增或缺失测试 | 已补充 | Rust 覆盖 delegated send、wrong owner、missing key、delegated inbox/history proof、E2EE filter、ScopedInboxToken unsupported、delegated group history reject；Dart bridge/public package 覆盖 optional 参数构造和映射。 |
+| 已更新或缺失文档 | 已更新 | 更新 `awiki-cli-rs2/docs/api/im-core-interface/04-message-interface.md`、两篇 Agent IM 设计文档、主 Plan 和 Step 文档；未发现缺失的 Step 02 文档项。 |
 
 ## 10. Commit 要求
 
 - Commit 时机：本步骤实现、验证、Review 都完成后。
 - Commit 范围：只包含 `im-core`、Dart binding 和直接相关文档/测试。
-- Commit 前状态：记录 `git status --short --branch`。
-- 纳入文件：记录本步骤 commit 包含的文件。
-- Commit 后证据：记录 commit hash 和 commit 后 `git status --short --branch`。
-- 遗留未提交变更：必须记录原因以及为什么安全。
+- Commit 前状态：`## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 3]`，包含 Step 02 相关 `im-core`、`im-core-dart`、`packages/awiki_im_core`、API 文档、Agent IM 设计/Plan 文档修改。
+- 纳入文件：`crates/im-core/**` delegated signing/inbox source/tests；`crates/im-core-dart/**` bridge DTO/API/mapping/tests/generated；`packages/awiki_im_core/**` generated/public Dart API/tests；`docs/api/im-core-interface/04-message-interface.md`；`docs/agent-im/agent_im_core_design.md`；`docs/agent-im/agent_delegated_identity_message_proof_plan.md`；`docs/agent-im/plan/plan.md`；`docs/agent-im/plan/steps/01-user-service-did-delegated-subkey.md`；`docs/agent-im/plan/steps/02-im-core-delegated-signing-inbox-options.md`。
+- Commit 后证据：`0ba6e52 im-core: add delegated inbox signing options`；post-commit status 为 `## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 4]`，无未提交文件。
+- 遗留未提交变更：无。
 - 建议消息：`im-core: add delegated inbox signing options`
 
 ## 11. Blocked 处理
@@ -134,6 +134,7 @@ Step index：02
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-09 | 创建 Step 02 小 Plan | 初始计划拆分 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | Review 后补充 service DID target、delegated group history 拒绝和文档残留清理 | 实现 Review 发现 proof target 不能硬编码；delegated options 不应进入 group/E2EE projection；Plan/设计文档需与最新私钥所有权和 message-service 授权边界一致 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
 
 ## 13. 风险、回滚与后续文档
 

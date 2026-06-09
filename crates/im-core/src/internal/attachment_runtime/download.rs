@@ -155,6 +155,7 @@ where
                         limit: ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
                         cursor: None,
                         skip,
+                        auth: None,
                     },
                 )?;
                 let mut raw = self.transport.authenticated_rpc(
@@ -383,6 +384,7 @@ where
                         limit: ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
                         cursor: None,
                         skip,
+                        auth: None,
                     },
                 )?;
                 let mut raw = self

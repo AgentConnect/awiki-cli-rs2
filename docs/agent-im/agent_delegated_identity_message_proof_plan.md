@@ -14,7 +14,7 @@
 
 1. **第一阶段 / MVP：用户 DID 子私钥方案**
    - APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把新的子签名私钥，称为 **User Delegated Subkey**，MVP 固定 DID URL fragment 为 `#daemon-key-1`，完整 verification method 为 `user_did#daemon-key-1`。
-   - 创建 DID Document 的地方必须先由 APP 本地生成 key package，再调用最新 user-service / DID API，只把 `user_did#daemon-key-1` public verification method 交给 user-service 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`；user-service 不生成、不接收、不返回 daemon subkey private material。
+   - 创建 DID Document 的地方必须先由 APP 本地生成 key package，并从中导出 `user_did#daemon-key-1` public verification method；再调用最新 user-service / DID API，只把这个 public verification method 交给 user-service 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`；user-service 不生成、不接收、不返回 daemon subkey private material。
    - MVP 第一版先允许 APP 通过普通消息发送明文 JSON bootstrap payload 将这把子私钥传给 Daemon；这是已知安全缺口。
    - 后续版本仍通过普通消息发送，只把 bootstrap body 从明文 JSON 改为加密文本或加密 JSON envelope。
    - bootstrap 阶段不再负责追加修改 DID Document，只传递已经存在且已登记的子私钥 key package。
@@ -118,7 +118,7 @@ MVP 服务器必须支持 user_did#daemon-key-1 直接证明接收权限；
 也可以由该子 key 换取 scoped inbox token 作为中期优化。
 ```
 
-原因是 ANP Direct Base 主要定义 direct.send / direct.incoming 的消息语义；history pull、read status、device sync、agent internal synchronization 不属于基础跨域互操作范围。MVP 的产品目标要求 Daemon 能离线代收普通消息，因此 message-service 必须能用 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 校验 `user_did#daemon-key-1`，并允许它读取普通非 E2EE inbox/history。user-service 在 MVP 中只负责 DID Document public verification method 的登记、撤销和审计状态。scoped inbox token 可以减少每次拉取的 DID proof 成本，但不是 MVP 接收能力的唯一表达。
+原因是 ANP Direct Base 主要定义 direct.send / direct.incoming 的消息语义；history pull、read status、device sync、agent internal synchronization 不属于基础跨域互操作范围。MVP 的产品目标要求 Daemon 能离线代收普通消息，因此 message-service 必须能用 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 校验 `user_did#daemon-key-1`，并允许它读取普通非 E2EE inbox/history。user-service 在 MVP 中只负责 DID Document public verification method 的登记、撤销和审计状态；撤销对 message-service 的生效通过 DID Document `authentication` 更新和 DID Document cache 刷新体现。scoped inbox token 可以减少每次拉取的 DID proof 成本，但不是 MVP 接收能力的唯一表达。
 
 ### 3.4 MVP 不支持 E2EE 交给 Agent
 
@@ -204,7 +204,7 @@ ANP verifier 的关键校验是：
 
 ### 5.1 身份模型
 
-MVP 中，Daemon 不是独立业务发送者，而是用户 DID 下的一个受控签名设备。
+MVP 中，Daemon 不是独立业务发送者，而是用户 DID 下的一个受控 delegated signing 执行上下文。
 
 ```text
 业务发送者：User DID
@@ -219,7 +219,7 @@ MVP 中，Daemon 不是独立业务发送者，而是用户 DID 下的一个受�
 签名使用 User DID Document 中的 #daemon-key-1。
 ```
 
-这和“用户在另一台设备上登录并使用该设备 key 发消息”的模型类似。
+这和“同一用户 DID 下使用不同 authentication key 发消息”的模型类似。
 
 ### 5.2 DID Document 示例
 
@@ -255,7 +255,7 @@ DID Document 示例：
       "id": "did:wba:example.com:user:alice:e1_userfingerprint#daemon-key-1",
       "type": "Multikey",
       "controller": "did:wba:example.com:user:alice:e1_userfingerprint",
-      "publicKeyMultibase": "z6MkDaemonDevicePublicKey..."
+      "publicKeyMultibase": "z6MkDaemonSubkeyPublicKey..."
     }
   ],
   "authentication": [
@@ -285,7 +285,7 @@ DID Document 示例：
 
 ### 5.3 子私钥生成与传输流程
 
-MVP 按当前决策采用“APP 创建用户 DID Document 时本地生成 `#daemon-key-1` 子私钥，user-service 只登记对应 public verification method，并通过普通消息发送明文 JSON bootstrap payload 把该既有子私钥传给 Daemon”的直接方案。这里的明文传递是第一版安全缺口，后续必须在同一普通消息发送路径上把 bootstrap body 改为加密文本或加密 JSON envelope。
+MVP 按当前决策采用“APP 创建用户 DID Document 时本地生成 `#daemon-key-1` 子私钥，只把由该 key package 导出的 public verification method 提交给 user-service 登记，并通过普通消息发送明文 JSON bootstrap payload 把该既有子私钥传给 Daemon”的直接方案。这里的明文传递是第一版安全缺口，后续必须在同一普通消息发送路径上把 bootstrap body 改为加密文本或加密 JSON envelope。
 
 这个 bootstrap 不只是传 key package，也是一条一次性声明式 session：APP 把用户 delegated subkey、APP capability policy 和 `desired_message_agent` 交给 Daemon。Daemon 收到后执行 `ensure_app_message_agent`，创建或复用专门处理 APP 普通消息的 Hermes Message Agent，并把该 Agent 与 user delegated inbox/send 能力绑定。APP 不应反复发送命令式 create runtime command；重复 bootstrap 必须通过 `bootstrap_id` / `idempotency_key` 幂等处理。
 
@@ -293,10 +293,11 @@ MVP 按当前决策采用“APP 创建用户 DID Document 时本地生成 `#daem
 sequenceDiagram
     participant App as aWiki.me APP
     participant D as Daemon
-    participant US as user-service / DID Registry
+    participant US as user-service / DID Document API
     participant MS as message-service
 
-    App->>US: 创建用户 DID Document，调用最新 DID API
+    App->>App: 本地生成 #daemon-key-1 key package，并导出 public verification method
+    App->>US: 创建用户 DID Document，只提交 #daemon-key-1 public verification method
     US-->>App: 返回包含 #daemon-key-1 的 DID Document；APP 本地持有子私钥
     App->>App: 读取创建 DID 时已生成的 daemon-key-1 子私钥
     App->>MS: 普通消息发送 awiki.daemon.bootstrap.v1 明文 JSON
@@ -391,7 +392,7 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
 
 注意：
 
-1. `allowed_usage_hint` 在 MVP 中只是本域策略提示，不是 DID Core 标准强制语义。运行时真正权限由 message-service 根据 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 执行；message-service MVP 不调用 user-service，也不读取 user-service 审计记录。user-service 只负责 public verification method 登记、撤销和审计状态。scoped token scope 是后续优化路径。
+1. `allowed_usage_hint` 在 MVP 中只是本域策略提示，不是 DID Core 标准强制语义。运行时真正权限由 message-service 根据 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 执行；user-service 只负责 public verification method 登记、撤销和审计状态。scoped token scope 是后续优化路径。
 2. `desired_message_agent` 表示期望状态，不是命令式创建请求。Daemon 应以 `ensure_once_key` 幂等创建或复用 `role=app_message_handler` 的 Runtime Agent。
 3. Hermes Message Agent 不直接持有子私钥；Daemon 只把 inbox/send 能力通过 local RPC、runtime token 和 policy 暴露给它。
 
@@ -890,7 +891,7 @@ security.policy.update
 
 ```text
 阶段 1：MVP 子私钥
-- APP 创建用户 DID Document 时本地生成 user_did#daemon-key-1 private/public key package，并调用最新 DID API 只登记 public verification method。
+- APP 创建用户 DID Document 时本地生成 user_did#daemon-key-1 private/public key package，并调用最新 DID API 只提交由该 key package 导出的 public verification method。
 - 创建后返回的 DID Document 必须已经包含 user_did#daemon-key-1 authentication relationship。
 - MVP 通过普通消息发送明文 JSON bootstrap，把既有子私钥传给 Daemon，记录后续普通消息 body 加密为安全债。
 - Daemon 使用该 key 签 ANP origin_proof。
@@ -1035,7 +1036,7 @@ Scope 对应关系：
    - 后续同一普通消息发送路径改为加密文本或加密 JSON envelope。
 
 2. `UserDidKeyService`
-   - 在用户创建 DID Document 时调用最新 user-service / DID API，APP 本地生成 `#daemon-key-1` private/public key package，只把 public verification method 交给 user-service 登记；
+   - 在用户创建 DID Document 前由 APP 本地生成 `#daemon-key-1` private/public key package；调用最新 user-service / DID API 时，只把由该 key package 导出的 public verification method 交给 user-service 登记；
    - 不在 Daemon pairing 时追加修改 DID Document；
    - 撤销/轮换 `#daemon-key-1` public verification method。
 
@@ -1147,18 +1148,18 @@ Scope 对应关系：
 新增或修改：
 
 1. DID Document key management API
-   - 创建用户 DID Document 时接收 APP 本地生成 key package 对应的 `#daemon-key-1` public verification method，并只登记到 DID Document `verificationMethod` 与 `authentication`；
+   - 创建用户 DID Document 时接收 APP 提交的 `#daemon-key-1` public verification method；该 public verification method 由 APP 本地 key package 导出，并只登记到 DID Document `verificationMethod` 与 `authentication`；
    - user-service 不生成、不接收、不返回 daemon subkey private material；
    - 撤销 `#daemon-key-1` public verification method；
    - 从 DID Document 查询当前有效的 daemon public verification method。
 
 2. Public audit API
    - MVP 记录 `user_did#daemon-key-1` public verification method 的状态和审计信息；
-   - message-service MVP 的每次请求授权不调用 user-service，不查询、不缓存、不依赖 user-service audit record，只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
+   - 该 audit 状态不作为 message-service MVP 请求授权源；MVP 请求授权只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
    - 后续根据 `user_did#daemon-key-1` 签发 scoped inbox token；
    - MVP 后再根据 Agent DID delegation 签发 delegated inbox token。
 
-3. Delegation registry
+3. Agent DID delegation credential / policy record
    - MVP 不实现；
    - 后续保存用户授权给 Agent DID 的 credential / policy，并支持撤销、过期、轮换、审计。
 
@@ -1303,7 +1304,7 @@ MVP 可先使用 `private_key_material` 沿用现有 daemon identity private key
 
 ### 11.2 user-service public audit 表
 
-下面的表只属于 user-service public verification method 撤销和审计状态，不是 message-service MVP 运行时授权依赖。message-service MVP 不调用该表、不查询 user-service 自有审计状态；它只读取 DID Document，并基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定请求。
+下面的表只属于 user-service public verification method 撤销和审计状态，不是 message-service MVP 运行时授权依赖。MVP 运行时授权只读取 DID Document，并基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定请求。
 
 ```sql
 CREATE TABLE user_delegated_key_audit (
@@ -1340,7 +1341,7 @@ CREATE TABLE user_agent_delegations (
 
 ### 12.1 MVP 子私钥测试
 
-1. APP 创建用户 DID Document 时调用最新 DID API，APP 本地生成 `#daemon-key-1` private/public key package，user-service 只登记 public verification method。
+1. APP 创建用户 DID Document 前本地生成 `#daemon-key-1` private/public key package；调用最新 DID API 时 user-service 只接收并登记由该 key package 导出的 public verification method。
 2. APP 一次性 bootstrap envelope 包含 `#daemon-key-1` key package、APP capabilities 和 `desired_message_agent`。
 3. Daemon 执行 `ensure_app_message_agent` 后创建或复用 `role=app_message_handler` 的 Hermes Message Agent。
 4. `app_message_agent_bindings` 写入 user DID、verification method、app_instance、pairing_session、runtime_agent_did 和 capability policy。
@@ -1432,7 +1433,7 @@ MVP 不建议依赖 DID Document 表达完整 scope。可以放 hint，但运行
 ```text
 DID Document: key 是否存在、是否可认证。
 message-service: 该 key 是否能用于普通非 E2EE send / inbox / history scope。
-user-service: 只登记、撤销和审计 public verification method，不参与 message-service 每次请求授权。
+user-service: 只登记、撤销和审计 public verification method；运行时请求授权只由 DID Document `authentication` 体现。
 ```
 
 ### 13.5 Agent DID 长期授权是否进入 ANP 标准
@@ -1451,7 +1452,7 @@ MVP：子私钥，不改 ANP。
 第一阶段落地方案：
 
 ```text
-1. APP 创建用户 DID Document 时本地生成 user_did#daemon-key-1 private/public key package，并调用最新 DID API 只登记 public verification method。
+1. APP 创建用户 DID Document 时本地生成 user_did#daemon-key-1 private/public key package，并调用最新 DID API 只提交由该 key package 导出的 public verification method。
 2. 创建后返回的 DID Document 必须已经将 #daemon-key-1 加入 authentication。
 3. APP 通过 MVP 普通消息明文 JSON bootstrap 把既有子私钥发给 Daemon，并记录普通消息 body 加密缺失。
 4. Daemon 先按现有 daemon identity private key 方式保存子私钥，后续迁移到受保护密钥仓库。
@@ -1468,7 +1469,7 @@ MVP：子私钥，不改 ANP。
 ```text
 1. 每个 Hermes / Runtime Agent 拥有独立 Agent DID。
 2. 用户通过 Delegation Credential 授权 Agent DID。
-3. user-service/message-service 保存 Agent DID delegation registry。
+3. MVP 后由 user-service 或 message-service 保存 Agent DID delegation credential / policy record。
 4. Agent DID 用自己的 key 获取 delegated inbox token。
 5. 本域审计中区分 sub=user_did 与 act=agent_did。
 6. ANP 规范新增 delegated origin proof，让跨域接收方也能验证 Agent 代表用户发送。

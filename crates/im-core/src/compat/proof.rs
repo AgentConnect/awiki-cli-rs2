@@ -9,6 +9,7 @@ pub struct OriginProofIdentity {
     pub identity_name: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
 }
 
 #[doc(hidden)]
@@ -29,6 +30,7 @@ pub fn build_origin_proof(
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
             key1_private_pem: identity.key1_private_pem.clone(),
+            verification_method: identity.verification_method.clone(),
         },
         payload,
     )

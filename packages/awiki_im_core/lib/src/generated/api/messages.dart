@@ -32,11 +32,13 @@ Future<DartMessagePage> inbox({
   required int limit,
   String? cursor,
   required bool unreadOnly,
+  DartInboxHistoryOptions? inboxHistoryOptions,
 }) => RustLib.instance.api.crateApiMessagesInbox(
   client: client,
   limit: limit,
   cursor: cursor,
   unreadOnly: unreadOnly,
+  inboxHistoryOptions: inboxHistoryOptions,
 );
 
 Future<DartMessagePage> history({
@@ -44,11 +46,13 @@ Future<DartMessagePage> history({
   required DartThreadRef thread,
   required int limit,
   String? cursor,
+  DartInboxHistoryOptions? inboxHistoryOptions,
 }) => RustLib.instance.api.crateApiMessagesHistory(
   client: client,
   thread: thread,
   limit: limit,
   cursor: cursor,
+  inboxHistoryOptions: inboxHistoryOptions,
 );
 
 Future<DartMarkReadResult> markRead({
