@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | review |
+| Status | done |
 | Branch | `feature/release-0526/agent-im-hutong` |
 | Started | 2026-06-09T12:46:56Z |
-| Completed | - |
-| Commit | 待回填：`awiki-deamon: add app bootstrap state` |
+| Completed | 2026-06-09T13:26:47Z |
+| Commit | `eac62bd awiki-deamon: add app bootstrap state` |
 | Review evidence | 2026-06-09 Review：检查 secret handling、control payload redaction、幂等冲突、状态恢复、schema dispatch、E2EE / main key 禁止、Step 04 边界。发现并修复：control payload / extra Debug redaction 不够硬；bootstrap replay 查重在 transaction 外存在并发写入窗口；schema version 升级后集成测试仍期望 15。剩余风险：MVP 仍按现有 daemon secret 存储方式保存 delegated subkey，明文 bootstrap body 加密和 secure key store 留到后续版本。 |
 | Verification evidence | `cargo test -p awiki-deamon --locked -j1`：72 lib tests passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。补充 targeted：`cargo test -p awiki-deamon --locked -j1 app_bridge -- --nocapture`：8 passed；`cargo test -p awiki-deamon --locked -j1 delegated_identity -- --nocapture`：2 passed；`git diff --check`：通过。 |
-| Next action | 创建 Step 03 聚焦 commit，并在主 Plan / Step 台账回填 commit hash |
+| Next action | 启动 Step 04：awiki-deamon message agent binding |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -78,7 +78,7 @@ Step index：03
 - [x] Daemon 重启后能恢复 `paired_key_received` 状态。
 - [x] 本步骤不创建重复 Runtime Agent；Message Agent 创建留给 Step 04。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -140,9 +140,14 @@ docs/agent-im/plan/plan.md
 docs/agent-im/plan/steps/03-awiki-deamon-bootstrap-state.md
 ```
 
-Commit 后证据：待回填 commit hash 和 commit 后 `git status --short --branch`。
+Commit 后证据：
 
-遗留未提交变更：预期只剩 commit hash 回填台账；若出现其它变更，提交前必须重新检查原因。
+```text
+commit: eac62bd awiki-deamon: add app bootstrap state
+## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 8]
+```
+
+遗留未提交变更：仅本 Step / 主 Plan 的 commit hash 与 `done` 状态回填；将通过独立 docs ledger commit 记录。
 
 ## 10. Commit 要求
 
