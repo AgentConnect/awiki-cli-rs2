@@ -49,6 +49,13 @@ impl RecipientPolicy {
         }
     }
 
+    fn app_message_handler(user_did: &str) -> Self {
+        Self {
+            allowed_recipients: vec![user_did.to_string()],
+            allowed_message_security: vec!["default_plain".to_string()],
+        }
+    }
+
     fn from_json(value: &Value, controller_did: &str) -> Result<Self> {
         let Some(object) = value.as_object() else {
             anyhow::bail!("recipient_policy_json must be a JSON object");
@@ -1010,6 +1017,11 @@ fn runtime_recipient_policy(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
 ) -> Result<RecipientPolicy> {
+    if let Some(binding) =
+        state.load_active_app_message_agent_binding_by_runtime(&profile.agent_did)?
+    {
+        return Ok(RecipientPolicy::app_message_handler(&binding.user_did));
+    }
     if profile.runtime_plugin_id == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
         return Ok(RecipientPolicy::hermes_default(&profile.controller_did));
     }

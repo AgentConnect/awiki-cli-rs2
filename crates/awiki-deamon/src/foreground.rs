@@ -481,7 +481,9 @@ fn route_message(
             };
             if is_app_control_payload(payload) {
                 handle_app_control_payload(
+                    config,
                     state,
+                    registration,
                     IncomingAppControlPayload {
                         message_id: payload_message.message_id,
                         conversation_id: payload_message.conversation_id,
@@ -1928,7 +1930,19 @@ mod tests {
             },
             "desired_message_agent": {
                 "role": "app_message_handler",
-                "runtime": "hermes"
+                "runtime": "hermes",
+                "display_name": "Hermes Message Agent",
+                "ensure_once_key": "app-message-agent:did:human:alice:app_1",
+                "runtime_registration_token": "tok_runtime_secret_value"
+            },
+            "capability_policy": {
+                "allowed_actions": [
+                    "message.summarize_plain",
+                    "message.create_draft",
+                    "contact.read",
+                    "contact.update_display_name",
+                    "contact.update_note"
+                ]
             }
         })
     }
@@ -2336,7 +2350,9 @@ mod tests {
         assert!(is_app_control_payload(&payload));
         assert!(!is_awiki_agent_command_payload(&payload));
         let outcome = handle_app_control_payload(
+            &config,
             &state,
+            &registration,
             IncomingAppControlPayload {
                 message_id: "msg_bootstrap".to_string(),
                 conversation_id: Some("direct:did:agent:daemon".to_string()),
@@ -2347,10 +2363,27 @@ mod tests {
             },
         )
         .unwrap();
-        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived(outcome) =
-            outcome;
-        assert_eq!(outcome.status, "paired_key_received");
-        assert!(!outcome.replayed);
+        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
+            bootstrap,
+            message_agent,
+        } = outcome;
+        assert_eq!(bootstrap.status, "paired_key_received");
+        assert!(!bootstrap.replayed);
+        assert!(message_agent.created_runtime_agent);
+        assert_eq!(
+            message_agent.binding.binding_id,
+            "app-message-agent:did:human:alice:app_1"
+        );
+        assert_eq!(message_agent.binding.role, "app_message_handler");
+        assert_eq!(
+            message_agent.binding.inbox_auth_verification_method,
+            "did:human:alice#daemon-key-1"
+        );
+        assert!(!message_agent
+            .binding
+            .desired_agent_json
+            .to_string()
+            .contains("tok_runtime_secret_value"));
 
         let loaded = state
             .load_user_delegated_identity("did:human:alice#daemon-key-1")
@@ -2360,6 +2393,16 @@ mod tests {
         assert_eq!(loaded.daemon_agent_did, daemon.agent_did);
         assert_eq!(loaded.private_key_material, "z-private-secret");
         assert!(!format!("{loaded:?}").contains("z-private-secret"));
+        let binding = state
+            .load_active_app_message_agent_binding(
+                "did:human:alice",
+                "app_1",
+                "app_message_handler",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.runtime_agent_did, message_agent.binding.runtime_agent_did);
+        assert_eq!(binding.runtime_profile_id, message_agent.binding.runtime_profile_id);
         assert!(!state
             .audit_event_exists(
                 "daemon.inbox.payload.ignored",
@@ -2367,6 +2410,188 @@ mod tests {
                 Some("msg_bootstrap"),
             )
             .unwrap());
+    }
+
+    #[test]
+    fn daemon_bootstrap_replay_reuses_message_agent_without_runtime_token() {
+        let (_root, config, state) = fixture();
+        let registration = MockRegistrationClient;
+        let daemon = setup_daemon_agent(
+            &config,
+            &state,
+            &registration,
+            "alice-mac-daemon",
+            "did:human:alice",
+            RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+        )
+        .unwrap();
+
+        let first = handle_app_control_payload(
+            &config,
+            &state,
+            &registration,
+            IncomingAppControlPayload {
+                message_id: "msg_bootstrap_first".to_string(),
+                conversation_id: Some("direct:did:agent:daemon".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: bootstrap_payload_fixture(),
+            },
+        )
+        .unwrap();
+        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
+            bootstrap: first_bootstrap,
+            message_agent: first_agent,
+        } = first;
+        assert!(!first_bootstrap.replayed);
+        assert!(first_agent.created_runtime_agent);
+
+        let reopened_state = DaemonState::open(&config).unwrap();
+        let mut replay_payload = bootstrap_payload_fixture();
+        replay_payload["desired_message_agent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime_registration_token");
+        let replay = handle_app_control_payload(
+            &config,
+            &reopened_state,
+            &registration,
+            IncomingAppControlPayload {
+                message_id: "msg_bootstrap_replay".to_string(),
+                conversation_id: Some("direct:did:agent:daemon".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: replay_payload,
+            },
+        )
+        .unwrap();
+        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
+            bootstrap: replay_bootstrap,
+            message_agent: replay_agent,
+        } = replay;
+
+        assert!(replay_bootstrap.replayed);
+        assert!(!replay_agent.created_runtime_agent);
+        assert_eq!(
+            replay_agent.binding.runtime_agent_did,
+            first_agent.binding.runtime_agent_did
+        );
+        assert_eq!(
+            replay_agent.binding.runtime_profile_id,
+            first_agent.binding.runtime_profile_id
+        );
+
+        let connection = rusqlite::Connection::open(&config.daemon_db_path).unwrap();
+        let runtime_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM agent_definition WHERE agent_kind = 'runtime'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runtime_count, 1);
+        let binding_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM app_message_agent_binding", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(binding_count, 1);
+        let stored_non_secret_text: String = connection
+            .query_row(
+                r#"
+SELECT
+    COALESCE((SELECT GROUP_CONCAT(desired_agent_json || ' ' || capability_policy_json, char(10)) FROM app_message_agent_binding), '')
+    || ' ' ||
+    COALESCE((SELECT GROUP_CONCAT(outcome_json, char(10)) FROM runtime_agent_create_request), '')
+    || ' ' ||
+    COALESCE((SELECT GROUP_CONCAT(hermes_profile || ' ' || hermes_home || ' ' || awiki_skills_version, char(10)) FROM hermes_profiles), '')
+"#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!stored_non_secret_text.contains("tok_runtime_secret_value"));
+        let audit_dump: String = connection
+            .query_row(
+                "SELECT GROUP_CONCAT(COALESCE(detail_json, ''), '\n') FROM audit_log",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+            .unwrap_or_default();
+        assert!(!audit_dump.contains("tok_runtime_secret_value"));
+    }
+
+    #[test]
+    fn app_message_agent_runtime_token_scope_is_limited_to_bound_user() {
+        let (_root, config, state) = fixture();
+        let registration = MockRegistrationClient;
+        let daemon = setup_daemon_agent(
+            &config,
+            &state,
+            &registration,
+            "alice-mac-daemon",
+            "did:human:alice",
+            RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+        )
+        .unwrap();
+        let outcome = handle_app_control_payload(
+            &config,
+            &state,
+            &registration,
+            IncomingAppControlPayload {
+                message_id: "msg_bootstrap_scope".to_string(),
+                conversation_id: Some("direct:did:agent:daemon".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did,
+                content_type: "application/json".to_string(),
+                payload: bootstrap_payload_fixture(),
+            },
+        )
+        .unwrap();
+        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
+            message_agent,
+            ..
+        } = outcome;
+
+        let outbox = MemoryRuntimeOutbox::default();
+        let gateway = FakeHermesGateway::default();
+        let result = run_runtime_text_message_with_gateway(
+            &config,
+            &state,
+            &outbox,
+            ControllerTextMessage {
+                message_id: "msg_scope".to_string(),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: message_agent.binding.runtime_agent_did.clone(),
+                text: "message handler task".to_string(),
+            },
+            || gateway.clone(),
+        )
+        .unwrap();
+
+        let connection = rusqlite::Connection::open(&config.daemon_db_path).unwrap();
+        let (allowed_recipients_json, allowed_security_json): (String, String) = connection
+            .query_row(
+                r#"
+SELECT COALESCE(allowed_recipients_json, ''), COALESCE(allowed_message_security_json, '')
+FROM runtime_rpc_tokens
+WHERE token_id = ?1
+"#,
+                [&result.token_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let allowed_recipients: Vec<String> =
+            serde_json::from_str(&allowed_recipients_json).unwrap();
+        let allowed_security: Vec<String> = serde_json::from_str(&allowed_security_json).unwrap();
+        assert_eq!(allowed_recipients, vec!["did:human:alice".to_string()]);
+        assert_eq!(allowed_security, vec!["default_plain".to_string()]);
+        assert!(!allowed_recipients_json.contains("@active_handle_lookup"));
+        assert!(!allowed_recipients_json.contains("@any_group"));
     }
 
     #[test]

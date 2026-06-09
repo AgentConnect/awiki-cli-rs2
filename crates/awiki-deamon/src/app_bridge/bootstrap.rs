@@ -309,12 +309,22 @@ fn stable_payload_hash(envelope: &DaemonBootstrapEnvelope) -> Result<String> {
             "allowed_scopes": package.allowed_scopes,
         },
         "capability_policy": envelope.capability_policy,
-        "desired_message_agent": envelope.desired_message_agent,
+        "desired_message_agent": sanitized_desired_message_agent_for_hash(&envelope.desired_message_agent),
         "sync_policy": envelope.sync_policy,
     });
     let bytes = serde_json::to_vec(&stable).context("serialize daemon bootstrap payload hash")?;
     let digest = Sha256::digest(bytes);
     Ok(hex_lower(&digest))
+}
+
+fn sanitized_desired_message_agent_for_hash(value: &Value) -> Value {
+    let mut sanitized = value.clone();
+    if let Some(object) = sanitized.as_object_mut() {
+        object.remove("runtime_registration_token");
+        object.remove("registration_token");
+        object.remove("token");
+    }
+    sanitized
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -382,6 +392,22 @@ mod tests {
         validate_bootstrap_envelope(&envelope, "did:wba:example.com:user:alice:e1_user").unwrap();
         let hash = stable_payload_hash(&envelope).unwrap();
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn bootstrap_payload_hash_ignores_runtime_registration_token() {
+        let mut with_token = valid_payload();
+        with_token["desired_message_agent"]["runtime_registration_token"] =
+            json!("tok_runtime_secret_value");
+        let without_token = valid_payload();
+
+        let with_token = parse_bootstrap_payload(with_token).unwrap();
+        let without_token = parse_bootstrap_payload(without_token).unwrap();
+
+        assert_eq!(
+            stable_payload_hash(&with_token).unwrap(),
+            stable_payload_hash(&without_token).unwrap()
+        );
     }
 
     #[test]

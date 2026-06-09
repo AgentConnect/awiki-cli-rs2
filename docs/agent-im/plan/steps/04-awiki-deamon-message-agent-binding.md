@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：04  
-状态：in_progress
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | in_progress |
+| Status | review |
 | Branch | `feature/release-0526/agent-im-hutong` |
 | Started | 2026-06-09T13:28:24Z |
 | Completed | - |
 | Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 读取现有 runtime 创建流程，设计 `ensure_app_message_agent(role=app_message_handler)` 与 binding 持久化 |
+| Review evidence | 2026-06-09 Review：检查 active binding 唯一性、bootstrap replay、runtime token scope、secret/token 泄漏、Hermes 私钥边界、Step 05 非目标。发现并修复：重复 bootstrap 去掉 `runtime_registration_token` 时 payload hash 冲突；专用 Message Agent 沿用 Hermes 默认 runtime token recipient scope 过宽。 |
+| Verification evidence | `cargo test -p awiki-deamon --locked -j1`：78 lib tests passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。定向：`cargo test -p awiki-deamon --locked -j1 app_bridge -- --nocapture`：11 passed；`cargo test -p awiki-deamon --locked -j1 daemon_bootstrap_replay_reuses_message_agent_without_runtime_token -- --nocapture`：1 passed；`cargo test -p awiki-deamon --locked -j1 app_message_agent_runtime_token_scope_is_limited_to_bound_user -- --nocapture`：1 passed；`git diff --check`：通过。 |
+| Next action | 提交 Step 04 聚焦 commit，回填 commit hash 后标记 done |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -65,14 +65,14 @@ Step index：04
 
 ## 7. 验收标准
 
-- [ ] `ensure_app_message_agent` 首次调用能创建 `role=app_message_handler` 的 Runtime Agent。
-- [ ] 重复 `bootstrap_id` / `idempotency_key` 不创建第二个 active Agent。
-- [ ] `app_message_agent_binding` 持久化 user DID、verification method、app_instance、pairing、runtime_agent_did、capability policy。
-- [ ] Daemon 重启后恢复 binding，不重新创建 Agent。
-- [ ] Hermes / Runtime 不直接持有 user delegated subkey private key。
-- [ ] runtime token scope 只允许 message handler 所需能力。
-- [ ] `desired_message_agent.runtime_registration_token` 仅首次创建使用，不进入 binding、audit detail、Hermes prompt 或 runtime temp。
-- [ ] Review 发现已经修复或明确记录。
+- [x] `ensure_app_message_agent` 首次调用能创建 `role=app_message_handler` 的 Runtime Agent。
+- [x] 重复 `bootstrap_id` / `idempotency_key` 不创建第二个 active Agent。
+- [x] `app_message_agent_binding` 持久化 user DID、verification method、app_instance、pairing、runtime_agent_did、capability policy。
+- [x] Daemon 重启后恢复 binding，不重新创建 Agent。
+- [x] Hermes / Runtime 不直接持有 user delegated subkey private key。
+- [x] runtime token scope 只允许 message handler 所需能力。
+- [x] `desired_message_agent.runtime_registration_token` 仅首次创建使用，不进入 binding、audit detail、Hermes prompt 或 runtime temp。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
@@ -93,11 +93,11 @@ Step index：04
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 2 项 | 1. 重复 bootstrap 已有 active binding 时允许省略 `runtime_registration_token`，但 Step 03 payload hash 会把该 token 纳入冲突判断；2. 专用 Message Agent 运行任务时若沿用 Hermes 默认 recipient scope，会允许 active handle lookup / any group，超过绑定用户 DID 范围。 |
+| 已修复问题 | 已修复 | bootstrap payload hash 只忽略一次性 runtime registration token 字段，不放松其他 payload 冲突；runtime host 在发现 active `app_message_agent_binding` 后使用绑定 `user_did` 和 `default_plain` 生成 runtime token scope。 |
+| 剩余风险 | 已记录 | Step 04 不实现 user delegated inbox poller；如果 Runtime Agent profile 缺失，重复 bootstrap 会失败并保留可重试状态，Step 05/后续 repair 流程再扩展。MVP 仍按 Step 03 决策保存 delegated subkey 明文。 |
+| 新增或缺失测试 | 已新增 | 覆盖首次 bootstrap 创建、重复 bootstrap/reopen 后复用且不消耗 token、active binding 持久化恢复、runtime token scope 限制、registration token 不进入 binding/audit/Hermes prompt/runtime temp 相关存储字段。 |
+| 已更新或缺失文档 | 已更新 | 主 Plan 与本 Step 已记录 `desired_message_agent.runtime_registration_token` 契约、Review 发现和验证证据。 |
 
 ## 10. Commit 要求
 

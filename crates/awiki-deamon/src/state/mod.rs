@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 16;
+const DAEMON_SCHEMA_VERSION: i64 = 17;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -232,6 +232,26 @@ pub enum BootstrapStoreOutcome {
     Duplicate,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppMessageAgentBindingRecord {
+    pub binding_id: String,
+    pub user_did: String,
+    pub inbox_auth_verification_method: String,
+    pub app_instance_id: String,
+    pub bootstrap_id: String,
+    pub idempotency_key: String,
+    pub daemon_agent_did: String,
+    pub runtime_agent_did: String,
+    pub runtime_profile_id: String,
+    pub role: String,
+    pub desired_agent_json: Value,
+    pub capability_policy_json: Value,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub revoked_at_ms: Option<i64>,
+}
+
 impl std::fmt::Debug for UserDelegatedIdentityRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UserDelegatedIdentityRecord")
@@ -273,6 +293,38 @@ impl UserDelegatedIdentityRecord {
         }
         if !self.allowed_scopes_json.is_array() {
             bail!("allowed_scopes_json must be a JSON array");
+        }
+        Ok(())
+    }
+}
+
+impl AppMessageAgentBindingRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("binding_id", self.binding_id.as_str()),
+            ("user_did", self.user_did.as_str()),
+            (
+                "inbox_auth_verification_method",
+                self.inbox_auth_verification_method.as_str(),
+            ),
+            ("app_instance_id", self.app_instance_id.as_str()),
+            ("bootstrap_id", self.bootstrap_id.as_str()),
+            ("idempotency_key", self.idempotency_key.as_str()),
+            ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("runtime_agent_did", self.runtime_agent_did.as_str()),
+            ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("role", self.role.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.desired_agent_json.is_object() {
+            bail!("desired_agent_json must be a JSON object");
+        }
+        if !self.capability_policy_json.is_object() {
+            bail!("capability_policy_json must be a JSON object");
         }
         Ok(())
     }
@@ -1201,6 +1253,192 @@ WHERE bootstrap_id = ?1
             )
             .optional()
             .context("load bootstrap replay")
+    }
+
+    pub fn upsert_app_message_agent_binding(
+        &self,
+        record: &AppMessageAgentBindingRecord,
+    ) -> Result<()> {
+        record.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO app_message_agent_binding (
+    binding_id,
+    user_did,
+    inbox_auth_verification_method,
+    app_instance_id,
+    bootstrap_id,
+    idempotency_key,
+    daemon_agent_did,
+    runtime_agent_did,
+    runtime_profile_id,
+    role,
+    desired_agent_json,
+    capability_policy_json,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    revoked_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+ON CONFLICT(binding_id) DO UPDATE SET
+    user_did = excluded.user_did,
+    inbox_auth_verification_method = excluded.inbox_auth_verification_method,
+    app_instance_id = excluded.app_instance_id,
+    bootstrap_id = excluded.bootstrap_id,
+    idempotency_key = excluded.idempotency_key,
+    daemon_agent_did = excluded.daemon_agent_did,
+    runtime_agent_did = excluded.runtime_agent_did,
+    runtime_profile_id = excluded.runtime_profile_id,
+    role = excluded.role,
+    desired_agent_json = excluded.desired_agent_json,
+    capability_policy_json = excluded.capability_policy_json,
+    status = excluded.status,
+    updated_at_ms = excluded.updated_at_ms,
+    revoked_at_ms = excluded.revoked_at_ms
+"#,
+            rusqlite::params![
+                &record.binding_id,
+                &record.user_did,
+                &record.inbox_auth_verification_method,
+                &record.app_instance_id,
+                &record.bootstrap_id,
+                &record.idempotency_key,
+                &record.daemon_agent_did,
+                &record.runtime_agent_did,
+                &record.runtime_profile_id,
+                &record.role,
+                record.desired_agent_json.to_string(),
+                record.capability_policy_json.to_string(),
+                &record.status,
+                if record.created_at_ms > 0 {
+                    record.created_at_ms
+                } else {
+                    now
+                },
+                now,
+                record.revoked_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_active_app_message_agent_binding(
+        &self,
+        user_did: &str,
+        app_instance_id: &str,
+        role: &str,
+    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    binding_id,
+    user_did,
+    inbox_auth_verification_method,
+    app_instance_id,
+    bootstrap_id,
+    idempotency_key,
+    daemon_agent_did,
+    runtime_agent_did,
+    runtime_profile_id,
+    role,
+    desired_agent_json,
+    capability_policy_json,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    revoked_at_ms
+FROM app_message_agent_binding
+WHERE user_did = ?1
+  AND app_instance_id = ?2
+  AND role = ?3
+  AND revoked_at_ms IS NULL
+  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+ORDER BY updated_at_ms DESC
+LIMIT 1
+"#,
+                rusqlite::params![user_did, app_instance_id, role],
+                app_message_agent_binding_from_row,
+            )
+            .optional()
+            .context("load active app message agent binding")
+    }
+
+    pub fn load_app_message_agent_binding(
+        &self,
+        binding_id: &str,
+    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    binding_id,
+    user_did,
+    inbox_auth_verification_method,
+    app_instance_id,
+    bootstrap_id,
+    idempotency_key,
+    daemon_agent_did,
+    runtime_agent_did,
+    runtime_profile_id,
+    role,
+    desired_agent_json,
+    capability_policy_json,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    revoked_at_ms
+FROM app_message_agent_binding
+WHERE binding_id = ?1
+"#,
+                [binding_id],
+                app_message_agent_binding_from_row,
+            )
+            .optional()
+            .context("load app message agent binding")
+    }
+
+    pub fn load_active_app_message_agent_binding_by_runtime(
+        &self,
+        runtime_agent_did: &str,
+    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    binding_id,
+    user_did,
+    inbox_auth_verification_method,
+    app_instance_id,
+    bootstrap_id,
+    idempotency_key,
+    daemon_agent_did,
+    runtime_agent_did,
+    runtime_profile_id,
+    role,
+    desired_agent_json,
+    capability_policy_json,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    revoked_at_ms
+FROM app_message_agent_binding
+WHERE runtime_agent_did = ?1
+  AND revoked_at_ms IS NULL
+  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+ORDER BY updated_at_ms DESC
+LIMIT 1
+"#,
+                [runtime_agent_did],
+                app_message_agent_binding_from_row,
+            )
+            .optional()
+            .context("load active app message agent binding by runtime")
     }
 
     pub fn store_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<()> {
@@ -3374,6 +3612,33 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_bootstrap_replay_identity
         ON bootstrap_replay(user_did, verification_method, app_instance_id);
 
+        CREATE TABLE IF NOT EXISTS app_message_agent_binding (
+            binding_id TEXT PRIMARY KEY,
+            user_did TEXT NOT NULL,
+            inbox_auth_verification_method TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            bootstrap_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            daemon_agent_did TEXT NOT NULL,
+            runtime_agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            desired_agent_json TEXT NOT NULL,
+            capability_policy_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            revoked_at_ms INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_app_message_agent_binding_active
+        ON app_message_agent_binding(user_did, app_instance_id, role, status, revoked_at_ms);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_app_message_agent_binding_active_role
+        ON app_message_agent_binding(user_did, app_instance_id, role)
+        WHERE revoked_at_ms IS NULL
+          AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -3395,6 +3660,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_final_outbox_v14(connection)?;
     migrate_runtime_final_plain_delivery_v15(connection)?;
     migrate_user_delegated_identity_v16(connection)?;
+    migrate_app_message_agent_binding_v17(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -3444,6 +3710,40 @@ fn migrate_user_delegated_identity_v16(connection: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_bootstrap_replay_identity
         ON bootstrap_replay(user_did, verification_method, app_instance_id);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_app_message_agent_binding_v17(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_message_agent_binding (
+            binding_id TEXT PRIMARY KEY,
+            user_did TEXT NOT NULL,
+            inbox_auth_verification_method TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            bootstrap_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            daemon_agent_did TEXT NOT NULL,
+            runtime_agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            desired_agent_json TEXT NOT NULL,
+            capability_policy_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            revoked_at_ms INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_app_message_agent_binding_active
+        ON app_message_agent_binding(user_did, app_instance_id, role, status, revoked_at_ms);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_app_message_agent_binding_active_role
+        ON app_message_agent_binding(user_did, app_instance_id, role)
+        WHERE revoked_at_ms IS NULL
+          AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
         "#,
     )?;
     Ok(())
@@ -4337,6 +4637,7 @@ mod tests {
             "runtime_final_outbox",
             "user_delegated_identity",
             "bootstrap_replay",
+            "app_message_agent_binding",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -4438,6 +4739,56 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("replay conflict"));
+    }
+
+    #[test]
+    fn app_message_agent_binding_roundtrips_and_restores_active_record() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let record = AppMessageAgentBindingRecord {
+            binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+            user_did: "did:human:alice".to_string(),
+            inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
+            app_instance_id: "app_1".to_string(),
+            bootstrap_id: "boot_1".to_string(),
+            idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+            daemon_agent_did: "did:agent:daemon".to_string(),
+            runtime_agent_did: "did:agent:runtime-hermes".to_string(),
+            runtime_profile_id: "profile_hermes_app_message".to_string(),
+            role: "app_message_handler".to_string(),
+            desired_agent_json: serde_json::json!({
+                "role": "app_message_handler",
+                "runtime": "hermes"
+            }),
+            capability_policy_json: serde_json::json!({
+                "allowed_actions": ["message.summarize_plain"]
+            }),
+            status: "message_agent_ready".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            revoked_at_ms: None,
+        };
+
+        state.upsert_app_message_agent_binding(&record).unwrap();
+        let loaded = state
+            .load_active_app_message_agent_binding(
+                "did:human:alice",
+                "app_1",
+                "app_message_handler",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.binding_id, record.binding_id);
+        assert_eq!(loaded.runtime_agent_did, "did:agent:runtime-hermes");
+
+        let reopened = DaemonState::open(&config).unwrap();
+        let restored = reopened
+            .load_app_message_agent_binding(&record.binding_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.status, "message_agent_ready");
     }
 
     #[test]
@@ -5005,6 +5356,46 @@ fn bootstrap_replay_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Bootst
         status: row.get(7)?,
         created_at_ms: row.get(8)?,
         updated_at_ms: row.get(9)?,
+    })
+}
+
+fn app_message_agent_binding_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AppMessageAgentBindingRecord> {
+    let desired_agent_json_raw: String = row.get(10)?;
+    let desired_agent_json = serde_json::from_str(&desired_agent_json_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            desired_agent_json_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    let capability_policy_json_raw: String = row.get(11)?;
+    let capability_policy_json =
+        serde_json::from_str(&capability_policy_json_raw).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                capability_policy_json_raw.len(),
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })?;
+    Ok(AppMessageAgentBindingRecord {
+        binding_id: row.get(0)?,
+        user_did: row.get(1)?,
+        inbox_auth_verification_method: row.get(2)?,
+        app_instance_id: row.get(3)?,
+        bootstrap_id: row.get(4)?,
+        idempotency_key: row.get(5)?,
+        daemon_agent_did: row.get(6)?,
+        runtime_agent_did: row.get(7)?,
+        runtime_profile_id: row.get(8)?,
+        role: row.get(9)?,
+        desired_agent_json,
+        capability_policy_json,
+        status: row.get(12)?,
+        created_at_ms: row.get(13)?,
+        updated_at_ms: row.get(14)?,
+        revoked_at_ms: row.get(15)?,
     })
 }
 

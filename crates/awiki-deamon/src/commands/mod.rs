@@ -64,10 +64,43 @@ pub struct RuntimeAgentCreateOutcome {
     pub display_name: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct RuntimeAgentCreateRequest {
+    pub command_id: String,
+    pub handle: Option<String>,
+    pub runtime: String,
+    pub display_name: Option<String>,
+    pub driver_id: Option<String>,
+    pub driver_config: Option<Value>,
+    pub recipient_policy: Option<Value>,
+    pub workspace: Option<String>,
+    pub controller_did: String,
+    pub registration_token: String,
+    pub client_request_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentCommandOutcome {
     RuntimeAgentCreated(RuntimeAgentCreateOutcome),
     StatusReported { command_id: String },
+}
+
+impl std::fmt::Debug for RuntimeAgentCreateRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeAgentCreateRequest")
+            .field("command_id", &self.command_id)
+            .field("handle", &self.handle)
+            .field("runtime", &self.runtime)
+            .field("display_name", &self.display_name)
+            .field("driver_id", &self.driver_id)
+            .field("driver_config", &self.driver_config)
+            .field("recipient_policy", &self.recipient_policy)
+            .field("workspace", &self.workspace)
+            .field("controller_did", &self.controller_did)
+            .field("registration_token", &"<redacted-registration-token>")
+            .field("client_request_id", &self.client_request_id)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -355,6 +388,40 @@ where
     };
     state.upsert_agent_definition(&definition)?;
     Ok(definition)
+}
+
+pub fn create_runtime_agent_from_request<C>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration_client: &C,
+    daemon_agent: &AgentDefinition,
+    request: RuntimeAgentCreateRequest,
+) -> Result<RuntimeAgentCreateOutcome>
+where
+    C: AgentRegistrationClient,
+{
+    create_runtime_agent(
+        config,
+        state,
+        registration_client,
+        daemon_agent,
+        &RuntimeAgentCreatePayload {
+            command_id: request.command_id,
+            args: RuntimeAgentCreateArgs {
+                handle: request.handle,
+                runtime: request.runtime,
+                display_name: request.display_name,
+                driver_id: request.driver_id,
+                driver_config: request.driver_config,
+                recipient_policy: request.recipient_policy,
+                workspace: request.workspace,
+                controller_did: request.controller_did,
+                registration_token: request.registration_token,
+                client_request_id: request.client_request_id,
+            },
+            reply_policy: None,
+        },
+    )
 }
 
 fn create_runtime_agent<C>(
