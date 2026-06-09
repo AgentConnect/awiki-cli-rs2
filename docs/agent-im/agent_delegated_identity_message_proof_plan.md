@@ -13,8 +13,8 @@
 本方案分为两个层级：
 
 1. **第一阶段 / MVP：用户 DID 子私钥方案**
-   - APP / IM 在创建用户 DID Document 时，默认在 APP 本地生成一把新的子签名私钥，称为 **Daemon Device Key / User Delegated Subkey**，MVP 固定 DID URL fragment 为 `#daemon-key-1`。
-   - 创建 DID Document 的地方必须调用最新 user-service / DID API，把 APP 本地生成的 `user_did#daemon-key-1` public verification method 交给 user-service 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`；user-service 不生成、不接收、不返回 daemon subkey private material。
+   - APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把新的子签名私钥，称为 **User Delegated Subkey**，MVP 固定 DID URL fragment 为 `#daemon-key-1`，完整 verification method 为 `user_did#daemon-key-1`。
+   - 创建 DID Document 的地方必须调用最新 user-service / DID API，把 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method 交给 user-service 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`；user-service 不生成、不接收、不返回 daemon subkey private material。
    - MVP 第一版先允许 APP 通过普通消息发送明文 JSON bootstrap payload 将这把子私钥传给 Daemon；这是已知安全缺口。
    - 后续版本仍通过普通消息发送，只把 bootstrap body 从明文 JSON 改为加密文本或加密 JSON envelope。
    - bootstrap 阶段不再负责追加修改 DID Document，只传递已经存在且已登记的子私钥 key package。
@@ -65,14 +65,14 @@ ANP SDK / im-core 只通过可选参数支持 delegated signing/inbox，不影�
 |---|---|
 | User DID | 用户主 DID，例如 `did:wba:example.com:user:alice:e1_xxx`。 |
 | User Main Key | 用户主私钥，通常对应 DID path 中 `e1_` 绑定 key 或用户主认证 key。MVP 不传给 Daemon。 |
-| Daemon Device Key / 子私钥 | APP 在创建用户 DID Document 时本地生成的一把子签名私钥，例如 `user_did#daemon-key-1`；user-service 只登记对应 public verification method。MVP 第一版 APP 通过普通消息发送明文 JSON bootstrap 传给 Daemon；后续普通消息 body 改为加密文本或加密 JSON envelope。 |
+| User Delegated Subkey / 子私钥 | APP 在创建用户 DID Document 时本地生成的一把子签名私钥，例如 `user_did#daemon-key-1`；user-service 只登记对应 public verification method。MVP 第一版 APP 通过普通消息发送明文 JSON bootstrap 传给 Daemon；后续普通消息 body 改为加密文本或加密 JSON envelope。 |
 | Daemon | 本地或云端 Agent Runtime Host，负责保管子私钥、拉取消息、调用 im-core/message SDK、调度 Hermes。 |
 | Hermes Agent | 具体 Runtime Agent。建议 Hermes 不直接持有 DID 私钥，而是通过 Daemon local RPC 请求发送、签名、拉取等能力。 |
 | Agent DID | 长期方案中 Agent 自己的 DID，例如 `did:wba:example.com:agent:hermes:e1_xxx`。 |
 | ANP origin proof | ANP `auth.origin_proof`，用于证明业务消息由 `meta.sender_did` 发起。 |
 | Signed Request Object | ANP proof 中被计算 `contentDigest` 的业务对象，只包含 `method`、`meta`、`body`，不包含 `auth`、`jsonrpc`、`id`。 |
 | Delegation Credential | 长期方案中用户签发给 Agent DID 的授权凭证，用来表达代理范围、有效期和撤销状态。 |
-| Scoped Inbox Token | message-service/user-service 签发给 Daemon/Agent 的本域 token，用于拉取 inbox/history 等非跨域业务 API。 |
+| Scoped Inbox Token | MVP 后由本域服务签发给 Daemon/Agent 的 token，用于拉取 inbox/history 等非跨域业务 API；不进入 MVP 主路径。 |
 
 命名约定：新增方案不再使用 `mailbox_*` 作为 API/SDK/Token/DB 名称。`mailbox` 容易被理解成 email/mail 系统；本文统一使用 `inbox` 表达“用户消息收件箱和历史记录访问”的授权上下文，例如 `InboxHistoryOptions`、`inbox_owner_did`、`inbox_auth_verification_method`、`ScopedInboxToken`。
 
@@ -209,7 +209,7 @@ MVP 中，Daemon 不是独立业务发送者，而是用户 DID 下的一个受�
 ```text
 业务发送者：User DID
 实际运行节点：Daemon
-签名 key：User DID 下的 Daemon Device Key
+签名 key：User DID 下的 `#daemon-key-1` User Delegated Subkey
 ```
 
 消息语义：
@@ -346,9 +346,9 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
 {
   "schema": "awiki.daemon.bootstrap.v1",
   "bootstrap_id": "boot_20260609_001",
-  "idempotency_key": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_userfingerprint:app_macbook",
+  "idempotency_key": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_userfingerprint:app_instance_1",
   "pairing_session_id": "pair_123",
-  "app_instance_id": "app_macbook",
+  "app_instance_id": "app_instance_1",
   "controller_did": "did:wba:example.com:user:alice:e1_userfingerprint",
   "user_subkey_package": {
     "schema": "awiki.daemon.user_subkey_package.v1",
@@ -359,7 +359,7 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
     "public_key_multibase": "z...",
     "created_at": "2026-06-09T12:00:00Z",
     "expires_at": "2026-09-09T12:00:00Z",
-    "label": "Alice MacBook Daemon",
+    "label": "Alice App Daemon",
     "allowed_usage_hint": [
       "anp.origin_proof.sign",
       "message.send.plain",
@@ -374,7 +374,7 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
     "role": "app_message_handler",
     "runtime": "hermes",
     "display_name": "Hermes Message Agent",
-    "ensure_once_key": "app-message-agent:did:wba:example.com:user:alice:e1_userfingerprint:app_macbook",
+    "ensure_once_key": "app-message-agent:did:wba:example.com:user:alice:e1_userfingerprint:app_instance_1",
     "auto_create": true,
     "plain_message_visible": true,
     "e2ee_visible": false,
@@ -891,7 +891,7 @@ security.policy.update
 ```text
 阶段 1：MVP 子私钥
 - APP 创建用户 DID Document 时本地生成 user_did#daemon-key-1 private/public key package，并调用最新 DID API 只登记 public verification method。
-- user_did#daemon-key-1 默认已在 DID Document authentication 中。
+- 创建后返回的 DID Document 必须已经包含 user_did#daemon-key-1 authentication relationship。
 - MVP 通过普通消息发送明文 JSON bootstrap，把既有子私钥传给 Daemon，记录后续普通消息 body 加密为安全债。
 - Daemon 使用该 key 签 ANP origin_proof。
 - user-service 负责 public registration / revoke / audit；message-service MVP 只校验 DID Document authentication、key owner 一致性和普通消息 scope。
@@ -1037,7 +1037,7 @@ Scope 对应关系：
 2. `UserDidKeyService`
    - 在用户创建 DID Document 时调用最新 user-service / DID API，APP 本地生成 `#daemon-key-1` private/public key package，只把 public verification method 交给 user-service 登记；
    - 不在 Daemon pairing 时追加修改 DID Document；
-   - 撤销/轮换 Daemon Device Key。
+   - 撤销/轮换 `#daemon-key-1` public verification method。
 
 3. `AgentControlService`
    - 当前已有 daemon/runtime agent 管理 payload；
@@ -1147,14 +1147,14 @@ Scope 对应关系：
 新增或修改：
 
 1. DID Document key management API
-   - 创建用户 DID Document 时接收 APP 本地生成的 `#daemon-key-1` public verification method，并登记到 DID Document `verificationMethod` 与 `authentication`；
-   - user-service 不生成、不接收、不返回 Daemon Device Key private material；
-   - 撤销 Daemon Device Key；
-   - 查询用户已授权设备/Daemon key。
+   - 创建用户 DID Document 时接收 APP 本地生成 key package 对应的 `#daemon-key-1` public verification method，并只登记到 DID Document `verificationMethod` 与 `authentication`；
+   - user-service 不生成、不接收、不返回 daemon subkey private material；
+   - 撤销 `#daemon-key-1` public verification method；
+   - 查询用户已登记的 daemon public verification method。
 
-2. Registration / token API
+2. Public registration / audit API
    - MVP 记录 `user_did#daemon-key-1` public registration、状态和审计信息；
-   - message-service MVP 的每次请求授权只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
+   - message-service MVP 的每次请求授权不查询、不缓存、不依赖 user-service public registration / audit record，只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
    - 后续根据 `user_did#daemon-key-1` 签发 scoped inbox token；
    - MVP 后再根据 Agent DID delegation 签发 delegated inbox token。
 
@@ -1301,7 +1301,9 @@ CREATE TABLE agent_delegations (
 
 MVP 可先使用 `private_key_material` 沿用现有 daemon identity private key 存储方式；后续安全版本迁移到 `private_key_ref`，并清除明文私钥字段。
 
-### 11.2 message-service / user-service 表
+### 11.2 user-service public registration / audit 表
+
+下面的表只属于 user-service public registration、撤销和审计状态，不是 message-service MVP 运行时授权依赖。message-service MVP 只读取 DID Document，并基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定请求。
 
 ```sql
 CREATE TABLE user_delegated_key_registry (
@@ -1450,7 +1452,7 @@ MVP：子私钥，不改 ANP。
 
 ```text
 1. APP 创建用户 DID Document 时本地生成 user_did#daemon-key-1 private/public key package，并调用最新 DID API 只登记 public verification method。
-2. 初始 DID Document 默认已将 #daemon-key-1 加入 authentication。
+2. 创建后返回的 DID Document 必须已经将 #daemon-key-1 加入 authentication。
 3. APP 通过 MVP 普通消息明文 JSON bootstrap 把既有子私钥发给 Daemon，并记录普通消息 body 加密缺失。
 4. Daemon 先按现有 daemon identity private key 方式保存子私钥，后续迁移到受保护密钥仓库。
 5. Daemon 使用 #daemon-key-1 签 ANP origin_proof。

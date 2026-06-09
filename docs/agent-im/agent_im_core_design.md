@@ -44,7 +44,7 @@
    现有 `awiki-deamon` 主要管理 agent identity，还没有 APP 通过普通消息发送向 Daemon bootstrap 的明确协议，也没有把 `user_did#daemon-key-1` 子私钥导入 daemon 的明确协议。APP 和 Daemon 之间只有一个传输方式：普通消息发送。MVP 先通过普通消息发送明文 JSON system/control payload 传递子私钥，这是安全缺口；后续仍是普通消息发送，只是把消息内容从明文 JSON 文本改为加密文本或加密 JSON envelope。
 
 2. **用户 delegated inbox 接收缺口**  
-   当前 daemon 主要轮询 agent 自己的 inbox。MVP 需要新增 user delegated identity profile，让 daemon 使用 `user_did#daemon-key-1` 作为用户 DID 下的受控设备 key，既能代发普通消息，也能向 message-service 证明自己有权拉取用户普通 inbox/history。
+   当前 daemon 主要轮询 agent 自己的 inbox。MVP 需要新增 user delegated identity profile，让 daemon 使用 `user_did#daemon-key-1` 作为用户 DID 下的受控子 key，既能代发普通消息，也能向 message-service 证明自己有权拉取用户普通 inbox/history。
 
 3. **E2EE 消息给 Agent 处理是后续设计，不进入本次 MVP**  
    message-service 明确不解密 direct/group E2EE；daemon/Hermes 也被当前 Hermes profile 明确限制为不持有 DID 私钥、不直连 message-service。因此本次 MVP 不同步 E2EE 消息给 Agent，不同步 metadata，不转发明文/摘要，只在本文记录未来设计边界。
@@ -71,7 +71,7 @@
 最终产品体验应是：
 
 1. 用户登录 aWiki.me 后，APP 通过普通消息发送完成 Daemon bootstrap；MVP 先发送明文 JSON control payload 传递子私钥，后续同样通过普通消息发送加密文本或加密 JSON envelope。
-2. Daemon 获得用户 DID 下的 Daemon Device Key / 子私钥，不获得用户主私钥，并用该子私钥接入普通消息同步链路。
+2. Daemon 获得用户 DID 下的 User Delegated Subkey / 子私钥，不获得用户主私钥，并用该子私钥接入普通消息同步链路。
 3. 新消息到达时，消息进入 APP 展示链路，也进入 Agent 处理链路。
 4. Agent 在用户未及时查看消息时，可以先做重要性判断、提醒、摘要、草拟回复或代发低风险回复。
 5. 用户打开 APP 时，Agent 已经把重要事项、待处理任务、摘要和建议动作准备好。
@@ -161,8 +161,8 @@ Agent 可以很强，但必须可控。所有自动化能力都要可配置、�
 
 MVP 的身份构建结论改为：
 
-1. APP / IM 在创建用户 DID Document 时，默认一并在 APP 本地生成一把 Daemon Device Key private/public key package，MVP 固定为 `user_did#daemon-key-1`，不包含设备名、设备型号、时间戳或其他可识别设备信息。
-2. 生成 DID Document 的代码路径需要调用最新 user-service / DID API，只把 APP 本地生成的 `user_did#daemon-key-1` public verification method 交给 user-service；user-service 负责把这个 public verification method 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`，并返回默认带有 `#daemon-key-1` 的 DID Document，而不是在 Daemon pairing/bootstrap 时再追加修改 DID Document。user-service 不生成、不接收、不返回 daemon subkey private material。
+1. APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把 User Delegated Subkey private/public key package，MVP 固定 DID URL 为 `user_did#daemon-key-1`，fragment 固定为 `#daemon-key-1`，不包含设备名、设备型号、时间戳或其他可识别设备信息。
+2. 生成 DID Document 的代码路径必须调用最新 user-service / DID API，只把 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method 交给 user-service；user-service 只负责把这个 public verification method 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`，并返回包含 `#daemon-key-1` 的 DID Document，而不是在 Daemon pairing/bootstrap 时再追加修改 DID Document。user-service 不生成、不接收、不返回 daemon subkey private material。
 3. APP 把这把已存在的子私钥传给 Daemon。MVP 先允许通过普通消息发送明文 JSON system/control payload bootstrap，这是已知安全缺口；后续仍通过普通消息发送，只把 private package 改为加密文本或加密 JSON envelope。
 4. Daemon 用该子私钥代表用户处理普通非 E2EE 消息的发送、接收、同步和 Agent 管理。
 5. Daemon 不持有用户主私钥，不持有 direct/group E2EE 私有会话状态。
@@ -387,7 +387,7 @@ sequenceDiagram
     Sender->>MsgSvc: direct.send / group.send
     MsgSvc-->>App: 用户 APP 下行通知
     Daemon->>MsgSvc: user delegated inbox/history pull
-    MsgSvc->>MsgSvc: 验证 user_did#daemon-key-1 / DID Document authentication / plain scope
+    MsgSvc->>MsgSvc: 验证 DID proof / DID Document authentication / key owner / plain scope
     MsgSvc-->>Daemon: 普通非 E2EE 消息
     Daemon->>Daemon: durable cursor / processed_message
     Daemon->>Hermes: 构造 message task / prompt wrapper
@@ -397,7 +397,7 @@ sequenceDiagram
 
 落地要求：
 
-1. `user-service` 必须支持创建 DID Document 时接收 APP 本地生成的 `user_did#daemon-key-1` public verification method，并登记到 DID Document `verificationMethod` 与 `authentication`；后续撤销、轮换和 public registration 审计记录也只处理 public verification method。user-service 不生成、不接收、不返回 daemon subkey private material。
+1. `user-service` 必须支持创建 DID Document 时接收 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并且只登记到 DID Document `verificationMethod` 与 `authentication`；后续撤销、轮换和 public registration 审计记录也只处理 public verification method。user-service 不生成、不接收、不返回 daemon subkey private material。
 2. `message-service` 必须支持该子 key 对普通 inbox/history 的接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 3. daemon 必须新增 user delegated inbox poller，而不是只轮询 Agent DID inbox。
 4. APP-side forward 不作为普通消息 MVP 主路径，只保留给未来 E2EE 或特殊场景。
@@ -1288,23 +1288,23 @@ E2EE profiles 是否公开，仍应跟随 message-service 的 discovery security
 
 ## 5.6 `user-service` 改造方案
 
-MVP 需要把 user-service 纳入范围，负责用户 DID Document public verification method 登记、撤销和审计状态。user-service 不是 daemon subkey private material 的生成方；message-service MVP 的请求授权只读取 DID Document 并校验 `authentication`：
+MVP 需要把 user-service 纳入范围，负责用户 DID Document public verification method 登记、撤销和审计状态。user-service 不是 daemon subkey private material 的生成方；message-service MVP 的请求授权不查询、不依赖 user-service delegated key registry，只读取 DID Document 并校验 `authentication`：
 
 1. DID Document key management API：
-   - 创建用户 DID Document 时接收 APP 本地生成的 `user_did#daemon-key-1` public verification method，并登记到 DID Document `verificationMethod` 与 `authentication`；
+   - 创建用户 DID Document 时接收 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并只登记到 DID Document `verificationMethod` 与 `authentication`；
    - user-service 不生成、不接收、不返回 daemon subkey private material；
    - 从 `authentication` 移除或撤销 `user_did#daemon-key-1`；
-   - 查询用户已授权 daemon key。
-2. delegated key registry：
+   - 查询用户已登记的 daemon public verification method。
+2. public registration / audit record（不作为 message-service MVP 授权依赖）：
    - 记录 `user_did`、`verification_method`、`daemon_instance_id`、`daemon_agent_did`、scope、expires、status、revoked_at；
    - 标记该 key 是 daemon delegated subkey，不是用户主 key；
-   - MVP 中该 registry 只用于 user-service 自身查询、撤销、审计和后续演进预留。
+   - MVP 中该记录只用于 user-service 自身查询、撤销、审计和后续演进预留；message-service 每次请求不查询、不缓存、不依赖该记录。
 3. inbox authorization：
-   - message-service MVP 直接验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
+   - message-service MVP 只基于请求内 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 做运行时授权；
    - scoped inbox token 可作为中期优化，但不进入 MVP 主路径。
 4. audit：
    - 记录 key 创建、使用、撤销、轮换；
-   - 记录使用者是 daemon key，而不是用户主设备。
+   - 记录使用者是 daemon key，而不是用户主 key。
 
 ---
 
@@ -1411,7 +1411,7 @@ MVP 主路径。
 4. Daemon bootstrap state / user delegated identity store。
 5. Daemon 幂等执行 `ensure_app_message_agent`，创建或复用 `role=app_message_handler` 的 Hermes Message Agent。
 6. `app_message_agent_binding` 持久化用户、APP、Runtime Agent、delegated subkey 和 capability policy 的绑定。
-7. user-service / DID API 在创建用户 DID Document 时登记 APP 本地生成的 `user_did#daemon-key-1` public verification method，并支持后续撤销；不生成、不接收、不返回 daemon subkey private material。
+7. user-service / DID API 在创建用户 DID Document 时只登记 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并支持后续撤销；不生成、不接收、不返回 daemon subkey private material。
 8. message-service 支持该子 key 的普通消息发送和接收权限校验；MVP 直接校验 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 9. APP capabilities 发布。
 10. Daemon 不持有用户主私钥。
@@ -1497,7 +1497,7 @@ MVP 主路径。
 3. Daemon 能根据 bootstrap 自动 `ensure_app_message_agent`，创建或复用 `role=app_message_handler` 的 Hermes Message Agent；APP 不需要反复发送 create runtime command。
 4. Daemon 能写入并恢复 `app_message_agent_binding`，绑定 user DID、verification method、app_instance、bootstrap_id、runtime_agent_did 和 capability policy。
 5. 重复发送同一个 `bootstrap_id` / `idempotency_key` 不会创建第二个 active message handler agent。
-6. user-service / DID API 能在创建用户 DID Document 时登记 APP 本地生成的 `user_did#daemon-key-1` public verification method，并支持后续撤销。
+6. user-service / DID API 能在创建用户 DID Document 时只登记 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并支持后续撤销。
 7. message-service 能接受该子 key 的普通消息发送 proof，并支持普通 inbox/history 接收权限校验；MVP 授权来源是 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 8. message-service 能支持同一个 user DID 的 APP 连接和 Daemon 连接同时在线，并把普通消息与 E2EE opaque notification fanout 给这些连接。
 9. Daemon 能使用 user delegated identity 拉取普通非 E2EE inbox/history，并投递给绑定的 Hermes Message Agent。
@@ -1563,7 +1563,7 @@ MVP 主路径。
 PR 线 A：User Delegated Identity Bootstrap
 PR 线 B：Delegated Inbox/Send & Durable Sync
 PR 线 C：App Action Capability & Execution
-PR 线 D：user-service/message-service Delegated Key Policy
+PR 线 D：User DID Public Key Registration & Message Service DID Document Auth
 ```
 
 这三条线完成后，“Agent 为主，APP 为辅”的产品闭环就能跑起来：Agent 能收消息、理解消息、发消息、同步状态，并以安全可控的方式操纵 APP。
