@@ -4,7 +4,7 @@
 DOC：`awiki-cli-rs2/docs/agent-im/plan`  
 Harness：`awiki-harness`  
 创建时间：2026-06-09  
-恢复指针：Step 01、Step 02、Step 03、Step 04、Step 05 已完成；恢复时从 Step 06 开始，或从第一个状态不是 `done` 的 Step 继续。
+恢复指针：Step 01、Step 02、Step 03、Step 04、Step 05、Step 06 已完成；恢复时从 Step 07 开始，或从第一个状态不是 `done` 的 Step 继续。
 
 ## 1. 目标
 
@@ -84,7 +84,7 @@ Harness：`awiki-harness`
 | 03 | awiki-deamon bootstrap 与 user delegated identity state | Step 01、Step 02 契约 | 从普通消息发送接收 `awiki.daemon.bootstrap.v1` 明文 JSON body、明文 key package 存储、幂等状态 | [steps/03-awiki-deamon-bootstrap-state.md](steps/03-awiki-deamon-bootstrap-state.md) | 必须 | done |
 | 04 | awiki-deamon message agent binding | Step 03 | `ensure_app_message_agent` 与 `app_message_agent_binding` | [steps/04-awiki-deamon-message-agent-binding.md](steps/04-awiki-deamon-message-agent-binding.md) | 必须 | done |
 | 05 | awiki-deamon delegated inbox sync | Step 02、Step 04、Step 07 契约 | durable cursor、processed message、普通消息投递、E2EE opaque ignore | [steps/05-awiki-deamon-user-delegated-inbox-sync.md](steps/05-awiki-deamon-user-delegated-inbox-sync.md) | 必须 | done |
-| 06 | awiki-me bootstrap UI 与 service | Step 01、Step 03、Step 04 | APP 一次性 bootstrap、状态展示、控制 payload 隐藏 | [steps/06-awiki-me-pairing-bootstrap-ui-service.md](steps/06-awiki-me-pairing-bootstrap-ui-service.md) | 必须 | pending |
+| 06 | awiki-me bootstrap UI 与 service | Step 01、Step 03、Step 04 | APP 一次性 bootstrap、状态展示、控制 payload 隐藏 | [steps/06-awiki-me-pairing-bootstrap-ui-service.md](steps/06-awiki-me-pairing-bootstrap-ui-service.md) | 必须 | done |
 | 07 | message-service delegated key policy 与 fanout | Step 01 契约、Step 02 契约 | delegated send/inbox/history proof、scope policy、多连接 fanout | [steps/07-message-service-delegated-key-policy-and-fanout.md](steps/07-message-service-delegated-key-policy-and-fanout.md) | 必须 | pending |
 | 08 | APP action schema 与可见性 | Step 04、Step 06 | 最小 action allowlist、schema、payload 过滤和 result 回传 | [steps/08-app-action-schema-and-visibility.md](steps/08-app-action-schema-and-visibility.md) | 必须 | pending |
 | 09 | 系统测试与集成收口 | Step 01-08 | remote `awiki.info` 系统测试、全局 Review、文档证据 | [steps/09-system-test-and-integration.md](steps/09-system-test-and-integration.md) | 如修改测试/文档则必须 | pending |
