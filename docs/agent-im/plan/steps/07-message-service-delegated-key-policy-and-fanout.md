@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：07  
-状态：in_progress
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | in_progress |
+| Status | done |
 | Branch | `feature/release-0526/agent-im-hutong` |
 | Started | 2026-06-09T17:45:37Z |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 对齐 message-service direct/history/inbox 与 WebSocket session routing，加入 delegated key policy |
+| Completed | 2026-06-09T18:24:04Z |
+| Commit | `message-service` `7afa621 message-service: support delegated inbox policy` |
+| Review evidence | 2026-06-09 Review：检查 delegated send / inbox / history 的 DID proof、key owner、`keyid` 一致性、DID Document `authentication`、老本地 view 兼容、E2EE filtering、同 DID fanout 和文档契约。发现并修复：delegated local view 补 `validate_auth_scheme`；增加 key 不在 DID Document `authentication` 的拒绝测试；补 delegated send 测试；确认运行时授权输入只来自请求 proof、当前 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。剩余风险：delegated `inbox.mark_read` MVP 明确不开放；撤销实时性依赖 DID Document `authentication` 更新和 message-service DID Document cache/refresh；workspace clippy 被无关 `im-group` 测试 lint 阻塞。 |
+| Verification evidence | `cd message-service && cargo test -p im-direct -- --nocapture`：40 passed；`cd message-service && cargo test -p im-storage -- --nocapture`：6 passed，Postgres integration helper 因未设置 `MESSAGE_SERVICE_STORAGE_TEST_DATABASE_URL` 打印 skipped；`cd message-service && cargo test -p im-runtime notify_agent_delivers_to_all_matching_sessions -- --nocapture`：1 passed；`cd message-service && cargo test --workspace`：208 passed，doc tests 0；`cd message-service && cargo clippy -p im-direct --all-targets -- -D warnings`：通过；`cd message-service && cargo clippy -p im-storage --all-targets -- -D warnings`：通过；`cd message-service && cargo clippy --workspace --all-targets -- -D warnings`：失败，既有无关 `crates/im-group/src/handlers.rs:6746` `await_holding_lock`；`cd message-service && git diff --check`：通过。 |
+| Next action | 启动 Step 08：APP action schema 与可见性 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -68,15 +68,15 @@ Step index：07
 
 ## 7. 验收标准
 
-- [ ] send 接受 `meta.sender_did = user_did`、`keyid = user_did#daemon-key-1` 的普通非 E2EE proof。
-- [ ] inbox/history 接受 `inbox_owner_did`、`inbox_auth_verification_method` 的 delegated proof。
-- [ ] message-service MVP 只校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；key 不在 DID Document `authentication` 中时拒绝。
-- [ ] delegated inbox/history pull 不返回 E2EE 明文、metadata projection 或 private state。
-- [ ] 同一 user DID 的 APP 和 Daemon 多连接均可收到下行 fanout。
-- [ ] E2EE opaque notification 可以下发给 Daemon 连接，但服务端不解密、不转明文。
-- [ ] 老客户端 send/inbox/history 和 E2EE 行为不回归。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] send 接受 `meta.sender_did = user_did`、`keyid = user_did#daemon-key-1` 的普通非 E2EE proof。
+- [x] inbox/history 接受 `inbox_owner_did`、`inbox_auth_verification_method` 的 delegated proof。
+- [x] message-service MVP 只校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；key 不在 DID Document `authentication` 中时拒绝。
+- [x] delegated inbox/history pull 不返回 E2EE 明文、metadata projection 或 private state。
+- [x] 同一 user DID 的 APP 和 Daemon 多连接均可收到下行 fanout。
+- [x] E2EE opaque notification 可以下发给 Daemon 连接，但服务端不解密、不转明文。
+- [x] 老客户端 send/inbox/history 和 E2EE 行为不回归。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -97,11 +97,11 @@ Step index：07
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 有发现 | delegated local view 需要显式校验 auth scheme；需要覆盖 key 不在 DID Document `authentication` 的拒绝路径；需要明确 delegated `inbox.mark_read` MVP 不开放。 |
+| 已修复问题 | 已修复 | delegated local view 补 `validate_auth_scheme`；新增 keyid mismatch、wrong auth key owner、key not in authentication、delegated send、delegated inbox/history、E2EE filtering 测试；API/architecture 文档明确授权输入只来自 DID proof 与 DID Document `authentication`。 |
+| 剩余风险 | 已记录 | delegated `inbox.mark_read` MVP 明确不开放；撤销实时性依赖 DID Document `authentication` 更新和 message-service DID Document cache/refresh；`cargo clippy --workspace --all-targets -- -D warnings` 被无关 `im-group` 测试 lint 阻塞。 |
+| 新增或缺失测试 | 已补测试 | `direct_send_accepts_daemon_key_origin_proof`、`delegated_inbox_get_accepts_daemon_key_proof`、`delegated_history_accepts_daemon_key_proof`、wrong owner/keyid/not-in-authentication、E2EE filtering、fanout 定向测试均通过。缺失：Postgres integration 需要 `MESSAGE_SERVICE_STORAGE_TEST_DATABASE_URL`，本轮未提供该环境。 |
+| 已更新或缺失文档 | 已更新 | 更新 `message-service/docs/api/ANP-client-server-api-direct.md` 和 `message-service/docs/architecture/identity-auth-proof-architecture.md`；未改 E2EE boundary 文档，因为服务端 opaque boundary 未改变。 |
 
 ## 10. Commit 要求
 
@@ -113,17 +113,28 @@ Step index：07
 - 遗留未提交变更：必须记录原因以及为什么安全。
 - 建议消息：`message-service: support delegated inbox policy`
 
+执行记录：
+
+| 项 | 记录 |
+|---|---|
+| Commit 前状态 | `message-service`：`## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong`，纳入 Step 07 变更后提交。 |
+| 纳入文件 | `crates/im-direct/src/service.rs`、`crates/im-storage/src/lib.rs`、`crates/im-storage/src/postgres.rs`、`docs/api/ANP-client-server-api-direct.md`、`docs/architecture/identity-auth-proof-architecture.md`。 |
+| Commit 后证据 | `7afa621 message-service: support delegated inbox policy`；`message-service` post-commit status：`## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 1]`。 |
+| 遗留未提交变更 | `message-service` 无遗留未提交变更；本轮 `awiki-cli-rs2` 只回填 Plan / Step 07 台账和两篇设计文档收敛改动。 |
+
 ## 11. Blocked 处理
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| DID Document cache 无法及时反映 authentication 撤销 | 待填写 | 缩短 DID Document cache 或在撤销后触发刷新；跨服务 policy client 作为后续增强 | 当前步骤 / Step 05 | 记录撤销实时性风险，不引入跨服务 registry RPC |
+| DID Document cache 无法及时反映 authentication 撤销 | Step 07 只以当前解析到的 DID Document `authentication` 判定 key 有效性，未引入跨服务撤销事件。 | 记录为 MVP 剩余风险；跨服务 policy client / cache TTL / 撤销事件作为后续增强。 | 当前步骤 / Step 05 / Step 09 | 不阻塞 Step 07 完成；Step 09 全局 Review 继续检查撤销风险记录。 |
+| workspace clippy 被无关 `im-group` 测试 lint 阻塞 | `cargo clippy --workspace --all-targets -- -D warnings` 失败于 `crates/im-group/src/handlers.rs:6746` `await_holding_lock`，不在 Step 07 touched files。 | 已运行 touched crate clippy：`im-direct`、`im-storage` 均通过；不修改无关模块。 | 全 workspace lint 证据 | 记录残余风险；Step 09 全局验证时再统一处理或记录。 |
 
 ## 12. Plan 变更记录
 
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-09 | 创建 Step 07 小 Plan | 初始计划拆分 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | Step 07 收口为 DID Document authentication 授权源 | 实现和 Review 确认 message-service MVP 运行时授权输入只来自请求 proof、当前 DID Document `authentication`、key owner 一致性和普通非 E2EE scope；delegated `inbox.mark_read` 不进入 MVP。 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
 
 ## 13. 风险、回滚与后续文档
 
