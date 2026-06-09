@@ -162,12 +162,12 @@ Agent 可以很强，但必须可控。所有自动化能力都要可配置、�
 MVP 的身份构建结论改为：
 
 1. APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把 User Delegated Subkey private/public key package，MVP 固定 DID URL 为 `user_did#daemon-key-1`，fragment 固定为 `#daemon-key-1`，不包含设备名、设备型号、时间戳或其他可识别设备信息；文档、实现和测试中不要使用任何设备化 fragment 示例。
-2. APP 创建用户 DID Document 的代码路径必须先在 APP 本地生成该 key package，并从中导出 `user_did#daemon-key-1` public verification method；随后调用最新 user-service / DID API 时只提交这个 public verification method。user-service 只负责把 APP 提交的 public verification method 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`，并返回包含 `#daemon-key-1` 的 DID Document。user-service 不能生成、派生、接收或返回 daemon subkey private material，daemon key private material 的创建只能发生在 APP 本地；bootstrap 阶段也不再追加修改 DID Document。
+2. APP 创建用户 DID Document 的代码路径必须先在 APP 本地生成该 key package，并从中导出 `user_did#daemon-key-1` public verification method；随后调用最新 user-service / DID API 时只提交这个 public verification method。user-service 只负责把 APP 提交的 public verification method 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`，并返回包含 `#daemon-key-1` 的 DID Document。daemon key private/public key package 的创建只能发生在 APP 本地；user-service 不能生成、派生、接收或返回 daemon subkey private material；bootstrap 阶段也不再追加修改 DID Document。
 3. APP 把这把已存在的子私钥传给 Daemon。MVP 先允许通过普通消息发送明文 JSON system/control payload bootstrap，这是已知安全缺口；后续仍通过普通消息发送，只把 private package 改为加密文本或加密 JSON envelope。
 4. Daemon 用该子私钥代表用户处理普通非 E2EE 消息的发送、接收、同步和 Agent 管理。
 5. Daemon 不持有用户主私钥，不持有 direct/group E2EE 私有会话状态。
 
-这个方案仍有风险：`user_did#daemon-key-1` 在 DID Document 的 `authentication` 中，远端验证方会把它当作用户 DID 的合法认证 key。第一个版本接受这个风险，但必须把 key 命名、审计、撤销、过期、服务器 policy 和 E2EE 禁止边界写进 MVP gate。
+这个方案仍有风险：`user_did#daemon-key-1` 在 DID Document 的 `authentication` 中，远端验证方会把它当作用户 DID 的合法认证 key。第一个版本接受这个风险，但必须把 key 命名、审计、撤销、过期、message-service 本地普通消息 scope / rate limit / audit policy 和 E2EE 禁止边界写进 MVP gate。
 
 ### 2.2.2 E2EE 消息不进入 MVP Agent 处理链路
 
@@ -1166,7 +1166,7 @@ Direct / Group E2EE 服务侧继续只处理 opaque cipher 和 metadata，不解
 
 ### 5.4.2 增加 user delegated inbox 能力
 
-MVP 需要 message-service 支持 daemon 使用 `user_did#daemon-key-1` 拉取和发送普通非 E2EE 消息。MVP 授权输入固定为请求内 DID proof、解析出的 DID Document `authentication`、key owner 一致性和普通非 E2EE scope；撤销只通过 DID Document `authentication` 更新和 message-service DID Document cache 刷新体现。后续如需更细的本域用户级策略，可以单独设计，例如：
+MVP 需要 message-service 支持 daemon 使用 `user_did#daemon-key-1` 拉取和发送普通非 E2EE 消息。MVP 授权输入固定为请求内 DID proof、解析出的 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。撤销对 message-service 的生效通过 DID Document `authentication` 更新和 DID Document 刷新体现。后续如需更细的本域用户级策略，可以单独设计，例如：
 
 ```text
 agent_message_visibility_policy
@@ -1303,7 +1303,8 @@ MVP 需要把 user-service 纳入范围，但它的职责只在用户 DID Docume
    - message-service MVP 只基于请求内 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 做运行时授权；
    - scoped inbox token 可作为中期优化，但不进入 MVP 主路径。
 4. audit：
-   - 记录 key 创建、使用、撤销、轮换；
+   - user-service 只记录 public verification method 登记、撤销、轮换和 DID Document 管理侧审计；
+   - 使用审计由 message-service / daemon 基于实际请求记录，不作为运行时授权状态；
    - 记录使用者是 daemon key，而不是用户主 key。
 
 ---
@@ -1412,7 +1413,7 @@ MVP 主路径。
 5. Daemon 幂等执行 `ensure_app_message_agent`，创建或复用 `role=app_message_handler` 的 Hermes Message Agent。
 6. `app_message_agent_binding` 持久化用户、APP、Runtime Agent、delegated subkey 和 capability policy 的绑定。
 7. user-service / DID API 在创建用户 DID Document 时只接收并登记 APP 提交的 `user_did#daemon-key-1` public verification method；该 public verification method 由 APP 本地 key package 导出，并支持后续撤销。user-service 不生成、不接收、不返回 daemon subkey private material。
-8. message-service 支持该子 key 的普通消息发送和接收权限校验；MVP 直接校验 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
+8. message-service 支持该子 key 的普通消息发送和接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 9. APP capabilities 发布。
 10. Daemon 不持有用户主私钥。
 
@@ -1467,7 +1468,7 @@ MVP 主路径。
 | 风险 | 严重度 | 控制措施 |
 |---|---:|---|
 | Daemon 持有用户主私钥 | 高 | MVP 禁止；只允许用户 DID 子私钥 |
-| Daemon 子私钥泄露 | 高 | 第一个版本接受该风险；使用命名、TTL、撤销、审计、服务器 policy 控制 |
+| Daemon 子私钥泄露 | 高 | 第一个版本接受该风险；使用命名、TTL、撤销、审计、message-service 本地普通消息 scope / rate limit / audit policy 控制 |
 | Agent 自动代发不当内容 | 高 | 默认草稿；低风险策略；外发确认；recipient/security scope |
 | E2EE 明文泄露给 Agent | 高 | MVP 不支持 E2EE forward；未来单独设计 |
 | Agent 反向操纵 APP 过度 | 高 | capability registry；risk level；confirmation；dry-run；audit |
