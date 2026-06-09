@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：06  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 在 awiki-me 中接入 DID 创建时已有 daemon key 和一次性 bootstrap service |
+| Status | done |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T16:12:00Z |
+| Completed | 2026-06-09T17:26:44Z |
+| Commit | `awiki-cli-rs2` `98c50ac im-core: expose daemon subkey package`；`awiki-me` `25d8cbb awiki-me: load daemon subkey for bootstrap` |
+| Review evidence | 2026-06-09 Review：检查 im-core 注册路径、Dart binding、awiki-me provider/adapter、secret exposure、payload visibility、web/native API 一致性和 generated 平台文件 churn。发现并修复：`SessionIdentity.localAlias` 不存在；`awiki_im_core` web stub 缺少 `loadDaemonSubkeyPackage`；`im-core` prelude 未导出 `DaemonSubkeyPrivatePackage`；测试生成的 Android registrant churn 已恢复。 |
+| Verification evidence | `cargo test -p im-core --locked register_handle_generates_and_saves_daemon_subkey_package -- --nocapture`：1 passed；`cargo check -p im-core-dart --locked`：通过；`cargo test -p im-core-dart --locked`：6 unit + 13 facade passed；`scripts/flutter/codegen-check.sh`：Done；`packages/awiki_im_core flutter test`：12 passed；`awiki-me flutter analyze`：No issues found；`awiki-me flutter test`：267 passed；两仓 `git diff --check` 通过。 |
+| Next action | 启动 Step 07：message-service delegated key policy 与 fanout |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -66,14 +66,14 @@ Step index：06
 
 ## 7. 验收标准
 
-- [ ] APP 不在 bootstrap 时修改 DID Document；APP 创建 DID 时本地生成 `#daemon-key-1` private package，并向 user-service 提交 public registration。
-- [ ] APP 能通过 message-service 普通消息发送构造并发送一次性 `awiki.daemon.bootstrap.v1`，包含 `desired_message_agent`。
-- [ ] `bootstrap_id` / `idempotency_key` 稳定，重试不变成重复 create runtime。
-- [ ] APP 能展示 bootstrap 和 message agent ready/active/failed 状态。
-- [ ] system/control payload 不显示成普通聊天；bootstrap private package 不进入普通聊天 UI、Hermes prompt、错误文案或日志。
-- [ ] private key package 不进入 UI、日志、普通错误消息。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] APP 不在 bootstrap 时修改 DID Document；im-core 在 DID 创建 / 注册路径本地生成 `#daemon-key-1` private package，向 user-service 提交的 DID Document 已包含 public verification method 和 `authentication`。
+- [x] APP 能通过 message-service 普通消息发送构造并发送一次性 `awiki.daemon.bootstrap.v1`，包含 `desired_message_agent`。
+- [x] `bootstrap_id` / `idempotency_key` 稳定，重试不变成重复 create runtime。
+- [x] APP 能展示 bootstrap 和 message agent ready/active/failed 状态。
+- [x] system/control payload 不显示成普通聊天；bootstrap private package 不进入普通聊天 UI、Hermes prompt、错误文案或日志。
+- [x] private key package 不进入 UI、日志、普通错误消息；只通过 `IdentityCorePort.loadDaemonSubkeyPackage` 在 bootstrap 时读取并传给 `AgentControlService`。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -94,21 +94,28 @@ Step index：06
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 已发现并处理 | `SessionIdentity.localAlias` 不存在导致 provider 编译失败；`awiki_im_core` web stub 缺少新 API 同名 unsupported 方法；`im-core` prelude 未导出新 DTO；`flutter test` 生成 Android registrant 无关 churn。 |
+| 已修复问题 | 已修复 | provider 改用 `session.credentialName` 读取本地 identity；补 `AwikiImCore.loadDaemonSubkeyPackage` web stub；补 `DaemonSubkeyPrivatePackage` prelude export；恢复 `android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java` 无关改动。 |
+| 剩余风险 | 已记录 | recovered / 既有本地身份没有 daemon subkey package 时，`loadDaemonSubkeyPackage` 会失败，需要后续补齐或 rotate flow；Step 07 完成前服务端 delegated send/inbox policy 仍未落地。 |
+| 新增或缺失测试 | 已新增 | im-core 注册保存 daemon subkey package 测试；awiki-me provider 默认加载 package 测试；mapper 测试；fake identity port 覆盖。 |
+| 已更新或缺失文档 | 已更新 | 主 Plan 和本 Step 台账已记录跨仓 Step 06 扩展、Review、验证和 commit；设计文档边界清理由 `df58004 docs: clarify delegated identity service boundaries` 单独提交。 |
+
+## 9.1 Review 细节
+
+- `awiki-cli-rs2`：im-core identity registration 在本地生成 `#daemon-key-1`，把 public verification method 写入注册 DID Document `verificationMethod` 与 `authentication`，把 private package 保存为本地 package 文件，并通过单独 `load_daemon_subkey_package` API 暴露；`RegisterHandleRequest` 和 `HandleRegistrationResult` 未增加 private material 字段，老调用签名保持不变。
+- `awiki-cli-rs2`：Dart binding 通过可选的新方法 `loadDaemonSubkeyPackage` 暴露 package；native/web 条件导出都具备同名 API，web stub 只返回 unsupported。
+- `awiki-me`：`AgentsController.bootstrapMessageAgent` 在调用方未显式传入 `UserSubkeyPackage` 时，通过 `identityCorePortProvider.loadDaemonSubkeyPackage(session.credentialName)` 读取本地 package，再复用现有 `AgentControlService.ensureMessageAgentBootstrap` 发送普通消息 JSON desired state。
+- secret 边界：private package 不进入 UI 文案、provider state dump 或错误文案；测试 fake 只使用 fixture 字符串。MVP 明文普通消息传输仍是已接受安全债。
 
 ## 10. Commit 要求
 
 - Commit 时机：本步骤实现、验证、Review 都完成后。
-- Commit 范围：只包含 awiki-me bootstrap/service/UI/filter 和直接测试。
-- Commit 前状态：记录 `git status --short --branch`。
-- 纳入文件：记录本步骤 commit 包含的文件。
-- Commit 后证据：记录 commit hash 和 commit 后 `git status --short --branch`。
-- 遗留未提交变更：必须记录原因以及为什么安全。
-- 建议消息：`awiki-me: bootstrap app message agent`
+- Commit 范围：Step 06 实现 Review 后扩展为两个仓库：`awiki-cli-rs2` 的 im-core / binding / package API；`awiki-me` 的 bootstrap adapter/provider 接入和测试。Plan 台账另行提交。
+- Commit 前状态：`awiki-cli-rs2` 提交前有 im-core/binding/package 文件与 Plan 台账未提交；`awiki-me` 提交前仅 Dart 源码和测试文件未提交，Android generated registrant churn 已恢复。
+- 纳入文件：`awiki-cli-rs2` commit `98c50ac` 纳入 im-core identity daemon subkey、identity store/registry、im-core-dart binding、`packages/awiki_im_core` native/web/generated/model 文件和测试；`awiki-me` commit `25d8cbb` 纳入 `IdentityCorePort`、im-core identity adapter/mapper、app provider override、agents provider 和测试。
+- Commit 后证据：`awiki-cli-rs2` `98c50ac im-core: expose daemon subkey package`；`awiki-me` `25d8cbb awiki-me: load daemon subkey for bootstrap`。
+- 遗留未提交变更：本 Step 完成时仅剩 Plan/Step 台账回填，将由独立文档 commit 提交。
+- 建议消息：已使用 `im-core: expose daemon subkey package` 和 `awiki-me: load daemon subkey for bootstrap`。
 
 ## 11. Blocked 处理
 
@@ -121,6 +128,7 @@ Step index：06
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-09 | 创建 Step 06 小 Plan | 初始计划拆分 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | Step 06 扩展为跨 `awiki-me` 与 `awiki-cli-rs2` identity registration 收口 | APP 不能伪造 private package；必须由 im-core DID 创建 / 注册路径生成、保存和暴露 `#daemon-key-1` package 后，awiki-me 才能在 bootstrap 时加载并发送。 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
 
 ## 13. 风险、回滚与后续文档
 
