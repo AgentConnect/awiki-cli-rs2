@@ -1,10 +1,10 @@
 # Plan：Agent IM MVP 可落地实施方案
 
-状态：in_progress  
+状态：done
 DOC：`awiki-cli-rs2/docs/agent-im/plan`  
 Harness：`awiki-harness`  
 创建时间：2026-06-09  
-恢复指针：Step 01、Step 02、Step 03、Step 04、Step 05、Step 06、Step 07 已完成；恢复时从 Step 08 开始，或从第一个状态不是 `done` 的 Step 继续。
+恢复指针：Step 01-09 均已完成；若恢复核验，只需读取第 7、15、17 节和 Step 09 文档，并核对最终提交与工作区状态。
 
 ## 1. 目标
 
@@ -39,7 +39,7 @@ Harness：`awiki-harness`
 | 领域 / 仓库 / 模块 | 影响 | 权威文档或代码 |
 |---|---|---|
 | 核心设计文档 | 作为需求来源和契约来源，不在本计划中继续修改 | `awiki-cli-rs2/docs/agent-im/agent_im_core_design.md`、`awiki-cli-rs2/docs/agent-im/agent_delegated_identity_message_proof_plan.md` |
-| user-service DID / key registry | 创建用户 DID Document 时登记 APP 侧生成的 `user_did#daemon-key-1` public verification method；支持查询、撤销、轮换策略；不生成、不接收、不返回 daemon subkey private material | `user-service/src/user_service/app/did/*`、`user-service/src/user_service/storage/sqlmodel/models/did.py`、`user-service/docs/api/*` |
+| user-service DID Document public method 管理 | 创建用户 DID Document 时只登记 APP 侧生成的 `user_did#daemon-key-1` public verification method；支持从 DID Document 写入、移除或替换该 public method；不生成、不接收、不返回 daemon subkey private material；不作为 message-service MVP 运行时授权来源 | `user-service/src/user_service/app/did/*`、`user-service/src/user_service/storage/sqlmodel/models/did.py`、`user-service/docs/api/*` |
 | ANP SDK / `im-core` | 新增向后兼容 optional params，支持 delegated signing 与 delegated inbox/history；老调用行为不变 | `awiki-cli-rs2/crates/im-core/src/messages/*`、`awiki-cli-rs2/crates/im-core/src/internal/proof/origin.rs`、`awiki-cli-rs2/crates/im-core/src/internal/wire/inbox.rs` |
 | Dart binding | 如 Rust DTO/API 变更，重新生成并暴露 Dart optional 参数 | `awiki-cli-rs2/packages/awiki_im_core/lib/src/generated/*`、`awiki-cli-rs2/packages/awiki_im_core/lib/src/awiki_im_core_base.dart` |
 | awiki-deamon bootstrap | 新增 APP 普通消息 bootstrap payload 解析、明文 key package 存储、幂等状态、user delegated identity profile | `awiki-cli-rs2/crates/awiki-deamon/src/*` |
@@ -87,7 +87,7 @@ Harness：`awiki-harness`
 | 06 | awiki-me bootstrap UI 与 service | Step 01、Step 03、Step 04 | APP 一次性 bootstrap、状态展示、控制 payload 隐藏 | [steps/06-awiki-me-pairing-bootstrap-ui-service.md](steps/06-awiki-me-pairing-bootstrap-ui-service.md) | 必须 | done |
 | 07 | message-service delegated key policy 与 fanout | Step 01 契约、Step 02 契约 | delegated send/inbox/history proof、scope policy、多连接 fanout | [steps/07-message-service-delegated-key-policy-and-fanout.md](steps/07-message-service-delegated-key-policy-and-fanout.md) | 必须 | done |
 | 08 | APP action schema 与可见性 | Step 04、Step 06 | 最小 action allowlist、schema、payload 过滤和 result 回传 | [steps/08-app-action-schema-and-visibility.md](steps/08-app-action-schema-and-visibility.md) | 必须 | done |
-| 09 | 系统测试与集成收口 | Step 01-08 | remote `awiki.info` 系统测试、全局 Review、文档证据 | [steps/09-system-test-and-integration.md](steps/09-system-test-and-integration.md) | 如修改测试/文档则必须 | pending |
+| 09 | 系统测试与集成收口 | Step 01-08 | remote `awiki.info` 系统测试、全局 Review、文档证据 | [steps/09-system-test-and-integration.md](steps/09-system-test-and-integration.md) | 如修改测试/文档则必须 | done |
 
 ## 7. 执行台账
 
@@ -103,7 +103,7 @@ Harness：`awiki-harness`
 | 06 | done | `feature/release-0526/agent-im-hutong` | 2026-06-09T16:12:00Z | 2026-06-09T17:26:44Z | `awiki-cli-rs2` `98c50ac im-core: expose daemon subkey package`；`awiki-me` `25d8cbb awiki-me: load daemon subkey for bootstrap` | 2026-06-09 Review：检查 APP bootstrap 是否只走普通消息、private package 是否只在 bootstrap 读取、不进入 UI/log、老注册 API 是否保持兼容、Dart native/web API 是否一致、generated platform churn 是否排除。发现并修复：`SessionIdentity.localAlias` 不存在导致 provider 编译失败；`awiki_im_core` web stub 缺少 `loadDaemonSubkeyPackage` 同名 unsupported API；`im-core` prelude 未导出 `DaemonSubkeyPrivatePackage`；`flutter test` 产生的 Android `GeneratedPluginRegistrant.java` 无关 churn 已恢复。剩余风险：recovered / 既有本地身份缺少 daemon subkey package 时仍需后续补齐或 rotate flow；Step 07 server policy 未完成前 delegated inbox/send 只能依赖客户端与 daemon 本地链路验证。 | `cd awiki-cli-rs2 && cargo test -p im-core --locked register_handle_generates_and_saves_daemon_subkey_package -- --nocapture`：1 passed；`cd awiki-cli-rs2 && cargo check -p im-core-dart --locked`：通过；`cd awiki-cli-rs2 && cargo test -p im-core-dart --locked`：6 unit + 13 facade passed；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh`：Done；`cd awiki-cli-rs2/packages/awiki_im_core && flutter test`：12 passed；`cd awiki-me && flutter analyze`：No issues found；`cd awiki-me && flutter test`：267 passed；targeted awiki-me tests：28 passed + 10 passed；`git diff --check`：两仓通过。 | 启动 Step 07：message-service delegated key policy 与 fanout |
 | 07 | done | `feature/release-0526/agent-im-hutong` | 2026-06-09T17:45:37Z | 2026-06-09T18:24:04Z | `message-service` `7afa621 message-service: support delegated inbox policy` | 2026-06-09 Review：检查 delegated send / inbox / history 的 DID proof、key owner、`keyid` 一致性、DID Document `authentication`、老本地 view 兼容、E2EE filtering、同 DID fanout 和文档契约。发现并修复：delegated local view 补 `validate_auth_scheme`；增加 key 不在 DID Document `authentication` 的拒绝测试；补 delegated send 测试；确认运行时授权输入只来自请求 proof、当前 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。剩余风险：delegated `inbox.mark_read` MVP 明确不开放；撤销实时性依赖 DID Document `authentication` 更新和 message-service DID Document cache/refresh；workspace clippy 被无关 `im-group` 测试 lint 阻塞。 | `cd message-service && cargo test -p im-direct -- --nocapture`：40 passed；`cd message-service && cargo test -p im-storage -- --nocapture`：6 passed，Postgres integration helper 因未设置 `MESSAGE_SERVICE_STORAGE_TEST_DATABASE_URL` 打印 skipped；`cd message-service && cargo test -p im-runtime notify_agent_delivers_to_all_matching_sessions -- --nocapture`：1 passed；`cd message-service && cargo test --workspace`：208 passed，doc tests 0；`cd message-service && cargo clippy -p im-direct --all-targets -- -D warnings`：通过；`cd message-service && cargo clippy -p im-storage --all-targets -- -D warnings`：通过；`cd message-service && cargo clippy --workspace --all-targets -- -D warnings`：失败，既有无关 `crates/im-group/src/handlers.rs:6746` `await_holding_lock`；`cd message-service && git diff --check`：通过。 | 启动 Step 08：APP action schema 与可见性 |
 | 08 | done | `feature/release-0526/agent-im-hutong` | 2026-06-09T18:28:37Z | 2026-06-09T19:08:53Z | `awiki-cli-rs2` `8c9e128 awiki-deamon: add app action schemas`；`awiki-me` `3841b76 awiki-me: add app action payload models`；相关设计收口 `awiki-cli-rs2` `f1d3cb5 docs: align message authorization boundary` | 2026-06-09 Review：检查 APP action schema、runtime token scope、no-side-effect RPC 路径、payload filter、未知 `awiki.*` 可见性、联系人写确认、E2EE/private material 拒绝和文档授权边界。发现并修复：`foreground.rs` 测试需适配新的 `AppControlOutcome`；`app.action.request` 不能走无 outbox 副作用 RPC 路径，已改为必须经 `execute_runtime_rpc_request_with_outbox`；Flutter test 产生的 Android registrant 无关 churn 已恢复；两篇设计文档继续收紧 message-service MVP 授权源为 DID proof + 当前 DID Document `authentication`。剩余风险：APP 侧当前落地为 domain model/reducer、payload hiding 和 confirmation state，尚未实现完整用户确认 UI / 自动化策略面板，按 MVP 后 UI 工作记录。 | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1`：lib 93 passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 23 + 2；doc tests 0 passed；0 failed。定向：`app_bridge` 15 passed；`action` 4 app action tests passed；`user_delegated` 11 passed；`app_action_request` 2 passed；`app_capabilities_and_action_result` 1 passed。`cd awiki-me && flutter analyze`：No issues found；`cd awiki-me && flutter test`：272 passed；targeted im-core mapper tests 20 passed；`git diff --check`：相关仓通过；旧命名/设备化 key/registry 残留检查通过。 | 启动 Step 09：系统测试与集成收口 |
-| 09 | pending | 待执行者填写 | - | - | - | - | - | 等 Step 01-08 完成后启动 |
+| 09 | done | `feature/release-0526/agent-im-hutong` | 2026-06-09T19:08:53Z | 2026-06-09T20:36:30Z | `agent-im: finalize system integration`；最终短 hash 以提交后 `git rev-parse --short HEAD` 为准 | 全局 Review：Step 01-08 均已 done 且有 commit/验证证据；确认 `awiki-system-test` 当前入口为 `uv run awiki-system-test`；发现并修复 DID Document 追加 `#daemon-key-1` 后 proof 失效、老 CLI / group-e2ee struct literal 缺少 optional 默认值、远端 mock DID 断言不再适配本地生成 key-bound DID、两篇设计文档和 Plan 中 message-service 授权源 / daemon key fragment / user-service public method 边界残留。剩余风险已记录：MVP 明文 bootstrap、daemon subkey 仍沿用现有 secret 存储、E2EE Agent 处理不进入 MVP、mail service remote skip HTTP 502、撤销实时性依赖 DID Document 刷新。 | `cd user-service && uv run pytest tests/app/did -v`：32 passed；`cd awiki-cli-rs2 && cargo test -p im-core --locked`：269 lib tests passed，integration/doc tests passed；`cargo test -p awiki-cli --locked`：awiki-cli 全量测试通过；`cargo build --bin awiki-cli --offline`：通过；`cargo test -p awiki-deamon --locked -j1`：93 lib passed，integration tests 21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 23 + 2，doc tests 0；`cargo +stable test -p im-core --lib ... --features group-e2ee --locked`：1 passed；`cargo test -p im-core-dart --locked`：6 unit + 13 facade passed；`scripts/flutter/codegen-check.sh`：Done；`packages/awiki_im_core && flutter test`：12 passed；`cd message-service && cargo test --workspace`：25 + 27 + 10 + 9 + 40 + 52 + 16 + 22 + 1 + 6 passed，doc tests 0；`cd awiki-me && flutter analyze`：No issues found；`cd awiki-me && flutter test`：272 passed；remote system test：185 passed, 16 skipped；naming check / `git diff --check`：通过。 | 已完成；提交后核对所有仓库状态 |
 
 ## 8. Codex Goal 执行协议
 
@@ -302,6 +302,10 @@ Harness：`awiki-harness`
 | 2026-06-09 | Step 05 Review 后补齐 delegated inbox 本地运行边界 | 实现 Review 发现 daemon 生产 adapter 需要把 bootstrap `private_key_multibase` 标准化为 im-core 可解析 PEM，DID shadow 需要随当前 identity 刷新，runtime status/final 需要进入 APP 可消费 outbox 且不能保存 final 明文。该变更不改变 APP-Daemon 普通消息通道和 user-service public registration 边界。 | Step 05、08、09 | 是 |
 | 2026-06-09 | Step 06 扩展为跨 `awiki-me` 与 `awiki-cli-rs2` identity registration 收口 | Step 06 实现 Review 发现 `awiki-me` 当前 `IdentityCorePort` / `AwikiImCoreIdentityAdapter` 只能调用 `awiki_im_core.registerHandle*`，底层 im-core identity registration 尚未生成、保存或暴露 `#daemon-key-1` private package，也未把 daemon public registration 注入注册 DID Document。不能在 APP 层伪造 key package；需要先由 im-core DID 创建路径本地生成 daemon subkey、写入 DID Document authentication、保存 private package，并以 optional API 暴露给 awiki-me bootstrap。 | Step 02、06、09 | 是 |
 | 2026-06-09 | Step 07 收口为 DID Document authentication 授权源 | Step 07 实现和设计文档 Review 后确认：message-service MVP 运行时授权输入只来自请求 proof、当前 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。delegated `inbox.mark_read` 不进入 MVP。 | Step 07、09 | 是 |
+| 2026-06-09 | Step 09 系统测试命令按 `awiki-system-test` 当前入口校准 | `awiki-system-test` README 和 `uv run awiki-system-test --help` 显示当前入口为 `uv run awiki-system-test`，没有 `manage_local_test_env.py run-tests --domain` 参数。remote `awiki.info` 通过 `AWIKI_SYSTEM_TEST_MODE=remote` 与默认 `E2E_DID_DOMAIN=awiki.info` / URL fallback 控制。 | Step 09 | 是 |
+| 2026-06-09 | Step 09 增加 `awiki-cli` optional 字段兼容修复 | remote system test 构建 `awiki-cli` 时发现 Step 02 新增的 `delegated_signing`、`inbox_history_options` 和 realtime wire `auth` optional 字段没有在老 CLI struct literal 中显式填默认值，导致 `cargo build --bin awiki-cli --offline` 失败。修复方式是老调用显式传 `None`，保持新增字段 optional 且不改变老行为。 | Step 02、09 | 是 |
+| 2026-06-09 | Step 09 修复 DID Document proof 重新签名 | 最终集成 Review 发现 im-core 在生成并签名 DID Document 后再追加 `#daemon-key-1` 会导致 W3C proof 失效。修复为 APP 本地追加 daemon public verification method 后，继续使用 `#key-1` 对更新后的 DID Document 重新签名，并保留原 proof options。 | Step 01、02、06、09 | 是 |
+| 2026-06-09 | Step 09 清理最终设计文档残留 | 用户要求两篇设计文档继续去掉 message-service 依赖 user-service 运行时授权来源、设备化 daemon key fragment 示例、以及 user-service 默认生成/登记的模糊表述。最终统一为 APP 本地生成 private/public key package，user-service 只登记 public verification method，message-service 只校验 DID proof 与 DID Document `authentication`。 | Step 09 | 是 |
 
 ## 16. 风险与回滚
 
@@ -316,13 +320,46 @@ Harness：`awiki-harness`
 
 ## 17. 最终全局 Review 与整体验证
 
-- 触发条件：所有步骤完成、Review、验证并提交后执行。
-- Review 范围：`awiki-cli-rs2`、`awiki-me`、`user-service`、`message-service`、`awiki-system-test` 的全部相关变更，公开契约、测试、文档、执行台账、遗留风险和工作区状态。
+- 触发条件：Step 01-08 已完成、Review、验证并提交；Step 09 已完成最终本地验证和 remote `awiki.info` 系统测试。
+- Review 范围：`awiki-cli-rs2`、`awiki-me`、`user-service`、`message-service`、`awiki-system-test` 的相关变更，公开契约、测试、文档、执行台账、遗留风险和工作区状态。
 - 重点关注：跨步骤一致性、回归风险、兼容性、安全/隐私、文档漂移、未提交变更、每个步骤 Review 发现是否已解决或记录。
-- 整体验证命令 / 检查：按第 11 节执行；系统测试必须使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `awiki.info`。
-- Review 发现：待 Step 09 填写。
-- 已修复问题：待 Step 09 填写。
-- 剩余风险：待 Step 09 填写。
-- 最终证据：待 Step 09 填写实际命令、通过/失败/跳过数量、失败或跳过原因和关键环境配置。
-- 最终 `git status`：待 Step 09 填写。
-- 如果本阶段修改文件：记录 Review、验证和最终集成 commit。
+- Review 发现：
+  - im-core 注册路径先生成/签名 DID Document，再追加 `#daemon-key-1` 到 `verificationMethod` / `authentication`，会导致提交给 user-service 的 DID Document W3C proof 失效。
+  - Step 02 新增 optional 字段后，`awiki-cli` 老调用和 group-e2ee feature-gated 测试 struct literal 仍缺少显式默认值。
+  - awiki-cli 身份 live/mock contract 仍假设远端返回固定 `e1_remote` DID，但当前正确行为是持久化 APP 本地生成的 key-bound DID。
+  - 两篇设计文档仍有少量容易误读为 message-service 依赖 user-service 运行时授权状态、设备化 daemon key fragment 或 user-service 生成 daemon key 的残留措辞。
+- 已修复问题：
+  - `crates/im-core/src/internal/identity_daemon_subkey.rs` 新增 DID Document 重新签名逻辑，保留原 proof options，并补单元测试和 integration proof 验证。
+  - `crates/im-core/src/internal/identity_registration_runtime.rs` 在 daemon public method 写入 DID Document 后重新签名，保证注册提交的 DID Document proof 有效。
+  - 老 CLI / feature-gated group-e2ee struct literal 显式填入 `delegated_signing: None`、`inbox_history_options: None`、`auth: None`，保持 optional 字段兼容。
+  - 身份 contract 测试改为断言持久化本地生成的 key-bound DID，并校验发送给 user-service 的 DID Document id 与本地身份一致。
+  - `agent_im_core_design.md`、`agent_delegated_identity_message_proof_plan.md`、Plan / Step 文档统一：APP 本地生成 private/public key package；user-service 只登记 public verification method；message-service MVP 只以 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定授权；daemon key fragment 固定 `#daemon-key-1`。
+- 剩余风险：
+  - MVP 仍通过普通消息明文 JSON bootstrap 传递 `#daemon-key-1` private package；后续必须在同一普通消息发送路径上升级为加密文本或加密 JSON envelope。
+  - daemon delegated subkey 本地存储暂沿用现有 daemon secret 存储方式；secure key store / OS keychain / KMS 是后续版本。
+  - `user_did#daemon-key-1` 仍位于 DID Document `authentication`，外部验证方可能把它当作完整用户 authentication key；MVP 通过本域普通消息 scope、E2EE deny、审计和撤销边界缓解。
+  - MVP 不处理 E2EE 明文、摘要、metadata 或 private state；Daemon 收到 E2EE opaque notification 只能丢弃或标记不可处理。
+  - remote system test 中 mail local 相关 4 项因 `awiki-mail-service /mail/health` HTTP 502 跳过；该 skip 不属于 Agent IM 本次验收面，但已记录。
+  - 撤销实时性仍依赖 DID Document `authentication` 更新和 message-service DID Document 重新解析/刷新。
+- 最终证据：
+  - `cd user-service && uv run pytest tests/app/did -v`：32 passed。执行前发现 `.venv/bin/pytest` shebang 指向旧工作区路径，已通过 `uv sync --all-groups --reinstall-package pytest` 修复本地虚拟环境入口；修复后原命令通过。
+  - `cd awiki-cli-rs2 && cargo test -p im-core --locked`：269 lib tests passed；所有 integration/doc tests passed。
+  - `cd awiki-cli-rs2 && cargo test -p awiki-cli --locked`：awiki-cli 全量测试通过。
+  - `cd awiki-cli-rs2 && cargo build --bin awiki-cli --offline`：通过。
+  - `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1`：93 lib passed；integration tests passed：21、22、5、19 passed / 3 ignored、15、3、23、2；doc tests 0。
+  - `cd awiki-cli-rs2 && cargo +stable test -p im-core --lib internal::group_e2ee::incoming::tests::realtime_notification_projection_redacts_attachment_manifest_secrets --features group-e2ee --locked`：1 passed。
+  - `cd awiki-cli-rs2 && cargo test -p im-core-dart --locked`：6 unit + 13 facade passed；doc tests 0。
+  - `cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh`：Done。
+  - `cd awiki-cli-rs2/packages/awiki_im_core && flutter test`：12 passed。
+  - `cd message-service && cargo test --workspace`：crate tests 25 + 27 + 10 + 9 + 40 + 52 + 16 + 22 + 1 + 6 passed；doc tests 0。
+  - `cd awiki-me && flutter analyze`：No issues found；`cd awiki-me && flutter test`：272 passed。
+  - `cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info E2E_USER_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 uv run awiki-system-test --show-command`：实际底层命令 `pytest tests_v2 -q -rs`；185 passed, 16 skipped in 232.63s。
+  - skip 原因：Rust store contract 目标已移除 1；local tests_v2 topology 相关 4；daemon rust contract selector 未设置 `AWIKI_DAEMON_RUST_REPO` 3；mail health HTTP 502 4；group E2EE flag-off guard 1；multi-tenant 额外环境变量未设置 3；message direct local topology 1。
+  - 文档 / 命名检查：旧收件箱授权命名族、设备化 daemon key fragment、user-service 运行时授权来源残留检查无命中；`cd awiki-cli-rs2 && git diff --check` 通过。
+- 最终 `git status`：
+  - `awiki-cli-rs2`：Step 09 代码修复与文档证据已纳入 `agent-im: finalize system integration`；最终短 hash 以提交后 `git rev-parse --short HEAD` 为准，工作区需保持 clean。
+  - `user-service`：clean，ahead 1。
+  - `message-service`：clean，ahead 1。
+  - `awiki-me`：clean，ahead 3；`flutter test` 产生的 Android generated registrant churn 已恢复。
+  - `awiki-system-test`：clean。
+- 本阶段修改文件：已创建 Step 09 最终集成 commit `agent-im: finalize system integration`；提交后以 `git status --short --branch` 和 `git rev-parse --short HEAD` 核对，最终响应记录实际短 hash。

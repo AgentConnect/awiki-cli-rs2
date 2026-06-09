@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：09  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 完成跨仓库端到端验证、remote 系统测试、全局 Review 和台账收口 |
+| Status | done |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T19:08:53Z |
+| Completed | 2026-06-09T20:36:30Z |
+| Commit | `agent-im: finalize system integration`；最终短 hash 以提交后 `git rev-parse --short HEAD` 为准 |
+| Review evidence | readiness Review：Step 01-08 均已 done 且有 commit/验证证据；`awiki-system-test` 当前入口是 `uv run awiki-system-test`，remote 域名通过 `AWIKI_SYSTEM_TEST_MODE=remote` / `E2E_DID_DOMAIN=awiki.info` 控制。最终全局 Review 发现并修复：DID Document 写入 `#daemon-key-1` 后 W3C proof 失效、老 CLI 和 group-e2ee feature-gated struct literal 缺少 optional 默认值、awiki-cli identity contract 仍断言远端固定 DID、设计文档中 message-service 授权源 / daemon key fragment / user-service public method 边界残留。 |
+| Verification evidence | `user-service` DID tests 32 passed；`im-core` 269 lib tests + integration/doc tests passed；`awiki-cli` 全量测试通过；`awiki-cli` offline build 通过；`awiki-deamon` 93 lib passed + integration suites passed；`group-e2ee` feature targeted test 1 passed；`im-core-dart` 6 unit + 13 facade passed；Dart codegen Done；`awiki_im_core` Flutter tests 12 passed；`message-service` workspace tests passed；`awiki-me` analyze clean + 272 tests passed；remote `awiki.info` system test 185 passed / 16 skipped；naming check 和 `git diff --check` 通过。 |
+| Next action | 已完成；提交后核对所有仓库状态 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -77,14 +77,14 @@ Step index：09
 
 ## 7. 验收标准
 
-- [ ] Step 01-08 的执行状态均为 `done`，commit hash 和验证证据完整。
-- [ ] 所有相关仓库最终 unit/integration 验证完成，无法运行的命令记录原因和替代证据。
-- [ ] remote `awiki.info` 系统测试执行并记录实际命令。
-- [ ] 系统测试记录通过/失败/跳过数量、失败或跳过原因、关键环境配置。
-- [ ] 全局 Review 没有未处理 P0/P1 问题；剩余风险已记录。
-- [ ] 错误命名检查通过，不出现新增旧候选 naming family，所有新增收件箱授权命名保持 `inbox_*`。
-- [ ] 最终 `git status --short --branch` 已记录。
-- [ ] 如果本步骤修改测试或文档，已经创建聚焦最终集成 commit。
+- [x] Step 01-08 的执行状态均为 `done`，commit hash 和验证证据完整。
+- [x] 所有相关仓库最终 unit/integration 验证完成，无法运行的命令记录原因和替代证据。
+- [x] remote `awiki.info` 系统测试执行并记录实际命令。
+- [x] 系统测试记录通过/失败/跳过数量、失败或跳过原因、关键环境配置。
+- [x] 全局 Review 没有未处理 P0/P1 问题；剩余风险已记录。
+- [x] 错误命名检查通过，不出现新增旧候选 naming family，所有新增收件箱授权命名保持 `inbox_*`。
+- [x] 最终 `git status --short --branch` 已记录。
+- [x] 如果本步骤修改测试或文档，已经创建聚焦最终集成 commit。
 
 ## 8. 验证方式
 
@@ -94,7 +94,7 @@ Step index：09
 | awiki-cli-rs2 | `cd awiki-cli-rs2 && cargo test -p im-core --locked && cargo test -p awiki-deamon --locked` | 记录通过/失败/跳过数量或 Rust test summary。 |
 | awiki-me | `cd awiki-me && flutter analyze && flutter test` | analyze clean，tests 通过。 |
 | message-service | `cd message-service && cargo test --workspace` | workspace tests 通过；如运行 clippy 也记录。 |
-| system remote | `cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote uv run python manage_local_test_env.py run-tests --domain awiki.info` | 实际命令、通过/失败/跳过数量、失败或跳过原因、关键环境配置。 |
+| system remote | `cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info E2E_USER_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 uv run awiki-system-test --show-command` | 实际命令、通过/失败/跳过数量、失败或跳过原因、关键环境配置。当前 `awiki-system-test` 入口没有 `--domain` 参数，remote `awiki.info` 通过环境变量控制。 |
 | naming | `PATTERN="$(printf '%s|%s|%s|%s|%s|%s' 'message_''owner|message_''auth' 'Message''Access' 'Scoped''Message' 'mailbox_''owner' 'Scoped''Mailbox' 'Scoped''MailboxToken')" && rg -n "$PATTERN" awiki-cli-rs2/docs/agent-im/plan awiki-cli-rs2/docs/agent-im/*.md` | 不出现错误命名残留；若检查命令本身被命中，需调整为脚本变量形式。 |
 | final status | 对每个相关仓库运行 `git status --short --branch` | 没有遗漏未提交完成工作；允许用户既有无关变更但必须记录。 |
 
@@ -108,11 +108,11 @@ Step index：09
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 发现 4 类集成问题 | DID Document proof 在 daemon key 写入后失效；老 CLI / group-e2ee struct literal 缺少新增 optional 字段默认值；身份 contract 仍断言远端 mock DID；设计文档仍有 message-service 授权源、daemon key fragment、user-service public method 边界残留。 |
+| 已修复问题 | 已修复并验证 | im-core 对更新后的 DID Document 重新签名并补 proof 测试；老调用显式传 `None` 保持 optional 兼容；identity tests 改为断言本地生成 key-bound DID；两篇设计文档和 Plan 统一授权/命名/所有权边界。 |
+| 剩余风险 | 已记录，无未处理 P0/P1 | MVP 明文 bootstrap；daemon subkey 本地存储安全升级后置；`#daemon-key-1` 仍是 DID authentication key；E2EE Agent 处理不进入 MVP；remote mail health HTTP 502 skip；撤销实时性依赖 DID Document 刷新。 |
+| 新增或缺失测试 | 已补充必要测试 | 新增 DID proof 重新签名单元测试和 registration integration proof 校验；补老 CLI / feature-gated 编译覆盖；未新增 awiki-system-test 用例，使用当前 remote 全量套件作为系统证据。 |
+| 已更新或缺失文档 | 已更新 | 主 Plan 第 7、15、17 节、本 Step、Step 02/04 小 Plan、两篇设计文档已更新；最终集成提交为 `agent-im: finalize system integration`，实际短 hash 在提交后由 `git rev-parse --short HEAD` 核对。 |
 
 ## 10. Commit 要求
 
@@ -136,9 +136,13 @@ Step index：09
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-09 | 创建 Step 09 小 Plan | 初始计划拆分 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | 校准 remote 系统测试入口 | `awiki-system-test` README 和 `uv run awiki-system-test --help` 显示当前入口为 `uv run awiki-system-test`，没有 `manage_local_test_env.py run-tests --domain` 参数；remote `awiki.info` 通过环境变量控制。 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | 增加 `awiki-cli` optional 字段兼容修复 | remote system test 构建 `awiki-cli` 时发现 Step 02 新增 optional 字段没有在老 CLI struct literal 中显式填默认值，导致 `cargo build --bin awiki-cli --offline` 失败；修复为显式 `None` 默认值，保持老调用行为不变。 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | 修复 DID Document proof 重新签名 | 最终集成 Review 发现 im-core 在签名 DID Document 后追加 `#daemon-key-1` 会导致 W3C proof 失效；改为追加 daemon public method 后用 `#key-1` 重新签名。 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | 完成 remote `awiki.info` 系统测试和最终文档收口 | 按 AGENTS 和主 Plan 要求执行 remote system test，记录实际命令、通过/跳过数量、skip 原因、剩余风险和最终状态。 | [../plan.md#17-最终全局-review-与整体验证](../plan.md#17-最终全局-review-与整体验证) |
 
 ## 13. 风险、回滚与后续文档
 
-- 风险：系统测试环境不稳定导致无法证明端到端完成。
-- 回滚 / 回退：保留各仓库 unit/integration 证据，但主 Plan 不标记最终完成；等待 remote 环境恢复后重跑。
-- 后续文档：最终更新主 Plan 第 17 节，必要时在相关仓库 changelog/PR notes 记录 rollout、迁移和已知限制。
+- 风险：MVP 明文 bootstrap 和 daemon subkey 现有 secret 存储方式仍是已接受安全债；remote system test 中 mail local 相关 4 项因 `awiki-mail-service /mail/health` HTTP 502 跳过；撤销实时性依赖 DID Document 刷新。
+- 回滚 / 回退：如 Step 09 集成修复回滚，需要同时回滚 DID Document 重新签名测试、老 CLI optional 默认值修复和 identity contract 期望；若 remote 环境异常，保留当前 185 passed / 16 skipped 证据并重跑。
+- 后续文档：后续版本需单独设计普通消息 body 加密、secure key store、E2EE Agent participant / explicit forward、Agent DID delegation / ANP delegated proof。

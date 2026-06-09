@@ -641,7 +641,7 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
     let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
 
-    let register = awiki_cmd_with_env(
+    let register = success_json(&awiki_cmd_with_env(
         &[
             "id",
             "register",
@@ -654,8 +654,15 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
         ],
         workspace.path(),
         &[],
+    ));
+    let registered_did = register["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered identity did")
+        .to_string();
+    assert!(
+        registered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "registration should persist the locally generated key-bound DID: {registered_did}"
     );
-    assert_code(&register, 0);
 
     let replace = success_json(&awiki_cmd_with_env(
         &[
@@ -679,7 +686,7 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
     assert_eq!(plan["action"], "replace_did");
     assert_eq!(plan["dangerous"], true);
     assert_eq!(plan["identity"]["local_alias"], "alice");
-    assert_eq!(plan["identity"]["did"], "did:wba:awiki.ai:alice:e1_remote");
+    assert_eq!(plan["identity"]["did"], registered_did);
     assert_eq!(plan["backup_plan"]["required"], true);
     assert!(plan["backup_plan"]["backup_path_preview"]
         .as_str()
@@ -687,12 +694,9 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
         .contains(".legacy-backup/replace-did/<timestamp>-alice-"));
     assert_eq!(
         plan["backup_plan"]["manifest_preview"]["old_did"],
-        "did:wba:awiki.ai:alice:e1_remote"
+        registered_did
     );
-    assert_eq!(
-        plan["local_rebind_plan"]["old_owner_did"],
-        "did:wba:awiki.ai:alice:e1_remote"
-    );
+    assert_eq!(plan["local_rebind_plan"]["old_owner_did"], registered_did);
     assert_eq!(plan["local_rebind_plan"]["dry_run_only"], true);
     assert_eq!(
         plan["remote_replace_did_call_preview"]["method"],

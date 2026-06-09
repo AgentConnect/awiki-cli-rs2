@@ -202,6 +202,7 @@ pub fn build_bridge_rpc_call(
                 &wire_identity(record),
                 InboxWireRequest {
                     limit: int_value(params.get("limit")),
+                    auth: None,
                 },
             ),
             Vec::new(),
@@ -215,6 +216,7 @@ pub fn build_bridge_rpc_call(
                     limit: int_value(params.get("limit")),
                     cursor: optional_string_value(params.get("cursor")),
                     skip: int_value(params.get("skip")),
+                    auth: None,
                 },
             )?,
             Vec::new(),

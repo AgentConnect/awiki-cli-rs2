@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anp::authentication::verification_methods::extract_public_key;
+use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use im_core::prelude::*;
 use serde_json::{json, Value};
 
@@ -293,6 +295,26 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
         .unwrap()
         .iter()
         .any(|item| item.as_str() == Some(package.verification_method.as_str())));
+
+    let proof_method = did_document["proof"]["verificationMethod"]
+        .as_str()
+        .expect("did document proof verification method");
+    assert_eq!(proof_method, format!("{}#key-1", package.user_did.as_str()));
+    let proof_public_key = did_document["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(proof_method))
+        .and_then(|item| extract_public_key(item).ok())
+        .expect("proof public key");
+    assert!(
+        verify_w3c_proof(
+            did_document,
+            &proof_public_key,
+            ProofVerificationOptions::default()
+        ),
+        "DID Document proof must remain valid after APP-side daemon subkey registration"
+    );
 }
 
 #[tokio::test]

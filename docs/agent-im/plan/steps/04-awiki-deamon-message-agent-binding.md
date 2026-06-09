@@ -59,7 +59,7 @@ Step index：04
 
 ## 6. 依赖
 
-- 前置步骤：Step 03 完成 bootstrap state；Step 01 key registry 契约用于字段命名；Step 02 optional API 为后续 runtime 能力服务。
+- 前置步骤：Step 03 完成 bootstrap state；Step 01 DID Document public method 契约用于字段命名；Step 02 optional API 为后续 runtime 能力服务。
 - 外部文档或决策：`agent_im_core_design.md` 第 3.1.3、5.1、5.2、5.3；`agent_delegated_identity_message_proof_plan.md` 第 5.5、10.2、11.1。
 - 环境前提：现有 Hermes runtime 创建测试可运行。
 

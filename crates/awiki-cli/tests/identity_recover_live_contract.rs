@@ -219,7 +219,14 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     register_alice(workspace.path());
     let old = read_stored_identity(workspace.path(), "alice");
     let old_dir_name = old.index["dir_name"].as_str().unwrap().to_string();
-    assert_eq!(old.index["did"], "did:wba:awiki.ai:alice:e1_remote");
+    let old_did = old.index["did"]
+        .as_str()
+        .expect("old identity did")
+        .to_string();
+    assert!(
+        old_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "registration should persist the locally generated key-bound DID: {old_did}"
+    );
 
     let output = awiki_cmd(
         &[
@@ -245,10 +252,7 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     assert_eq!(envelope["data"]["full_handle"], "alice.awiki.ai");
     assert_eq!(envelope["data"]["final_identity_name"], "alice");
     assert_eq!(envelope["data"]["archived_identities"], json!(["alice"]));
-    assert_eq!(
-        envelope["data"]["archived_dids"],
-        json!(["did:wba:awiki.ai:alice:e1_remote"])
-    );
+    assert_eq!(envelope["data"]["archived_dids"], json!([old_did]));
     assert!(envelope["data"].get("temp_identity_name").is_none());
     assert!(envelope["data"].get("active_before").is_none());
     assert!(envelope["data"].get("old_dids").is_none());

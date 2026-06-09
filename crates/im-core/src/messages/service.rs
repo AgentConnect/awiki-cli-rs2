@@ -1554,6 +1554,7 @@ mod group_e2ee_public_send_tests {
                     idempotency_key: Some("op-public-group-e2ee".to_owned()),
                     wait_for_final_acceptance: true,
                 },
+                delegated_signing: None,
             })
             .unwrap();
 
@@ -1628,6 +1629,7 @@ mod group_e2ee_public_send_tests {
                 crate::ids::MessageId::parse("msg-public-group-e2ee-sync").unwrap(),
             ),
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
         });
 
         assert!(matches!(
@@ -1686,6 +1688,7 @@ mod group_e2ee_public_send_tests {
                     idempotency_key: Some("op-public-group-e2ee-async".to_owned()),
                     wait_for_final_acceptance: true,
                 },
+                delegated_signing: None,
             })
             .await
             .unwrap();
@@ -1738,6 +1741,7 @@ mod group_e2ee_public_send_tests {
             security: crate::messages::MessageSecurityMode::GroupE2ee,
             client_message_id: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
         });
 
         assert!(matches!(

@@ -13,7 +13,7 @@ Step index：02
 | Started | 2026-06-09T10:39:30Z |
 | Completed | 2026-06-09T12:28:11Z |
 | Commit | `f0a5389 im-core: add delegated inbox signing options` |
-| Review evidence | 2026-06-09 Review：检查 optional 参数兼容、ANP proof keyid / target DID、owner/key 本地校验、Dart binding 同步、delegated E2EE 边界、错误命名残留和两篇设计文档边界。发现并修复 4 项：`history.rs` delegated auth 被 move 后又借用的编译风险；delegated inbox/history local proof target 原先缺少配置化 service DID；delegated group history 会静默忽略 `InboxHistoryOptions` 并进入 group/E2EE projection 路径；Plan/设计文档中 user-service registry / device key / 默认生成措辞残留。 |
+| Review evidence | 2026-06-09 Review：检查 optional 参数兼容、ANP proof keyid / target DID、owner/key 本地校验、Dart binding 同步、delegated E2EE 边界、错误命名残留和两篇设计文档边界。发现并修复 4 项：`history.rs` delegated auth 被 move 后又借用的编译风险；delegated inbox/history local proof target 原先缺少配置化 service DID；delegated group history 会静默忽略 `InboxHistoryOptions` 并进入 group/E2EE projection 路径；Plan/设计文档中 user-service public method 管理、daemon key fragment 固定值和私钥所有权边界残留。 |
 | Verification evidence | `cd awiki-cli-rs2 && cargo test -p im-core --locked`：267 lib tests passed，所有 integration/doc tests passed；`cd awiki-cli-rs2 && cargo test -p im-core-dart --locked`：6 unit + 13 facade + 0 doc tests passed；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh`：Done；`cd awiki-cli-rs2/packages/awiki_im_core && flutter test`：12 tests passed；`cd awiki-cli-rs2 && git diff --check`：通过；Step 02 naming check 和设计残留检查：无命中。 |
 | Next action | 创建 Step 02 聚焦 commit；随后从 Step 03 继续 |
 

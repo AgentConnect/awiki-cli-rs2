@@ -2025,6 +2025,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 idempotency_key: Some("op-client-e2ee".to_owned()),
                 wait_for_final_acceptance: true,
             },
+            delegated_signing: None,
         }
     }
 
@@ -2051,6 +2052,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 idempotency_key: Some("op-client-e2ee-attachment".to_owned()),
                 wait_for_final_acceptance: true,
             },
+            delegated_signing: None,
         }
     }
 

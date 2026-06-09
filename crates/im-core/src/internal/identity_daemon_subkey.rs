@@ -1,3 +1,7 @@
+use anp::proof::{
+    generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_EDDSA_JCS_2022,
+    PROOF_TYPE_DATA_INTEGRITY,
+};
 use serde_json::{json, Value};
 
 pub(crate) const DAEMON_SUBKEY_FRAGMENT: &str = "daemon-key-1";
@@ -82,6 +86,30 @@ pub(crate) fn apply_to_did_document(
     Ok(())
 }
 
+pub(crate) fn resign_did_document_with_key1(
+    did_document: &mut Value,
+    did: &crate::ids::Did,
+    key1_private_pem: &str,
+) -> crate::ImResult<()> {
+    let private_key = anp::PrivateKeyMaterial::from_pem(key1_private_pem).map_err(|err| {
+        crate::ImError::Serialization {
+            detail: format!("load DID Document signing key: {err}"),
+        }
+    })?;
+    let options = proof_generation_options_from_document(did_document);
+    let signed = generate_w3c_proof(
+        did_document,
+        &private_key,
+        &format!("{}#key-1", did.as_str()),
+        options,
+    )
+    .map_err(|err| crate::ImError::Serialization {
+        detail: format!("resign DID Document proof after daemon subkey registration: {err}"),
+    })?;
+    *did_document = signed;
+    Ok(())
+}
+
 pub(crate) fn package_from_parts(
     user_did: crate::ids::Did,
     verification_method: String,
@@ -104,9 +132,43 @@ fn ed25519_public_key_to_multibase(key: &ed25519_dalek::VerifyingKey) -> String 
     format!("z{}", bs58::encode(bytes).into_string())
 }
 
+fn proof_generation_options_from_document(did_document: &Value) -> ProofGenerationOptions {
+    let proof = did_document.get("proof");
+    ProofGenerationOptions {
+        proof_purpose: proof
+            .and_then(|value| value.get("proofPurpose"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("assertionMethod".to_owned())),
+        proof_type: proof
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| Some(PROOF_TYPE_DATA_INTEGRITY.to_owned())),
+        cryptosuite: proof
+            .and_then(|value| value.get("cryptosuite"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| Some(CRYPTOSUITE_EDDSA_JCS_2022.to_owned())),
+        created: proof
+            .and_then(|value| value.get("created"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        domain: proof
+            .and_then(|value| value.get("domain"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        challenge: proof
+            .and_then(|value| value.get("challenge"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
     use serde_json::json;
 
     #[test]
@@ -137,5 +199,49 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with('z'));
+    }
+
+    #[test]
+    fn resign_did_document_after_daemon_key_keeps_w3c_proof_valid() {
+        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
+            "awiki.test",
+            ["alice"],
+            None,
+            None,
+        )
+        .unwrap();
+        let mut document = generated.did_document.clone();
+        let original_proof = document["proof"].clone();
+        let signing_key = anp::PrivateKeyMaterial::from_pem(&generated.key1_private_pem).unwrap();
+        assert!(verify_w3c_proof(
+            &document,
+            &signing_key.public_key(),
+            ProofVerificationOptions::default()
+        ));
+
+        let subkey = generate_for_did(&generated.did);
+        apply_to_did_document(&mut document, &generated.did, &subkey).unwrap();
+        assert!(!verify_w3c_proof(
+            &document,
+            &signing_key.public_key(),
+            ProofVerificationOptions::default()
+        ));
+
+        resign_did_document_with_key1(&mut document, &generated.did, &generated.key1_private_pem)
+            .unwrap();
+
+        assert_eq!(document["proof"]["created"], original_proof["created"]);
+        assert_eq!(document["proof"]["domain"], original_proof["domain"]);
+        assert_eq!(document["proof"]["challenge"], original_proof["challenge"]);
+        assert!(verify_w3c_proof(
+            &document,
+            &signing_key.public_key(),
+            ProofVerificationOptions::default()
+        ));
+        assert!(document["authentication"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some(subkey.verification_method.as_str())));
     }
 }

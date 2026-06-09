@@ -36,6 +36,7 @@ pub fn send_message_request(
             security,
             client_message_id: None,
             delivery: MessageDeliveryOptions::default(),
+            delegated_signing: None,
         },
         warnings,
     ))
@@ -136,6 +137,7 @@ pub fn inbox_query(command: &ParsedCommand) -> Result<InboxQuery, ExitError> {
         limit: page_limit(command, "limit", 20)?,
         cursor: optional_cursor(command)?,
         unread_only: bool_flag(command, "unread"),
+        inbox_history_options: None,
     })
 }
 
@@ -170,6 +172,7 @@ pub fn history_request(
         HistoryQuery {
             limit: page_limit(command, "limit", 50)?,
             cursor: optional_cursor(command)?,
+            inbox_history_options: None,
         },
     ))
 }

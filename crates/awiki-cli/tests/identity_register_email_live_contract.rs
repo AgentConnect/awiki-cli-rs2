@@ -113,9 +113,13 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(envelope["data"]["verification_state"], "completed");
     assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
     assert_eq!(envelope["data"]["identity"]["handle"], "alice");
-    assert_eq!(
-        envelope["data"]["identity"]["did"],
-        "did:wba:awiki.ai:alice:e1_remote"
+    let registered_did = envelope["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered identity did")
+        .to_string();
+    assert!(
+        registered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "registration should persist the locally generated key-bound DID: {registered_did}"
     );
     assert!(envelope["data"]["identity"]["has_jwt"]
         .as_bool()
@@ -142,17 +146,16 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(body["params"]["invite_code"], "invite-1");
     assert!(body["params"].get("phone").is_none());
     assert!(body["params"].get("otp_code").is_none());
-    assert!(body["params"]["did_document"]["id"]
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("did:wba:awiki.ai:alice:"));
+    assert_eq!(body["params"]["did_document"]["id"], registered_did);
 
     let stored = read_stored_identity(workspace.path(), "alice");
     assert_eq!(stored.index["handle"], "alice");
     assert_eq!(stored.index["full_handle"], "alice.awiki.ai");
+    assert_eq!(stored.index["did"], registered_did);
     assert_eq!(stored.index["user_id"], "user-alice");
     assert_eq!(stored.identity["handle"], "alice");
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
+    assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
     assert_eq!(stored.auth["jwt_token"], "jwt-register");
 }

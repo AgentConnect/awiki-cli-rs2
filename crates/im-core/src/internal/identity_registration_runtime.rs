@@ -151,6 +151,11 @@ where
             &generated.did,
             &daemon_subkey,
         )?;
+        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+            &mut generated.did_document,
+            &generated.did,
+            &generated.key1_private_pem,
+        )?;
         let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_parts(
             generated.did.clone(),
             daemon_subkey.verification_method,
@@ -367,6 +372,11 @@ where
             &mut generated.did_document,
             &generated.did,
             &daemon_subkey,
+        )?;
+        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+            &mut generated.did_document,
+            &generated.did,
+            &generated.key1_private_pem,
         )?;
         let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_parts(
             generated.did.clone(),

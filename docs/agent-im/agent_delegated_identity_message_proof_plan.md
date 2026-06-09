@@ -118,7 +118,7 @@ MVP 服务器必须支持 user_did#daemon-key-1 直接证明接收权限；
 也可以由该子 key 换取 scoped inbox token 作为中期优化。
 ```
 
-原因是 ANP Direct Base 主要定义 direct.send / direct.incoming 的消息语义；history pull、read status、device sync、agent internal synchronization 不属于基础跨域互操作范围。MVP 的产品目标要求 Daemon 能离线代收普通消息，因此 message-service 必须能用 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 校验 `user_did#daemon-key-1`，并允许它读取普通非 E2EE inbox/history。user-service 在 MVP 中只负责把 APP 本地生成 key package 导出的 public verification method 写入、移除或替换到 DID Document；message-service 的 MVP 运行时授权输入固定为请求 proof 和解析到的 DID Document，只校验 verification method 是否存在并位于 `authentication`、`keyid` DID 是否等于 `inbox_owner_did` / `meta.sender_did`，以及请求是否为普通非 E2EE scope。撤销对 message-service 的生效只通过 DID Document `authentication` 更新和 DID Document 重新解析/刷新体现。scoped inbox token 可以减少每次拉取的 DID proof 成本，但不是 MVP 接收能力的唯一表达。
+原因是 ANP Direct Base 主要定义 direct.send / direct.incoming 的消息语义；history pull、read status、device sync、agent internal synchronization 不属于基础跨域互操作范围。MVP 的产品目标要求 Daemon 能离线代收普通消息，因此 message-service 必须能用 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 校验 `user_did#daemon-key-1`，并允许它读取普通非 E2EE inbox/history。user-service 在 MVP 中只负责把 APP 本地生成 key package 导出的 public verification method 写入、移除或替换到 DID Document；message-service 的 MVP 授权来源固定为请求 proof 和解析到的 DID Document。message-service 只校验 verification method 是否存在并位于 `authentication`、`keyid` DID 是否等于 `inbox_owner_did` / `meta.sender_did`，以及请求是否为普通非 E2EE scope。撤销对 message-service 的生效只通过 DID Document `authentication` 更新和 DID Document 重新解析/刷新体现。scoped inbox token 可以减少每次拉取的 DID proof 成本，但不是 MVP 接收能力的唯一表达。
 
 ### 3.4 MVP 不支持 E2EE 交给 Agent
 
@@ -578,7 +578,7 @@ MVP 撤销必须包含两层：
    - 发布新 DID Document。
 
 2. 服务端本域层：
-   - user-service 的 MVP 职责是更新 DID Document，并确保 DID Document `authentication` 不再包含该 key；可选管理侧记录只服务 user-service 自身排障和追溯，不作为 message-service 运行时授权输入；
+   - user-service 的 MVP 职责是更新 DID Document，并确保 DID Document `authentication` 不再包含该 key；可选写入审计只服务 user-service 自身排障和追溯，不作为 message-service 运行时授权输入；
    - message-service 通过 DID Document 重新解析/刷新感知撤销；
    - MVP 后如果启用 scoped inbox token，message-service 还需要撤销相关 token；
    - Daemon 下次请求收到 `unauthorized` 后删除本地 key。
@@ -895,7 +895,7 @@ security.policy.update
 - 创建后返回的 DID Document 必须已经包含 user_did#daemon-key-1 authentication relationship。
 - MVP 通过普通消息发送明文 JSON bootstrap，把既有子私钥传给 Daemon，记录后续普通消息 body 加密为安全债。
 - Daemon 使用该 key 签 ANP origin_proof。
-- user-service 负责 DID Document public verification method 写入 / revoke；message-service MVP 授权输入固定为请求 proof 和当前解析到的 DID Document，只校验 DID proof、DID Document authentication、key owner 一致性和普通消息 scope。
+- user-service 只负责 DID Document public verification method 写入 / revoke；message-service MVP 授权输入固定为请求 proof 和当前解析到的 DID Document，只校验 DID proof、DID Document authentication、key owner 一致性和普通消息 scope。
 - Daemon 使用该 key 发送和接收普通非 E2EE 消息。
 
 阶段 2：MVP 后安全与性能增强
@@ -1151,12 +1151,12 @@ Scope 对应关系：
    - 创建用户 DID Document 时接收 APP 提交的 `#daemon-key-1` public verification method；该 public verification method 由 APP 本地 key package 导出，user-service 只负责把它写入 DID Document `verificationMethod` 与 `authentication`；
    - user-service 不生成 daemon subkey，不接触 daemon subkey private material，不保存 daemon subkey private package；
    - 撤销 `#daemon-key-1` public verification method；
-   - 按 DID Document 返回当前存在且在 `authentication` 中的 daemon public verification method；该返回只服务 APP / 管理侧查询，不构成 message-service 运行时授权依赖。
+   - APP / 管理侧如需展示当前 daemon public verification method，应读取当前 DID Document 中的 `verificationMethod` / `authentication`；该信息不构成 message-service 运行时授权的独立接口。
 
 2. DID Document 写入审计 API（MVP 后可选，非运行时授权输入）
    - 可记录 `user_did#daemon-key-1` public verification method 的写入、撤销、轮换和审计信息；
    - 该审计记录只服务 user-service 自身排障和追溯；
-   - message-service MVP 请求授权只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope，不查询该审计记录；
+   - message-service MVP 请求授权只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；该审计记录不参与授权判定；
    - 后续如需 scoped inbox token，签发方、缓存和撤销传播需要另行设计，不能改变 MVP 只校验 DID Document `authentication` 的授权边界；
    - MVP 后再根据 Agent DID delegation 签发 delegated inbox token。
 

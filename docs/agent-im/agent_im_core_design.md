@@ -167,7 +167,7 @@ MVP 的身份构建结论改为：
 4. Daemon 用该子私钥代表用户处理普通非 E2EE 消息的发送、接收、同步和 Agent 管理。
 5. Daemon 不持有用户主私钥，不持有 direct/group E2EE 私有会话状态。
 
-命名和所有权约束必须保持一致：MVP 只允许 `#daemon-key-1`，不得出现任何包含设备、安装环境、时间戳或用户可识别信息的 daemon key fragment；不得再使用设备化、环境化、通配形式或设备占位符形式的 daemon key 示例。涉及 daemon key 所有权的表述必须统一写成“APP 本地生成 private/public key package，user-service 只登记 APP 提交的 public verification method”。message-service MVP 授权输入固定为请求 proof 和当前解析到的 DID Document；只校验 verification method 是否存在并位于 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。运行时 key 有效性只以当前 DID Document `authentication` 为准。
+命名和所有权约束必须保持一致：MVP 只允许 `#daemon-key-1`，不得出现任何包含设备、安装环境、时间戳或用户可识别信息的 daemon key fragment；不得再使用设备化、环境化、通配形式或设备占位符形式的 daemon key 示例。涉及 daemon key 所有权的表述必须统一写成“APP 本地生成 private/public key package，user-service 只登记 APP 提交的 public verification method”。message-service MVP 授权来源只固定为请求 proof 和当前解析到的 DID Document；只校验 verification method 是否存在并位于 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。运行时 key 有效性只以当前 DID Document `authentication` 为准。
 
 这个方案仍有风险：`user_did#daemon-key-1` 在 DID Document 的 `authentication` 中，远端验证方会把它当作用户 DID 的合法认证 key。第一个版本接受这个风险，但必须把 key 命名、审计、撤销、过期、message-service 本地普通消息 scope / rate limit / audit policy 和 E2EE 禁止边界写进 MVP gate。
 
@@ -1170,7 +1170,7 @@ Direct / Group E2EE 服务侧继续只处理 opaque cipher 和 metadata，不解
 
 ### 5.4.2 增加 user delegated inbox 能力
 
-MVP 需要 message-service 支持 daemon 使用 `user_did#daemon-key-1` 拉取和发送普通非 E2EE 消息。MVP 授权输入固定为请求内 DID proof 和解析出的 DID Document；校验点固定为 verification method 是否存在并位于 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。key 是否有效只以 DID Document `authentication` 为准，撤销对 message-service 的生效通过 DID Document `authentication` 更新和 DID Document 刷新体现。MVP 运行时授权边界到此为止；后续如需更细的本域用户级策略，可以单独设计，例如：
+MVP 需要 message-service 支持 daemon 使用 `user_did#daemon-key-1` 拉取和发送普通非 E2EE 消息。MVP 授权来源固定为请求内 DID proof 和解析出的 DID Document；校验点固定为 verification method 是否存在并位于 DID Document `authentication`、key owner 一致性和普通非 E2EE scope。key 是否有效只以 DID Document `authentication` 为准，撤销对 message-service 的生效通过 DID Document `authentication` 更新和 DID Document 刷新体现。MVP 运行时授权边界到此为止；后续如需更细的本域用户级策略，可以单独设计，例如：
 
 ```text
 agent_message_visibility_policy
@@ -1292,17 +1292,17 @@ E2EE profiles 是否公开，仍应跟随 message-service 的 discovery security
 
 ## 5.6 `user-service` 改造方案
 
-MVP 需要把 user-service 纳入范围，但它的职责只在用户 DID Document 管理侧：APP 本地生成 `user_did#daemon-key-1` private/public key package，并只把导出的 public verification method 提交给 user-service；user-service 只把这个 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不会创建任何 daemon subkey private/public key package，也不接触 daemon subkey private material。message-service 的 MVP 请求授权只读取 DID Document 并校验 `authentication`；user-service 管理侧记录不作为运行时授权来源：
+MVP 需要把 user-service 纳入范围，但职责仅限用户 DID Document 管理：APP 本地生成 `user_did#daemon-key-1` private/public key package，并只把导出的 public verification method 提交给 user-service；user-service 只登记这个 public verification method，把它写入 DID Document 的 `verificationMethod` 与 `authentication`，不会创建任何 daemon subkey private/public key package，也不接触 daemon subkey private material。message-service 的 MVP 授权来源只有 DID proof 与当前 DID Document `authentication`：
 
 1. DID Document key management API：
    - 创建用户 DID Document 时接收 APP 提交的 `user_did#daemon-key-1` public verification method；该 public verification method 由 APP 本地生成的 key package 导出，user-service 只负责把 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`；
    - user-service 不生成 daemon subkey，不接触 daemon subkey private material，不保存 daemon subkey private package；
    - 从 `authentication` 移除或撤销 `user_did#daemon-key-1`；
-   - 按 DID Document 返回当前存在且在 `authentication` 中的 daemon public verification method；该返回只服务 APP / 管理侧查询，不构成 message-service 运行时授权依赖。
+   - APP / 管理侧如需展示当前 daemon public verification method，应读取当前 DID Document 中的 `verificationMethod` / `authentication`；该信息不构成 message-service 运行时授权的独立接口。
 2. DID Document 写入审计记录（MVP 后可选，非运行时授权输入）：
    - 可记录 APP 提交的 public verification method 写入、撤销、轮换和 DID Document 管理侧审计；
    - 可标记该 key 是 daemon delegated subkey，不是用户主 key；
-   - 该记录只服务 user-service 自身排障和追溯，不参与 message-service MVP 运行时授权；message-service MVP 授权来源固定为 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
+   - 该记录只服务 user-service 自身排障和追溯，不参与 message-service MVP 运行时授权；MVP 授权来源固定为 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 3. inbox authorization：
    - message-service MVP 只基于请求内 DID proof、当前 DID Document `authentication`、key owner 一致性和普通非 E2EE scope 做运行时授权；
    - 撤销只通过 DID Document `authentication` 更新体现；
