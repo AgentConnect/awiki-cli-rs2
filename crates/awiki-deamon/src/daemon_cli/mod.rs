@@ -559,6 +559,15 @@ mod tests {
                 }]
             }))
         }
+
+        fn archive_agent(
+            &self,
+            _daemon_agent_did: &str,
+            _agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({ "archived": [] }))
+        }
     }
 
     fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {

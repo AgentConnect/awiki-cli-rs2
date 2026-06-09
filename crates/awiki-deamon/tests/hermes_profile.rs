@@ -117,6 +117,15 @@ impl AgentInventoryClient for MockRegistrationClient {
     ) -> anyhow::Result<serde_json::Value> {
         anyhow::bail!("update_latest_status is not used in hermes profile tests")
     }
+
+    fn archive_agent(
+        &self,
+        _daemon_agent_did: &str,
+        _agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({ "archived": [] }))
+    }
 }
 
 fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {

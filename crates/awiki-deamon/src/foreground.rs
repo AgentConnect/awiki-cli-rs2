@@ -2144,8 +2144,8 @@ mod tests {
     use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
     use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
     use crate::registration::{
-        AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
-        AgentRegistrationExchangeResult, AgentLatestStatusUpdateItem, DidAuthMaterial,
+        AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
+        AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, DidAuthMaterial,
         RegistrationToken,
     };
     use crate::runtime::RuntimeAgentProfile;
@@ -2209,6 +2209,15 @@ mod tests {
             _auth: &DidAuthMaterial,
         ) -> Result<Value> {
             anyhow::bail!("update_latest_status is not used in foreground command tests")
+        }
+
+        fn archive_agent(
+            &self,
+            _daemon_agent_did: &str,
+            _agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({ "archived": [] }))
         }
     }
 

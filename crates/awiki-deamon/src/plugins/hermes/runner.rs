@@ -134,15 +134,14 @@ where
                     .state
                     .as_ref()
                     .expect("state checked above for Hermes session recovery");
-                let session =
-                    reset_and_create_persisted_session(
-                        state,
-                        &runner,
-                        &self.profile,
-                        &route,
-                        &context.task.controller_did,
-                    )
-                        .context("recover missing Hermes session")?;
+                let session = reset_and_create_persisted_session(
+                    state,
+                    &runner,
+                    &self.profile,
+                    &route,
+                    &context.task.controller_did,
+                )
+                .context("recover missing Hermes session")?;
                 runner
                     .submit_prompt(&session, request)
                     .context("submit Hermes prompt after session recovery")?

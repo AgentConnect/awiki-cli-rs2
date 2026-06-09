@@ -721,8 +721,7 @@ mod tests {
 
     const TEST_CONTROLLER_USER_ID: &str = "user-alice";
     const TEST_CONTROLLER_FULL_HANDLE: &str = "alice.anpclaw.com";
-    const TEST_CONTROLLER_SCOPE_KEY: &str =
-        "controller-scope:v1:test-alice-anpclaw-com";
+    const TEST_CONTROLLER_SCOPE_KEY: &str = "controller-scope:v1:test-alice-anpclaw-com";
 
     fn daemon() -> AgentDefinition {
         AgentDefinition {

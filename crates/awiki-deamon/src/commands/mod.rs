@@ -36,6 +36,8 @@ const RUNTIME_SESSION_RESET: &str = "runtime.session.reset";
 const RUNTIME_RUN_RETRY: &str = "runtime.run.retry";
 const DAEMON_UPGRADE: &str = "daemon.upgrade";
 const RUNTIME_AGENT_REBUILD: &str = "runtime.agent.rebuild";
+const DAEMON_DELETE: &str = "daemon.delete";
+const RUNTIME_AGENT_DELETE: &str = "runtime.agent.delete";
 const RUNTIME_INBOX_QUERY: &str = "runtime.inbox.query";
 const RUNTIME_INBOX_THREAD_QUERY: &str = "runtime.inbox.thread.query";
 const STATUS_QUERY_MIN_INTERVAL_MS: i64 = 10_000;
@@ -292,6 +294,34 @@ where
                 command_id: envelope.command_id,
             })
         }
+        DAEMON_DELETE => {
+            handle_daemon_delete(
+                config,
+                outbox,
+                state,
+                registration_client,
+                &daemon_agent,
+                &message,
+                &envelope,
+            )?;
+            Ok(AgentCommandOutcome::StatusReported {
+                command_id: envelope.command_id,
+            })
+        }
+        RUNTIME_AGENT_DELETE => {
+            handle_runtime_agent_delete(
+                config,
+                outbox,
+                state,
+                registration_client,
+                &daemon_agent,
+                &message,
+                &envelope,
+            )?;
+            Ok(AgentCommandOutcome::StatusReported {
+                command_id: envelope.command_id,
+            })
+        }
         other => {
             send_command_status(
                 outbox,
@@ -346,8 +376,10 @@ where
     if exchange.did != identity.did {
         bail!("registration token exchange returned a different DID");
     }
-    let exchange_scope_key =
-        controller_scope_key(&exchange.controller_user_id, &exchange.controller_full_handle)?;
+    let exchange_scope_key = controller_scope_key(
+        &exchange.controller_user_id,
+        &exchange.controller_full_handle,
+    )?;
     state.store_agent_identity(&identity.into_record(handle.clone(), AgentKind::Daemon))?;
     let (local_agent_db_path, message_db_path) = agent_data_paths(&exchange.did)?;
     let definition = AgentDefinition {
@@ -1176,6 +1208,216 @@ where
             }),
         ),
     }
+}
+
+fn handle_runtime_agent_delete<C, O>(
+    config: &DaemonConfig,
+    outbox: &O,
+    state: &DaemonState,
+    registration_client: &C,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    payload: &AgentCommandEnvelope,
+) -> Result<()>
+where
+    C: AgentInventoryClient,
+    O: AgentManagementOutbox,
+{
+    let runtime_agent_did = required_arg_string(&payload.args, "runtime_agent_did")?;
+    let runtime_agent = match load_owned_runtime_agent(state, daemon_agent, &runtime_agent_did) {
+        Ok(runtime_agent) => runtime_agent,
+        Err(_) => {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("runtime agent does not belong to this daemon".to_string()),
+                json!({
+                    "command": RUNTIME_AGENT_DELETE,
+                    "runtime_agent_did": runtime_agent_did,
+                    "daemon_agent_did": daemon_agent.agent_did,
+                    "error_code": "runtime_not_owned",
+                }),
+            );
+        }
+    };
+    send_command_status(
+        outbox,
+        daemon_agent,
+        message,
+        &payload.command_id,
+        "archiving",
+        Some("runtime agent archive started".to_string()),
+        json!({
+            "command": RUNTIME_AGENT_DELETE,
+            "runtime_agent_did": runtime_agent.agent_did,
+            "daemon_agent_did": daemon_agent.agent_did,
+        }),
+    )?;
+    let result =
+        crate::archive::archive_runtime_agent(config, state, &runtime_agent).and_then(|report| {
+            archive_agent_remote(
+                registration_client,
+                config,
+                state,
+                daemon_agent,
+                &runtime_agent.agent_did,
+            )
+            .map(|_| report)
+        });
+    match result {
+        Ok(report) => send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "archived",
+            Some("runtime agent archived".to_string()),
+            json!({
+                "command": RUNTIME_AGENT_DELETE,
+                "runtime_agent_did": runtime_agent.agent_did,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "archive_id": report.archive_id,
+                "moved_path_count": report.moved_paths.len(),
+                "skipped_path_count": report.skipped_paths.len(),
+            }),
+        ),
+        Err(error) => send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("runtime agent archive failed".to_string()),
+            json!({
+                "command": RUNTIME_AGENT_DELETE,
+                "runtime_agent_did": runtime_agent.agent_did,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "error_code": "archive_failed",
+                "last_error_summary": sanitize_public_error(&error.to_string()),
+            }),
+        ),
+    }
+}
+
+fn handle_daemon_delete<C, O>(
+    config: &DaemonConfig,
+    outbox: &O,
+    state: &DaemonState,
+    registration_client: &C,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    payload: &AgentCommandEnvelope,
+) -> Result<()>
+where
+    C: AgentInventoryClient,
+    O: AgentManagementOutbox,
+{
+    let target_daemon = optional_arg_string(&payload.args, "daemon_agent_did")
+        .or_else(|| optional_arg_string(&payload.args, "target_daemon_agent_did"));
+    if target_daemon
+        .as_deref()
+        .is_some_and(|target| target != daemon_agent.agent_did)
+    {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("daemon.delete can only target this daemon".to_string()),
+            json!({
+                "command": DAEMON_DELETE,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "error_code": "daemon_target_mismatch",
+            }),
+        );
+    }
+    send_command_status(
+        outbox,
+        daemon_agent,
+        message,
+        &payload.command_id,
+        "archiving",
+        Some("daemon archive started".to_string()),
+        json!({
+            "command": DAEMON_DELETE,
+            "daemon_agent_did": daemon_agent.agent_did,
+        }),
+    )?;
+    let runtimes = state.list_runtime_agent_definitions_for_daemon(&daemon_agent.agent_did)?;
+    let result = crate::archive::prepare_daemon_archive(config, state, daemon_agent, &runtimes)
+        .and_then(|report| {
+            archive_agent_remote(
+                registration_client,
+                config,
+                state,
+                daemon_agent,
+                &daemon_agent.agent_did,
+            )
+            .map(|_| report)
+        });
+    match result {
+        Ok(mut report) => {
+            send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "archived",
+                Some("daemon archived".to_string()),
+                json!({
+                    "command": DAEMON_DELETE,
+                    "daemon_agent_did": daemon_agent.agent_did,
+                    "archive_id": report.archive_id,
+                    "runtime_agent_count": runtimes.len(),
+                }),
+            )?;
+            crate::archive::schedule_daemon_archive_finalizer(
+                config.clone(),
+                report.archive_id.clone(),
+                std::time::Duration::from_millis(1500),
+            )?;
+            report.finalizer_scheduled = true;
+            Ok(())
+        }
+        Err(error) => send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("daemon archive failed".to_string()),
+            json!({
+                "command": DAEMON_DELETE,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "error_code": "archive_failed",
+                "last_error_summary": sanitize_public_error(&error.to_string()),
+            }),
+        ),
+    }
+}
+
+fn archive_agent_remote<C>(
+    registration_client: &C,
+    config: &DaemonConfig,
+    state: &DaemonState,
+    daemon_agent: &AgentDefinition,
+    agent_did: &str,
+) -> Result<Value>
+where
+    C: AgentInventoryClient,
+{
+    let auth_paths =
+        crate::im_core_adapter::agent_identity_auth_paths(config, &daemon_agent.agent_did);
+    let auth = DidAuthMaterial {
+        did_document_path: auth_paths.0,
+        private_key_path: auth_paths.1,
+        bearer_token: state.load_agent_auth_token(&daemon_agent.agent_did)?,
+    };
+    registration_client.archive_agent(&daemon_agent.agent_did, agent_did, &auth)
 }
 
 fn service_label(platform: crate::service::ServicePlatform) -> &'static str {

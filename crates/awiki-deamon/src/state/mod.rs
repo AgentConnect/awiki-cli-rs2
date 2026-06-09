@@ -85,7 +85,10 @@ impl CliDriverRunRecord {
             ("runtime_profile_id", self.runtime_profile_id.as_str()),
             ("driver_id", self.driver_id.as_str()),
             ("controller_user_id", self.controller_user_id.as_str()),
-            ("controller_full_handle", self.controller_full_handle.as_str()),
+            (
+                "controller_full_handle",
+                self.controller_full_handle.as_str(),
+            ),
             ("controller_scope_key", self.controller_scope_key.as_str()),
             ("controller_did", self.controller_did.as_str()),
             ("route_key", self.route_key.as_str()),
@@ -531,7 +534,10 @@ fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> 
     format!("hns_{:x}", digest)
 }
 
-pub fn controller_scope_key(controller_user_id: &str, controller_full_handle: &str) -> Result<String> {
+pub fn controller_scope_key(
+    controller_user_id: &str,
+    controller_full_handle: &str,
+) -> Result<String> {
     let controller_user_id = controller_user_id.trim();
     let controller_full_handle = controller_full_handle.trim().to_ascii_lowercase();
     if controller_user_id.is_empty() {
@@ -910,6 +916,97 @@ SET controller_did = ?1
 WHERE daemon_agent_did = ?2
 "#,
             rusqlite::params![controller_did, daemon_agent_did],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn mark_agent_archived(&self, agent_did: &str) -> Result<usize> {
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let now_ms = current_time_millis()?;
+        let now = now_ms.to_string();
+        let mut updated = 0usize;
+        updated += connection.execute(
+            r#"
+UPDATE agent_definition
+SET status = 'archived',
+    updated_at = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_profile
+SET status = 'archived',
+    updated_at = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE workspace_binding
+SET status = 'archived',
+    updated_at = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE cli_runtime_profile
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE runtime_profile_id IN (
+    SELECT runtime_profile_id
+    FROM agent_definition
+    WHERE agent_did = ?1
+      AND runtime_profile_id IS NOT NULL
+)
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE hermes_profiles
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+  AND status = 'active'
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_task
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+  AND status IN ('created', 'pending', 'running')
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![agent_did, now_ms],
         )?;
         Ok(updated)
     }
@@ -1514,10 +1611,8 @@ WHERE runtime_agent_did = ?1
         let Some(binding) = self.load_runtime_daemon_binding(runtime_agent_did)? else {
             return Ok(false);
         };
-        Ok(
-            binding.daemon_agent_did == daemon_agent_did
-                && binding.controller_scope_key == controller_scope_key,
-        )
+        Ok(binding.daemon_agent_did == daemon_agent_did
+            && binding.controller_scope_key == controller_scope_key)
     }
 
     pub fn store_runtime_agent_create_request(
@@ -3352,7 +3447,11 @@ fn migrate_runtime_final_plain_delivery_v15(connection: &Connection) -> Result<(
 
 fn migrate_controller_scope_v16(connection: &Connection) -> Result<()> {
     for (table, column, definition) in [
-        ("agent_definition", "controller_user_id", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "agent_definition",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
         (
             "agent_definition",
             "controller_full_handle",
@@ -3363,7 +3462,11 @@ fn migrate_controller_scope_v16(connection: &Connection) -> Result<()> {
             "controller_scope_key",
             "TEXT NOT NULL DEFAULT ''",
         ),
-        ("runtime_task", "controller_user_id", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "runtime_task",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
         (
             "runtime_task",
             "controller_full_handle",
@@ -3399,7 +3502,11 @@ fn migrate_controller_scope_v16(connection: &Connection) -> Result<()> {
             "controller_scope_key",
             "TEXT NOT NULL DEFAULT ''",
         ),
-        ("cli_driver_run", "controller_user_id", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "cli_driver_run",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
         (
             "cli_driver_run",
             "controller_full_handle",
@@ -4342,9 +4449,8 @@ mod tests {
 
         let now = current_time_millis().unwrap();
         let record = RuntimeFinalOutboxRecord {
-            idempotency_key:
-                "runtime-final:did:agent:hermes:run_1:controller-scope:v1:test-alice"
-                    .to_string(),
+            idempotency_key: "runtime-final:did:agent:hermes:run_1:controller-scope:v1:test-alice"
+                .to_string(),
             run_id: "run_1".to_string(),
             agent_did: "did:agent:hermes".to_string(),
             runtime_profile_id: "profile_hermes".to_string(),

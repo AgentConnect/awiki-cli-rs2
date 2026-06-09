@@ -95,6 +95,13 @@ pub trait AgentInventoryClient {
         statuses: Vec<AgentLatestStatusUpdateItem>,
         auth: &DidAuthMaterial,
     ) -> Result<Value>;
+
+    fn archive_agent(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value>;
 }
 
 #[derive(Clone)]
@@ -311,6 +318,45 @@ impl UserServiceAgentRegistrationClient {
             .context("read sync controller scope response")?;
         parse_json_rpc_result(&bytes, "agent inventory sync_controller_scope")
     }
+
+    pub async fn archive_agent_async(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "archive_agent",
+            "params": {
+                "daemon_agent_did": daemon_agent_did,
+                "agent_did": agent_did,
+            },
+            "id": 1
+        });
+        let body_bytes = body.to_string().into_bytes();
+        let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
+        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "call user-service agent inventory {}",
+                    self.inventory_rpc_url
+                )
+            })?
+            .error_for_status()
+            .context("user-service agent inventory HTTP error")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("read archive agent response")?;
+        parse_json_rpc_result(&bytes, "agent inventory archive_agent")
+    }
 }
 
 impl AgentRegistrationClient for UserServiceAgentRegistrationClient {
@@ -382,13 +428,39 @@ impl AgentInventoryClient for UserServiceAgentRegistrationClient {
             let auth = auth.clone();
             let join = std::thread::Builder::new()
                 .name("awiki-agent-scope-sync".to_string())
-                .spawn(move || client.sync_controller_scope_in_new_runtime(&daemon_agent_did, &auth))
+                .spawn(move || {
+                    client.sync_controller_scope_in_new_runtime(&daemon_agent_did, &auth)
+                })
                 .context("spawn scope sync RPC runtime thread")?;
             return join
                 .join()
                 .map_err(|_| anyhow::anyhow!("scope sync RPC runtime thread panicked"))?;
         }
         self.sync_controller_scope_in_new_runtime(daemon_agent_did, auth)
+    }
+
+    fn archive_agent(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let daemon_agent_did = daemon_agent_did.to_string();
+            let agent_did = agent_did.to_string();
+            let auth = auth.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-archive".to_string())
+                .spawn(move || {
+                    client.archive_agent_in_new_runtime(&daemon_agent_did, &agent_did, &auth)
+                })
+                .context("spawn archive agent RPC runtime thread")?;
+            return join
+                .join()
+                .map_err(|_| anyhow::anyhow!("archive agent RPC runtime thread panicked"))?;
+        }
+        self.archive_agent_in_new_runtime(daemon_agent_did, agent_did, auth)
     }
 }
 
@@ -438,6 +510,19 @@ impl UserServiceAgentRegistrationClient {
             .build()
             .context("create scope sync RPC runtime")?;
         runtime.block_on(self.sync_controller_scope_async(daemon_agent_did, auth))
+    }
+
+    fn archive_agent_in_new_runtime(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create archive agent RPC runtime")?;
+        runtime.block_on(self.archive_agent_async(daemon_agent_did, agent_did, auth))
     }
 }
 

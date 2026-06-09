@@ -21,6 +21,7 @@ pub enum ServiceAction {
     Start,
     Stop,
     Restart,
+    Uninstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +255,18 @@ pub(crate) mod macos {
                         .arg(&path),
                 )?;
             }
+            ServiceAction::Uninstall => {
+                let _ = run_status(
+                    std::process::Command::new("launchctl")
+                        .arg("bootout")
+                        .arg(&domain)
+                        .arg(&path),
+                )?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove LaunchAgent {}", path.display()))?;
+                }
+            }
             ServiceAction::Status => {}
         }
         let running = run_status(
@@ -346,6 +359,19 @@ WantedBy=default.target
             ServiceAction::Restart => {
                 let _ = run_status(
                     std::process::Command::new("systemctl").args(["--user", "restart", UNIT_NAME]),
+                )?;
+            }
+            ServiceAction::Uninstall => {
+                let _ = run_status(
+                    std::process::Command::new("systemctl")
+                        .args(["--user", "disable", "--now", UNIT_NAME]),
+                )?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove systemd unit {}", path.display()))?;
+                }
+                let _ = run_status(
+                    std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
                 )?;
             }
             ServiceAction::Status => {}

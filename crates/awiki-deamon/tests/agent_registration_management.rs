@@ -25,12 +25,17 @@ use serde_json::json;
 #[derive(Debug, Clone, Default)]
 struct MockRegistrationClient {
     requests: Arc<Mutex<Vec<AgentRegistrationExchangeRequest>>>,
+    archive_requests: Arc<Mutex<Vec<(String, String)>>>,
     fail_reason: Option<String>,
 }
 
 impl MockRegistrationClient {
     fn requests(&self) -> Vec<AgentRegistrationExchangeRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn archive_requests(&self) -> Vec<(String, String)> {
+        self.archive_requests.lock().unwrap().clone()
     }
 }
 
@@ -92,6 +97,19 @@ impl AgentInventoryClient for MockRegistrationClient {
         _auth: &DidAuthMaterial,
     ) -> anyhow::Result<serde_json::Value> {
         anyhow::bail!("update_latest_status is not used in agent registration management tests")
+    }
+
+    fn archive_agent(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.archive_requests
+            .lock()
+            .unwrap()
+            .push((daemon_agent_did.to_string(), agent_did.to_string()));
+        Ok(json!({ "archived": [] }))
     }
 }
 
@@ -658,8 +676,13 @@ fn runtime_session_reset_archives_active_hermes_route() {
         Some("dm:alice:hermes".to_string()),
         "conversation",
     );
-    let record =
-        HermesNativeSessionRecord::active(&route, "did:human:alice", "awiki_alice_hermes", "hsession-1").unwrap();
+    let record = HermesNativeSessionRecord::active(
+        &route,
+        "did:human:alice",
+        "awiki_alice_hermes",
+        "hsession-1",
+    )
+    .unwrap();
     state.store_hermes_native_session(&record).unwrap();
     assert!(state
         .load_active_hermes_session_by_route(&route)
@@ -1552,6 +1575,198 @@ fn runtime_inbox_query_rejects_unowned_runtime_without_reading_messages() {
     assert_eq!(
         statuses[0].payload["result"]["error_code"],
         "runtime_not_owned"
+    );
+}
+
+#[test]
+fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let created = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_for_delete".to_string(),
+                conversation_id: Some("conv_delete".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_for_delete",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-delete-runtime",
+                        "runtime": "hermes",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let runtime = state.load_agent_definition(&created.agent_did).unwrap();
+    let agent_db = config.state_root.join(&runtime.local_agent_db_path);
+    let message_db = config.state_root.join(&runtime.message_db_path);
+    std::fs::create_dir_all(agent_db.parent().unwrap()).unwrap();
+    std::fs::write(&agent_db, b"agent").unwrap();
+    std::fs::write(&message_db, b"message").unwrap();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_delete_runtime".to_string(),
+            conversation_id: Some("conv_delete".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_delete_runtime",
+                "command": "runtime.agent.delete",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": created.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        registration.archive_requests(),
+        vec![(daemon.agent_did.clone(), created.agent_did.clone())]
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(&created.agent_did)
+            .unwrap()
+            .status,
+        "archived"
+    );
+    assert!(!agent_db.exists());
+    assert!(!message_db.exists());
+    let archived = outbox.agent_statuses().last().unwrap().clone();
+    assert_eq!(archived.payload["state"], "archived");
+    assert_eq!(
+        archived.payload["result"]["command"],
+        "runtime.agent.delete"
+    );
+    assert_eq!(
+        archived.payload["result"]["runtime_agent_did"],
+        created.agent_did
+    );
+}
+
+#[test]
+fn daemon_delete_archives_daemon_family_and_reports_status() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let created = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_for_daemon_delete".to_string(),
+                conversation_id: Some("conv_daemon_delete".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_for_daemon_delete",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-daemon-delete-runtime",
+                        "runtime": "hermes",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_delete_daemon".to_string(),
+            conversation_id: Some("conv_daemon_delete".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_delete_daemon",
+                "command": "daemon.delete",
+                "target_agent_kind": "daemon",
+                "args": {
+                    "daemon_agent_did": daemon.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        registration.archive_requests(),
+        vec![(daemon.agent_did.clone(), daemon.agent_did.clone())]
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(&daemon.agent_did)
+            .unwrap()
+            .status,
+        "archived"
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(&created.agent_did)
+            .unwrap()
+            .status,
+        "archived"
+    );
+    let archived = outbox.agent_statuses().last().unwrap().clone();
+    assert_eq!(archived.payload["state"], "archived");
+    assert_eq!(archived.payload["result"]["command"], "daemon.delete");
+    assert_eq!(
+        archived.payload["result"]["daemon_agent_did"],
+        daemon.agent_did
     );
 }
 
