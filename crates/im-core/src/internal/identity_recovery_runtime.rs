@@ -446,6 +446,7 @@ fn save_recover_with_local_finalize_identity(
         key1_public_pem: generated.key1_public_pem.clone(),
         e2ee_signing_private_pem: generated.e2ee_signing_private_pem.clone(),
         e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem.clone(),
+        daemon_subkey_package: None,
         make_default: false,
     })?;
     let identity = crate::internal::identity_recovery_local::identity_summary_from_generated(
@@ -619,6 +620,7 @@ pub(crate) fn finalize_recover_handle_result(
             key1_public_pem: generated.key1_public_pem,
             e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
             e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            daemon_subkey_package: None,
             make_default: true,
         })?;
     let identity =

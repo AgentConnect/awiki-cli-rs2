@@ -133,6 +133,19 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final package = await _mapNativeErrors(
+      () => gen_identity_api.loadDaemonSubkeyPackage(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return package._toModel();
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
     String? localAlias,
     required String requestedHandle,
@@ -1109,6 +1122,17 @@ extension on gen_identity.DartDeleteLocalIdentityResult {
     wasDefault: wasDefault,
     nextDefault: nextDefault?._toModel(),
     warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartDaemonSubkeyPrivatePackage {
+  DaemonSubkeyPrivatePackage _toModel() => DaemonSubkeyPrivatePackage(
+    schema: schema,
+    userDid: userDid,
+    verificationMethod: verificationMethod,
+    keyType: keyType,
+    publicKeyMultibase: publicKeyMultibase,
+    privateKeyMultibase: privateKeyMultibase,
   );
 }
 

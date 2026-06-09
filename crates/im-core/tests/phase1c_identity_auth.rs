@@ -224,6 +224,78 @@ async fn register_handle_async_returns_identity_and_default_change() {
 }
 
 #[tokio::test]
+async fn register_handle_generates_and_saves_daemon_subkey_package() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "user_id": "user-daemon",
+        "handle": "daemon",
+        "full_handle": "daemon.awiki.test",
+        "access_token": "jwt-daemon"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
+
+    let result = core
+        .identities()
+        .register_handle_async(RegisterHandleRequest {
+            local_alias: Some("daemon".to_string()),
+            requested_handle: Handle::parse("daemon.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Daemon User".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .await
+        .unwrap();
+
+    let identity = result.identity.unwrap();
+    let package = core
+        .identities()
+        .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("daemon".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(package.schema, "awiki.daemon.user_subkey_package.v1");
+    assert_eq!(package.key_type, "Multikey/Ed25519");
+    assert_eq!(package.user_did, identity.did);
+    assert_eq!(
+        package.verification_method,
+        format!("{}#daemon-key-1", package.user_did.as_str())
+    );
+    assert!(package.public_key_multibase.starts_with('z'));
+    assert!(package
+        .private_key_multibase
+        .starts_with("-----BEGIN PRIVATE KEY-----"));
+
+    let requests = server.join();
+    let body = requests[0].json_body();
+    let did_document = &body["params"]["did_document"];
+    assert_eq!(did_document["id"].as_str(), Some(package.user_did.as_str()));
+    let method = did_document["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(package.verification_method.as_str()))
+        .expect("daemon verification method");
+    assert_eq!(method["type"].as_str(), Some("Multikey"));
+    assert_eq!(
+        method["controller"].as_str(),
+        Some(package.user_did.as_str())
+    );
+    assert_eq!(
+        method["publicKeyMultibase"].as_str(),
+        Some(package.public_key_multibase.as_str())
+    );
+    assert!(did_document["authentication"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
+}
+
+#[tokio::test]
 async fn recover_handle_async_without_otp_sends_recover_otp() {
     let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({ "sent": true }))]);
     let fixture = Fixture::new();

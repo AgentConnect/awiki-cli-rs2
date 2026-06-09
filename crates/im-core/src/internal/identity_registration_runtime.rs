@@ -137,12 +137,26 @@ where
         target: RegistrationTarget,
     ) -> crate::ImResult<IdentityRegistrationRuntimeResult> {
         let previous_default = self.core.identities().default_identity().ok().flatten();
-        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
-            &target.effective_domain,
-            [target.local_part.as_str()],
-            self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
-            self.core.inner().sdk_config().anp_service_did.as_ref(),
+        let mut generated =
+            crate::internal::identity_generation::generate_identity_with_path_segments(
+                &target.effective_domain,
+                [target.local_part.as_str()],
+                self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                self.core.inner().sdk_config().anp_service_did.as_ref(),
+            )?;
+        let daemon_subkey =
+            crate::internal::identity_daemon_subkey::generate_for_did(&generated.did);
+        crate::internal::identity_daemon_subkey::apply_to_did_document(
+            &mut generated.did_document,
+            &generated.did,
+            &daemon_subkey,
         )?;
+        let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_parts(
+            generated.did.clone(),
+            daemon_subkey.verification_method,
+            daemon_subkey.public_key_multibase,
+            daemon_subkey.private_key_pem,
+        );
         let call = crate::internal::identity_wire::recovery::build_register_rpc_call(
             crate::internal::identity_wire::RegisterRpcParams {
                 did_document: generated.did_document.clone(),
@@ -162,7 +176,7 @@ where
         )
         .save_identity(crate::internal::identity_store::SaveIdentityInput {
             local_alias,
-            did: did_from_raw(&raw).unwrap_or_else(|| generated.did.clone()),
+            did: generated.did.clone(),
             unique_id: generated.unique_id,
             user_id: string_value(&raw, "user_id", ""),
             display_name: request
@@ -178,6 +192,7 @@ where
             key1_public_pem: generated.key1_public_pem,
             e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
             e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            daemon_subkey_package: Some(daemon_subkey_package),
             make_default: request.make_default,
         })?;
         let identity = identity_summary_from_stored(&stored)?;
@@ -339,12 +354,26 @@ where
             .await
             .ok()
             .flatten();
-        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
-            &target.effective_domain,
-            [target.local_part.as_str()],
-            self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
-            self.core.inner().sdk_config().anp_service_did.as_ref(),
+        let mut generated =
+            crate::internal::identity_generation::generate_identity_with_path_segments(
+                &target.effective_domain,
+                [target.local_part.as_str()],
+                self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                self.core.inner().sdk_config().anp_service_did.as_ref(),
+            )?;
+        let daemon_subkey =
+            crate::internal::identity_daemon_subkey::generate_for_did(&generated.did);
+        crate::internal::identity_daemon_subkey::apply_to_did_document(
+            &mut generated.did_document,
+            &generated.did,
+            &daemon_subkey,
         )?;
+        let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_parts(
+            generated.did.clone(),
+            daemon_subkey.verification_method,
+            daemon_subkey.public_key_multibase,
+            daemon_subkey.private_key_pem,
+        );
         let call = crate::internal::identity_wire::recovery::build_register_rpc_call(
             crate::internal::identity_wire::RegisterRpcParams {
                 did_document: generated.did_document.clone(),
@@ -364,7 +393,7 @@ where
             self.core.inner().sdk_paths().identities.clone(),
             crate::internal::identity_store::SaveIdentityInput {
                 local_alias,
-                did: did_from_raw(&raw).unwrap_or_else(|| generated.did.clone()),
+                did: generated.did.clone(),
                 unique_id: generated.unique_id,
                 user_id: string_value(&raw, "user_id", ""),
                 display_name: request
@@ -380,6 +409,7 @@ where
                 key1_public_pem: generated.key1_public_pem,
                 e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
                 e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+                daemon_subkey_package: Some(daemon_subkey_package),
                 make_default: request.make_default,
             },
         )

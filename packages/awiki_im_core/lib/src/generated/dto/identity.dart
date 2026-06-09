@@ -8,6 +8,45 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'identity.freezed.dart';
 
+class DartDaemonSubkeyPrivatePackage {
+  final String schema;
+  final String userDid;
+  final String verificationMethod;
+  final String keyType;
+  final String publicKeyMultibase;
+  final String privateKeyMultibase;
+
+  const DartDaemonSubkeyPrivatePackage({
+    required this.schema,
+    required this.userDid,
+    required this.verificationMethod,
+    required this.keyType,
+    required this.publicKeyMultibase,
+    required this.privateKeyMultibase,
+  });
+
+  @override
+  int get hashCode =>
+      schema.hashCode ^
+      userDid.hashCode ^
+      verificationMethod.hashCode ^
+      keyType.hashCode ^
+      publicKeyMultibase.hashCode ^
+      privateKeyMultibase.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDaemonSubkeyPrivatePackage &&
+          runtimeType == other.runtimeType &&
+          schema == other.schema &&
+          userDid == other.userDid &&
+          verificationMethod == other.verificationMethod &&
+          keyType == other.keyType &&
+          publicKeyMultibase == other.publicKeyMultibase &&
+          privateKeyMultibase == other.privateKeyMultibase;
+}
+
 class DartDefaultIdentityChange {
   final DartIdentitySummary? previous;
   final DartIdentitySummary next;

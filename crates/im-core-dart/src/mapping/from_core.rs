@@ -13,8 +13,8 @@ use crate::dto::{
     },
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
     identity::{
-        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
-        DartIdentitySummary, DartRecoverHandleResult,
+        DartDaemonSubkeyPrivatePackage, DartDefaultIdentityChange, DartDeleteLocalIdentityResult,
+        DartHandleRegistrationResult, DartIdentitySummary, DartRecoverHandleResult,
     },
     message::{
         DartConversation, DartConversationPage, DartMarkReadResult, DartMessage,
@@ -216,6 +216,19 @@ impl From<im_core::identity::DeleteLocalIdentityResult> for DartDeleteLocalIdent
             was_default: value.was_default,
             next_default: value.next_default.map(Into::into),
             warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::DaemonSubkeyPrivatePackage> for DartDaemonSubkeyPrivatePackage {
+    fn from(value: im_core::identity::DaemonSubkeyPrivatePackage) -> Self {
+        Self {
+            schema: value.schema,
+            user_did: value.user_did.as_str().to_string(),
+            verification_method: value.verification_method,
+            key_type: value.key_type,
+            public_key_multibase: value.public_key_multibase,
+            private_key_multibase: value.private_key_multibase,
         }
     }
 }

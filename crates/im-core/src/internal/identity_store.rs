@@ -14,6 +14,8 @@ const KEY1_PRIVATE_FILE_NAME: &str = "key-1-private.pem";
 const KEY1_PUBLIC_FILE_NAME: &str = "key-1-public.pem";
 const E2EE_SIGNING_PRIVATE_FILE_NAME: &str = "e2ee-signing-private.pem";
 const E2EE_AGREEMENT_PRIVATE_FILE_NAME: &str = "e2ee-agreement-private.pem";
+const DAEMON_SUBKEY_PRIVATE_FILE_NAME: &str = "daemon-key-1-private.pem";
+const DAEMON_SUBKEY_PACKAGE_FILE_NAME: &str = "daemon-subkey-package.json";
 
 #[derive(Debug, Clone)]
 pub(crate) struct IdentityStore<'a> {
@@ -35,6 +37,7 @@ pub(crate) struct SaveIdentityInput {
     pub(crate) key1_public_pem: String,
     pub(crate) e2ee_signing_private_pem: String,
     pub(crate) e2ee_agreement_private_pem: String,
+    pub(crate) daemon_subkey_package: Option<crate::identity::DaemonSubkeyPrivatePackage>,
     pub(crate) make_default: bool,
 }
 
@@ -150,6 +153,19 @@ impl<'a> IdentityStore<'a> {
             &identity_dir.join(E2EE_AGREEMENT_PRIVATE_FILE_NAME),
             &input.e2ee_agreement_private_pem,
         )?;
+        if let Some(package) = &input.daemon_subkey_package {
+            if package.user_did != input.did {
+                return Err(crate::ImError::invalid_input(
+                    Some("daemon_subkey_package.user_did".to_string()),
+                    "daemon subkey package user_did must match identity did",
+                ));
+            }
+            write_secure_text_if_present(
+                &identity_dir.join(DAEMON_SUBKEY_PRIVATE_FILE_NAME),
+                &package.private_key_multibase,
+            )?;
+            write_secure_json(&identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME), package)?;
+        }
 
         if input.make_default || index.default_credential_name.is_empty() {
             index.default_credential_name = local_alias.clone();
@@ -200,6 +216,41 @@ impl<'a> IdentityStore<'a> {
     ) -> crate::ImResult<StoredIdentity> {
         crate::internal::runtime::worker::run_blocking(move || {
             IdentityStore::new(&paths).save_identity(input)
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })?
+    }
+
+    pub(crate) fn load_daemon_subkey_package(
+        &self,
+        identity_dir_name: &str,
+    ) -> crate::ImResult<crate::identity::DaemonSubkeyPrivatePackage> {
+        let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
+        let package_path = identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME);
+        match fs::read(&package_path) {
+            Ok(raw) => serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(crate::ImError::IdentityNotFound {
+                    selector: format!("daemon subkey package for {identity_dir_name}"),
+                })
+            }
+            Err(err) => Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "daemon_subkey_package".to_string(),
+                detail: err.to_string(),
+            }),
+        }
+    }
+
+    pub(crate) async fn load_daemon_subkey_package_async(
+        paths: crate::paths::IdentityRegistryPaths,
+        identity_dir_name: String,
+    ) -> crate::ImResult<crate::identity::DaemonSubkeyPrivatePackage> {
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityStore::new(&paths).load_daemon_subkey_package(&identity_dir_name)
         })
         .await
         .map_err(|err| crate::ImError::Internal {
@@ -651,6 +702,22 @@ fn derive_full_handle_from_did(handle: &str, did: &str) -> String {
         return String::new();
     };
     format!("{local_part}.{}", domain.trim().to_lowercase())
+}
+
+fn local_identity_dir(root: &Path, dir_name: &str) -> crate::ImResult<std::path::PathBuf> {
+    let relative = Path::new(dir_name);
+    if dir_name.trim().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("identity".to_string()),
+            "local identity directory name must be a simple relative path segment",
+        ));
+    }
+    Ok(root.join(relative))
 }
 
 fn preferred_dir_name(unique_id: &str) -> crate::ImResult<String> {

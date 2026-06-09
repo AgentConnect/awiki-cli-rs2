@@ -12,6 +12,7 @@ pub(crate) mod group_e2ee;
 pub(crate) mod group_runtime;
 pub(crate) mod http;
 pub(crate) mod identity_bind_runtime;
+pub(crate) mod identity_daemon_subkey;
 pub(crate) mod identity_document_cache;
 pub(crate) mod identity_generation;
 pub(crate) mod identity_recover_local_state;

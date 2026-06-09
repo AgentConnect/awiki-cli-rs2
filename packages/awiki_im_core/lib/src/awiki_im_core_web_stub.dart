@@ -32,6 +32,12 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<DaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
   Future<AwikiImClient> client(IdentitySelector selector) async {
     throw _unsupported();
   }

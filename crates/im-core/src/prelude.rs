@@ -35,11 +35,11 @@ pub use crate::groups::{
     GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use crate::identity::{
-    ContactBindingMethod, ContactBindingRequest, ContactBindingState, DefaultIdentityChange,
-    DeleteLocalIdentityResult, HandleRegistrationResult, HandleRegistrationState,
-    IdentityMissingItem, IdentityReadiness, IdentityRegistry, IdentitySelector, IdentityService,
-    IdentitySummary, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
-    RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
+    ContactBindingMethod, ContactBindingRequest, ContactBindingState, DaemonSubkeyPrivatePackage,
+    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
+    HandleRegistrationState, IdentityMissingItem, IdentityReadiness, IdentityRegistry,
+    IdentitySelector, IdentityService, IdentitySummary, InitialProfile, Profile, ProfileAttribute,
+    ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
     RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
     RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
 };

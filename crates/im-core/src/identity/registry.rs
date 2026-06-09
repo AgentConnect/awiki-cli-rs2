@@ -165,6 +165,43 @@ impl<'a> IdentityRegistry<'a> {
         self.resolve_from_snapshot(&registry, selector)
     }
 
+    pub fn load_daemon_subkey_package(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DaemonSubkeyPrivatePackage> {
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        let dir_name =
+            entry
+                .identity_dir_name()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_string(),
+                })?;
+        crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .load_daemon_subkey_package(&dir_name)
+    }
+
+    pub async fn load_daemon_subkey_package_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DaemonSubkeyPrivatePackage> {
+        let registry = self.load_registry_async().await?;
+        let entry = registry.find_entry(selector)?;
+        let dir_name =
+            entry
+                .identity_dir_name()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_string(),
+                })?;
+        crate::internal::identity_store::IdentityStore::load_daemon_subkey_package_async(
+            self.core.inner().sdk_paths().identities.clone(),
+            dir_name,
+        )
+        .await
+    }
+
     fn resolve_from_snapshot(
         &self,
         registry: &RegistrySnapshot,
@@ -627,6 +664,15 @@ impl RegistrySnapshot {
                     selector: handle.as_str().to_string(),
                 }),
         }
+    }
+
+    fn find_entry(&self, selector: super::IdentitySelector) -> crate::ImResult<&RegistryEntry> {
+        let index = self.find_index(selector)?;
+        self.entries
+            .get(index)
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: index.to_string(),
+            })
     }
 
     fn apply_default_flags(&mut self) {

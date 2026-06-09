@@ -28,6 +28,16 @@ pub struct DartInitialProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDaemonSubkeyPrivatePackage {
+    pub schema: String,
+    pub user_did: String,
+    pub verification_method: String,
+    pub key_type: String,
+    pub public_key_multibase: String,
+    pub private_key_multibase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDefaultIdentityChange {
     pub previous: Option<DartIdentitySummary>,
     pub next: DartIdentitySummary,

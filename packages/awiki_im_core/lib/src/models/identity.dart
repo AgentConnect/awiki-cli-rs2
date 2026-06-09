@@ -94,6 +94,24 @@ class DeleteLocalIdentityResult {
   final List<String> warnings;
 }
 
+class DaemonSubkeyPrivatePackage {
+  const DaemonSubkeyPrivatePackage({
+    required this.schema,
+    required this.userDid,
+    required this.verificationMethod,
+    required this.keyType,
+    required this.publicKeyMultibase,
+    required this.privateKeyMultibase,
+  });
+
+  final String schema;
+  final String userDid;
+  final String verificationMethod;
+  final String keyType;
+  final String publicKeyMultibase;
+  final String privateKeyMultibase;
+}
+
 class HandleRegistrationResult {
   const HandleRegistrationResult({
     this.identity,

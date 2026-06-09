@@ -34,6 +34,14 @@ Future<DartDeleteLocalIdentityResult> deleteLocalIdentity({
   selector: selector,
 );
 
+Future<DartDaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLoadDaemonSubkeyPackage(
+  core: core,
+  selector: selector,
+);
+
 Future<DartHandleRegistrationResult> registerHandleWithPhone({
   required ArcDartImCore core,
   String? localAlias,

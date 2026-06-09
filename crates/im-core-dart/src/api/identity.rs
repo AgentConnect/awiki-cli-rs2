@@ -3,8 +3,9 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     identity::{
-        DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentitySelector,
-        DartIdentitySummary, DartInitialProfile, DartRecoverHandleResult,
+        DartDaemonSubkeyPrivatePackage, DartDeleteLocalIdentityResult,
+        DartHandleRegistrationResult, DartIdentitySelector, DartIdentitySummary,
+        DartInitialProfile, DartRecoverHandleResult,
     },
 };
 
@@ -53,6 +54,19 @@ pub async fn delete_local_identity(
     inner
         .identities()
         .delete_local_identity_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn load_daemon_subkey_package(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartDaemonSubkeyPrivatePackage, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .load_daemon_subkey_package_async(selector.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

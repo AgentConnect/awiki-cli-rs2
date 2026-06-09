@@ -51,6 +51,16 @@ pub struct RegisterHandleRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonSubkeyPrivatePackage {
+    pub schema: String,
+    pub user_did: crate::ids::Did,
+    pub verification_method: String,
+    pub key_type: String,
+    pub public_key_multibase: String,
+    pub private_key_multibase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationInput {
     Otp {
         code: String,
