@@ -17,7 +17,7 @@ use crate::service::{
     current_platform_label, manage_service, require_service_state_root_is_product, ServiceAction,
     ServicePlatform, ServiceStatus,
 };
-use crate::state::DaemonState;
+use crate::state::{controller_scope_key, DaemonState};
 use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,7 +324,10 @@ where
         Err(error) => {
             if let Some(existing) = existing {
                 if is_token_already_consumed_error(&error) {
-                    return Ok(existing);
+                    sync_existing_daemon_controller_scope(config, state, client, existing)
+                        .context("sync daemon controller scope after used token")?;
+                    return existing_daemon_agent(state)?
+                        .context("existing daemon agent disappeared after controller scope sync");
                 }
             }
             return Err(error).context("verify daemon registration token");
@@ -391,13 +394,81 @@ where
         bail!("registration token exchange returned an empty controller_did");
     }
     let (local_agent_db_path, message_db_path) = agent_data_paths(&existing.agent_did)?;
+    sync_existing_daemon_scope_from_exchange(state, &existing.agent_did, &exchange)?;
+    let exchange_scope_key = controller_scope_key(
+        &exchange.controller_user_id,
+        &exchange.controller_full_handle,
+    )?;
     existing.handle = exchange.handle;
+    existing.controller_user_id = exchange.controller_user_id;
+    existing.controller_full_handle = exchange.controller_full_handle;
+    existing.controller_scope_key = exchange_scope_key;
     existing.controller_did = exchange.controller_did;
     existing.local_agent_db_path = local_agent_db_path;
     existing.message_db_path = message_db_path;
     existing.status = "active".to_string();
     state.upsert_agent_definition(&existing)?;
     Ok(existing)
+}
+
+fn sync_existing_daemon_scope_from_exchange(
+    state: &DaemonState,
+    daemon_agent_did: &str,
+    exchange: &crate::registration::AgentRegistrationExchangeResult,
+) -> Result<()> {
+    let scope_key = controller_scope_key(
+        &exchange.controller_user_id,
+        &exchange.controller_full_handle,
+    )?;
+    state.update_controller_scope_for_agent_family(
+        daemon_agent_did,
+        &exchange.controller_user_id,
+        &exchange.controller_full_handle,
+        &scope_key,
+        &exchange.controller_did,
+    )?;
+    Ok(())
+}
+
+fn sync_existing_daemon_controller_scope<C>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    client: &C,
+    existing: AgentDefinition,
+) -> Result<()>
+where
+    C: AgentInventoryClient,
+{
+    let auth_paths = crate::im_core_adapter::agent_identity_auth_paths(config, &existing.agent_did);
+    let response = client.sync_controller_scope(
+        &existing.agent_did,
+        &DidAuthMaterial {
+            did_document_path: auth_paths.0,
+            private_key_path: auth_paths.1,
+            bearer_token: state.load_agent_auth_token(&existing.agent_did)?,
+        },
+    )?;
+    let controller_user_id = response
+        .get("controller_user_id")
+        .and_then(Value::as_str)
+        .context("sync_controller_scope response missing controller_user_id")?;
+    let controller_full_handle = response
+        .get("controller_full_handle")
+        .and_then(Value::as_str)
+        .context("sync_controller_scope response missing controller_full_handle")?;
+    let controller_did = response
+        .get("controller_did")
+        .and_then(Value::as_str)
+        .context("sync_controller_scope response missing controller_did")?;
+    let scope_key = controller_scope_key(controller_user_id, controller_full_handle)?;
+    state.update_controller_scope_for_agent_family(
+        &existing.agent_did,
+        controller_user_id,
+        controller_full_handle,
+        &scope_key,
+        controller_did,
+    )?;
+    Ok(())
 }
 
 fn existing_daemon_agent(state: &DaemonState) -> Result<Option<AgentDefinition>> {
@@ -606,6 +677,16 @@ mod tests {
         definition
     }
 
+    fn store_legacy_scoped_daemon(config: &DaemonConfig, state: &DaemonState) -> AgentDefinition {
+        let mut definition = store_existing_daemon(config, state);
+        let legacy_hex = "6469643a68756d616e3a616c696365";
+        definition.controller_user_id = format!("legacy-user:{legacy_hex}");
+        definition.controller_full_handle = format!("legacy-handle:{legacy_hex}");
+        definition.controller_scope_key = format!("controller-scope:legacy-did:{legacy_hex}");
+        state.upsert_agent_definition(&definition).unwrap();
+        definition
+    }
+
     #[test]
     fn product_install_exchanges_active_daemon_token() {
         let (_root, config, state) = fixture();
@@ -628,7 +709,7 @@ mod tests {
     #[test]
     fn product_install_recovers_existing_daemon_with_new_token() {
         let (_root, config, state) = fixture();
-        let existing = store_existing_daemon(&config, &state);
+        let existing = store_legacy_scoped_daemon(&config, &state);
         let client = MockInstallClient::active_daemon_token();
 
         let agent = install_or_recover_product_daemon_agent_for_test(
@@ -649,12 +730,13 @@ mod tests {
             Some(existing.agent_did.as_str())
         );
         assert_eq!(agent.agent_did, existing.agent_did);
+        let recovered = state.load_agent_definition(&existing.agent_did).unwrap();
+        assert_eq!(recovered.controller_user_id, "user-alice");
+        assert_eq!(recovered.controller_full_handle, "alice.anpclaw.com");
+        assert_eq!(recovered.controller_did, "did:human:alice");
         assert_eq!(
-            state
-                .load_agent_definition(&existing.agent_did)
-                .unwrap()
-                .controller_did,
-            "did:human:alice"
+            recovered.controller_scope_key,
+            crate::state::controller_scope_key("user-alice", "alice.anpclaw.com").unwrap()
         );
     }
 

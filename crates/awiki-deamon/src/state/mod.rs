@@ -920,6 +920,78 @@ WHERE daemon_agent_did = ?2
         Ok(updated)
     }
 
+    pub fn update_controller_scope_for_agent_family(
+        &self,
+        daemon_agent_did: &str,
+        controller_user_id: &str,
+        controller_full_handle: &str,
+        controller_scope_key: &str,
+        controller_did: &str,
+    ) -> Result<usize> {
+        if daemon_agent_did.trim().is_empty() {
+            bail!("daemon_agent_did must not be empty");
+        }
+        if controller_user_id.trim().is_empty() {
+            bail!("controller_user_id must not be empty");
+        }
+        if controller_full_handle.trim().is_empty() {
+            bail!("controller_full_handle must not be empty");
+        }
+        if controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
+        }
+        if controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let mut updated = 0usize;
+        updated += connection.execute(
+            r#"
+UPDATE agent_definition
+SET controller_user_id = ?1,
+    controller_full_handle = ?2,
+    controller_scope_key = ?3,
+    controller_did = ?4,
+    updated_at = ?5
+WHERE agent_did = ?6
+   OR agent_did IN (
+       SELECT runtime_agent_did
+       FROM runtime_daemon_binding
+       WHERE daemon_agent_did = ?6
+   )
+"#,
+            rusqlite::params![
+                controller_user_id,
+                controller_full_handle,
+                controller_scope_key,
+                controller_did,
+                now.to_string(),
+                daemon_agent_did,
+            ],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_daemon_binding
+SET controller_user_id = ?1,
+    controller_full_handle = ?2,
+    controller_scope_key = ?3,
+    controller_did = ?4,
+    updated_at_ms = ?5
+WHERE daemon_agent_did = ?6
+"#,
+            rusqlite::params![
+                controller_user_id,
+                controller_full_handle,
+                controller_scope_key,
+                controller_did,
+                now,
+                daemon_agent_did,
+            ],
+        )?;
+        Ok(updated)
+    }
+
     pub fn mark_agent_archived(&self, agent_did: &str) -> Result<usize> {
         if agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
