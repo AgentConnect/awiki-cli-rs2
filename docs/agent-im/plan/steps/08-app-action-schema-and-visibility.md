@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：08  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 收敛 `message.sync`、APP capability、action request/result schema 和最小 allowlist |
+| Status | done |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T18:28:37Z |
+| Completed | 2026-06-09T19:08:53Z |
+| Commit | `awiki-cli-rs2` `8c9e128 awiki-deamon: add app action schemas`；`awiki-me` `3841b76 awiki-me: add app action payload models`；相关设计收口 `awiki-cli-rs2` `f1d3cb5 docs: align message authorization boundary` |
+| Review evidence | 2026-06-09 Review：检查 APP action schema、runtime token scope、no-side-effect RPC 路径、payload filter、未知 `awiki.*` 可见性、联系人写确认、E2EE/private material 拒绝和文档授权边界。发现并修复：`foreground.rs` 测试需适配新的 `AppControlOutcome`；`app.action.request` 不能走无 outbox 副作用 RPC 路径，已改为必须经 `execute_runtime_rpc_request_with_outbox`；Flutter test 产生的 Android registrant 无关 churn 已恢复；两篇设计文档继续收紧 message-service MVP 授权源为 DID proof + 当前 DID Document `authentication`。 |
+| Verification evidence | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1`：lib 93 passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 23 + 2；doc tests 0 passed；0 failed。定向：`app_bridge` 15 passed；`action` 4 app action tests passed；`user_delegated` 11 passed；`app_action_request` 2 passed；`app_capabilities_and_action_result` 1 passed。`cd awiki-me && flutter analyze`：No issues found；`cd awiki-me && flutter test`：272 passed；targeted im-core mapper tests 20 passed；`git diff --check`：相关仓通过；旧命名/设备化 key/registry 残留检查通过。 |
+| Next action | 启动 Step 09：系统测试与集成收口 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -67,14 +67,14 @@ Step index：08
 
 ## 7. 验收标准
 
-- [ ] Daemon/APP 都能解析 `awiki.app.capabilities.v1`、`awiki.app.action.v1`、`awiki.app.action.result.v1`、`awiki.message.sync.v1`。
-- [ ] MVP allowlist 只包含 5 个能力：`message.summarize_plain`、`message.create_draft`、`contact.read`、`contact.update_display_name`、`contact.update_note`。
-- [ ] `message.send`、E2EE forward、删除/导出/身份密钥变更默认拒绝。
-- [ ] 联系人写操作有 APP 侧确认或策略授权路径。
-- [ ] system/control payload 和未知 `awiki.*` schema 不显示为普通聊天。
-- [ ] action result 能回传给 Daemon/Hermes，并可同步到 APP 状态。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit；如跨仓拆 commit，台账必须说明。
+- [x] Daemon/APP 都能解析 `awiki.app.capabilities.v1`、`awiki.app.action.v1`、`awiki.app.action.result.v1`、`awiki.message.sync.v1`。
+- [x] MVP allowlist 只包含 5 个能力：`message.summarize_plain`、`message.create_draft`、`contact.read`、`contact.update_display_name`、`contact.update_note`。
+- [x] `message.send`、E2EE forward、删除/导出/身份密钥变更默认拒绝。
+- [x] 联系人写操作有 APP 侧确认或策略授权路径。
+- [x] system/control payload 和未知 `awiki.*` schema 不显示为普通聊天。
+- [x] action result 能回传给 Daemon/Hermes，并可同步到 APP 状态。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit；如跨仓拆 commit，台账必须说明。
 
 ## 8. 验证方式
 
@@ -95,11 +95,11 @@ Step index：08
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 有发现 | `foreground.rs` 既有测试未覆盖新的 `AppControlOutcome` variants；`app.action.request` 初版可走无 outbox 副作用 RPC 路径；Flutter test 会生成 Android registrant 无关 churn；两篇设计文档仍需要把 message-service MVP 授权源收敛到 DID Document `authentication`。 |
+| 已修复问题 | 已修复 | 增加 `expect_bootstrap_received` 测试 helper；`execute_runtime_rpc_request` 拒绝 `AppActionRequest`，必须走 `execute_runtime_rpc_request_with_outbox`；补本地 RPC side-effect 测试；恢复 Android registrant churn；设计文档补 `f1d3cb5` 收口。 |
+| 剩余风险 | 已记录 | APP 侧当前落地为 domain model/reducer、payload hiding 和 confirmation state，尚未实现完整用户确认 UI / 自动化策略面板，按 MVP 后 UI 工作记录；MVP 仍不支持 E2EE action / forward。 |
+| 新增或缺失测试 | 已补测试 | Daemon 新增 app action schema、capabilities/action result、local RPC side-effect 和 delegated inbox allowlist 测试；APP 新增 payload model/reducer 测试。缺失：完整 UI confirmation panel 未进入本步骤。 |
+| 已更新或缺失文档 | 已更新 | 主 Plan / Step 08 台账已记录；两篇设计文档在 `f1d3cb5` 收紧 message-service 授权源和 user-service public-only 边界。 |
 
 ## 10. Commit 要求
 
@@ -110,6 +110,13 @@ Step index：08
 - Commit 后证据：记录 commit hash 和 commit 后 `git status --short --branch`。
 - 遗留未提交变更：必须记录原因以及为什么安全。
 - 建议消息：`agent-im: add app action schemas`
+
+| 项 | 记录 |
+|---|---|
+| Commit 前状态 | `awiki-cli-rs2`：Step 08 daemon code 已提交前纳入；`awiki-me`：Step 08 APP model/test 已提交前纳入。Step 08 台账回填前，`awiki-cli-rs2` 仅剩 Plan / Step 文档修改。 |
+| 纳入文件 | `awiki-cli-rs2` commit `8c9e128` 纳入 daemon app action schema、runtime/local RPC、foreground、user delegated inbox 和 tests；`awiki-me` commit `3841b76` 纳入 APP payload model/reducer 和 tests；`f1d3cb5` 纳入两篇设计文档授权边界收口。 |
+| Commit 后证据 | `awiki-cli-rs2` `8c9e128 awiki-deamon: add app action schemas`；`awiki-me` `3841b76 awiki-me: add app action payload models`；相关文档 `awiki-cli-rs2` `f1d3cb5 docs: align message authorization boundary`。 |
+| 遗留未提交变更 | Step 08 代码与设计文档已提交；本轮只剩 Plan / Step 08 台账回填，随后创建独立 docs commit。 |
 
 ## 11. Blocked 处理
 
