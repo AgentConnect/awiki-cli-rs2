@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：04  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | review |
+| Status | done |
 | Branch | `feature/release-0526/agent-im-hutong` |
 | Started | 2026-06-09T13:28:24Z |
-| Completed | - |
-| Commit | - |
+| Completed | 2026-06-09T14:04:10Z |
+| Commit | `ccf84b5 awiki-deamon: ensure app message agent` |
 | Review evidence | 2026-06-09 Review：检查 active binding 唯一性、bootstrap replay、runtime token scope、secret/token 泄漏、Hermes 私钥边界、Step 05 非目标。发现并修复：重复 bootstrap 去掉 `runtime_registration_token` 时 payload hash 冲突；专用 Message Agent 沿用 Hermes 默认 runtime token recipient scope 过宽。 |
 | Verification evidence | `cargo test -p awiki-deamon --locked -j1`：78 lib tests passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。定向：`cargo test -p awiki-deamon --locked -j1 app_bridge -- --nocapture`：11 passed；`cargo test -p awiki-deamon --locked -j1 daemon_bootstrap_replay_reuses_message_agent_without_runtime_token -- --nocapture`：1 passed；`cargo test -p awiki-deamon --locked -j1 app_message_agent_runtime_token_scope_is_limited_to_bound_user -- --nocapture`：1 passed；`git diff --check`：通过。 |
-| Next action | 提交 Step 04 聚焦 commit，回填 commit hash 后标记 done |
+| Next action | 启动 Step 05：awiki-deamon delegated inbox sync |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -73,7 +73,7 @@ Step index：04
 - [x] runtime token scope 只允许 message handler 所需能力。
 - [x] `desired_message_agent.runtime_registration_token` 仅首次创建使用，不进入 binding、audit detail、Hermes prompt 或 runtime temp。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
