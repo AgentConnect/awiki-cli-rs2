@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 
@@ -250,24 +250,47 @@ pub fn update_user_service_latest(
         bearer_token: state.load_agent_auth_token(&daemon.agent_did)?,
     };
     let response = client.update_latest_status(&daemon.agent_did, items, &auth)?;
-    sync_controller_did_from_latest_response(state, &daemon.agent_did, &response)?;
+    sync_controller_scope_from_response(state, &daemon.agent_did, &response)?;
     Ok(())
 }
 
-pub fn sync_controller_did_from_latest_response(
+pub fn sync_controller_scope_from_response(
     state: &DaemonState,
     daemon_agent_did: &str,
     response: &Value,
 ) -> Result<()> {
-    let Some(controller_did) = controller_did_from_latest_response(daemon_agent_did, response)
-    else {
+    let Some(controller) = controller_scope_from_response(daemon_agent_did, response) else {
         return Ok(());
     };
     let local = state.load_agent_definition(daemon_agent_did)?;
-    if local.controller_did == controller_did {
+    if controller
+        .controller_user_id
+        .as_deref()
+        .is_some_and(|value| value != local.controller_user_id)
+        || controller
+            .controller_full_handle
+            .as_deref()
+            .is_some_and(|value| value != local.controller_full_handle)
+    {
+        state.insert_audit_event_json(
+            "daemon.controller_scope_mismatch",
+            Some(daemon_agent_did),
+            None,
+            None,
+            None,
+            json!({
+                "local_controller_user_id": local.controller_user_id,
+                "local_controller_full_handle": local.controller_full_handle,
+                "remote_controller_user_id": controller.controller_user_id,
+                "remote_controller_full_handle": controller.controller_full_handle,
+            }),
+        )?;
+        bail!("controller_scope_mismatch");
+    }
+    if local.controller_did == controller.controller_did {
         return Ok(());
     }
-    state.update_controller_did_for_agent_family(daemon_agent_did, &controller_did)?;
+    state.update_controller_did_for_agent_family(daemon_agent_did, &controller.controller_did)?;
     state.insert_audit_event_json(
         "daemon.controller_did.synced",
         Some(daemon_agent_did),
@@ -276,26 +299,62 @@ pub fn sync_controller_did_from_latest_response(
         None,
         json!({
             "old_controller_did": local.controller_did,
-            "new_controller_did": controller_did,
+            "new_controller_did": controller.controller_did,
         }),
     )?;
     Ok(())
 }
 
-fn controller_did_from_latest_response(daemon_agent_did: &str, response: &Value) -> Option<String> {
-    response
+pub fn sync_controller_did_from_latest_response(
+    state: &DaemonState,
+    daemon_agent_did: &str,
+    response: &Value,
+) -> Result<()> {
+    sync_controller_scope_from_response(state, daemon_agent_did, response)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ControllerScopeSyncPayload {
+    controller_user_id: Option<String>,
+    controller_full_handle: Option<String>,
+    controller_did: String,
+}
+
+fn controller_scope_from_response(
+    daemon_agent_did: &str,
+    response: &Value,
+) -> Option<ControllerScopeSyncPayload> {
+    let item = response
         .get("updated")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter(|item| {
-            item.get("agent_did")
-                .and_then(Value::as_str)
-                .map(|did| did == daemon_agent_did)
-                .unwrap_or(false)
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("agent_did")
+                    .and_then(Value::as_str)
+                    .map(|did| did == daemon_agent_did)
+                    .unwrap_or(false)
+            })
         })
-        .find_map(|item| item.get("controller_did").and_then(Value::as_str))
+        .unwrap_or(response);
+    let controller_did = item
+        .get("controller_did")
+        .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+    Some(ControllerScopeSyncPayload {
+        controller_user_id: optional_nonempty_string(item, "controller_user_id"),
+        controller_full_handle: optional_nonempty_string(item, "controller_full_handle"),
+        controller_did,
+    })
+}
+
+fn optional_nonempty_string(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
         .map(str::to_string)
 }
 
@@ -331,7 +390,6 @@ fn runtime_status_payload(
     Ok(json!({
         "agent_did": runtime.agent_did,
         "daemon_agent_did": daemon.agent_did,
-        "display_name": runtime.handle,
         "runtime": runtime_name_from_plugin(runtime.runtime_plugin_id.as_deref()),
         "runtime_profile_id": runtime.runtime_profile_id,
         "status": if runtime_status.needs_config { "needs_config" } else { "ready" },
@@ -347,7 +405,6 @@ fn runtime_status_payload(
 fn daemon_status_payload(daemon: &AgentDefinition, service: &ServiceStatus, now: &str) -> Value {
     json!({
         "agent_did": daemon.agent_did,
-        "display_name": daemon.handle,
         "status": "ready",
         "last_seen_at": now,
         "version": env!("CARGO_PKG_VERSION"),
@@ -662,11 +719,19 @@ mod tests {
         }
     }
 
+    const TEST_CONTROLLER_USER_ID: &str = "user-alice";
+    const TEST_CONTROLLER_FULL_HANDLE: &str = "alice.anpclaw.com";
+    const TEST_CONTROLLER_SCOPE_KEY: &str =
+        "controller-scope:v1:test-alice-anpclaw-com";
+
     fn daemon() -> AgentDefinition {
         AgentDefinition {
             agent_did: "did:agent:daemon".to_string(),
             handle: "alice-daemon".to_string(),
             agent_kind: AgentKind::Daemon,
+            controller_user_id: TEST_CONTROLLER_USER_ID.to_string(),
+            controller_full_handle: TEST_CONTROLLER_FULL_HANDLE.to_string(),
+            controller_scope_key: TEST_CONTROLLER_SCOPE_KEY.to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_plugin_id: None,
             runtime_profile_id: None,
@@ -683,6 +748,9 @@ mod tests {
             agent_did: "did:agent:hermes".to_string(),
             handle: "alice-hermes".to_string(),
             agent_kind: AgentKind::Runtime,
+            controller_user_id: TEST_CONTROLLER_USER_ID.to_string(),
+            controller_full_handle: TEST_CONTROLLER_FULL_HANDLE.to_string(),
+            controller_scope_key: TEST_CONTROLLER_SCOPE_KEY.to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_plugin_id: Some(HERMES_RUNTIME_PLUGIN_ID.to_string()),
             runtime_profile_id: Some("profile_hermes_alice".to_string()),
@@ -734,6 +802,9 @@ mod tests {
             .upsert_runtime_daemon_binding(
                 &runtime.agent_did,
                 &daemon.agent_did,
+                &daemon.controller_user_id,
+                &daemon.controller_full_handle,
+                &daemon.controller_scope_key,
                 &daemon.controller_did,
             )
             .unwrap();
@@ -913,6 +984,9 @@ mod tests {
             .upsert_runtime_daemon_binding(
                 &runtime.agent_did,
                 &daemon.agent_did,
+                &daemon.controller_user_id,
+                &daemon.controller_full_handle,
+                &daemon.controller_scope_key,
                 &daemon.controller_did,
             )
             .unwrap();
@@ -963,6 +1037,9 @@ mod tests {
             .upsert_runtime_daemon_binding(
                 &runtime.agent_did,
                 &daemon.agent_did,
+                &daemon.controller_user_id,
+                &daemon.controller_full_handle,
+                &daemon.controller_scope_key,
                 &daemon.controller_did,
             )
             .unwrap();

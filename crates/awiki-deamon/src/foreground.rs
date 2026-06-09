@@ -2144,7 +2144,8 @@ mod tests {
     use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
     use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
     use crate::registration::{
-        AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
+        AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
+        AgentRegistrationExchangeResult, AgentLatestStatusUpdateItem, DidAuthMaterial,
         RegistrationToken,
     };
     use crate::runtime::RuntimeAgentProfile;
@@ -2170,10 +2171,44 @@ mod tests {
                 did,
                 user_id: Some(format!("user_{}", request.handle)),
                 agent_kind: request.agent_kind,
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
             })
+        }
+    }
+
+    impl AgentInventoryClient for MockRegistrationClient {
+        fn verify_token(
+            &self,
+            _token: &RegistrationToken,
+        ) -> Result<crate::registration::RegistrationTokenMetadata> {
+            anyhow::bail!("verify_token is not used in foreground command tests")
+        }
+
+        fn sync_controller_scope(
+            &self,
+            daemon_agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({
+                "agent_did": daemon_agent_did,
+                "controller_user_id": "user-alice",
+                "controller_full_handle": "alice.anpclaw.com",
+                "controller_did": "did:human:alice",
+                "updated_count": 1,
+            }))
+        }
+
+        fn update_latest_status(
+            &self,
+            _daemon_agent_did: &str,
+            _statuses: Vec<AgentLatestStatusUpdateItem>,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            anyhow::bail!("update_latest_status is not used in foreground command tests")
         }
     }
 
@@ -2539,6 +2574,9 @@ mod tests {
     fn profile(root: &Path) -> RuntimeAgentProfile {
         RuntimeAgentProfile {
             agent_did: "did:agent:hermes".to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_profile_id: "profile_hermes_alice".to_string(),
             runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),

@@ -12,8 +12,8 @@ use crate::plugins::hermes::{
     initialize_hermes_profile, mark_hermes_profile_failed, HERMES_RUNTIME_PLUGIN_ID,
 };
 use crate::registration::{
-    AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-    RegistrationToken,
+    AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
+    AgentRegistrationExchangeResult, DidAuthMaterial, RegistrationToken,
 };
 use crate::runtime::{RuntimeAgentProfile, RuntimeRunStatus};
 use crate::runtime_inbox::{
@@ -21,7 +21,8 @@ use crate::runtime_inbox::{
     RuntimeInboxScope, RuntimeInboxThreadKind, RuntimeInboxThreadQuery,
 };
 use crate::state::{
-    CliRuntimeProfileRecord, DaemonState, HermesSessionRoute, RuntimeAgentCreateRequestRecord,
+    controller_scope_key, CliRuntimeProfileRecord, DaemonState, HermesSessionRoute,
+    RuntimeAgentCreateRequestRecord,
 };
 use crate::upgrade::{upgrade_daemon, DaemonUpgradeRequest};
 use crate::workspace::WorkspaceMode;
@@ -128,18 +129,25 @@ pub fn handle_agent_payload_message<C, O>(
     message: IncomingAgentPayloadMessage,
 ) -> Result<AgentCommandOutcome>
 where
-    C: AgentRegistrationClient,
+    C: AgentRegistrationClient + AgentInventoryClient,
     O: AgentManagementOutbox,
 {
     validate_application_json_payload(&message)?;
-    let daemon_agent = state
+    let mut daemon_agent = state
         .load_agent_definition(&message.target_agent_did)
         .context("load target daemon agent")?;
     if daemon_agent.agent_kind != AgentKind::Daemon {
         bail!("target agent is not a daemon agent");
     }
     if message.sender_did != daemon_agent.controller_did {
-        bail!("message sender is not the configured controller_did");
+        sync_controller_scope_for_daemon(config, state, registration_client, &daemon_agent)
+            .context("sync controller scope before command sender check")?;
+        daemon_agent = state
+            .load_agent_definition(&message.target_agent_did)
+            .context("reload target daemon agent after controller scope sync")?;
+        if message.sender_did != daemon_agent.controller_did {
+            bail!("controller_did_mismatch");
+        }
     }
 
     let envelope: AgentCommandEnvelope =
@@ -338,12 +346,17 @@ where
     if exchange.did != identity.did {
         bail!("registration token exchange returned a different DID");
     }
+    let exchange_scope_key =
+        controller_scope_key(&exchange.controller_user_id, &exchange.controller_full_handle)?;
     state.store_agent_identity(&identity.into_record(handle.clone(), AgentKind::Daemon))?;
     let (local_agent_db_path, message_db_path) = agent_data_paths(&exchange.did)?;
     let definition = AgentDefinition {
         agent_did: exchange.did,
         handle: exchange.handle,
         agent_kind: AgentKind::Daemon,
+        controller_user_id: exchange.controller_user_id,
+        controller_full_handle: exchange.controller_full_handle,
+        controller_scope_key: exchange_scope_key,
         controller_did: exchange.controller_did,
         runtime_plugin_id: None,
         runtime_profile_id: None,
@@ -384,7 +397,7 @@ where
     if let Some(client_request_id) = client_request_id {
         if let Some(existing) = state.load_runtime_agent_create_request(
             &daemon_agent.agent_did,
-            &daemon_agent.controller_did,
+            &daemon_agent.controller_scope_key,
             client_request_id,
         )? {
             let mut outcome: RuntimeAgentCreateOutcome =
@@ -415,6 +428,11 @@ where
         allow_existing_agent_did: false,
     })?;
     verify_exchange_result(&exchange, AgentKind::Runtime, controller_did, &handle)?;
+    if exchange.controller_user_id != daemon_agent.controller_user_id
+        || exchange.controller_full_handle != daemon_agent.controller_full_handle
+    {
+        bail!("registration token exchange returned wrong controller scope");
+    }
     if exchange.did != identity.did {
         bail!("registration token exchange returned a different DID");
     }
@@ -422,6 +440,9 @@ where
 
     let profile = RuntimeAgentProfile {
         agent_did: exchange.did.clone(),
+        controller_user_id: daemon_agent.controller_user_id.clone(),
+        controller_full_handle: daemon_agent.controller_full_handle.clone(),
+        controller_scope_key: daemon_agent.controller_scope_key.clone(),
         controller_did: exchange.controller_did.clone(),
         runtime_profile_id: profile_id.clone(),
         runtime_plugin_id: plugin_id.clone(),
@@ -434,6 +455,9 @@ where
     state.upsert_runtime_daemon_binding(
         &profile.agent_did,
         &daemon_agent.agent_did,
+        &daemon_agent.controller_user_id,
+        &daemon_agent.controller_full_handle,
+        &daemon_agent.controller_scope_key,
         &daemon_agent.controller_did,
     )?;
     if profile.runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
@@ -526,6 +550,7 @@ where
         let now = crate::security::runtime_token::current_time_millis()?;
         state.store_runtime_agent_create_request(&RuntimeAgentCreateRequestRecord {
             daemon_agent_did: daemon_agent.agent_did.clone(),
+            controller_scope_key: daemon_agent.controller_scope_key.clone(),
             controller_did: daemon_agent.controller_did.clone(),
             client_request_id: client_request_id.to_string(),
             runtime_agent_did: outcome.agent_did.clone(),
@@ -661,16 +686,16 @@ where
         let route = HermesSessionRoute::new(
             runtime_agent.agent_did.clone(),
             runtime_profile_id.to_string(),
-            daemon_agent.controller_did.clone(),
+            daemon_agent.controller_scope_key.clone(),
             Some(conversation_id.to_string()),
             "conversation",
         );
         state.reset_active_hermes_session_by_route(&route)?
     } else {
-        state.reset_active_hermes_sessions_for_runtime_controller(
+        state.reset_active_hermes_sessions_for_runtime_controller_scope(
             &runtime_agent.agent_did,
             runtime_profile_id,
-            &daemon_agent.controller_did,
+            &daemon_agent.controller_scope_key,
         )?
     };
     state.insert_audit_event_json(
@@ -1169,11 +1194,11 @@ fn load_owned_runtime_agent(
 ) -> Result<AgentDefinition> {
     let runtime_agent = state.load_agent_definition(runtime_agent_did)?;
     if runtime_agent.agent_kind != AgentKind::Runtime
-        || runtime_agent.controller_did != daemon_agent.controller_did
-        || !state.runtime_agent_belongs_to_daemon(
+        || runtime_agent.controller_scope_key != daemon_agent.controller_scope_key
+        || !state.runtime_agent_belongs_to_daemon_scope(
             &runtime_agent.agent_did,
             &daemon_agent.agent_did,
-            &daemon_agent.controller_did,
+            &daemon_agent.controller_scope_key,
         )?
     {
         bail!("runtime agent does not belong to this daemon");
@@ -1273,6 +1298,30 @@ fn verify_exchange_result(
         bail!("registration token exchange did not register agent");
     }
     Ok(())
+}
+
+fn sync_controller_scope_for_daemon<C>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    client: &C,
+    daemon_agent: &AgentDefinition,
+) -> Result<()>
+where
+    C: AgentInventoryClient,
+{
+    let auth_paths =
+        crate::im_core_adapter::agent_identity_auth_paths(config, &daemon_agent.agent_did);
+    let auth = DidAuthMaterial {
+        did_document_path: auth_paths.0,
+        private_key_path: auth_paths.1,
+        bearer_token: state.load_agent_auth_token(&daemon_agent.agent_did)?,
+    };
+    let response = client.sync_controller_scope(&daemon_agent.agent_did, &auth)?;
+    crate::agent_status::sync_controller_scope_from_response(
+        state,
+        &daemon_agent.agent_did,
+        &response,
+    )
 }
 
 fn send_command_status<O>(

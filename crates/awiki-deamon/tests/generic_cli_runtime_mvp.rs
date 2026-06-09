@@ -28,6 +28,9 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:alice-coder".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         runtime_profile_id: "profile_generic_cli_1".to_string(),
         runtime_plugin_id: "generic-cli".to_string(),

@@ -8,8 +8,9 @@ use awiki_deamon::commands::{
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
-    AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-    RegistrationToken,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
+    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, DidAuthMaterial,
+    RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::runtime::{RuntimeRun, RuntimeRunStatus};
 use awiki_deamon::state::{HermesNativeSessionRecord, HermesSessionRoute};
@@ -53,10 +54,44 @@ impl AgentRegistrationClient for MockRegistrationClient {
             did,
             user_id: Some(format!("user_{}", request.handle)),
             agent_kind: request.agent_kind,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
             handle: request.handle,
             status: "registered".to_string(),
         })
+    }
+}
+
+impl AgentInventoryClient for MockRegistrationClient {
+    fn verify_token(
+        &self,
+        _token: &RegistrationToken,
+    ) -> anyhow::Result<RegistrationTokenMetadata> {
+        anyhow::bail!("verify_token is not used in agent registration management tests")
+    }
+
+    fn sync_controller_scope(
+        &self,
+        daemon_agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({
+            "agent_did": daemon_agent_did,
+            "controller_user_id": "user-alice",
+            "controller_full_handle": "alice.anpclaw.com",
+            "controller_did": "did:human:alice",
+            "updated_count": 1,
+        }))
+    }
+
+    fn update_latest_status(
+        &self,
+        _daemon_agent_did: &str,
+        _statuses: Vec<AgentLatestStatusUpdateItem>,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("update_latest_status is not used in agent registration management tests")
     }
 }
 
@@ -512,9 +547,14 @@ fn agent_status_query_returns_snapshot_payload_without_chat_content() {
     assert_eq!(status.payload["status_scope"], "snapshot");
     assert_eq!(status.payload["daemon_agent_did"], daemon.agent_did);
     assert_eq!(status.payload["daemon"]["status"], "ready");
+    assert!(status.payload["daemon"].get("display_name").is_none());
     assert_eq!(status.payload["runs"], json!([]));
+    for runtime in status.payload["runtimes"].as_array().unwrap() {
+        assert!(runtime.get("display_name").is_none());
+    }
     let dump = status.payload.to_string();
     assert!(!dump.contains("tok_daemon_secret_value"));
+    assert!(!dump.contains("alice-mac-daemon"));
     assert!(!dump.contains("prompt"));
 }
 
@@ -614,12 +654,12 @@ fn runtime_session_reset_archives_active_hermes_route() {
     let route = HermesSessionRoute::new(
         created.agent_did.clone(),
         created.runtime_profile_id.clone(),
-        "did:human:alice",
+        daemon.controller_scope_key.clone(),
         Some("dm:alice:hermes".to_string()),
         "conversation",
     );
     let record =
-        HermesNativeSessionRecord::active(&route, "awiki_alice_hermes", "hsession-1").unwrap();
+        HermesNativeSessionRecord::active(&route, "did:human:alice", "awiki_alice_hermes", "hsession-1").unwrap();
     state.store_hermes_native_session(&record).unwrap();
     assert!(state
         .load_active_hermes_session_by_route(&route)
@@ -788,6 +828,9 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
         .insert_runtime_task(&awiki_deamon::runtime::RuntimeTask {
             task_id: "task_failed_retry".to_string(),
             agent_did: created.agent_did.clone(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             sender_did: "did:human:alice".to_string(),
             conversation_id: Some("dm:alice:retry".to_string()),
@@ -1580,12 +1623,13 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
     let route = awiki_deamon::state::HermesSessionRoute::new(
         created.agent_did.clone(),
         created.runtime_profile_id.clone(),
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
     let session = awiki_deamon::state::HermesNativeSessionRecord::active(
         &route,
+        "did:human:alice",
         "awiki_alice_hermes_status",
         "hermes-session-status",
     )

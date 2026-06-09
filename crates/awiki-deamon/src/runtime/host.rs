@@ -607,11 +607,12 @@ fn runtime_final_outbox_record(
         idempotency_key: runtime_final_idempotency_key(
             &profile.agent_did,
             &run.run_id,
-            &profile.controller_did,
+            &profile.controller_scope_key,
         ),
         run_id: run.run_id.clone(),
         agent_did: profile.agent_did.clone(),
         runtime_profile_id: profile.runtime_profile_id.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: profile.controller_did.clone(),
         conversation_id: conversation_id.map(str::to_string),
         final_text: final_text.to_string(),
@@ -631,9 +632,9 @@ fn runtime_final_outbox_record(
 fn runtime_final_idempotency_key(
     runtime_agent_did: &str,
     run_id: &str,
-    controller_did: &str,
+    controller_scope_key: &str,
 ) -> String {
-    format!("runtime-final:{runtime_agent_did}:{run_id}:{controller_did}")
+    format!("runtime-final:{runtime_agent_did}:{run_id}:{controller_scope_key}")
 }
 
 const MAX_RUNTIME_FINAL_OUTBOX_ATTEMPTS: i64 = 5;
@@ -931,6 +932,9 @@ fn persist_cli_driver_run(
         agent_did: run.agent_did.clone(),
         runtime_profile_id: run.runtime_profile_id.clone(),
         driver_id,
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: profile.controller_did.clone(),
         conversation_id: task.conversation_id.clone(),
         route_key: generic_cli_route_key(

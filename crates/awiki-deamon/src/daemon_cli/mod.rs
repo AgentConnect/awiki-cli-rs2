@@ -470,6 +470,8 @@ mod tests {
                     token_id: "agtok_daemon".to_string(),
                     agent_kind: AgentKind::Daemon,
                     handle: Some("alice-mac-daemon".to_string()),
+                    controller_user_id: Some("user-alice".to_string()),
+                    controller_full_handle: Some("alice.anpclaw.com".to_string()),
                     controller_did: "did:human:alice".to_string(),
                     status: "active".to_string(),
                     scope: json!({}),
@@ -511,6 +513,8 @@ mod tests {
                 did,
                 user_id: Some("agent-user-1".to_string()),
                 agent_kind: request.agent_kind,
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
@@ -524,6 +528,20 @@ mod tests {
                 Ok(metadata) => Ok(metadata.clone()),
                 Err(reason) => anyhow::bail!("agent registration token verify failed: {reason}"),
             }
+        }
+
+        fn sync_controller_scope(
+            &self,
+            daemon_agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({
+                "agent_did": daemon_agent_did,
+                "controller_user_id": "user-alice",
+                "controller_full_handle": "alice.anpclaw.com",
+                "controller_did": "did:human:alice",
+                "updated_count": 1,
+            }))
         }
 
         fn update_latest_status(
@@ -563,6 +581,9 @@ mod tests {
             agent_did,
             handle: "alice-mac-daemon".to_string(),
             agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_plugin_id: None,
             runtime_profile_id: None,

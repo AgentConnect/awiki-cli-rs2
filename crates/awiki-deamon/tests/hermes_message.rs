@@ -115,6 +115,9 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         runtime_profile_id: "profile_hermes_alice".to_string(),
         runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
@@ -747,6 +750,9 @@ fn hermes_message_prompt_wrapper_debug_redacts_user_message() {
     let task = RuntimeTask {
         task_id: "task_msg_debug".to_string(),
         agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         sender_did: "did:human:alice".to_string(),
         conversation_id: None,
@@ -809,7 +815,7 @@ fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
         "profile_hermes_alice",
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
@@ -819,7 +825,7 @@ fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
         .unwrap();
     assert_eq!(
         active.hermes_session_id,
-        "fake-session-hermes:did:agent:hermes:did:human:alice:direct:did:human:alice:conversation"
+        "fake-session-hermes:did:agent:hermes:controller-scope:v1:test-alice-anpclaw-com:direct:did:human:alice:conversation"
     );
 
     let reopened_state =
@@ -856,7 +862,7 @@ fn hermes_session_mapping_reset_archives_old_session_and_creates_replacement() {
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
         "profile_hermes_alice",
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
@@ -915,7 +921,7 @@ fn hermes_session_missing_recreates_session_and_retries_prompt_once() {
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
         "profile_hermes_alice",
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );

@@ -56,6 +56,9 @@ fn insert_runtime_task_context(
         state
             .upsert_runtime_agent_profile(&RuntimeAgentProfile {
                 agent_did: agent_did.to_string(),
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:controller".to_string(),
                 runtime_profile_id: "profile_1".to_string(),
                 runtime_plugin_id: "test-runtime".to_string(),
@@ -70,6 +73,9 @@ fn insert_runtime_task_context(
         .insert_runtime_task(&RuntimeTask {
             task_id: "task_attachment".to_string(),
             agent_did: agent_did.to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:controller".to_string(),
             sender_did: "did:human:controller".to_string(),
             conversation_id: Some("dm:controller-agent".to_string()),

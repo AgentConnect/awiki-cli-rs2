@@ -13,6 +13,9 @@ pub mod host;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeAgentProfile {
     pub agent_did: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub runtime_profile_id: String,
     pub runtime_plugin_id: String,
@@ -26,6 +29,9 @@ pub struct RuntimeAgentProfile {
 pub struct RuntimeTask {
     pub task_id: String,
     pub agent_did: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub sender_did: String,
     pub conversation_id: Option<String>,
@@ -89,6 +95,15 @@ impl RuntimeAgentProfile {
         if self.agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
         }
+        if self.controller_user_id.trim().is_empty() {
+            bail!("controller_user_id must not be empty");
+        }
+        if self.controller_full_handle.trim().is_empty() {
+            bail!("controller_full_handle must not be empty");
+        }
+        if self.controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
+        }
         if self.controller_did.trim().is_empty() {
             bail!("controller_did must not be empty");
         }
@@ -122,6 +137,15 @@ impl RuntimeTask {
         }
         if self.agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
+        }
+        if self.controller_user_id.trim().is_empty() {
+            bail!("controller_user_id must not be empty");
+        }
+        if self.controller_full_handle.trim().is_empty() {
+            bail!("controller_full_handle must not be empty");
+        }
+        if self.controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         if self.controller_did.trim().is_empty() {
             bail!("controller_did must not be empty");

@@ -10,6 +10,9 @@ use awiki_deamon::security::runtime_token::{RpcMethod, RuntimeTokenScope};
 fn hermes_profile() -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         runtime_profile_id: "profile_hermes_alice".to_string(),
         runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),

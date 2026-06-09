@@ -9,8 +9,9 @@ use awiki_deamon::commands::{
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
-    AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-    RegistrationToken,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
+    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, DidAuthMaterial,
+    RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::state::HermesProfileRecord;
 use awiki_deamon::{DaemonConfig, DaemonState};
@@ -77,10 +78,44 @@ impl AgentRegistrationClient for MockRegistrationClient {
             did,
             user_id: Some(format!("user_{}", request.handle)),
             agent_kind: request.agent_kind,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
             handle: request.handle,
             status: "registered".to_string(),
         })
+    }
+}
+
+impl AgentInventoryClient for MockRegistrationClient {
+    fn verify_token(
+        &self,
+        _token: &RegistrationToken,
+    ) -> anyhow::Result<RegistrationTokenMetadata> {
+        anyhow::bail!("verify_token is not used in hermes profile tests")
+    }
+
+    fn sync_controller_scope(
+        &self,
+        daemon_agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({
+            "agent_did": daemon_agent_did,
+            "controller_user_id": "user-alice",
+            "controller_full_handle": "alice.anpclaw.com",
+            "controller_did": "did:human:alice",
+            "updated_count": 1,
+        }))
+    }
+
+    fn update_latest_status(
+        &self,
+        _daemon_agent_did: &str,
+        _statuses: Vec<AgentLatestStatusUpdateItem>,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("update_latest_status is not used in hermes profile tests")
     }
 }
 
@@ -140,7 +175,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 15);
+    assert_eq!(summary.schema_version, 16);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
