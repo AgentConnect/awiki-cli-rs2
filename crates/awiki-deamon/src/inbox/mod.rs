@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::{RuntimeAgentProfile, RuntimeTask};
 
+pub mod user_delegated;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerTextMessage {
     pub message_id: String,

@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 17;
+const DAEMON_SCHEMA_VERSION: i64 = 18;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -252,6 +252,57 @@ pub struct AppMessageAgentBindingRecord {
     pub revoked_at_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxCursorRecord {
+    pub owner_did: String,
+    pub inbox_scope: String,
+    pub cursor: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessedMessageRecord {
+    pub owner_did: String,
+    pub message_id: String,
+    pub schema: String,
+    pub processed_at_ms: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageEventRecord {
+    pub event_id: String,
+    pub owner_did: String,
+    pub conversation_id: Option<String>,
+    pub message_id: String,
+    pub message_kind: String,
+    pub sender_did: String,
+    pub received_at: Option<String>,
+    pub plain_text_ref_or_excerpt: Option<String>,
+    pub content_hash: String,
+    pub schema: String,
+    pub processing_status: String,
+    pub retention_class: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSyncOutboxRecord {
+    pub idempotency_key: String,
+    pub owner_did: String,
+    pub app_instance_id: String,
+    pub payload_json: Value,
+    pub status: String,
+    pub attempt_count: i64,
+    pub next_attempt_at_ms: i64,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub sent_at_ms: Option<i64>,
+}
+
 impl std::fmt::Debug for UserDelegatedIdentityRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UserDelegatedIdentityRecord")
@@ -325,6 +376,88 @@ impl AppMessageAgentBindingRecord {
         }
         if !self.capability_policy_json.is_object() {
             bail!("capability_policy_json must be a JSON object");
+        }
+        Ok(())
+    }
+}
+
+impl InboxCursorRecord {
+    pub fn validate(&self) -> Result<()> {
+        if self.owner_did.trim().is_empty() {
+            bail!("owner_did must not be empty");
+        }
+        if self.inbox_scope.trim().is_empty() {
+            bail!("inbox_scope must not be empty");
+        }
+        if self
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.trim().is_empty())
+        {
+            bail!("cursor must not be empty when present");
+        }
+        Ok(())
+    }
+}
+
+impl ProcessedMessageRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("owner_did", self.owner_did.as_str()),
+            ("message_id", self.message_id.as_str()),
+            ("schema", self.schema.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl MessageEventRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("event_id", self.event_id.as_str()),
+            ("owner_did", self.owner_did.as_str()),
+            ("message_id", self.message_id.as_str()),
+            ("message_kind", self.message_kind.as_str()),
+            ("sender_did", self.sender_did.as_str()),
+            ("content_hash", self.content_hash.as_str()),
+            ("schema", self.schema.as_str()),
+            ("processing_status", self.processing_status.as_str()),
+            ("retention_class", self.retention_class.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if self
+            .plain_text_ref_or_excerpt
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > 512)
+        {
+            bail!("plain_text_ref_or_excerpt must be a short projection");
+        }
+        Ok(())
+    }
+}
+
+impl MessageSyncOutboxRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("idempotency_key", self.idempotency_key.as_str()),
+            ("owner_did", self.owner_did.as_str()),
+            ("app_instance_id", self.app_instance_id.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.payload_json.is_object() {
+            bail!("message sync outbox payload_json must be a JSON object");
         }
         Ok(())
     }
@@ -1439,6 +1572,342 @@ LIMIT 1
             )
             .optional()
             .context("load active app message agent binding by runtime")
+    }
+
+    pub fn list_active_app_message_agent_bindings(
+        &self,
+    ) -> Result<Vec<AppMessageAgentBindingRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    binding_id,
+    user_did,
+    inbox_auth_verification_method,
+    app_instance_id,
+    bootstrap_id,
+    idempotency_key,
+    daemon_agent_did,
+    runtime_agent_did,
+    runtime_profile_id,
+    role,
+    desired_agent_json,
+    capability_policy_json,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    revoked_at_ms
+FROM app_message_agent_binding
+WHERE revoked_at_ms IS NULL
+  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+ORDER BY updated_at_ms ASC
+"#,
+        )?;
+        let rows = statement.query_map([], app_message_agent_binding_from_row)?;
+        let mut bindings = Vec::new();
+        for row in rows {
+            bindings.push(row?);
+        }
+        Ok(bindings)
+    }
+
+    pub fn load_inbox_cursor(
+        &self,
+        owner_did: &str,
+        inbox_scope: &str,
+    ) -> Result<Option<InboxCursorRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT owner_did, inbox_scope, cursor, updated_at_ms
+FROM inbox_cursor
+WHERE owner_did = ?1 AND inbox_scope = ?2
+"#,
+                rusqlite::params![owner_did, inbox_scope],
+                inbox_cursor_from_row,
+            )
+            .optional()
+            .context("load inbox cursor")
+    }
+
+    pub fn upsert_inbox_cursor(&self, record: &InboxCursorRecord) -> Result<()> {
+        record.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO inbox_cursor (
+    owner_did,
+    inbox_scope,
+    cursor,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT(owner_did, inbox_scope) DO UPDATE SET
+    cursor = excluded.cursor,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                &record.owner_did,
+                &record.inbox_scope,
+                &record.cursor,
+                if record.updated_at_ms > 0 {
+                    record.updated_at_ms
+                } else {
+                    now
+                },
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_processed_message(
+        &self,
+        owner_did: &str,
+        message_id: &str,
+    ) -> Result<Option<ProcessedMessageRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT owner_did, message_id, schema, processed_at_ms, status
+FROM processed_message
+WHERE owner_did = ?1 AND message_id = ?2
+"#,
+                rusqlite::params![owner_did, message_id],
+                processed_message_from_row,
+            )
+            .optional()
+            .context("load processed message")
+    }
+
+    pub fn try_insert_processed_message(&self, record: &ProcessedMessageRecord) -> Result<bool> {
+        record.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let inserted = connection.execute(
+            r#"
+INSERT OR IGNORE INTO processed_message (
+    owner_did,
+    message_id,
+    schema,
+    processed_at_ms,
+    status
+) VALUES (?1, ?2, ?3, ?4, ?5)
+"#,
+            rusqlite::params![
+                &record.owner_did,
+                &record.message_id,
+                &record.schema,
+                if record.processed_at_ms > 0 {
+                    record.processed_at_ms
+                } else {
+                    now
+                },
+                &record.status,
+            ],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    pub fn mark_processed_message_status(
+        &self,
+        owner_did: &str,
+        message_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        if status.trim().is_empty() {
+            bail!("processed message status must not be empty");
+        }
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+UPDATE processed_message
+SET status = ?3,
+    processed_at_ms = ?4
+WHERE owner_did = ?1 AND message_id = ?2
+"#,
+            rusqlite::params![owner_did, message_id, status, current_time_millis()?],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_message_event(&self, record: &MessageEventRecord) -> Result<()> {
+        record.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO message_event (
+    event_id,
+    owner_did,
+    conversation_id,
+    message_id,
+    message_kind,
+    sender_did,
+    received_at,
+    plain_text_ref_or_excerpt,
+    content_hash,
+    schema,
+    processing_status,
+    retention_class,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+ON CONFLICT(event_id) DO UPDATE SET
+    conversation_id = excluded.conversation_id,
+    message_kind = excluded.message_kind,
+    sender_did = excluded.sender_did,
+    received_at = excluded.received_at,
+    plain_text_ref_or_excerpt = excluded.plain_text_ref_or_excerpt,
+    content_hash = excluded.content_hash,
+    schema = excluded.schema,
+    processing_status = excluded.processing_status,
+    retention_class = excluded.retention_class,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                &record.event_id,
+                &record.owner_did,
+                &record.conversation_id,
+                &record.message_id,
+                &record.message_kind,
+                &record.sender_did,
+                &record.received_at,
+                &record.plain_text_ref_or_excerpt,
+                &record.content_hash,
+                &record.schema,
+                &record.processing_status,
+                &record.retention_class,
+                if record.created_at_ms > 0 {
+                    record.created_at_ms
+                } else {
+                    now
+                },
+                if record.updated_at_ms > 0 {
+                    record.updated_at_ms
+                } else {
+                    now
+                },
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_message_event(&self, event_id: &str) -> Result<Option<MessageEventRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    event_id,
+    owner_did,
+    conversation_id,
+    message_id,
+    message_kind,
+    sender_did,
+    received_at,
+    plain_text_ref_or_excerpt,
+    content_hash,
+    schema,
+    processing_status,
+    retention_class,
+    created_at_ms,
+    updated_at_ms
+FROM message_event
+WHERE event_id = ?1
+"#,
+                [event_id],
+                message_event_from_row,
+            )
+            .optional()
+            .context("load message event")
+    }
+
+    pub fn upsert_message_sync_outbox(&self, record: &MessageSyncOutboxRecord) -> Result<()> {
+        record.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO message_sync_outbox (
+    idempotency_key,
+    owner_did,
+    app_instance_id,
+    payload_json,
+    status,
+    attempt_count,
+    next_attempt_at_ms,
+    last_error_code,
+    last_error_summary,
+    created_at_ms,
+    updated_at_ms,
+    sent_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+ON CONFLICT(idempotency_key) DO UPDATE SET
+    payload_json = excluded.payload_json,
+    status = excluded.status,
+    next_attempt_at_ms = excluded.next_attempt_at_ms,
+    last_error_code = excluded.last_error_code,
+    last_error_summary = excluded.last_error_summary,
+    updated_at_ms = excluded.updated_at_ms,
+    sent_at_ms = excluded.sent_at_ms
+"#,
+            rusqlite::params![
+                &record.idempotency_key,
+                &record.owner_did,
+                &record.app_instance_id,
+                record.payload_json.to_string(),
+                &record.status,
+                record.attempt_count,
+                record.next_attempt_at_ms,
+                &record.last_error_code,
+                &record.last_error_summary,
+                if record.created_at_ms > 0 {
+                    record.created_at_ms
+                } else {
+                    now
+                },
+                if record.updated_at_ms > 0 {
+                    record.updated_at_ms
+                } else {
+                    now
+                },
+                record.sent_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_message_sync_outbox(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<MessageSyncOutboxRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    idempotency_key,
+    owner_did,
+    app_instance_id,
+    payload_json,
+    status,
+    attempt_count,
+    next_attempt_at_ms,
+    last_error_code,
+    last_error_summary,
+    created_at_ms,
+    updated_at_ms,
+    sent_at_ms
+FROM message_sync_outbox
+WHERE idempotency_key = ?1
+"#,
+                [idempotency_key],
+                message_sync_outbox_from_row,
+            )
+            .optional()
+            .context("load message sync outbox")
     }
 
     pub fn store_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<()> {
@@ -3639,6 +4108,67 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         WHERE revoked_at_ms IS NULL
           AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
 
+        CREATE TABLE IF NOT EXISTS inbox_cursor (
+            owner_did TEXT NOT NULL,
+            inbox_scope TEXT NOT NULL,
+            cursor TEXT,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (owner_did, inbox_scope)
+        );
+
+        CREATE TABLE IF NOT EXISTS processed_message (
+            owner_did TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            schema TEXT NOT NULL,
+            processed_at_ms INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            PRIMARY KEY (owner_did, message_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_processed_message_status
+        ON processed_message(owner_did, status, processed_at_ms);
+
+        CREATE TABLE IF NOT EXISTS message_event (
+            event_id TEXT PRIMARY KEY,
+            owner_did TEXT NOT NULL,
+            conversation_id TEXT,
+            message_id TEXT NOT NULL,
+            message_kind TEXT NOT NULL,
+            sender_did TEXT NOT NULL,
+            received_at TEXT,
+            plain_text_ref_or_excerpt TEXT,
+            content_hash TEXT NOT NULL,
+            schema TEXT NOT NULL,
+            processing_status TEXT NOT NULL,
+            retention_class TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_message_event_owner_message
+        ON message_event(owner_did, message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_message_event_processing
+        ON message_event(owner_did, processing_status, created_at_ms);
+
+        CREATE TABLE IF NOT EXISTS message_sync_outbox (
+            idempotency_key TEXT PRIMARY KEY,
+            owner_did TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            sent_at_ms INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_message_sync_outbox_due
+        ON message_sync_outbox(status, next_attempt_at_ms, created_at_ms);
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -3661,6 +4191,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_final_plain_delivery_v15(connection)?;
     migrate_user_delegated_identity_v16(connection)?;
     migrate_app_message_agent_binding_v17(connection)?;
+    migrate_user_delegated_inbox_sync_v18(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -3744,6 +4275,74 @@ fn migrate_app_message_agent_binding_v17(connection: &Connection) -> Result<()> 
         ON app_message_agent_binding(user_did, app_instance_id, role)
         WHERE revoked_at_ms IS NULL
           AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_user_delegated_inbox_sync_v18(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS inbox_cursor (
+            owner_did TEXT NOT NULL,
+            inbox_scope TEXT NOT NULL,
+            cursor TEXT,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (owner_did, inbox_scope)
+        );
+
+        CREATE TABLE IF NOT EXISTS processed_message (
+            owner_did TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            schema TEXT NOT NULL,
+            processed_at_ms INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            PRIMARY KEY (owner_did, message_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_processed_message_status
+        ON processed_message(owner_did, status, processed_at_ms);
+
+        CREATE TABLE IF NOT EXISTS message_event (
+            event_id TEXT PRIMARY KEY,
+            owner_did TEXT NOT NULL,
+            conversation_id TEXT,
+            message_id TEXT NOT NULL,
+            message_kind TEXT NOT NULL,
+            sender_did TEXT NOT NULL,
+            received_at TEXT,
+            plain_text_ref_or_excerpt TEXT,
+            content_hash TEXT NOT NULL,
+            schema TEXT NOT NULL,
+            processing_status TEXT NOT NULL,
+            retention_class TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_message_event_owner_message
+        ON message_event(owner_did, message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_message_event_processing
+        ON message_event(owner_did, processing_status, created_at_ms);
+
+        CREATE TABLE IF NOT EXISTS message_sync_outbox (
+            idempotency_key TEXT PRIMARY KEY,
+            owner_did TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            sent_at_ms INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_message_sync_outbox_due
+        ON message_sync_outbox(status, next_attempt_at_ms, created_at_ms);
         "#,
     )?;
     Ok(())
@@ -4638,6 +5237,10 @@ mod tests {
             "user_delegated_identity",
             "bootstrap_replay",
             "app_message_agent_binding",
+            "inbox_cursor",
+            "processed_message",
+            "message_event",
+            "message_sync_outbox",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -4789,6 +5392,92 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored.status, "message_agent_ready");
+    }
+
+    #[test]
+    fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        let cursor = InboxCursorRecord {
+            owner_did: "did:human:alice".to_string(),
+            inbox_scope: "default_plain".to_string(),
+            cursor: Some("cursor_10".to_string()),
+            updated_at_ms: 0,
+        };
+        state.upsert_inbox_cursor(&cursor).unwrap();
+        let loaded_cursor = state
+            .load_inbox_cursor("did:human:alice", "default_plain")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_cursor.cursor.as_deref(), Some("cursor_10"));
+
+        let processed = ProcessedMessageRecord {
+            owner_did: "did:human:alice".to_string(),
+            message_id: "msg_1".to_string(),
+            schema: "awiki.user_message.default_plain.v1".to_string(),
+            processed_at_ms: 0,
+            status: "dispatched".to_string(),
+        };
+        assert!(state.try_insert_processed_message(&processed).unwrap());
+        assert!(!state.try_insert_processed_message(&processed).unwrap());
+        state
+            .mark_processed_message_status("did:human:alice", "msg_1", "done")
+            .unwrap();
+        let loaded_processed = state
+            .load_processed_message("did:human:alice", "msg_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_processed.status, "done");
+
+        let event = MessageEventRecord {
+            event_id: "evt_msg_1".to_string(),
+            owner_did: "did:human:alice".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            message_id: "msg_1".to_string(),
+            message_kind: "text".to_string(),
+            sender_did: "did:human:bob".to_string(),
+            received_at: Some("2026-06-09T00:00:00Z".to_string()),
+            plain_text_ref_or_excerpt: Some("hello".to_string()),
+            content_hash: "hash_1".to_string(),
+            schema: "awiki.user_message.default_plain.v1".to_string(),
+            processing_status: "agent_dispatched".to_string(),
+            retention_class: "short_excerpt".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        state.upsert_message_event(&event).unwrap();
+        let loaded_event = state.load_message_event("evt_msg_1").unwrap().unwrap();
+        assert_eq!(
+            loaded_event.plain_text_ref_or_excerpt.as_deref(),
+            Some("hello")
+        );
+
+        let sync = MessageSyncOutboxRecord {
+            idempotency_key: "message-sync:did:human:alice:msg_1".to_string(),
+            owner_did: "did:human:alice".to_string(),
+            app_instance_id: "app_1".to_string(),
+            payload_json: serde_json::json!({
+                "schema": "awiki.message.sync.v1",
+                "message_id": "msg_1"
+            }),
+            status: "pending".to_string(),
+            attempt_count: 0,
+            next_attempt_at_ms: 0,
+            last_error_code: None,
+            last_error_summary: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            sent_at_ms: None,
+        };
+        state.upsert_message_sync_outbox(&sync).unwrap();
+        let loaded_sync = state
+            .load_message_sync_outbox(&sync.idempotency_key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_sync.payload_json["message_id"], "msg_1");
     }
 
     #[test]
@@ -5396,6 +6085,71 @@ fn app_message_agent_binding_from_row(
         created_at_ms: row.get(13)?,
         updated_at_ms: row.get(14)?,
         revoked_at_ms: row.get(15)?,
+    })
+}
+
+fn inbox_cursor_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxCursorRecord> {
+    Ok(InboxCursorRecord {
+        owner_did: row.get(0)?,
+        inbox_scope: row.get(1)?,
+        cursor: row.get(2)?,
+        updated_at_ms: row.get(3)?,
+    })
+}
+
+fn processed_message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessedMessageRecord> {
+    Ok(ProcessedMessageRecord {
+        owner_did: row.get(0)?,
+        message_id: row.get(1)?,
+        schema: row.get(2)?,
+        processed_at_ms: row.get(3)?,
+        status: row.get(4)?,
+    })
+}
+
+fn message_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageEventRecord> {
+    Ok(MessageEventRecord {
+        event_id: row.get(0)?,
+        owner_did: row.get(1)?,
+        conversation_id: row.get(2)?,
+        message_id: row.get(3)?,
+        message_kind: row.get(4)?,
+        sender_did: row.get(5)?,
+        received_at: row.get(6)?,
+        plain_text_ref_or_excerpt: row.get(7)?,
+        content_hash: row.get(8)?,
+        schema: row.get(9)?,
+        processing_status: row.get(10)?,
+        retention_class: row.get(11)?,
+        created_at_ms: row.get(12)?,
+        updated_at_ms: row.get(13)?,
+    })
+}
+
+fn message_sync_outbox_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<MessageSyncOutboxRecord> {
+    let payload_json_raw: String = row.get(3)?;
+    let payload_json = serde_json::from_str(&payload_json_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            payload_json_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    Ok(MessageSyncOutboxRecord {
+        idempotency_key: row.get(0)?,
+        owner_did: row.get(1)?,
+        app_instance_id: row.get(2)?,
+        payload_json,
+        status: row.get(4)?,
+        attempt_count: row.get(5)?,
+        next_attempt_at_ms: row.get(6)?,
+        last_error_code: row.get(7)?,
+        last_error_summary: row.get(8)?,
+        created_at_ms: row.get(9)?,
+        updated_at_ms: row.get(10)?,
+        sent_at_ms: row.get(11)?,
     })
 }
 

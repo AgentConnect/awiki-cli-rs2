@@ -213,6 +213,7 @@ dependencies = [
  "anp",
  "anyhow",
  "base64",
+ "bs58",
  "im-core",
  "libc",
  "rand 0.8.6",

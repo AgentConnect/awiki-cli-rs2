@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：draft
+状态：committed
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 实现 user delegated inbox poller、durable cursor 和 processed message |
+| Status | committed |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T14:16:19Z |
+| Completed | 2026-06-09T15:33:31Z |
+| Commit | 待提交后回填 |
+| Review evidence | 2026-06-09 Review：检查 cursor/processed message、dispatch 失败、E2EE opaque、system/control payload、prompt 包装、message_event retention、runtime status/final outbox、delegated key material 和 DID shadow。发现并修复：失败 dispatch 后 `processed_message` 必须进入 retryable 且 cursor 不前移；message_event 必须在 dispatch 成功后写入；生产 dispatcher 不能只插入 runtime_task，必须实际运行 Runtime Host；failed prior runtime run 需要 retry run id；`private_key_multibase` 需要规范化为 im-core 可解析 PEM；delegated DID shadow 必须随当前 identity 刷新；runtime status/final 需要进入 `message_sync_outbox` 且不保存 final 明文。 |
+| Verification evidence | `cargo check -p awiki-deamon --locked`：通过；`cargo test -p awiki-deamon --lib --locked -j1 user_delegated -- --nocapture`：11 passed；`cargo test -p awiki-deamon --lib --locked -j1 delegated_inbox_sync_state -- --nocapture`：1 passed；`cargo test -p awiki-deamon --locked -j1`：lib 88 passed；main 0 passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。 |
+| Next action | 创建 Step 05 聚焦 commit 并回填 commit hash |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -95,16 +95,16 @@ message_event(
 
 ## 7. 验收标准
 
-- [ ] `process_user_delegated_inbox_once` 使用 `inbox_owner_did` 和 `inbox_auth_verification_method` 拉取普通消息。
-- [ ] `inbox_cursor` 和 `processed_message` 持久化，并能覆盖重启、重试、历史重放。
-- [ ] 普通非 E2EE 消息投递给 active `app_message_agent_binding`。
-- [ ] 普通非 E2EE 消息投递给 Hermes 前被包装为 untrusted content envelope，不把用户正文当系统指令。
-- [ ] `message_event` 使用最小投影，不保存 E2EE 内容或 Hermes 完整 prompt；全文保留策略如需启用必须记录 retention class。
-- [ ] E2EE opaque notification 不解密、不转发给 Hermes、不写入可处理明文事件。
-- [ ] Agent status/final/action/result 能通过 sync/outbox 进入 APP 可消费路径。
-- [ ] 现有 Agent own inbox polling 不回归。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] `process_user_delegated_inbox_once` 使用 `inbox_owner_did` 和 `inbox_auth_verification_method` 拉取普通消息。
+- [x] `inbox_cursor` 和 `processed_message` 持久化，并能覆盖重启、重试、历史重放。
+- [x] 普通非 E2EE 消息投递给 active `app_message_agent_binding`。
+- [x] 普通非 E2EE 消息投递给 Hermes 前被包装为 untrusted content envelope，不把用户正文当系统指令。
+- [x] `message_event` 使用最小投影，不保存 E2EE 内容或 Hermes 完整 prompt；全文保留策略如需启用必须记录 retention class。
+- [x] E2EE opaque notification 不解密、不转发给 Hermes、不写入可处理明文事件。
+- [x] Agent status/final 能通过 `message_sync_outbox` 进入 APP 可消费路径；action/result schema 和 APP 消费仍由 Step 08 完成。
+- [x] 现有 Agent own inbox polling 不回归。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -124,11 +124,11 @@ message_event(
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 7 项 | dispatch 失败若保持 `processing` 会导致后续跳过；message_event 在 dispatch 前写入会伪造已处理；生产 dispatcher 只入库不运行 Runtime Host；失败 runtime run 会被相同 run id 复用；bootstrap `private_key_multibase` 不能直接作为 im-core PEM key ref；DID shadow 文件不刷新会在 key 替换后过期；runtime status/final 只有 audit，没有进入 APP 可消费 outbox。 |
+| 已修复问题 | 已修复 | 增加 `failed_retryable` 与 retry-aware cursor 语义；成功 dispatch 后再写 `message_event`；生产 dispatcher 调用 `run_existing_runtime_task_with_config`；失败 run 使用 `_retry_N` run id；新增 delegated private key PEM normalization 和 0600 key 文件权限；DID shadow 每次按当前 identity 重写；status/final 入 `message_sync_outbox`，final 只保存 hash/has_text。 |
+| 剩余风险 | 已记录 | Step 07 message-service delegated send/inbox/history server policy 尚未实现，本步骤用 im-core adapter 和 mock contract 验证 daemon 本地逻辑；Step 08 才实现 APP action/result schema 与 APP 侧消费/展示；MVP delegated private key 仍沿用当前 daemon 本地 secret 存储方式，secure key store 留到后续。 |
+| 新增或缺失测试 | 已补充 | 新增 delegated inbox plain dispatch、cursor/replay、retryable failure、retry run id、E2EE ignore、system payload filter、private key normalization、runtime status/final outbox、state roundtrip/dedup 测试。 |
+| 已更新或缺失文档 | 已更新 | 本 Step 文档与主 Plan 台账回填 Review、验证、剩余风险和 commit 证据。 |
 
 ## 10. Commit 要求
 
@@ -144,7 +144,7 @@ message_event(
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| message-service delegated inbox API 尚未完成 | 待填写 | 使用 mock adapter 完成本地逻辑；最终验收等 Step 07 | 当前步骤 / Step 09 | 不标记端到端 done，记录依赖 |
+| message-service delegated inbox API 尚未完成 | Step 07 仍为 pending；本步骤使用 mock adapter 和 im-core optional API 验证 daemon 本地逻辑 | 已实现 daemon 本地 adapter、state 和 mock tests；端到端服务端策略留给 Step 07/09 | 当前步骤 / Step 09 | Step 05 可标记 daemon 本地逻辑 done；不把跨服务端到端验收提前标记完成 |
 
 ## 12. Plan 变更记录
 
@@ -154,6 +154,6 @@ message_event(
 
 ## 13. 风险、回滚与后续文档
 
-- 风险：错误处理 E2EE opaque notification 可能让 Agent 获得不应有的信息。
-- 回滚 / 回退：停用 user delegated inbox poller，保留 existing runtime inbox；清理可疑 message_event。
-- 后续文档：实现后更新 Daemon docs，记录 cursor、processed message 和 E2EE ignore 策略。
+- 风险：错误处理 E2EE opaque notification 可能让 Agent 获得不应有的信息；message-service delegated inbox server policy 未落地前无法完成真实跨服务端到端验收。
+- 回滚 / 回退：停用 user delegated inbox poller，保留 existing runtime inbox；清理可疑 message_event、message_sync_outbox 和 delegated key cache。
+- 后续文档：Step 07 更新 message-service API/architecture；Step 08 更新 APP action/schema 消费；Step 09 汇总 remote system test 证据。

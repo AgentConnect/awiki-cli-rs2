@@ -21,6 +21,7 @@ use crate::cli_wrapper::CliWrapperRequest;
 use crate::commands::{
     handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
 };
+use crate::inbox::user_delegated::process_user_delegated_inbox_once;
 use crate::inbox::ControllerTextMessage;
 use crate::local_rpc::call_uds_once;
 #[cfg(unix)]
@@ -146,6 +147,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
         let newly_processed = process_inbox_once(&config, &state, &im_core, &mut processed).await?;
+        let delegated_processed = process_user_delegated_inbox_once(&config, &state, &im_core)?;
         let retry_processed = {
             let outbox = rpc_outbox
                 .lock()
@@ -180,7 +182,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 Ok(_) => {}
             }
         };
-        let newly_processed = newly_processed + retry_processed;
+        let newly_processed = newly_processed + delegated_processed + retry_processed;
         processed_messages += newly_processed;
         if let Some(limit) = options.max_processed_messages {
             if processed_messages >= limit {
@@ -2401,8 +2403,14 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(binding.runtime_agent_did, message_agent.binding.runtime_agent_did);
-        assert_eq!(binding.runtime_profile_id, message_agent.binding.runtime_profile_id);
+        assert_eq!(
+            binding.runtime_agent_did,
+            message_agent.binding.runtime_agent_did
+        );
+        assert_eq!(
+            binding.runtime_profile_id,
+            message_agent.binding.runtime_profile_id
+        );
         assert!(!state
             .audit_event_exists(
                 "daemon.inbox.payload.ignored",
@@ -2493,9 +2501,11 @@ mod tests {
             .unwrap();
         assert_eq!(runtime_count, 1);
         let binding_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM app_message_agent_binding", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM app_message_agent_binding",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(binding_count, 1);
         let stored_non_secret_text: String = connection
