@@ -2,15 +2,15 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：07  
-状态：draft
+状态：in_progress
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
+| Status | in_progress |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T17:45:37Z |
 | Completed | - |
 | Commit | - |
 | Review evidence | - |
