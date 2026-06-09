@@ -14,7 +14,7 @@
 
 1. **第一阶段 / MVP：用户 DID 子私钥方案**
    - APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把新的子签名私钥，称为 **User Delegated Subkey**，MVP 固定 DID URL fragment 为 `#daemon-key-1`，完整 verification method 为 `user_did#daemon-key-1`。
-   - 创建 DID Document 的地方必须调用最新 user-service / DID API，把 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method 交给 user-service 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`；user-service 不生成、不接收、不返回 daemon subkey private material。
+   - 创建 DID Document 的地方必须先由 APP 本地生成 key package，再调用最新 user-service / DID API，只把 `user_did#daemon-key-1` public verification method 交给 user-service 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`；user-service 不生成、不接收、不返回 daemon subkey private material。
    - MVP 第一版先允许 APP 通过普通消息发送明文 JSON bootstrap payload 将这把子私钥传给 Daemon；这是已知安全缺口。
    - 后续版本仍通过普通消息发送，只把 bootstrap body 从明文 JSON 改为加密文本或加密 JSON envelope。
    - bootstrap 阶段不再负责追加修改 DID Document，只传递已经存在且已登记的子私钥 key package。
@@ -65,7 +65,7 @@ ANP SDK / im-core 只通过可选参数支持 delegated signing/inbox，不影�
 |---|---|
 | User DID | 用户主 DID，例如 `did:wba:example.com:user:alice:e1_xxx`。 |
 | User Main Key | 用户主私钥，通常对应 DID path 中 `e1_` 绑定 key 或用户主认证 key。MVP 不传给 Daemon。 |
-| User Delegated Subkey / 子私钥 | APP 在创建用户 DID Document 时本地生成的一把子签名私钥，例如 `user_did#daemon-key-1`；user-service 只登记对应 public verification method。MVP 第一版 APP 通过普通消息发送明文 JSON bootstrap 传给 Daemon；后续普通消息 body 改为加密文本或加密 JSON envelope。 |
+| User Delegated Subkey / 子私钥 | APP 在创建用户 DID Document 时本地生成的一把子签名私钥，例如 `user_did#daemon-key-1`；user-service 只登记对应 public verification method，不生成、不接收、不返回私钥。MVP 第一版 APP 通过普通消息发送明文 JSON bootstrap 传给 Daemon；后续普通消息 body 改为加密文本或加密 JSON envelope。 |
 | Daemon | 本地或云端 Agent Runtime Host，负责保管子私钥、拉取消息、调用 im-core/message SDK、调度 Hermes。 |
 | Hermes Agent | 具体 Runtime Agent。建议 Hermes 不直接持有 DID 私钥，而是通过 Daemon local RPC 请求发送、签名、拉取等能力。 |
 | Agent DID | 长期方案中 Agent 自己的 DID，例如 `did:wba:example.com:agent:hermes:e1_xxx`。 |
@@ -391,7 +391,7 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
 
 注意：
 
-1. `allowed_usage_hint` 在 MVP 中只是本域策略提示，不是 DID Core 标准强制语义。运行时真正权限由 message-service 根据 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 执行；user-service 只负责 public verification method 登记、撤销和审计状态。scoped token scope 是后续优化路径。
+1. `allowed_usage_hint` 在 MVP 中只是本域策略提示，不是 DID Core 标准强制语义。运行时真正权限由 message-service 根据 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 执行；message-service MVP 不调用 user-service，也不读取 user-service 审计记录。user-service 只负责 public verification method 登记、撤销和审计状态。scoped token scope 是后续优化路径。
 2. `desired_message_agent` 表示期望状态，不是命令式创建请求。Daemon 应以 `ensure_once_key` 幂等创建或复用 `role=app_message_handler` 的 Runtime Agent。
 3. Hermes Message Agent 不直接持有子私钥；Daemon 只把 inbox/send 能力通过 local RPC、runtime token 和 policy 暴露给它。
 
@@ -1150,11 +1150,11 @@ Scope 对应关系：
    - 创建用户 DID Document 时接收 APP 本地生成 key package 对应的 `#daemon-key-1` public verification method，并只登记到 DID Document `verificationMethod` 与 `authentication`；
    - user-service 不生成、不接收、不返回 daemon subkey private material；
    - 撤销 `#daemon-key-1` public verification method；
-   - 查询用户已登记的 daemon public verification method。
+   - 从 DID Document 查询当前有效的 daemon public verification method。
 
-2. Public registration / audit API
-   - MVP 记录 `user_did#daemon-key-1` public registration、状态和审计信息；
-   - message-service MVP 的每次请求授权不查询、不缓存、不依赖 user-service public registration / audit record，只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
+2. Public audit API
+   - MVP 记录 `user_did#daemon-key-1` public verification method 的状态和审计信息；
+   - message-service MVP 的每次请求授权不调用 user-service，不查询、不缓存、不依赖 user-service audit record，只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope；
    - 后续根据 `user_did#daemon-key-1` 签发 scoped inbox token；
    - MVP 后再根据 Agent DID delegation 签发 delegated inbox token。
 
@@ -1301,12 +1301,12 @@ CREATE TABLE agent_delegations (
 
 MVP 可先使用 `private_key_material` 沿用现有 daemon identity private key 存储方式；后续安全版本迁移到 `private_key_ref`，并清除明文私钥字段。
 
-### 11.2 user-service public registration / audit 表
+### 11.2 user-service public audit 表
 
-下面的表只属于 user-service public registration、撤销和审计状态，不是 message-service MVP 运行时授权依赖。message-service MVP 只读取 DID Document，并基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定请求。
+下面的表只属于 user-service public verification method 撤销和审计状态，不是 message-service MVP 运行时授权依赖。message-service MVP 不调用该表、不查询 user-service 自有审计状态；它只读取 DID Document，并基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定请求。
 
 ```sql
-CREATE TABLE user_delegated_key_registry (
+CREATE TABLE user_delegated_key_audit (
   user_did TEXT NOT NULL,
   verification_method TEXT PRIMARY KEY,
   key_kind TEXT NOT NULL,

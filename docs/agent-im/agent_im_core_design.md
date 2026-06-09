@@ -162,7 +162,7 @@ Agent 可以很强，但必须可控。所有自动化能力都要可配置、�
 MVP 的身份构建结论改为：
 
 1. APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把 User Delegated Subkey private/public key package，MVP 固定 DID URL 为 `user_did#daemon-key-1`，fragment 固定为 `#daemon-key-1`，不包含设备名、设备型号、时间戳或其他可识别设备信息。
-2. 生成 DID Document 的代码路径必须调用最新 user-service / DID API，只把 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method 交给 user-service；user-service 只负责把这个 public verification method 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`，并返回包含 `#daemon-key-1` 的 DID Document，而不是在 Daemon pairing/bootstrap 时再追加修改 DID Document。user-service 不生成、不接收、不返回 daemon subkey private material。
+2. APP 创建用户 DID Document 的代码路径必须先在 APP 本地生成该 key package，再调用最新 user-service / DID API，只提交 `user_did#daemon-key-1` public verification method；user-service 只负责把这个 public verification method 登记到初始 DID Document 的 `verificationMethod` 与 `authentication`，并返回包含 `#daemon-key-1` 的 DID Document，而不是生成私钥，也不是在 Daemon pairing/bootstrap 时再追加修改 DID Document。user-service 不生成、不接收、不返回 daemon subkey private material。
 3. APP 把这把已存在的子私钥传给 Daemon。MVP 先允许通过普通消息发送明文 JSON system/control payload bootstrap，这是已知安全缺口；后续仍通过普通消息发送，只把 private package 改为加密文本或加密 JSON envelope。
 4. Daemon 用该子私钥代表用户处理普通非 E2EE 消息的发送、接收、同步和 Agent 管理。
 5. Daemon 不持有用户主私钥，不持有 direct/group E2EE 私有会话状态。
@@ -397,7 +397,7 @@ sequenceDiagram
 
 落地要求：
 
-1. `user-service` 必须支持创建 DID Document 时接收 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并且只登记到 DID Document `verificationMethod` 与 `authentication`；后续撤销、轮换和 public registration 审计记录也只处理 public verification method。user-service 不生成、不接收、不返回 daemon subkey private material。
+1. `user-service` 必须支持创建 DID Document 时接收 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并且只登记到 DID Document `verificationMethod` 与 `authentication`；后续撤销、轮换和审计记录也只处理 public verification method。user-service 不生成、不接收、不返回 daemon subkey private material。
 2. `message-service` 必须支持该子 key 对普通 inbox/history 的接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 3. daemon 必须新增 user delegated inbox poller，而不是只轮询 Agent DID inbox。
 4. APP-side forward 不作为普通消息 MVP 主路径，只保留给未来 E2EE 或特殊场景。
@@ -1288,17 +1288,17 @@ E2EE profiles 是否公开，仍应跟随 message-service 的 discovery security
 
 ## 5.6 `user-service` 改造方案
 
-MVP 需要把 user-service 纳入范围，负责用户 DID Document public verification method 登记、撤销和审计状态。user-service 不是 daemon subkey private material 的生成方；message-service MVP 的请求授权不查询、不依赖 user-service delegated key registry，只读取 DID Document 并校验 `authentication`：
+MVP 需要把 user-service 纳入范围，负责用户 DID Document public verification method 登记、撤销和审计状态。APP 本地生成 `user_did#daemon-key-1` private/public key package；user-service 只登记 public verification method，不生成、不接收、不返回 daemon subkey private material。message-service MVP 的请求授权不调用 user-service，不依赖 user-service 自有审计状态，只读取 DID Document 并校验 `authentication`：
 
 1. DID Document key management API：
    - 创建用户 DID Document 时接收 APP 本地生成 key package 对应的 `user_did#daemon-key-1` public verification method，并只登记到 DID Document `verificationMethod` 与 `authentication`；
    - user-service 不生成、不接收、不返回 daemon subkey private material；
    - 从 `authentication` 移除或撤销 `user_did#daemon-key-1`；
-   - 查询用户已登记的 daemon public verification method。
-2. public registration / audit record（不作为 message-service MVP 授权依赖）：
+   - 从 DID Document 查询当前有效的 daemon public verification method。
+2. public audit record（不作为 message-service MVP 授权依赖）：
    - 记录 `user_did`、`verification_method`、`daemon_instance_id`、`daemon_agent_did`、scope、expires、status、revoked_at；
    - 标记该 key 是 daemon delegated subkey，不是用户主 key；
-   - MVP 中该记录只用于 user-service 自身查询、撤销、审计和后续演进预留；message-service 每次请求不查询、不缓存、不依赖该记录。
+   - MVP 中该记录只用于 user-service 自身查询、撤销、审计和后续演进预留；message-service 每次请求不查询、不缓存、不依赖该记录，只以 DID Document `authentication` 为授权来源。
 3. inbox authorization：
    - message-service MVP 只基于请求内 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 做运行时授权；
    - scoped inbox token 可作为中期优化，但不进入 MVP 主路径。
@@ -1342,7 +1342,7 @@ MVP 需要把 user-service 纳入范围，负责用户 DID Document public verif
 ### 缺点
 
 - 子 key 在 DID `authentication` 中，仍可能被外部验证方视为完整用户 authentication key。
-- 需要 user-service 增加 public registration / revoke / audit 记录，message-service 增加基于 DID Document `authentication` 的普通消息接收权限校验。
+- 需要 user-service 在 DID Document 管理 API 中支持 public verification method 登记、撤销和审计，message-service 增加基于 DID Document `authentication` 的普通消息接收权限校验。
 - Daemon compromise 后，攻击者可在撤销前用该 key 发送普通消息。
 
 ### 结论
