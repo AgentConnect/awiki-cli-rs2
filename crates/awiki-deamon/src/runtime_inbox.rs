@@ -97,6 +97,7 @@ pub fn query_runtime_inbox_thread(
         HistoryQuery {
             limit: PageLimit(input.limit.min(MAX_LIMIT)),
             cursor: None,
+            inbox_history_options: None,
         },
     );
     let conversation_id = conversation_id_from_thread_query(&input)?;
@@ -213,6 +214,7 @@ fn refresh_runtime_conversation_projection(
         limit: PageLimit(inbox_limit),
         cursor: None,
         unread_only: false,
+        inbox_history_options: None,
     })?;
     Ok(())
 }

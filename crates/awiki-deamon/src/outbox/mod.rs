@@ -109,6 +109,7 @@ impl ImCoreAgentOutbox {
             security,
             client_message_id: None,
             delivery: MessageDeliveryOptions::default(),
+            delegated_signing: None,
         };
         Ok(self.client.messages().send_async(request).await?)
     }
@@ -177,6 +178,7 @@ impl ImCoreAgentOutbox {
                 security: security.to_im_core_direct()?,
                 client_message_id,
                 delivery,
+                delegated_signing: None,
             })
             .await?;
         Ok(result)
@@ -683,6 +685,7 @@ impl RuntimeMessageSend {
                 idempotency_key: self.idempotency_key,
                 wait_for_final_acceptance: false,
             },
+            delegated_signing: None,
         })
     }
 }

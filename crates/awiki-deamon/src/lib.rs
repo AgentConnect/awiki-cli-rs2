@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_status;
+pub mod app_bridge;
 pub mod cli_wrapper;
 pub mod commands;
 pub mod config;

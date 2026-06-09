@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent_status::HeartbeatScheduler;
+use crate::app_bridge::message_control::{
+    handle_app_control_payload, is_app_control_payload, IncomingAppControlPayload,
+};
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::commands::{
     handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
@@ -233,6 +236,7 @@ async fn process_inbox_once(
                 limit: im_core::ids::PageLimit::new(20)?,
                 cursor: None,
                 unread_only: false,
+                inbox_history_options: None,
             })
             .await
             .with_context(|| format!("poll inbox for agent {}", agent.agent_did))?;
@@ -467,6 +471,28 @@ fn route_message(
                 .content_type
                 .clone()
                 .unwrap_or_else(|| "application/json".to_string());
+            let payload_message = IncomingAgentPayloadMessage {
+                message_id: message.id.as_str().to_string(),
+                conversation_id,
+                sender_did,
+                target_agent_did: target_agent_did.to_string(),
+                content_type: content_type.clone(),
+                payload: payload.clone(),
+            };
+            if is_app_control_payload(payload) {
+                handle_app_control_payload(
+                    state,
+                    IncomingAppControlPayload {
+                        message_id: payload_message.message_id,
+                        conversation_id: payload_message.conversation_id,
+                        sender_did: payload_message.sender_did,
+                        target_agent_did: payload_message.target_agent_did,
+                        content_type: payload_message.content_type,
+                        payload: payload_message.payload,
+                    },
+                )?;
+                return Ok(true);
+            }
             if !is_awiki_agent_command_payload(payload) {
                 record_ignored_non_command_payload(
                     state,
@@ -477,14 +503,6 @@ fn route_message(
                 )?;
                 return Ok(false);
             }
-            let payload_message = IncomingAgentPayloadMessage {
-                message_id: message.id.as_str().to_string(),
-                conversation_id,
-                sender_did,
-                target_agent_did: target_agent_did.to_string(),
-                content_type,
-                payload: payload.clone(),
-            };
             if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
                 run_runtime_task_command(config, state, im_core, payload_message)?;
             } else {
@@ -1710,6 +1728,9 @@ mod tests {
     use im_core::messages::{DeliveryState, SendMessageResult};
 
     use super::*;
+    use crate::app_bridge::message_control::{
+        handle_app_control_payload, is_app_control_payload, IncomingAppControlPayload,
+    };
     use crate::commands::{
         handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
         IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
@@ -1884,6 +1905,32 @@ mod tests {
             AgentCommandOutcome::RuntimeAgentCreated(created) => created,
             other => panic!("expected runtime agent create outcome, got {other:?}"),
         }
+    }
+
+    fn bootstrap_payload_fixture() -> Value {
+        json!({
+            "schema": "awiki.daemon.bootstrap.v1",
+            "bootstrap_id": "boot_1",
+            "idempotency_key": "message-agent-bootstrap:did:human:alice:app_1",
+            "app_instance_id": "app_1",
+            "controller_did": "did:human:alice",
+            "user_subkey_package": {
+                "schema": "awiki.daemon.user_subkey_package.v1",
+                "user_did": "did:human:alice",
+                "verification_method": "did:human:alice#daemon-key-1",
+                "public_key_multibase": "z-public",
+                "private_key_multibase": "z-private-secret",
+                "allowed_scopes": [
+                    "message.inbox.read.plain",
+                    "message.history.read.plain",
+                    "message.send.plain"
+                ]
+            },
+            "desired_message_agent": {
+                "role": "app_message_handler",
+                "runtime": "hermes"
+            }
+        })
     }
 
     #[test]
@@ -2269,6 +2316,57 @@ mod tests {
             conversation_id(&message).as_deref(),
             Some("direct:did:human:alice")
         );
+    }
+
+    #[test]
+    fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
+        let (_root, config, state) = fixture();
+        let registration = MockRegistrationClient;
+        let daemon = setup_daemon_agent(
+            &config,
+            &state,
+            &registration,
+            "alice-mac-daemon",
+            "did:human:alice",
+            RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+        )
+        .unwrap();
+        let payload = bootstrap_payload_fixture();
+
+        assert!(is_app_control_payload(&payload));
+        assert!(!is_awiki_agent_command_payload(&payload));
+        let outcome = handle_app_control_payload(
+            &state,
+            IncomingAppControlPayload {
+                message_id: "msg_bootstrap".to_string(),
+                conversation_id: Some("direct:did:agent:daemon".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload,
+            },
+        )
+        .unwrap();
+        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived(outcome) =
+            outcome;
+        assert_eq!(outcome.status, "paired_key_received");
+        assert!(!outcome.replayed);
+
+        let loaded = state
+            .load_user_delegated_identity("did:human:alice#daemon-key-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.user_did, "did:human:alice");
+        assert_eq!(loaded.daemon_agent_did, daemon.agent_did);
+        assert_eq!(loaded.private_key_material, "z-private-secret");
+        assert!(!format!("{loaded:?}").contains("z-private-secret"));
+        assert!(!state
+            .audit_event_exists(
+                "daemon.inbox.payload.ignored",
+                Some(&daemon.agent_did),
+                Some("msg_bootstrap"),
+            )
+            .unwrap());
     }
 
     #[test]

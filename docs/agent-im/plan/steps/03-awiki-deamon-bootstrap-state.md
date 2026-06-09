@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
+| Status | review |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T12:46:56Z |
 | Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 设计 `awiki.daemon.bootstrap.v1` 解析、secret store 和幂等状态表 |
+| Commit | 待回填：`awiki-deamon: add app bootstrap state` |
+| Review evidence | 2026-06-09 Review：检查 secret handling、control payload redaction、幂等冲突、状态恢复、schema dispatch、E2EE / main key 禁止、Step 04 边界。发现并修复：control payload / extra Debug redaction 不够硬；bootstrap replay 查重在 transaction 外存在并发写入窗口；schema version 升级后集成测试仍期望 15。剩余风险：MVP 仍按现有 daemon secret 存储方式保存 delegated subkey，明文 bootstrap body 加密和 secure key store 留到后续版本。 |
+| Verification evidence | `cargo test -p awiki-deamon --locked -j1`：72 lib tests passed；integration tests passed：21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 21 + 2；doc tests 0 passed；0 failed。补充 targeted：`cargo test -p awiki-deamon --locked -j1 app_bridge -- --nocapture`：8 passed；`cargo test -p awiki-deamon --locked -j1 delegated_identity -- --nocapture`：2 passed；`git diff --check`：通过。 |
+| Next action | 创建 Step 03 聚焦 commit，并在主 Plan / Step 台账回填 commit hash |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -68,16 +68,16 @@ Step index：03
 
 ## 7. 验收标准
 
-- [ ] Daemon 能从 message-service 普通消息 payload 解析 `awiki.daemon.bootstrap.v1` 并保存 user delegated identity。
-- [ ] `user_subkey_package` 与 Step 01 `DaemonSubkeyPrivatePackage` schema 对齐。
-- [ ] Daemon 不接受用户主私钥或 E2EE private state。
-- [ ] Daemon 不新增本地 RPC、局域网或独立传输通道 bootstrap 入口；APP ↔ Daemon bootstrap 只走普通消息发送。
-- [ ] `awiki.daemon.bootstrap.v1` 被识别为 system/control payload，不显示为普通聊天，不进入 Hermes prompt。
-- [ ] `bootstrap_id` / `idempotency_key` 重放幂等；冲突 payload 明确拒绝。
-- [ ] secret store 不把 private key 写入日志、prompt、runtime temp、普通 audit detail。
-- [ ] Daemon 重启后能恢复 `paired_key_received` 状态。
-- [ ] 本步骤不创建重复 Runtime Agent；Message Agent 创建留给 Step 04。
-- [ ] Review 发现已经修复或明确记录。
+- [x] Daemon 能从 message-service 普通消息 payload 解析 `awiki.daemon.bootstrap.v1` 并保存 user delegated identity。
+- [x] `user_subkey_package` 与 Step 01 `DaemonSubkeyPrivatePackage` schema 对齐。
+- [x] Daemon 不接受用户主私钥或 E2EE private state。
+- [x] Daemon 不新增本地 RPC、局域网或独立传输通道 bootstrap 入口；APP ↔ Daemon bootstrap 只走普通消息发送。
+- [x] `awiki.daemon.bootstrap.v1` 被识别为 system/control payload，不显示为普通聊天，不进入 Hermes prompt。
+- [x] `bootstrap_id` / `idempotency_key` 重放幂等；冲突 payload 明确拒绝。
+- [x] secret store 不把 private key 写入日志、prompt、runtime temp、普通 audit detail。
+- [x] Daemon 重启后能恢复 `paired_key_received` 状态。
+- [x] 本步骤不创建重复 Runtime Agent；Message Agent 创建留给 Step 04。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
@@ -98,11 +98,51 @@ Step index：03
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待填写 | - |
-| 已修复问题 | 待填写 | - |
-| 剩余风险 | 待填写 | - |
-| 新增或缺失测试 | 待填写 | - |
-| 已更新或缺失文档 | 待填写 | - |
+| 发现问题 | 3 项 | control payload / extra Debug redaction 不够硬；bootstrap replay 查重在 transaction 外存在并发写入窗口；schema version 升级后 `hermes_profile` / `state_bootstrap` 集成测试仍期望 15。 |
+| 已修复问题 | 3 项 | Debug 改为 redacted control payload，并拒绝 extra 中通用 `private_key` 字段；`store_bootstrap_state` 改用 immediate transaction 内查重和写入；测试预期更新为 schema version 16。 |
+| 剩余风险 | 已记录 | MVP 仍按现有 daemon identity private key 存储方式保存 delegated subkey；普通消息明文 bootstrap body 加密、OS keychain/KMS、密钥覆盖/撤销自动清理留到后续版本。 |
+| 新增或缺失测试 | 已新增 | app_bridge 单测覆盖 schema、owner、fragment、E2EE scope、main key、extra private key redaction；state 单测覆盖 roundtrip、replay idempotency、conflict、restart restore；foreground 单测覆盖 system/control dispatch 和 ignored audit 不污染。 |
+| 已更新或缺失文档 | 已更新 | 本 Step 和主 Plan 台账记录 Review、验证和 commit 范围；两篇设计文档边界清理已在独立 docs commit `745a3d9` 完成。 |
+
+### Commit 执行记录
+
+Commit 前状态：
+
+```text
+## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 7]
+ M crates/awiki-deamon/src/foreground.rs
+ M crates/awiki-deamon/src/lib.rs
+ M crates/awiki-deamon/src/outbox/mod.rs
+ M crates/awiki-deamon/src/runtime_inbox.rs
+ M crates/awiki-deamon/src/state/mod.rs
+ M crates/awiki-deamon/tests/hermes_profile.rs
+ M crates/awiki-deamon/tests/state_bootstrap.rs
+ M docs/agent-im/plan/plan.md
+ M docs/agent-im/plan/steps/03-awiki-deamon-bootstrap-state.md
+?? crates/awiki-deamon/src/app_bridge/
+```
+
+纳入文件：
+
+```text
+crates/awiki-deamon/src/app_bridge/mod.rs
+crates/awiki-deamon/src/app_bridge/bootstrap.rs
+crates/awiki-deamon/src/app_bridge/message_control.rs
+crates/awiki-deamon/src/app_bridge/secret_store.rs
+crates/awiki-deamon/src/lib.rs
+crates/awiki-deamon/src/foreground.rs
+crates/awiki-deamon/src/outbox/mod.rs
+crates/awiki-deamon/src/runtime_inbox.rs
+crates/awiki-deamon/src/state/mod.rs
+crates/awiki-deamon/tests/hermes_profile.rs
+crates/awiki-deamon/tests/state_bootstrap.rs
+docs/agent-im/plan/plan.md
+docs/agent-im/plan/steps/03-awiki-deamon-bootstrap-state.md
+```
+
+Commit 后证据：待回填 commit hash 和 commit 后 `git status --short --branch`。
+
+遗留未提交变更：预期只剩 commit hash 回填台账；若出现其它变更，提交前必须重新检查原因。
 
 ## 10. Commit 要求
 

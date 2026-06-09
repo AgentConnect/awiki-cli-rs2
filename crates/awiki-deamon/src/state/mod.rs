@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 15;
+const DAEMON_SCHEMA_VERSION: i64 = 16;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -192,6 +192,110 @@ pub struct HermesProfileRecord {
     pub hermes_version: Option<String>,
     pub awiki_skills_version: String,
     pub status: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserDelegatedIdentityRecord {
+    pub user_did: String,
+    pub verification_method: String,
+    pub app_instance_id: String,
+    pub controller_did: String,
+    pub daemon_agent_did: String,
+    pub public_key_multibase: String,
+    pub private_key_material: String,
+    pub allowed_scopes_json: Value,
+    pub status: String,
+    pub expires_at: Option<String>,
+    pub bootstrap_id: String,
+    pub idempotency_key: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapReplayRecord {
+    pub bootstrap_id: String,
+    pub idempotency_key: String,
+    pub payload_hash: String,
+    pub user_did: String,
+    pub verification_method: String,
+    pub app_instance_id: String,
+    pub daemon_agent_did: String,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapStoreOutcome {
+    Inserted,
+    Duplicate,
+}
+
+impl std::fmt::Debug for UserDelegatedIdentityRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserDelegatedIdentityRecord")
+            .field("user_did", &self.user_did)
+            .field("verification_method", &self.verification_method)
+            .field("app_instance_id", &self.app_instance_id)
+            .field("controller_did", &self.controller_did)
+            .field("daemon_agent_did", &self.daemon_agent_did)
+            .field("public_key_multibase", &self.public_key_multibase)
+            .field("private_key_material", &"<redacted-private-key>")
+            .field("allowed_scopes_json", &self.allowed_scopes_json)
+            .field("status", &self.status)
+            .field("expires_at", &self.expires_at)
+            .field("bootstrap_id", &self.bootstrap_id)
+            .field("idempotency_key", &self.idempotency_key)
+            .field("created_at_ms", &self.created_at_ms)
+            .field("updated_at_ms", &self.updated_at_ms)
+            .finish()
+    }
+}
+
+impl UserDelegatedIdentityRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("user_did", self.user_did.as_str()),
+            ("verification_method", self.verification_method.as_str()),
+            ("app_instance_id", self.app_instance_id.as_str()),
+            ("controller_did", self.controller_did.as_str()),
+            ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("public_key_multibase", self.public_key_multibase.as_str()),
+            ("private_key_material", self.private_key_material.as_str()),
+            ("status", self.status.as_str()),
+            ("bootstrap_id", self.bootstrap_id.as_str()),
+            ("idempotency_key", self.idempotency_key.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !self.allowed_scopes_json.is_array() {
+            bail!("allowed_scopes_json must be a JSON array");
+        }
+        Ok(())
+    }
+}
+
+impl BootstrapReplayRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("bootstrap_id", self.bootstrap_id.as_str()),
+            ("idempotency_key", self.idempotency_key.as_str()),
+            ("payload_hash", self.payload_hash.as_str()),
+            ("user_did", self.user_did.as_str()),
+            ("verification_method", self.verification_method.as_str()),
+            ("app_instance_id", self.app_instance_id.as_str()),
+            ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl HermesProfileRecord {
@@ -917,6 +1021,186 @@ WHERE agent_did = ?1
                 agent_identity_from_row,
             )
             .with_context(|| format!("load agent identity {agent_did}"))
+    }
+
+    pub fn store_bootstrap_state(
+        &self,
+        identity: &UserDelegatedIdentityRecord,
+        replay: &BootstrapReplayRecord,
+    ) -> Result<BootstrapStoreOutcome> {
+        identity.validate()?;
+        replay.validate()?;
+        if identity.user_did != replay.user_did
+            || identity.verification_method != replay.verification_method
+            || identity.app_instance_id != replay.app_instance_id
+            || identity.daemon_agent_did != replay.daemon_agent_did
+            || identity.bootstrap_id != replay.bootstrap_id
+            || identity.idempotency_key != replay.idempotency_key
+            || identity.status != replay.status
+        {
+            bail!("bootstrap replay and delegated identity records do not match");
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_bootstrap_replay_by_id_or_key(
+            &transaction,
+            &replay.bootstrap_id,
+            &replay.idempotency_key,
+        )? {
+            if existing.payload_hash != replay.payload_hash {
+                bail!("daemon bootstrap replay conflict");
+            }
+            if existing.bootstrap_id != replay.bootstrap_id
+                || existing.idempotency_key != replay.idempotency_key
+                || existing.user_did != replay.user_did
+                || existing.verification_method != replay.verification_method
+                || existing.app_instance_id != replay.app_instance_id
+                || existing.daemon_agent_did != replay.daemon_agent_did
+            {
+                bail!("daemon bootstrap replay identity conflict");
+            }
+            return Ok(BootstrapStoreOutcome::Duplicate);
+        }
+        let now = current_time_millis()?;
+        transaction.execute(
+            r#"
+INSERT INTO bootstrap_replay (
+    bootstrap_id,
+    idempotency_key,
+    payload_hash,
+    user_did,
+    verification_method,
+    app_instance_id,
+    daemon_agent_did,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+"#,
+            rusqlite::params![
+                &replay.bootstrap_id,
+                &replay.idempotency_key,
+                &replay.payload_hash,
+                &replay.user_did,
+                &replay.verification_method,
+                &replay.app_instance_id,
+                &replay.daemon_agent_did,
+                &replay.status,
+                now,
+            ],
+        )?;
+        transaction.execute(
+            r#"
+INSERT INTO user_delegated_identity (
+    user_did,
+    verification_method,
+    app_instance_id,
+    controller_did,
+    daemon_agent_did,
+    public_key_multibase,
+    private_key_material,
+    allowed_scopes_json,
+    status,
+    expires_at,
+    bootstrap_id,
+    idempotency_key,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+ON CONFLICT(verification_method) DO UPDATE SET
+    user_did = excluded.user_did,
+    app_instance_id = excluded.app_instance_id,
+    controller_did = excluded.controller_did,
+    daemon_agent_did = excluded.daemon_agent_did,
+    public_key_multibase = excluded.public_key_multibase,
+    private_key_material = excluded.private_key_material,
+    allowed_scopes_json = excluded.allowed_scopes_json,
+    status = excluded.status,
+    expires_at = excluded.expires_at,
+    bootstrap_id = excluded.bootstrap_id,
+    idempotency_key = excluded.idempotency_key,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                &identity.user_did,
+                &identity.verification_method,
+                &identity.app_instance_id,
+                &identity.controller_did,
+                &identity.daemon_agent_did,
+                &identity.public_key_multibase,
+                &identity.private_key_material,
+                identity.allowed_scopes_json.to_string(),
+                &identity.status,
+                &identity.expires_at,
+                &identity.bootstrap_id,
+                &identity.idempotency_key,
+                now,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(BootstrapStoreOutcome::Inserted)
+    }
+
+    pub fn load_user_delegated_identity(
+        &self,
+        verification_method: &str,
+    ) -> Result<Option<UserDelegatedIdentityRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    user_did,
+    verification_method,
+    app_instance_id,
+    controller_did,
+    daemon_agent_did,
+    public_key_multibase,
+    private_key_material,
+    allowed_scopes_json,
+    status,
+    expires_at,
+    bootstrap_id,
+    idempotency_key,
+    created_at_ms,
+    updated_at_ms
+FROM user_delegated_identity
+WHERE verification_method = ?1
+"#,
+                [verification_method],
+                user_delegated_identity_from_row,
+            )
+            .optional()
+            .context("load user delegated identity")
+    }
+
+    pub fn load_bootstrap_replay(
+        &self,
+        bootstrap_id: &str,
+    ) -> Result<Option<BootstrapReplayRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    bootstrap_id,
+    idempotency_key,
+    payload_hash,
+    user_did,
+    verification_method,
+    app_instance_id,
+    daemon_agent_did,
+    status,
+    created_at_ms,
+    updated_at_ms
+FROM bootstrap_replay
+WHERE bootstrap_id = ?1
+"#,
+                [bootstrap_id],
+                bootstrap_replay_from_row,
+            )
+            .optional()
+            .context("load bootstrap replay")
     }
 
     pub fn store_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<()> {
@@ -3054,6 +3338,42 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
         ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
 
+        CREATE TABLE IF NOT EXISTS user_delegated_identity (
+            verification_method TEXT PRIMARY KEY,
+            user_did TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            daemon_agent_did TEXT NOT NULL,
+            public_key_multibase TEXT NOT NULL,
+            private_key_material TEXT NOT NULL,
+            allowed_scopes_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            expires_at TEXT,
+            bootstrap_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_delegated_identity_user
+        ON user_delegated_identity(user_did, app_instance_id, status);
+
+        CREATE TABLE IF NOT EXISTS bootstrap_replay (
+            bootstrap_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            payload_hash TEXT NOT NULL,
+            user_did TEXT NOT NULL,
+            verification_method TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            daemon_agent_did TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bootstrap_replay_identity
+        ON bootstrap_replay(user_did, verification_method, app_instance_id);
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -3074,6 +3394,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_agent_create_request_v13(connection)?;
     migrate_runtime_final_outbox_v14(connection)?;
     migrate_runtime_final_plain_delivery_v15(connection)?;
+    migrate_user_delegated_identity_v16(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -3081,6 +3402,49 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_user_delegated_identity_v16(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS user_delegated_identity (
+            verification_method TEXT PRIMARY KEY,
+            user_did TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            daemon_agent_did TEXT NOT NULL,
+            public_key_multibase TEXT NOT NULL,
+            private_key_material TEXT NOT NULL,
+            allowed_scopes_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            expires_at TEXT,
+            bootstrap_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_delegated_identity_user
+        ON user_delegated_identity(user_did, app_instance_id, status);
+
+        CREATE TABLE IF NOT EXISTS bootstrap_replay (
+            bootstrap_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            payload_hash TEXT NOT NULL,
+            user_did TEXT NOT NULL,
+            verification_method TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            daemon_agent_did TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bootstrap_replay_identity
+        ON bootstrap_replay(user_did, verification_method, app_instance_id);
+        "#,
     )?;
     Ok(())
 }
@@ -3971,6 +4335,8 @@ mod tests {
             "runtime_retry_queue",
             "runtime_agent_create_request",
             "runtime_final_outbox",
+            "user_delegated_identity",
+            "bootstrap_replay",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -3981,6 +4347,97 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing table {table}");
         }
+    }
+
+    fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplayRecord) {
+        let identity = UserDelegatedIdentityRecord {
+            user_did: "did:wba:example.com:user:alice:e1_user".to_string(),
+            verification_method: "did:wba:example.com:user:alice:e1_user#daemon-key-1".to_string(),
+            app_instance_id: "app_1".to_string(),
+            controller_did: "did:wba:example.com:user:alice:e1_user".to_string(),
+            daemon_agent_did: "did:agent:daemon".to_string(),
+            public_key_multibase: "z-public".to_string(),
+            private_key_material: "z-private-secret".to_string(),
+            allowed_scopes_json: serde_json::json!([
+                "message.inbox.read.plain",
+                "message.history.read.plain",
+                "message.send.plain"
+            ]),
+            status: "paired_key_received".to_string(),
+            expires_at: Some("2026-09-09T00:00:00Z".to_string()),
+            bootstrap_id: "boot_1".to_string(),
+            idempotency_key: "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1"
+                .to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let replay = BootstrapReplayRecord {
+            bootstrap_id: identity.bootstrap_id.clone(),
+            idempotency_key: identity.idempotency_key.clone(),
+            payload_hash: "payload-hash-1".to_string(),
+            user_did: identity.user_did.clone(),
+            verification_method: identity.verification_method.clone(),
+            app_instance_id: identity.app_instance_id.clone(),
+            daemon_agent_did: identity.daemon_agent_did.clone(),
+            status: identity.status.clone(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        (identity, replay)
+    }
+
+    #[test]
+    fn user_delegated_identity_roundtrips_and_replays_idempotently() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let (identity, replay) = delegated_identity_fixture();
+
+        assert_eq!(
+            state.store_bootstrap_state(&identity, &replay).unwrap(),
+            BootstrapStoreOutcome::Inserted
+        );
+        assert_eq!(
+            state.store_bootstrap_state(&identity, &replay).unwrap(),
+            BootstrapStoreOutcome::Duplicate
+        );
+
+        let loaded = state
+            .load_user_delegated_identity(&identity.verification_method)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.user_did, identity.user_did);
+        assert_eq!(loaded.private_key_material, "z-private-secret");
+        assert_eq!(loaded.status, "paired_key_received");
+        assert!(!format!("{loaded:?}").contains("z-private-secret"));
+
+        let replay_loaded = state.load_bootstrap_replay("boot_1").unwrap().unwrap();
+        assert_eq!(replay_loaded.payload_hash, "payload-hash-1");
+
+        let reopened = DaemonState::open(&config).unwrap();
+        let recovered = reopened
+            .load_user_delegated_identity(&identity.verification_method)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, "paired_key_received");
+    }
+
+    #[test]
+    fn user_delegated_identity_rejects_conflicting_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let (identity, mut replay) = delegated_identity_fixture();
+        state.store_bootstrap_state(&identity, &replay).unwrap();
+        replay.payload_hash = "payload-hash-2".to_string();
+
+        let error = state
+            .store_bootstrap_state(&identity, &replay)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("replay conflict"));
     }
 
     #[test]
@@ -4505,4 +4962,79 @@ fn agent_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIde
         e2ee_signing_private_key_pem: row.get(8)?,
         e2ee_agreement_private_key_pem: row.get(9)?,
     })
+}
+
+fn user_delegated_identity_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<UserDelegatedIdentityRecord> {
+    let allowed_scopes_json_raw: String = row.get(7)?;
+    let allowed_scopes_json = serde_json::from_str(&allowed_scopes_json_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            allowed_scopes_json_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    Ok(UserDelegatedIdentityRecord {
+        user_did: row.get(0)?,
+        verification_method: row.get(1)?,
+        app_instance_id: row.get(2)?,
+        controller_did: row.get(3)?,
+        daemon_agent_did: row.get(4)?,
+        public_key_multibase: row.get(5)?,
+        private_key_material: row.get(6)?,
+        allowed_scopes_json,
+        status: row.get(8)?,
+        expires_at: row.get(9)?,
+        bootstrap_id: row.get(10)?,
+        idempotency_key: row.get(11)?,
+        created_at_ms: row.get(12)?,
+        updated_at_ms: row.get(13)?,
+    })
+}
+
+fn bootstrap_replay_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BootstrapReplayRecord> {
+    Ok(BootstrapReplayRecord {
+        bootstrap_id: row.get(0)?,
+        idempotency_key: row.get(1)?,
+        payload_hash: row.get(2)?,
+        user_did: row.get(3)?,
+        verification_method: row.get(4)?,
+        app_instance_id: row.get(5)?,
+        daemon_agent_did: row.get(6)?,
+        status: row.get(7)?,
+        created_at_ms: row.get(8)?,
+        updated_at_ms: row.get(9)?,
+    })
+}
+
+fn load_bootstrap_replay_by_id_or_key(
+    connection: &Connection,
+    bootstrap_id: &str,
+    idempotency_key: &str,
+) -> Result<Option<BootstrapReplayRecord>> {
+    connection
+        .query_row(
+            r#"
+SELECT
+    bootstrap_id,
+    idempotency_key,
+    payload_hash,
+    user_did,
+    verification_method,
+    app_instance_id,
+    daemon_agent_did,
+    status,
+    created_at_ms,
+    updated_at_ms
+FROM bootstrap_replay
+WHERE bootstrap_id = ?1 OR idempotency_key = ?2
+ORDER BY created_at_ms ASC
+LIMIT 1
+"#,
+            rusqlite::params![bootstrap_id, idempotency_key],
+            bootstrap_replay_from_row,
+        )
+        .optional()
+        .context("load bootstrap replay by id or idempotency key")
 }
