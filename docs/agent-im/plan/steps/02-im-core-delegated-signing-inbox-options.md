@@ -12,7 +12,7 @@ Step index：02
 | Branch | `feature/release-0526/agent-im-hutong` |
 | Started | 2026-06-09T10:39:30Z |
 | Completed | 2026-06-09T12:28:11Z |
-| Commit | `0ba6e52 im-core: add delegated inbox signing options` |
+| Commit | `f0a5389 im-core: add delegated inbox signing options` |
 | Review evidence | 2026-06-09 Review：检查 optional 参数兼容、ANP proof keyid / target DID、owner/key 本地校验、Dart binding 同步、delegated E2EE 边界、错误命名残留和两篇设计文档边界。发现并修复 4 项：`history.rs` delegated auth 被 move 后又借用的编译风险；delegated inbox/history local proof target 原先缺少配置化 service DID；delegated group history 会静默忽略 `InboxHistoryOptions` 并进入 group/E2EE projection 路径；Plan/设计文档中 user-service registry / device key / 默认生成措辞残留。 |
 | Verification evidence | `cd awiki-cli-rs2 && cargo test -p im-core --locked`：267 lib tests passed，所有 integration/doc tests passed；`cd awiki-cli-rs2 && cargo test -p im-core-dart --locked`：6 unit + 13 facade + 0 doc tests passed；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh`：Done；`cd awiki-cli-rs2/packages/awiki_im_core && flutter test`：12 tests passed；`cd awiki-cli-rs2 && git diff --check`：通过；Step 02 naming check 和设计残留检查：无命中。 |
 | Next action | 创建 Step 02 聚焦 commit；随后从 Step 03 继续 |
@@ -119,7 +119,7 @@ Step index：02
 - Commit 范围：只包含 `im-core`、Dart binding 和直接相关文档/测试。
 - Commit 前状态：`## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 3]`，包含 Step 02 相关 `im-core`、`im-core-dart`、`packages/awiki_im_core`、API 文档、Agent IM 设计/Plan 文档修改。
 - 纳入文件：`crates/im-core/**` delegated signing/inbox source/tests；`crates/im-core-dart/**` bridge DTO/API/mapping/tests/generated；`packages/awiki_im_core/**` generated/public Dart API/tests；`docs/api/im-core-interface/04-message-interface.md`；`docs/agent-im/agent_im_core_design.md`；`docs/agent-im/agent_delegated_identity_message_proof_plan.md`；`docs/agent-im/plan/plan.md`；`docs/agent-im/plan/steps/01-user-service-did-delegated-subkey.md`；`docs/agent-im/plan/steps/02-im-core-delegated-signing-inbox-options.md`。
-- Commit 后证据：`0ba6e52 im-core: add delegated inbox signing options`；post-commit status 为 `## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 4]`，无未提交文件。
+- Commit 后证据：`f0a5389 im-core: add delegated inbox signing options`；实现 commit 后状态为 `## feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 4]`，无未提交文件。该 hash 由后续台账回填提交记录，避免同仓库提交自引用导致 hash 不稳定。
 - 遗留未提交变更：无。
 - 建议消息：`im-core: add delegated inbox signing options`
 
