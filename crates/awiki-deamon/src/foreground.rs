@@ -1732,8 +1732,11 @@ mod tests {
     use im_core::messages::{DeliveryState, SendMessageResult};
 
     use super::*;
+    use crate::app_bridge::bootstrap::BootstrapProcessOutcome;
+    use crate::app_bridge::message_agent::EnsureAppMessageAgentOutcome;
     use crate::app_bridge::message_control::{
-        handle_app_control_payload, is_app_control_payload, IncomingAppControlPayload,
+        handle_app_control_payload, is_app_control_payload, AppControlOutcome,
+        IncomingAppControlPayload,
     };
     use crate::commands::{
         handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
@@ -1860,6 +1863,18 @@ mod tests {
         let state = DaemonState::open(&config).unwrap();
         state.initialize().unwrap();
         (root, config, state)
+    }
+
+    fn expect_bootstrap_received(
+        outcome: AppControlOutcome,
+    ) -> (BootstrapProcessOutcome, EnsureAppMessageAgentOutcome) {
+        match outcome {
+            AppControlOutcome::BootstrapReceived {
+                bootstrap,
+                message_agent,
+            } => (bootstrap, message_agent),
+            other => panic!("expected bootstrap outcome, got {other:?}"),
+        }
     }
 
     fn create_hermes_runtime(
@@ -2365,10 +2380,7 @@ mod tests {
             },
         )
         .unwrap();
-        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
-            bootstrap,
-            message_agent,
-        } = outcome;
+        let (bootstrap, message_agent) = expect_bootstrap_received(outcome);
         assert_eq!(bootstrap.status, "paired_key_received");
         assert!(!bootstrap.replayed);
         assert!(message_agent.created_runtime_agent);
@@ -2421,6 +2433,94 @@ mod tests {
     }
 
     #[test]
+    fn app_capabilities_and_action_result_are_system_control_payloads() {
+        let (_root, config, state) = fixture();
+        let registration = MockRegistrationClient;
+        let daemon = setup_daemon_agent(
+            &config,
+            &state,
+            &registration,
+            "alice-mac-daemon",
+            "did:human:alice",
+            RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+        )
+        .unwrap();
+        let capabilities_payload = json!({
+            "schema": "awiki.app.capabilities.v1",
+            "capabilities": ["message.summarize_plain", "contact.update_note"],
+            "require_confirmation_for_write_actions": true
+        });
+        assert!(is_app_control_payload(&capabilities_payload));
+        let capabilities = handle_app_control_payload(
+            &config,
+            &state,
+            &registration,
+            IncomingAppControlPayload {
+                message_id: "msg_app_capabilities".to_string(),
+                conversation_id: Some("direct:did:agent:daemon".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: capabilities_payload,
+            },
+        )
+        .unwrap();
+        match capabilities {
+            AppControlOutcome::CapabilitiesReceived { capabilities } => {
+                assert_eq!(
+                    capabilities,
+                    vec![
+                        "message.summarize_plain".to_string(),
+                        "contact.update_note".to_string()
+                    ]
+                );
+            }
+            other => panic!("expected app capabilities outcome, got {other:?}"),
+        }
+
+        let result_payload = json!({
+            "schema": "awiki.app.action.result.v1",
+            "action_id": "act_draft_1",
+            "action": "message.create_draft",
+            "state": "succeeded",
+            "result": {"draft_text": "Looks good"}
+        });
+        assert!(is_app_control_payload(&result_payload));
+        let result = handle_app_control_payload(
+            &config,
+            &state,
+            &registration,
+            IncomingAppControlPayload {
+                message_id: "msg_app_action_result".to_string(),
+                conversation_id: Some("direct:did:agent:daemon".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: result_payload,
+            },
+        )
+        .unwrap();
+        match result {
+            AppControlOutcome::ActionResultReceived {
+                action_id,
+                action,
+                state: action_state,
+            } => {
+                assert_eq!(action_id, "act_draft_1");
+                assert_eq!(action, "message.create_draft");
+                assert_eq!(action_state, "succeeded");
+            }
+            other => panic!("expected app action result outcome, got {other:?}"),
+        }
+        assert!(state
+            .audit_event_exists("app.capabilities.received", Some(&daemon.agent_did), None,)
+            .unwrap());
+        assert!(state
+            .audit_event_exists("app.action.result.received", Some(&daemon.agent_did), None,)
+            .unwrap());
+    }
+
+    #[test]
     fn daemon_bootstrap_replay_reuses_message_agent_without_runtime_token() {
         let (_root, config, state) = fixture();
         let registration = MockRegistrationClient;
@@ -2448,10 +2548,7 @@ mod tests {
             },
         )
         .unwrap();
-        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
-            bootstrap: first_bootstrap,
-            message_agent: first_agent,
-        } = first;
+        let (first_bootstrap, first_agent) = expect_bootstrap_received(first);
         assert!(!first_bootstrap.replayed);
         assert!(first_agent.created_runtime_agent);
 
@@ -2475,10 +2572,7 @@ mod tests {
             },
         )
         .unwrap();
-        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
-            bootstrap: replay_bootstrap,
-            message_agent: replay_agent,
-        } = replay;
+        let (replay_bootstrap, replay_agent) = expect_bootstrap_received(replay);
 
         assert!(replay_bootstrap.replayed);
         assert!(!replay_agent.created_runtime_agent);
@@ -2561,10 +2655,7 @@ SELECT
             },
         )
         .unwrap();
-        let crate::app_bridge::message_control::AppControlOutcome::BootstrapReceived {
-            message_agent,
-            ..
-        } = outcome;
+        let (_bootstrap, message_agent) = expect_bootstrap_received(outcome);
 
         let outbox = MemoryRuntimeOutbox::default();
         let gateway = FakeHermesGateway::default();

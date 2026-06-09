@@ -251,6 +251,7 @@ where
             RpcMethod::MsgSend,
             RpcMethod::SendAttachment,
             RpcMethod::ArtifactCreated,
+            RpcMethod::AppActionRequest,
         ],
         Some(recipient_policy.allowed_recipients),
         Duration::from_secs(5 * 60),

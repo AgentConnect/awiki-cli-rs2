@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::AgentKind;
+use crate::app_bridge::action::{
+    is_app_action_result_payload, is_app_capabilities_payload, parse_app_action_result_payload,
+    parse_app_capabilities_payload,
+};
 use crate::app_bridge::bootstrap::{
     is_daemon_bootstrap_payload, parse_bootstrap_payload, process_bootstrap_envelope,
     BootstrapProcessOutcome,
@@ -28,10 +32,20 @@ pub enum AppControlOutcome {
         bootstrap: BootstrapProcessOutcome,
         message_agent: EnsureAppMessageAgentOutcome,
     },
+    CapabilitiesReceived {
+        capabilities: Vec<String>,
+    },
+    ActionResultReceived {
+        action_id: String,
+        action: String,
+        state: String,
+    },
 }
 
 pub fn is_app_control_payload(payload: &Value) -> bool {
     is_daemon_bootstrap_payload(payload)
+        || is_app_capabilities_payload(payload)
+        || is_app_action_result_payload(payload)
 }
 
 pub fn handle_app_control_payload<C>(
@@ -81,6 +95,46 @@ where
         return Ok(AppControlOutcome::BootstrapReceived {
             bootstrap: outcome,
             message_agent,
+        });
+    }
+    if is_app_capabilities_payload(&message.payload) {
+        let envelope = parse_app_capabilities_payload(message.payload)?;
+        state.insert_audit_event_json(
+            "app.capabilities.received",
+            Some(&message.target_agent_did),
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "sender_did": message.sender_did,
+                "capabilities": envelope.capabilities,
+                "require_confirmation_for_write_actions": envelope.require_confirmation_for_write_actions,
+            }),
+        )?;
+        return Ok(AppControlOutcome::CapabilitiesReceived {
+            capabilities: envelope.capabilities,
+        });
+    }
+    if is_app_action_result_payload(&message.payload) {
+        let envelope = parse_app_action_result_payload(message.payload)?;
+        state.insert_audit_event_json(
+            "app.action.result.received",
+            Some(&message.target_agent_did),
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "sender_did": message.sender_did,
+                "action_id": envelope.action_id,
+                "action": envelope.action,
+                "state": envelope.state,
+                "error_code": envelope.error_code,
+            }),
+        )?;
+        return Ok(AppControlOutcome::ActionResultReceived {
+            action_id: envelope.action_id,
+            action: envelope.action,
+            state: envelope.state,
         });
     }
     bail!("unsupported app control payload schema")

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::agent::AgentDefinition;
 use crate::commands::{
-    create_runtime_agent_from_request, RuntimeAgentCreateRequest, RuntimeAgentCreateOutcome,
+    create_runtime_agent_from_request, RuntimeAgentCreateOutcome, RuntimeAgentCreateRequest,
 };
 use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
 use crate::registration::AgentRegistrationClient;
@@ -49,7 +49,10 @@ impl std::fmt::Debug for DesiredMessageAgent {
             .field("runtime", &self.runtime)
             .field("display_name", &self.display_name)
             .field("ensure_once_key", &self.ensure_once_key)
-            .field("runtime_registration_token", &"<redacted-registration-token>")
+            .field(
+                "runtime_registration_token",
+                &"<redacted-registration-token>",
+            )
             .field("auto_create", &self.auto_create)
             .field("allowed_actions", &self.allowed_actions)
             .field("extra", &"<redacted-control-payload>")
@@ -117,7 +120,10 @@ where
         daemon_agent,
         RuntimeAgentCreateRequest {
             command_id: format!("cmd_{binding_id}"),
-            handle: Some(default_handle(&identity.user_did, &identity.app_instance_id)),
+            handle: Some(default_handle(
+                &identity.user_did,
+                &identity.app_instance_id,
+            )),
             runtime: "hermes".to_string(),
             display_name: Some(
                 desired

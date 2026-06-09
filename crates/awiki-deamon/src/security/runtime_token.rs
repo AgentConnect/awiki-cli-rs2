@@ -28,6 +28,7 @@ pub enum RpcMethod {
     MsgSend,
     SendAttachment,
     ArtifactCreated,
+    AppActionRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +107,7 @@ impl RpcMethod {
             Self::MsgSend => "msg.send",
             Self::SendAttachment => "attachment.send",
             Self::ArtifactCreated => "artifact.created",
+            Self::AppActionRequest => "app.action.request",
         }
     }
 
@@ -117,6 +119,7 @@ impl RpcMethod {
             "msg.send" => Ok(Self::MsgSend),
             "attachment.send" => Ok(Self::SendAttachment),
             "artifact.created" => Ok(Self::ArtifactCreated),
+            "app.action.request" => Ok(Self::AppActionRequest),
             other => bail!("unsupported RPC method: {other}"),
         }
     }
@@ -125,7 +128,10 @@ impl RpcMethod {
         match self {
             Self::RpcPing => RpcMethodLevel::Read,
             Self::TaskStatus | Self::TaskFinish => RpcMethodLevel::Status,
-            Self::MsgSend | Self::SendAttachment | Self::ArtifactCreated => RpcMethodLevel::Message,
+            Self::MsgSend
+            | Self::SendAttachment
+            | Self::ArtifactCreated
+            | Self::AppActionRequest => RpcMethodLevel::Message,
         }
     }
 }

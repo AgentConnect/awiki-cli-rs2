@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::app_bridge::action::queue_runtime_app_action_request;
 use crate::outbox::{
     RuntimeAttachmentSend, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
 };
@@ -112,7 +113,10 @@ pub fn execute_runtime_rpc_request(
     request: RuntimeRpcRequest,
 ) -> Result<RuntimeRpcResponse> {
     let method = RpcMethod::parse(&request.method)?;
-    if matches!(method, RpcMethod::MsgSend | RpcMethod::SendAttachment) {
+    if matches!(
+        method,
+        RpcMethod::MsgSend | RpcMethod::SendAttachment | RpcMethod::AppActionRequest
+    ) {
         bail!("message RPC methods require runtime outbox side effects");
     }
     let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
@@ -284,6 +288,9 @@ fn apply_runtime_rpc_side_effects(
             }
             state.update_runtime_run_status(&context.run_id, RuntimeRunStatus::Finished)?;
             outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
+        }
+        RpcMethod::AppActionRequest => {
+            queue_runtime_app_action_request(state, context, params)?;
         }
         RpcMethod::MsgSend | RpcMethod::SendAttachment => {}
         RpcMethod::RpcPing | RpcMethod::ArtifactCreated => {}

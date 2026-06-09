@@ -11,6 +11,7 @@ use awiki_deamon::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, R
 use awiki_deamon::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
 };
+use awiki_deamon::state::AppMessageAgentBindingRecord;
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
@@ -85,6 +86,47 @@ fn insert_runtime_task_context(
             runtime_plugin_id: "test-runtime".to_string(),
             workspace_id: workspace_root.map(|_| "workspace_test".to_string()),
             status: RuntimeRunStatus::Pending,
+        })
+        .unwrap();
+}
+
+fn insert_app_message_agent_binding(state: &DaemonState) {
+    state
+        .upsert_app_message_agent_binding(&AppMessageAgentBindingRecord {
+            binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+            user_did: "did:human:alice".to_string(),
+            inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
+            app_instance_id: "app_1".to_string(),
+            bootstrap_id: "boot_1".to_string(),
+            idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+            daemon_agent_did: "did:agent:daemon".to_string(),
+            runtime_agent_did: "did:agent:test".to_string(),
+            runtime_profile_id: "profile_1".to_string(),
+            role: "app_message_handler".to_string(),
+            desired_agent_json: json!({
+                "role": "app_message_handler",
+                "allowed_actions": [
+                    "message.summarize_plain",
+                    "message.create_draft",
+                    "contact.read",
+                    "contact.update_display_name",
+                    "contact.update_note"
+                ]
+            }),
+            capability_policy_json: json!({
+                "capabilities": [
+                    "message.summarize_plain",
+                    "message.create_draft",
+                    "contact.read",
+                    "contact.update_display_name",
+                    "contact.update_note"
+                ],
+                "require_confirmation_for_write_actions": true
+            }),
+            status: "message_agent_ready".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            revoked_at_ms: None,
         })
         .unwrap();
 }
@@ -708,6 +750,67 @@ fn attachment_send_requires_outbox_execution_path() {
     .unwrap_err();
 
     assert!(error.to_string().contains("require runtime outbox"));
+}
+
+#[test]
+fn app_action_request_requires_outbox_execution_path() {
+    let (_root, state) = fixture();
+    insert_app_message_agent_binding(&state);
+    let issued = issue(&state, vec![RpcMethod::AppActionRequest], None);
+
+    let error = execute_runtime_rpc_request(
+        &state,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "app.action.request".to_string(),
+            params: json!({
+                "action_id": "act_note_1",
+                "action": "contact.update_note",
+                "args": {"contact_did": "did:human:bob", "note": "Follow up"}
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("require runtime outbox"));
+}
+
+#[test]
+fn app_action_request_records_message_sync_side_effect() {
+    let (_root, state) = fixture();
+    insert_app_message_agent_binding(&state);
+    let issued = issue(&state, vec![RpcMethod::AppActionRequest], None);
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let response = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "app.action.request".to_string(),
+            params: json!({
+                "action_id": "act_note_1",
+                "action": "contact.update_note",
+                "source_message_id": "msg_1",
+                "args": {"contact_did": "did:human:bob", "note": "Follow up"}
+            }),
+            debug: None,
+        },
+    )
+    .unwrap();
+
+    assert!(response.ok);
+    assert_eq!(response.result.unwrap()["method"], "app.action.request");
+    let record = state
+        .load_message_sync_outbox("app-action:did:human:alice:run_1:act_note_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.payload_json["schema"], "awiki.app.action.v1");
+    assert_eq!(record.payload_json["action"], "contact.update_note");
+    assert_eq!(record.payload_json["state"], "requires_confirmation");
+    assert_eq!(record.payload_json["requires_confirmation"], true);
+    assert!(outbox.records().is_empty());
 }
 
 #[test]

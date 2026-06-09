@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::app_bridge::action::MVP_ALLOWED_ACTIONS;
 use crate::app_bridge::message_agent::APP_MESSAGE_HANDLER_ROLE;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
@@ -851,11 +852,10 @@ fn allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_else(|| {
-            vec![
-                "message.summarize_plain".to_string(),
-                "message.create_draft".to_string(),
-                "contact.read".to_string(),
-            ]
+            MVP_ALLOWED_ACTIONS
+                .iter()
+                .map(|action| action.to_string())
+                .collect()
         })
 }
 
