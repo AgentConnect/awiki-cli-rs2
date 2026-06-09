@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：04  
-状态：draft
+状态：in_progress
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | 待执行者填写 |
-| Started | - |
+| Status | in_progress |
+| Branch | `feature/release-0526/agent-im-hutong` |
+| Started | 2026-06-09T13:28:24Z |
 | Completed | - |
 | Commit | - |
 | Review evidence | - |
 | Verification evidence | - |
-| Next action | 实现 `ensure_app_message_agent(role=app_message_handler)` 与 binding 持久化 |
+| Next action | 读取现有 runtime 创建流程，设计 `ensure_app_message_agent(role=app_message_handler)` 与 binding 持久化 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -30,7 +30,7 @@ Step index：04
 
 - 设计边界：Message Agent 是 APP 消息处理链路的一部分，与用户手动创建的通用 Runtime Agent 分开。
 - 核心决策：以 `role=app_message_handler` 和 `app_message_agent_binding` 标识专用 Agent；Hermes 只拿 runtime token，不拿 delegated subkey private key。
-- 契约 / API / 数据流：Step 03 产生 `paired_key_received` 后，Daemon 执行 `ensure_app_message_agent(desired_message_agent)`；创建或复用 Runtime Agent；写入 binding；状态进入 `message_agent_ready` 或 `message_agent_active`。
+- 契约 / API / 数据流：Step 03 产生 `paired_key_received` 后，Daemon 执行 `ensure_app_message_agent(desired_message_agent)`；创建或复用 Runtime Agent；写入 binding；状态进入 `message_agent_ready` 或 `message_agent_active`。现有 Runtime Agent 创建仍需要 user-service runtime registration token；MVP 将其作为 `desired_message_agent.runtime_registration_token` 可选字段放在同一条 `awiki.daemon.bootstrap.v1` 普通消息 JSON 中。已有 active binding 时不需要该 token；首次创建时必须提供，且不得持久化到 binding / audit detail。
 - 兼容性：不破坏现有 Hermes runtime 创建流程；新增路径优先复用 runtime host 现有模块。
 - 迁移策略：已有 Daemon state 无 binding 时，bootstrap 后创建；已有 binding 且 active 时复用。
 - 风险控制：唯一约束应覆盖 user DID + app_instance_id + role + active status，防止重复 active Agent。
@@ -41,7 +41,7 @@ Step index：04
 2. 新增 `awiki-cli-rs2/crates/awiki-deamon/src/app_bridge/message_agent.rs`，实现 `ensure_app_message_agent` 服务。
 3. 定义 `AppMessageAgentBinding` 状态模型，字段至少包含：`binding_id`、`user_did`、`inbox_auth_verification_method`、`app_instance_id`、`pairing_id`、`runtime_agent_did`、`role`、`capability_policy_ref`、`status`、`created_at`、`updated_at`、`revoked_at`。
 4. 接入 Step 03 bootstrap flow：收到 `desired_message_agent` 后执行 ensure；失败时保留可重试状态，不创建重复 Agent。
-5. 复用现有 Hermes runtime 创建和 registration token 流程；如果缺少 runtime token scope，新增只允许 message handler 所需能力的 scope。
+5. 复用现有 Hermes runtime 创建和 registration token 流程；首次创建时从 `desired_message_agent.runtime_registration_token` 读取 token，已存在 active binding 时不再消耗 token；如果缺少 runtime token scope，新增只允许 message handler 所需能力的 scope。
 6. 实现 Daemon 重启恢复：读取 active binding，确认 runtime agent 存在；不存在时按策略恢复或标记 repair_needed。
 7. 增加测试：首次 bootstrap 创建 Agent、重复 bootstrap 复用、冲突 desired state 拒绝或更新策略、重启恢复、Hermes 不持有 user subkey。
 
@@ -71,6 +71,7 @@ Step index：04
 - [ ] Daemon 重启后恢复 binding，不重新创建 Agent。
 - [ ] Hermes / Runtime 不直接持有 user delegated subkey private key。
 - [ ] runtime token scope 只允许 message handler 所需能力。
+- [ ] `desired_message_agent.runtime_registration_token` 仅首次创建使用，不进入 binding、audit detail、Hermes prompt 或 runtime temp。
 - [ ] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
 
@@ -119,6 +120,7 @@ Step index：04
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-09 | 创建 Step 04 小 Plan | 初始计划拆分 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
+| 2026-06-09 | 明确 `desired_message_agent.runtime_registration_token` 可选字段 | Runtime Agent 创建必须经 user-service runtime registration token；仍通过普通消息 bootstrap JSON 传递，不新增第二通道 | [../plan.md#15-plan-变更记录](../plan.md#15-plan-变更记录) |
 
 ## 13. 风险、回滚与后续文档
 
