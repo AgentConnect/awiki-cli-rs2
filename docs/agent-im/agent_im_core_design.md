@@ -162,12 +162,12 @@ Agent 可以很强，但必须可控。所有自动化能力都要可配置、�
 MVP 的身份构建结论改为：
 
 1. APP / IM 在创建用户 DID Document 时，由 APP 本地生成一把 User Delegated Subkey private/public key package，MVP 固定 DID URL 为 `user_did#daemon-key-1`，fragment 固定为 `#daemon-key-1`，不包含设备名、设备型号、时间戳或其他可识别设备信息；所有文档、实现和测试统一使用 `#daemon-key-1`。
-2. APP 创建用户 DID Document 的代码路径必须先在 APP 本地生成该 key package，并从中导出 `user_did#daemon-key-1` public verification method；随后调用最新 user-service / DID API 时只提交这个 public verification method。user-service 只接收 APP 提交的 public verification method，并把它写入初始 DID Document 的 `verificationMethod` 与 `authentication`，再返回包含 `#daemon-key-1` 的 DID Document。本文后续提到“初始 DID Document 带 `#daemon-key-1`”时，含义固定为：APP 本地生成 key package，user-service 只写入 public verification method；不表示 user-service 生成、默认生成、派生、托管、接收或返回 daemon key/private material。bootstrap 阶段也不再追加修改 DID Document。
+2. APP 创建用户 DID Document 的代码路径必须先在 APP 本地生成该 key package，并从中导出 `user_did#daemon-key-1` public verification method；随后调用最新 user-service / DID API 时只提交这个 public verification method。user-service 只接收 APP 提交的 public verification method，并把它写入初始 DID Document 的 `verificationMethod` 与 `authentication`，再返回包含 `#daemon-key-1` 的 DID Document。本文后续提到“初始 DID Document 带 `#daemon-key-1`”时，含义固定为：APP 本地生成 key package，user-service 只写入 public verification method；不表示 user-service 创建、派生、托管、接收或返回 daemon key/private material。bootstrap 阶段也不再追加修改 DID Document。
 3. APP 把这把已存在的子私钥传给 Daemon。MVP 先允许通过普通消息发送明文 JSON system/control payload bootstrap，这是已知安全缺口；后续仍通过普通消息发送，只把 private package 改为加密文本或加密 JSON envelope。
 4. Daemon 用该子私钥代表用户处理普通非 E2EE 消息的发送、接收、同步和 Agent 管理。
 5. Daemon 不持有用户主私钥，不持有 direct/group E2EE 私有会话状态。
 
-命名和所有权约束必须保持一致：MVP 只允许 `#daemon-key-1`，不得出现任何包含设备、安装环境、时间戳或用户可识别信息的 daemon key fragment；不得把“user-service 写入 public verification method”写成“user-service 生成 / 默认生成 / 托管 daemon key”，也不得把它写成 user-service 维护 delegated key registry 供 message-service 查询；message-service MVP 授权只能校验请求 proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope，不依赖 user-service 管理侧 registry、audit、状态、HTTP/RPC、内部 crate 或本地缓存。
+命名和所有权约束必须保持一致：MVP 只允许 `#daemon-key-1`，不得出现任何包含设备、安装环境、时间戳或用户可识别信息的 daemon key fragment；不得把“user-service 写入 public verification method”写成“user-service 创建 / 托管 daemon key”。message-service MVP 授权输入固定为请求 proof 和当前解析到的 DID Document，只校验 verification method 是否存在并位于 `authentication`、key owner 一致性和普通非 E2EE scope。
 
 这个方案仍有风险：`user_did#daemon-key-1` 在 DID Document 的 `authentication` 中，远端验证方会把它当作用户 DID 的合法认证 key。第一个版本接受这个风险，但必须把 key 命名、审计、撤销、过期、message-service 本地普通消息 scope / rate limit / audit policy 和 E2EE 禁止边界写进 MVP gate。
 
@@ -258,7 +258,7 @@ awiki-deamon foreground
 
 ### 3.1.2 需要新增的普通消息 bootstrap 流程
 
-安装完成后，需要补一个 APP -> Daemon 的普通消息 bootstrap 流程。它的前置条件是：APP 在创建用户 DID Document 时已经本地生成 `user_did#daemon-key-1` 子私钥，并通过最新 user-service / DID API 只提交由该 key package 导出的 public verification method。user-service 只把该 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不生成、不接收、不返回私钥。因此 bootstrap 不再创建或追加 DID key，只负责把这把既有用户 DID 子私钥交给 Daemon。
+安装完成后，需要补一个 APP -> Daemon 的普通消息 bootstrap 流程。它的前置条件是：APP 在创建用户 DID Document 时已经本地生成 `user_did#daemon-key-1` 子私钥，并通过最新 user-service / DID API 只提交由该 key package 导出的 public verification method。user-service 只把该 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不创建、不托管、不接收、不返回私钥。因此 bootstrap 不再创建或追加 DID key，只负责把这把既有用户 DID 子私钥交给 Daemon。
 
 这个流程同时承担“一次性创建 APP 消息处理智能体”的职责。APP 不应该反复发送 `create runtime` 这类命令式消息；APP 只发送一次 bootstrap/session payload，把用户 delegated subkey、APP 能力和期望的消息处理 Agent 形态声明给 Daemon。Daemon 收到后执行 `ensure_app_message_agent`：如果这个用户和 APP 已经有 active message handler agent，就复用并刷新配置；如果不存在，Daemon 自己创建一个专门处理 APP 普通消息的 Runtime Agent。重复收到同一个 bootstrap 不得创建多个 Agent。
 
@@ -401,8 +401,8 @@ sequenceDiagram
 
 落地要求：
 
-1. `user-service` 必须支持创建 DID Document 时接收 APP 提交的 `user_did#daemon-key-1` public verification method；该 public verification method 由 APP 本地生成的 key package 导出，并且只写入 DID Document `verificationMethod` 与 `authentication`。后续撤销、轮换也以 DID Document 中该 public verification method 的替换或移除为准。user-service 不生成、不默认生成、不派生、不托管、不接收、不返回 daemon subkey private material。
-2. `message-service` 必须支持该子 key 对普通 inbox/history 的接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。MVP 运行时授权输入只有请求 proof 和当前解析到的 DID Document；message-service 不调用 user-service 读取 delegated key registry、audit 或授权状态，也不通过 HTTP/RPC、内部 crate 或本地缓存依赖 user-service。key 是否有效只以 DID Document `authentication` 为准。
+1. `user-service` 必须支持创建 DID Document 时接收 APP 提交的 `user_did#daemon-key-1` public verification method；该 public verification method 由 APP 本地生成的 key package 导出，并且只写入 DID Document `verificationMethod` 与 `authentication`。后续撤销、轮换也以 DID Document 中该 public verification method 的替换或移除为准。user-service 不创建、不派生、不托管、不接收、不返回 daemon subkey private material。
+2. `message-service` 必须支持该子 key 对普通 inbox/history 的接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。MVP 运行时授权输入只有请求 proof 和当前解析到的 DID Document；key 是否有效只以 DID Document `authentication` 为准。
 3. daemon 必须新增 user delegated inbox poller，而不是只轮询 Agent DID inbox。
 4. APP-side forward 不作为普通消息 MVP 主路径，只保留给未来 E2EE 或特殊场景。
 
@@ -1170,7 +1170,7 @@ Direct / Group E2EE 服务侧继续只处理 opaque cipher 和 metadata，不解
 
 ### 5.4.2 增加 user delegated inbox 能力
 
-MVP 需要 message-service 支持 daemon 使用 `user_did#daemon-key-1` 拉取和发送普通非 E2EE 消息。MVP 授权输入固定为请求内 DID proof、解析出的 DID Document `authentication`、key owner 一致性和普通非 E2EE scope；key 是否有效只以 DID Document `authentication` 为准。message-service 在 MVP 中不调用 user-service 读取 delegated key registry、audit、授权状态或撤销状态，也不新增对 user-service 的 HTTP/RPC/内部 crate/本地缓存授权依赖。撤销对 message-service 的生效通过 DID Document `authentication` 更新和 DID Document 刷新体现。后续如需更细的本域用户级策略，可以单独设计，例如：
+MVP 需要 message-service 支持 daemon 使用 `user_did#daemon-key-1` 拉取和发送普通非 E2EE 消息。MVP 授权输入固定为请求内 DID proof 和解析出的 DID Document；校验点固定为 verification method 是否存在并位于 `authentication`、key owner 一致性和普通非 E2EE scope。key 是否有效只以 DID Document `authentication` 为准。撤销对 message-service 的生效通过 DID Document `authentication` 更新和 DID Document 刷新体现。后续如需更细的本域用户级策略，可以单独设计，例如：
 
 ```text
 agent_message_visibility_policy
@@ -1292,17 +1292,17 @@ E2EE profiles 是否公开，仍应跟随 message-service 的 discovery security
 
 ## 5.6 `user-service` 改造方案
 
-MVP 需要把 user-service 纳入范围，但它的职责只在用户 DID Document 管理侧：APP 本地生成 `user_did#daemon-key-1` private/public key package，并只把导出的 public verification method 提交给 user-service；user-service 只把这个 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不生成、不默认生成、不派生、不托管、不接收、不返回 daemon subkey private material，也不作为 message-service 的 delegated key registry。message-service 的 MVP 请求授权只读取 DID Document 并校验 `authentication`，不调用 user-service 读取 registry、audit 或授权状态：
+MVP 需要把 user-service 纳入范围，但它的职责只在用户 DID Document 管理侧：APP 本地生成 `user_did#daemon-key-1` private/public key package，并只把导出的 public verification method 提交给 user-service；user-service 只把这个 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不创建、不派生、不托管、不接收、不返回 daemon subkey private material。message-service 的 MVP 请求授权只读取 DID Document 并校验 `authentication`：
 
 1. DID Document key management API：
-   - 创建用户 DID Document 时接收 APP 提交的 `user_did#daemon-key-1` public verification method；该 public verification method 由 APP 本地生成的 key package 导出，user-service 只把 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不生成、默认生成、派生或托管 key package；
-   - user-service 不生成、不接收、不返回 daemon subkey private material；
+   - 创建用户 DID Document 时接收 APP 提交的 `user_did#daemon-key-1` public verification method；该 public verification method 由 APP 本地生成的 key package 导出，user-service 只把 public verification method 写入 DID Document 的 `verificationMethod` 与 `authentication`，不创建、派生或托管 key package；
+   - user-service 不创建、不接收、不返回 daemon subkey private material；
    - 从 `authentication` 移除或撤销 `user_did#daemon-key-1`；
    - 按 DID Document 返回当前存在且在 `authentication` 中的 daemon public verification method。
 2. DID Document 管理审计（MVP 后可选）：
    - 可记录 APP 提交的 public verification method 写入、撤销、轮换和 DID Document 管理侧审计；
    - 可标记该 key 是 daemon delegated subkey，不是用户主 key；
-   - 该记录只服务 user-service 自身排障和追溯；message-service MVP 授权来源固定为 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope，不查询该记录。
+   - 该记录只服务 user-service 自身排障和追溯；message-service MVP 授权来源固定为 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 3. inbox authorization：
    - message-service MVP 只基于请求内 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 做运行时授权；
    - scoped inbox token 可作为中期优化，但不进入 MVP 主路径。
@@ -1347,7 +1347,7 @@ MVP 需要把 user-service 纳入范围，但它的职责只在用户 DID Docume
 ### 缺点
 
 - 子 key 在 DID `authentication` 中，仍可能被外部验证方视为完整用户 authentication key。
-- 需要 user-service 在 DID Document 管理 API 中支持 APP 提交的 public verification method 写入和撤销。message-service 只增加基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 的普通消息接收权限校验，不调用 user-service 读取 registry、audit 或授权状态。
+- 需要 user-service 在 DID Document 管理 API 中支持 APP 提交的 public verification method 写入和撤销。message-service 只增加基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 的普通消息接收权限校验。
 - Daemon compromise 后，攻击者可在撤销前用该 key 发送普通消息。
 
 ### 结论
@@ -1416,7 +1416,7 @@ MVP 主路径。
 4. Daemon bootstrap state / user delegated identity store。
 5. Daemon 幂等执行 `ensure_app_message_agent`，创建或复用 `role=app_message_handler` 的 Hermes Message Agent。
 6. `app_message_agent_binding` 持久化用户、APP、Runtime Agent、delegated subkey 和 capability policy 的绑定。
-7. user-service / DID API 在创建用户 DID Document 时只接收 APP 提交的 `user_did#daemon-key-1` public verification method，并把它写入 DID Document 的 `verificationMethod` 与 `authentication`；该 public verification method 由 APP 本地 key package 导出，并支持后续撤销。user-service 不生成、不默认生成、不接收、不返回 daemon subkey private material。
+7. user-service / DID API 在创建用户 DID Document 时只接收 APP 提交的 `user_did#daemon-key-1` public verification method，并把它写入 DID Document 的 `verificationMethod` 与 `authentication`；该 public verification method 由 APP 本地 key package 导出，并支持后续撤销。user-service 不创建、不接收、不返回 daemon subkey private material。
 8. message-service 支持该子 key 的普通消息发送和接收权限校验；MVP 直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope。
 9. APP capabilities 发布。
 10. Daemon 不持有用户主私钥。
