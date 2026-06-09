@@ -118,7 +118,7 @@ MVP 服务器必须支持 user_did#daemon-key-1 直接证明接收权限；
 也可以由该子 key 换取 scoped inbox token 作为中期优化。
 ```
 
-原因是 ANP Direct Base 主要定义 direct.send / direct.incoming 的消息语义；history pull、read status、device sync、agent internal synchronization 不属于基础跨域互操作范围。MVP 的产品目标要求 Daemon 能离线代收普通消息，因此 message-service 必须能用 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 校验 `user_did#daemon-key-1`，并允许它读取普通非 E2EE inbox/history。user-service 在 MVP 中只负责 DID Document public verification method 的登记、撤销和管理侧审计记录；message-service 的 MVP 运行时授权只读取 DID Document，并以 DID Document `authentication` 作为 key 是否有效的依据。user-service 管理侧记录、audit 表、状态表或 scoped token 签发状态都不进入 message-service MVP 运行时授权输入。撤销对 message-service 的生效只通过 DID Document `authentication` 更新和 DID Document 重新解析/刷新体现。scoped inbox token 可以减少每次拉取的 DID proof 成本，但不是 MVP 接收能力的唯一表达。
+原因是 ANP Direct Base 主要定义 direct.send / direct.incoming 的消息语义；history pull、read status、device sync、agent internal synchronization 不属于基础跨域互操作范围。MVP 的产品目标要求 Daemon 能离线代收普通消息，因此 message-service 必须能用 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 校验 `user_did#daemon-key-1`，并允许它读取普通非 E2EE inbox/history。user-service 在 MVP 中只负责 DID Document public verification method 的登记、撤销和管理侧审计记录；message-service 的 MVP 运行时授权只读取 DID Document，并以 DID Document `authentication` 作为 key 是否有效的依据。user-service 管理侧记录、audit 表、状态表或 scoped token 签发状态都不进入 message-service MVP 运行时授权输入；message-service 不通过 HTTP/RPC/内部 crate/本地缓存读取 user-service 管理侧状态。撤销对 message-service 的生效只通过 DID Document `authentication` 更新和 DID Document 重新解析/刷新体现。scoped inbox token 可以减少每次拉取的 DID proof 成本，但不是 MVP 接收能力的唯一表达。
 
 ### 3.4 MVP 不支持 E2EE 交给 Agent
 
@@ -488,7 +488,7 @@ MVP 要求服务器支持 `user_did#daemon-key-1` 对普通非 E2EE inbox/histor
 
 1. Daemon 每次用该子 key 做 DID/RFC9421 proof。
 2. message-service 解析 `keyid` 指向的用户 DID Document，校验 verification method 存在且在 `authentication` 中，校验 `inbox_owner_did == keyid DID`，并只允许普通非 E2EE inbox/history scope。
-3. message-service 运行时只读取 DID Document，撤销实时性依赖 DID Document `authentication` 更新和 message-service 对 DID Document 的重新解析/刷新。
+3. message-service 运行时只读取 DID Document，撤销实时性依赖 DID Document `authentication` 更新和 message-service 对 DID Document 的重新解析/刷新；不得读取 user-service 管理侧状态、audit 表或状态表来决定 MVP 授权。
 
 Daemon 用该子 key 向 user-service 换取 `ScopedInboxToken` 再拉取，是 MVP 后的性能和撤销传播优化，不是 MVP 主路径。
 
@@ -1156,7 +1156,7 @@ Scope 对应关系：
 2. 管理侧 audit API（可选，不是 message-service MVP 授权依赖）
    - 可记录 `user_did#daemon-key-1` public verification method 的登记、撤销、轮换和审计信息；
    - 该 audit 状态只服务 user-service 自身查询、撤销、排障和追溯；
-   - message-service MVP 请求授权只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope，不查询该 audit 状态；
+   - message-service MVP 请求授权只直接校验 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope，不查询该 audit 状态，也不读取 user-service 管理侧状态；
    - 后续根据 `user_did#daemon-key-1` 签发 scoped inbox token；
    - MVP 后再根据 Agent DID delegation 签发 delegated inbox token。
 
@@ -1394,6 +1394,8 @@ MVP 统一固定：
 
 固定使用 `#daemon-key-1`，不要包含设备名、设备型号、时间戳、硬件编号、APP 安装环境或其他可识别设备/用户隐私的信息。一个 APP 在 MVP 中默认只有一个 active daemon key；已有用户补齐或轮换时仍围绕 `#daemon-key-1` 做 revoke/replace，不通过 fragment 表达设备或版本。
 
+文档、计划和测试中不得再出现任何设备化 daemon key fragment；所有示例统一写 `user_did#daemon-key-1`。
+
 ### 13.2 子私钥是否由 APP 生成还是 Daemon 生成
 
 本方案按要求采用：
@@ -1402,13 +1404,13 @@ MVP 统一固定：
 APP 生成子私钥，然后 MVP 先通过明文 bootstrap 传给 Daemon。
 ```
 
-但后续必须把普通消息 body 升级为加密文本或加密 JSON envelope；长期更安全的变体是：
+更准确地说，APP 必须在创建用户 DID Document 前本地生成 `#daemon-key-1` private/public key package，只把 public verification method 交给 user-service 登记；user-service 不生成、不接收、不返回 daemon subkey private material。MVP bootstrap 只是把这把已经存在、已登记的子私钥通过普通消息明文 JSON 传给 Daemon。
 
 ```text
-Daemon 本地生成私钥，只把公钥发给 APP；APP 更新 DID Document。
+后续安全升级：仍由 APP 持有私钥所有权边界，但普通消息 body 改为加密文本或加密 JSON envelope，并把 Daemon 本地存储迁移到受保护密钥仓库。
 ```
 
-MVP 可以先用 APP 生成并传输，后续平滑升级为 Daemon 本地生成。
+因此，后续升级不默认改成“Daemon 本地生成用户 DID 子私钥”；如果未来要支持 Daemon 生成公钥再由 APP 登记 DID Document，必须作为独立方案重新评审私钥所有权、撤销和 bootstrap 信任边界。
 
 ### 13.3 子 key 放在哪个 relationship
 
@@ -1434,7 +1436,7 @@ MVP 不建议依赖 DID Document 表达完整 scope。可以放 hint，但运行
 ```text
 DID Document: key 是否存在、是否可认证。
 message-service: 只基于 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 判定普通 send / inbox / history 请求。
-user-service: 只登记和撤销 APP 本地生成的 public verification method；管理侧审计可选。运行时请求授权只通过 DID Document `authentication` 体现，user-service 管理侧记录、audit 表或状态表不进入 message-service MVP 运行时授权输入。
+user-service: 只登记和撤销 APP 本地生成的 public verification method；管理侧审计可选。运行时请求授权只通过 DID Document `authentication` 体现，user-service 管理侧记录、audit 表或状态表不进入 message-service MVP 运行时授权输入，message-service 也不读取 user-service 管理侧状态。
 ```
 
 ### 13.5 Agent DID 长期授权是否进入 ANP 标准
