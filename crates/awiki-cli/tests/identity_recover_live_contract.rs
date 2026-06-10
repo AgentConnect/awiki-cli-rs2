@@ -212,7 +212,7 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_recovered","user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
         ),
     ]);
     write_service_config(workspace.path(), &server.base_url());
@@ -283,9 +283,12 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
         .unwrap()
         .contains("alice.awiki.ai"));
     assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
-    assert_eq!(
-        envelope["data"]["identity"]["did"],
-        "did:wba:awiki.ai:alice:e1_recovered"
+    let recovered_did = envelope["data"]["identity"]["did"]
+        .as_str()
+        .expect("recovered identity did");
+    assert!(
+        recovered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "recovery should persist the locally generated key-bound DID: {recovered_did}"
     );
     assert_eq!(envelope["data"]["identity"]["handle"], "alice");
     assert_eq!(
@@ -315,22 +318,19 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     assert_eq!(body["params"]["phone"], "+8613800138000");
     assert_eq!(body["params"]["otp_code"], "654321");
     assert!(body["params"]["did_document"].is_object());
-    assert!(body["params"]["did_document"]["id"]
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("did:wba:awiki.ai:alice:"));
+    assert_eq!(
+        body["params"]["did_document"]["id"].as_str(),
+        Some(recovered_did)
+    );
 
     let stored = read_stored_identity(workspace.path(), "alice");
     assert_eq!(stored.index["handle"], "alice");
     assert_eq!(stored.index["full_handle"], "alice.awiki.ai");
-    assert_eq!(stored.index["did"], "did:wba:awiki.ai:alice:e1_recovered");
+    assert_eq!(stored.index["did"], recovered_did);
     assert_eq!(stored.index["user_id"], "user-alice-recovered");
     assert_eq!(stored.identity["handle"], "alice");
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
-    assert_eq!(
-        stored.identity["did"],
-        "did:wba:awiki.ai:alice:e1_recovered"
-    );
+    assert_eq!(stored.identity["did"], recovered_did);
     assert_eq!(stored.identity["user_id"], "user-alice-recovered");
     assert_eq!(stored.auth["jwt_token"], "jwt-recover");
 

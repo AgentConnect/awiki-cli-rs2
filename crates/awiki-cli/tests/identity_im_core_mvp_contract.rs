@@ -564,7 +564,7 @@ fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_recovered","user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
         ),
     ]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
@@ -606,9 +606,12 @@ fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes
     assert_eq!(recover["data"]["action"], "recover_handle");
     assert_eq!(recover["data"]["final_identity_name"], "alice");
     assert_eq!(recover["data"]["archived_identities"], json!(["alice"]));
-    assert_eq!(
-        recover["data"]["identity"]["did"],
-        "did:wba:awiki.ai:alice:e1_recovered"
+    let recovered_did = recover["data"]["identity"]["did"]
+        .as_str()
+        .expect("recovered identity did");
+    assert!(
+        recovered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "recovery should persist the locally generated key-bound DID: {recovered_did}"
     );
     assert!(recover["data"].get("temp_identity_name").is_none());
     assert!(recover["data"].get("old_dids").is_none());
@@ -633,6 +636,10 @@ fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes
     assert_eq!(body["params"]["phone"], "+8613800138000");
     assert_eq!(body["params"]["otp_code"], "654321");
     assert!(body["params"]["did_document"].is_object());
+    assert_eq!(
+        body["params"]["did_document"]["id"].as_str(),
+        Some(recovered_did)
+    );
 }
 
 #[test]
