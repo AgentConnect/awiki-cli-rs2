@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | `anp/anp` 当前分支、`awiki-cli-rs2` / `user-service` 相关分支 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 等 Step 01 和 Step 04 完成后，把 DID additional authentication 下沉到 ANP SDK |
+| Status | done |
+| Branch | `awiki-cli-rs2`、`user-service` 当前分支；`anp/anp` `master` |
+| Started | 2026-06-10T04:26:17Z |
+| Completed | 2026-06-10T05:57:51Z |
+| Commit | `anp/anp` `c4b2144`；`awiki-cli-rs2` `ac2a0bf`；`user-service` `10ee4d0` |
+| Review evidence | Review 完成；确认 SDK optional API 兼容、proof 覆盖最终 DID Document、consumer 主路径不再 post-proof patch；修复 user-service 文件头无关漂移并同步依赖文档 |
+| Verification evidence | ANP Python 141 passed；ANP Rust 全量 cargo test 通过；im-core 272 lib tests 与 integration/doc tests 通过；user-service DID/DID auth 140 passed, 32 warnings；格式、ruff、三仓 diff check 通过 |
+| Next action | Step 06：最终集成验证、安全 Review 与文档收口 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -31,7 +31,7 @@ Step index：05
 - 设计边界：ANP SDK owns DID WBA document creation and proof generation；产品仓不应在 proof 后修改 DID Document 并自行补救，除非作为临时 legacy fallback。
 - 核心决策：新增 generic optional 参数，而不是 AWiki 专用字段名。例如：
   - Python `create_did_wba_document(..., additional_verification_methods=None, additional_authentication=None)`；
-  - Rust `DidDocumentOptions { additional_verification_methods, additional_authentication, .. }`。
+  - Rust 不直接给 public `DidDocumentOptions` 增必填字段，避免外部完整 struct literal 旧调用编译失败；新增 `DidDocumentCreationOptions` / builder wrapper，`create_did_wba_document(hostname, DidDocumentOptions::...)` 旧调用继续可用，新调用用 wrapper 携带 `additional_verification_methods` / `additional_authentication`。
 - 契约 / API / 数据流：调用方先生成 daemon public key，然后传入 additional method entry 和 authentication reference；SDK 在构建 DID Document 后、生成 proof 前插入；proof 覆盖完整最终文档。
 - 兼容性：默认 `None` / empty list 与当前输出字节级或语义级兼容；旧 tests 必须通过。新增参数必须可选，不强制所有调用方更新。
 - 迁移策略：先在 ANP SDK 增加能力和 tests；再改 `im-core` identity generation 直接传 additional method；再改 user-service REST DID create 使用 SDK optional 参数或禁用后置 patch；最后移除/限制 `identity_daemon_subkey::apply_to_did_document` 主路径，只保留 migration/legacy fallback。
@@ -47,7 +47,7 @@ Step index：05
    - 增加 proof validity tests 和 old behavior tests。
 2. Rust SDK：
    - 阅读 `anp/anp/rust/src` 下 DID WBA options 和 builder；
-   - 增加 optional additional methods；
+   - 增加 optional additional methods；为保持 Rust source compatibility，不直接扩展 public `DidDocumentOptions` 的字段集合，而是用可 `From<DidDocumentOptions>` 的 wrapper / builder 承载新增 optional 数据；
    - 保持默认空值不改变旧行为；
    - 增加 Rust tests。
 3. im-core 消费：
@@ -69,7 +69,7 @@ Step index：05
 | `anp/anp/anp/authentication/did_wba.py` | Python DID WBA additional authentication optional 参数 | proof 前插入 |
 | `anp/anp/anp/unittest/authentication/*` | Python tests | old behavior + proof validity |
 | `anp/anp/anp/unittest/proof/*` | 如需新增 proof tests | 验证完整 DID Document |
-| `anp/anp/rust/src/*` | Rust DID Document options | 具体文件按代码校准 |
+| `anp/anp/rust/src/*` | Rust DID Document creation wrapper / builder | 保持旧 `DidDocumentOptions` 调用兼容 |
 | `anp/anp/rust/tests/*` | Rust tests | old behavior + proof validity |
 | `awiki-cli-rs2/crates/im-core/src/internal/identity_generation.rs` | 使用 ANP Rust SDK optional 参数 | 主路径下沉 |
 | `awiki-cli-rs2/crates/im-core/src/internal/identity_daemon_subkey.rs` | 降级为 package/helper 或 legacy migration | 不再主路径 patch |
@@ -84,15 +84,15 @@ Step index：05
 
 ## 7. 验收标准
 
-- [ ] Python `create_did_wba_document` 新 optional 参数生成的 DID Document 包含 additional method 和 authentication，proof 有效。
-- [ ] Python 旧调用不传 optional 参数时行为兼容。
-- [ ] Rust DID Document options 新 optional 参数生成的 DID Document proof 有效。
-- [ ] Rust 旧调用不传 optional 参数时行为兼容。
-- [ ] im-core 新注册主路径不再依赖 proof 后 JSON patch + 重签。
-- [ ] user-service REST delegated public registration 不再 proof 后 patch 或被明确禁用。
-- [ ] 文档说明这是 DID Document creation optional extension，不是 ANP delegated proof。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] Python `create_did_wba_document` 新 optional 参数生成的 DID Document 包含 additional method 和 authentication，proof 有效。
+- [x] Python 旧调用不传 optional 参数时行为兼容。
+- [x] Rust DID Document creation wrapper / builder 新 optional 参数生成的 DID Document proof 有效。
+- [x] Rust 旧调用不传 optional 参数时行为兼容。
+- [x] im-core 新注册主路径不再依赖 proof 后 JSON patch + 重签。
+- [x] user-service REST delegated public registration 不再 proof 后 patch 或被明确禁用。
+- [x] 文档说明这是 DID Document creation optional extension，不是 ANP delegated proof。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -115,11 +115,11 @@ Step index：05
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待回填 | - |
-| 已修复问题 | 待回填 | - |
-| 剩余风险 | 待回填 | - |
-| 新增或缺失测试 | 待回填 | - |
-| 已更新或缺失文档 | 待回填 | - |
+| 发现问题 | 发现 user-service `service.py` 文件头无关漂移；发现 `CLAUDE.md` / `SPEC.md` 仍记录旧 ANP SDK 版本；确认 `user-service` 使用 sibling editable source 消费未发布 ANP 0.8.7 是发布风险 | 文件头漂移已恢复；依赖文档已同步；发布风险记录到剩余风险 |
+| 已修复问题 | 恢复 `from __future__ import annotations`；同步 `user-service/CLAUDE.md` 和 `user-service/SPEC.md`；Rust SDK API 从直接扩展 `DidDocumentOptions` 改为 `DidDocumentCreationOptions` wrapper / builder | 旧 `create_did_wba_document(hostname, DidDocumentOptions)` 源码兼容 |
+| 剩余风险 | `user-service` 当前通过 `../anp/anp` editable source 使用未发布 ANP 0.8.7，发布前需随 ANP SDK 同步发布或切回已发布包；byte-level 输出因随机 key / proof timestamp 不固定，只验证语义兼容 | 不影响本地验证；Step 06 全局 Review 继续检查发布路径 |
+| 新增或缺失测试 | 已新增 Python/Rust SDK old behavior、additional auth proof、tamper、controller mismatch、unknown reference tests；user-service 增加 SDK additional auth 前置 proof 测试和 absolute verification_method 拒绝测试；im-core 注册/恢复路径由既有 identity tests 覆盖 | 未新增 byte-level snapshot，理由见剩余风险 |
+| 已更新或缺失文档 | 已更新 `agent_im_core_design.md`、`agent_delegated_identity_message_proof_plan.md`、`user-service/CLAUDE.md`、`user-service/SPEC.md` 和本 Step 台账 | ANP README/API docs 未单独更新，当前以 docstring + tests 作为 SDK 行为说明，Step 06 可决定是否补发行文档 |
 
 ## 10. Commit 要求
 
@@ -135,8 +135,8 @@ Step index：05
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| ANP Rust DID builder 不易扩展 | 待回填 | 增加 wrapper / builder hook | 当前步骤 | 记录 API 方案并更新 Plan |
-| 默认输出无法做字节级兼容 | 待回填 | 语义级 fixture / deterministic created | 当前步骤 | 记录兼容证据 |
+| ANP Rust DID builder 不易扩展 | 已解决 | 增加 `DidDocumentCreationOptions` wrapper / builder，保留旧 `create_did_wba_document(hostname, DidDocumentOptions)` 签名 | 当前步骤 | 已记录 Plan 变更并完成 Review |
+| 默认输出无法做字节级兼容 | 已处理 | 使用 old behavior tests、proof validity、tamper-negative 和默认无 additional method 语义检查 | 当前步骤 | 记录为语义兼容证据，不做随机输出 snapshot |
 
 ## 12. Plan 变更记录
 
