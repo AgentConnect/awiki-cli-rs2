@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::dto::{
-    directory::{DartDirectoryResolution, DartRelationStatus, DartRelationshipPage},
+    directory::{
+        DartDirectoryResolution, DartDisplayProfile, DartRelationStatus, DartRelationshipPage,
+    },
     error::DartImError,
 };
 
@@ -38,9 +40,26 @@ pub async fn lookup_handle(
         input: result.handle.as_str().to_string(),
         did: result.did.as_str().to_string(),
         handle: Some(result.handle.as_str().to_string()),
-        profile: None,
-        warnings: Vec::new(),
+        profile: result.profile.map(Into::into),
+        warnings: result.warnings,
     })
+}
+
+pub async fn hydrate_display_profiles(
+    client: &Arc<crate::api::client::DartImClient>,
+    peers: Vec<String>,
+) -> Result<Vec<DartDisplayProfile>, DartImError> {
+    let inner = client.clone_inner()?;
+    let peers = peers
+        .into_iter()
+        .map(|peer| im_core::ids::PeerRef::parse(peer, "").map_err(DartImError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+    inner
+        .directory()
+        .hydrate_display_profiles_async(im_core::directory::DisplayProfileBatchRequest { peers })
+        .await
+        .map(|profiles| profiles.into_iter().map(Into::into).collect())
+        .map_err(DartImError::from)
 }
 
 pub async fn relation_status(
@@ -141,12 +160,33 @@ fn relationship_item_to_dart(
         .profile
         .as_ref()
         .and_then(|profile| profile.display_name.clone());
+    let avatar_uri = item
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.avatar_uri.clone());
+    let avatar_url = item
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.avatar_url.clone())
+        .or_else(|| avatar_uri.clone());
+    let profile_uri = item
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.profile_uri.clone());
+    let subject_type = item
+        .profile
+        .as_ref()
+        .and_then(|profile| profile.subject_type.clone());
     let handle = item.handle.map(|handle| handle.as_str().to_string());
     let did = item.did.map(|did| did.as_str().to_string())?;
     Some(crate::dto::directory::DartRelationshipListItem {
         did,
         handle,
         display_name,
+        avatar_uri,
+        avatar_url,
+        profile_uri,
+        subject_type,
         relationship: relationship.to_string(),
         created_at: item.created_at,
         warnings: item.warnings,

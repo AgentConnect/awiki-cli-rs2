@@ -1380,6 +1380,7 @@ fn profile_patch_from_command(
         bio: trimmed_optional(bio),
         tags: tags_patch(tags_csv),
         markdown,
+        ..ProfilePatch::default()
     })
 }
 

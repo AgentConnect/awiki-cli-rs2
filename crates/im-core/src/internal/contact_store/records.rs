@@ -595,17 +595,46 @@ ON CONFLICT(owner_identity_id, event_id) DO UPDATE SET
 }
 
 pub(crate) fn contact_to_dto(record: &ContactRecord) -> crate::ImResult<crate::directory::Contact> {
+    let metadata = metadata_object(&record.metadata);
+    let avatar_uri = metadata_string(&metadata, "avatar_uri")
+        .or_else(|| metadata_string(&metadata, "avatar_url"))
+        .or_else(|| metadata_string(&metadata, "avatar"));
+    let avatar_url = metadata_string(&metadata, "avatar_url")
+        .or_else(|| metadata_string(&metadata, "avatar"))
+        .or_else(|| avatar_uri.clone());
     Ok(crate::directory::Contact {
         did: crate::ids::Did::parse(record.did.trim())?,
         handle: optional_string(&record.handle)
             .map(|handle| crate::ids::Handle::parse(handle, ""))
             .transpose()?,
         display_name: optional_string(&record.name).or_else(|| optional_string(&record.nick_name)),
+        avatar_uri,
+        avatar_url,
+        profile_uri: metadata_string(&metadata, "profile_uri")
+            .or_else(|| metadata_string(&metadata, "profile_url")),
+        subject_type: metadata_string(&metadata, "subject_type"),
         relationship: optional_string(&record.relationship),
         followed: record.followed.unwrap_or(false),
         messaged: record.messaged.unwrap_or(false),
         note: optional_string(&record.note),
         last_seen_at: optional_string(&record.last_seen_at),
+    })
+}
+
+pub(crate) fn display_profile_from_record(
+    record: &ContactRecord,
+) -> crate::ImResult<crate::directory::DisplayProfile> {
+    let contact = contact_to_dto(record)?;
+    Ok(crate::directory::DisplayProfile {
+        did: Some(contact.did),
+        handle: contact.handle,
+        display_name: contact.display_name,
+        avatar_uri: contact.avatar_uri,
+        avatar_url: contact.avatar_url,
+        profile_uri: contact.profile_uri,
+        subject_type: contact.subject_type,
+        cache_hit: true,
+        warnings: Vec::new(),
     })
 }
 
@@ -1160,6 +1189,22 @@ fn optional_json_string(value: &str) -> Value {
     optional_string(value)
         .map(Value::String)
         .unwrap_or(Value::Null)
+}
+
+fn metadata_object(value: &str) -> serde_json::Map<String, Value> {
+    let Ok(Value::Object(object)) = serde_json::from_str(value.trim()) else {
+        return serde_json::Map::new();
+    };
+    object
+}
+
+fn metadata_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    match object.get(key) {
+        Some(Value::String(value)) => optional_string(value),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        Some(Value::Bool(value)) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

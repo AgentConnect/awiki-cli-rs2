@@ -361,10 +361,16 @@ impl From<im_core::identity::Profile> for DartUserProfile {
             handle: value.handle.map(|handle| handle.as_str().to_string()),
             display_name: value.display_name,
             bio: value.bio,
+            description: value.description,
             tags: value.tags,
             markdown: value.markdown,
+            avatar_uri: value.avatar_uri,
             avatar_url: value.avatar_url,
+            profile_uri: value.profile_uri,
+            subject_type: value.subject_type,
             updated_at: value.updated_at,
+            version_id: value.version_id,
+            ttl: value.ttl,
         }
     }
 }
@@ -382,6 +388,22 @@ impl From<im_core::directory::DirectoryResolution> for DartDirectoryResolution {
             did: value.did.as_str().to_string(),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
             profile: value.profile.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::directory::DisplayProfile> for crate::dto::directory::DartDisplayProfile {
+    fn from(value: im_core::directory::DisplayProfile) -> Self {
+        Self {
+            did: value.did.map(|did| did.as_str().to_string()),
+            handle: value.handle.map(|handle| handle.as_str().to_string()),
+            display_name: value.display_name,
+            avatar_uri: value.avatar_uri,
+            avatar_url: value.avatar_url,
+            profile_uri: value.profile_uri,
+            subject_type: value.subject_type,
+            cache_hit: value.cache_hit,
             warnings: value.warnings,
         }
     }

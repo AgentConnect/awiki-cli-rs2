@@ -60,6 +60,7 @@ async fn identity_service_profile_uses_public_http_transport() {
             bio: Some("sdk profile skeleton".to_string()),
             tags: Some(vec!["sdk".to_string()]),
             markdown: Some("# Alice".to_string()),
+            ..ProfilePatch::default()
         })
         .await
         .unwrap();
@@ -125,6 +126,7 @@ async fn identity_service_profile_async_uses_public_http_transport() {
             bio: Some("async profile skeleton".to_string()),
             tags: Some(vec!["async".to_string()]),
             markdown: Some("# Alice Async".to_string()),
+            ..ProfilePatch::default()
         })
         .await
         .unwrap();
@@ -166,16 +168,21 @@ fn identity_profile_bridge_maps_get_me_result_to_sdk_profile() {
         Some("https://cdn.test/a.png")
     );
     assert_eq!(
+        result.profile.avatar_uri.as_deref(),
+        Some("https://cdn.test/a.png")
+    );
+    assert_eq!(
         result.profile.updated_at.as_deref(),
         Some("2026-05-21T00:00:00Z")
     );
-    assert_eq!(
-        result.profile.metadata,
-        vec![ProfileAttribute {
-            key: "source".to_string(),
-            value: "profile-service".to_string(),
-        }]
-    );
+    assert!(result
+        .profile
+        .metadata
+        .iter()
+        .any(|attribute| { attribute.key == "source" && attribute.value == "profile-service" }));
+    assert!(result.profile.metadata.iter().any(|attribute| {
+        attribute.key == "avatar_url" && attribute.value == "https://cdn.test/a.png"
+    }));
     assert_eq!(result.raw["nick_name"], "Alice Remote");
 }
 
@@ -190,6 +197,7 @@ fn identity_profile_bridge_updates_current_profile() {
             bio: Some(" Rust port ".to_string()),
             tags: Some(vec!["rust".to_string(), "cli".to_string()]),
             markdown: Some("## Alice".to_string()),
+            ..ProfilePatch::default()
         },
         ProfileSession {
             subject: client.did().clone(),
@@ -440,6 +448,213 @@ async fn directory_service_async_uses_actor_projection_and_resolution_api() {
     assert_eq!(relation.did.as_ref().unwrap().as_str(), "did:example:bob");
     assert!(relation.is_contact);
     assert_eq!(relation.relationship.as_deref(), Some("friend"));
+}
+
+#[tokio::test]
+async fn directory_resolution_prefers_valid_wns_profile_projection() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let resolved = client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+
+    let profile = resolved.profile.as_ref().unwrap();
+    assert_eq!(profile.subject.as_str(), "did:example:bob");
+    assert_eq!(profile.display_name.as_deref(), Some("Bob WNS"));
+    assert_eq!(
+        profile.avatar_uri.as_deref(),
+        Some("https://cdn.test/bob-wns.png")
+    );
+    assert_eq!(
+        profile.profile_uri.as_deref(),
+        Some("https://bob.awiki.test/")
+    );
+    assert_eq!(profile.subject_type.as_deref(), Some("person"));
+    assert_eq!(profile.version_id.as_deref(), Some("profile-7"));
+    assert_eq!(profile.ttl, Some(300));
+    assert!(resolved.warnings.is_empty());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].rpc_method, "lookup");
+    assert_eq!(requests[1].rpc_method, "resolve");
+}
+
+#[tokio::test]
+async fn directory_resolution_ignores_mismatched_wns_profile_and_falls_back() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_mismatched_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let resolved = client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolved.profile.as_ref().unwrap().display_name.as_deref(),
+        Some("Bob")
+    );
+    assert!(resolved
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("profile.subject_did")));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].rpc_method, "get_public_profile");
+}
+
+#[tokio::test]
+async fn directory_resolution_ignores_wns_profile_without_subject_and_falls_back() {
+    let fixture = Fixture::new();
+    let mut lookup = handle_lookup_with_profile_value();
+    lookup["profile"]
+        .as_object_mut()
+        .unwrap()
+        .remove("subject_did");
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            lookup,
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let resolved = client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resolved.profile.as_ref().unwrap().display_name.as_deref(),
+        Some("Bob")
+    );
+    assert!(resolved
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("profile.subject_did is missing")));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].rpc_method, "get_public_profile");
+}
+
+#[tokio::test]
+async fn directory_display_profile_hydration_reads_local_cache_only() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_with_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    client
+        .directory()
+        .resolve_peer_async(PeerRef::parse("bob.awiki.test", "").unwrap())
+        .await
+        .unwrap();
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+
+    let hydrated = client
+        .directory()
+        .hydrate_display_profiles_async(DisplayProfileBatchRequest {
+            peers: vec![
+                PeerRef::parse("bob.awiki.test", "").unwrap(),
+                PeerRef::parse("did:example:bob", "").unwrap(),
+                PeerRef::parse("charlie.awiki.test", "").unwrap(),
+            ],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(hydrated.len(), 3);
+    assert!(hydrated[0].cache_hit);
+    assert_eq!(
+        hydrated[0].did.as_ref().unwrap().as_str(),
+        "did:example:bob"
+    );
+    assert_eq!(hydrated[0].display_name.as_deref(), Some("Bob WNS"));
+    assert_eq!(
+        hydrated[0].avatar_uri.as_deref(),
+        Some("https://cdn.test/bob-wns.png")
+    );
+    assert_eq!(
+        hydrated[0].profile_uri.as_deref(),
+        Some("https://bob.awiki.test/")
+    );
+    assert_eq!(hydrated[0].subject_type.as_deref(), Some("person"));
+    assert!(hydrated[1].cache_hit);
+    assert_eq!(hydrated[1].display_name.as_deref(), Some("Bob WNS"));
+    assert!(!hydrated[2].cache_hit);
+    assert!(hydrated[2].did.is_none());
+    assert_eq!(
+        hydrated[2].handle.as_ref().unwrap().as_str(),
+        "charlie.awiki.test"
+    );
 }
 
 #[tokio::test]
@@ -1011,6 +1226,44 @@ fn handle_lookup_value() -> Value {
         "did": "did:example:bob",
         "domain": "awiki.test",
         "status": "active",
+    })
+}
+
+fn handle_lookup_with_profile_value() -> Value {
+    json!({
+        "handle": "bob.awiki.test",
+        "did": "did:example:bob",
+        "domain": "awiki.test",
+        "status": "active",
+        "profile": {
+            "type": "DIDSubjectProfile",
+            "subject_did": "did:example:bob",
+            "subject_type": "person",
+            "handle": "bob.awiki.test",
+            "display_name": "Bob WNS",
+            "description": "WNS projection",
+            "avatar_uri": "https://cdn.test/bob-wns.png",
+            "profile_uri": "https://bob.awiki.test/",
+            "updated": "2026-05-21T00:00:00Z",
+            "versionId": "profile-7",
+            "ttl": 300
+        }
+    })
+}
+
+fn handle_lookup_with_mismatched_profile_value() -> Value {
+    json!({
+        "handle": "bob.awiki.test",
+        "did": "did:example:bob",
+        "domain": "awiki.test",
+        "status": "active",
+        "profile": {
+            "type": "DIDSubjectProfile",
+            "subject_did": "did:example:mallory",
+            "subject_type": "person",
+            "handle": "bob.awiki.test",
+            "display_name": "Mallory"
+        }
     })
 }
 

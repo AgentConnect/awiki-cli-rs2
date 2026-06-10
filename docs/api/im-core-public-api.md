@@ -370,11 +370,15 @@ pub enum IdentitySubject {
 }
 
 impl DirectoryService<'_> {
-    pub fn resolve_peer(&self, subject: IdentitySubject) -> ImResult<PeerProfile>;
-    pub fn lookup_handle(&self, handle: Handle) -> ImResult<ResolvedIdentity>;
+    pub fn resolve_peer(&self, peer: PeerRef) -> ImResult<DirectoryResolution>;
+    pub fn lookup_handle(&self, handle: Handle) -> ImResult<HandleLookupResult>;
     pub fn public_profile(&self, subject: IdentitySubject) -> ImResult<PublicProfile>;
     pub fn save_contact(&self, request: SaveContactRequest) -> ImResult<Contact>;
     pub fn contacts(&self, query: ContactListQuery) -> ImResult<Page<Contact>>;
+    pub fn hydrate_display_profiles(
+        &self,
+        request: DisplayProfileBatchRequest,
+    ) -> ImResult<Vec<DisplayProfile>>;
     pub fn relation_status(&self, peer: PeerRef) -> ImResult<RelationStatus>;
     pub fn follow(&self, request: FollowRequest) -> ImResult<FollowResult>;
     pub fn unfollow(&self, request: UnfollowRequest) -> ImResult<UnfollowResult>;
@@ -383,6 +387,35 @@ impl DirectoryService<'_> {
     pub fn following(&self, query: RelationshipListQuery) -> ImResult<Page<RelationshipListItem>>;
 }
 ```
+
+`HandleLookupResult` 和 `DirectoryResolution.profile` 可以承载 WNS Handle Resolution Document 中的 DID Subject Profile 投影。SDK 优先接受合法的 `profile`：
+
+- `profile.subject_did` 必须等于外层 `did`；
+- `profile.handle` 如存在必须等于外层 `handle`；
+- 合法 profile 会映射为 `Profile.display_name`、`avatar_uri`、`profile_uri`、`description`、`subject_type`、`version_id`、`ttl`；
+- 不合法 profile 会被忽略并写入 `warnings`，然后回退旧 `get_public_profile` 路径；
+- `profile` 只用于展示，不用于 routing、authentication、authorization、service discovery、E2EE session binding 或安全策略选择。
+
+`Profile` 标准字段：
+
+```rust
+pub struct Profile {
+    pub subject: Did,
+    pub handle: Option<Handle>,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub bio: Option<String>,          // legacy compatibility
+    pub avatar_uri: Option<String>,
+    pub avatar_url: Option<String>,   // legacy compatibility
+    pub profile_uri: Option<String>,
+    pub subject_type: Option<String>,
+    pub updated_at: Option<String>,
+    pub version_id: Option<String>,
+    pub ttl: Option<u64>,
+}
+```
+
+`hydrate_display_profiles` 是本地 cache 读取 API，不会发起 WNS / User Service 远程请求。它用于联系人列表、会话列表、群成员列表等热路径水化展示资料；cache miss 时返回 `cache_hit = false`，调用方按 `display_name -> handle -> did` 的展示 fallback 处理。远程刷新仍应通过显式 `resolve_peer` / `public_profile` / 安全验证链路触发。
 
 `relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。
 

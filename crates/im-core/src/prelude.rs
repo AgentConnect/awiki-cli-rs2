@@ -13,9 +13,10 @@ pub use crate::core::{
     PathValidationReport,
 };
 pub use crate::directory::{
-    Contact, ContactListQuery, DirectoryResolution, DirectoryService, FollowRequest, FollowResult,
-    HandleLookupResult, IdentitySubject, PublicProfile, RelationStatus, RelationshipListItem,
-    RelationshipListQuery, RelationshipStatus, SaveContactRequest, UnfollowRequest, UnfollowResult,
+    Contact, ContactListQuery, DirectoryResolution, DirectoryService, DisplayProfile,
+    DisplayProfileBatchRequest, FollowRequest, FollowResult, HandleLookupResult, IdentitySubject,
+    PublicProfile, RelationStatus, RelationshipListItem, RelationshipListQuery, RelationshipStatus,
+    SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
 pub use crate::email::{
     EmailAccount, EmailAddress, EmailAttachmentContent, EmailAttachmentDownloadRequest,

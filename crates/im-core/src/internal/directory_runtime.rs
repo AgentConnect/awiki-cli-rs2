@@ -30,7 +30,7 @@ where
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::HandleLookupResult> {
         let raw = lookup_by_handle(&mut self.transport, handle.as_str())?;
-        handle_lookup_from_value(&raw)
+        handle_lookup_from_value_with_client(self.client, &raw)
     }
 
     pub(crate) fn public_profile(
@@ -84,16 +84,25 @@ where
     fn resolve_handle(&mut self, handle: String) -> crate::ImResult<DirectoryResolveResult> {
         let lookup_raw = lookup_by_handle(&mut self.transport, &handle)
             .map_err(|err| map_directory_not_found(err, &handle))?;
-        let lookup = handle_lookup_from_value(&lookup_raw)?;
-        let profile = public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok();
+        let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        let warnings = lookup.warnings.clone();
+        let fallback_profile = if lookup.profile.is_none() {
+            public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok()
+        } else {
+            None
+        };
         let resolve_raw = resolve_profile_by_did(&mut self.transport, lookup.did.as_str())?;
-        let profile_dto = profile
-            .as_ref()
-            .map(|raw| {
-                let mut profile =
-                    crate::internal::profile_runtime::profile_from_value(self.client, raw)?;
-                profile.subject = lookup.did.clone();
-                Ok::<_, crate::ImError>(profile)
+        let profile_dto = lookup
+            .profile
+            .clone()
+            .map(Ok)
+            .or_else(|| {
+                fallback_profile.as_ref().map(|raw| {
+                    let mut profile =
+                        crate::internal::profile_runtime::profile_from_value(self.client, raw)?;
+                    profile.subject = lookup.did.clone();
+                    Ok::<_, crate::ImError>(profile)
+                })
             })
             .transpose()?;
         Ok(DirectoryResolveResult {
@@ -102,11 +111,11 @@ where
                 did: lookup.did.clone(),
                 handle: Some(lookup.handle),
                 profile: profile_dto,
-                warnings: Vec::new(),
+                warnings,
             },
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
-            public_profile: profile,
+            public_profile: fallback_profile,
         })
     }
 
@@ -118,7 +127,8 @@ where
         let mut handle = None;
         match lookup_by_did(&mut self.transport, did.as_str()) {
             Ok(raw) => {
-                let lookup = handle_lookup_from_value(&raw)?;
+                let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
+                warnings.extend(lookup.warnings);
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -156,7 +166,16 @@ where
     ) -> crate::ImResult<crate::directory::PublicProfile> {
         let lookup_raw = lookup_by_handle(&mut self.transport, handle.as_str())
             .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
-        let lookup = handle_lookup_from_value(&lookup_raw)?;
+        let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        if let Some(profile) = lookup.profile {
+            return Ok(crate::directory::PublicProfile {
+                subject: crate::directory::IdentitySubject::Handle(handle),
+                did: lookup.did,
+                handle: Some(lookup.handle),
+                profile,
+                warnings: lookup.warnings,
+            });
+        }
         self.public_profile_by_did(
             crate::directory::IdentitySubject::Handle(handle),
             lookup.did,
@@ -192,7 +211,7 @@ where
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::HandleLookupResult> {
         let raw = lookup_by_handle_async(&mut self.transport, handle.as_str()).await?;
-        handle_lookup_from_value(&raw)
+        handle_lookup_from_value_with_client(self.client, &raw)
     }
 
     pub(crate) async fn public_profile_async(
@@ -254,19 +273,28 @@ where
         let lookup_raw = lookup_by_handle_async(&mut self.transport, &handle)
             .await
             .map_err(|err| map_directory_not_found(err, &handle))?;
-        let lookup = handle_lookup_from_value(&lookup_raw)?;
-        let profile = public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
-            .await
-            .ok();
+        let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        let warnings = lookup.warnings.clone();
+        let fallback_profile = if lookup.profile.is_none() {
+            public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
+                .await
+                .ok()
+        } else {
+            None
+        };
         let resolve_raw =
             resolve_profile_by_did_async(&mut self.transport, lookup.did.as_str()).await?;
-        let profile_dto = profile
-            .as_ref()
-            .map(|raw| {
-                let mut profile =
-                    crate::internal::profile_runtime::profile_from_value(self.client, raw)?;
-                profile.subject = lookup.did.clone();
-                Ok::<_, crate::ImError>(profile)
+        let profile_dto = lookup
+            .profile
+            .clone()
+            .map(Ok)
+            .or_else(|| {
+                fallback_profile.as_ref().map(|raw| {
+                    let mut profile =
+                        crate::internal::profile_runtime::profile_from_value(self.client, raw)?;
+                    profile.subject = lookup.did.clone();
+                    Ok::<_, crate::ImError>(profile)
+                })
             })
             .transpose()?;
         Ok(DirectoryResolveResult {
@@ -275,11 +303,11 @@ where
                 did: lookup.did.clone(),
                 handle: Some(lookup.handle),
                 profile: profile_dto,
-                warnings: Vec::new(),
+                warnings,
             },
             resolve: Some(resolve_raw),
             lookup: Some(lookup_raw),
-            public_profile: profile,
+            public_profile: fallback_profile,
         })
     }
 
@@ -291,7 +319,8 @@ where
         let mut handle = None;
         match lookup_by_did_async(&mut self.transport, did.as_str()).await {
             Ok(raw) => {
-                let lookup = handle_lookup_from_value(&raw)?;
+                let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
+                warnings.extend(lookup.warnings);
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
             }
@@ -330,7 +359,16 @@ where
         let lookup_raw = lookup_by_handle_async(&mut self.transport, handle.as_str())
             .await
             .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
-        let lookup = handle_lookup_from_value(&lookup_raw)?;
+        let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        if let Some(profile) = lookup.profile {
+            return Ok(crate::directory::PublicProfile {
+                subject: crate::directory::IdentitySubject::Handle(handle),
+                did: lookup.did,
+                handle: Some(lookup.handle),
+                profile,
+                warnings: lookup.warnings,
+            });
+        }
         self.public_profile_by_did_async(
             crate::directory::IdentitySubject::Handle(handle),
             lookup.did,
@@ -456,7 +494,8 @@ where
     transport.rpc(call.endpoint, call.method, call.params).await
 }
 
-fn handle_lookup_from_value(
+fn handle_lookup_from_value_with_client(
+    client: &crate::core::ImClient,
     value: &Value,
 ) -> crate::ImResult<crate::directory::HandleLookupResult> {
     let did = string_value(value, "did");
@@ -469,12 +508,71 @@ fn handle_lookup_from_value(
     if handle.trim().is_empty() {
         return Err(crate::ImError::PeerNotFound { peer: did.clone() });
     }
+    let did = crate::ids::Did::parse(did)?;
+    let handle = crate::ids::Handle::parse(handle, "")?;
+    let (profile, warnings) = profile_from_lookup(client, value.get("profile"), &did, &handle)?;
     Ok(crate::directory::HandleLookupResult {
-        handle: crate::ids::Handle::parse(handle, "")?,
-        did: crate::ids::Did::parse(did)?,
+        handle,
+        did,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
+        profile,
+        warnings,
     })
+}
+
+fn profile_from_lookup(
+    client: &crate::core::ImClient,
+    value: Option<&Value>,
+    did: &crate::ids::Did,
+    handle: &crate::ids::Handle,
+) -> crate::ImResult<(Option<crate::identity::Profile>, Vec<String>)> {
+    let Some(value) = value else {
+        return Ok((None, Vec::new()));
+    };
+    if !value.is_object() {
+        return Ok((
+            None,
+            vec!["Ignoring WNS profile because it is not a JSON object".to_string()],
+        ));
+    }
+    let explicit_subject = first_string_value(value, &["subject_did", "did", "subject", "id"]);
+    if explicit_subject.trim().is_empty() {
+        return Ok((
+            None,
+            vec!["Ignoring WNS profile because profile.subject_did is missing".to_string()],
+        ));
+    }
+    if explicit_subject != did.as_str() {
+        return Ok((
+            None,
+            vec![
+                "Ignoring WNS profile because profile.subject_did does not match resolved did"
+                    .to_string(),
+            ],
+        ));
+    }
+    let mut profile = crate::internal::profile_runtime::profile_from_value(client, value)?;
+    let mut warnings = Vec::new();
+    if profile.subject != *did {
+        warnings.push(
+            "Ignoring WNS profile because profile.subject_did does not match resolved did"
+                .to_string(),
+        );
+        return Ok((None, warnings));
+    }
+    if let Some(profile_handle) = profile.handle.as_ref() {
+        if profile_handle != handle {
+            warnings.push(
+                "Ignoring WNS profile because profile.handle does not match resolved handle"
+                    .to_string(),
+            );
+            return Ok((None, warnings));
+        }
+    } else {
+        profile.handle = Some(handle.clone());
+    }
+    Ok((Some(profile), warnings))
 }
 
 fn first_string_value(value: &Value, keys: &[&str]) -> String {

@@ -300,6 +300,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw);
 
   @protected
+  DartDisplayProfile dco_decode_dart_display_profile(dynamic raw);
+
+  @protected
   DartDownloadAttachmentRequest dco_decode_dart_download_attachment_request(
     dynamic raw,
   );
@@ -542,6 +545,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
+
+  @protected
+  List<DartDisplayProfile> dco_decode_list_dart_display_profile(dynamic raw);
 
   @protected
   List<DartEmailAttachmentMetadata>
@@ -961,6 +967,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDisplayProfile sse_decode_dart_display_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDownloadAttachmentRequest sse_decode_dart_download_attachment_request(
     SseDeserializer deserializer,
   );
@@ -1291,6 +1302,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartConversation> sse_decode_list_dart_conversation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartDisplayProfile> sse_decode_list_dart_display_profile(
     SseDeserializer deserializer,
   );
 
@@ -1795,6 +1811,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_display_profile(
+    DartDisplayProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_download_attachment_request(
     DartDownloadAttachmentRequest self,
     SseSerializer serializer,
@@ -2208,6 +2230,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_conversation(
     List<DartConversation> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_display_profile(
+    List<DartDisplayProfile> self,
     SseSerializer serializer,
   );
 

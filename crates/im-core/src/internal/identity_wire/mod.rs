@@ -101,6 +101,8 @@ pub struct UpdateProfileParams {
     pub bio: String,
     pub tags_csv: String,
     pub markdown: String,
+    pub avatar_uri: String,
+    pub avatar_url: String,
     pub preserve_markdown: bool,
 }
 

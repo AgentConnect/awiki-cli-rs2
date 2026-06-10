@@ -168,6 +168,8 @@ pub(crate) fn update_profile_params_from_patch(
         bio: patch.bio.unwrap_or_default(),
         tags_csv: patch.tags.map(|tags| tags.join(",")).unwrap_or_default(),
         markdown: patch.markdown.unwrap_or_default(),
+        avatar_uri: patch.avatar_uri.unwrap_or_default(),
+        avatar_url: patch.avatar_url.unwrap_or_default(),
         preserve_markdown: true,
     }
 }
@@ -176,7 +178,7 @@ pub(crate) fn profile_from_value(
     client: &crate::core::ImClient,
     raw: &Value,
 ) -> crate::ImResult<crate::identity::Profile> {
-    let subject = string_value(raw, &["did", "subject", "id"])
+    let subject = string_value(raw, &["subject_did", "did", "subject", "id"])
         .filter(|value| value.starts_with("did:"))
         .map(crate::ids::Did::parse)
         .transpose()?
@@ -187,22 +189,36 @@ pub(crate) fn profile_from_value(
         .transpose()?
         .or_else(|| client.handle().cloned());
     let display_name = string_value(raw, &["display_name", "nick_name", "name"]);
-    let bio = string_value(raw, &["bio"]);
+    let description = string_value(raw, &["description", "bio"]);
+    let bio = string_value(raw, &["bio", "description"]);
     let tags = tags_value(raw.get("tags"));
     let markdown = string_value(raw, &["markdown", "profile_md"]);
-    let avatar_url = string_value(raw, &["avatar_url", "avatar"]);
-    let updated_at = string_value(raw, &["updated_at", "update_time", "updatedAt"]);
-    let metadata = metadata_value(raw.get("metadata"));
+    let avatar_uri = string_value(raw, &["avatar_uri", "avatar_url", "avatar"]);
+    let avatar_url = string_value(raw, &["avatar_url", "avatar", "avatar_uri"]);
+    let profile_uri = string_value(raw, &["profile_uri", "profile_url"]);
+    let subject_type = string_value(raw, &["subject_type"]);
+    let updated_at = string_value(raw, &["updated", "updated_at", "update_time", "updatedAt"]);
+    let version_id = string_value(raw, &["versionId", "version_id"]);
+    let ttl = u64_value(raw.get("ttl"));
+    let proof = raw.get("proof").cloned();
+    let metadata = profile_metadata(raw);
 
     Ok(crate::identity::Profile {
         subject,
         handle,
         display_name,
         bio,
+        description,
         tags,
         markdown,
+        avatar_uri,
         avatar_url,
+        profile_uri,
+        subject_type,
         updated_at,
+        version_id,
+        ttl,
+        proof,
         metadata,
     })
 }
@@ -233,6 +249,49 @@ fn tags_value(value: Option<&Value>) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn u64_value(value: Option<&Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::String(value)) => value.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn profile_metadata(raw: &Value) -> Vec<crate::identity::ProfileAttribute> {
+    let mut metadata = metadata_value(raw.get("metadata"));
+    for key in [
+        "type",
+        "avatar_uri",
+        "avatar_url",
+        "profile_uri",
+        "profile_url",
+        "description",
+        "subject_type",
+        "discoverability",
+        "updated",
+        "versionId",
+        "version_id",
+        "ttl",
+    ] {
+        let Some(value) = raw.get(key) else {
+            continue;
+        };
+        if metadata.iter().any(|attribute| attribute.key == key) {
+            continue;
+        }
+        let value = match value {
+            Value::String(value) => value.clone(),
+            Value::Null => continue,
+            value => value.to_string(),
+        };
+        metadata.push(crate::identity::ProfileAttribute {
+            key: key.to_string(),
+            value,
+        });
+    }
+    metadata
 }
 
 fn metadata_value(value: Option<&Value>) -> Vec<crate::identity::ProfileAttribute> {

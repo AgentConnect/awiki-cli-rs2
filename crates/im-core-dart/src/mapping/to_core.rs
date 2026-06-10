@@ -458,6 +458,8 @@ impl From<DartProfilePatch> for im_core::identity::ProfilePatch {
             bio: value.bio,
             tags: value.tags,
             markdown: value.markdown,
+            avatar_uri: value.avatar_uri,
+            avatar_url: value.avatar_url,
         }
     }
 }

@@ -377,6 +377,95 @@ impl<'a> DirectoryService<'a> {
         }
     }
 
+    pub fn hydrate_display_profiles(
+        &self,
+        request: super::DisplayProfileBatchRequest,
+    ) -> crate::ImResult<Vec<super::DisplayProfile>> {
+        validate_display_profile_batch_request(&request)?;
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
+        {
+            let connection = crate::internal::contact_store::open_writable(self.client)?;
+            request
+                .peers
+                .into_iter()
+                .map(|peer| {
+                    let record = local_contact_for_peer(
+                        |did| {
+                            crate::internal::contact_store::records::get_contact_by_did(
+                                &connection,
+                                self.owner_identity_id(),
+                                self.owner_did().as_str(),
+                                did,
+                            )
+                        },
+                        |handle| {
+                            crate::internal::contact_store::records::get_current_contact_by_handle(
+                                &connection,
+                                self.owner_identity_id(),
+                                self.owner_did().as_str(),
+                                handle,
+                            )
+                        },
+                        &peer,
+                    );
+                    display_profile_from_local_result(peer, record)
+                })
+                .collect()
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported(
+                "sync-directory-hydrate-display-profiles",
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported(
+                "directory-hydrate-display-profiles",
+            ))
+        }
+    }
+
+    pub async fn hydrate_display_profiles_async(
+        &self,
+        request: super::DisplayProfileBatchRequest,
+    ) -> crate::ImResult<Vec<super::DisplayProfile>> {
+        validate_display_profile_batch_request(&request)?;
+        #[cfg(feature = "sqlite")]
+        {
+            let db = self.client.core_inner().local_state_db().await?;
+            let mut result = Vec::with_capacity(request.peers.len());
+            for peer in request.peers {
+                let record = if peer.as_str().trim().starts_with("did:") {
+                    db.get_contact_by_did(
+                        self.owner_identity_id(),
+                        self.owner_did().as_str(),
+                        peer.as_str(),
+                    )
+                    .await
+                } else {
+                    db.get_current_contact_by_handle(
+                        self.owner_identity_id(),
+                        self.owner_did().as_str(),
+                        peer.as_str(),
+                    )
+                    .await
+                };
+                result.push(display_profile_from_local_result(peer, record)?);
+            }
+            Ok(result)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported(
+                "directory-hydrate-display-profiles",
+            ))
+        }
+    }
+
     pub fn relation_status(
         &self,
         peer: crate::ids::PeerRef,
@@ -830,6 +919,76 @@ fn validate_peer(peer: &str) -> crate::ImResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_display_profile_batch_request(
+    request: &crate::directory::DisplayProfileBatchRequest,
+) -> crate::ImResult<()> {
+    if request
+        .peers
+        .iter()
+        .any(|peer| peer.as_str().trim().is_empty())
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("peers".to_string()),
+            "peers must not contain empty values",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
+fn local_contact_for_peer<FDid, FHandle>(
+    by_did: FDid,
+    by_handle: FHandle,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<crate::internal::contact_store::records::ContactRecord>
+where
+    FDid: FnOnce(&str) -> crate::ImResult<crate::internal::contact_store::records::ContactRecord>,
+    FHandle:
+        FnOnce(&str) -> crate::ImResult<crate::internal::contact_store::records::ContactRecord>,
+{
+    if peer.as_str().trim().starts_with("did:") {
+        by_did(peer.as_str())
+    } else {
+        by_handle(peer.as_str())
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn display_profile_from_local_result(
+    peer: crate::ids::PeerRef,
+    record: crate::ImResult<crate::internal::contact_store::records::ContactRecord>,
+) -> crate::ImResult<crate::directory::DisplayProfile> {
+    match record {
+        Ok(record) => crate::internal::contact_store::records::display_profile_from_record(&record),
+        Err(crate::ImError::PeerNotFound { .. }) => display_profile_cache_miss(peer),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn display_profile_cache_miss(
+    peer: crate::ids::PeerRef,
+) -> crate::ImResult<crate::directory::DisplayProfile> {
+    let mut warnings = vec!["display profile cache miss".to_string()];
+    let (did, handle) = if peer.as_str().trim().starts_with("did:") {
+        (Some(crate::ids::Did::parse(peer.as_str())?), None)
+    } else {
+        warnings.push("peer did is unknown until remote handle resolution".to_string());
+        (None, Some(crate::ids::Handle::parse(peer.as_str(), "")?))
+    };
+    Ok(crate::directory::DisplayProfile {
+        did,
+        handle,
+        display_name: None,
+        avatar_uri: None,
+        avatar_url: None,
+        profile_uri: None,
+        subject_type: None,
+        cache_hit: false,
+        warnings,
+    })
 }
 
 fn validate_not_self_peer(

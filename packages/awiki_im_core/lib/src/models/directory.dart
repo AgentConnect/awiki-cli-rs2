@@ -51,11 +51,39 @@ class RelationStatus {
   final String? displayName;
 }
 
+class DisplayProfile {
+  const DisplayProfile({
+    this.did,
+    this.handle,
+    this.displayName,
+    this.avatarUri,
+    this.avatarUrl,
+    this.profileUri,
+    this.subjectType,
+    required this.cacheHit,
+    this.warnings = const [],
+  });
+
+  final String? did;
+  final String? handle;
+  final String? displayName;
+  final String? avatarUri;
+  final String? avatarUrl;
+  final String? profileUri;
+  final String? subjectType;
+  final bool cacheHit;
+  final List<String> warnings;
+}
+
 class RelationshipListItem {
   const RelationshipListItem({
     required this.did,
     this.handle,
     this.displayName,
+    this.avatarUri,
+    this.avatarUrl,
+    this.profileUri,
+    this.subjectType,
     required this.relationship,
     this.createdAt,
     this.warnings = const [],
@@ -64,6 +92,10 @@ class RelationshipListItem {
   final String did;
   final String? handle;
   final String? displayName;
+  final String? avatarUri;
+  final String? avatarUrl;
+  final String? profileUri;
+  final String? subjectType;
   final String relationship;
   final String? createdAt;
   final List<String> warnings;

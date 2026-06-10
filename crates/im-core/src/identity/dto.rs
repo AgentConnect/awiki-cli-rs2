@@ -271,10 +271,23 @@ pub struct Profile {
     pub handle: Option<crate::ids::Handle>,
     pub display_name: Option<String>,
     pub bio: Option<String>,
+    pub description: Option<String>,
     pub tags: Vec<String>,
     pub markdown: Option<String>,
+    pub avatar_uri: Option<String>,
     pub avatar_url: Option<String>,
+    pub profile_uri: Option<String>,
+    pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(
+        default,
+        rename = "versionId",
+        alias = "version_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub version_id: Option<String>,
+    pub ttl: Option<u64>,
+    pub proof: Option<serde_json::Value>,
     pub metadata: Vec<ProfileAttribute>,
 }
 
@@ -285,10 +298,43 @@ pub struct ProfileAttribute {
 }
 
 impl Profile {
+    pub fn new(subject: crate::ids::Did) -> Self {
+        Self {
+            subject,
+            handle: None,
+            display_name: None,
+            bio: None,
+            description: None,
+            tags: Vec::new(),
+            markdown: None,
+            avatar_uri: None,
+            avatar_url: None,
+            profile_uri: None,
+            subject_type: None,
+            updated_at: None,
+            version_id: None,
+            ttl: None,
+            proof: None,
+            metadata: Vec::new(),
+        }
+    }
+
+    pub fn effective_description(&self) -> Option<&String> {
+        self.description.as_ref().or(self.bio.as_ref())
+    }
+
+    pub fn effective_avatar_uri(&self) -> Option<&String> {
+        self.avatar_uri.as_ref().or(self.avatar_url.as_ref())
+    }
+
     pub fn to_wire_profile_value(&self) -> serde_json::Value {
         let mut value = serde_json::Map::new();
         value.insert(
             "did".to_string(),
+            serde_json::Value::String(self.subject.as_str().to_string()),
+        );
+        value.insert(
+            "subject_did".to_string(),
             serde_json::Value::String(self.subject.as_str().to_string()),
         );
         if let Some(handle) = self.handle.as_ref() {
@@ -299,11 +345,21 @@ impl Profile {
         }
         if let Some(display_name) = self.display_name.as_ref() {
             value.insert(
+                "display_name".to_string(),
+                serde_json::Value::String(display_name.clone()),
+            );
+            value.insert(
                 "nick_name".to_string(),
                 serde_json::Value::String(display_name.clone()),
             );
         }
-        if let Some(bio) = self.bio.as_ref() {
+        if let Some(description) = self.effective_description() {
+            value.insert(
+                "description".to_string(),
+                serde_json::Value::String(description.clone()),
+            );
+        }
+        if let Some(bio) = self.bio.as_ref().or(self.description.as_ref()) {
             value.insert("bio".to_string(), serde_json::Value::String(bio.clone()));
         }
         if !self.tags.is_empty() {
@@ -315,10 +371,28 @@ impl Profile {
                 serde_json::Value::String(markdown.clone()),
             );
         }
-        if let Some(avatar_url) = self.avatar_url.as_ref() {
+        if let Some(avatar_uri) = self.effective_avatar_uri() {
+            value.insert(
+                "avatar_uri".to_string(),
+                serde_json::Value::String(avatar_uri.clone()),
+            );
+        }
+        if let Some(avatar_url) = self.avatar_url.as_ref().or(self.avatar_uri.as_ref()) {
             value.insert(
                 "avatar_url".to_string(),
                 serde_json::Value::String(avatar_url.clone()),
+            );
+        }
+        if let Some(profile_uri) = self.profile_uri.as_ref() {
+            value.insert(
+                "profile_uri".to_string(),
+                serde_json::Value::String(profile_uri.clone()),
+            );
+        }
+        if let Some(subject_type) = self.subject_type.as_ref() {
+            value.insert(
+                "subject_type".to_string(),
+                serde_json::Value::String(subject_type.clone()),
             );
         }
         if let Some(updated_at) = self.updated_at.as_ref() {
@@ -326,6 +400,22 @@ impl Profile {
                 "updated_at".to_string(),
                 serde_json::Value::String(updated_at.clone()),
             );
+            value.insert(
+                "updated".to_string(),
+                serde_json::Value::String(updated_at.clone()),
+            );
+        }
+        if let Some(version_id) = self.version_id.as_ref() {
+            value.insert(
+                "versionId".to_string(),
+                serde_json::Value::String(version_id.clone()),
+            );
+        }
+        if let Some(ttl) = self.ttl {
+            value.insert("ttl".to_string(), serde_json::json!(ttl));
+        }
+        if let Some(proof) = self.proof.as_ref() {
+            value.insert("proof".to_string(), proof.clone());
         }
         if !self.metadata.is_empty() {
             value.insert(
@@ -353,6 +443,8 @@ pub struct ProfilePatch {
     pub bio: Option<String>,
     pub tags: Option<Vec<String>>,
     pub markdown: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -365,6 +365,17 @@ class DirectoryApi {
     return resolution._toModel();
   }
 
+  Future<List<DisplayProfile>> hydrateDisplayProfiles(List<String> peers) async {
+    _client._ensureNotDisposed();
+    final profiles = await _mapNativeErrors(
+      () => gen_directory.hydrateDisplayProfiles(
+        client: _client._inner,
+        peers: peers,
+      ),
+    );
+    return profiles.map((profile) => profile._toModel()).toList();
+  }
+
   Future<RelationStatus> relationStatus(String peer) async {
     _client._ensureNotDisposed();
     final status = await _mapNativeErrors(
@@ -1251,11 +1262,29 @@ extension on gen_directory_dto.DartRelationStatus {
   );
 }
 
+extension on gen_directory_dto.DartDisplayProfile {
+  DisplayProfile _toModel() => DisplayProfile(
+    did: did,
+    handle: handle,
+    displayName: displayName,
+    avatarUri: avatarUri,
+    avatarUrl: avatarUrl,
+    profileUri: profileUri,
+    subjectType: subjectType,
+    cacheHit: cacheHit,
+    warnings: warnings,
+  );
+}
+
 extension on gen_directory_dto.DartRelationshipListItem {
   RelationshipListItem _toModel() => RelationshipListItem(
     did: did,
     handle: handle,
     displayName: displayName,
+    avatarUri: avatarUri,
+    avatarUrl: avatarUrl,
+    profileUri: profileUri,
+    subjectType: subjectType,
     relationship: relationship,
     createdAt: createdAt,
     warnings: warnings,
@@ -1276,6 +1305,8 @@ extension on ProfilePatch {
     bio: bio,
     tags: tags,
     markdown: markdown,
+    avatarUri: avatarUri,
+    avatarUrl: avatarUrl,
   );
 }
 
@@ -1285,10 +1316,16 @@ extension on gen_profile_dto.DartUserProfile {
     handle: handle,
     displayName: displayName,
     bio: bio,
+    description: description,
     tags: tags,
     markdown: markdown,
+    avatarUri: avatarUri,
     avatarUrl: avatarUrl,
+    profileUri: profileUri,
+    subjectType: subjectType,
     updatedAt: updatedAt,
+    versionId: versionId,
+    ttl: ttl == null ? null : ttl!.toInt(),
   );
 }
 
