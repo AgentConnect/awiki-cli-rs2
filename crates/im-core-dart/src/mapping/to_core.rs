@@ -411,6 +411,7 @@ impl DartCreateGroupRequest {
         Ok(im_core::groups::GroupCreateRequest {
             name: self.name,
             description: self.description,
+            avatar_uri: self.avatar_uri,
             discoverability: match self.discoverability {
                 Some(value) => Some(
                     im_core::groups::GroupDiscoverability::parse(value)

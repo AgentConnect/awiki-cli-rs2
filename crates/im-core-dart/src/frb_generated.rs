@@ -4630,6 +4630,7 @@ impl SseDecode for crate::dto::group::DartCreateGroupRequest {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_description = <Option<String>>::sse_decode(deserializer);
+        let mut var_avatarUri = <Option<String>>::sse_decode(deserializer);
         let mut var_discoverability = <Option<String>>::sse_decode(deserializer);
         let mut var_admissionMode = <Option<String>>::sse_decode(deserializer);
         let mut var_messageSecurityProfile = <Option<String>>::sse_decode(deserializer);
@@ -4646,6 +4647,7 @@ impl SseDecode for crate::dto::group::DartCreateGroupRequest {
         return crate::dto::group::DartCreateGroupRequest {
             name: var_name,
             description: var_description,
+            avatar_uri: var_avatarUri,
             discoverability: var_discoverability,
             admission_mode: var_admissionMode,
             message_security_profile: var_messageSecurityProfile,
@@ -5253,7 +5255,9 @@ impl SseDecode for crate::dto::group::DartGroupSnapshot {
         let mut var_id = <Option<String>>::sse_decode(deserializer);
         let mut var_did = <String>::sse_decode(deserializer);
         let mut var_name = <Option<String>>::sse_decode(deserializer);
+        let mut var_displayName = <Option<String>>::sse_decode(deserializer);
         let mut var_description = <Option<String>>::sse_decode(deserializer);
+        let mut var_avatarUri = <Option<String>>::sse_decode(deserializer);
         let mut var_myRole = <Option<String>>::sse_decode(deserializer);
         let mut var_membershipStatus = <Option<String>>::sse_decode(deserializer);
         let mut var_memberCount = <Option<u32>>::sse_decode(deserializer);
@@ -5262,7 +5266,9 @@ impl SseDecode for crate::dto::group::DartGroupSnapshot {
             id: var_id,
             did: var_did,
             name: var_name,
+            display_name: var_displayName,
             description: var_description,
+            avatar_uri: var_avatarUri,
             my_role: var_myRole,
             membership_status: var_membershipStatus,
             member_count: var_memberCount,
@@ -5277,6 +5283,8 @@ impl SseDecode for crate::dto::group::DartGroupSummary {
         let mut var_id = <Option<String>>::sse_decode(deserializer);
         let mut var_did = <String>::sse_decode(deserializer);
         let mut var_name = <Option<String>>::sse_decode(deserializer);
+        let mut var_displayName = <Option<String>>::sse_decode(deserializer);
+        let mut var_avatarUri = <Option<String>>::sse_decode(deserializer);
         let mut var_membershipStatus = <Option<String>>::sse_decode(deserializer);
         let mut var_memberCount = <Option<u32>>::sse_decode(deserializer);
         let mut var_lastMessageAt = <Option<String>>::sse_decode(deserializer);
@@ -5284,6 +5292,8 @@ impl SseDecode for crate::dto::group::DartGroupSummary {
             id: var_id,
             did: var_did,
             name: var_name,
+            display_name: var_displayName,
+            avatar_uri: var_avatarUri,
             membership_status: var_membershipStatus,
             member_count: var_memberCount,
             last_message_at: var_lastMessageAt,
@@ -9305,6 +9315,7 @@ impl SseEncode for crate::dto::group::DartCreateGroupRequest {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.name, serializer);
         <Option<String>>::sse_encode(self.description, serializer);
+        <Option<String>>::sse_encode(self.avatar_uri, serializer);
         <Option<String>>::sse_encode(self.discoverability, serializer);
         <Option<String>>::sse_encode(self.admission_mode, serializer);
         <Option<String>>::sse_encode(self.message_security_profile, serializer);
@@ -9712,7 +9723,9 @@ impl SseEncode for crate::dto::group::DartGroupSnapshot {
         <Option<String>>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.did, serializer);
         <Option<String>>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.display_name, serializer);
         <Option<String>>::sse_encode(self.description, serializer);
+        <Option<String>>::sse_encode(self.avatar_uri, serializer);
         <Option<String>>::sse_encode(self.my_role, serializer);
         <Option<String>>::sse_encode(self.membership_status, serializer);
         <Option<u32>>::sse_encode(self.member_count, serializer);
@@ -9726,6 +9739,8 @@ impl SseEncode for crate::dto::group::DartGroupSummary {
         <Option<String>>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.did, serializer);
         <Option<String>>::sse_encode(self.name, serializer);
+        <Option<String>>::sse_encode(self.display_name, serializer);
+        <Option<String>>::sse_encode(self.avatar_uri, serializer);
         <Option<String>>::sse_encode(self.membership_status, serializer);
         <Option<u32>>::sse_encode(self.member_count, serializer);
         <Option<String>>::sse_encode(self.last_message_at, serializer);

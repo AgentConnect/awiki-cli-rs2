@@ -1410,10 +1410,17 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["kind"], "group");
     assert_eq!(items[0]["group_did"], "did:group:team");
+    assert_eq!(items[0]["peer_did"], serde_json::Value::Null);
+    assert_eq!(items[0]["title"], "did:group:team");
+    assert_eq!(items[0]["display"]["title"], "did:group:team");
+    assert_eq!(items[0]["display"]["source"], "did_fallback");
     assert_eq!(items[0]["has_attachments"], true);
     assert_eq!(items[0]["last_content_type"], "attachment");
     assert_eq!(items[1]["kind"], "direct");
     assert_eq!(items[1]["peer_did"], "did:human:bob");
+    assert_eq!(items[1]["group_did"], serde_json::Value::Null);
+    assert_eq!(items[1]["display"]["title"], "did:human:bob");
+    assert_eq!(items[1]["display"]["source"], "did_fallback");
     assert_eq!(items[1]["last_message_preview"], "hello runtime");
 
     let thread_outbox = MemoryRuntimeOutbox::default();
@@ -1448,6 +1455,12 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     let payload = &statuses[0].payload;
     assert_eq!(payload["status_scope"], "runtime_inbox_thread");
     assert_eq!(payload["state"], "succeeded");
+    assert_eq!(payload["result"]["kind"], "group");
+    assert_eq!(payload["result"]["peer_did"], serde_json::Value::Null);
+    assert_eq!(payload["result"]["group_did"], "did:group:team");
+    assert_eq!(payload["result"]["title"], "did:group:team");
+    assert_eq!(payload["result"]["display"]["title"], "did:group:team");
+    assert_eq!(payload["result"]["display"]["source"], "did_fallback");
     let messages = payload["result"]["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["content_type"], "attachment");

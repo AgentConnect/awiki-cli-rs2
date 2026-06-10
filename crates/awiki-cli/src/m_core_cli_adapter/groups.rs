@@ -23,6 +23,7 @@ pub struct GroupCreateRequest {
     pub identity_name: String,
     pub name: String,
     pub description: String,
+    pub avatar_uri: String,
     pub discoverability: String,
     pub admission_mode: String,
     pub message_security_profile: String,
@@ -73,6 +74,7 @@ pub struct GroupUpdateRequest {
     pub group: String,
     pub name: String,
     pub description: String,
+    pub avatar_uri: String,
     pub discoverability: String,
     pub admission_mode: String,
     pub slug: String,
@@ -1122,6 +1124,7 @@ fn group_create_request(
     Ok(SdkGroupCreateRequest {
         name: request.name,
         description: optional_string(&request.description),
+        avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
             .map_err(im_error_to_message_error)?,
         admission_mode: GroupAdmissionMode::parse_optional(&request.admission_mode)
@@ -1161,6 +1164,7 @@ fn group_profile_patch(
     Ok(GroupProfilePatch {
         name: optional_string(&request.name),
         description: optional_string(&request.description),
+        avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
             .map_err(im_error_to_message_error)?,
         slug: optional_string(&request.slug),
@@ -1245,12 +1249,25 @@ fn group_messages_to_cli_json(result: &GroupReadResult, raw: &Value) -> Vec<Valu
 
 fn group_snapshot_to_cli_json(snapshot: Option<&GroupSnapshot>) -> Option<Value> {
     let snapshot = snapshot?;
+    let display_name = snapshot
+        .display_name
+        .clone()
+        .or_else(|| snapshot.name.clone());
+    let group_profile = group_profile_json(
+        display_name.clone(),
+        snapshot.description.clone(),
+        snapshot.avatar_uri.clone(),
+    );
     Some(json!({
         "id": snapshot.id,
         "group_did": snapshot.did.as_str(),
         "did": snapshot.did.as_str(),
-        "name": snapshot.name,
+        "name": display_name,
+        "display_name": display_name,
         "description": snapshot.description,
+        "avatar_uri": snapshot.avatar_uri,
+        "avatar": snapshot.avatar_uri,
+        "group_profile": group_profile,
         "member_role": snapshot.my_role,
         "my_role": snapshot.my_role,
         "member_status": snapshot.membership_status,
@@ -1280,11 +1297,17 @@ fn merge_group_snapshot_raw(mut snapshot: Value, raw: &Value) -> Value {
 }
 
 fn group_summary_to_json(group: &GroupSummary) -> Value {
+    let display_name = group.display_name.clone().or_else(|| group.name.clone());
+    let group_profile = group_profile_json(display_name.clone(), None, group.avatar_uri.clone());
     json!({
         "id": group.id,
         "group_did": group.did.as_str(),
         "did": group.did.as_str(),
-        "name": group.name,
+        "name": display_name,
+        "display_name": display_name,
+        "avatar_uri": group.avatar_uri,
+        "avatar": group.avatar_uri,
+        "group_profile": group_profile,
         "member_role": group.my_role,
         "my_role": group.my_role,
         "member_status": group.membership_status,
@@ -1500,6 +1523,24 @@ fn default_string(value: &str, fallback: &str) -> String {
     }
 }
 
+fn group_profile_json(
+    display_name: Option<String>,
+    description: Option<String>,
+    avatar_uri: Option<String>,
+) -> Value {
+    let mut profile = serde_json::Map::new();
+    if let Some(display_name) = display_name.filter(|value| !value.trim().is_empty()) {
+        profile.insert("display_name".to_string(), Value::String(display_name));
+    }
+    if let Some(description) = description.filter(|value| !value.trim().is_empty()) {
+        profile.insert("description".to_string(), Value::String(description));
+    }
+    if let Some(avatar_uri) = avatar_uri.filter(|value| !value.trim().is_empty()) {
+        profile.insert("avatar_uri".to_string(), Value::String(avatar_uri));
+    }
+    Value::Object(profile)
+}
+
 fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
     if raw.is_null() {
         return None;
@@ -1512,12 +1553,19 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
         return None;
     }
     if let Some(profile) = raw.get("group_profile").filter(|value| value.is_object()) {
+        let display_name = string_value(profile.get("display_name"));
+        let avatar_uri = string_value(profile.get("avatar_uri"))
+            .or_else_nonempty(|| string_value(profile.get("avatar_url")))
+            .or_else_nonempty(|| string_value(profile.get("avatar")));
         return Some(json!({
             "group_did": group_did,
             "did": group_did,
             "group_state_version": raw.get("group_state_version").cloned().unwrap_or(Value::Null),
-            "name": string_value(profile.get("display_name")),
+            "name": display_name,
+            "display_name": display_name,
             "description": profile.get("description").cloned().unwrap_or(Value::Null),
+            "avatar_uri": avatar_uri,
+            "avatar": avatar_uri,
             "discoverability": profile.get("discoverability").cloned().unwrap_or(Value::Null),
             "slug": profile.get("slug").cloned().unwrap_or(Value::Null),
             "goal": profile.get("goal").cloned().unwrap_or(Value::Null),

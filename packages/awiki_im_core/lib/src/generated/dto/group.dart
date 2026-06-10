@@ -10,6 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 class DartCreateGroupRequest {
   final String name;
   final String? description;
+  final String? avatarUri;
   final String? discoverability;
   final String? admissionMode;
   final String? messageSecurityProfile;
@@ -27,6 +28,7 @@ class DartCreateGroupRequest {
   const DartCreateGroupRequest({
     required this.name,
     this.description,
+    this.avatarUri,
     this.discoverability,
     this.admissionMode,
     this.messageSecurityProfile,
@@ -46,6 +48,7 @@ class DartCreateGroupRequest {
   int get hashCode =>
       name.hashCode ^
       description.hashCode ^
+      avatarUri.hashCode ^
       discoverability.hashCode ^
       admissionMode.hashCode ^
       messageSecurityProfile.hashCode ^
@@ -67,6 +70,7 @@ class DartCreateGroupRequest {
           runtimeType == other.runtimeType &&
           name == other.name &&
           description == other.description &&
+          avatarUri == other.avatarUri &&
           discoverability == other.discoverability &&
           admissionMode == other.admissionMode &&
           messageSecurityProfile == other.messageSecurityProfile &&
@@ -164,7 +168,9 @@ class DartGroupSnapshot {
   final String? id;
   final String did;
   final String? name;
+  final String? displayName;
   final String? description;
+  final String? avatarUri;
   final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
@@ -174,7 +180,9 @@ class DartGroupSnapshot {
     this.id,
     required this.did,
     this.name,
+    this.displayName,
     this.description,
+    this.avatarUri,
     this.myRole,
     this.membershipStatus,
     this.memberCount,
@@ -186,7 +194,9 @@ class DartGroupSnapshot {
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
+      displayName.hashCode ^
       description.hashCode ^
+      avatarUri.hashCode ^
       myRole.hashCode ^
       membershipStatus.hashCode ^
       memberCount.hashCode ^
@@ -200,7 +210,9 @@ class DartGroupSnapshot {
           id == other.id &&
           did == other.did &&
           name == other.name &&
+          displayName == other.displayName &&
           description == other.description &&
+          avatarUri == other.avatarUri &&
           myRole == other.myRole &&
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&
@@ -211,6 +223,8 @@ class DartGroupSummary {
   final String? id;
   final String did;
   final String? name;
+  final String? displayName;
+  final String? avatarUri;
   final String? membershipStatus;
   final int? memberCount;
   final String? lastMessageAt;
@@ -219,6 +233,8 @@ class DartGroupSummary {
     this.id,
     required this.did,
     this.name,
+    this.displayName,
+    this.avatarUri,
     this.membershipStatus,
     this.memberCount,
     this.lastMessageAt,
@@ -229,6 +245,8 @@ class DartGroupSummary {
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
+      displayName.hashCode ^
+      avatarUri.hashCode ^
       membershipStatus.hashCode ^
       memberCount.hashCode ^
       lastMessageAt.hashCode;
@@ -241,6 +259,8 @@ class DartGroupSummary {
           id == other.id &&
           did == other.did &&
           name == other.name &&
+          displayName == other.displayName &&
+          avatarUri == other.avatarUri &&
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&
           lastMessageAt == other.lastMessageAt;

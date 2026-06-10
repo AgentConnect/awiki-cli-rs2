@@ -712,6 +712,8 @@ fn identity_dry_run_and_validation_contracts_match_go() {
             "rust,port",
             "--markdown",
             "inline",
+            "--avatar-uri",
+            "https://example.com/alice.png",
         ],
         workspace.path(),
     ));
@@ -725,6 +727,10 @@ fn identity_dry_run_and_validation_contracts_match_go() {
     assert_eq!(profile_plan["data"]["plan"]["tags"], "rust,port");
     assert_eq!(profile_plan["data"]["plan"]["markdown"], "inline");
     assert_eq!(profile_plan["data"]["plan"]["markdown_file"], "");
+    assert_eq!(
+        profile_plan["data"]["plan"]["avatar_uri"],
+        "https://example.com/alice.png"
+    );
     assert!(profile_plan["data"]["plan"]["remote_calls"]
         .as_array()
         .unwrap()

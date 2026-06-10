@@ -467,6 +467,7 @@ pub struct CreateGroupRequest {
 pub struct GroupProfileDraft {
     pub display_name: String,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub slug: Option<String>,
     pub goal: Option<String>,
     pub rules: Option<String>,
@@ -499,6 +500,8 @@ impl GroupService<'_> {
 ```
 
 普通群消息统一走 `client.messages().send(MessageTarget::Group)`。`groups().send_text()` 只是便利封装，不重复实现业务逻辑。
+
+Rust SDK 调用方创建群组时推荐使用 `GroupCreateRequest::new(name)`，再按需设置 `description`、`avatar_uri`、`discoverability` 等可选字段，避免后续新增可选字段时依赖完整 struct literal。群资料更新继续使用 `GroupProfilePatch::default()` 后按需填写字段；`avatar_uri` 对应 Group Host 权威的 `group_profile.avatar_uri`，`name` 仍只是 `group_profile.display_name` 的兼容输入。
 
 ## 11. local state / bootstrap
 

@@ -114,6 +114,8 @@ pub fn query_runtime_inbox_thread(
     records.truncate(input.limit as usize);
     records.reverse();
     let title = thread_title_from_records(&input, &records);
+    let peer_did = thread_peer_did(&input, &records);
+    let group_did = thread_group_did(&input, &records);
     let messages = records
         .iter()
         .map(|message| message_json(message, &runtime_agent.agent_did))
@@ -123,6 +125,9 @@ pub fn query_runtime_inbox_thread(
         "thread_id": input.thread_id,
         "kind": input.kind.as_str(),
         "title": title,
+        "display": display_fallback_json(&title),
+        "peer_did": peer_did,
+        "group_did": group_did,
         "messages": messages,
         "next_cursor": if has_more { Some(next_offset.to_string()) } else { None },
         "fetched_at_ms": crate::security::runtime_token::current_time_millis()?,
@@ -407,10 +412,12 @@ fn inbox_item_json(
     let last_content_type = last_message
         .map(message_content_type)
         .unwrap_or_else(|| "text".to_string());
+    let title = conversation_title(conversation, peer_did.as_deref(), group_did.as_deref());
     Ok(json!({
         "thread_id": thread_id,
         "kind": kind,
-        "title": conversation_title(conversation, peer_did.as_deref(), group_did.as_deref()),
+        "title": title,
+        "display": display_fallback_json(&title),
         "peer_did": peer_did,
         "group_id": group_id,
         "group_did": group_did,
@@ -477,6 +484,13 @@ fn conversation_title(
         .or_else(|| group_did.map(str::to_string))
         .or_else(|| Some(conversation.conversation_id.clone()))
         .unwrap_or_else(|| "Unknown".to_string())
+}
+
+fn display_fallback_json(title: &str) -> Value {
+    json!({
+        "title": title,
+        "source": "did_fallback",
+    })
 }
 
 fn thread_ref_from_query(input: &RuntimeInboxThreadQuery) -> Result<ThreadRef> {
@@ -579,6 +593,61 @@ fn thread_title_from_records(
             .or_else(|| input.thread_id.strip_prefix("group:").map(str::to_string))
             .unwrap_or_else(|| input.thread_id.clone()),
     }
+}
+
+fn thread_peer_did(
+    input: &RuntimeInboxThreadQuery,
+    messages: &[LocalMessageRecord],
+) -> Option<String> {
+    if input.kind != RuntimeInboxThreadKind::Direct {
+        return None;
+    }
+    input
+        .peer_did
+        .as_deref()
+        .or_else(|| input.thread_id.strip_prefix("direct:"))
+        .or_else(|| input.thread_id.strip_prefix("dm:"))
+        .or_else(|| {
+            input
+                .thread_id
+                .starts_with("did:")
+                .then_some(input.thread_id.as_str())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            messages.iter().find_map(|message| {
+                let candidate = if message.sender_did.trim() != input.runtime_agent_did {
+                    message.sender_did.as_str()
+                } else {
+                    message.receiver_did.as_str()
+                };
+                (!candidate.trim().is_empty()).then(|| candidate.to_string())
+            })
+        })
+}
+
+fn thread_group_did(
+    input: &RuntimeInboxThreadQuery,
+    messages: &[LocalMessageRecord],
+) -> Option<String> {
+    if input.kind != RuntimeInboxThreadKind::Group {
+        return None;
+    }
+    input
+        .group_did
+        .as_deref()
+        .or_else(|| input.thread_id.strip_prefix("group:"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            messages.iter().find_map(|message| {
+                let group = first_non_empty([&message.group_did, &message.group_id]);
+                (!group.trim().is_empty()).then_some(group)
+            })
+        })
 }
 
 fn message_json(message: &LocalMessageRecord, runtime_agent_did: &str) -> Result<Value> {

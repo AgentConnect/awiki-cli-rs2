@@ -55,6 +55,7 @@ pub struct MarkReadWireRequest {
 pub struct GroupCreateWireRequest {
     pub name: String,
     pub description: String,
+    pub avatar_uri: String,
     pub discoverability: String,
     pub admission_mode: String,
     pub message_security_profile: String,
@@ -287,6 +288,7 @@ pub fn build_bridge_group_create_rpc_params(
         &crate::groups::GroupCreateRequest {
             name: request.name,
             description: optional_trimmed(request.description),
+            avatar_uri: optional_trimmed(request.avatar_uri),
             discoverability: crate::groups::GroupDiscoverability::parse_optional(
                 request.discoverability,
             )?,

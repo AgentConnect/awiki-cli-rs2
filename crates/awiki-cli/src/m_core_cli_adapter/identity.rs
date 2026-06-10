@@ -54,6 +54,8 @@ pub struct ResolveCommandRequest {
 pub struct SetProfileCommandRequest {
     pub patch: ProfilePatch,
     pub display_name: String,
+    pub avatar_uri: String,
+    pub avatar_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +192,11 @@ pub fn register_handle_request(
         invite_code: trimmed_optional(&string_flag(command, "invite-code")),
         profile: InitialProfile {
             display_name: trimmed_optional(&string_flag(command, "display-name")),
-            avatar_url: trimmed_optional(&string_flag(command, "avatar-url")),
+            avatar_url: trimmed_optional(&standard_or_compat_flag(
+                command,
+                "avatar-uri",
+                "avatar-url",
+            )),
         },
         make_default: command
             .flags
@@ -1303,12 +1309,23 @@ pub fn set_profile_request(
     tags_csv: String,
     markdown: String,
     markdown_file: String,
+    avatar_uri: String,
+    avatar_url: String,
 ) -> Result<SetProfileCommandRequest, ExitError> {
-    let patch =
-        profile_patch_from_command(&display_name, &bio, &tags_csv, &markdown, &markdown_file)?;
+    let patch = profile_patch_from_command(
+        &display_name,
+        &bio,
+        &tags_csv,
+        &markdown,
+        &markdown_file,
+        &avatar_uri,
+        &avatar_url,
+    )?;
     Ok(SetProfileCommandRequest {
         patch,
         display_name,
+        avatar_uri,
+        avatar_url,
     })
 }
 
@@ -1359,6 +1376,8 @@ fn profile_patch_from_command(
     tags_csv: &str,
     markdown: &str,
     markdown_file: &str,
+    avatar_uri: &str,
+    avatar_url: &str,
 ) -> Result<ProfilePatch, ExitError> {
     let markdown_file = markdown_file.trim();
     let markdown = if markdown_file.is_empty() {
@@ -1380,6 +1399,8 @@ fn profile_patch_from_command(
         bio: trimmed_optional(bio),
         tags: tags_patch(tags_csv),
         markdown,
+        avatar_uri: trimmed_optional(avatar_uri),
+        avatar_url: trimmed_optional(avatar_url),
         ..ProfilePatch::default()
     })
 }
@@ -1407,6 +1428,12 @@ fn changed_fields_from_profile_patch(patch: &ProfilePatch) -> Vec<String> {
     }
     if patch.markdown.is_some() {
         fields.push("profile_md".to_string());
+    }
+    if patch.avatar_uri.is_some() {
+        fields.push("avatar_uri".to_string());
+    }
+    if patch.avatar_url.is_some() {
+        fields.push("avatar_url".to_string());
     }
     fields
 }
@@ -2212,6 +2239,14 @@ fn looks_like_handle(value: &str) -> bool {
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
+}
+
+fn standard_or_compat_flag(command: &ParsedCommand, standard: &str, compat: &str) -> String {
+    let standard_value = string_flag(command, standard);
+    if !standard_value.trim().is_empty() {
+        return standard_value;
+    }
+    string_flag(command, compat)
 }
 
 fn trimmed_optional(value: &str) -> Option<String> {

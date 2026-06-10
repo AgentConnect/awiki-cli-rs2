@@ -459,6 +459,12 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
     assert_eq!(contacts_save["implemented"], true);
     assert_eq!(contacts_save["handler"], "people.contacts.save");
     assert_eq!(schema_flag(contacts_save, "did")["required"], true);
+    assert_eq!(
+        schema_flag(contacts_save, "display-name")["usage"],
+        "Contact display name"
+    );
+    let contacts_save_all = schema_all_command("people.contacts.save");
+    assert_eq!(schema_flag(&contacts_save_all, "name")["deprecated"], true);
 
     let raw = schema_for(&["debug", "raw"]);
     assert_eq!(schema_command(&raw)["implemented"], false);
@@ -593,6 +599,15 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
         schema_flag(schema_command(&profile_set), "display-name")["usage"],
         "Profile display name"
     );
+    assert_eq!(
+        schema_flag(schema_command(&profile_set), "avatar-uri")["usage"],
+        "Profile avatar URI"
+    );
+    let profile_set_all = schema_all_command("id.profile.set");
+    assert_eq!(
+        schema_flag(&profile_set_all, "avatar-url")["deprecated"],
+        true
+    );
 
     let msg_send = schema_for(&["msg", "send"]);
     assert_eq!(
@@ -615,6 +630,10 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
         "deprecated message-security-profile should stay off the default schema surface: {group_create:?}"
     );
     let group_create_all = schema_all_command("group.create");
+    assert_eq!(
+        schema_flag(&group_create_all, "avatar-uri")["usage"],
+        "Group avatar URI"
+    );
     assert_eq!(
         schema_flag(&group_create_all, "message-security-profile")["choices"],
         serde_json::json!(["transport-protected", "group-e2ee"])
@@ -878,6 +897,8 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
             "did:example:alice",
             "--handle",
             "alice",
+            "--display-name",
+            "Alice",
             "--reason",
             "migration smoke",
         ],
@@ -896,6 +917,8 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
     );
     assert_eq!(envelope["data"]["plan"]["did"], "did:example:alice");
     assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.ai");
+    assert_eq!(envelope["data"]["plan"]["display_name"], "Alice");
+    assert_eq!(envelope["data"]["plan"]["name"], "Alice");
     assert_eq!(envelope["data"]["plan"]["note"], "migration smoke");
     assert_ne!(
         envelope["error"]["code"], "unsupported_capability",

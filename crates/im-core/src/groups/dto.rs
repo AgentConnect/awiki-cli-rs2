@@ -84,6 +84,7 @@ impl GroupReadResult {
 pub struct GroupCreateRequest {
     pub name: String,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub discoverability: Option<GroupDiscoverability>,
     pub admission_mode: Option<GroupAdmissionMode>,
     pub message_security_profile: Option<GroupMessageSecurityProfile>,
@@ -99,6 +100,30 @@ pub struct GroupCreateRequest {
     pub max_members: Option<GroupMemberLimit>,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
+}
+
+impl GroupCreateRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            avatar_uri: None,
+            discoverability: None,
+            admission_mode: None,
+            message_security_profile: None,
+            security: GroupSecurityRequirement::default(),
+            e2ee: false,
+            slug: None,
+            goal: None,
+            rules: None,
+            message_prompt: None,
+            doc_url: None,
+            attachments_allowed: None,
+            max_members: None,
+            member_max_messages: None,
+            member_max_total_chars: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +287,7 @@ pub struct GroupMemberResolution {
 pub struct GroupProfilePatch {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub discoverability: Option<GroupDiscoverability>,
     pub slug: Option<String>,
     pub goal: Option<String>,
@@ -741,7 +767,9 @@ pub struct GroupSnapshot {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
     pub name: Option<String>,
+    pub display_name: Option<String>,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -753,6 +781,8 @@ pub struct GroupSummary {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
     pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -771,14 +801,20 @@ pub struct GroupMember {
 fn group_snapshot_from_value(value: &Value) -> Option<GroupSnapshot> {
     let object = value.as_object()?;
     let did = group_ref_from_object(object)?;
+    let display_name = optional_string(object.get("display_name"))
+        .or_else(|| nested_string(object.get("group_profile"), "display_name"))
+        .or_else(|| optional_string(object.get("name")));
     Some(GroupSnapshot {
         id: optional_string(object.get("id")).or_else(|| optional_string(object.get("group_id"))),
         did,
-        name: optional_string(object.get("name"))
-            .or_else(|| optional_string(object.get("display_name")))
-            .or_else(|| nested_string(object.get("group_profile"), "display_name")),
+        name: display_name.clone(),
+        display_name,
         description: optional_string(object.get("description"))
             .or_else(|| nested_string(object.get("group_profile"), "description")),
+        avatar_uri: optional_string(object.get("avatar_uri"))
+            .or_else(|| nested_string(object.get("group_profile"), "avatar_uri"))
+            .or_else(|| optional_string(object.get("avatar_url")))
+            .or_else(|| optional_string(object.get("avatar"))),
         my_role: optional_string(object.get("my_role"))
             .or_else(|| optional_string(object.get("member_role")))
             .or_else(|| optional_string(object.get("actor_membership_role"))),
@@ -794,12 +830,18 @@ fn group_snapshot_from_value(value: &Value) -> Option<GroupSnapshot> {
 fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
     let object = value.as_object()?;
     let did = group_ref_from_object(object)?;
+    let display_name = optional_string(object.get("display_name"))
+        .or_else(|| nested_string(object.get("group_profile"), "display_name"))
+        .or_else(|| optional_string(object.get("name")));
     Some(GroupSummary {
         id: optional_string(object.get("id")).or_else(|| optional_string(object.get("group_id"))),
         did,
-        name: optional_string(object.get("name"))
-            .or_else(|| optional_string(object.get("display_name")))
-            .or_else(|| nested_string(object.get("group_profile"), "display_name")),
+        name: display_name.clone(),
+        display_name,
+        avatar_uri: optional_string(object.get("avatar_uri"))
+            .or_else(|| nested_string(object.get("group_profile"), "avatar_uri"))
+            .or_else(|| optional_string(object.get("avatar_url")))
+            .or_else(|| optional_string(object.get("avatar"))),
         my_role: optional_string(object.get("my_role"))
             .or_else(|| optional_string(object.get("member_role")))
             .or_else(|| optional_string(object.get("actor_membership_role"))),
@@ -1016,6 +1058,20 @@ fn message_kind(content_type: Option<&str>) -> crate::messages::MessageKind {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn group_create_request_new_sets_only_required_name() {
+        let request = GroupCreateRequest::new("Demo Group");
+
+        assert_eq!(request.name, "Demo Group");
+        assert_eq!(request.description, None);
+        assert_eq!(request.avatar_uri, None);
+        assert_eq!(request.security, GroupSecurityRequirement::default());
+        assert!(!request.e2ee);
+        assert_eq!(request.discoverability, None);
+        assert_eq!(request.admission_mode, None);
+        assert_eq!(request.message_security_profile, None);
+    }
 
     #[test]
     fn group_result_projects_domain_fields_and_keeps_raw_response() {

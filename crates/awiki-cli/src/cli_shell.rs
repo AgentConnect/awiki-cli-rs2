@@ -724,6 +724,8 @@ impl App {
         let tags = string_flag(command, "tags");
         let markdown = string_flag(command, "markdown");
         let markdown_file = string_flag(command, "markdown-file");
+        let avatar_uri = string_flag(command, "avatar-uri");
+        let avatar_url = string_flag(command, "avatar-url");
         if !markdown.trim().is_empty() && !markdown_file.trim().is_empty() {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -746,6 +748,8 @@ impl App {
                             "tags": tags,
                             "markdown": markdown,
                             "markdown_file": markdown_file,
+                            "avatar_uri": avatar_uri,
+                            "avatar_url": avatar_url,
                             "remote_calls": ["did.profile.update_me"],
                             "local_writes": ["identity.json", "index.json"],
                         }
@@ -761,6 +765,8 @@ impl App {
             tags,
             markdown,
             markdown_file,
+            avatar_uri,
+            avatar_url,
         )?;
         let result = crate::m_core_cli_adapter::identity::set_profile_via_im_core(
             &resolved,
@@ -777,6 +783,8 @@ impl App {
         let tags = string_flag(command, "tags");
         let markdown = string_flag(command, "markdown");
         let markdown_file = string_flag(command, "markdown-file");
+        let avatar_uri = string_flag(command, "avatar-uri");
+        let avatar_url = string_flag(command, "avatar-url");
         if !markdown.trim().is_empty() && !markdown_file.trim().is_empty() {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -795,6 +803,8 @@ impl App {
             tags,
             markdown,
             markdown_file,
+            avatar_uri,
+            avatar_url,
         )?;
         let result = crate::m_core_cli_adapter::identity::set_profile_via_im_core_async(
             &resolved,

@@ -3731,24 +3731,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return DartCreateGroupRequest(
       name: dco_decode_String(arr[0]),
       description: dco_decode_opt_String(arr[1]),
-      discoverability: dco_decode_opt_String(arr[2]),
-      admissionMode: dco_decode_opt_String(arr[3]),
-      messageSecurityProfile: dco_decode_opt_String(arr[4]),
-      e2Ee: dco_decode_bool(arr[5]),
-      slug: dco_decode_opt_String(arr[6]),
-      goal: dco_decode_opt_String(arr[7]),
-      rules: dco_decode_opt_String(arr[8]),
-      messagePrompt: dco_decode_opt_String(arr[9]),
-      docUrl: dco_decode_opt_String(arr[10]),
-      attachmentsAllowed: dco_decode_opt_box_autoadd_bool(arr[11]),
-      maxMembers: dco_decode_opt_String(arr[12]),
-      memberMaxMessages: dco_decode_opt_box_autoadd_i_64(arr[13]),
-      memberMaxTotalChars: dco_decode_opt_box_autoadd_i_64(arr[14]),
+      avatarUri: dco_decode_opt_String(arr[2]),
+      discoverability: dco_decode_opt_String(arr[3]),
+      admissionMode: dco_decode_opt_String(arr[4]),
+      messageSecurityProfile: dco_decode_opt_String(arr[5]),
+      e2Ee: dco_decode_bool(arr[6]),
+      slug: dco_decode_opt_String(arr[7]),
+      goal: dco_decode_opt_String(arr[8]),
+      rules: dco_decode_opt_String(arr[9]),
+      messagePrompt: dco_decode_opt_String(arr[10]),
+      docUrl: dco_decode_opt_String(arr[11]),
+      attachmentsAllowed: dco_decode_opt_box_autoadd_bool(arr[12]),
+      maxMembers: dco_decode_opt_String(arr[13]),
+      memberMaxMessages: dco_decode_opt_box_autoadd_i_64(arr[14]),
+      memberMaxTotalChars: dco_decode_opt_box_autoadd_i_64(arr[15]),
     );
   }
 
@@ -4236,17 +4237,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return DartGroupSnapshot(
       id: dco_decode_opt_String(arr[0]),
       did: dco_decode_String(arr[1]),
       name: dco_decode_opt_String(arr[2]),
-      description: dco_decode_opt_String(arr[3]),
-      myRole: dco_decode_opt_String(arr[4]),
-      membershipStatus: dco_decode_opt_String(arr[5]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[6]),
-      lastMessageAt: dco_decode_opt_String(arr[7]),
+      displayName: dco_decode_opt_String(arr[3]),
+      description: dco_decode_opt_String(arr[4]),
+      avatarUri: dco_decode_opt_String(arr[5]),
+      myRole: dco_decode_opt_String(arr[6]),
+      membershipStatus: dco_decode_opt_String(arr[7]),
+      memberCount: dco_decode_opt_box_autoadd_u_32(arr[8]),
+      lastMessageAt: dco_decode_opt_String(arr[9]),
     );
   }
 
@@ -4254,15 +4257,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartGroupSummary(
       id: dco_decode_opt_String(arr[0]),
       did: dco_decode_String(arr[1]),
       name: dco_decode_opt_String(arr[2]),
-      membershipStatus: dco_decode_opt_String(arr[3]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      lastMessageAt: dco_decode_opt_String(arr[5]),
+      displayName: dco_decode_opt_String(arr[3]),
+      avatarUri: dco_decode_opt_String(arr[4]),
+      membershipStatus: dco_decode_opt_String(arr[5]),
+      memberCount: dco_decode_opt_box_autoadd_u_32(arr[6]),
+      lastMessageAt: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -5760,6 +5765,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_name = sse_decode_String(deserializer);
     var var_description = sse_decode_opt_String(deserializer);
+    var var_avatarUri = sse_decode_opt_String(deserializer);
     var var_discoverability = sse_decode_opt_String(deserializer);
     var var_admissionMode = sse_decode_opt_String(deserializer);
     var var_messageSecurityProfile = sse_decode_opt_String(deserializer);
@@ -5776,6 +5782,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return DartCreateGroupRequest(
       name: var_name,
       description: var_description,
+      avatarUri: var_avatarUri,
       discoverability: var_discoverability,
       admissionMode: var_admissionMode,
       messageSecurityProfile: var_messageSecurityProfile,
@@ -6387,7 +6394,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_name = sse_decode_opt_String(deserializer);
+    var var_displayName = sse_decode_opt_String(deserializer);
     var var_description = sse_decode_opt_String(deserializer);
+    var var_avatarUri = sse_decode_opt_String(deserializer);
     var var_myRole = sse_decode_opt_String(deserializer);
     var var_membershipStatus = sse_decode_opt_String(deserializer);
     var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
@@ -6396,7 +6405,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       did: var_did,
       name: var_name,
+      displayName: var_displayName,
       description: var_description,
+      avatarUri: var_avatarUri,
       myRole: var_myRole,
       membershipStatus: var_membershipStatus,
       memberCount: var_memberCount,
@@ -6410,6 +6421,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_opt_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_name = sse_decode_opt_String(deserializer);
+    var var_displayName = sse_decode_opt_String(deserializer);
+    var var_avatarUri = sse_decode_opt_String(deserializer);
     var var_membershipStatus = sse_decode_opt_String(deserializer);
     var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
@@ -6417,6 +6430,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       did: var_did,
       name: var_name,
+      displayName: var_displayName,
+      avatarUri: var_avatarUri,
       membershipStatus: var_membershipStatus,
       memberCount: var_memberCount,
       lastMessageAt: var_lastMessageAt,
@@ -8312,6 +8327,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.name, serializer);
     sse_encode_opt_String(self.description, serializer);
+    sse_encode_opt_String(self.avatarUri, serializer);
     sse_encode_opt_String(self.discoverability, serializer);
     sse_encode_opt_String(self.admissionMode, serializer);
     sse_encode_opt_String(self.messageSecurityProfile, serializer);
@@ -8748,7 +8764,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.id, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.name, serializer);
+    sse_encode_opt_String(self.displayName, serializer);
     sse_encode_opt_String(self.description, serializer);
+    sse_encode_opt_String(self.avatarUri, serializer);
     sse_encode_opt_String(self.myRole, serializer);
     sse_encode_opt_String(self.membershipStatus, serializer);
     sse_encode_opt_box_autoadd_u_32(self.memberCount, serializer);
@@ -8764,6 +8782,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.id, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.name, serializer);
+    sse_encode_opt_String(self.displayName, serializer);
+    sse_encode_opt_String(self.avatarUri, serializer);
     sse_encode_opt_String(self.membershipStatus, serializer);
     sse_encode_opt_box_autoadd_u_32(self.memberCount, serializer);
     sse_encode_opt_String(self.lastMessageAt, serializer);

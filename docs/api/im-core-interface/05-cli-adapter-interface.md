@@ -233,3 +233,24 @@ group lifecycle commands
 runtime listener service commands
 debug.db.*
 ```
+
+## 11. Name / Avatar 展示字段边界
+
+CLI adapter 的 JSON 输出使用标准展示字段：
+
+- 联系人、关系列表和目录结果应稳定包含 `did`、`handle`、`display_name`、`avatar_uri`、`profile_uri`、`subject_type`。
+- 群组结果应稳定包含 `group_did` / `did`、`display_name`、`avatar_uri`，并保留 `group_profile.display_name` / `group_profile.avatar_uri` 作为群组资料权威投影。
+- 旧字段 `name`、`avatar`、`avatar_url` 只能作为兼容输出或输入 alias；新逻辑优先读取 `display_name` / `avatar_uri`。
+- human summary 可以显示 `display_name`，但必须保留 Handle 或 DID，例如 `Alice (alice.awiki.ai / did:...)`。
+
+CLI 输入兼容规则：
+
+- `people contacts save --display-name` 是标准联系人展示名输入；`--name` 保留为 deprecated alias。
+- `id profile set --avatar-uri` 是标准头像输入；`--avatar-url` 保留为 deprecated alias。
+- `group create --name` 和 `group update --name` 保留为 CLI 便利输入，内部映射到 `group_profile.display_name`；`--avatar-uri` 映射到 `group_profile.avatar_uri`。
+
+安全边界：
+
+- `display_name`、`avatar_uri`、`profile_uri`、`subject_type`、`name`、`avatar` 不得用于路由、身份认证、授权、服务发现、E2EE 绑定或安全 profile 协商。
+- Daemon runtime inbox 返回的 `title` 和 `display` 对象只是 UI fallback metadata；响应必须同时保留 `peer_did` 或 `group_did`，App 可以用这些 DID 从 SDK profile cache 进行后续水化。
+- Daemon runtime agent 的 `display_name` 是本机 runtime 管理名，不是公开 DID Subject Profile；公开联系人或 Agent 展示资料仍应来自 WNS / User Service profile。

@@ -28,6 +28,8 @@ fn group_create_and_update_dry_run_match_go_policy_contracts() {
             "Policy Group",
             "--description",
             "Policy group description",
+            "--avatar-uri",
+            "https://example.com/group.png",
             "--discoverability",
             "public",
             "--admission-mode",
@@ -57,6 +59,7 @@ fn group_create_and_update_dry_run_match_go_policy_contracts() {
     let create_request = &create["data"]["plan"]["request"];
     assert_eq!(create_request["IdentityName"], "alice");
     assert_eq!(create_request["Name"], "Policy Group");
+    assert_eq!(create_request["AvatarURI"], "https://example.com/group.png");
     assert_eq!(create_request["Discoverability"], "public");
     assert_eq!(create_request["AdmissionMode"], "open-join");
     assert_eq!(
@@ -112,6 +115,8 @@ fn group_create_and_update_dry_run_match_go_policy_contracts() {
             "did:wba:awiki.ai:group:e1_policy",
             "--goal",
             "update tests",
+            "--avatar-uri",
+            "https://example.com/updated-group.png",
             "--rules",
             "keep output stable",
             "--message-prompt",
@@ -126,6 +131,10 @@ fn group_create_and_update_dry_run_match_go_policy_contracts() {
     assert_eq!(update["data"]["plan"]["action"], "group.update");
     let update_request = &update["data"]["plan"]["request"];
     assert_eq!(update_request["Group"], "did:wba:awiki.ai:group:e1_policy");
+    assert_eq!(
+        update_request["AvatarURI"],
+        "https://example.com/updated-group.png"
+    );
     assert_eq!(update_request["Goal"], "update tests");
     assert_eq!(update_request["Rules"], "keep output stable");
     assert_eq!(update_request["MessagePrompt"], "reply in english");

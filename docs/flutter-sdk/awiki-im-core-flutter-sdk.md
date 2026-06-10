@@ -61,13 +61,13 @@ Display fields must not be used for routing, authentication, authorization, serv
 
 `client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally; the app should fall back to `displayName -> handle -> did` without blocking list rendering. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
 
-## Group creation service DID
+## Group display metadata
 
-`CreateGroupRequest.serviceDid` maps to `im_core::groups::GroupCreateRequest.service_did`. Resolution order is:
+`CreateGroupRequest.avatarUri` maps to `group_profile.avatar_uri`; `CreateGroupRequest.name` remains the Flutter convenience input for `group_profile.display_name`. `GroupSummary` and `GroupSnapshot` expose `displayName` and `avatarUri`; the old `name` field is retained as a compatibility projection of `displayName`.
 
-1. `request.serviceDid`
-2. `AwikiImCoreConfig.anpServiceDid`
-3. `invalid_input(field = service_did)`
+Group creation service DID is resolved from `AwikiImCoreConfig.anpServiceDid`. If it is absent, group create returns `invalid_input(field = anp_service_did)`.
+
+These display fields are UI metadata only. They must not be used for routing, authorization, membership checks, E2EE binding, or service endpoint selection.
 
 ## Message retry
 

@@ -63,6 +63,7 @@ pub(crate) fn build_group_create_payload(
     let mut profile = Map::new();
     insert_required_trimmed_string(&mut profile, "display_name", &request.name, "name")?;
     insert_optional_trimmed_string(&mut profile, "description", request.description.as_deref());
+    insert_optional_trimmed_string(&mut profile, "avatar_uri", request.avatar_uri.as_deref());
     insert_optional_trimmed_string(
         &mut profile,
         "discoverability",
@@ -352,6 +353,7 @@ fn group_profile_patch(request: &crate::groups::GroupProfilePatch) -> Map<String
     let mut patch = Map::new();
     insert_optional_trimmed_string(&mut patch, "display_name", request.name.as_deref());
     insert_optional_trimmed_string(&mut patch, "description", request.description.as_deref());
+    insert_optional_trimmed_string(&mut patch, "avatar_uri", request.avatar_uri.as_deref());
     insert_optional_trimmed_string(
         &mut patch,
         "discoverability",

@@ -349,6 +349,7 @@ fn group_create_bridge_request_no_longer_accepts_per_request_service_did() {
     let request = awiki_im_core::dto::group::DartCreateGroupRequest {
         name: "test".to_string(),
         description: None,
+        avatar_uri: None,
         discoverability: None,
         admission_mode: None,
         message_security_profile: None,

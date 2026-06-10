@@ -431,6 +431,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
                 description: Some(" group description ".to_string()),
+                avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
                 admission_mode: Some(crate::groups::GroupAdmissionMode::OpenJoin),
                 message_security_profile: Some(
@@ -501,6 +502,10 @@ mod tests {
             "Demo Group"
         );
         assert_eq!(
+            calls[0].params["body"]["group_profile"]["avatar_uri"],
+            "https://example.test/group.png"
+        );
+        assert_eq!(
             calls[0].params["body"]["group_policy"]["message_security_profile"],
             "transport-protected"
         );
@@ -542,6 +547,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
                 description: Some(" group description ".to_string()),
+                avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
                 admission_mode: Some(crate::groups::GroupAdmissionMode::OpenJoin),
                 message_security_profile: Some(
@@ -615,6 +621,10 @@ mod tests {
             "Demo Group"
         );
         assert_eq!(
+            calls[0].params["body"]["group_profile"]["avatar_uri"],
+            "https://example.test/group.png"
+        );
+        assert_eq!(
             calls[0].params["body"]["group_policy"]["message_security_profile"],
             "transport-protected"
         );
@@ -650,6 +660,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Demo Group".to_string(),
                 description: None,
+                avatar_uri: None,
                 discoverability: None,
                 admission_mode: None,
                 message_security_profile: None,
@@ -697,6 +708,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
                 description: None,
+                avatar_uri: None,
                 discoverability: None,
                 admission_mode: None,
                 message_security_profile: None,
@@ -747,6 +759,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
                 description: None,
+                avatar_uri: None,
                 discoverability: None,
                 admission_mode: None,
                 message_security_profile: Some(
@@ -844,6 +857,7 @@ mod tests {
                 patch: crate::groups::GroupProfilePatch {
                     name: Some(" Renamed ".to_string()),
                     description: Some(" updated ".to_string()),
+                    avatar_uri: Some(" https://example.test/new.png ".to_string()),
                     ..crate::groups::GroupProfilePatch::default()
                 },
             },
@@ -896,7 +910,11 @@ mod tests {
         assert_eq!(calls[2].method, "group.update_profile");
         assert_eq!(
             calls[2].params["body"]["group_profile_patch"],
-            json!({"display_name":"Renamed","description":"updated"})
+            json!({
+                "display_name": "Renamed",
+                "description": "updated",
+                "avatar_uri": "https://example.test/new.png",
+            })
         );
         assert_eq!(calls[3].method, "group.update_policy");
         let policy = &calls[3].params["body"]["group_policy_patch"];
