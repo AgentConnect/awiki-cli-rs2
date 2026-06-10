@@ -260,8 +260,10 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
         .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("daemon".to_string()))
         .await
         .unwrap();
-    assert_eq!(package.schema, "awiki.daemon.user_subkey_package.v1");
+    assert_eq!(package.schema, "awiki.daemon.user_subkey_package.v2");
     assert_eq!(package.key_type, "Multikey/Ed25519");
+    assert_eq!(package.key_algorithm.as_deref(), Some("Ed25519"));
+    assert_eq!(package.private_key_encoding, "pem");
     assert_eq!(package.user_did, identity.did);
     assert_eq!(
         package.verification_method,
@@ -269,7 +271,7 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
     );
     assert!(package.public_key_multibase.starts_with('z'));
     assert!(package
-        .private_key_multibase
+        .private_key_pem
         .starts_with("-----BEGIN PRIVATE KEY-----"));
 
     let requests = server.join();

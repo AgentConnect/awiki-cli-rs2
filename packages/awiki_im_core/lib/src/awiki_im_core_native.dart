@@ -1144,7 +1144,10 @@ extension on gen_identity.DartDaemonSubkeyPrivatePackage {
     userDid: userDid,
     verificationMethod: verificationMethod,
     keyType: keyType,
+    keyAlgorithm: keyAlgorithm,
     publicKeyMultibase: publicKeyMultibase,
+    privateKeyEncoding: privateKeyEncoding,
+    privateKeyPem: privateKeyPem,
     privateKeyMultibase: privateKeyMultibase,
   );
 }

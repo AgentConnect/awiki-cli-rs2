@@ -1948,12 +1948,14 @@ mod tests {
             "app_instance_id": "app_1",
             "controller_did": "did:human:alice",
             "user_subkey_package": {
-                "schema": "awiki.daemon.user_subkey_package.v1",
+                "schema": "awiki.daemon.user_subkey_package.v2",
                 "user_did": "did:human:alice",
                 "verification_method": "did:human:alice#daemon-key-1",
                 "key_type": "Multikey/Ed25519",
+                "key_algorithm": "Ed25519",
                 "public_key_multibase": public_key,
-                "private_key_multibase": private_key,
+                "private_key_encoding": "pem",
+                "private_key_pem": private_key,
                 "allowed_scopes": [
                     "message.inbox.read.plain",
                     "message.history.read.plain",
@@ -1968,13 +1970,15 @@ mod tests {
                 "runtime_registration_token": "tok_runtime_secret_value"
             },
             "capability_policy": {
-                "allowed_actions": [
+                "schema": "awiki.app.capabilities.v1",
+                "capabilities": [
                     "message.summarize_plain",
                     "message.create_draft",
                     "contact.read",
                     "contact.update_display_name",
                     "contact.update_note"
-                ]
+                ],
+                "require_confirmation_for_write_actions": true
             }
         })
     }

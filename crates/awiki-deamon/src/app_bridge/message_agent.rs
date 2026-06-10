@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent::AgentDefinition;
+use crate::app_bridge::action::{parse_app_capabilities_payload, APP_CAPABILITIES_SCHEMA};
 use crate::commands::{
     create_runtime_agent_from_request, RuntimeAgentCreateOutcome, RuntimeAgentCreateRequest,
 };
@@ -106,6 +107,8 @@ where
             created_runtime_agent: false,
         });
     }
+    parse_app_capabilities_payload(capability_policy.clone())
+        .context("validate app message agent capability_policy")?;
 
     let token = desired
         .runtime_registration_token
@@ -219,10 +222,16 @@ fn sanitized_desired_agent_json(value: &Value) -> Value {
 }
 
 fn sanitized_capability_policy_json(value: &Value) -> Value {
-    if value.is_object() {
+    if value.get("schema").and_then(Value::as_str) == Some(APP_CAPABILITIES_SCHEMA)
+        && value.is_object()
+    {
         value.clone()
     } else {
-        json!({})
+        json!({
+            "schema": APP_CAPABILITIES_SCHEMA,
+            "capabilities": [],
+            "require_confirmation_for_write_actions": true
+        })
     }
 }
 

@@ -4608,14 +4608,20 @@ impl SseDecode for crate::dto::identity::DartDaemonSubkeyPrivatePackage {
         let mut var_userDid = <String>::sse_decode(deserializer);
         let mut var_verificationMethod = <String>::sse_decode(deserializer);
         let mut var_keyType = <String>::sse_decode(deserializer);
+        let mut var_keyAlgorithm = <Option<String>>::sse_decode(deserializer);
         let mut var_publicKeyMultibase = <String>::sse_decode(deserializer);
+        let mut var_privateKeyEncoding = <String>::sse_decode(deserializer);
+        let mut var_privateKeyPem = <String>::sse_decode(deserializer);
         let mut var_privateKeyMultibase = <String>::sse_decode(deserializer);
         return crate::dto::identity::DartDaemonSubkeyPrivatePackage {
             schema: var_schema,
             user_did: var_userDid,
             verification_method: var_verificationMethod,
             key_type: var_keyType,
+            key_algorithm: var_keyAlgorithm,
             public_key_multibase: var_publicKeyMultibase,
+            private_key_encoding: var_privateKeyEncoding,
+            private_key_pem: var_privateKeyPem,
             private_key_multibase: var_privateKeyMultibase,
         };
     }
@@ -6993,7 +6999,10 @@ impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartDaemonSubkeyPri
             self.user_did.into_into_dart().into_dart(),
             self.verification_method.into_into_dart().into_dart(),
             self.key_type.into_into_dart().into_dart(),
+            self.key_algorithm.into_into_dart().into_dart(),
             self.public_key_multibase.into_into_dart().into_dart(),
+            self.private_key_encoding.into_into_dart().into_dart(),
+            self.private_key_pem.into_into_dart().into_dart(),
             self.private_key_multibase.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -9147,7 +9156,10 @@ impl SseEncode for crate::dto::identity::DartDaemonSubkeyPrivatePackage {
         <String>::sse_encode(self.user_did, serializer);
         <String>::sse_encode(self.verification_method, serializer);
         <String>::sse_encode(self.key_type, serializer);
+        <Option<String>>::sse_encode(self.key_algorithm, serializer);
         <String>::sse_encode(self.public_key_multibase, serializer);
+        <String>::sse_encode(self.private_key_encoding, serializer);
+        <String>::sse_encode(self.private_key_pem, serializer);
         <String>::sse_encode(self.private_key_multibase, serializer);
     }
 }

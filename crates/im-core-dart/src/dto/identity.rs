@@ -33,7 +33,10 @@ pub struct DartDaemonSubkeyPrivatePackage {
     pub user_did: String,
     pub verification_method: String,
     pub key_type: String,
+    pub key_algorithm: Option<String>,
     pub public_key_multibase: String,
+    pub private_key_encoding: String,
+    pub private_key_pem: String,
     pub private_key_multibase: String,
 }
 

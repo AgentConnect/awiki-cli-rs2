@@ -162,7 +162,7 @@ impl<'a> IdentityStore<'a> {
             }
             write_secure_text_if_present(
                 &identity_dir.join(DAEMON_SUBKEY_PRIVATE_FILE_NAME),
-                &package.private_key_multibase,
+                package.private_key_material(),
             )?;
             write_secure_json(&identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME), package)?;
         }
@@ -350,7 +350,7 @@ impl<'a> IdentityStore<'a> {
         let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
         write_secure_text_if_present(
             &identity_dir.join(DAEMON_SUBKEY_PRIVATE_FILE_NAME),
-            &package.private_key_multibase,
+            package.private_key_material(),
         )?;
         write_secure_json(&identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME), package)
     }

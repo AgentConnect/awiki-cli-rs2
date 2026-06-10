@@ -266,23 +266,29 @@ fn validate_action_allowed(binding: &AppMessageAgentBindingRecord, action: &str)
 }
 
 fn effective_allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
-    let configured = binding
+    let has_explicit_capability_policy = binding
         .capability_policy_json
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .or_else(|| {
-            binding
-                .capability_policy_json
-                .get("allowed_actions")
-                .and_then(Value::as_array)
-        })
-        .or_else(|| {
-            binding
-                .desired_agent_json
-                .get("allowed_actions")
-                .and_then(Value::as_array)
-        });
-    let mut actions = configured
+        .get("schema")
+        .and_then(Value::as_str)
+        == Some(APP_CAPABILITIES_SCHEMA);
+    let configured = if has_explicit_capability_policy {
+        binding
+            .capability_policy_json
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .or_else(|| {
+                binding
+                    .capability_policy_json
+                    .get("allowed_actions")
+                    .and_then(Value::as_array)
+            })
+    } else {
+        binding
+            .desired_agent_json
+            .get("allowed_actions")
+            .and_then(Value::as_array)
+    };
+    let actions = configured
         .map(|items| {
             items
                 .iter()
@@ -292,15 +298,7 @@ fn effective_allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<Stri
                 .map(ToOwned::to_owned)
                 .collect::<BTreeSet<_>>()
         })
-        .unwrap_or_else(|| {
-            MVP_ALLOWED_ACTIONS
-                .iter()
-                .map(|value| value.to_string())
-                .collect()
-        });
-    if actions.is_empty() {
-        actions.extend(MVP_ALLOWED_ACTIONS.iter().map(|value| value.to_string()));
-    }
+        .unwrap_or_default();
     actions.into_iter().collect()
 }
 
@@ -490,6 +488,7 @@ mod tests {
     #[test]
     fn allowed_contact_write_action_queues_confirmation_request() {
         let fixture = fixture(json!({
+            "schema": APP_CAPABILITIES_SCHEMA,
             "capabilities": MVP_ALLOWED_ACTIONS,
             "require_confirmation_for_write_actions": true
         }));
@@ -525,7 +524,10 @@ mod tests {
 
     #[test]
     fn high_risk_action_is_rejected_and_result_is_queued() {
-        let fixture = fixture(json!({"capabilities": MVP_ALLOWED_ACTIONS}));
+        let fixture = fixture(json!({
+            "schema": APP_CAPABILITIES_SCHEMA,
+            "capabilities": MVP_ALLOWED_ACTIONS
+        }));
         let error = queue_runtime_app_action_request(
             &fixture.state,
             &fixture.context,
@@ -557,6 +559,7 @@ mod tests {
     #[test]
     fn binding_capability_policy_restricts_mvp_action_subset() {
         let fixture = fixture(json!({
+            "schema": APP_CAPABILITIES_SCHEMA,
             "capabilities": ["message.summarize_plain"]
         }));
         let error = queue_runtime_app_action_request(
@@ -573,6 +576,61 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("not enabled"));
+    }
+
+    #[test]
+    fn empty_explicit_capabilities_disable_app_actions() {
+        let fixture = fixture(json!({
+            "schema": APP_CAPABILITIES_SCHEMA,
+            "capabilities": []
+        }));
+        let error = queue_runtime_app_action_request(
+            &fixture.state,
+            &fixture.context,
+            &json!({
+                "action_id": "act_summary_1",
+                "action": "message.summarize_plain",
+                "args": {"message_id": "msg_1"}
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not enabled"));
+    }
+
+    #[test]
+    fn missing_capability_policy_does_not_default_to_all_actions_for_new_binding() {
+        let fixture = fixture(json!({}));
+        let error = queue_runtime_app_action_request(
+            &fixture.state,
+            &fixture.context,
+            &json!({
+                "action_id": "act_summary_1",
+                "action": "message.summarize_plain",
+                "args": {"message_id": "msg_1"}
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not enabled"));
+    }
+
+    #[test]
+    fn legacy_binding_without_capability_schema_can_use_desired_allowed_actions() {
+        let fixture = fixture_with_desired_actions(json!({}), json!(["message.summarize_plain"]));
+        let outcome = queue_runtime_app_action_request(
+            &fixture.state,
+            &fixture.context,
+            &json!({
+                "action_id": "act_summary_1",
+                "action": "message.summarize_plain",
+                "args": {"message_id": "msg_1"}
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.state, "requested");
+        assert!(!outcome.requires_confirmation);
     }
 
     #[test]
@@ -613,10 +671,23 @@ mod tests {
     }
 
     fn fixture(capability_policy_json: Value) -> TestFixture {
+        fixture_with_desired_actions(capability_policy_json, Value::Null)
+    }
+
+    fn fixture_with_desired_actions(
+        capability_policy_json: Value,
+        allowed_actions: Value,
+    ) -> TestFixture {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         let state = DaemonState::open(&config).unwrap();
         state.initialize().unwrap();
+        let mut desired_agent_json = json!({
+            "role": "app_message_handler"
+        });
+        if !allowed_actions.is_null() {
+            desired_agent_json["allowed_actions"] = allowed_actions;
+        }
         let binding = AppMessageAgentBindingRecord {
             binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
             user_did: "did:human:alice".to_string(),
@@ -628,10 +699,7 @@ mod tests {
             runtime_agent_did: "did:agent:hermes".to_string(),
             runtime_profile_id: "profile_hermes".to_string(),
             role: "app_message_handler".to_string(),
-            desired_agent_json: json!({
-                "role": "app_message_handler",
-                "allowed_actions": MVP_ALLOWED_ACTIONS
-            }),
+            desired_agent_json,
             capability_policy_json,
             status: "message_agent_ready".to_string(),
             created_at_ms: 0,

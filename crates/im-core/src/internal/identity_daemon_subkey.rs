@@ -5,8 +5,8 @@ use anp::proof::{
 use serde_json::{json, Value};
 
 pub(crate) const DAEMON_SUBKEY_FRAGMENT: &str = "daemon-key-1";
-const USER_SUBKEY_PACKAGE_SCHEMA: &str = "awiki.daemon.user_subkey_package.v1";
 const KEY_TYPE: &str = "Multikey/Ed25519";
+const KEY_ALGORITHM: &str = "Ed25519";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GeneratedDaemonSubkey {
@@ -116,7 +116,7 @@ pub(crate) fn apply_package_to_did_document(
     let subkey = GeneratedDaemonSubkey {
         verification_method: package.verification_method.clone(),
         public_key_multibase: package.public_key_multibase.clone(),
-        private_key_pem: package.private_key_multibase.clone(),
+        private_key_pem: package.private_key_material().to_string(),
     };
     apply_to_did_document(did_document, &package.user_did, &subkey)
 }
@@ -151,14 +151,14 @@ pub(crate) fn package_from_parts(
     public_key_multibase: String,
     private_key_pem: String,
 ) -> crate::identity::DaemonSubkeyPrivatePackage {
-    crate::identity::DaemonSubkeyPrivatePackage {
-        schema: USER_SUBKEY_PACKAGE_SCHEMA.to_owned(),
+    crate::identity::DaemonSubkeyPrivatePackage::new_v2_pem(
         user_did,
         verification_method,
-        key_type: KEY_TYPE.to_owned(),
+        KEY_TYPE.to_owned(),
+        Some(KEY_ALGORITHM.to_owned()),
         public_key_multibase,
-        private_key_multibase: private_key_pem,
-    }
+        private_key_pem,
+    )
 }
 
 pub(crate) fn package_from_private_pem_and_document(
@@ -199,6 +199,7 @@ pub(crate) fn validate_package_against_did_document(
             "daemon subkey verification method must be user_did#daemon-key-1",
         ));
     }
+    validate_package_schema_and_encoding(package)?;
     validate_package_private_matches_public(package)?;
     let document_public = daemon_public_key_multibase(did_document, &package.user_did)?
         .ok_or_else(|| crate::ImError::IdentityNotReady {
@@ -218,12 +219,36 @@ pub(crate) fn validate_package_private_matches_public(
     package: &crate::identity::DaemonSubkeyPrivatePackage,
 ) -> crate::ImResult<()> {
     let derived_public_key_multibase =
-        public_key_multibase_from_private_pem(&package.private_key_multibase)?;
+        public_key_multibase_from_private_pem(package.private_key_material())?;
     if derived_public_key_multibase != package.public_key_multibase {
         return Err(crate::ImError::IdentityNotReady {
             identity: package.user_did.as_str().to_string(),
             missing: vec!["daemon_subkey_private_mismatch".to_string()],
         });
+    }
+    Ok(())
+}
+
+fn validate_package_schema_and_encoding(
+    package: &crate::identity::DaemonSubkeyPrivatePackage,
+) -> crate::ImResult<()> {
+    match package.schema.as_str() {
+        crate::identity::DAEMON_SUBKEY_PACKAGE_SCHEMA_V1
+        | crate::identity::DAEMON_SUBKEY_PACKAGE_SCHEMA_V2 => {}
+        _ => {
+            return Err(crate::ImError::invalid_input(
+                Some("daemon_subkey_package.schema".to_owned()),
+                "unsupported daemon subkey package schema",
+            ));
+        }
+    }
+    if package.schema == crate::identity::DAEMON_SUBKEY_PACKAGE_SCHEMA_V2
+        && package.private_key_encoding != crate::identity::DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("daemon_subkey_package.private_key_encoding".to_owned()),
+            "daemon subkey package v2 private_key_encoding must be pem",
+        ));
     }
     Ok(())
 }

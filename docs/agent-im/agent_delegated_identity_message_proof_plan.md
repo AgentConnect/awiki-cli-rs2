@@ -352,11 +352,13 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
   "app_instance_id": "app_instance_1",
   "controller_did": "did:wba:example.com:user:alice:e1_userfingerprint",
   "user_subkey_package": {
-    "schema": "awiki.daemon.user_subkey_package.v1",
+    "schema": "awiki.daemon.user_subkey_package.v2",
     "user_did": "did:wba:example.com:user:alice:e1_userfingerprint",
     "verification_method": "did:wba:example.com:user:alice:e1_userfingerprint#daemon-key-1",
     "key_type": "Multikey/Ed25519",
-    "private_key_multibase": "z...",
+    "key_algorithm": "Ed25519",
+    "private_key_encoding": "pem",
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----",
     "public_key_multibase": "z...",
     "created_at": "2026-06-09T12:00:00Z",
     "expires_at": "2026-09-09T12:00:00Z",
@@ -386,6 +388,17 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
       "contact.update_display_name",
       "contact.update_note"
     ]
+  },
+  "capability_policy": {
+    "schema": "awiki.app.capabilities.v1",
+    "capabilities": [
+      "message.summarize_plain",
+      "message.create_draft",
+      "contact.read",
+      "contact.update_display_name",
+      "contact.update_note"
+    ],
+    "require_confirmation_for_write_actions": true
   }
 }
 ```
@@ -395,6 +408,8 @@ MVP 明文 payload 结构建议如下。后续加密 body 落地后，该结构�
 1. `allowed_usage_hint` 在 MVP 中只是本域策略提示，不是 DID Core 标准强制语义。运行时真正权限由 message-service 根据 DID proof、DID Document `authentication`、key owner 一致性和普通非 E2EE scope 执行；user-service 只负责 DID Document 中 public verification method 的登记和移除；scoped token scope 是后续优化路径。
 2. `desired_message_agent` 表示期望状态，不是命令式创建请求。Daemon 应以 `ensure_once_key` 幂等创建或复用 `role=app_message_handler` 的 Runtime Agent。
 3. Hermes Message Agent 不直接持有子私钥；Daemon 只把 inbox/send 能力通过 local RPC、runtime token 和 policy 暴露给它。
+4. APP / im-core 新写的 key package 必须使用 `awiki.daemon.user_subkey_package.v2`、`private_key_encoding: "pem"` 和 `private_key_pem`；Daemon 只为兼容旧 bootstrap 数据读取 v1 的 `private_key_multibase`。
+5. 新建 binding 的 APP action 授权必须来自显式 `capability_policy.schema = "awiki.app.capabilities.v1"`；空 `capabilities` 表示不允许执行 APP action。`desired_message_agent.allowed_actions` 只保留为旧 binding 兼容/展示提示。
 
 ### 5.6 Daemon 存储要求
 

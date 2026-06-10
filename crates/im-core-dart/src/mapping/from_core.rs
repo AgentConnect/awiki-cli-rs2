@@ -227,7 +227,10 @@ impl From<im_core::identity::DaemonSubkeyPrivatePackage> for DartDaemonSubkeyPri
             user_did: value.user_did.as_str().to_string(),
             verification_method: value.verification_method,
             key_type: value.key_type,
+            key_algorithm: value.key_algorithm,
             public_key_multibase: value.public_key_multibase,
+            private_key_encoding: value.private_key_encoding,
+            private_key_pem: value.private_key_pem,
             private_key_multibase: value.private_key_multibase,
         }
     }

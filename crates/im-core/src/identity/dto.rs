@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -50,14 +50,156 @@ pub struct RegisterHandleRequest {
     pub make_default: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V1: &str = "awiki.daemon.user_subkey_package.v1";
+pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
+pub const DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM: &str = "pem";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonSubkeyPrivatePackage {
     pub schema: String,
     pub user_did: crate::ids::Did,
     pub verification_method: String,
     pub key_type: String,
+    pub key_algorithm: Option<String>,
     pub public_key_multibase: String,
+    pub private_key_encoding: String,
+    pub private_key_pem: String,
+    /// Legacy compatibility field. New JSON serialization writes `private_key_pem`
+    /// instead of this v1 field, but older Rust/Dart callers may still read it.
     pub private_key_multibase: String,
+}
+
+impl DaemonSubkeyPrivatePackage {
+    pub fn new_v2_pem(
+        user_did: crate::ids::Did,
+        verification_method: String,
+        key_type: String,
+        key_algorithm: Option<String>,
+        public_key_multibase: String,
+        private_key_pem: String,
+    ) -> Self {
+        Self {
+            schema: DAEMON_SUBKEY_PACKAGE_SCHEMA_V2.to_owned(),
+            user_did,
+            verification_method,
+            key_type,
+            key_algorithm,
+            public_key_multibase,
+            private_key_encoding: DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM.to_owned(),
+            private_key_multibase: private_key_pem.clone(),
+            private_key_pem,
+        }
+    }
+
+    pub fn private_key_material(&self) -> &str {
+        if !self.private_key_pem.trim().is_empty() {
+            &self.private_key_pem
+        } else {
+            &self.private_key_multibase
+        }
+    }
+
+    pub fn is_v2_pem(&self) -> bool {
+        self.schema == DAEMON_SUBKEY_PACKAGE_SCHEMA_V2
+            && self.private_key_encoding == DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+            && !self.private_key_pem.trim().is_empty()
+    }
+}
+
+impl Serialize for DaemonSubkeyPrivatePackage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            schema: &'a str,
+            user_did: &'a crate::ids::Did,
+            verification_method: &'a str,
+            key_type: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            key_algorithm: Option<&'a str>,
+            public_key_multibase: &'a str,
+            private_key_encoding: &'a str,
+            private_key_pem: &'a str,
+        }
+
+        let private_key_pem = self.private_key_material();
+        let private_key_encoding = if self.private_key_encoding.trim().is_empty() {
+            DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+        } else {
+            self.private_key_encoding.trim()
+        };
+        Wire {
+            schema: DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,
+            user_did: &self.user_did,
+            verification_method: &self.verification_method,
+            key_type: &self.key_type,
+            key_algorithm: self.key_algorithm.as_deref(),
+            public_key_multibase: &self.public_key_multibase,
+            private_key_encoding,
+            private_key_pem,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DaemonSubkeyPrivatePackage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            schema: String,
+            user_did: crate::ids::Did,
+            verification_method: String,
+            key_type: String,
+            #[serde(default)]
+            key_algorithm: Option<String>,
+            public_key_multibase: String,
+            #[serde(default)]
+            private_key_encoding: Option<String>,
+            #[serde(default)]
+            private_key_pem: Option<String>,
+            #[serde(default)]
+            private_key_multibase: Option<String>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let private_key_pem = wire
+            .private_key_pem
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                wire.private_key_multibase
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .ok_or_else(|| serde::de::Error::missing_field("private_key_pem"))?;
+        let private_key_encoding = wire
+            .private_key_encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM)
+            .to_string();
+        Ok(Self {
+            schema: wire.schema,
+            user_did: wire.user_did,
+            verification_method: wire.verification_method,
+            key_type: wire.key_type,
+            key_algorithm: wire.key_algorithm,
+            public_key_multibase: wire.public_key_multibase,
+            private_key_encoding,
+            private_key_multibase: private_key_pem.clone(),
+            private_key_pem,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -564,5 +706,50 @@ mod tests {
         assert!(recover_json.get("raw_response").is_none());
         assert!(recover_json.get("raw_response").is_none());
         assert!(recover_json.get("raw").is_none());
+    }
+
+    #[test]
+    fn daemon_subkey_package_writes_v2_pem_without_legacy_private_field() {
+        let package = DaemonSubkeyPrivatePackage::new_v2_pem(
+            crate::ids::Did::parse("did:example:alice").unwrap(),
+            "did:example:alice#daemon-key-1".to_string(),
+            "Multikey/Ed25519".to_string(),
+            Some("Ed25519".to_string()),
+            "zPublic".to_string(),
+            "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----".to_string(),
+        );
+
+        let value = serde_json::to_value(&package).unwrap();
+
+        assert_eq!(value["schema"], DAEMON_SUBKEY_PACKAGE_SCHEMA_V2);
+        assert_eq!(
+            value["private_key_encoding"],
+            DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+        );
+        assert_eq!(value["private_key_pem"], package.private_key_pem);
+        assert!(value.get("private_key_multibase").is_none());
+    }
+
+    #[test]
+    fn daemon_subkey_package_reads_legacy_v1_private_key_multibase() {
+        let package: DaemonSubkeyPrivatePackage = serde_json::from_value(json!({
+            "schema": DAEMON_SUBKEY_PACKAGE_SCHEMA_V1,
+            "user_did": "did:example:alice",
+            "verification_method": "did:example:alice#daemon-key-1",
+            "key_type": "Multikey/Ed25519",
+            "public_key_multibase": "zPublic",
+            "private_key_multibase": "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
+        }))
+        .unwrap();
+
+        assert_eq!(package.schema, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1);
+        assert_eq!(
+            package.private_key_encoding,
+            DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+        );
+        assert_eq!(package.private_key_pem, package.private_key_multibase);
+        assert!(package
+            .private_key_material()
+            .starts_with("-----BEGIN PRIVATE KEY-----"));
     }
 }

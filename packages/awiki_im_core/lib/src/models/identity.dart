@@ -100,15 +100,23 @@ class DaemonSubkeyPrivatePackage {
     required this.userDid,
     required this.verificationMethod,
     required this.keyType,
+    this.keyAlgorithm,
     required this.publicKeyMultibase,
-    required this.privateKeyMultibase,
-  });
+    this.privateKeyEncoding = 'pem',
+    String? privateKeyPem,
+    String? privateKeyMultibase,
+  }) : privateKeyPem = privateKeyPem ?? privateKeyMultibase ?? '',
+       privateKeyMultibase = privateKeyMultibase ?? privateKeyPem ?? '';
 
   final String schema;
   final String userDid;
   final String verificationMethod;
   final String keyType;
+  final String? keyAlgorithm;
   final String publicKeyMultibase;
+  final String privateKeyEncoding;
+  final String privateKeyPem;
+  @Deprecated('Use privateKeyPem for PEM v2 packages.')
   final String privateKeyMultibase;
 }
 

@@ -3715,15 +3715,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return DartDaemonSubkeyPrivatePackage(
       schema: dco_decode_String(arr[0]),
       userDid: dco_decode_String(arr[1]),
       verificationMethod: dco_decode_String(arr[2]),
       keyType: dco_decode_String(arr[3]),
-      publicKeyMultibase: dco_decode_String(arr[4]),
-      privateKeyMultibase: dco_decode_String(arr[5]),
+      keyAlgorithm: dco_decode_opt_String(arr[4]),
+      publicKeyMultibase: dco_decode_String(arr[5]),
+      privateKeyEncoding: dco_decode_String(arr[6]),
+      privateKeyPem: dco_decode_String(arr[7]),
+      privateKeyMultibase: dco_decode_String(arr[8]),
     );
   }
 
@@ -5718,14 +5721,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_userDid = sse_decode_String(deserializer);
     var var_verificationMethod = sse_decode_String(deserializer);
     var var_keyType = sse_decode_String(deserializer);
+    var var_keyAlgorithm = sse_decode_opt_String(deserializer);
     var var_publicKeyMultibase = sse_decode_String(deserializer);
+    var var_privateKeyEncoding = sse_decode_String(deserializer);
+    var var_privateKeyPem = sse_decode_String(deserializer);
     var var_privateKeyMultibase = sse_decode_String(deserializer);
     return DartDaemonSubkeyPrivatePackage(
       schema: var_schema,
       userDid: var_userDid,
       verificationMethod: var_verificationMethod,
       keyType: var_keyType,
+      keyAlgorithm: var_keyAlgorithm,
       publicKeyMultibase: var_publicKeyMultibase,
+      privateKeyEncoding: var_privateKeyEncoding,
+      privateKeyPem: var_privateKeyPem,
       privateKeyMultibase: var_privateKeyMultibase,
     );
   }
@@ -8183,7 +8192,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.userDid, serializer);
     sse_encode_String(self.verificationMethod, serializer);
     sse_encode_String(self.keyType, serializer);
+    sse_encode_opt_String(self.keyAlgorithm, serializer);
     sse_encode_String(self.publicKeyMultibase, serializer);
+    sse_encode_String(self.privateKeyEncoding, serializer);
+    sse_encode_String(self.privateKeyPem, serializer);
     sse_encode_String(self.privateKeyMultibase, serializer);
   }
 

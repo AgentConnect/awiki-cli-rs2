@@ -297,11 +297,14 @@ sequenceDiagram
   "controller_did": "did:wba:...",
   "user_handle": "@alice",
   "user_subkey_package": {
-    "schema": "awiki.daemon.user_subkey_package.v1",
+    "schema": "awiki.daemon.user_subkey_package.v2",
     "user_did": "did:wba:...user...",
     "verification_method": "did:wba:...user...#daemon-key-1",
+    "key_type": "Multikey/Ed25519",
+    "key_algorithm": "Ed25519",
     "public_key_multibase": "z...",
-    "private_key_multibase": "z...",
+    "private_key_encoding": "pem",
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----",
     "expires_at": "2026-09-09T00:00:00Z",
     "allowed_scopes": [
       "message.inbox.read.plain",
@@ -332,6 +335,17 @@ sequenceDiagram
       "contact.update_note"
     ]
   },
+  "capability_policy": {
+    "schema": "awiki.app.capabilities.v1",
+    "capabilities": [
+      "message.summarize_plain",
+      "message.create_draft",
+      "contact.read",
+      "contact.update_display_name",
+      "contact.update_note"
+    ],
+    "require_confirmation_for_write_actions": true
+  },
   "sync_policy": {
     "e2ee_default": "not_supported_in_mvp",
     "plain_default": "agent_visible",
@@ -343,7 +357,7 @@ sequenceDiagram
 要求：
 
 1. 不允许传用户主私钥或 E2EE session state。
-2. MVP 可按现有 daemon identity private key 的方式存储子私钥；这是临时安全债。
+2. APP / im-core 新写的 `user_subkey_package` 必须使用 `awiki.daemon.user_subkey_package.v2`、`private_key_encoding: "pem"` 和 `private_key_pem`；Daemon 只为兼容旧数据读取 v1 的 `private_key_multibase`。
 3. 后续不新增传输通道，只把普通消息 body 从明文 JSON 改为加密文本或加密 JSON envelope，并优先接入 OS keychain / secure enclave。
 4. 永不写入日志、audit detail、Hermes profile、prompt、runtime temp。
 5. 可以从 APP 远程撤销。
@@ -351,6 +365,7 @@ sequenceDiagram
 7. `bootstrap_id` / `idempotency_key` 必须幂等；同一个用户、APP 和 `role=app_message_handler` 只能有一个 active 绑定。
 8. Daemon 创建消息处理 Agent 是 bootstrap 的后置效果，不是 APP 反复下发的命令；失败后重试应恢复同一条 binding，不创建重复 Agent。
 9. `runtime_registration_token` 只用于首次创建 Runtime Agent；已有 active binding 时不需要。该 token 与旧 `runtime.agent.create` 命令里的 registration token 语义一致，但随一次性 bootstrap desired state 传递，不持久化到 binding、audit detail、Hermes prompt 或 runtime temp。
+10. 新建 binding 必须带显式 `capability_policy.schema = "awiki.app.capabilities.v1"`；空 `capabilities` 表示不允许执行 APP action。`desired_message_agent.allowed_actions` 只作为旧 binding 兼容/展示提示，不能作为新授权主路径。
 
 ### 3.1.3 Daemon 一次性创建并绑定消息处理 Agent
 

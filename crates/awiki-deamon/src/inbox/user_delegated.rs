@@ -847,33 +847,40 @@ fn conversation_id(message: &Message) -> Option<String> {
 }
 
 fn allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
-    binding
+    let has_explicit_capability_policy = binding
         .capability_policy_json
-        .get("allowed_actions")
-        .and_then(Value::as_array)
-        .or_else(|| {
-            binding
-                .desired_agent_json
-                .get("allowed_actions")
-                .and_then(Value::as_array)
-        })
+        .get("schema")
+        .and_then(Value::as_str)
+        == Some(crate::app_bridge::action::APP_CAPABILITIES_SCHEMA);
+    let configured = if has_explicit_capability_policy {
+        binding
+            .capability_policy_json
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .or_else(|| {
+                binding
+                    .capability_policy_json
+                    .get("allowed_actions")
+                    .and_then(Value::as_array)
+            })
+    } else {
+        binding
+            .desired_agent_json
+            .get("allowed_actions")
+            .and_then(Value::as_array)
+    };
+    configured
         .map(|items| {
             items
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .filter(|value| MVP_ALLOWED_ACTIONS.contains(value))
                 .map(ToOwned::to_owned)
                 .collect()
         })
-        .unwrap_or_else(|| {
-            MVP_ALLOWED_ACTIONS
-                .iter()
-                .map(|action| action.to_string())
-                .collect()
-        })
+        .unwrap_or_default()
 }
-
 fn ensure_delegated_inbox_key_ref(
     config: &DaemonConfig,
     identity: &UserDelegatedIdentityRecord,
@@ -1140,6 +1147,13 @@ mod tests {
         assert_eq!(envelope.content_role, "user_message_untrusted");
         assert_eq!(envelope.source_sender_did, "did:human:bob");
         assert_eq!(envelope.content_text, "hello agent");
+        assert_eq!(
+            envelope.allowed_actions,
+            vec![
+                "message.summarize_plain".to_string(),
+                "message.create_draft".to_string()
+            ]
+        );
         assert!(!task.text.contains("system"));
 
         let event = state
@@ -1157,6 +1171,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(sync.payload_json["content_role"], "user_message_untrusted");
+    }
+
+    #[test]
+    fn explicit_empty_capabilities_project_empty_allowed_actions() {
+        let fixture = fixture();
+        let mut binding = fixture.binding.clone();
+        binding.capability_policy_json = json!({
+            "schema": crate::app_bridge::action::APP_CAPABILITIES_SCHEMA,
+            "capabilities": []
+        });
+        let message = plain_message("msg_1", "did:human:bob", "hello agent");
+
+        let envelope = user_message_envelope(&binding, &message, "hello agent").unwrap();
+
+        assert!(envelope.allowed_actions.is_empty());
     }
 
     #[test]
@@ -1438,7 +1467,9 @@ mod tests {
                 "allowed_actions": ["message.summarize_plain", "message.create_draft"]
             }),
             capability_policy_json: json!({
-                "allowed_actions": ["message.summarize_plain", "message.create_draft"]
+                "schema": crate::app_bridge::action::APP_CAPABILITIES_SCHEMA,
+                "capabilities": ["message.summarize_plain", "message.create_draft"],
+                "require_confirmation_for_write_actions": true
             }),
             status: "message_agent_ready".to_string(),
             created_at_ms: 0,

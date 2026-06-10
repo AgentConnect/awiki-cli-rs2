@@ -18,9 +18,11 @@ use crate::DaemonConfig;
 
 pub const DAEMON_BOOTSTRAP_SCHEMA: &str = "awiki.daemon.bootstrap.v1";
 pub const USER_SUBKEY_PACKAGE_SCHEMA: &str = "awiki.daemon.user_subkey_package.v1";
+pub const USER_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
 pub const DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED: &str = "paired_key_received";
 const MVP_DAEMON_KEY_FRAGMENT: &str = "daemon-key-1";
 const SHADOW_IDENTITY_ALIAS_PREFIX: &str = "delegated-inbox-";
+const PRIVATE_KEY_ENCODING_PEM: &str = "pem";
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonBootstrapEnvelope {
@@ -49,7 +51,14 @@ pub struct UserSubkeyPackage {
     pub verification_method: String,
     #[serde(default)]
     pub key_type: Option<String>,
+    #[serde(default)]
+    pub key_algorithm: Option<String>,
     pub public_key_multibase: String,
+    #[serde(default)]
+    pub private_key_encoding: Option<String>,
+    #[serde(default)]
+    pub private_key_pem: Option<String>,
+    #[serde(default)]
     pub private_key_multibase: String,
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -57,6 +66,16 @@ pub struct UserSubkeyPackage {
     pub allowed_scopes: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl UserSubkeyPackage {
+    fn private_key_material(&self) -> &str {
+        self.private_key_pem
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.private_key_multibase.trim())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,8 +145,11 @@ impl std::fmt::Debug for UserSubkeyPackage {
             .field("user_did", &self.user_did)
             .field("verification_method", &self.verification_method)
             .field("key_type", &self.key_type)
+            .field("key_algorithm", &self.key_algorithm)
             .field("public_key_multibase", &self.public_key_multibase)
-            .field("private_key_multibase", &"<redacted-private-key>")
+            .field("private_key_encoding", &self.private_key_encoding)
+            .field("private_key_pem", &"<redacted-private-key>")
+            .field("private_key_multibase", &"<redacted-legacy-private-key>")
             .field("expires_at", &self.expires_at)
             .field("allowed_scopes", &self.allowed_scopes)
             .field("extra", &"<redacted-control-payload>")
@@ -166,7 +188,7 @@ pub fn process_bootstrap_envelope(
     )?;
     let payload_hash = stable_payload_hash(&envelope)?;
     let package = &envelope.user_subkey_package;
-    let private_key = secret_from_private_key_multibase(&package.private_key_multibase);
+    let private_key = secret_from_private_key_multibase(package.private_key_material());
     let identity = UserDelegatedIdentityRecord {
         user_did: package.user_did.clone(),
         verification_method: package.verification_method.clone(),
@@ -255,9 +277,25 @@ fn validate_user_subkey_package(package: &UserSubkeyPackage) -> Result<()> {
     require_non_empty("user_did", &package.user_did)?;
     require_non_empty("verification_method", &package.verification_method)?;
     require_non_empty("public_key_multibase", &package.public_key_multibase)?;
-    require_non_empty("private_key_multibase", &package.private_key_multibase)?;
-    if package.schema != USER_SUBKEY_PACKAGE_SCHEMA {
+    if !matches!(
+        package.schema.as_str(),
+        USER_SUBKEY_PACKAGE_SCHEMA | USER_SUBKEY_PACKAGE_SCHEMA_V2
+    ) {
         bail!("unsupported user subkey package schema: {}", package.schema);
+    }
+    if package.schema == USER_SUBKEY_PACKAGE_SCHEMA_V2 {
+        if package
+            .private_key_encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            != Some(PRIVATE_KEY_ENCODING_PEM)
+        {
+            bail!("daemon subkey v2 private_key_encoding must be pem");
+        }
+        require_non_empty("private_key_pem", package.private_key_material())?;
+    } else {
+        require_non_empty("private_key_multibase", package.private_key_material())?;
     }
     if package
         .key_type
@@ -267,6 +305,15 @@ fn validate_user_subkey_package(package: &UserSubkeyPackage) -> Result<()> {
         .is_some_and(|value| value != "Multikey/Ed25519")
     {
         bail!("daemon subkey key_type must be Multikey/Ed25519");
+    }
+    if package
+        .key_algorithm
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value != "Ed25519")
+    {
+        bail!("daemon subkey key_algorithm must be Ed25519");
     }
     validate_daemon_key_verification_method(&package.user_did, &package.verification_method)?;
     for scope in &package.allowed_scopes {
@@ -294,8 +341,11 @@ pub(crate) fn validate_user_delegated_identity_against_did_document(
         user_did: identity.user_did.clone(),
         verification_method: identity.verification_method.clone(),
         key_type: Some("Multikey/Ed25519".to_string()),
+        key_algorithm: Some("Ed25519".to_string()),
         public_key_multibase: identity.public_key_multibase.clone(),
-        private_key_multibase: identity.private_key_material.clone(),
+        private_key_encoding: Some(PRIVATE_KEY_ENCODING_PEM.to_string()),
+        private_key_pem: Some(identity.private_key_material.clone()),
+        private_key_multibase: String::new(),
         expires_at: identity.expires_at.clone(),
         allowed_scopes: Vec::new(),
         extra: BTreeMap::new(),
@@ -310,7 +360,7 @@ pub(crate) fn validate_user_subkey_package_against_did_document(
 ) -> Result<()> {
     validate_user_subkey_package(package)?;
     validate_package_expiration(package, now)?;
-    let derived_public = public_key_multibase_from_private_material(&package.private_key_multibase)
+    let derived_public = public_key_multibase_from_private_material(package.private_key_material())
         .context("derive delegated private key public key")?;
     if derived_public != package.public_key_multibase {
         bail!("daemon subkey private/public key mismatch");
@@ -743,8 +793,10 @@ fn stable_payload_hash(envelope: &DaemonBootstrapEnvelope) -> Result<String> {
             "user_did": package.user_did,
             "verification_method": package.verification_method,
             "key_type": package.key_type,
+            "key_algorithm": package.key_algorithm,
             "public_key_multibase": package.public_key_multibase,
-            "private_key_present": !package.private_key_multibase.trim().is_empty(),
+            "private_key_encoding": package.private_key_encoding,
+            "private_key_present": !package.private_key_material().trim().is_empty(),
             "expires_at": package.expires_at,
             "allowed_scopes": package.allowed_scopes,
         },
@@ -848,12 +900,14 @@ mod tests {
             "app_instance_id": "app_1",
             "controller_did": "did:wba:example.com:user:alice:e1_user",
             "user_subkey_package": {
-                "schema": USER_SUBKEY_PACKAGE_SCHEMA,
+                "schema": USER_SUBKEY_PACKAGE_SCHEMA_V2,
                 "user_did": "did:wba:example.com:user:alice:e1_user",
                 "verification_method": "did:wba:example.com:user:alice:e1_user#daemon-key-1",
                 "key_type": "Multikey/Ed25519",
+                "key_algorithm": "Ed25519",
                 "public_key_multibase": public_key,
-                "private_key_multibase": private_key,
+                "private_key_encoding": "pem",
+                "private_key_pem": private_key,
                 "allowed_scopes": [
                     "message.inbox.read.plain",
                     "message.history.read.plain",
@@ -918,6 +972,36 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v1_private_key_multibase_payload_still_validates() {
+        let mut payload = valid_payload();
+        let private_key = payload["user_subkey_package"]["private_key_pem"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let package = payload["user_subkey_package"].as_object_mut().unwrap();
+        package.insert(
+            "schema".to_string(),
+            Value::String(USER_SUBKEY_PACKAGE_SCHEMA.to_string()),
+        );
+        package.remove("key_algorithm");
+        package.remove("private_key_encoding");
+        package.remove("private_key_pem");
+        package.insert(
+            "private_key_multibase".to_string(),
+            Value::String(private_key),
+        );
+        let did_document = did_document_for_payload(&payload);
+        let envelope = parse_bootstrap_payload(payload).unwrap();
+
+        validate_user_subkey_package_against_did_document(
+            &envelope.user_subkey_package,
+            &did_document,
+            OffsetDateTime::now_utc(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn bootstrap_payload_hash_ignores_runtime_registration_token() {
         let mut with_token = valid_payload();
         with_token["desired_message_agent"]["runtime_registration_token"] =
@@ -937,9 +1021,9 @@ mod tests {
     fn bootstrap_payload_hash_does_not_fingerprint_private_key_material() {
         let mut first = valid_payload();
         let mut second = first.clone();
-        first["user_subkey_package"]["private_key_multibase"] =
+        first["user_subkey_package"]["private_key_pem"] =
             json!("-----BEGIN PRIVATE KEY-----\nfirst\n-----END PRIVATE KEY-----");
-        second["user_subkey_package"]["private_key_multibase"] =
+        second["user_subkey_package"]["private_key_pem"] =
             json!("-----BEGIN PRIVATE KEY-----\nsecond\n-----END PRIVATE KEY-----");
 
         let first = parse_bootstrap_payload(first).unwrap();

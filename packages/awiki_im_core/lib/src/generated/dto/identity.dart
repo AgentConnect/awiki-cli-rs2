@@ -13,7 +13,10 @@ class DartDaemonSubkeyPrivatePackage {
   final String userDid;
   final String verificationMethod;
   final String keyType;
+  final String? keyAlgorithm;
   final String publicKeyMultibase;
+  final String privateKeyEncoding;
+  final String privateKeyPem;
   final String privateKeyMultibase;
 
   const DartDaemonSubkeyPrivatePackage({
@@ -21,7 +24,10 @@ class DartDaemonSubkeyPrivatePackage {
     required this.userDid,
     required this.verificationMethod,
     required this.keyType,
+    this.keyAlgorithm,
     required this.publicKeyMultibase,
+    required this.privateKeyEncoding,
+    required this.privateKeyPem,
     required this.privateKeyMultibase,
   });
 
@@ -31,7 +37,10 @@ class DartDaemonSubkeyPrivatePackage {
       userDid.hashCode ^
       verificationMethod.hashCode ^
       keyType.hashCode ^
+      keyAlgorithm.hashCode ^
       publicKeyMultibase.hashCode ^
+      privateKeyEncoding.hashCode ^
+      privateKeyPem.hashCode ^
       privateKeyMultibase.hashCode;
 
   @override
@@ -43,7 +52,10 @@ class DartDaemonSubkeyPrivatePackage {
           userDid == other.userDid &&
           verificationMethod == other.verificationMethod &&
           keyType == other.keyType &&
+          keyAlgorithm == other.keyAlgorithm &&
           publicKeyMultibase == other.publicKeyMultibase &&
+          privateKeyEncoding == other.privateKeyEncoding &&
+          privateKeyPem == other.privateKeyPem &&
           privateKeyMultibase == other.privateKeyMultibase;
 }
 
