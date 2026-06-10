@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 export COPYFILE_DISABLE=1
+if [[ -n "${HOME:-}" && -d "${HOME}/.cargo/bin" ]]; then
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+fi
 
 NGINX_DAEMON_DIR="/var/www/awiki-web/daemon"
 OS_NAME="linux"
