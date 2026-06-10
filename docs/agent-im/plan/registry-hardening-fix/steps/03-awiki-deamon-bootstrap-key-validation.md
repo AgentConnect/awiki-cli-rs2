@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
+| Status | done |
 | Branch | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2` 当前分支 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 等 Step 01-02 完成后增强 bootstrap key package validation |
+| Started | 2026-06-10T03:00:09Z |
+| Completed | 2026-06-10T03:40:25Z |
+| Commit | `awiki-cli-rs2` `1596856` (`awiki-deamon: validate delegated bootstrap keys`) |
+| Review evidence | Review 完成；发现并修复 `controller_did` 未显式绑定 `user_subkey_package.user_did` 的缺口；确认坏 package / resolve failure 不落库、secret 不进入 Debug/audit hash、resolver 不信任 delegated shadow identity cache、delegated inbox sync 前复查当前 DID Document。 |
+| Verification evidence | `cargo fmt --check -p awiki-deamon` 通过；`cargo test -p awiki-deamon --locked -j1 bootstrap -- --nocapture` 21 passed；`cargo test -p awiki-deamon --locked -j1 user_delegated -- --nocapture` 9 passed；`cargo test -p awiki-deamon --locked -j1` 全量通过，lib 105 passed，集成测试套件通过，Hermes 真实环境 3 ignored；`git diff --check` 通过；secret 搜索无新增日志/audit 泄露。 |
+| Next action | Step 04：key package schema 与 APP action capability 收口 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -89,25 +89,25 @@ Step index：03
 
 ## 7. 验收标准
 
-- [ ] bootstrap 保存状态前验证 private/public match。
-- [ ] bootstrap 保存状态前验证当前 DID Document `authentication` 包含 `user_did#daemon-key-1`。
-- [ ] package public key 与 DID Document method public key 不一致时拒绝。
-- [ ] package 过期、method owner 错、scope 含 E2EE/private state 时拒绝。
-- [ ] DID resolve retryable error 不创建 binding，并允许后续重试。
-- [ ] 被撤销 key 的 existing binding / inbox sync 不继续处理用户消息。
-- [ ] 所有错误、Debug、audit、test snapshot 不泄露 private key。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] bootstrap 保存状态前验证 private/public match。
+- [x] bootstrap 保存状态前验证当前 DID Document `authentication` 包含 `user_did#daemon-key-1`。
+- [x] package public key 与 DID Document method public key 不一致时拒绝。
+- [x] package 过期、method owner 错、scope 含 E2EE/private state 时拒绝。
+- [x] DID resolve retryable error 不创建 binding，并允许后续重试。
+- [x] 被撤销 key 的 existing binding / inbox sync 不继续处理用户消息。
+- [x] 所有错误、Debug、audit、test snapshot 不泄露 private key。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
 | 检查项 | 命令 / 方法 | 预期证据 |
 |---|---|---|
-| awiki-deamon | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1` | 全量 daemon tests 通过。 |
-| Targeted | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 bootstrap -- --nocapture` | bootstrap validation tests 通过。 |
-| Inbox revoked | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 user_delegated -- --nocapture` | revoked/missing auth 不 dispatch。 |
-| Secret search | `rg -n "BEGIN PRIVATE|private_key_multibase|private_key_pem|z-private|secret" awiki-cli-rs2/crates/awiki-deamon/src awiki-cli-rs2/crates/awiki-deamon/tests` | 只有 redaction、fixture 或合法 parser；无日志/audit 泄露。 |
-| Diff | `cd awiki-cli-rs2 && git diff --check` | 无 whitespace 错误。 |
+| awiki-deamon | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1` | 通过；lib 105 passed，`agent_registration_management` 21 passed，`generic_cli_runtime_mvp` 22 passed，`hermes_contracts` 5 passed，`hermes_gateway` 19 passed / 3 ignored，`hermes_message` 15 passed，`hermes_profile` 3 passed，`local_rpc_security` 23 passed，`state_bootstrap` 2 passed，doc-tests 0 passed。 |
+| Targeted | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 bootstrap -- --nocapture` | 通过；21 passed，覆盖 private/public mismatch、DID auth missing/public mismatch、expired package、resolve failure 不落库、controller/user DID 绑定和 redaction。 |
+| Inbox revoked | `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 user_delegated -- --nocapture` | 通过；9 passed，覆盖 delegated inbox cursor/replay、E2EE opaque 不 dispatch、system payload 不作为用户文本处理。 |
+| Secret search | `rg -n "BEGIN PRIVATE|private_key_multibase|private_key_pem|z-private|secret" awiki-cli-rs2/crates/awiki-deamon/src awiki-cli-rs2/crates/awiki-deamon/tests` | 已复核；命中集中在 secret handling、redaction tests、fixtures 和既有状态测试；未发现新增日志/audit 泄露。 |
+| Diff | `cd awiki-cli-rs2 && git diff --check` | 通过，无 whitespace 错误。 |
 
 如果某个命令不能运行，必须记录原因、影响和替代证据。
 
@@ -119,28 +119,27 @@ Step index：03
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待回填 | - |
-| 已修复问题 | 待回填 | - |
-| 剩余风险 | 待回填 | - |
-| 新增或缺失测试 | 待回填 | - |
-| 已更新或缺失文档 | 待回填 | - |
+| 发现问题 | 已发现 1 项并修复 | bootstrap envelope 已校验 `controller_did == message sender`，但未显式要求 `user_subkey_package.user_did == controller_did`；已补校验和测试，避免合法 private package 被错绑到另一个 controller 的 bootstrap。 |
+| 已修复问题 | 已修复 | 新增 private/public derive 校验、DID Document `id` / `authentication` / `verificationMethod.controller` / `publicKeyMultibase` 校验、`expires_at` RFC3339 和过期校验、`key_type` Ed25519 校验、DID resolve failure 不落库、`payload_hash` 不包含 private key material、local resolver 忽略 `delegated-inbox-*` shadow identity cache、delegated inbox sync 前复查当前 DID Document。 |
+| 剩余风险 | 已记录 | Daemon 本地仍不验证 DID Document proof，只绑定当前解析到的 DID Document method/auth/public key；`did:wba` / `did:web` HTTP resolve fail closed 可能影响首次 bootstrap 可用性；bootstrap private package 仍按 MVP 决策通过普通消息明文 JSON 传输；旧 `private_key_multibase` 承载 PEM 的 schema 命名留给 Step 04 收口。 |
+| 新增或缺失测试 | 已新增 | 新增 bootstrap validation、private/public mismatch、DID auth missing、DID public mismatch、expired package、resolve failure 不落库、secret hash 不含 private key、resolver 忽略 shadow identity、controller/user DID 绑定和 secret key parser 测试；未补 DID Document proof verifier 测试，原因是 Daemon 当前未实现本地 proof 验证能力。 |
+| 已更新或缺失文档 | 已更新本计划 | 回填主 Plan 和本 Step 证据；核心设计文档的 schema v2 / capability 说明留给 Step 04，ANP SDK optional API 文档留给 Step 05。 |
 
 ## 10. Commit 要求
 
-- Commit 时机：本步骤实现、验证、Review 都完成后。
-- Commit 范围：只包含 `awiki-deamon` bootstrap validation、state/inbox 直接相关改动和测试。
-- Commit 前状态：记录 `cd awiki-cli-rs2 && git status --short --branch`。
-- 纳入文件：记录本步骤 commit 包含的文件。
-- Commit 后证据：记录 commit hash 和 commit 后 `git status`。
-- 遗留未提交变更：必须记录原因以及为什么安全。
-- 建议消息：`awiki-deamon: validate delegated bootstrap keys`
+- Commit 时机：已完成；本步骤实现、验证、Review 后提交。
+- Commit 范围：只包含 `awiki-deamon` bootstrap validation、secret helper、foreground fixture 和 delegated inbox sync 复查相关改动。
+- Commit 前状态：`feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 37]`，仅本 Step 代码文件和本计划文档未提交。
+- 纳入文件：`crates/awiki-deamon/src/app_bridge/bootstrap.rs`、`crates/awiki-deamon/src/app_bridge/message_control.rs`、`crates/awiki-deamon/src/app_bridge/secret_store.rs`、`crates/awiki-deamon/src/foreground.rs`、`crates/awiki-deamon/src/inbox/user_delegated.rs`。
+- Commit 后证据：`1596856` (`awiki-deamon: validate delegated bootstrap keys`)；代码 commit 后只剩本计划文档待回填。
+- 遗留未提交变更：本计划文档回填独立提交，不影响代码 Step commit。
 
 ## 11. Blocked 处理
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| 无可用 DID resolver | 待回填 | 复用 im-core DID resolve 或本地 DID Document cache | 当前步骤 | 先实现接口 + mock，记录生产 resolver 待补 |
-| private key 编码不明确 | 待回填 | 对齐 Step 04 schema | 当前步骤 | 临时支持 legacy，Step 04 统一 |
+| 无可用 DID resolver | 已解决 | 实现 `BootstrapDidDocumentResolver` trait、生产默认 resolver、测试 mock resolver；生产 resolver 对 `did:wba` / `did:web` 走 HTTP DID Document resolve，对非 HTTP DID method 使用本地 identity cache | 当前步骤 | 已完成；HTTP resolve fail closed 的可用性风险已记录 |
+| private key 编码不明确 | 已缓解 | 将 PEM / base58btc multibase parse 和 Ed25519 public derive helper 移入 `secret_store`；继续兼容 legacy v1 字段 | 当前步骤 / Step 04 | Step 04 统一 key package schema v2 和字段命名 |
 
 ## 12. Plan 变更记录
 
@@ -150,6 +149,6 @@ Step index：03
 
 ## 13. 风险、回滚与后续文档
 
-- 风险：DID resolve 依赖网络，可能让 bootstrap 首次失败。
-- 回滚 / 回退：保留 schema validation，但禁用 binding 创建直到 resolver 恢复；不得回退到创建坏 binding。
-- 后续文档：更新 daemon bootstrap 状态机和错误码说明。
+- 风险：DID resolve 依赖网络，可能让 `did:wba` / `did:web` bootstrap 首次 fail closed；Daemon 本地尚未验证 DID Document proof；bootstrap private package 仍走普通消息明文 JSON；schema v1 字段名仍存在历史命名问题。
+- 回滚 / 回退：不得回退到创建坏 binding；如 resolver 不可用，保持 schema validation 与 private/public 校验，但 binding / message agent 创建必须 fail closed，等待 bootstrap retry。
+- 后续文档：Step 04 更新 daemon bootstrap key package schema v2、APP action capability 行为和核心设计文档；Step 05 更新 ANP SDK optional API 文档。
