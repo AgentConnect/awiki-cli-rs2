@@ -9,7 +9,7 @@ use crate::app_bridge::action::{
 };
 use crate::app_bridge::bootstrap::{
     is_daemon_bootstrap_payload, parse_bootstrap_payload, process_bootstrap_envelope,
-    BootstrapProcessOutcome,
+    BootstrapProcessOutcome, DefaultBootstrapDidDocumentResolver,
 };
 use crate::app_bridge::message_agent::{ensure_app_message_agent, EnsureAppMessageAgentOutcome};
 use crate::registration::AgentRegistrationClient;
@@ -74,10 +74,12 @@ where
         }
         let desired_message_agent = envelope.desired_message_agent.clone();
         let capability_policy = envelope.capability_policy.clone();
+        let did_resolver = DefaultBootstrapDidDocumentResolver::new(config);
         let outcome = process_bootstrap_envelope(
             state,
             &daemon_agent.agent_did,
             &message.sender_did,
+            &did_resolver,
             envelope,
         )?;
         let identity = state

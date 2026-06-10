@@ -2,7 +2,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use im_core::messages::{
     InboxHistoryOptions, InboxQuery, InboxScope, Message, MessageBodyView, MessageDirection,
 };
@@ -11,7 +10,12 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::app_bridge::action::MVP_ALLOWED_ACTIONS;
+use crate::app_bridge::bootstrap::{
+    validate_user_delegated_identity_against_did_document, BootstrapDidDocumentResolver,
+    DefaultBootstrapDidDocumentResolver,
+};
 use crate::app_bridge::message_agent::APP_MESSAGE_HANDLER_ROLE;
+use crate::app_bridge::secret_store::normalize_delegated_private_key_pem;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
     RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
@@ -41,9 +45,6 @@ const PROCESSED_STATUS_FAILED_RETRYABLE: &str = "failed_retryable";
 const RETENTION_CLASS_SHORT_EXCERPT: &str = "short_excerpt";
 const RETENTION_CLASS_OPAQUE_ONLY: &str = "opaque_no_plaintext";
 const EXCERPT_MAX_CHARS: usize = 240;
-const ED25519_PKCS8_PREFIX: &[u8] = &[
-    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessUserDelegatedInboxOutcome {
@@ -215,6 +216,20 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
             self.config,
             &daemon_identity,
             jwt_token.as_deref(),
+        )?;
+        let did_resolver = DefaultBootstrapDidDocumentResolver::new(self.config);
+        let did_document = did_resolver
+            .resolve_user_did_document(&identity.user_did)
+            .with_context(|| {
+                format!(
+                    "resolve current DID Document for delegated inbox {}",
+                    identity.user_did
+                )
+            })?;
+        validate_user_delegated_identity_against_did_document(
+            identity,
+            &did_document,
+            time::OffsetDateTime::now_utc(),
         )?;
         let key_ref = ensure_delegated_inbox_key_ref(self.config, identity)?;
         ensure_delegated_inbox_did_shadow(self.config, identity)?;
@@ -872,58 +887,6 @@ fn ensure_delegated_inbox_key_ref(
     Ok(path)
 }
 
-fn normalize_delegated_private_key_pem(material: &str) -> Result<String> {
-    let material = material.trim();
-    if material.is_empty() {
-        bail!("delegated private key material must not be empty");
-    }
-    if material.starts_with("-----BEGIN ") {
-        let private_key = anp::PrivateKeyMaterial::from_pem(material)
-            .or_else(|_| anp::PrivateKeyMaterial::from_compatible_private_pem(material))
-            .context("delegated private key PEM is not supported")?;
-        return Ok(private_key.to_pem());
-    }
-    ed25519_private_key_pem_from_multibase(material)
-}
-
-fn ed25519_private_key_pem_from_multibase(material: &str) -> Result<String> {
-    let Some(encoded) = material.strip_prefix('z') else {
-        bail!("delegated private key material must be PEM or base58btc multibase");
-    };
-    let bytes = bs58::decode(encoded)
-        .into_vec()
-        .context("decode delegated private key multibase")?;
-    let key_bytes = match bytes.as_slice() {
-        [0x80, 0x26, rest @ ..] if rest.len() == 32 => rest,
-        [0x13, 0x00, rest @ ..] if rest.len() == 32 => rest,
-        rest if rest.len() == 32 => rest,
-        _ => bail!("delegated private key multibase must contain an Ed25519 private key"),
-    };
-    let key_bytes: [u8; 32] = key_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("delegated private key length is invalid"))?;
-    let pem = ed25519_private_key_pem(&key_bytes);
-    anp::PrivateKeyMaterial::from_pem(&pem).context("normalize delegated Ed25519 key")?;
-    Ok(pem)
-}
-
-fn ed25519_private_key_pem(key_bytes: &[u8; 32]) -> String {
-    let mut der = Vec::with_capacity(ED25519_PKCS8_PREFIX.len() + key_bytes.len());
-    der.extend_from_slice(ED25519_PKCS8_PREFIX);
-    der.extend_from_slice(key_bytes);
-    encode_pem("PRIVATE KEY", &der)
-}
-
-fn encode_pem(label: &str, contents: &[u8]) -> String {
-    let encoded = STANDARD.encode(contents);
-    let mut wrapped = String::new();
-    for chunk in encoded.as_bytes().chunks(64) {
-        wrapped.push_str(std::str::from_utf8(chunk).unwrap_or_default());
-        wrapped.push('\n');
-    }
-    format!("-----BEGIN {label}-----\n{wrapped}-----END {label}-----\n")
-}
-
 #[cfg(unix)]
 fn set_private_key_file_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -1372,32 +1335,6 @@ mod tests {
 
         assert_eq!(outcome.dispatched_messages, 0);
         assert!(dispatcher.dispatched.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn delegated_private_key_multibase_is_written_as_parseable_pem() {
-        let mut key_bytes = [0_u8; 32];
-        key_bytes[0] = 1;
-        let mut prefixed = vec![0x80, 0x26];
-        prefixed.extend_from_slice(&key_bytes);
-        let private_multibase = format!("z{}", bs58::encode(prefixed).into_string());
-
-        let pem = normalize_delegated_private_key_pem(&private_multibase).unwrap();
-
-        assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"));
-        anp::PrivateKeyMaterial::from_pem(&pem).unwrap();
-    }
-
-    #[test]
-    fn delegated_private_key_pem_is_normalized_for_key_ref() {
-        let mut key_bytes = [0_u8; 32];
-        key_bytes[0] = 2;
-        let pem = ed25519_private_key_pem(&key_bytes);
-
-        let normalized = normalize_delegated_private_key_pem(&pem).unwrap();
-
-        assert!(normalized.starts_with("-----BEGIN PRIVATE KEY-----"));
-        anp::PrivateKeyMaterial::from_pem(&normalized).unwrap();
     }
 
     #[test]

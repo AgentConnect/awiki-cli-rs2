@@ -1926,7 +1926,21 @@ mod tests {
         }
     }
 
+    fn bootstrap_key_material() -> (String, String) {
+        let mut key_bytes = [0_u8; 32];
+        key_bytes[0] = 17;
+        let private_key =
+            crate::app_bridge::secret_store::ed25519_private_key_pem_for_test(&key_bytes);
+        let public_key =
+            crate::app_bridge::secret_store::public_key_multibase_from_private_material(
+                &private_key,
+            )
+            .unwrap();
+        (public_key, private_key)
+    }
+
     fn bootstrap_payload_fixture() -> Value {
+        let (public_key, private_key) = bootstrap_key_material();
         json!({
             "schema": "awiki.daemon.bootstrap.v1",
             "bootstrap_id": "boot_1",
@@ -1937,8 +1951,9 @@ mod tests {
                 "schema": "awiki.daemon.user_subkey_package.v1",
                 "user_did": "did:human:alice",
                 "verification_method": "did:human:alice#daemon-key-1",
-                "public_key_multibase": "z-public",
-                "private_key_multibase": "z-private-secret",
+                "key_type": "Multikey/Ed25519",
+                "public_key_multibase": public_key,
+                "private_key_multibase": private_key,
                 "allowed_scopes": [
                     "message.inbox.read.plain",
                     "message.history.read.plain",
@@ -1962,6 +1977,47 @@ mod tests {
                 ]
             }
         })
+    }
+
+    fn write_bootstrap_did_document_cache(config: &DaemonConfig, payload: &Value) {
+        let package = &payload["user_subkey_package"];
+        let user_did = package["user_did"].as_str().unwrap();
+        let method = package["verification_method"].as_str().unwrap();
+        let public_key = package["public_key_multibase"].as_str().unwrap();
+        let identity_dir = config.identity_root_dir.join("alice");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        std::fs::write(
+            identity_dir.join("did.json"),
+            serde_json::to_vec_pretty(&json!({
+                "id": user_did,
+                "verificationMethod": [{
+                    "id": method,
+                    "type": "Multikey",
+                    "controller": user_did,
+                    "publicKeyMultibase": public_key
+                }],
+                "authentication": [method]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        if let Some(parent) = config.identity_registry_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            &config.identity_registry_path,
+            serde_json::to_vec_pretty(&json!({
+                "default_identity": "alice",
+                "identities": [{
+                    "id": "alice",
+                    "did": user_did,
+                    "dir_name": "alice",
+                    "local_alias": "alice"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2363,6 +2419,7 @@ mod tests {
         )
         .unwrap();
         let payload = bootstrap_payload_fixture();
+        write_bootstrap_did_document_cache(&config, &payload);
 
         assert!(is_app_control_payload(&payload));
         assert!(!is_awiki_agent_command_payload(&payload));
@@ -2405,8 +2462,11 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.user_did, "did:human:alice");
         assert_eq!(loaded.daemon_agent_did, daemon.agent_did);
-        assert_eq!(loaded.private_key_material, "z-private-secret");
-        assert!(!format!("{loaded:?}").contains("z-private-secret"));
+        assert_eq!(
+            loaded.private_key_material,
+            bootstrap_key_material().1.trim()
+        );
+        assert!(!format!("{loaded:?}").contains("BEGIN PRIVATE KEY"));
         let binding = state
             .load_active_app_message_agent_binding(
                 "did:human:alice",
@@ -2533,6 +2593,8 @@ mod tests {
             RegistrationToken::new("tok_daemon_secret_value").unwrap(),
         )
         .unwrap();
+        let first_payload = bootstrap_payload_fixture();
+        write_bootstrap_did_document_cache(&config, &first_payload);
 
         let first = handle_app_control_payload(
             &config,
@@ -2544,7 +2606,7 @@ mod tests {
                 sender_did: "did:human:alice".to_string(),
                 target_agent_did: daemon.agent_did.clone(),
                 content_type: "application/json".to_string(),
-                payload: bootstrap_payload_fixture(),
+                payload: first_payload,
             },
         )
         .unwrap();
@@ -2554,6 +2616,7 @@ mod tests {
 
         let reopened_state = DaemonState::open(&config).unwrap();
         let mut replay_payload = bootstrap_payload_fixture();
+        write_bootstrap_did_document_cache(&config, &replay_payload);
         replay_payload["desired_message_agent"]
             .as_object_mut()
             .unwrap()
@@ -2641,6 +2704,8 @@ SELECT
             RegistrationToken::new("tok_daemon_secret_value").unwrap(),
         )
         .unwrap();
+        let payload = bootstrap_payload_fixture();
+        write_bootstrap_did_document_cache(&config, &payload);
         let outcome = handle_app_control_payload(
             &config,
             &state,
@@ -2651,7 +2716,7 @@ SELECT
                 sender_did: "did:human:alice".to_string(),
                 target_agent_did: daemon.agent_did,
                 content_type: "application/json".to_string(),
-                payload: bootstrap_payload_fixture(),
+                payload,
             },
         )
         .unwrap();
