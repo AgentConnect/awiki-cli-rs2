@@ -1,10 +1,10 @@
 # Plan：Agent IM Delegated Key Registry 与 Bootstrap 安全收口修复
 
-状态：in_progress  
+状态：done
 DOC：`awiki-cli-rs2/docs/agent-im/plan/registry-hardening-fix`  
 Harness：`awiki-harness`  
 创建时间：2026-06-10  
-恢复指针：Step 05 已完成，下一步从 Step 06 最终集成验证、安全 Review 与文档收口开始。
+恢复指针：所有 Step 已完成；最终 remote `awiki.info` 系统测试通过，后续按剩余风险处理发布依赖和 bootstrap 加密升级。
 
 ## 1. 目标
 
@@ -89,7 +89,7 @@ Harness：`awiki-harness`
 | 03 | awiki-deamon bootstrap private package 早期校验 | Step 01、Step 02 | private/public 匹配、DID Document authentication、public key 一致性和过期检查 | [steps/03-awiki-deamon-bootstrap-key-validation.md](steps/03-awiki-deamon-bootstrap-key-validation.md) | 必须 | done |
 | 04 | key package schema 与 APP action capability 收口 | Step 03 | key package v2 / legacy decode；显式 capability policy；空列表禁用 | [steps/04-schema-capability-hardening.md](steps/04-schema-capability-hardening.md) | 必须 | done |
 | 05 | ANP SDK DID Document additional authentication optional 参数 | Step 01、Step 04 | Python/Rust ANP SDK optional API；im-core/user-service 消费新 API；移除产品层 JSON patch 主路径 | [steps/05-anp-sdk-did-additional-authentication.md](steps/05-anp-sdk-did-additional-authentication.md) | 必须 | done |
-| 06 | 最终集成验证、安全 Review 与文档收口 | Step 01-05 | 全局 Review、跨仓测试、remote system-test、文档一致性和执行台账 | [steps/06-final-integration-security-review.md](steps/06-final-integration-security-review.md) | 如修改文件则必须 | pending |
+| 06 | 最终集成验证、安全 Review 与文档收口 | Step 01-05 | 全局 Review、跨仓测试、remote system-test、文档一致性和执行台账 | [steps/06-final-integration-security-review.md](steps/06-final-integration-security-review.md) | 如修改文件则必须 | done |
 
 ## 7. 执行台账
 
@@ -102,7 +102,7 @@ Harness：`awiki-harness`
 | 03 | done | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2` | 2026-06-10T03:00:09Z | 2026-06-10T03:40:25Z | `awiki-cli-rs2` `1596856` | Review 完成；发现并修复 bootstrap envelope 未显式要求 `controller_did == user_subkey_package.user_did` 的绑定缺口；确认坏 package / DID resolve 失败不会写入 `user_delegated_identity` 或 `bootstrap_replay`，`payload_hash` 不再包含 private key material，resolver 不信任 `delegated-inbox-*` shadow identity cache，delegated inbox sync 前会复查当前 DID Document authentication；剩余风险为 DID Document proof 未在 Daemon 本地验证、`did:wba` / `did:web` HTTP resolve fail closed 可能影响首次 bootstrap 可用性，bootstrap private package 仍按 MVP 走普通消息明文 JSON | `cd awiki-cli-rs2 && cargo fmt --check -p awiki-deamon`：通过；`cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 bootstrap -- --nocapture`：21 passed；`cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 user_delegated -- --nocapture`：9 passed；`cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1`：全量通过，lib 105 passed，集成测试套件通过，Hermes 真实环境 3 ignored；`cd awiki-cli-rs2 && git diff --check`：通过；secret 搜索只命中 secret handling、redaction tests、fixtures 和既有状态测试，无新增日志/audit 泄露 | Step 04：key package schema 与 APP action capability 收口 |
 | 04 | done | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2`、`awiki-me` | 2026-06-10T03:45:56Z | 2026-06-10T04:22:36Z | `awiki-cli-rs2` `94b1c20`；`awiki-me` `fc1895f` | Review 完成；发现并修复 action 测试 fixture 仍把新 binding 伪装成 legacy `desired_agent.allowed_actions`、`user_delegated` allowed_actions 投影和 action 执行规则不完全一致、`awiki-me` 未本地拒绝非 `pem` v2 private key encoding、`flutter test` 反复改动无关 Android generated registrant；确认 im-core / awiki-me 新写 v2 `private_key_pem`，Daemon 只为 legacy v1 读取 `private_key_multibase`，bootstrap hash/debug/audit 不包含 private material，新 binding 必须显式 `awiki.app.capabilities.v1`，空 capabilities 禁用 APP action；剩余风险为旧 binding 无 schema 时仍允许 legacy `desired_agent.allowed_actions` 兼容路径，bootstrap private package 仍按 MVP 决策通过普通消息明文 JSON 传输 | `cd awiki-cli-rs2 && cargo fmt --check -p im-core -p im-core-dart -p awiki-deamon`：通过；`cargo test -p im-core --locked`：通过，lib 272 passed，integration/doc tests 通过；`cargo test -p awiki-deamon --locked -j1 bootstrap -- --nocapture`：22 passed；`cargo test -p awiki-deamon --locked -j1 action -- --nocapture`：9 passed；`cargo test -p awiki-deamon --locked -j1 user_delegated -- --nocapture`：10 passed；`cargo test -p awiki-deamon --locked -j1`：通过，lib 110 passed，integration tests 21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 23 + 2，doc tests 0 passed；`cargo test -p im-core-dart --locked`：6 unit + 13 facade passed；`scripts/flutter/codegen-check.sh`：Done；`cd packages/awiki_im_core && flutter test`：12 passed；`cd awiki-me && flutter analyze`：No issues found；`cd awiki-me && flutter test`：273 passed；两仓 `git diff --check` 通过；命名/secret 搜索只命中 legacy decode/tests、历史计划记录、email mailbox 既有模型和 secret/redaction 代码，无新增 mailbox 命名或未解释 secret 泄露 | Step 05：ANP SDK DID Document additional authentication optional 参数 |
 | 05 | done | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2`、`user-service`；`anp/anp` `master` | 2026-06-10T04:26:17Z | 2026-06-10T05:57:51Z | `anp/anp` `c4b2144`；`awiki-cli-rs2` `ac2a0bf`；`user-service` `10ee4d0` | Review 完成；确认 Python/Rust ANP SDK optional additional authentication 在 proof 前插入，旧调用仍可用；im-core 新注册/恢复主路径改为 APP 本地生成 daemon subkey 后通过 ANP SDK 生成已签 DID Document，`apply_to_did_document` 只保留 legacy migration/helper/tests；user-service REST create 移除 proof 后置 patch/re-sign，改为调用 SDK optional 参数；修复 Review 中发现的 user-service 文件头无关漂移并同步 `CLAUDE.md` / `SPEC.md` 依赖文档。剩余风险为 `user-service` 当前通过 sibling `../anp/anp` editable source 消费未发布 ANP 0.8.7，发布前需随 ANP SDK 同步发布或切回已发布包；byte-level 输出因 proof 时间/随机 key 不做固定快照，只做语义兼容验证 | `cd anp/anp && uv run pytest anp/unittest/authentication anp/unittest/proof -v`：141 passed；`cd anp/anp/rust && cargo test --locked`：lib 61 passed，authentication 33 passed，direct/group/key/proof/python/wns integration tests 通过；`cd awiki-cli-rs2 && cargo test -p im-core --locked`：lib 272 passed，integration/doc tests 通过；`cd user-service && uv run pytest tests/app/did tests/app/did_auth -v`：140 passed, 32 warnings；`cargo fmt --check` / `cargo fmt --check -p im-core` / `uv run ruff check ...` / 三仓 `git diff --check`：通过；搜索确认 user-service 无 `_apply_delegated_key_public_registration` / `_resign_did_document_after_local_mutation`，im-core post-proof patch 仅在 legacy migration/helper/tests | Step 06：最终集成验证、安全 Review 与文档收口 |
-| 06 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 等 Step 01-05 完成 |
+| 06 | done | `feature/release-0526/agent-im-hutong` / 相关仓当前分支；`anp/anp` `master` | 2026-06-10T05:59:50Z | 2026-06-10T06:40:41Z | `awiki-cli-rs2` 最终集成文档 commit（以 `git log -1 --oneline` 为准） | 全局 Review 完成；未发现新的代码级 P0/P1 契约缺口。确认 user-service 不再保留 proof 后置 patch 主路径，message-service MVP 不查询 registry，Daemon bootstrap / delegated inbox 有 private/public/DID Document 早期校验，APP action 新 binding 不再默认全能力，E2EE payload 不投递给 Agent。remote 阻塞已解除：`message-service.service` 原因是 release 二进制缺失导致 systemd `203/EXEC`，编译 `cargo build -p message-service --release` 后又因临时前台验证进程占用 `127.0.0.1:9900` 导致一次 bind 失败；清理临时进程后 systemd 正常接管。剩余发布风险为 `user-service` 仍通过 sibling editable `../anp/anp` 消费 ANP SDK，发布前需要同步发布或固定依赖。 | 本地与跨仓验证已完成：user-service 140 passed；ANP Python 141 passed；ANP Rust suites 全通过；message-service `cargo test --workspace` 全通过；awiki-cli-rs2 Rust/Flutter package 全通过；awiki-me analyze 无问题、273 passed。remote system-test 最终通过：`AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info uv run --no-sync python scripts/run_tests_v2.py --raw tests_v2/daemon tests_v2/user_service tests_v2/message_service` -> 19 passed, 7 skipped；带 `-rs` 复跑同一目标 -> 19 passed, 7 skipped，skip 均为 local topology、显式 daemon contract selector 或 group E2EE flag-off guard。服务健康：`message-service.service` active，监听 `127.0.0.1:9900`；本地和公网 `/im/rpc`、`/anp-im/rpc` 均从 502 恢复为 405。 | 所有 Step 完成；发布前处理 ANP SDK 依赖固定和 bootstrap 加密后续风险 |
 
 ## 8. Codex Goal 执行协议
 
@@ -247,7 +247,7 @@ Harness：`awiki-harness`
 
 | Blocker | Step | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|---|
-| 未出现 | - | - | - | - | - |
+| remote `awiki.info` message-service 不可用 | 已解决。最初 Step 06 remote system-test：`tests_v2/message_service` 为 14 failed, 3 passed, 2 skipped；失败均由 `https://awiki.info/im/rpc`、`https://awiki.info/anp-im/rpc` 或 `wss://awiki.info/im/ws` 返回 502 引起；健康探测显示 `/im/rpc=502`、`/anp-im/rpc=502`、`/=500`。根因是 `message-service.service` 的 `ExecStart` 指向的 `target/release/message-service` 不存在，systemd 报 `203/EXEC`；编译后曾有临时前台验证进程占用 `127.0.0.1:9900`，导致 systemd bind 失败 | `cargo build -p message-service --release` 生成 release 二进制；停止临时前台进程；`sudo -n systemctl reset-failed message-service.service && sudo -n systemctl restart message-service.service`；确认服务 active 且监听 `127.0.0.1:9900`；重跑 remote system-test | 阻塞已解除 | remote system-test 最终 19 passed, 7 skipped；Step 06 已完成 |
 
 - 只有依赖允许且风险已记录时，才继续另一个 pending 步骤；当前计划默认串行。
 - 只有没有安全假设、回退方案或独立下一步时，才询问用户。
@@ -260,6 +260,8 @@ Harness：`awiki-harness`
 | 2026-06-10 | 创建修复专项计划 | 根据实现 Review 发现整理可执行修复方案 | Step 01-06 | 是 |
 | 2026-06-10 | Step 05 Rust SDK API 从直接扩展 `DidDocumentOptions` 改为新增 creation wrapper / builder | 直接给 public Rust struct 增字段会破坏外部完整 struct literal 旧调用，不满足“新字段 optional、旧调用不变” | Step 05 | 是 |
 | 2026-06-10 | Step 02 增加 user-service `update_document` optional metadata preservation 小修 | 实现 im-core 旧身份 migration 时发现 DID Document signed update 若省略 `is_public` / `is_agent` 会被服务端默认落成 `false`，可能破坏既有身份元数据；需先让省略字段保持旧值，旧显式传参行为不变 | Step 02 | 是 |
+| 2026-06-10 | Step 06 状态改为 `blocked`，不标记最终完成 | remote `awiki.info` message-service HTTP / WebSocket 端点返回 502，完整 remote E2E 未通过；按系统测试要求记录失败和恢复动作 | Step 06 | 是 |
+| 2026-06-10 | Step 06 从 `blocked` 改为 `done` | 已生成 release 二进制并恢复 `message-service.service`，remote `awiki.info` 系统测试最终通过 | Step 06 | 是 |
 
 ## 16. 风险与回滚
 
@@ -279,9 +281,34 @@ Harness：`awiki-harness`
 - Review 范围：`user-service`、`awiki-cli-rs2`、`awiki-me`、`anp/anp`、`message-service`、`awiki-system-test` 相关测试和文档。
 - 重点关注：DID Document proof、registry sync、signed revoke/rotate、existing identity migration、bootstrap secret、APP action capability、optional API 兼容、文档漂移、未提交变更。
 - 整体验证命令 / 检查：按第 11 节执行，并记录实际命令和结果。
-- Review 发现：待 Step 06 回填。
-- 已修复问题：待 Step 06 回填。
-- 剩余风险：待 Step 06 回填。
-- 最终证据：待 Step 06 回填。
-- 最终 `git status`：待 Step 06 回填。
-- 如果本阶段修改文件：记录 Review、验证和最终集成 commit。
+- Review 发现：
+  - 未发现新的代码级 P0/P1 契约缺口。Step 01-05 的实现与当前核心设计收敛：APP 本地生成 `#daemon-key-1` private/public key package；user-service 只登记/同步 public verification method 和 registry；message-service MVP 不查询 registry，运行时授权以 DID proof 和当前 DID Document `authentication` 为准；Daemon bootstrap 在落库前校验 private/public/DID Document；APP action 新 binding 不默认全能力；E2EE payload 不投递给 Agent。
+  - 已修复的环境问题：remote `awiki.info` message-service 端点最初不可用，根因是 systemd `ExecStart` 指向的 release 二进制缺失；编译并重启服务后完整 remote E2E 通过。
+- 已修复问题：
+  - 生成 `message-service/target/release/message-service` release 二进制；停止临时前台验证进程；通过 systemd 重启并恢复 `message-service.service`。
+  - 恢复了一次 `awiki-me` Flutter 测试自动造成的 generated registrant 无关漂移，并回填执行文档。
+- 剩余风险：
+  - `user-service` 当前通过 sibling editable `../anp/anp` 消费 ANP SDK；发布前需要同步发布 ANP SDK 或固定可部署依赖。
+  - bootstrap private package MVP 仍通过普通消息明文 JSON 传输；这是既定后续安全债，后续需要同一普通消息通道上的加密文本或加密 JSON envelope。
+  - remote system-test 已通过；运行环境仍依赖 systemd unit 指向当前 workspace release 二进制，后续部署时需要保证 release build 不被清理。
+- 最终证据：
+  - `user-service`: `uv run pytest tests/app/did tests/app/did_auth -v` -> 140 passed, 32 warnings。
+  - `anp/anp`: `uv run pytest anp/unittest/authentication anp/unittest/proof -v` -> 141 passed。
+  - `anp/anp/rust`: `cargo test --locked` -> lib 61 passed；authentication 33 passed；direct/group/key/proof/python/wns suites 通过。
+  - `message-service`: `cargo test --workspace` -> workspace 全通过。
+  - `awiki-cli-rs2`: `cargo test -p im-core --locked && cargo test -p im-core-dart --locked && cargo test -p awiki-deamon --locked -j1` -> 通过；`awiki-deamon` Hermes real gateway 3 ignored。
+  - `awiki-cli-rs2` Flutter package: `scripts/flutter/codegen-check.sh` -> `Done!`；`cd packages/awiki_im_core && flutter test` -> 12 passed。
+  - `awiki-me`: `flutter analyze && flutter test` -> No issues found；273 passed。
+  - remote system-test:
+    - 故障修复前：`AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info uv run --no-sync python scripts/run_tests_v2.py --raw tests_v2/daemon tests_v2/user_service tests_v2/message_service` -> 5 passed, 14 failed, 7 skipped；失败均为 remote `/im/rpc`、`/anp-im/rpc`、`/im/ws` 502。
+    - 故障修复后：`AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info uv run --no-sync python scripts/run_tests_v2.py --raw tests_v2/daemon tests_v2/user_service tests_v2/message_service` -> 19 passed, 7 skipped。
+    - 带 skip 原因复跑：`AWIKI_SYSTEM_TEST_MODE=remote E2E_DID_DOMAIN=awiki.info NO_PROXY=127.0.0.1,localhost,awiki.info,www.awiki.info uv run --no-project --python .venv/bin/python -m pytest tests_v2/daemon tests_v2/user_service tests_v2/message_service -q -rs` -> 19 passed, 7 skipped；跳过原因是 local topology、显式 `AWIKI_DAEMON_RUST_REPO` contract selector、Group E2EE flag-off guard。
+    - 健康探测：故障修复后本地和公网 `/im/rpc`、`/anp-im/rpc` 均返回 405，说明 nginx 已连到运行中的 message-service；`message-service.service` active，监听 `127.0.0.1:9900`。
+- 最终 `git status`：
+  - `awiki-cli-rs2`: 提交前为 `feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 43]`，仅 `plan.md` 和 Step 06 doc 修改；提交后为 `feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 44]`，clean。
+  - `awiki-me`: `feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 5]`，clean。
+  - `user-service`: `feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 4]`，clean。
+  - `message-service`: `feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong [ahead 1]`，clean。
+  - `awiki-system-test`: `feature/release-0526/agent-im-hutong...origin/feature/release-0526/agent-im-hutong`，clean。
+  - `anp/anp`: `master...origin/master [ahead 1]`，clean。
+- 如果本阶段修改文件：已修改 Plan 文档记录环境修复、最终 Review 和验证证据；Step 06 已标记 done，提交最终集成文档 commit。
