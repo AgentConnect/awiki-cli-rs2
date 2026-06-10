@@ -1195,6 +1195,19 @@ MVP 不改 ANP 协议结构，但需要 ANP SDK / `im-core` 支持 Daemon 用用
 建议 API 形态如下，命名可按现有 Rust/Dart SDK 风格调整：
 
 ```text
+DID WBA creation:
+  Python create_did_wba_document(
+    additional_verification_methods: Optional[List[Dict]] = None,
+    additional_authentication: Optional[List[str | Dict]] = None,
+  )
+  Rust create_did_wba_document_with_creation_options(
+    DidDocumentCreationOptions {
+      document_options: DidDocumentOptions,
+      additional_verification_methods: Vec<Value>,
+      additional_authentication: Vec<Value>,
+    },
+  )
+
 SendOptions / DirectSendOptions:
   logical_sender_did: Option<String>
   signing_verification_method: Option<String>
@@ -1210,18 +1223,21 @@ InboxHistoryOptions:
 
 字段语义：
 
-1. `logical_sender_did` / `inbox_owner_did` 默认为当前 identity DID；user delegated 场景传 `user_did`。
-2. `signing_verification_method` / `inbox_auth_verification_method` 可传 `user_did#daemon-key-1`。
-3. `signing_key_ref` / `inbox_auth_key_ref` 指向 Daemon 本地保存的子私钥；SDK 不要求调用方直接传私钥明文。
-4. `actor_agent_did` 只用于本地 policy、日志、action result 和后续审计；MVP 不序列化为 ANP delegated origin proof。
-5. `inbox_auth` 默认为空，表示沿用 DID proof；后续可传 scoped inbox token，但它不是 MVP 接收能力的唯一主路径。
+1. DID WBA creation 的 additional verification/authentication 是 generic DID Document 扩展；SDK 在 proof 生成前插入，支持 `#daemon-key-1` fragment 按最终 DID 归一化，proof 覆盖完整 DID Document。
+2. Python 新参数必须 optional；Rust 使用新增 creation wrapper / builder，不直接扩展既有 public `DidDocumentOptions` 字段集合，确保旧 `create_did_wba_document(hostname, DidDocumentOptions)` 源码兼容。
+3. `im-core` 新注册/恢复主路径由 APP 本地生成 daemon subkey，传 public verification method 给 ANP SDK 生成已签 DID Document，再保存 private package；`user-service` REST DID create 只把 APP public registration 转为 SDK additional method，不再 proof 后置 patch。已有身份 migration 才允许本地 patch 后重签并通过 signed update 提交。
+4. `logical_sender_did` / `inbox_owner_did` 默认为当前 identity DID；user delegated 场景传 `user_did`。
+5. `signing_verification_method` / `inbox_auth_verification_method` 可传 `user_did#daemon-key-1`。
+6. `signing_key_ref` / `inbox_auth_key_ref` 指向 Daemon 本地保存的子私钥；SDK 不要求调用方直接传私钥明文。
+7. `actor_agent_did` 只用于本地 policy、日志、action result 和后续审计；MVP 不序列化为 ANP delegated origin proof。
+8. `inbox_auth` 默认为空，表示沿用 DID proof；后续可传 scoped inbox token，但它不是 MVP 接收能力的唯一主路径。
 
 兼容和校验要求：
 
 1. optional 参数为空时，`meta.sender_did`、`signatureInput.keyid`、`contentDigest`、消息接收/历史拉取认证方式均保持旧行为。
 2. optional 参数存在时，SDK 必须校验 verification method 属于 logical sender / inbox owner，且本地 key ref 可用。
 3. SDK 不应允许 delegated 参数请求 E2EE plaintext、E2EE metadata projection 或 private state。
-4. 服务端 MVP 以 DID proof、DID Document `authentication`、key owner 一致性和 message-service 普通非 E2EE scope / rate limit / audit policy 为最终授权来源；`ScopedInboxToken` 属于后续增强。
+4. 服务端 MVP 以 DID proof、DID Document `authentication`、key owner 一致性和 message-service 普通非 E2EE scope / rate limit / audit policy 为最终授权来源；message-service MVP 不查询 user-service registry；`ScopedInboxToken` 属于后续增强。
 
 长期 Agent DID 授权方案：
 

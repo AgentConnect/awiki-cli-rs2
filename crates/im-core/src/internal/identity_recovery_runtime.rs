@@ -308,14 +308,17 @@ fn prepare_recover_with_local_finalize(
         &core.inner().sdk_config().did_domain,
     )?;
     let local_finalize = request.local_finalize.clone().unwrap_or_default();
-    let mut generated = crate::internal::identity_generation::generate_identity_with_path_segments(
-        &plan.target.effective_domain,
-        [plan.target.target_local_part.as_str()],
-        core.inner().sdk_config().anp_service_endpoint.as_ref(),
-        core.inner().sdk_config().anp_service_did.as_ref(),
-    )?;
-    let daemon_subkey_package =
-        crate::internal::identity_daemon_subkey::attach_to_generated_identity(&mut generated)?;
+    let generated_with_daemon =
+        crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+            &plan.target.effective_domain,
+            [plan.target.target_local_part.as_str()],
+            core.inner().sdk_config().anp_service_endpoint.as_ref(),
+            core.inner().sdk_config().anp_service_did.as_ref(),
+        )?;
+    let crate::internal::identity_generation::GeneratedIdentityWithDaemonSubkey {
+        identity: generated,
+        daemon_subkey_package,
+    } = generated_with_daemon;
     let call = crate::internal::identity_wire::recovery::build_recover_handle_rpc_call(
         crate::internal::identity_wire::RecoverHandleRpcParams {
             did_document: generated.did_document.clone(),
@@ -569,15 +572,17 @@ pub(crate) fn prepare_recover_handle_request(
     let mut local_store = None;
     if otp_present && request.local_finalize.is_none() && request.generated_identity.is_none() {
         let target = recovery_target(&request.handle, &core.inner().sdk_config().did_domain)?;
-        let mut generated =
-            crate::internal::identity_generation::generate_identity_with_path_segments(
+        let generated_with_daemon =
+            crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
                 &target.effective_domain,
                 [target.local_part.as_str()],
                 core.inner().sdk_config().anp_service_endpoint.as_ref(),
                 core.inner().sdk_config().anp_service_did.as_ref(),
             )?;
-        let daemon_subkey_package =
-            crate::internal::identity_daemon_subkey::attach_to_generated_identity(&mut generated)?;
+        let crate::internal::identity_generation::GeneratedIdentityWithDaemonSubkey {
+            identity: generated,
+            daemon_subkey_package,
+        } = generated_with_daemon;
         request.generated_identity = Some(crate::identity::RecoverGeneratedIdentity {
             did: generated.did.clone(),
             unique_id: generated.unique_id.clone(),

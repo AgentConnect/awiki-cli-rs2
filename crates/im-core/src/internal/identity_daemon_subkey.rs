@@ -9,6 +9,12 @@ const KEY_TYPE: &str = "Multikey/Ed25519";
 const KEY_ALGORITHM: &str = "Ed25519";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GeneratedDaemonSubkeyMaterial {
+    pub(crate) public_key_multibase: String,
+    pub(crate) private_key_pem: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GeneratedDaemonSubkey {
     pub(crate) verification_method: String,
     pub(crate) public_key_multibase: String,
@@ -33,7 +39,7 @@ pub(crate) fn attach_to_generated_identity(
     ))
 }
 
-pub(crate) fn generate_for_did(did: &crate::ids::Did) -> GeneratedDaemonSubkey {
+pub(crate) fn generate_material() -> GeneratedDaemonSubkeyMaterial {
     let private_key = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
         &mut rand::rngs::OsRng,
     ));
@@ -42,15 +48,47 @@ pub(crate) fn generate_for_did(did: &crate::ids::Did) -> GeneratedDaemonSubkey {
         anp::PublicKeyMaterial::Ed25519(key) => ed25519_public_key_to_multibase(&key),
         _ => unreachable!("generated daemon subkey must be Ed25519"),
     };
-    GeneratedDaemonSubkey {
-        verification_method: format!("{}#{}", did.as_str(), DAEMON_SUBKEY_FRAGMENT),
+    GeneratedDaemonSubkeyMaterial {
         public_key_multibase,
         private_key_pem: private_key.to_pem(),
     }
 }
 
+pub(crate) fn generate_for_did(did: &crate::ids::Did) -> GeneratedDaemonSubkey {
+    let material = generate_material();
+    GeneratedDaemonSubkey {
+        verification_method: format!("{}#{}", did.as_str(), DAEMON_SUBKEY_FRAGMENT),
+        public_key_multibase: material.public_key_multibase,
+        private_key_pem: material.private_key_pem,
+    }
+}
+
 pub(crate) fn expected_verification_method(did: &crate::ids::Did) -> String {
     format!("{}#{}", did.as_str(), DAEMON_SUBKEY_FRAGMENT)
+}
+
+pub(crate) fn creation_verification_method(material: &GeneratedDaemonSubkeyMaterial) -> Value {
+    json!({
+        "id": format!("#{DAEMON_SUBKEY_FRAGMENT}"),
+        "type": "Multikey",
+        "publicKeyMultibase": material.public_key_multibase,
+    })
+}
+
+pub(crate) fn creation_authentication_reference() -> String {
+    format!("#{DAEMON_SUBKEY_FRAGMENT}")
+}
+
+pub(crate) fn package_from_material(
+    user_did: crate::ids::Did,
+    material: GeneratedDaemonSubkeyMaterial,
+) -> crate::identity::DaemonSubkeyPrivatePackage {
+    package_from_parts(
+        user_did.clone(),
+        expected_verification_method(&user_did),
+        material.public_key_multibase,
+        material.private_key_pem,
+    )
 }
 
 pub(crate) fn apply_to_did_document(

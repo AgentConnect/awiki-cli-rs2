@@ -1241,6 +1241,19 @@ MVP 不改变 ANP wire schema、`origin_proof` 结构或 Direct Base 语义，�
 建议 API 形态如下，具体命名可以按现有 SDK 风格调整：
 
 ```text
+DID WBA creation:
+  Python create_did_wba_document(
+    additional_verification_methods: Optional[List[Dict]] = None,
+    additional_authentication: Optional[List[str | Dict]] = None,
+  )
+  Rust create_did_wba_document_with_creation_options(
+    DidDocumentCreationOptions {
+      document_options: DidDocumentOptions,
+      additional_verification_methods: Vec<Value>,
+      additional_authentication: Vec<Value>,
+    },
+  )
+
 SendOptions / DirectSendOptions:
   logical_sender_did: Option<String>
   signing_verification_method: Option<String>
@@ -1256,13 +1269,16 @@ InboxHistoryOptions:
 
 约束：
 
-1. 所有字段都是 optional；为空时走现有用户/agent identity 默认行为，不影响旧 CLI、APP、SDK 调用。
-2. `logical_sender_did` 默认为当前 identity DID；daemon 代用户发送时传 `user_did`。
-3. `signing_verification_method` 可指定 `user_did#daemon-key-1`；本地必须能通过 `signing_key_ref` 或现有 identity store 找到对应子私钥。
-4. `actor_agent_did` 只用于本地 policy、日志和 result/audit metadata；MVP 不把它序列化为 ANP delegated proof。
-5. inbox/history 调用可用 `inbox_owner_did + inbox_auth_verification_method` 生成 DID proof，或后续用 `inbox_auth = ScopedInboxToken`；MVP 先支持子 key DID proof。
-6. SDK 本地校验应尽早拒绝：verification method 不属于 `logical_sender_did` / `inbox_owner_did`、本地无 key、scope 不允许、或请求 E2EE inbox projection。
-7. 服务端 MVP 以 DID proof、DID Document `authentication`、key owner 一致性和 message-service 普通非 E2EE scope / rate limit / audit policy 为最终判定。
+1. DID WBA creation 的 additional verification/authentication 是 generic DID Document 扩展；SDK 必须在 proof 生成前插入，支持 `#daemon-key-1` fragment 自动按最终 DID 归一化，proof 覆盖最终 DID Document。
+2. Python 新参数必须 optional；旧调用不传参数时行为不变。Rust 不直接给既有 public `DidDocumentOptions` 增必填字段，使用新的 creation wrapper / builder；旧 `create_did_wba_document(hostname, DidDocumentOptions)` 调用保持不变。
+3. `im-core` 新注册/恢复主路径必须先在 APP 本地生成 daemon public/private key material，再把 public verification method 交给 ANP SDK 生成已签 DID Document；`user-service` REST DID create 只把 APP public registration 转换为 SDK additional method，不再 proof 后置 JSON patch。已有身份 migration 才允许本地 patch 后用用户主 key 重签，并通过 signed `update_document` 更新服务端。
+4. 所有 send/inbox 字段都是 optional；为空时走现有用户/agent identity 默认行为，不影响旧 CLI、APP、SDK 调用。
+5. `logical_sender_did` 默认为当前 identity DID；daemon 代用户发送时传 `user_did`。
+6. `signing_verification_method` 可指定 `user_did#daemon-key-1`；本地必须能通过 `signing_key_ref` 或现有 identity store 找到对应子私钥。
+7. `actor_agent_did` 只用于本地 policy、日志和 result/audit metadata；MVP 不把它序列化为 ANP delegated proof。
+8. inbox/history 调用可用 `inbox_owner_did + inbox_auth_verification_method` 生成 DID proof，或后续用 `inbox_auth = ScopedInboxToken`；MVP 先支持子 key DID proof。
+9. SDK 本地校验应尽早拒绝：verification method 不属于 `logical_sender_did` / `inbox_owner_did`、本地无 key、scope 不允许、或请求 E2EE inbox projection。
+10. 服务端 MVP 以 DID proof、DID Document `authentication`、key owner 一致性和 message-service 普通非 E2EE scope / rate limit / audit policy 为最终判定；message-service MVP 不查询 user-service registry。
 
 ### 5.5.2 新增/扩展 Profile
 
