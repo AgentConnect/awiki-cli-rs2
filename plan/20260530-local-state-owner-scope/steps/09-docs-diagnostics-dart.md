@@ -69,7 +69,7 @@ Diagnostics 和 generated DTOs 必须保持脱敏：
 6. 更新 SDK refactor local-state docs。
 7. 只有实现改变 owner-scope wording 或 public redacted status fields 时，才更新 secure docs；不要复制 raw implementation details。
 8. 增加 diagnostics tests，使用 sentinel secret/plaintext values，并断言输出中不存在这些值。
-9. 如果 Rust FFI DTO 变化，运行 `scripts/flutter/codegen.sh`，然后运行 codegen check。
+9. 如果 Rust FFI DTO 变化，运行 `scripts/flutter/codegen-check.sh`。
 
 ## 7. 验收标准
 

@@ -215,12 +215,10 @@ python3 scripts/test_daemon_release_contract.py
 如果修改了 Flutter SDK：
 
 ```bash
-scripts/flutter/codegen-check.sh
-cd packages/awiki_im_core
-flutter pub get
-dart analyze
-flutter test
+scripts/flutter/build-sdk-native.sh
 ```
+
+该脚本依次执行 bridge 生成一致性检查、Apple XCFramework 构建和 Android jniLibs 构建。只需要检查执行计划时可使用 `--dry-run`。
 
 如果只发布 daemon，可以至少执行：
 

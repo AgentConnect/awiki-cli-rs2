@@ -56,7 +56,7 @@ crates/im-core
 crates/awiki-cli
 crates/im-core-dart
 packages/awiki_im_core
-scripts/flutter/codegen.sh
+scripts/flutter/codegen-check.sh
 docs/async-core
 ```
 
@@ -657,7 +657,7 @@ packages/awiki_im_core/lib/awiki_im_core.dart
 packages/awiki_im_core/lib/src/models/*.dart
 packages/awiki_im_core/lib/src/generated/*.dart
 packages/awiki_im_core/pubspec.yaml
-scripts/flutter/codegen.sh
+scripts/flutter/codegen-check.sh
 ```
 
 检查点：

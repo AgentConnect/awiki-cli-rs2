@@ -134,7 +134,6 @@ packages/awiki_im_core/test/**
 ```bash
 cargo check -p im-core-dart --locked
 cargo test -p im-core-dart --locked
-scripts/flutter/codegen.sh
 scripts/flutter/codegen-check.sh
 cd packages/awiki_im_core && dart analyze
 cd packages/awiki_im_core && dart test

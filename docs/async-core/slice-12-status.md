@@ -74,7 +74,6 @@ sync `connect()` call remains in the realtime bridge API/generated surface.
 Generated bindings were refreshed through the project scripts:
 
 ```bash
-CARGO_NET_OFFLINE=true scripts/flutter/codegen.sh
 CARGO_NET_OFFLINE=true scripts/flutter/codegen-check.sh
 ```
 
@@ -82,7 +81,7 @@ The first online attempt stalled inside `cargo metadata` while Cargo was
 connected to crates.io. Running the same script with `CARGO_NET_OFFLINE=true`
 used already-available dependencies and completed.
 
-`scripts/flutter/codegen.sh` now calls:
+`scripts/flutter/codegen-check.sh` runs the bridge generator and formats:
 
 ```bash
 rustfmt --edition 2021 crates/im-core-dart/src/frb_generated.rs
@@ -108,7 +107,6 @@ Passed:
 cargo fmt --all -- --check
 cargo check -p im-core-dart --locked
 cargo test -p im-core-dart --locked
-CARGO_NET_OFFLINE=true scripts/flutter/codegen.sh
 CARGO_NET_OFFLINE=true scripts/flutter/codegen-check.sh
 cd packages/awiki_im_core && dart analyze
 cd packages/awiki_im_core && dart test

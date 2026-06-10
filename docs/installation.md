@@ -71,12 +71,10 @@ scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com
 Flutter SDK 变更还需要：
 
 ```bash
-scripts/flutter/codegen-check.sh
-cd packages/awiki_im_core
-flutter pub get
-dart analyze
-flutter test
+scripts/flutter/build-sdk-native.sh
 ```
+
+该脚本会检查 Flutter/Rust bridge 生成文件，并重新构建 macOS、iOS、Android 的 `awiki_im_core` native 产物。只需要单平台验证时可使用 `--macos-only`、`--ios-only` 或 `--android-only`。
 
 ## 3. 工作区布局
 
