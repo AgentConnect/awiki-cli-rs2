@@ -456,7 +456,7 @@ where
     transport.rpc(call.endpoint, call.method, call.params).await
 }
 
-fn handle_lookup_from_value(
+pub(crate) fn handle_lookup_from_value(
     value: &Value,
 ) -> crate::ImResult<crate::directory::HandleLookupResult> {
     let did = string_value(value, "did");
@@ -469,9 +469,14 @@ fn handle_lookup_from_value(
     if handle.trim().is_empty() {
         return Err(crate::ImError::PeerNotFound { peer: did.clone() });
     }
+    let user_id = string_value(value, "user_id");
+    if user_id.trim().is_empty() {
+        return Err(crate::ImError::PeerNotFound { peer: did.clone() });
+    }
     Ok(crate::directory::HandleLookupResult {
         handle: crate::ids::Handle::parse(handle, "")?,
         did: crate::ids::Did::parse(did)?,
+        user_id: user_id.trim().to_owned(),
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
     })

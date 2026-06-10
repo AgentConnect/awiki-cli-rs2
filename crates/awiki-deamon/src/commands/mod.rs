@@ -1084,6 +1084,7 @@ where
             thread_id: thread_id.clone(),
             kind,
             peer_did: optional_arg_string(&payload.args, "peer_did"),
+            peer_handle: optional_arg_string(&payload.args, "peer_handle"),
             group_did: optional_arg_string(&payload.args, "group_did"),
             limit,
             cursor: optional_arg_string(&payload.args, "cursor"),

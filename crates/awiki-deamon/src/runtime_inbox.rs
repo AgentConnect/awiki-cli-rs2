@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use im_core::ids::{GroupRef, PageLimit, PeerRef};
-use im_core::messages::{HistoryQuery, InboxScope, ThreadRef};
+use im_core::messages::{direct_peer_scope_thread_id, HistoryQuery, InboxScope, ThreadRef};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use crate::agent::AgentDefinition;
 use crate::im_core_adapter::ImCoreAdapter;
@@ -42,6 +42,7 @@ pub struct RuntimeInboxThreadQuery {
     pub thread_id: String,
     pub kind: RuntimeInboxThreadKind,
     pub peer_did: Option<String>,
+    pub peer_handle: Option<String>,
     pub group_did: Option<String>,
     pub limit: u32,
     pub cursor: Option<String>,
@@ -55,6 +56,12 @@ pub fn query_runtime_inbox(
 ) -> Result<Value> {
     let client = runtime_agent_client(config, state, runtime_agent)?;
     let _ = refresh_runtime_conversation_projection(&client, input.scope, input.limit);
+    let _ = repair_scoped_direct_conversations(
+        &client,
+        &config.im_core_sqlite_path,
+        client.current_identity().id.as_str(),
+        &runtime_agent.agent_did,
+    );
     let offset = cursor_offset(input.cursor.as_deref())?;
     let records = load_local_conversations(
         &config.im_core_sqlite_path,
@@ -65,12 +72,18 @@ pub fn query_runtime_inbox(
     )
     .context("read local runtime conversations")?;
     let has_more = records.len() > input.limit as usize;
-    let items = records
+    let page_records = records
         .into_iter()
         .take(input.limit as usize)
-        .map(|conversation| inbox_item_json(&conversation, &runtime_agent.agent_did))
+        .collect::<Vec<_>>();
+    let consumed_count = page_records.len();
+    let items = page_records
+        .into_iter()
+        .filter_map(|conversation| {
+            inbox_item_json(&conversation, &runtime_agent.agent_did).transpose()
+        })
         .collect::<Result<Vec<_>>>()?;
-    let next_offset = offset + items.len();
+    let next_offset = offset + consumed_count;
     let next_cursor = if has_more {
         Some(next_offset.to_string())
     } else {
@@ -91,13 +104,20 @@ pub fn query_runtime_inbox_thread(
     input: RuntimeInboxThreadQuery,
 ) -> Result<Value> {
     let client = runtime_agent_client(config, state, runtime_agent)?;
-    let thread = thread_ref_from_query(&input)?;
-    let _ = client.messages().history(
-        thread,
-        HistoryQuery {
-            limit: PageLimit(input.limit.min(MAX_LIMIT)),
-            cursor: None,
-        },
+    if let Ok(thread) = thread_ref_from_query(&input) {
+        let _ = client.messages().history(
+            thread,
+            HistoryQuery {
+                limit: PageLimit(input.limit.min(MAX_LIMIT)),
+                cursor: None,
+            },
+        );
+    }
+    let _ = repair_scoped_direct_conversations(
+        &client,
+        &config.im_core_sqlite_path,
+        client.current_identity().id.as_str(),
+        &runtime_agent.agent_did,
     );
     let conversation_id = conversation_id_from_thread_query(&input)?;
     let offset = cursor_offset(input.cursor.as_deref())?;
@@ -159,10 +179,7 @@ impl RuntimeInboxThreadKind {
     pub fn parse(input: Option<&str>, thread_id: &str) -> Result<Self> {
         let inferred = if thread_id.trim().starts_with("group:") {
             Some(Self::Group)
-        } else if thread_id.trim().starts_with("direct:")
-            || thread_id.trim().starts_with("dm:")
-            || thread_id.trim().starts_with("did:")
-        {
+        } else if thread_id.trim().starts_with("dm:peer-scope:v1:") {
             Some(Self::Direct)
         } else {
             None
@@ -238,6 +255,7 @@ struct LocalMessageRecord {
     content: String,
     sent_at: String,
     stored_at: String,
+    metadata: String,
 }
 
 fn load_local_conversations(
@@ -264,7 +282,8 @@ SELECT
     m.content_type,
     m.content,
     m.sent_at,
-    m.stored_at
+    m.stored_at,
+    m.metadata
 FROM threads t
 LEFT JOIN messages m
   ON m.owner_identity_id = t.owner_identity_id
@@ -312,6 +331,7 @@ LIMIT ?2 OFFSET ?3"#,
                 content: optional_string(row, "content")?,
                 sent_at: optional_string(row, "sent_at")?,
                 stored_at: optional_string(row, "stored_at")?,
+                metadata: optional_string(row, "metadata")?,
             })
         };
         Ok(LocalConversationRecord {
@@ -354,7 +374,8 @@ SELECT
     content_type,
     content,
     sent_at,
-    stored_at
+    stored_at,
+    metadata
 FROM messages
 WHERE owner_identity_id = ?1
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
@@ -375,6 +396,7 @@ LIMIT ?3 OFFSET ?4"#,
                 content: optional_string(row, "content")?,
                 sent_at: optional_string(row, "sent_at")?,
                 stored_at: optional_string(row, "stored_at")?,
+                metadata: optional_string(row, "metadata")?,
             })
         },
     )?;
@@ -394,10 +416,10 @@ fn u32_from_i64(value: i64) -> u32 {
 fn inbox_item_json(
     conversation: &LocalConversationRecord,
     runtime_agent_did: &str,
-) -> Result<Value> {
-    let (kind, peer_did, group_id, group_did) =
-        conversation_fields(conversation, runtime_agent_did);
-    let thread_id = thread_id_from_fields(kind, peer_did.as_deref(), group_did.as_deref());
+) -> Result<Option<Value>> {
+    let Some(fields) = conversation_fields(conversation, runtime_agent_did)? else {
+        return Ok(None);
+    };
     let last_message = conversation.last_message.as_ref();
     let preview = last_message
         .map(message_preview)
@@ -405,13 +427,15 @@ fn inbox_item_json(
     let last_content_type = last_message
         .map(message_content_type)
         .unwrap_or_else(|| "text".to_string());
-    Ok(json!({
-        "thread_id": thread_id,
-        "kind": kind,
-        "title": conversation_title(conversation, peer_did.as_deref(), group_did.as_deref()),
-        "peer_did": peer_did,
-        "group_id": group_id,
-        "group_did": group_did,
+    Ok(Some(json!({
+        "thread_id": fields.thread_id,
+        "kind": fields.kind,
+        "title": fields.title,
+        "peer_user_id": fields.peer_user_id,
+        "peer_handle": fields.peer_handle,
+        "peer_did": fields.peer_did,
+        "group_id": fields.group_id,
+        "group_did": fields.group_did,
         "last_message_preview": preview,
         "last_message_at_ms": conversation
             .last_message_at
@@ -420,13 +444,25 @@ fn inbox_item_json(
         "unread_count": conversation.unread_count,
         "has_attachments": last_message.is_some_and(message_has_attachments),
         "last_content_type": last_content_type,
-    }))
+    })))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationFields {
+    kind: &'static str,
+    thread_id: String,
+    title: String,
+    peer_user_id: Option<String>,
+    peer_handle: Option<String>,
+    peer_did: Option<String>,
+    group_id: Option<String>,
+    group_did: Option<String>,
 }
 
 fn conversation_fields(
     conversation: &LocalConversationRecord,
     runtime_agent_did: &str,
-) -> (&'static str, Option<String>, Option<String>, Option<String>) {
+) -> Result<Option<ConversationFields>> {
     if let Some(group) = conversation.conversation_id.strip_prefix("group:") {
         let group_did = conversation
             .last_message
@@ -434,66 +470,71 @@ fn conversation_fields(
             .map(|message| first_non_empty([&message.group_did, &message.group_id]))
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| group.to_string());
-        return ("group", None, Some(group_did.clone()), Some(group_did));
+        return Ok(Some(ConversationFields {
+            kind: "group",
+            thread_id: format!("group:{group_did}"),
+            title: group_did.clone(),
+            peer_user_id: None,
+            peer_handle: None,
+            peer_did: None,
+            group_id: Some(group_did.clone()),
+            group_did: Some(group_did),
+        }));
     }
-    let peer = conversation
+    let metadata_scope = conversation
         .last_message
         .as_ref()
-        .map(|message| {
-            if message.sender_did.trim() != runtime_agent_did {
-                message.sender_did.clone()
-            } else {
-                message.receiver_did.clone()
-            }
-        })
-        .filter(|value| !value.trim().is_empty())
+        .and_then(peer_scope_from_message);
+    let peer_did = current_peer_did_from_metadata(metadata_scope.as_ref())
         .or_else(|| {
             conversation
-                .conversation_id
-                .strip_prefix("direct:")
-                .or_else(|| conversation.conversation_id.strip_prefix("dm:"))
-                .map(str::to_string)
+                .last_message
+                .as_ref()
+                .and_then(|message| message_peer_did(message, runtime_agent_did))
         })
-        .unwrap_or_else(|| conversation.conversation_id.clone());
-    ("direct", Some(peer), None, None)
-}
-
-fn thread_id_from_fields(kind: &str, peer_did: Option<&str>, group_did: Option<&str>) -> String {
-    if kind == "group" {
-        return format!("group:{}", group_did.unwrap_or_default());
+        .or_else(|| direct_peer_from_conversation_id(&conversation.conversation_id));
+    if let Some(scope) = metadata_scope {
+        let thread_id = scoped_direct_conversation_id(&scope)?;
+        let title = scope.full_handle.clone();
+        return Ok(Some(ConversationFields {
+            kind: "direct",
+            thread_id,
+            title,
+            peer_user_id: Some(scope.user_id),
+            peer_handle: Some(scope.full_handle),
+            peer_did,
+            group_id: None,
+            group_did: None,
+        }));
     }
-    format!("direct:{}", peer_did.unwrap_or_default())
+    Ok(None)
 }
 
-fn conversation_title(
-    conversation: &LocalConversationRecord,
-    peer_did: Option<&str>,
-    group_did: Option<&str>,
-) -> String {
-    peer_did
-        .map(str::to_string)
-        .or_else(|| group_did.map(str::to_string))
-        .or_else(|| Some(conversation.conversation_id.clone()))
-        .unwrap_or_else(|| "Unknown".to_string())
+fn message_peer_did(message: &LocalMessageRecord, runtime_agent_did: &str) -> Option<String> {
+    message_peer_did_from_parts(
+        &message.sender_did,
+        &message.receiver_did,
+        runtime_agent_did,
+    )
+}
+
+fn message_peer_did_from_parts(
+    sender_did: &str,
+    receiver_did: &str,
+    runtime_agent_did: &str,
+) -> Option<String> {
+    let runtime = runtime_agent_did.trim();
+    let sender = sender_did.trim();
+    let receiver = receiver_did.trim();
+    let peer = if sender != runtime { sender } else { receiver };
+    (!peer.is_empty()).then(|| peer.to_string())
 }
 
 fn thread_ref_from_query(input: &RuntimeInboxThreadQuery) -> Result<ThreadRef> {
     match input.kind {
         RuntimeInboxThreadKind::Direct => {
-            let peer = input
-                .peer_did
-                .as_deref()
-                .or_else(|| input.thread_id.strip_prefix("direct:"))
-                .or_else(|| input.thread_id.strip_prefix("dm:"))
-                .or_else(|| {
-                    input
-                        .thread_id
-                        .starts_with("did:")
-                        .then_some(input.thread_id.as_str())
-                })
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("direct runtime inbox thread requires peer_did")?;
+            let peer = direct_history_peer_from_query(input)
+                .context("direct runtime inbox thread requires peer_handle or peer_did")?;
             Ok(ThreadRef::Direct(PeerRef::parse(peer, "")?))
         }
         RuntimeInboxThreadKind::Group => {
@@ -512,27 +553,20 @@ fn thread_ref_from_query(input: &RuntimeInboxThreadQuery) -> Result<ThreadRef> {
 fn conversation_id_from_thread_query(input: &RuntimeInboxThreadQuery) -> Result<String> {
     match input.kind {
         RuntimeInboxThreadKind::Direct => {
-            let peer = input
-                .peer_did
-                .as_deref()
-                .or_else(|| input.thread_id.strip_prefix("direct:"))
-                .or_else(|| input.thread_id.strip_prefix("dm:"))
-                .or_else(|| {
-                    input
-                        .thread_id
-                        .starts_with("did:")
-                        .then_some(input.thread_id.as_str())
-                })
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("direct runtime inbox thread requires peer_did")?;
-            Ok(format!("dm:{peer}"))
+            let thread_id = input.thread_id.trim();
+            if thread_id.starts_with("dm:peer-scope:v1:") {
+                return Ok(thread_id.to_string());
+            }
+            anyhow::bail!("direct runtime inbox thread requires stable dm:peer-scope:v1 thread_id")
         }
         RuntimeInboxThreadKind::Group => {
+            let thread_id = input.thread_id.trim();
+            if thread_id.starts_with("group:") {
+                return Ok(thread_id.to_string());
+            }
             let group = input
                 .group_did
                 .as_deref()
-                .or_else(|| input.thread_id.strip_prefix("group:"))
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .context("group runtime inbox thread requires group_did")?;
@@ -545,16 +579,26 @@ fn thread_title_from_records(
     input: &RuntimeInboxThreadQuery,
     messages: &[LocalMessageRecord],
 ) -> String {
+    if let RuntimeInboxThreadKind::Direct = input.kind {
+        if let Some(peer_handle) = input
+            .peer_handle
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return peer_handle.to_string();
+        }
+    }
     for message in messages {
         match input.kind {
             RuntimeInboxThreadKind::Direct => {
-                let candidate = if message.sender_did.trim() != input.runtime_agent_did {
-                    message.sender_did.as_str()
-                } else {
-                    message.receiver_did.as_str()
-                };
+                if let Some(scope) = peer_scope_from_message(message) {
+                    return scope.full_handle;
+                }
+                let candidate =
+                    message_peer_did(message, &input.runtime_agent_did).unwrap_or_default();
                 if !candidate.trim().is_empty() {
-                    return candidate.to_string();
+                    return candidate;
                 }
             }
             RuntimeInboxThreadKind::Group => {
@@ -567,9 +611,11 @@ fn thread_title_from_records(
     }
     match input.kind {
         RuntimeInboxThreadKind::Direct => input
-            .peer_did
+            .peer_handle
             .clone()
-            .or_else(|| input.thread_id.strip_prefix("direct:").map(str::to_string))
+            .or_else(|| input.peer_did.clone())
+            .or_else(|| direct_peer_from_conversation_id(&input.thread_id))
+            .or_else(|| input.thread_id.strip_prefix("dm:").map(str::to_string))
             .unwrap_or_else(|| input.thread_id.clone()),
         RuntimeInboxThreadKind::Group => input
             .group_did
@@ -579,11 +625,239 @@ fn thread_title_from_records(
     }
 }
 
+fn direct_peer_from_conversation_id(conversation_id: &str) -> Option<String> {
+    let raw = conversation_id.trim();
+    if raw.starts_with("dm:peer-scope:") {
+        return None;
+    }
+    raw.strip_prefix("dm:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn direct_history_peer_from_query(input: &RuntimeInboxThreadQuery) -> Option<&str> {
+    input
+        .peer_handle
+        .as_deref()
+        .or(input.peer_did.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectPeerScope {
+    user_id: String,
+    full_handle: String,
+    current_did: Option<String>,
+}
+
+fn peer_scope_from_message(message: &LocalMessageRecord) -> Option<DirectPeerScope> {
+    peer_scope_from_metadata(&message.metadata)
+}
+
+fn peer_scope_from_metadata(metadata: &str) -> Option<DirectPeerScope> {
+    let object = serde_json::from_str::<Value>(metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned())?;
+    let user_id = object
+        .get("peer_user_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let full_handle = object
+        .get("peer_full_handle")
+        .or_else(|| object.get("target_handle"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_ascii_lowercase();
+    let current_did = object
+        .get("peer_current_did")
+        .or_else(|| object.get("resolved_target_did"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    Some(DirectPeerScope {
+        user_id,
+        full_handle,
+        current_did,
+    })
+}
+
+fn current_peer_did_from_metadata(scope: Option<&DirectPeerScope>) -> Option<String> {
+    scope.and_then(|scope| scope.current_did.clone())
+}
+
+fn scoped_direct_conversation_id(scope: &DirectPeerScope) -> Result<String> {
+    Ok(
+        direct_peer_scope_thread_id(&scope.user_id, &scope.full_handle)?
+            .as_str()
+            .to_string(),
+    )
+}
+
+fn repair_scoped_direct_conversations(
+    client: &im_core::ImClient,
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    runtime_agent_did: &str,
+) -> Result<()> {
+    let mut connection = rusqlite::Connection::open(sqlite_path)?;
+    let candidates = load_direct_repair_candidates(&connection, owner_identity_id)?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let mut lookup_cache = HashMap::<String, Option<DirectPeerScope>>::new();
+    let transaction = connection.transaction()?;
+    for candidate in candidates {
+        let Some(peer_did) = candidate.peer_did(runtime_agent_did) else {
+            continue;
+        };
+        let scope = candidate.metadata_scope.or_else(|| {
+            lookup_cache
+                .entry(peer_did.clone())
+                .or_insert_with(|| lookup_peer_scope_by_did(client, &peer_did))
+                .clone()
+        });
+        let Some(scope) = scope else {
+            continue;
+        };
+        let conversation_id = scoped_direct_conversation_id(&scope)?;
+        let metadata = metadata_with_peer_scope(&candidate.metadata, &scope, Some(&peer_did));
+        transaction.execute(
+            r#"
+UPDATE messages
+SET conversation_id = ?2,
+    thread_id = ?2,
+    metadata = ?3
+WHERE owner_identity_id = ?4
+  AND msg_id = ?1"#,
+            rusqlite::params![
+                candidate.msg_id,
+                conversation_id,
+                metadata,
+                owner_identity_id,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct DirectRepairCandidate {
+    msg_id: String,
+    sender_did: String,
+    receiver_did: String,
+    conversation_id: String,
+    metadata: String,
+    metadata_scope: Option<DirectPeerScope>,
+}
+
+impl DirectRepairCandidate {
+    fn peer_did(&self, runtime_agent_did: &str) -> Option<String> {
+        current_peer_did_from_metadata(self.metadata_scope.as_ref())
+            .or_else(|| {
+                message_peer_did_from_parts(&self.sender_did, &self.receiver_did, runtime_agent_did)
+            })
+            .or_else(|| direct_peer_from_conversation_id(&self.conversation_id))
+    }
+}
+
+fn load_direct_repair_candidates(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+) -> Result<Vec<DirectRepairCandidate>> {
+    let mut statement = connection.prepare(
+        r#"
+SELECT
+    msg_id,
+    sender_did,
+    receiver_did,
+    COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
+    metadata
+FROM messages
+WHERE owner_identity_id = ?1
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'group:%'
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'dm:peer-scope:%'"#,
+    )?;
+    let rows = statement.query_map((owner_identity_id,), |row| {
+        let sender_did = optional_string(row, "sender_did")?;
+        let receiver_did = optional_string(row, "receiver_did")?;
+        let metadata = optional_string(row, "metadata")?;
+        let candidate = DirectRepairCandidate {
+            msg_id: optional_string(row, "msg_id")?,
+            sender_did,
+            receiver_did,
+            conversation_id: optional_string(row, "conversation_id")?,
+            metadata_scope: peer_scope_from_metadata(&metadata),
+            metadata,
+        };
+        Ok(candidate)
+    })?;
+    let candidates = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(candidates)
+}
+
+fn lookup_peer_scope_by_did(client: &im_core::ImClient, peer_did: &str) -> Option<DirectPeerScope> {
+    let resolution = client
+        .directory()
+        .resolve_peer(PeerRef::parse(peer_did, "").ok()?)
+        .ok()?;
+    let handle = resolution.handle?;
+    let lookup = client.directory().lookup_handle(handle).ok()?;
+    Some(DirectPeerScope {
+        user_id: lookup.user_id,
+        full_handle: lookup.handle.as_str().to_ascii_lowercase(),
+        current_did: Some(lookup.did.as_str().to_string()),
+    })
+}
+
+fn metadata_with_peer_scope(
+    metadata: &str,
+    scope: &DirectPeerScope,
+    current_did: Option<&str>,
+) -> String {
+    let mut object = serde_json::from_str::<Value>(metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.insert(
+        "peer_user_id".to_string(),
+        Value::String(scope.user_id.clone()),
+    );
+    object.insert(
+        "peer_full_handle".to_string(),
+        Value::String(scope.full_handle.clone()),
+    );
+    if let Some(did) = scope
+        .current_did
+        .as_deref()
+        .or(current_did)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "peer_current_did".to_string(),
+            Value::String(did.to_string()),
+        );
+        object.insert(
+            "resolved_target_did".to_string(),
+            Value::String(did.to_string()),
+        );
+    }
+    Value::Object(object).to_string()
+}
+
 fn message_json(message: &LocalMessageRecord, runtime_agent_did: &str) -> Result<Value> {
     let (text, truncated) = message_text(message);
     Ok(json!({
         "message_id": message.msg_id,
         "sender_did": message.sender_did,
+        "sender_handle": sender_handle_for_message(message, runtime_agent_did),
         "sent_at_ms": message
             .sent_at
             .as_str()
@@ -601,6 +875,16 @@ fn message_json(message: &LocalMessageRecord, runtime_agent_did: &str) -> Result
         "truncated": truncated,
         "attachments": attachment_items(message),
     }))
+}
+
+fn sender_handle_for_message(
+    message: &LocalMessageRecord,
+    runtime_agent_did: &str,
+) -> Option<String> {
+    if message.sender_did.trim() == runtime_agent_did.trim() {
+        return None;
+    }
+    peer_scope_from_message(message).map(|scope| scope.full_handle)
 }
 
 fn message_preview(message: &LocalMessageRecord) -> String {
@@ -804,12 +1088,30 @@ mod tests {
     #[test]
     fn parses_thread_kind_from_thread_id() {
         assert_eq!(
-            RuntimeInboxThreadKind::parse(None, "direct:did:example:alice").unwrap(),
+            RuntimeInboxThreadKind::parse(None, "dm:peer-scope:v1:alice").unwrap(),
             RuntimeInboxThreadKind::Direct
         );
         assert_eq!(
             RuntimeInboxThreadKind::parse(None, "group:did:example:team").unwrap(),
             RuntimeInboxThreadKind::Group
         );
+        assert!(RuntimeInboxThreadKind::parse(None, "direct:did:example:alice").is_err());
+        assert!(RuntimeInboxThreadKind::parse(None, "dm:did:example:alice").is_err());
+    }
+
+    #[test]
+    fn direct_thread_query_requires_stable_peer_scope_id() {
+        let input = RuntimeInboxThreadQuery {
+            runtime_agent_did: "did:agent:runtime".to_string(),
+            thread_id: "dm:did:example:alice".to_string(),
+            kind: RuntimeInboxThreadKind::Direct,
+            peer_did: Some("did:example:alice".to_string()),
+            peer_handle: Some("alice.anpclaw.com".to_string()),
+            group_did: None,
+            limit: 20,
+            cursor: None,
+        };
+
+        assert!(conversation_id_from_thread_query(&input).is_err());
     }
 }

@@ -263,6 +263,8 @@ impl<'a> MessageService<'a> {
             }
             (super::MessageTarget::Direct(_), _) => {
                 let resolved = resolve_send_request(self.client, request)?;
+                let direct_handle = resolved.direct_handle().map(str::to_owned);
+                let peer_scope = resolved.peer_scope.clone();
                 let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -280,7 +282,8 @@ impl<'a> MessageService<'a> {
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
                         self.client,
                         &result.target_did,
-                        direct_handle_from_result(&result.sdk_result).as_deref(),
+                        direct_handle.as_deref(),
+                        peer_scope.as_ref(),
                         &result.sdk_result,
                     )
                 {
@@ -372,6 +375,8 @@ impl<'a> MessageService<'a> {
             }
             (super::MessageTarget::Direct(_), _) => {
                 let resolved = resolve_send_request_async(self.client, request).await?;
+                let direct_handle = resolved.direct_handle().map(str::to_owned);
+                let peer_scope = resolved.peer_scope.clone();
                 let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -388,7 +393,8 @@ impl<'a> MessageService<'a> {
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
                         self.client,
                         &result.target_did,
-                        direct_handle_from_result(&result.sdk_result).as_deref(),
+                        direct_handle.as_deref(),
+                        peer_scope.as_ref(),
                         &result.sdk_result,
                     )
                     .await
@@ -868,7 +874,7 @@ impl<'a> MessageService<'a> {
         thread: super::ThreadRef,
         query: super::HistoryQuery,
     ) -> crate::ImResult<super::MessagePage> {
-        let (thread, resolved_did, handle_peer) = resolve_history_thread(self.client, thread)?;
+        let resolved = resolve_history_thread(self.client, thread)?;
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -876,14 +882,15 @@ impl<'a> MessageService<'a> {
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .history(crate::internal::message_runtime::read::HistoryRead {
-            thread,
+            thread: resolved.thread,
             query,
-            resolved_peer_did: resolved_did.clone(),
+            resolved_peer_did: resolved.resolved_did.clone(),
+            peer_scope: resolved.peer_scope.clone(),
         })
         .map(|result| {
             let mut page = message_page_from_read_result(result)?;
             #[cfg(feature = "sqlite")]
-            if let Some((handle, current_did)) = handle_peer.as_ref() {
+            if let Some((handle, current_did)) = resolved.handle_peer.as_ref() {
                 if let Ok(dids) =
                     crate::internal::message_runtime::local_projection::peer_dids_for_handle(
                         self.client,
@@ -898,7 +905,7 @@ impl<'a> MessageService<'a> {
                 }
             }
             if page.resolved_dids.is_empty() {
-                if let Some(did) = resolved_did {
+                if let Some(did) = resolved.resolved_did {
                     if let Ok(did) = crate::ids::Did::parse(did) {
                         page.resolved_dids.push(did);
                     }
@@ -913,8 +920,7 @@ impl<'a> MessageService<'a> {
         thread: super::ThreadRef,
         query: super::HistoryQuery,
     ) -> crate::ImResult<super::MessagePage> {
-        let (thread, resolved_did, handle_peer) =
-            resolve_history_thread_async(self.client, thread).await?;
+        let resolved = resolve_history_thread_async(self.client, thread).await?;
         let mut page = crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -922,14 +928,15 @@ impl<'a> MessageService<'a> {
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .history_async(crate::internal::message_runtime::read::HistoryRead {
-            thread,
+            thread: resolved.thread,
             query,
-            resolved_peer_did: resolved_did.clone(),
+            resolved_peer_did: resolved.resolved_did.clone(),
+            peer_scope: resolved.peer_scope.clone(),
         })
         .await
         .map(message_page_from_read_result)??;
         #[cfg(feature = "sqlite")]
-        if let Some((handle, current_did)) = handle_peer.as_ref() {
+        if let Some((handle, current_did)) = resolved.handle_peer.as_ref() {
             if let Ok(dids) =
                 crate::internal::message_runtime::local_projection::peer_dids_for_handle_async(
                     self.client,
@@ -945,7 +952,7 @@ impl<'a> MessageService<'a> {
             }
         }
         if page.resolved_dids.is_empty() {
-            if let Some(did) = resolved_did {
+            if let Some(did) = resolved.resolved_did {
                 if let Ok(did) = crate::ids::Did::parse(did) {
                     page.resolved_dids.push(did);
                 }
@@ -1181,19 +1188,33 @@ async fn persist_deferred_direct_e2ee_attachment_effect(
 struct ResolvedSendRequest {
     request: super::SendMessageRequest,
     target_did: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
+impl ResolvedSendRequest {
+    fn direct_handle(&self) -> Option<&str> {
+        self.peer_scope
+            .as_ref()
+            .map(|scope| scope.full_handle.as_str())
+            .or_else(|| direct_handle_from_target(&self.request.target))
+    }
 }
 
 fn resolve_send_request(
     client: &crate::core::ImClient,
     request: super::SendMessageRequest,
 ) -> crate::ImResult<ResolvedSendRequest> {
-    let target_did = match &request.target {
-        super::MessageTarget::Direct(peer) => resolve_direct_peer_did(client, peer)?,
-        super::MessageTarget::Group(_) => None,
+    let (target_did, peer_scope) = match &request.target {
+        super::MessageTarget::Direct(peer) => {
+            let resolved = resolve_direct_peer(client, peer)?;
+            (resolved.target_did, resolved.peer_scope)
+        }
+        super::MessageTarget::Group(_) => (None, None),
     };
     Ok(ResolvedSendRequest {
         request,
         target_did,
+        peer_scope,
     })
 }
 
@@ -1201,45 +1222,71 @@ async fn resolve_send_request_async(
     client: &crate::core::ImClient,
     request: super::SendMessageRequest,
 ) -> crate::ImResult<ResolvedSendRequest> {
-    let target_did = match &request.target {
-        super::MessageTarget::Direct(peer) => resolve_direct_peer_did_async(client, peer).await?,
-        super::MessageTarget::Group(_) => None,
+    let (target_did, peer_scope) = match &request.target {
+        super::MessageTarget::Direct(peer) => {
+            let resolved = resolve_direct_peer_async(client, peer).await?;
+            (resolved.target_did, resolved.peer_scope)
+        }
+        super::MessageTarget::Group(_) => (None, None),
     };
     Ok(ResolvedSendRequest {
         request,
         target_did,
+        peer_scope,
     })
 }
 
-fn resolve_direct_peer_did(
-    client: &crate::core::ImClient,
-    peer: &crate::ids::PeerRef,
-) -> crate::ImResult<Option<String>> {
-    let raw = peer.as_str().trim();
-    if raw.is_empty() || raw.starts_with("did:") {
-        return Ok(None);
-    }
-    let handle = crate::ids::Handle::parse(raw, "")?;
-    client
-        .directory()
-        .lookup_handle(handle)
-        .map(|lookup| Some(lookup.did.as_str().to_owned()))
+struct ResolvedDirectPeer {
+    target_did: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
-async fn resolve_direct_peer_did_async(
+fn resolve_direct_peer(
     client: &crate::core::ImClient,
     peer: &crate::ids::PeerRef,
-) -> crate::ImResult<Option<String>> {
+) -> crate::ImResult<ResolvedDirectPeer> {
     let raw = peer.as_str().trim();
     if raw.is_empty() || raw.starts_with("did:") {
-        return Ok(None);
+        return Ok(ResolvedDirectPeer {
+            target_did: None,
+            peer_scope: None,
+        });
     }
     let handle = crate::ids::Handle::parse(raw, "")?;
-    client
-        .directory()
-        .lookup_handle_async(handle)
-        .await
-        .map(|lookup| Some(lookup.did.as_str().to_owned()))
+    let lookup = client.directory().lookup_handle(handle)?;
+    Ok(ResolvedDirectPeer {
+        target_did: Some(lookup.did.as_str().to_owned()),
+        peer_scope: Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id,
+                lookup.handle.as_str().to_owned(),
+            )?,
+        ),
+    })
+}
+
+async fn resolve_direct_peer_async(
+    client: &crate::core::ImClient,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<ResolvedDirectPeer> {
+    let raw = peer.as_str().trim();
+    if raw.is_empty() || raw.starts_with("did:") {
+        return Ok(ResolvedDirectPeer {
+            target_did: None,
+            peer_scope: None,
+        });
+    }
+    let handle = crate::ids::Handle::parse(raw, "")?;
+    let lookup = client.directory().lookup_handle_async(handle).await?;
+    Ok(ResolvedDirectPeer {
+        target_did: Some(lookup.did.as_str().to_owned()),
+        peer_scope: Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id,
+                lookup.handle.as_str().to_owned(),
+            )?,
+        ),
+    })
 }
 
 fn validate_send_mode(
@@ -1366,61 +1413,92 @@ fn message_kind_from_result(
     }
 }
 
-fn direct_handle_from_result(result: &super::SendMessageResult) -> Option<String> {
-    match &result.message.thread {
-        super::ThreadRef::Direct(peer) if !peer.as_str().starts_with("did:") => {
-            Some(peer.as_str().to_owned())
+fn direct_handle_from_target(target: &super::MessageTarget) -> Option<&str> {
+    match target {
+        super::MessageTarget::Direct(peer) if !peer.as_str().starts_with("did:") => {
+            Some(peer.as_str())
         }
         _ => None,
     }
 }
 
+struct ResolvedHistoryThread {
+    thread: super::ThreadRef,
+    resolved_did: Option<String>,
+    handle_peer: Option<(String, String)>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
 fn resolve_history_thread(
     client: &crate::core::ImClient,
     thread: super::ThreadRef,
-) -> crate::ImResult<(super::ThreadRef, Option<String>, Option<(String, String)>)> {
+) -> crate::ImResult<ResolvedHistoryThread> {
     let super::ThreadRef::Direct(peer) = thread else {
-        return Ok((thread, None, None));
+        return Ok(ResolvedHistoryThread {
+            thread,
+            resolved_did: None,
+            handle_peer: None,
+            peer_scope: None,
+        });
     };
     if peer.as_str().starts_with("did:") {
-        return Ok((
-            super::ThreadRef::Direct(peer.clone()),
-            Some(peer.as_str().to_owned()),
-            None,
-        ));
+        return Ok(ResolvedHistoryThread {
+            thread: super::ThreadRef::Direct(peer.clone()),
+            resolved_did: Some(peer.as_str().to_owned()),
+            handle_peer: None,
+            peer_scope: None,
+        });
     }
     let handle = crate::ids::Handle::parse(peer.as_str(), "")?;
     let lookup = client.directory().lookup_handle(handle)?;
     let did = lookup.did.as_str().to_owned();
-    Ok((
-        super::ThreadRef::Direct(crate::ids::PeerRef::parse(&did, "")?),
-        Some(did.clone()),
-        Some((lookup.handle.as_str().to_owned(), did)),
-    ))
+    let full_handle = lookup.handle.as_str().to_owned();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        full_handle.clone(),
+    )?;
+    Ok(ResolvedHistoryThread {
+        thread: super::ThreadRef::Direct(crate::ids::PeerRef::parse(&did, "")?),
+        resolved_did: Some(did.clone()),
+        handle_peer: Some((full_handle, did)),
+        peer_scope: Some(peer_scope),
+    })
 }
 
 async fn resolve_history_thread_async(
     client: &crate::core::ImClient,
     thread: super::ThreadRef,
-) -> crate::ImResult<(super::ThreadRef, Option<String>, Option<(String, String)>)> {
+) -> crate::ImResult<ResolvedHistoryThread> {
     let super::ThreadRef::Direct(peer) = thread else {
-        return Ok((thread, None, None));
+        return Ok(ResolvedHistoryThread {
+            thread,
+            resolved_did: None,
+            handle_peer: None,
+            peer_scope: None,
+        });
     };
     if peer.as_str().starts_with("did:") {
-        return Ok((
-            super::ThreadRef::Direct(peer.clone()),
-            Some(peer.as_str().to_owned()),
-            None,
-        ));
+        return Ok(ResolvedHistoryThread {
+            thread: super::ThreadRef::Direct(peer.clone()),
+            resolved_did: Some(peer.as_str().to_owned()),
+            handle_peer: None,
+            peer_scope: None,
+        });
     }
     let handle = crate::ids::Handle::parse(peer.as_str(), "")?;
     let lookup = client.directory().lookup_handle_async(handle).await?;
     let did = lookup.did.as_str().to_owned();
-    Ok((
-        super::ThreadRef::Direct(crate::ids::PeerRef::parse(&did, "")?),
-        Some(did.clone()),
-        Some((lookup.handle.as_str().to_owned(), did)),
-    ))
+    let full_handle = lookup.handle.as_str().to_owned();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        full_handle.clone(),
+    )?;
+    Ok(ResolvedHistoryThread {
+        thread: super::ThreadRef::Direct(crate::ids::PeerRef::parse(&did, "")?),
+        resolved_did: Some(did.clone()),
+        handle_peer: Some((full_handle, did)),
+        peer_scope: Some(peer_scope),
+    })
 }
 
 fn message_page_from_read_result(

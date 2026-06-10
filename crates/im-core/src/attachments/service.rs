@@ -19,7 +19,7 @@ impl<'a> AttachmentService<'a> {
                 .send_secure_attachment(message_request_from_attachment(target, request)?)?;
             return attachment_send_result_from_secure_message(result);
         }
-        let resolved_target_did = resolve_direct_target_did(self.client, &target)?;
+        let resolved_target = resolve_direct_target(self.client, &target)?;
         let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -29,7 +29,7 @@ impl<'a> AttachmentService<'a> {
             crate::internal::attachment_runtime::upload::AttachmentSendInput {
                 target,
                 request,
-                resolved_target_did,
+                resolved_target_did: resolved_target.target_did.clone(),
                 credentials: None,
             },
         )?;
@@ -46,7 +46,8 @@ impl<'a> AttachmentService<'a> {
                 crate::internal::message_runtime::local_projection::persist_direct_attachment_outgoing(
                     self.client,
                     &result.target_did,
-                    direct_handle_from_result(&result.sdk_result).as_deref(),
+                    resolved_target.direct_handle.as_deref(),
+                    resolved_target.peer_scope.as_ref(),
                     &result.manifest,
                     &result.sdk_result,
                 )
@@ -74,7 +75,7 @@ impl<'a> AttachmentService<'a> {
                 .await?;
             return attachment_send_result_from_secure_message(result);
         }
-        let resolved_target_did = resolve_direct_target_did_async(self.client, &target).await?;
+        let resolved_target = resolve_direct_target_async(self.client, &target).await?;
         let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -84,7 +85,7 @@ impl<'a> AttachmentService<'a> {
             crate::internal::attachment_runtime::upload::AttachmentSendInput {
                 target,
                 request,
-                resolved_target_did,
+                resolved_target_did: resolved_target.target_did.clone(),
                 credentials: None,
             },
         )
@@ -103,7 +104,8 @@ impl<'a> AttachmentService<'a> {
                 crate::internal::message_runtime::local_projection::persist_direct_attachment_outgoing_async(
                     self.client,
                     &result.target_did,
-                    direct_handle_from_result(&result.sdk_result).as_deref(),
+                    resolved_target.direct_handle.as_deref(),
+                    resolved_target.peer_scope.as_ref(),
                     &result.manifest,
                     &result.sdk_result,
                 )
@@ -306,32 +308,37 @@ fn secure_attachment_target_did(message: &crate::messages::SendMessageResult) ->
     }
 }
 
-fn direct_handle_from_result(result: &crate::messages::SendMessageResult) -> Option<String> {
-    match &result.message.thread {
-        crate::messages::ThreadRef::Direct(peer) if !peer.as_str().starts_with("did:") => {
-            Some(peer.as_str().to_owned())
-        }
-        _ => None,
+struct ResolvedDirectTarget {
+    target_did: Option<String>,
+    direct_handle: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
+fn resolve_direct_target(
+    client: &crate::core::ImClient,
+    target: &crate::messages::MessageTarget,
+) -> crate::ImResult<ResolvedDirectTarget> {
+    match target {
+        crate::messages::MessageTarget::Direct(peer) => resolve_peer(client, peer),
+        crate::messages::MessageTarget::Group(_) => Ok(ResolvedDirectTarget {
+            target_did: None,
+            direct_handle: None,
+            peer_scope: None,
+        }),
     }
 }
 
-fn resolve_direct_target_did(
+async fn resolve_direct_target_async(
     client: &crate::core::ImClient,
     target: &crate::messages::MessageTarget,
-) -> crate::ImResult<Option<String>> {
+) -> crate::ImResult<ResolvedDirectTarget> {
     match target {
-        crate::messages::MessageTarget::Direct(peer) => resolve_peer_did(client, peer),
-        crate::messages::MessageTarget::Group(_) => Ok(None),
-    }
-}
-
-async fn resolve_direct_target_did_async(
-    client: &crate::core::ImClient,
-    target: &crate::messages::MessageTarget,
-) -> crate::ImResult<Option<String>> {
-    match target {
-        crate::messages::MessageTarget::Direct(peer) => resolve_peer_did_async(client, peer).await,
-        crate::messages::MessageTarget::Group(_) => Ok(None),
+        crate::messages::MessageTarget::Direct(peer) => resolve_peer_async(client, peer).await,
+        crate::messages::MessageTarget::Group(_) => Ok(ResolvedDirectTarget {
+            target_did: None,
+            direct_handle: None,
+            peer_scope: None,
+        }),
     }
 }
 
@@ -340,7 +347,7 @@ fn resolve_direct_thread_did(
     thread: &crate::messages::ThreadRef,
 ) -> crate::ImResult<Option<String>> {
     match thread {
-        crate::messages::ThreadRef::Direct(peer) => resolve_peer_did(client, peer),
+        crate::messages::ThreadRef::Direct(peer) => resolve_peer_current_did(client, peer),
         crate::messages::ThreadRef::Group(_) => Ok(None),
         crate::messages::ThreadRef::Thread(_) => Ok(None),
     }
@@ -351,13 +358,15 @@ async fn resolve_direct_thread_did_async(
     thread: &crate::messages::ThreadRef,
 ) -> crate::ImResult<Option<String>> {
     match thread {
-        crate::messages::ThreadRef::Direct(peer) => resolve_peer_did_async(client, peer).await,
+        crate::messages::ThreadRef::Direct(peer) => {
+            resolve_peer_current_did_async(client, peer).await
+        }
         crate::messages::ThreadRef::Group(_) => Ok(None),
         crate::messages::ThreadRef::Thread(_) => Ok(None),
     }
 }
 
-fn resolve_peer_did(
+fn resolve_peer_current_did(
     client: &crate::core::ImClient,
     peer: &crate::ids::PeerRef,
 ) -> crate::ImResult<Option<String>> {
@@ -372,7 +381,7 @@ fn resolve_peer_did(
         .map(|lookup| Some(lookup.did.as_str().to_string()))
 }
 
-async fn resolve_peer_did_async(
+async fn resolve_peer_current_did_async(
     client: &crate::core::ImClient,
     peer: &crate::ids::PeerRef,
 ) -> crate::ImResult<Option<String>> {
@@ -386,4 +395,56 @@ async fn resolve_peer_did_async(
         .lookup_handle_async(handle)
         .await
         .map(|lookup| Some(lookup.did.as_str().to_string()))
+}
+
+fn resolve_peer(
+    client: &crate::core::ImClient,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<ResolvedDirectTarget> {
+    let raw = peer.as_str().trim();
+    if raw.is_empty() || raw.starts_with("did:") {
+        return Ok(ResolvedDirectTarget {
+            target_did: None,
+            direct_handle: None,
+            peer_scope: None,
+        });
+    }
+    let handle = crate::ids::Handle::parse(raw, "")?;
+    let lookup = client.directory().lookup_handle(handle)?;
+    Ok(ResolvedDirectTarget {
+        target_did: Some(lookup.did.as_str().to_string()),
+        direct_handle: Some(lookup.handle.as_str().to_string()),
+        peer_scope: Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id,
+                lookup.handle.as_str().to_string(),
+            )?,
+        ),
+    })
+}
+
+async fn resolve_peer_async(
+    client: &crate::core::ImClient,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<ResolvedDirectTarget> {
+    let raw = peer.as_str().trim();
+    if raw.is_empty() || raw.starts_with("did:") {
+        return Ok(ResolvedDirectTarget {
+            target_did: None,
+            direct_handle: None,
+            peer_scope: None,
+        });
+    }
+    let handle = crate::ids::Handle::parse(raw, "")?;
+    let lookup = client.directory().lookup_handle_async(handle).await?;
+    Ok(ResolvedDirectTarget {
+        target_did: Some(lookup.did.as_str().to_string()),
+        direct_handle: Some(lookup.handle.as_str().to_string()),
+        peer_scope: Some(
+            crate::internal::local_state::owner_scope::DirectPeerScope::new(
+                lookup.user_id,
+                lookup.handle.as_str().to_string(),
+            )?,
+        ),
+    })
 }

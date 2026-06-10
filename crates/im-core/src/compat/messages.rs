@@ -178,6 +178,7 @@ where
         thread: request.thread,
         query: request.query,
         resolved_peer_did: request.resolved_peer_did,
+        peer_scope: None,
     })?;
     Ok(ReadBridgeResult {
         page: result.page,

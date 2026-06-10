@@ -7,6 +7,7 @@ pub struct RealtimeMessageLocalProjectionContext {
     pub owner_identity_id: String,
     pub owner_did: String,
     pub credential_name: String,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
 #[cfg(feature = "sqlite")]
@@ -59,7 +60,7 @@ pub fn plan_realtime_message_local_projection(
         sender_did.as_str()
     };
     let has_thread_peer = !peer_did.trim().is_empty();
-    let conversation_id = conversation_id_for_message(message);
+    let conversation_id = conversation_id_for_message(message, context.peer_scope.as_ref());
     if conversation_id.trim().is_empty() || (group_did.trim().is_empty() && !has_thread_peer) {
         return None;
     }
@@ -93,6 +94,7 @@ pub fn plan_realtime_message_local_projection(
                 attachment_summary,
                 download_action,
                 warnings,
+                context.peer_scope.as_ref(),
             ),
             credential_name: context.credential_name.trim().to_string(),
             ..crate::internal::local_state::messages::MessageRecord::default()
@@ -123,7 +125,24 @@ fn owner_did_for_message(
 }
 
 #[cfg(feature = "sqlite")]
-fn conversation_id_for_message(message: &crate::messages::Message) -> String {
+fn conversation_id_for_message(
+    message: &crate::messages::Message,
+    context_peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> String {
+    if let Some(scope) =
+        crate::internal::message_runtime::local_projection::peer_scope_from_metadata(
+            &message.metadata,
+        )
+    {
+        return crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope(
+            &scope,
+        );
+    }
+    if let Some(scope) = context_peer_scope {
+        return crate::internal::message_runtime::local_projection::direct_conversation_id_for_peer_scope(
+            scope,
+        );
+    }
     match &message.thread {
         crate::messages::ThreadRef::Group(group) => {
             crate::internal::message_runtime::local_projection::group_conversation_id(
@@ -203,9 +222,22 @@ fn message_metadata_value(
     attachment_summary: Option<&crate::realtime::AttachmentMessageSummary>,
     download_action: Option<&crate::realtime::AttachmentDownloadAction>,
     warnings: &[String],
+    context_peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
 ) -> String {
     let mut value = serde_json::to_value(&message.metadata).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
+        if let Some(scope) =
+            crate::internal::message_runtime::local_projection::peer_scope_from_metadata(
+                &message.metadata,
+            )
+            .or_else(|| context_peer_scope.cloned())
+        {
+            object.insert("peer_user_id".to_string(), Value::String(scope.user_id));
+            object.insert(
+                "peer_full_handle".to_string(),
+                Value::String(scope.full_handle),
+            );
+        }
         if let Some(summary) = attachment_summary_value(attachment_summary) {
             object.insert("attachment_summary".to_string(), summary);
             object.insert("has_attachments".to_string(), Value::Bool(true));

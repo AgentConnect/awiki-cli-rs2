@@ -516,13 +516,13 @@ impl Fixture {
             &identities,
             "alice",
             "did:example:alice",
-            "2026-05-21T00:00:00Z",
+            "2099-05-21T00:00:00Z",
         );
         write_identity_runtime(
             &identities,
             "bob",
             "did:example:bob",
-            "2026-05-21T00:00:00Z",
+            "2099-05-21T00:00:00Z",
         );
         Self { root }
     }

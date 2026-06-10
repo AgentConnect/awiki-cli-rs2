@@ -186,6 +186,19 @@ pub enum ThreadRef {
     Thread(crate::ids::ThreadId),
 }
 
+pub fn direct_peer_scope_thread_id(
+    user_id: impl AsRef<str>,
+    full_handle: impl AsRef<str>,
+) -> crate::ImResult<crate::ids::ThreadId> {
+    let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        user_id.as_ref().to_owned(),
+        full_handle.as_ref().to_owned(),
+    )?;
+    crate::ids::ThreadId::parse(
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(&scope),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxQuery {
     pub scope: InboxScope,

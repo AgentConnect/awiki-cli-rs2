@@ -82,6 +82,15 @@ pub fn default_executable_path() -> Result<PathBuf> {
     std::env::current_exe().context("resolve awiki-deamon executable path")
 }
 
+pub fn product_current_executable_path() -> Result<PathBuf> {
+    Ok(DaemonConfig::default_product_state_root()?
+        .parent()
+        .context("resolve daemon product root")?
+        .join("bin")
+        .join("current")
+        .join("awiki-deamon"))
+}
+
 fn platform_manager() -> ServicePlatform {
     if cfg!(target_os = "macos") {
         ServicePlatform::LaunchAgent

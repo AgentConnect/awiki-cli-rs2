@@ -1301,6 +1301,7 @@ fn handle_lookup_result() -> Value {
         "handle": "bob",
         "full_handle": "bob.awiki.info",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.info",
         "status": "active",
     })

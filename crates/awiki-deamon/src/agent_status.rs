@@ -15,6 +15,7 @@ use crate::registration::{
 use crate::security::runtime_token::current_time_millis;
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
 use crate::state::DaemonState;
+use crate::upgrade::{check_release_status, DaemonReleaseStatus};
 use crate::{DaemonConfig, ImCoreAdapter};
 
 pub const IDLE_HEARTBEAT_MS: i64 = 5 * 60 * 1000;
@@ -81,7 +82,10 @@ impl HeartbeatScheduler {
         let mut emitted = false;
         let mut wrote_latest = false;
         for daemon in daemon_agents {
-            if let Err(error) = emit_daemon_heartbeat(config, state, im_core, outbox, &daemon) {
+            let release = check_release_status(config);
+            if let Err(error) =
+                emit_daemon_heartbeat(config, state, im_core, outbox, &daemon, &release)
+            {
                 record_status_error(
                     state,
                     &daemon,
@@ -92,7 +96,8 @@ impl HeartbeatScheduler {
                 emitted = true;
             }
 
-            let latest_items = latest_status_items(config, state, &daemon, now)?;
+            let latest_items =
+                latest_status_items_with_release(config, state, &daemon, now, &release)?;
             let signature = latest_signature(&latest_items);
             let should_write_latest = !active
                 || self
@@ -141,15 +146,16 @@ pub fn daemon_snapshot_payload(
 ) -> Result<Value> {
     let now = rfc3339_now();
     let service = service_status(config);
+    let release = check_release_status(config);
     let runtimes = state
         .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)?
         .into_iter()
-        .map(|agent| runtime_status_payload(config, state, daemon, agent, &now))
+        .map(|agent| runtime_status_payload(config, state, daemon, agent, &now, &release))
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({
         "command": "agent.status.query",
         "daemon_agent_did": daemon.agent_did,
-        "daemon": daemon_status_payload(daemon, &service, &now),
+        "daemon": daemon_status_payload(config, daemon, &service, &now, &release),
         "runtimes": runtimes,
         "runs": [],
     }))
@@ -158,6 +164,17 @@ pub fn daemon_snapshot_payload(
 pub fn daemon_lightweight_payload(config: &DaemonConfig, daemon: &AgentDefinition) -> Value {
     let now = rfc3339_now();
     let service = service_status(config);
+    let release = check_release_status(config);
+    daemon_lightweight_payload_with_release(config, daemon, &service, &now, &release)
+}
+
+fn daemon_lightweight_payload_with_release(
+    config: &DaemonConfig,
+    daemon: &AgentDefinition,
+    service: &ServiceStatus,
+    now: &str,
+    release: &DaemonReleaseStatus,
+) -> Value {
     json!({
         "schema": "awiki.agent.status.v1",
         "event_id": format!("evt_{}", current_time_millis().unwrap_or(0)),
@@ -167,7 +184,7 @@ pub fn daemon_lightweight_payload(config: &DaemonConfig, daemon: &AgentDefinitio
         "command_id": null,
         "state": "ready",
         "message": "daemon heartbeat",
-        "daemon": daemon_status_payload(daemon, &service, &now),
+        "daemon": daemon_status_payload(config, daemon, service, now, release),
         "runtimes": [],
         "runs": [],
         "details": {
@@ -187,18 +204,35 @@ pub fn latest_status_items(
     daemon: &AgentDefinition,
     now_ms: i64,
 ) -> Result<Vec<AgentLatestStatusUpdateItem>> {
+    let release = check_release_status(config);
+    latest_status_items_with_release(config, state, daemon, now_ms, &release)
+}
+
+fn latest_status_items_with_release(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+    now_ms: i64,
+    release: &DaemonReleaseStatus,
+) -> Result<Vec<AgentLatestStatusUpdateItem>> {
     let last_seen_at = Some(rfc3339_from_millis(now_ms));
     let service = service_status(config);
     let mut items = vec![AgentLatestStatusUpdateItem {
         agent_did: daemon.agent_did.clone(),
         agent_kind: AgentKind::Daemon,
-        status: "ready".to_string(),
+        status: if release.needs_upgrade {
+            "needs_upgrade"
+        } else {
+            "ready"
+        }
+        .to_string(),
         last_seen_at: last_seen_at.clone(),
-        version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        min_supported_version: Some("0.1.0".to_string()),
+        version: Some(release.current_version.clone()),
+        latest_version: release.latest_version.clone(),
+        min_supported_version: None,
         platform: Some(crate::service::current_platform_label()),
         service: Some(service_label(service.platform).to_string()),
-        needs_upgrade: false,
+        needs_upgrade: release.needs_upgrade,
         needs_config: false,
         last_error_code: None,
         last_error_summary: None,
@@ -207,6 +241,9 @@ pub fn latest_status_items(
             "runner_status": if service.running { "running" } else { "not_running" },
             "config_summary": {
                 "service_installed": service.installed,
+                "release_manifest_url": release.manifest_url.clone(),
+                "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+                "release_error": release.error.clone(),
             },
         }),
     }];
@@ -222,11 +259,12 @@ pub fn latest_status_items(
             }
             .to_string(),
             last_seen_at: last_seen_at.clone(),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            min_supported_version: Some("0.1.0".to_string()),
+            version: Some(release.current_version.clone()),
+            latest_version: release.latest_version.clone(),
+            min_supported_version: None,
             platform: Some(crate::service::current_platform_label()),
             service: Some(service_label(service.platform).to_string()),
-            needs_upgrade: false,
+            needs_upgrade: release.needs_upgrade,
             needs_config: runtime_status.needs_config,
             last_error_code: runtime_status.last_error_code.clone(),
             last_error_summary: None,
@@ -364,6 +402,7 @@ fn emit_daemon_heartbeat<O>(
     im_core: &ImCoreAdapter,
     outbox: &O,
     daemon: &AgentDefinition,
+    release: &DaemonReleaseStatus,
 ) -> Result<()>
 where
     O: AgentManagementOutbox,
@@ -375,7 +414,11 @@ where
         conversation_id: None,
         agent_did: daemon.agent_did.clone(),
         recipient_did: daemon.controller_did.clone(),
-        payload: daemon_lightweight_payload(config, daemon),
+        payload: {
+            let service = service_status(config);
+            let now = rfc3339_now();
+            daemon_lightweight_payload_with_release(config, daemon, &service, &now, release)
+        },
     })
 }
 
@@ -385,6 +428,7 @@ fn runtime_status_payload(
     daemon: &AgentDefinition,
     runtime: AgentDefinition,
     now: &str,
+    release: &DaemonReleaseStatus,
 ) -> Result<Value> {
     let runtime_status = runtime_status_summary(config, state, &runtime);
     Ok(json!({
@@ -394,24 +438,33 @@ fn runtime_status_payload(
         "runtime_profile_id": runtime.runtime_profile_id,
         "status": if runtime_status.needs_config { "needs_config" } else { "ready" },
         "last_seen_at": now,
+        "version": release.current_version.clone(),
+        "latest_version": release.latest_version.clone(),
         "needs_config": runtime_status.needs_config,
-        "needs_upgrade": false,
+        "needs_upgrade": release.needs_upgrade,
         "last_error_code": runtime_status.last_error_code,
         "last_error_summary": null,
         "diagnostics_summary": runtime_diagnostics_summary(state, &runtime, &runtime_status),
     }))
 }
 
-fn daemon_status_payload(daemon: &AgentDefinition, service: &ServiceStatus, now: &str) -> Value {
+fn daemon_status_payload(
+    _config: &DaemonConfig,
+    daemon: &AgentDefinition,
+    service: &ServiceStatus,
+    now: &str,
+    release: &DaemonReleaseStatus,
+) -> Value {
     json!({
         "agent_did": daemon.agent_did,
-        "status": "ready",
+        "status": if release.needs_upgrade { "needs_upgrade" } else { "ready" },
         "last_seen_at": now,
-        "version": env!("CARGO_PKG_VERSION"),
-        "min_supported_version": "0.1.0",
+        "version": release.current_version.clone(),
+        "latest_version": release.latest_version.clone(),
+        "min_supported_version": null,
         "platform": crate::service::current_platform_label(),
         "service": service_label(service.platform),
-        "needs_upgrade": false,
+        "needs_upgrade": release.needs_upgrade,
         "last_error_code": null,
         "last_error_summary": null,
     })
@@ -601,9 +654,11 @@ fn latest_signature(items: &[AgentLatestStatusUpdateItem]) -> String {
         .iter()
         .map(|item| {
             format!(
-                "{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}",
                 item.agent_did,
                 item.status,
+                item.version.as_deref().unwrap_or_default(),
+                item.latest_version.as_deref().unwrap_or_default(),
                 item.needs_upgrade,
                 item.needs_config,
                 item.last_error_code.as_deref().unwrap_or_default()
@@ -769,6 +824,9 @@ mod tests {
             "active_session_count",
             "runtime_version",
             "config_summary",
+            "release_manifest_url",
+            "release_status",
+            "release_error",
         ]
         .into_iter()
         .collect()

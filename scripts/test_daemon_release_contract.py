@@ -221,6 +221,77 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 ).is_file()
             )
 
+    def test_publish_daemon_linux_dry_run_rejects_non_incremental_published_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            output_dir = temp_dir / "daemon"
+            (output_dir / "releases").mkdir(parents=True)
+            (output_dir / "releases" / "manifest.json").write_text(
+                json.dumps({"latest": self.read_crate_version(), "packages": []}) + "\n",
+                encoding="utf-8",
+            )
+
+            with serve_directory(temp_dir) as base_url:
+                result = subprocess.run(
+                    [
+                        "scripts/release/publish-daemon-linux.sh",
+                        "--base-url",
+                        base_url,
+                        "--dry-run",
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be greater than published latest", result.stderr)
+
+    def test_publish_daemon_linux_dry_run_accepts_incremental_published_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            output_dir = temp_dir / "daemon"
+            (output_dir / "releases").mkdir(parents=True)
+            (output_dir / "releases" / "manifest.json").write_text(
+                json.dumps({"latest": "0.0.1", "packages": []}) + "\n",
+                encoding="utf-8",
+            )
+
+            with serve_directory(temp_dir) as base_url:
+                result = run_command(
+                    [
+                        "scripts/release/publish-daemon-linux.sh",
+                        "--base-url",
+                        base_url,
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertIn(f"version: {self.read_crate_version()}", result.stdout)
+            self.assertIn("dry run: no build, staging, or nginx publish performed", result.stdout)
+
+    @staticmethod
+    def read_crate_version() -> str:
+        version = ""
+        in_package = False
+        for line in (ROOT / "crates/awiki-deamon/Cargo.toml").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            stripped = line.strip()
+            if stripped == "[package]":
+                in_package = True
+                continue
+            if in_package and stripped.startswith("["):
+                break
+            if in_package and stripped.startswith("version"):
+                version = stripped.split("=", 1)[1].strip().strip('"')
+                break
+        if not version:
+            raise AssertionError("failed to read awiki-deamon crate version")
+        return version.removeprefix("v")
+
     def test_stage_daemon_downloads_rejects_implicit_base_for_nonstandard_download_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)

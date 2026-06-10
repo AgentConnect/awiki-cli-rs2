@@ -26,6 +26,7 @@ pub(crate) struct HistoryRead {
     pub thread: crate::messages::ThreadRef,
     pub query: crate::messages::HistoryQuery,
     pub resolved_peer_did: Option<String>,
+    pub peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +69,7 @@ where
             self.transport
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
         project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
+        annotate_direct_peer_scopes(self.client, &mut raw, &mut self.directory_transport, None);
         let page = page_from_raw(self.client, &raw, input.query.limit)?;
         persist_projection_best_effort(self.client, &page.items);
         Ok(ReadPageResult { page, raw })
@@ -99,6 +101,12 @@ where
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
+                );
+                annotate_direct_peer_scopes(
+                    self.client,
+                    &mut raw,
+                    &mut self.directory_transport,
+                    input.peer_scope.as_ref(),
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
                 persist_projection_best_effort(self.client, &page.items);
@@ -155,6 +163,13 @@ where
             .await?;
         project_secure_direct_messages_async(self.client, &mut raw, &mut self.directory_transport)
             .await;
+        annotate_direct_peer_scopes_async(
+            self.client,
+            &mut raw,
+            &mut self.directory_transport,
+            None,
+        )
+        .await;
         let page = page_from_raw(self.client, &raw, input.query.limit)?;
         persist_projection_best_effort_async(self.client, &page.items).await;
         Ok(ReadPageResult { page, raw })
@@ -189,6 +204,13 @@ where
                     self.client,
                     &mut raw,
                     &mut self.directory_transport,
+                )
+                .await;
+                annotate_direct_peer_scopes_async(
+                    self.client,
+                    &mut raw,
+                    &mut self.directory_transport,
+                    input.peer_scope.as_ref(),
                 )
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
@@ -313,6 +335,179 @@ fn page_from_raw_with_group(
         next_cursor,
         has_more,
     })
+}
+
+fn annotate_direct_peer_scopes(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+    preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        annotate_direct_peer_scope(client, message, directory_transport, preferred_scope);
+    }
+}
+
+fn annotate_direct_peer_scope(
+    client: &crate::core::ImClient,
+    message: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+    preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    if !string_value(object.get("group_did")).trim().is_empty() {
+        return;
+    }
+    if !string_value(object.get("peer_user_id")).trim().is_empty()
+        && !string_value(object.get("peer_full_handle"))
+            .trim()
+            .is_empty()
+    {
+        return;
+    }
+    let sender_did = string_value(object.get("sender_did"));
+    let receiver_did = string_value(object.get("receiver_did"));
+    let peer_did =
+        direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did).trim();
+    if peer_did.is_empty() || !peer_did.starts_with("did:") || peer_did == client.did().as_str() {
+        return;
+    }
+    if let Some(scope) = preferred_scope {
+        annotate_object_with_peer_scope(object, scope, Some(peer_did));
+        return;
+    }
+    let Ok(raw_lookup) = lookup_handle_by_did(directory_transport, peer_did) else {
+        return;
+    };
+    annotate_object_with_handle_lookup(object, raw_lookup);
+}
+
+async fn annotate_direct_peer_scopes_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+    preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        annotate_direct_peer_scope_async(client, message, directory_transport, preferred_scope)
+            .await;
+    }
+}
+
+async fn annotate_direct_peer_scope_async(
+    client: &crate::core::ImClient,
+    message: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+    preferred_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    if !string_value(object.get("group_did")).trim().is_empty() {
+        return;
+    }
+    if !string_value(object.get("peer_user_id")).trim().is_empty()
+        && !string_value(object.get("peer_full_handle"))
+            .trim()
+            .is_empty()
+    {
+        return;
+    }
+    let sender_did = string_value(object.get("sender_did"));
+    let receiver_did = string_value(object.get("receiver_did"));
+    let peer_did =
+        direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did).trim();
+    if peer_did.is_empty() || !peer_did.starts_with("did:") || peer_did == client.did().as_str() {
+        return;
+    }
+    if let Some(scope) = preferred_scope {
+        annotate_object_with_peer_scope(object, scope, Some(peer_did));
+        return;
+    }
+    let Ok(raw_lookup) = lookup_handle_by_did_async(directory_transport, peer_did).await else {
+        return;
+    };
+    annotate_object_with_handle_lookup(object, raw_lookup);
+}
+
+fn annotate_object_with_peer_scope(
+    object: &mut Map<String, Value>,
+    scope: &crate::internal::local_state::owner_scope::DirectPeerScope,
+    current_did: Option<&str>,
+) {
+    object.insert(
+        "peer_user_id".to_owned(),
+        Value::String(scope.user_id.to_owned()),
+    );
+    object.insert(
+        "peer_full_handle".to_owned(),
+        Value::String(scope.full_handle.to_owned()),
+    );
+    if let Some(did) = current_did.map(str::trim).filter(|value| !value.is_empty()) {
+        object.insert("peer_current_did".to_owned(), Value::String(did.to_owned()));
+        object.insert(
+            "resolved_target_did".to_owned(),
+            Value::String(did.to_owned()),
+        );
+    }
+}
+
+fn annotate_object_with_handle_lookup(object: &mut Map<String, Value>, lookup: Value) {
+    let Some(user_id) = lookup
+        .get("user_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let Some(full_handle) = first_string_lookup(&lookup, &["full_handle", "handle"]) else {
+        return;
+    };
+    let Ok(scope) = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        user_id.to_owned(),
+        full_handle,
+    ) else {
+        return;
+    };
+    annotate_object_with_peer_scope(
+        object,
+        &scope,
+        lookup
+            .get("did")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    );
+}
+
+fn first_string_lookup(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| value.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn lookup_handle_by_did(transport: &mut impl RpcTransport, did: &str) -> crate::ImResult<Value> {
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
+    transport.rpc(call.endpoint, call.method, call.params)
+}
+
+async fn lookup_handle_by_did_async(
+    transport: &mut impl AsyncRpcTransport,
+    did: &str,
+) -> crate::ImResult<Value> {
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
+    transport.rpc(call.endpoint, call.method, call.params).await
 }
 
 fn project_secure_direct_messages(
@@ -1071,6 +1266,12 @@ fn message_from_value(
     let metadata = message_metadata_from_object(object, &id, retry_target);
     let thread = if !group_did.trim().is_empty() {
         crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&group_did)?)
+    } else if let Some(thread) =
+        crate::internal::message_runtime::local_projection::scoped_direct_thread_ref_from_metadata(
+            &metadata,
+        )
+    {
+        thread
     } else {
         let peer = direct_peer_did_for_message(client.did().as_str(), &sender_did, &receiver_did);
         crate::messages::ThreadRef::Direct(crate::ids::PeerRef::parse(peer, "")?)
@@ -1208,7 +1409,35 @@ fn metadata_attributes_from_object(
             value: group_event_seq,
         });
     }
+    for key in [
+        "peer_user_id",
+        "peer_full_handle",
+        "peer_current_did",
+        "resolved_target_did",
+        "target_handle",
+    ] {
+        let value = string_value(object.get(key));
+        if !value.trim().is_empty() {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: key.to_string(),
+                value,
+            });
+        }
+    }
     attributes
+}
+
+fn metadata_attribute<'a>(
+    metadata: &'a crate::messages::MessageMetadata,
+    key: &str,
+) -> Option<&'a str> {
+    metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn message_identity(message: &Value, group_did: Option<&str>) -> String {
@@ -1593,6 +1822,85 @@ mod tests {
     }
 
     #[test]
+    fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [
+                        {
+                            "id": "msg-bob-old",
+                            "sender_did": "did:example:bob-old",
+                            "receiver_did": "did:example:alice",
+                            "content": "old did",
+                            "content_type": "text/plain",
+                            "sent_at": "2026-05-21T00:00:00Z"
+                        },
+                        {
+                            "id": "msg-bob-new",
+                            "sender_did": "did:example:bob-new",
+                            "receiver_did": "did:example:alice",
+                            "content": "new did",
+                            "content_type": "text/plain",
+                            "sent_at": "2026-05-21T00:00:01Z"
+                        }
+                    ]
+                }),
+            },
+            StaticHandleDirectoryTransport,
+        );
+
+        runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::DirectOnly,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                },
+            })
+            .unwrap();
+
+        let conversations =
+            crate::internal::message_runtime::conversations::MessageConversationRuntime::new(
+                &client,
+            )
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: false,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(conversations.items.len(), 1);
+        let conversation = &conversations.items[0];
+        assert_eq!(conversation.message_count, 2);
+        assert!(matches!(
+            &conversation.thread,
+            crate::messages::ThreadRef::Thread(thread)
+                if thread.as_str().starts_with("dm:peer-scope:v1:")
+        ));
+        assert_eq!(conversation.participants[0].as_str(), "bob.anpclaw.com");
+        assert_eq!(
+            conversation
+                .last_message
+                .as_ref()
+                .unwrap()
+                .metadata
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == "peer_user_id")
+                .map(|attribute| attribute.value.as_str()),
+            Some("user-bob")
+        );
+    }
+
+    #[test]
     fn messages_read_runtime_preserves_remote_read_state_in_projection() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -1678,6 +1986,7 @@ mod tests {
                     cursor: None,
                 },
                 resolved_peer_did: None,
+                peer_scope: None,
             })
             .unwrap();
 
@@ -1730,6 +2039,7 @@ mod tests {
                     cursor: Some(crate::ids::Cursor::parse("42").unwrap()),
                 },
                 resolved_peer_did: Some("did:example:bob".to_string()),
+                peer_scope: None,
             })
             .unwrap();
 
@@ -1775,6 +2085,7 @@ mod tests {
                     cursor: None,
                 },
                 resolved_peer_did: None,
+                peer_scope: None,
             })
             .unwrap();
 
@@ -1820,6 +2131,7 @@ mod tests {
                     cursor: None,
                 },
                 resolved_peer_did: None,
+                peer_scope: None,
             })
             .unwrap();
 
@@ -1871,6 +2183,7 @@ mod tests {
                     cursor: Some(crate::ids::Cursor::parse("42").unwrap()),
                 },
                 resolved_peer_did: None,
+                peer_scope: None,
             })
             .unwrap();
 
@@ -1938,6 +2251,7 @@ mod tests {
                     cursor: Some(crate::ids::Cursor::parse("43").unwrap()),
                 },
                 resolved_peer_did: None,
+                peer_scope: None,
             })
             .await
             .unwrap();
@@ -2695,6 +3009,36 @@ mod tests {
     }
 
     impl AsyncRpcTransport for NoopDirectoryTransport {
+        async fn rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            RpcTransport::rpc(self, endpoint, method, params)
+        }
+    }
+
+    struct StaticHandleDirectoryTransport;
+
+    impl RpcTransport for StaticHandleDirectoryTransport {
+        fn rpc(&mut self, _endpoint: &str, _method: &str, params: Value) -> crate::ImResult<Value> {
+            let did = params
+                .get("did")
+                .and_then(Value::as_str)
+                .unwrap_or("did:example:bob-new");
+            Ok(json!({
+                "handle": "bob",
+                "full_handle": "bob.anpclaw.com",
+                "did": did,
+                "domain": "anpclaw.com",
+                "status": "active",
+                "user_id": "user-bob"
+            }))
+        }
+    }
+
+    impl AsyncRpcTransport for StaticHandleDirectoryTransport {
         async fn rpc(
             &mut self,
             endpoint: &str,

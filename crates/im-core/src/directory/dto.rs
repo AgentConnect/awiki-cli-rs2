@@ -29,6 +29,7 @@ pub struct PublicProfile {
 pub struct HandleLookupResult {
     pub handle: crate::ids::Handle,
     pub did: crate::ids::Did,
+    pub user_id: String,
     pub domain: Option<String>,
     pub status: Option<String>,
 }

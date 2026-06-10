@@ -18,6 +18,7 @@ use crate::service::{
     ServicePlatform, ServiceStatus,
 };
 use crate::state::{controller_scope_key, DaemonState};
+use crate::upgrade::check_release_status;
 use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,7 +269,7 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
             }),
         }
     } else {
-        let executable = crate::service::default_executable_path()?;
+        let executable = crate::service::product_current_executable_path()?;
         manage_service(&config, &executable, ServiceAction::Install)?
     };
 
@@ -745,15 +746,22 @@ fn update_daemon_latest_status(
         private_key_path: auth_paths.1,
         bearer_token: state.load_agent_auth_token(&agent.agent_did)?,
     };
+    let release = check_release_status(config);
     let response = client.update_latest_status(
         &agent.agent_did,
         vec![AgentLatestStatusUpdateItem {
             agent_did: agent.agent_did.clone(),
             agent_kind: AgentKind::Daemon,
-            status: "ready".to_string(),
+            status: if release.needs_upgrade {
+                "needs_upgrade"
+            } else {
+                "ready"
+            }
+            .to_string(),
             last_seen_at: None,
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            min_supported_version: Some("0.1.0".to_string()),
+            version: Some(release.current_version.clone()),
+            latest_version: release.latest_version.clone(),
+            min_supported_version: None,
             platform: Some(current_platform_label()),
             service: Some(
                 match service.platform {
@@ -764,7 +772,7 @@ fn update_daemon_latest_status(
                 }
                 .to_string(),
             ),
-            needs_upgrade: false,
+            needs_upgrade: release.needs_upgrade,
             needs_config: false,
             last_error_code: None,
             last_error_summary: None,
@@ -773,6 +781,9 @@ fn update_daemon_latest_status(
                 "runner_status": if service.running { "running" } else { "not_running" },
                 "config_summary": {
                     "service_installed": service.installed,
+                    "release_manifest_url": release.manifest_url,
+                    "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+                    "release_error": release.error,
                 },
             }),
         }],

@@ -768,6 +768,43 @@ fn hermes_message_prompt_wrapper_debug_redacts_user_message() {
 }
 
 #[test]
+fn hermes_message_prompt_disables_interactive_requests() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
+    let plugin = HermesRuntimePlugin::new(
+        gateway.clone(),
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_no_clarify_request".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "信息不够时也不要走 Hermes interactive request".to_string(),
+        },
+    )
+    .unwrap();
+
+    let prompts = gateway.submitted_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not use Hermes interactive requests"));
+    assert!(prompts[0].prompt.contains("clarify.request"));
+    assert!(prompts[0]
+        .prompt
+        .contains("ask for it in your ordinary final answer"));
+}
+
+#[test]
 fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
