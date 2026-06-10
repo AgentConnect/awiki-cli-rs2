@@ -1,6 +1,6 @@
 pub use crate::internal::identity_wire::{
     ProfileUpdateCall, RecoverHandleRpcParams, RegisterRpcParams, ReplaceDidRpcParams, RestCall,
-    RpcCall, TransportProfile, UpdateProfileParams,
+    RpcCall, TransportProfile, UpdateDocumentRpcParams, UpdateProfileParams,
 };
 
 pub const DID_AUTH_RPC_ENDPOINT: &str = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
@@ -42,6 +42,10 @@ pub fn build_recover_handle_rpc_call(params: RecoverHandleRpcParams) -> crate::I
 
 pub fn build_replace_did_rpc_call(params: ReplaceDidRpcParams) -> RpcCall {
     crate::internal::identity_wire::replace_did::build_replace_did_rpc_call(params)
+}
+
+pub fn build_update_document_rpc_call(params: UpdateDocumentRpcParams) -> RpcCall {
+    crate::internal::identity_wire::update_document::build_update_document_rpc_call(params)
 }
 
 pub fn build_email_send_rest_call(

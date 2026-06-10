@@ -144,24 +144,8 @@ where
                 self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
                 self.core.inner().sdk_config().anp_service_did.as_ref(),
             )?;
-        let daemon_subkey =
-            crate::internal::identity_daemon_subkey::generate_for_did(&generated.did);
-        crate::internal::identity_daemon_subkey::apply_to_did_document(
-            &mut generated.did_document,
-            &generated.did,
-            &daemon_subkey,
-        )?;
-        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
-            &mut generated.did_document,
-            &generated.did,
-            &generated.key1_private_pem,
-        )?;
-        let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_parts(
-            generated.did.clone(),
-            daemon_subkey.verification_method,
-            daemon_subkey.public_key_multibase,
-            daemon_subkey.private_key_pem,
-        );
+        let daemon_subkey_package =
+            crate::internal::identity_daemon_subkey::attach_to_generated_identity(&mut generated)?;
         let call = crate::internal::identity_wire::recovery::build_register_rpc_call(
             crate::internal::identity_wire::RegisterRpcParams {
                 did_document: generated.did_document.clone(),
@@ -366,24 +350,8 @@ where
                 self.core.inner().sdk_config().anp_service_endpoint.as_ref(),
                 self.core.inner().sdk_config().anp_service_did.as_ref(),
             )?;
-        let daemon_subkey =
-            crate::internal::identity_daemon_subkey::generate_for_did(&generated.did);
-        crate::internal::identity_daemon_subkey::apply_to_did_document(
-            &mut generated.did_document,
-            &generated.did,
-            &daemon_subkey,
-        )?;
-        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
-            &mut generated.did_document,
-            &generated.did,
-            &generated.key1_private_pem,
-        )?;
-        let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_parts(
-            generated.did.clone(),
-            daemon_subkey.verification_method,
-            daemon_subkey.public_key_multibase,
-            daemon_subkey.private_key_pem,
-        );
+        let daemon_subkey_package =
+            crate::internal::identity_daemon_subkey::attach_to_generated_identity(&mut generated)?;
         let call = crate::internal::identity_wire::recovery::build_register_rpc_call(
             crate::internal::identity_wire::RegisterRpcParams {
                 did_document: generated.did_document.clone(),

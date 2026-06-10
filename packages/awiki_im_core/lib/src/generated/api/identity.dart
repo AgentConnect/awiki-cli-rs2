@@ -42,6 +42,14 @@ Future<DartDaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage({
   selector: selector,
 );
 
+Future<DartDaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityEnsureDaemonSubkeyPackage(
+  core: core,
+  selector: selector,
+);
+
 Future<DartHandleRegistrationResult> registerHandleWithPhone({
   required ArcDartImCore core,
   String? localAlias,

@@ -15,6 +15,7 @@ pub(crate) struct PreparedRecoverHandleRequest {
 
 pub(crate) struct GeneratedRecoveryLocalStore {
     generated: crate::internal::identity_generation::GeneratedIdentity,
+    daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
     local_alias: String,
 }
 
@@ -274,6 +275,7 @@ struct PreparedLocalFinalize {
     plan: crate::internal::identity_recovery_local::RecoverLocalPlan,
     local_finalize: crate::identity::RecoverHandleLocalFinalizeRequest,
     generated: crate::internal::identity_generation::GeneratedIdentity,
+    daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
     active_before: String,
     backup: crate::internal::identity_recovery_local::RecoverBackupResult,
     call: crate::internal::identity_wire::RpcCall,
@@ -306,12 +308,14 @@ fn prepare_recover_with_local_finalize(
         &core.inner().sdk_config().did_domain,
     )?;
     let local_finalize = request.local_finalize.clone().unwrap_or_default();
-    let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
+    let mut generated = crate::internal::identity_generation::generate_identity_with_path_segments(
         &plan.target.effective_domain,
         [plan.target.target_local_part.as_str()],
         core.inner().sdk_config().anp_service_endpoint.as_ref(),
         core.inner().sdk_config().anp_service_did.as_ref(),
     )?;
+    let daemon_subkey_package =
+        crate::internal::identity_daemon_subkey::attach_to_generated_identity(&mut generated)?;
     let call = crate::internal::identity_wire::recovery::build_recover_handle_rpc_call(
         crate::internal::identity_wire::RecoverHandleRpcParams {
             did_document: generated.did_document.clone(),
@@ -336,6 +340,7 @@ fn prepare_recover_with_local_finalize(
         plan,
         local_finalize,
         generated,
+        daemon_subkey_package,
         active_before,
         backup,
         call,
@@ -422,11 +427,19 @@ fn save_recover_with_local_finalize_identity(
 ) -> crate::ImResult<PreparedLocalFinalizeSaved> {
     let plan = prepared.plan;
     let generated = prepared.generated;
+    let daemon_subkey_package = prepared.daemon_subkey_package;
     let store =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let did = did_from_raw(raw).unwrap_or_else(|| generated.did.clone());
+    if did != daemon_subkey_package.user_did {
+        return Err(crate::ImError::IdentityNotReady {
+            identity: did.as_str().to_string(),
+            missing: vec!["daemon_subkey_did_mismatch".to_string()],
+        });
+    }
     let stored = store.save_identity(crate::internal::identity_store::SaveIdentityInput {
         local_alias: plan.temp_identity_name.clone(),
-        did: did_from_raw(raw).unwrap_or_else(|| generated.did.clone()),
+        did,
         unique_id: generated.unique_id.clone(),
         user_id: crate::internal::identity_recovery_local::string_value(raw, "user_id", ""),
         display_name: plan.target.target_local_part.clone(),
@@ -446,7 +459,7 @@ fn save_recover_with_local_finalize_identity(
         key1_public_pem: generated.key1_public_pem.clone(),
         e2ee_signing_private_pem: generated.e2ee_signing_private_pem.clone(),
         e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem.clone(),
-        daemon_subkey_package: None,
+        daemon_subkey_package: Some(daemon_subkey_package),
         make_default: false,
     })?;
     let identity = crate::internal::identity_recovery_local::identity_summary_from_generated(
@@ -556,12 +569,15 @@ pub(crate) fn prepare_recover_handle_request(
     let mut local_store = None;
     if otp_present && request.local_finalize.is_none() && request.generated_identity.is_none() {
         let target = recovery_target(&request.handle, &core.inner().sdk_config().did_domain)?;
-        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
-            &target.effective_domain,
-            [target.local_part.as_str()],
-            core.inner().sdk_config().anp_service_endpoint.as_ref(),
-            core.inner().sdk_config().anp_service_did.as_ref(),
-        )?;
+        let mut generated =
+            crate::internal::identity_generation::generate_identity_with_path_segments(
+                &target.effective_domain,
+                [target.local_part.as_str()],
+                core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                core.inner().sdk_config().anp_service_did.as_ref(),
+            )?;
+        let daemon_subkey_package =
+            crate::internal::identity_daemon_subkey::attach_to_generated_identity(&mut generated)?;
         request.generated_identity = Some(crate::identity::RecoverGeneratedIdentity {
             did: generated.did.clone(),
             unique_id: generated.unique_id.clone(),
@@ -570,6 +586,7 @@ pub(crate) fn prepare_recover_handle_request(
         request.handle = target.full_handle;
         local_store = Some(GeneratedRecoveryLocalStore {
             generated,
+            daemon_subkey_package,
             local_alias: if target.explicit_domain {
                 request.handle.as_str().to_string()
             } else {
@@ -603,7 +620,14 @@ pub(crate) fn finalize_recover_handle_result(
         &core.inner().sdk_config().did_domain,
     )?;
     let generated = local_store.generated;
+    let daemon_subkey_package = local_store.daemon_subkey_package;
     let did = did_from_raw(&result.raw).unwrap_or_else(|| generated.did.clone());
+    if did != daemon_subkey_package.user_did {
+        return Err(crate::ImError::IdentityNotReady {
+            identity: did.as_str().to_string(),
+            missing: vec!["daemon_subkey_did_mismatch".to_string()],
+        });
+    }
     let stored =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
             .save_identity(crate::internal::identity_store::SaveIdentityInput {
@@ -620,7 +644,7 @@ pub(crate) fn finalize_recover_handle_result(
             key1_public_pem: generated.key1_public_pem,
             e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
             e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            daemon_subkey_package: None,
+            daemon_subkey_package: Some(daemon_subkey_package),
             make_default: true,
         })?;
     let identity =

@@ -1,12 +1,13 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anp::authentication::verification_methods::extract_public_key;
+use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use im_core::prelude::*;
 use serde_json::{json, Value};
@@ -353,7 +354,6 @@ async fn recover_handle_async_without_otp_sends_recover_otp() {
 #[tokio::test]
 async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
     let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
-        "did": "did:wba:awiki.test:erin:e1_recovered",
         "user_id": "user-erin",
         "handle": "erin",
         "full_handle": "erin.awiki.test",
@@ -380,10 +380,7 @@ async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
     assert_eq!(result.handle.as_str(), "erin.awiki.test");
     let recovered = result.recovered_identity.unwrap();
     assert_eq!(recovered.identity.local_alias.as_deref(), Some("erin"));
-    assert_eq!(
-        recovered.identity.did.as_str(),
-        "did:wba:awiki.test:erin:e1_recovered"
-    );
+    let recovered_did = recovered.identity.did.as_str().to_string();
     assert!(recovered.access_token_present);
     let default = core
         .identities()
@@ -403,6 +400,157 @@ async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
     assert_eq!(body["params"]["phone"], "+15551234567");
     assert_eq!(body["params"]["otp_code"], "654321");
     assert!(body["params"]["did_document"].is_object());
+    assert_eq!(
+        body["params"]["did_document"]["id"].as_str(),
+        Some(recovered_did.as_str())
+    );
+}
+
+#[tokio::test]
+async fn recover_handle_async_with_otp_persists_daemon_subkey_package() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "user_id": "user-erin",
+        "handle": "erin",
+        "full_handle": "erin.awiki.test",
+        "access_token": "jwt-erin"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url();
+    let core = fixture.core_async_with_base_url(base_url).await;
+
+    let result = core
+        .identities()
+        .recover_handle_async(RecoverHandleRequest {
+            handle: Handle::parse("erin", "").unwrap(),
+            raw_handle: None,
+            phone: "+15551234567".to_string(),
+            otp: Some("654321".to_string()),
+            generated_identity: None,
+            local_finalize: None,
+        })
+        .await
+        .unwrap();
+
+    let recovered = result.recovered_identity.unwrap();
+    let package = core
+        .identities()
+        .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("erin".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(package.user_did, recovered.identity.did);
+    assert_eq!(
+        package.verification_method,
+        format!("{}#daemon-key-1", recovered.identity.did.as_str())
+    );
+
+    let requests = server.join();
+    let did_document = &requests[0].json_body()["params"]["did_document"];
+    assert_eq!(did_document["id"].as_str(), Some(package.user_did.as_str()));
+    assert!(did_document["authentication"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
+    let method = did_document["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(package.verification_method.as_str()))
+        .unwrap();
+    assert_eq!(
+        method["publicKeyMultibase"].as_str(),
+        Some(package.public_key_multibase.as_str())
+    );
+}
+
+#[tokio::test]
+async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_identity() {
+    let fixture = Fixture::new();
+    let identity = fixture.write_generated_identity_without_daemon_key("legacy", true);
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "did": identity.did,
+        "user_id": "user-legacy",
+        "message": "DID document updated",
+        "access_token": "jwt-legacy-updated"
+    }))]);
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
+
+    let package = core
+        .identities()
+        .ensure_daemon_subkey_package_async(IdentitySelector::LocalAlias("legacy".to_string()))
+        .await
+        .unwrap();
+
+    assert_eq!(package.user_did.as_str(), identity.did);
+    assert_eq!(
+        package.verification_method,
+        format!("{}#daemon-key-1", identity.did)
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "update_document");
+    assert_eq!(body["params"].get("is_public"), None);
+    assert_eq!(body["params"].get("is_agent"), None);
+    let did_document = &body["params"]["did_document"];
+    assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
+    assert!(did_document["authentication"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str() == Some(package.verification_method.as_str())));
+    let method = did_document["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(package.verification_method.as_str()))
+        .unwrap();
+    assert_eq!(
+        method["publicKeyMultibase"].as_str(),
+        Some(package.public_key_multibase.as_str())
+    );
+    let proof_method = did_document["proof"]["verificationMethod"]
+        .as_str()
+        .expect("proof method");
+    let proof_public_key = did_document["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(proof_method))
+        .and_then(|item| extract_public_key(item).ok())
+        .expect("proof public key");
+    assert!(verify_w3c_proof(
+        did_document,
+        &proof_public_key,
+        ProofVerificationOptions::default()
+    ));
+
+    let saved = fs::read_to_string(
+        fixture
+            .root
+            .join("identities")
+            .join("legacy-id")
+            .join("daemon-subkey-package.json"),
+    )
+    .unwrap();
+    assert!(saved.contains("daemon-key-1"));
+}
+
+#[test]
+fn ensure_daemon_subkey_package_fails_closed_when_document_has_daemon_key_without_private_package()
+{
+    let fixture = Fixture::new();
+    fixture.write_generated_identity_with_daemon_key_without_package("stale");
+    let core = fixture.core();
+
+    let err = core
+        .identities()
+        .ensure_daemon_subkey_package(IdentitySelector::LocalAlias("stale".to_string()))
+        .unwrap_err();
+
+    assert!(err.to_string().contains("daemon_subkey_private_missing"));
 }
 
 #[tokio::test]
@@ -666,6 +814,39 @@ impl Fixture {
             .unwrap()
     }
 
+    fn write_generated_identity_without_daemon_key(
+        &self,
+        alias: &str,
+        make_default: bool,
+    ) -> GeneratedTestIdentity {
+        let generated = generated_test_identity(alias);
+        write_generated_identity(
+            &self.root.join("identities"),
+            alias,
+            &generated,
+            make_default,
+            false,
+            false,
+        );
+        generated
+    }
+
+    fn write_generated_identity_with_daemon_key_without_package(
+        &self,
+        alias: &str,
+    ) -> GeneratedTestIdentity {
+        let generated = generated_test_identity(alias);
+        write_generated_identity(
+            &self.root.join("identities"),
+            alias,
+            &generated,
+            false,
+            true,
+            false,
+        );
+        generated
+    }
+
     fn config(&self, base_url: &str) -> ImCoreConfig {
         ImCoreConfig {
             service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
@@ -714,6 +895,158 @@ fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str, 
     fs::write(
         identity_dir.join("auth.json"),
         format!(r#"{{"jwt_token":"test-token-for-{alias}","expires_at":"{expires_at}"}}"#),
+    )
+    .unwrap();
+}
+
+struct GeneratedTestIdentity {
+    did: String,
+    did_document: Value,
+    key1_private_pem: String,
+    key1_public_pem: String,
+}
+
+fn generated_test_identity(alias: &str) -> GeneratedTestIdentity {
+    let bundle = create_did_wba_document(
+        "awiki.test",
+        DidDocumentOptions {
+            path_segments: vec![alias.to_string(), format!("e1_{alias}")],
+            domain: Some("awiki.test".to_string()),
+            challenge: Some(format!("phase1c-{alias}")),
+            did_profile: anp::authentication::DidProfile::E1,
+            ..DidDocumentOptions::default()
+        },
+    )
+    .unwrap();
+    GeneratedTestIdentity {
+        did: bundle.did().unwrap().to_string(),
+        did_document: bundle.did_document.clone(),
+        key1_private_pem: bundle.private_key_pem("key-1").unwrap().to_string(),
+        key1_public_pem: bundle.public_key_pem("key-1").unwrap().to_string(),
+    }
+}
+
+fn write_generated_identity(
+    identities: &Path,
+    alias: &str,
+    generated: &GeneratedTestIdentity,
+    make_default: bool,
+    include_daemon_key: bool,
+    include_daemon_package: bool,
+) {
+    let dir_name = format!("{alias}-id");
+    let identity_dir = identities.join(&dir_name);
+    fs::create_dir_all(&identity_dir).unwrap();
+    let mut did_document = generated.did_document.clone();
+    let daemon_package = if include_daemon_key {
+        let private_key = anp::PrivateKeyMaterial::Ed25519(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        ));
+        let public_key = match private_key.public_key() {
+            anp::PublicKeyMaterial::Ed25519(key) => {
+                let mut bytes = vec![0xed, 0x01];
+                bytes.extend_from_slice(&key.to_bytes());
+                format!("z{}", bs58::encode(bytes).into_string())
+            }
+            _ => unreachable!("test key must be Ed25519"),
+        };
+        let verification_method = format!("{}#daemon-key-1", generated.did);
+        did_document["verificationMethod"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": verification_method,
+                "type": "Multikey",
+                "controller": generated.did,
+                "publicKeyMultibase": public_key,
+            }));
+        did_document["authentication"]
+            .as_array_mut()
+            .unwrap()
+            .push(Value::String(verification_method.clone()));
+        Some(json!({
+            "schema": "awiki.daemon.user_subkey_package.v1",
+            "user_did": generated.did,
+            "verification_method": verification_method,
+            "key_type": "Multikey/Ed25519",
+            "public_key_multibase": public_key,
+            "private_key_multibase": private_key.to_pem(),
+        }))
+    } else {
+        None
+    };
+    fs::write(
+        identity_dir.join("identity.json"),
+        json!({
+            "did": generated.did,
+            "unique_id": dir_name,
+            "created_at": "2026-05-21T00:00:00Z",
+            "user_id": format!("user-{alias}"),
+            "name": alias,
+            "handle": alias,
+            "full_handle": format!("{alias}.awiki.test"),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("did_document.json"),
+        serde_json::to_vec_pretty(&did_document).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("key-1-private.pem"),
+        &generated.key1_private_pem,
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("key-1-public.pem"),
+        &generated.key1_public_pem,
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("auth.json"),
+        format!(r#"{{"jwt_token":"test-token-for-{alias}","expires_at":"2026-05-21T00:00:00Z"}}"#),
+    )
+    .unwrap();
+    if include_daemon_package {
+        let package = daemon_package.expect("daemon package");
+        fs::write(
+            identity_dir.join("daemon-subkey-package.json"),
+            serde_json::to_vec_pretty(&package).unwrap(),
+        )
+        .unwrap();
+    }
+    fs::write(
+        identities.join("registry.json"),
+        json!({
+            "default_identity": if make_default { alias } else { "alice" },
+            "identities": [
+                {
+                    "id": "alice-id",
+                    "did": "did:example:alice",
+                    "handle": "alice.awiki.test",
+                    "display_name": "Alice",
+                    "local_alias": "alice",
+                    "dir_name": "alice",
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                },
+                {
+                    "id": dir_name,
+                    "did": generated.did,
+                    "handle": format!("{alias}.awiki.test"),
+                    "display_name": alias,
+                    "local_alias": alias,
+                    "dir_name": dir_name,
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                }
+            ]
+        })
+        .to_string(),
     )
     .unwrap();
 }

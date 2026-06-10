@@ -146,6 +146,19 @@ class AwikiImCore {
     return package._toModel();
   }
 
+  Future<DaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final package = await _mapNativeErrors(
+      () => gen_identity_api.ensureDaemonSubkeyPackage(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return package._toModel();
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
     String? localAlias,
     required String requestedHandle,

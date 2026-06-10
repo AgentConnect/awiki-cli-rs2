@@ -72,6 +72,19 @@ pub async fn load_daemon_subkey_package(
         .map_err(DartImError::from)
 }
 
+pub async fn ensure_daemon_subkey_package(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartDaemonSubkeyPrivatePackage, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .ensure_daemon_subkey_package_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn register_handle_with_phone(
     core: &Arc<crate::api::core::DartImCore>,
     local_alias: Option<String>,

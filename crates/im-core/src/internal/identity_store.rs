@@ -245,6 +245,39 @@ impl<'a> IdentityStore<'a> {
         }
     }
 
+    pub(crate) fn load_daemon_subkey_package_or_legacy(
+        &self,
+        identity_dir_name: &str,
+        did: &crate::ids::Did,
+        did_document: &Value,
+    ) -> crate::ImResult<Option<crate::identity::DaemonSubkeyPrivatePackage>> {
+        match self.load_daemon_subkey_package(identity_dir_name) {
+            Ok(package) => return Ok(Some(package)),
+            Err(crate::ImError::IdentityNotFound { .. }) => {}
+            Err(err) => return Err(err),
+        }
+        let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
+        let legacy_private_path = identity_dir.join(DAEMON_SUBKEY_PRIVATE_FILE_NAME);
+        let private_key_pem = match fs::read_to_string(&legacy_private_path) {
+            Ok(value) => value,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(crate::ImError::CredentialFileUnreadable {
+                    path_kind: "daemon_subkey_private".to_string(),
+                    detail: err.to_string(),
+                });
+            }
+        };
+        let package =
+            crate::internal::identity_daemon_subkey::package_from_private_pem_and_document(
+                did.clone(),
+                private_key_pem,
+                did_document,
+            )?;
+        self.save_daemon_subkey_package(identity_dir_name, &package)?;
+        Ok(Some(package))
+    }
+
     pub(crate) async fn load_daemon_subkey_package_async(
         paths: crate::paths::IdentityRegistryPaths,
         identity_dir_name: String,
@@ -256,6 +289,70 @@ impl<'a> IdentityStore<'a> {
         .map_err(|err| crate::ImError::Internal {
             message: err.to_string(),
         })?
+    }
+
+    pub(crate) fn load_did_document(&self, identity_dir_name: &str) -> crate::ImResult<Value> {
+        let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
+        let path = first_existing_path(&identity_dir, &[DID_DOCUMENT_FILE_NAME, "did.json"]);
+        match fs::read(&path) {
+            Ok(raw) => serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(crate::ImError::CredentialFileUnreadable {
+                    path_kind: "did_document".to_string(),
+                    detail: "file is missing".to_string(),
+                })
+            }
+            Err(err) => Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "did_document".to_string(),
+                detail: err.to_string(),
+            }),
+        }
+    }
+
+    pub(crate) fn save_did_document(
+        &self,
+        identity_dir_name: &str,
+        did_document: &Value,
+    ) -> crate::ImResult<()> {
+        let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
+        write_secure_json(&identity_dir.join(DID_DOCUMENT_FILE_NAME), did_document)
+    }
+
+    pub(crate) fn load_key1_private_pem(&self, identity_dir_name: &str) -> crate::ImResult<String> {
+        let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
+        let path = first_existing_path(&identity_dir, &[KEY1_PRIVATE_FILE_NAME, "private.key"]);
+        match fs::read_to_string(&path) {
+            Ok(value) if !value.trim().is_empty() => Ok(value),
+            Ok(_) => Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "private_key".to_string(),
+                detail: "file is empty".to_string(),
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(crate::ImError::CredentialFileUnreadable {
+                    path_kind: "private_key".to_string(),
+                    detail: "file is missing".to_string(),
+                })
+            }
+            Err(err) => Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "private_key".to_string(),
+                detail: err.to_string(),
+            }),
+        }
+    }
+
+    pub(crate) fn save_daemon_subkey_package(
+        &self,
+        identity_dir_name: &str,
+        package: &crate::identity::DaemonSubkeyPrivatePackage,
+    ) -> crate::ImResult<()> {
+        let identity_dir = local_identity_dir(&self.paths.identity_root_dir, identity_dir_name)?;
+        write_secure_text_if_present(
+            &identity_dir.join(DAEMON_SUBKEY_PRIVATE_FILE_NAME),
+            &package.private_key_multibase,
+        )?;
+        write_secure_json(&identity_dir.join(DAEMON_SUBKEY_PACKAGE_FILE_NAME), package)
     }
 
     pub(crate) fn promote_recovered_handle(
@@ -718,6 +815,14 @@ fn local_identity_dir(root: &Path, dir_name: &str) -> crate::ImResult<std::path:
         ));
     }
     Ok(root.join(relative))
+}
+
+fn first_existing_path(root: &Path, names: &[&str]) -> std::path::PathBuf {
+    names
+        .iter()
+        .map(|name| root.join(name))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| root.join(names[0]))
 }
 
 fn preferred_dir_name(unique_id: &str) -> crate::ImResult<String> {
