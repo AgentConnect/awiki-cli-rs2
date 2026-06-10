@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：04  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 等 Step 03 完成后统一 key package schema 和 capability 默认值 |
+| Status | done |
+| Branch | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2`、`awiki-me` 当前分支 |
+| Started | 2026-06-10T03:45:56Z |
+| Completed | 2026-06-10T04:22:36Z |
+| Commit | `awiki-cli-rs2` `94b1c20`；`awiki-me` `fc1895f` |
+| Review evidence | Review 完成；发现并修复 action 测试 fixture 仍把新 binding 伪装成 legacy、`user_delegated` 投影规则与 action 执行规则不一致、APP 未本地拒绝非 `pem` v2 encoding、Flutter 工具生成无关 Android 文件漂移 |
+| Verification evidence | `cargo test -p im-core --locked`、`cargo test -p awiki-deamon --locked -j1`、`cargo test -p im-core-dart --locked`、`scripts/flutter/codegen-check.sh`、`packages/awiki_im_core flutter test`、`awiki-me flutter analyze`、`awiki-me flutter test` 均通过 |
+| Next action | 启动 Step 05：ANP SDK DID Document additional authentication optional 参数 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -91,14 +91,14 @@ Step index：04
 
 ## 7. 验收标准
 
-- [ ] 新写出的 key package schema 是 v2，字段名与编码一致。
-- [ ] v1 legacy package 仍能读取并通过 Step 03 validation。
-- [ ] 文档和 fixture 不再把 PEM 示例写成 multibase 主路径。
-- [ ] 新 binding 缺 capability 或 capability 空列表时，APP action 被拒绝，不自动补成全部 MVP actions。
-- [ ] awiki-me bootstrap 显式传 capability policy。
-- [ ] 旧 binding 的兼容行为有 migration 标记或测试说明。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] 新写出的 key package schema 是 v2，字段名与编码一致。
+- [x] v1 legacy package 仍能读取并通过 Step 03 validation。
+- [x] 文档和 fixture 不再把 PEM 示例写成 multibase 主路径。
+- [x] 新 binding 缺 capability 或 capability 空列表时，APP action 被拒绝，不自动补成全部 MVP actions。
+- [x] awiki-me bootstrap 显式传 capability policy。
+- [x] 旧 binding 的兼容行为有 migration 标记或测试说明。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -121,28 +121,48 @@ Step index：04
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待回填 | - |
-| 已修复问题 | 待回填 | - |
-| 剩余风险 | 待回填 | - |
-| 新增或缺失测试 | 待回填 | - |
-| 已更新或缺失文档 | 待回填 | - |
+| 发现问题 | 4 项 | action 测试 fixture 默认 `desired_agent.allowed_actions` 让“新 binding 缺 capability”错误通过；`user_delegated` 投影未完全复用显式 schema 规则；APP v2 package 允许非 `pem` encoding 写出；`flutter test` 反复改动无关 Android generated registrant。 |
+| 已修复问题 | 已修复 | 新 binding fixture 默认不带 legacy actions；action 与 `user_delegated` 都只在显式 `awiki.app.capabilities.v1` 下读取 `capabilities/allowed_actions`，无 schema 时仅保留 legacy `desired_agent.allowed_actions`；APP 本地拒绝非 `pem` v2 encoding；无关 Android generated registrant 未进入提交。 |
+| 剩余风险 | 已记录 | 旧 binding 无 schema 时仍允许 legacy `desired_agent.allowed_actions` 兼容路径；bootstrap private package 仍按 MVP 决策通过普通消息明文 JSON 传输；secure storage 和加密通道不在本步骤范围内。 |
+| 新增或缺失测试 | 已覆盖 | 新增/更新 v2 serialization、v1 legacy read、Daemon v2/v1 bootstrap parser、empty/missing capability、legacy fallback、`user_delegated` allowed_actions 投影、APP unsupported encoding、awiki-me mapper/bootstrap payload tests。 |
+| 已更新或缺失文档 | 已更新 | 更新 `awiki-cli-rs2/docs/agent-im/agent_im_core_design.md` 和 `awiki-cli-rs2/docs/agent-im/agent_delegated_identity_message_proof_plan.md` 的 bootstrap 示例和 capability policy 说明。 |
+
+## 9.1 实际验证证据
+
+| 命令 / 检查 | 结果 |
+|---|---|
+| `cd awiki-cli-rs2 && cargo fmt --check -p im-core -p im-core-dart -p awiki-deamon` | 通过 |
+| `cd awiki-cli-rs2 && cargo test -p im-core --locked` | 通过；lib 272 passed，integration/doc tests 通过 |
+| `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 bootstrap -- --nocapture` | 22 passed |
+| `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 action -- --nocapture` | 9 passed |
+| `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1 user_delegated -- --nocapture` | 10 passed |
+| `cd awiki-cli-rs2 && cargo test -p awiki-deamon --locked -j1` | 通过；lib 110 passed，integration tests 21 + 22 + 5 + 19 passed / 3 ignored + 15 + 3 + 23 + 2，doc tests 0 passed |
+| `cd awiki-cli-rs2 && cargo test -p im-core-dart --locked` | 6 unit + 13 facade passed |
+| `cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh` | Done |
+| `cd awiki-cli-rs2/packages/awiki_im_core && flutter test` | 12 passed |
+| `cd awiki-me && dart format --set-exit-if-changed ...` | 4 files checked，0 changed |
+| `cd awiki-me && flutter analyze` | No issues found |
+| `cd awiki-me && flutter test test/agents/agent_control_service_test.dart test/data/im_core/awiki_im_core_mappers_test.dart` | 27 passed |
+| `cd awiki-me && flutter test` | 273 passed |
+| 两仓 `git diff --check` | 通过 |
+| 命名 / secret 搜索 | `private_key_multibase` 只命中 legacy decode/tests、历史记录和兼容字段；`mailbox_*` 命中 email/mail 既有模型或历史检查命令；secret 关键词命中 secret handling/redaction、测试 fixture 和既有 JWT/key path 逻辑，无新增未解释泄露。 |
 
 ## 10. Commit 要求
 
-- Commit 时机：本步骤实现、验证、Review 都完成后。
-- Commit 范围：schema/capability 变更按仓库聚焦提交；不要混入 ANP SDK Step 05。
-- Commit 前状态：记录相关仓 `git status --short --branch`。
-- 纳入文件：记录本步骤 commit 包含的文件。
-- Commit 后证据：记录 commit hash 和 commit 后 `git status`。
-- 遗留未提交变更：必须记录原因以及为什么安全。
-- 建议消息：`agent-im: add daemon subkey package v2`、`awiki-deamon: require explicit app action capabilities`
+- Commit 时机：本步骤实现、验证、Review 都完成后已提交。
+- Commit 范围：schema/capability 变更按仓库聚焦提交；未混入 ANP SDK Step 05。
+- Commit 前状态：`awiki-cli-rs2` 仅暂存 Step 04 代码/生成文件/设计文档，计划台账未暂存；`awiki-me` 仅暂存 Step 04 Dart 代码和测试，无关 Android generated registrant 已恢复。
+- 纳入文件：`awiki-cli-rs2` commit `94b1c20` 包含 im-core DTO/internal、im-core-dart/generated Flutter package、awiki-deamon bootstrap/action/message_agent/user_delegated/foreground fixture、两篇 agent-im 设计文档；`awiki-me` commit `fc1895f` 包含 bootstrap model、im-core mapper 和对应测试。
+- Commit 后证据：`awiki-cli-rs2` `94b1c20 agent-im: add daemon subkey package v2`；`awiki-me` `fc1895f agent-im: write daemon subkey package v2`。
+- 遗留未提交变更：仅本计划台账文档待回填并单独提交。
+- 建议消息：已使用 `agent-im: add daemon subkey package v2`、`agent-im: write daemon subkey package v2`。
 
 ## 11. Blocked 处理
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| v2 schema 与现有 FFI/codegen 不兼容 | 待回填 | 保留内部 DTO，外部 mapper 转换 | 当前步骤 | 更新 Plan 或拆分 |
-| 旧 binding 行为收紧影响测试 | 待回填 | legacy migration 标记 | 当前步骤 | 记录兼容策略 |
+| v2 schema 与现有 FFI/codegen 不兼容 | 未发生 | `scripts/flutter/codegen-check.sh` 和 `cargo test -p im-core-dart --locked` 通过；public Dart model 保留 optional legacy `privateKeyMultibase` | 当前步骤 | 无需更新 Plan |
+| 旧 binding 行为收紧影响测试 | 已处理 | 新 binding 必须显式 schema；无 schema 仅保留 legacy `desired_agent.allowed_actions` fallback，并有测试覆盖 | 当前步骤 | 兼容策略已记录 |
 
 ## 12. Plan 变更记录
 
