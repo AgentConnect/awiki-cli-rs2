@@ -1662,6 +1662,18 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
             .status,
         "archived"
     );
+    assert!(state
+        .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)
+        .unwrap()
+        .is_empty());
+    let latest_items =
+        awiki_deamon::agent_status::latest_status_items(&config, &state, &daemon, 1_700_000)
+            .unwrap();
+    assert_eq!(latest_items.len(), 1);
+    assert_eq!(latest_items[0].agent_did, daemon.agent_did);
+    let snapshot =
+        awiki_deamon::agent_status::daemon_snapshot_payload(&config, &state, &daemon).unwrap();
+    assert_eq!(snapshot["runtimes"].as_array().map(Vec::len), Some(0));
     assert!(!agent_db.exists());
     assert!(!message_db.exists());
     let archived = outbox.agent_statuses().last().unwrap().clone();

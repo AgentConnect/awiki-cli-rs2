@@ -1794,6 +1794,7 @@ FROM agent_definition
 INNER JOIN runtime_daemon_binding
     ON runtime_daemon_binding.runtime_agent_did = agent_definition.agent_did
 WHERE agent_definition.agent_kind = 'runtime'
+  AND agent_definition.status = 'active'
   AND runtime_daemon_binding.daemon_agent_did = ?1
 ORDER BY agent_definition.updated_at DESC, agent_definition.agent_did ASC
 "#,
@@ -2036,6 +2037,7 @@ SELECT
     status
 FROM agent_definition
 WHERE agent_kind = ?1
+  AND status = 'active'
 ORDER BY updated_at DESC, agent_did ASC
 "#
             }
@@ -2057,6 +2059,7 @@ SELECT
     message_db_path,
     status
 FROM agent_definition
+WHERE status = 'active'
 ORDER BY updated_at DESC, agent_did ASC
 "#
             }
