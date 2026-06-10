@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：02  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 |
-| Started | - |
-| Completed | - |
-| Commit | - |
-| Review evidence | - |
-| Verification evidence | - |
-| Next action | 等 Step 01 完成后实现 im-core ensure/migration API 和 awiki-me bootstrap fallback |
+| Status | done |
+| Branch | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2`、`awiki-me`、`user-service` 当前分支 |
+| Started | 2026-06-10T02:13:41Z |
+| Completed | 2026-06-10T02:57:20Z |
+| Commit | `awiki-cli-rs2` `4562474` (`im-core: ensure daemon subkey for recovered identities`)；`awiki-me` `6fd1411` (`awiki-me: ensure daemon subkey before bootstrap`)；`user-service` `1cafb30` (`user-service: preserve DID metadata on document update`) |
+| Review evidence | 已 Review 主私钥使用边界、daemon package private/public/DID Document authentication 匹配、已有 `#daemon-key-1` 不覆盖、signed update 契约、Dart API 兼容、awiki-me Dart-only 约束、secret 日志/UI 泄露。发现并修复 user-service `update_document` 省略元数据字段会重置旧值的问题，并补上显式 `null` 与字段省略的契约测试。 |
+| Verification evidence | `cd awiki-cli-rs2 && cargo fmt --check && cargo test -p im-core --locked && cargo test -p im-core-dart --locked`：通过，`im-core` 270 lib tests 与 integration tests 通过，`im-core-dart` 6 unit + 13 facade tests 通过；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh && cd packages/awiki_im_core && flutter test`：codegen stable，12 tests passed；`cd user-service && uv run pytest tests/app/did_auth -v && uv run ruff check src/user_service/app/did_auth tests/app/did_auth`：105 passed, 32 warnings，ruff 通过；`cd awiki-me && flutter analyze && flutter test`：No issues found，272 tests passed；三仓 `git diff --check` 通过；secret 搜索无新增日志/UI 泄露。 |
+| Next action | Step 03：awiki-deamon bootstrap private package 早期校验 |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -25,6 +25,7 @@ Step index：02
 - 用户 / 系统可见行为：用户恢复账号或升级旧版本后，点击 bootstrap message agent 不会因为本地缺少 `daemon-key-1-private.pem` 直接失败；系统会幂等生成/补齐 daemon subkey、更新 signed DID Document、同步 user-service registry，然后再发送 bootstrap。
 - 非目标：不在缺少用户主 `#key-1` 私钥时强行修改 DID Document；不把用户主私钥交给 Daemon；不自动创建多个 daemon key；不支持设备化 fragment。
 - 完成标准：im-core 提供同步/异步 ensure API；recovery 路径能保存或补齐 package；awiki-me 使用 ensure API；无法安全重签时 fail closed 并给出可诊断错误。
+- 本步骤新增前置小修：user-service `did-auth.update_document` 省略 `is_public` / `is_agent` / `role` / `endpoint_url` 时必须保留既有元数据，避免 im-core migration 只更新 DID Document 却把身份可见性或 agent 标记意外重置；显式传入字段的旧行为保持不变。
 
 ## 3. 设计方法
 
@@ -79,6 +80,9 @@ Step index：02
 | `awiki-cli-rs2/crates/im-core/src/identity/*` | 暴露 ensure API / DTO | public SDK surface |
 | `awiki-cli-rs2/crates/im-core-dart/*` | FFI/Dart binding | 保持 native/web API 一致 |
 | `awiki-cli-rs2/packages/awiki_im_core/*` | Dart package API/codegen | 需要 codegen check |
+| `user-service/src/user_service/app/did_auth/schemas.py` | `UpdateDocumentRequest` 元数据字段改为 optional | 省略字段保留旧值 |
+| `user-service/src/user_service/app/did_auth/service.py` | `update_document` 写库时使用旧值 fallback | 避免 migration 回归 |
+| `user-service/tests/app/did_auth/*` | 补省略元数据字段的回归测试 | Step 02 的 user-service 前置小修 |
 | `awiki-me/lib/src/application/ports/identity_core_port.dart` | 增加 ensure 方法 | App 抽象层 |
 | `awiki-me/lib/src/data/im_core/*` | 调用 binding ensure API | Dart-only |
 | `awiki-me/lib/src/presentation/agents/*` | bootstrap 前 ensure | UI/provider |
@@ -93,14 +97,15 @@ Step index：02
 
 ## 7. 验收标准
 
-- [ ] `im-core` 新增 `ensure_daemon_subkey_package` 同步/异步 API，旧 `load` API 不变。
-- [ ] 恢复账号路径不再固定保存 `daemon_subkey_package: None`；新恢复身份能 bootstrap。
-- [ ] 旧身份缺少 package 且本地有主签名 key 时，能生成 daemon key、重签 DID Document、调用 signed update 并保存 package。
-- [ ] 旧身份 DID Document 已有 daemon public key 但本地无对应 private key 时 fail closed，不覆盖同 fragment public key。
-- [ ] awiki-me bootstrap 前调用 ensure API；错误不泄露 secret。
-- [ ] Dart native/web API 名称一致，codegen 更新。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] `im-core` 新增 `ensure_daemon_subkey_package` 同步/异步 API，旧 `load` API 不变。
+- [x] `user-service update_document` 省略 `is_public` / `is_agent` / `role` / `endpoint_url` 时保留旧值，显式传入仍按传入值更新；`role` / `endpoint_url` 显式 `null` 可清空。
+- [x] 恢复账号路径不再固定保存 `daemon_subkey_package: None`；新恢复身份能 bootstrap。
+- [x] 旧身份缺少 package 且本地有主签名 key 时，能生成 daemon key、重签 DID Document、调用 signed update 并保存 package。
+- [x] 旧身份 DID Document 已有 daemon public key 但本地无对应 private key 时 fail closed，不覆盖同 fragment public key。
+- [x] awiki-me bootstrap 前调用 ensure API；错误不泄露 secret。
+- [x] Dart native/web API 名称一致，codegen 更新。
+- [x] Review 发现已经修复或明确记录。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -123,11 +128,11 @@ Step index：02
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | 待回填 | - |
-| 已修复问题 | 待回填 | - |
-| 剩余风险 | 待回填 | - |
-| 新增或缺失测试 | 待回填 | - |
-| 已更新或缺失文档 | 待回填 | - |
+| 发现问题 | 2 项 | 1. im-core migration 调用 `update_document` 时不传 `is_public` / `is_agent` / `role` / `endpoint_url`，原 user-service schema 会把省略字段落成默认值，可能破坏旧身份元数据。2. 初始修复若只按 `None` fallback，会把显式 `role=null` / `endpoint_url=null` 误当成省略字段，破坏“显式传入仍按传入值更新”的契约。 |
+| 已修复问题 | 2 项 | `UpdateDocumentRequest` 的元数据字段改为 optional，并通过 `model_fields_set` 区分省略与显式传入；新增省略字段保留旧值、显式 false/null 覆盖旧值的测试。 |
+| 剩余风险 | 已记录 | im-core 在远端 signed update 成功后才保存本地 DID Document 和 daemon package；如果远端成功但本地保存失败，远端 DID Document 会已有 `#daemon-key-1`，本地仍缺 package，下一次 ensure 会 fail closed 为 `daemon_subkey_private_missing`。这是安全优先行为，后续可补恢复/补偿流程。Step 04 仍需修正 `private_key_multibase` 承载 PEM 的 schema 命名。 |
+| 新增或缺失测试 | 已新增 | 新增 recovery 持久化 package、旧身份 signed update migration、已有 daemon key 无 private package fail closed、`update_document` 元数据省略/显式覆盖、Dart bootstrap ensure 调用等测试。 |
+| 已更新或缺失文档 | 已更新 | 已回填本 Step 文档和主 Plan 台账；user-service API 说明在 schema Field 描述中体现。更完整 API 文档可在 Step 06 文档收口时统一检查。 |
 
 ## 10. Commit 要求
 
@@ -143,8 +148,8 @@ Step index：02
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 下一步决策 |
 |---|---|---|---|---|
-| 缺少 signed DID update API | 待回填 | 复用 / 扩展 Step 01 API | 当前步骤 / 整体计划 | 返回 Step 01 或更新 Plan |
-| 旧身份缺少主 key | 待回填 | fail closed | 当前用户路径 | 记录终端错误和用户恢复路径 |
+| 缺少 signed DID update API | 已解决 | 复用 Step 01 已存在的 `did-auth.update_document`，im-core 新增 `update_document` RPC builder | - | 已完成 |
+| 旧身份缺少主 key | 已处理 | `load_key1_private_pem` 缺失时 fail closed 为 `key1_private` | 当前用户路径 | 用户需重新恢复/重新绑定；不自动修改 DID Document |
 
 ## 12. Plan 变更记录
 

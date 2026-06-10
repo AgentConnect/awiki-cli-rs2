@@ -4,7 +4,7 @@
 DOC：`awiki-cli-rs2/docs/agent-im/plan/registry-hardening-fix`  
 Harness：`awiki-harness`  
 创建时间：2026-06-10  
-恢复指针：Step 01 已完成，下一步从 Step 02 开始。
+恢复指针：Step 02 已完成，下一步从 Step 03 开始。
 
 ## 1. 目标
 
@@ -85,7 +85,7 @@ Harness：`awiki-harness`
 | Step | 标题 | 依赖 | 产出 | 小 Plan 文档 | Commit gate | 状态 |
 |---|---|---|---|---|---|---|
 | 01 | user-service registry 与 DID auth 注册/更新闭环 | 无 | DID auth register/update 派生 registry；proof 有效性测试；撤销语义修正；backfill/reconcile | [steps/01-user-service-did-auth-registry-proof.md](steps/01-user-service-did-auth-registry-proof.md) | 必须 | done |
-| 02 | im-core / awiki-me 恢复与已有身份 daemon subkey migration | Step 01 | `ensure_daemon_subkey_package`；恢复路径保存 package；App bootstrap 前补齐 | [steps/02-im-core-awiki-me-daemon-subkey-migration.md](steps/02-im-core-awiki-me-daemon-subkey-migration.md) | 必须 | pending |
+| 02 | im-core / awiki-me 恢复与已有身份 daemon subkey migration | Step 01 | `ensure_daemon_subkey_package`；恢复路径保存 package；App bootstrap 前补齐；user-service `update_document` 省略元数据字段时保留旧值 | [steps/02-im-core-awiki-me-daemon-subkey-migration.md](steps/02-im-core-awiki-me-daemon-subkey-migration.md) | 必须 | done |
 | 03 | awiki-deamon bootstrap private package 早期校验 | Step 01、Step 02 | private/public 匹配、DID Document authentication、public key 一致性和过期检查 | [steps/03-awiki-deamon-bootstrap-key-validation.md](steps/03-awiki-deamon-bootstrap-key-validation.md) | 必须 | pending |
 | 04 | key package schema 与 APP action capability 收口 | Step 03 | key package v2 / legacy decode；显式 capability policy；空列表禁用 | [steps/04-schema-capability-hardening.md](steps/04-schema-capability-hardening.md) | 必须 | pending |
 | 05 | ANP SDK DID Document additional authentication optional 参数 | Step 01、Step 04 | Python/Rust ANP SDK optional API；im-core/user-service 消费新 API；移除产品层 JSON patch 主路径 | [steps/05-anp-sdk-did-additional-authentication.md](steps/05-anp-sdk-did-additional-authentication.md) | 必须 | pending |
@@ -98,8 +98,8 @@ Harness：`awiki-harness`
 | Step | 状态 | 分支 | 开始时间 | 完成时间 | Commit | Review 证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
 | 01 | done | `feature/release-0526/agent-im-hutong` / `user-service` | 2026-06-10T01:49:07Z | 2026-06-10T02:11:46Z | `user-service` `dada5a6` | Review 完成；修复 storage update 失败仍可能同步 registry、缺少 reconcile 入口、局部 CLAUDE/文件头漂移；剩余风险为 DID Document 保存与 registry 同步非同一 DB 事务，运行时仍以 DID Document `authentication` 为事实源 | `uv run pytest tests/app/did tests/app/did_auth -v`：137 passed, 32 warnings；`uv run ruff check src/user_service/app/did src/user_service/app/did_auth src/user_service/storage tests/app/did tests/app/did_auth`：All checks passed；`git diff --check`：通过；secret 搜索无 daemon private material 泄露 | Step 02：im-core / awiki-me 恢复与已有身份 daemon subkey migration |
-| 02 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 等 Step 01 完成 |
-| 03 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 等 Step 02 完成 |
+| 02 | done | `feature/release-0526/agent-im-hutong` / `awiki-cli-rs2`、`awiki-me`、`user-service` | 2026-06-10T02:13:41Z | 2026-06-10T02:57:20Z | `awiki-cli-rs2` `4562474`；`awiki-me` `6fd1411`；`user-service` `1cafb30` | Review 完成；发现并修复 `update_document` 省略元数据可能破坏旧身份元数据，进一步修正显式 `null` 与省略字段的契约区别；确认 ensure 状态机不会覆盖已有 `#daemon-key-1` public key，不把主私钥交给 Daemon，无新增 secret 日志/UI；剩余风险为远端 signed update 成功后本地 package 保存失败会让下一次 ensure fail closed，需要用户重新恢复或后续补偿流程 | `cd awiki-cli-rs2 && cargo fmt --check && cargo test -p im-core --locked && cargo test -p im-core-dart --locked`：通过，`im-core` 270 lib tests 与 integration tests 通过、`im-core-dart` 6 unit + 13 facade tests 通过；`cd awiki-cli-rs2 && scripts/flutter/codegen-check.sh && cd packages/awiki_im_core && flutter test`：codegen stable，12 tests passed；`cd user-service && uv run pytest tests/app/did_auth -v && uv run ruff check src/user_service/app/did_auth tests/app/did_auth`：105 passed, 32 warnings，ruff 通过；`cd awiki-me && flutter analyze && flutter test`：No issues found，272 tests passed；三仓 `git diff --check` 通过；secret 搜索只命中既有 secret handling、测试 fixture、bootstrap payload 字段和 redaction 逻辑 | Step 03：awiki-deamon bootstrap private package 早期校验 |
+| 03 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 从 Step 03 开始 |
 | 04 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 等 Step 03 完成 |
 | 05 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 等 Step 04 完成 |
 | 06 | pending | `feature/release-0526/agent-im-hutong` / 相关仓当前分支 | - | - | - | - | - | 等 Step 01-05 完成 |
@@ -258,6 +258,7 @@ Harness：`awiki-harness`
 | 日期 | 变更 | 原因 | 影响步骤 | 是否需要 Review |
 |---|---|---|---|---|
 | 2026-06-10 | 创建修复专项计划 | 根据实现 Review 发现整理可执行修复方案 | Step 01-06 | 是 |
+| 2026-06-10 | Step 02 增加 user-service `update_document` optional metadata preservation 小修 | 实现 im-core 旧身份 migration 时发现 DID Document signed update 若省略 `is_public` / `is_agent` 会被服务端默认落成 `false`，可能破坏既有身份元数据；需先让省略字段保持旧值，旧显式传参行为不变 | Step 02 | 是 |
 
 ## 16. 风险与回滚
 
