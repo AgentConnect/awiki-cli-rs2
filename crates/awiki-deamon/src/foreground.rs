@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use im_core::attachments::{
     AttachmentDestination, DownloadAttachmentRequest, DownloadedAttachmentDestination,
 };
-use im_core::ids::MessageId;
+use im_core::ids::{MessageId, ThreadId};
 use im_core::messages::{
     InboxQuery, InboxScope, Message, MessageBodyView, MessageDeliveryOptions, MessageDirection,
     ThreadRef,
@@ -476,7 +476,7 @@ async fn route_message(
                 .content_type
                 .clone()
                 .unwrap_or_else(|| "application/json".to_string());
-            if is_attachment_manifest_payload(&content_type, payload) {
+            if is_attachment_manifest_message(message, &content_type, payload) {
                 let verified_sender = verify_runtime_controller_sender(
                     config,
                     state,
@@ -566,8 +566,15 @@ fn is_awiki_agent_command_payload(payload: &Value) -> bool {
     payload.get("schema").and_then(Value::as_str) == Some("awiki.agent.command.v1")
 }
 
-fn is_attachment_manifest_payload(content_type: &str, payload: &Value) -> bool {
-    content_type.trim() == im_core::attachments::attachment_manifest_content_type()
+fn is_attachment_manifest_message(message: &Message, content_type: &str, payload: &Value) -> bool {
+    let manifest_content_type = im_core::attachments::attachment_manifest_content_type();
+    let content_type_matches = content_type.trim() == manifest_content_type
+        || message.metadata.content_type.as_deref().map(str::trim) == Some(manifest_content_type)
+        || message.metadata.attributes.iter().any(|attribute| {
+            attribute.key.trim() == "content_type"
+                && attribute.value.trim() == manifest_content_type
+        });
+    content_type_matches
         && payload
             .get("attachments")
             .and_then(Value::as_array)
@@ -781,10 +788,11 @@ async fn download_inbound_attachment(
         return Ok(destination);
     }
     let message_id = MessageId::parse(message.id.as_str())?;
+    let download_thread = attachment_download_thread(message, sender_did)?;
     let downloaded = target_client
         .attachments()
         .download_async(DownloadAttachmentRequest {
-            thread: message.thread.clone(),
+            thread: download_thread,
             message_id,
             attachment_id: Some(attachment.attachment_id.clone()),
             destination: AttachmentDestination::LocalFile(destination.clone()),
@@ -801,6 +809,27 @@ async fn download_inbound_attachment(
             attachment.attachment_id,
             sender_did
         ),
+    }
+}
+
+fn attachment_download_thread(message: &Message, sender_did: &str) -> Result<ThreadRef> {
+    match &message.thread {
+        ThreadRef::Direct(_) | ThreadRef::Group(_) => Ok(message.thread.clone()),
+        ThreadRef::Thread(thread) => {
+            let raw = thread.as_str();
+            if let Some(group) = raw.strip_prefix("group:") {
+                return Ok(ThreadRef::Group(im_core::ids::GroupRef::parse(group)?));
+            }
+            let peer = if message.sender.as_str().trim().is_empty() {
+                sender_did.trim()
+            } else {
+                message.sender.as_str().trim()
+            };
+            if peer.starts_with("did:") {
+                return Ok(ThreadRef::Direct(im_core::ids::PeerRef::parse(peer, "")?));
+            }
+            Ok(ThreadRef::Thread(ThreadId::parse(raw)?))
+        }
     }
 }
 
@@ -2956,6 +2985,98 @@ mod tests {
         assert!(prompt.contains("附件处理规则："));
         assert!(!prompt.contains("Controller message:"));
         assert!(!prompt.contains("<empty>"));
+    }
+
+    #[test]
+    fn scoped_thread_attachment_download_uses_sender_direct_thread() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
+            thread: ThreadRef::Thread(
+                im_core::ids::ThreadId::parse("dm:peer-scope:v1:user-alice:alice.anpclaw.com")
+                    .unwrap(),
+            ),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Payload {
+                payload: serde_json::json!({}),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        let thread = attachment_download_thread(&message, "did:human:alice").unwrap();
+
+        assert_eq!(
+            thread,
+            ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap())
+        );
+    }
+
+    #[test]
+    fn group_thread_attachment_download_uses_group_thread() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_group_attachment").unwrap(),
+            thread: ThreadRef::Thread(
+                im_core::ids::ThreadId::parse("group:did:example:group").unwrap(),
+            ),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: None,
+            group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: MessageBodyView::Payload {
+                payload: serde_json::json!({}),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        let thread = attachment_download_thread(&message, "did:human:alice").unwrap();
+
+        assert_eq!(
+            thread,
+            ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap())
+        );
+    }
+
+    #[test]
+    fn metadata_attribute_content_type_marks_attachment_manifest() {
+        let payload = json!({
+            "attachments": [{
+                "attachment_id": "att_1",
+                "filename": "notes.md"
+            }]
+        });
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
+            thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata {
+                content_type: Some("application/json".to_string()),
+                attributes: vec![im_core::messages::MessageMetadataAttribute {
+                    key: "content_type".to_string(),
+                    value: im_core::attachments::attachment_manifest_content_type().to_string(),
+                }],
+                ..im_core::messages::MessageMetadata::default()
+            },
+        };
+
+        assert!(is_attachment_manifest_message(
+            &message,
+            "application/json",
+            &payload
+        ));
     }
 
     #[test]
