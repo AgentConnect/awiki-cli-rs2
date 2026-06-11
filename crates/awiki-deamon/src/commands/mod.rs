@@ -7,6 +7,7 @@ use crate::agent::{
     runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
     GENERIC_CLI_RUNTIME_PLUGIN_ID,
 };
+use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
 use crate::plugins::hermes::{
     initialize_hermes_profile, mark_hermes_profile_failed, HERMES_RUNTIME_PLUGIN_ID,
@@ -135,22 +136,23 @@ where
     O: AgentManagementOutbox,
 {
     validate_application_json_payload(&message)?;
-    let mut daemon_agent = state
+    let daemon_agent = state
         .load_agent_definition(&message.target_agent_did)
         .context("load target daemon agent")?;
     if daemon_agent.agent_kind != AgentKind::Daemon {
         bail!("target agent is not a daemon agent");
     }
-    if message.sender_did != daemon_agent.controller_did {
-        sync_controller_scope_for_daemon(config, state, registration_client, &daemon_agent)
-            .context("sync controller scope before command sender check")?;
-        daemon_agent = state
-            .load_agent_definition(&message.target_agent_did)
-            .context("reload target daemon agent after controller scope sync")?;
-        if message.sender_did != daemon_agent.controller_did {
-            bail!("controller_did_mismatch");
-        }
-    }
+    let verified_sender = verify_daemon_controller_sender(
+        config,
+        state,
+        registration_client,
+        &daemon_agent,
+        &message.sender_did,
+    )
+    .context("verify daemon command sender scope")?;
+    let daemon_agent = state
+        .load_agent_definition(&message.target_agent_did)
+        .context("reload target daemon agent after controller sender verification")?;
 
     let envelope: AgentCommandEnvelope =
         serde_json::from_value(message.payload.clone()).context("parse agent command payload")?;
@@ -177,6 +179,7 @@ where
                 state,
                 registration_client,
                 &daemon_agent,
+                &verified_sender,
                 &payload,
             ) {
                 Ok(outcome) => outcome,
@@ -272,7 +275,7 @@ where
             })
         }
         DAEMON_UPGRADE => {
-            handle_daemon_upgrade(config, outbox, &daemon_agent, &message, &envelope)?;
+            handle_daemon_upgrade(config, outbox, state, &daemon_agent, &message, &envelope)?;
             Ok(AgentCommandOutcome::StatusReported {
                 command_id: envelope.command_id,
             })
@@ -408,6 +411,7 @@ fn create_runtime_agent<C>(
     state: &DaemonState,
     registration_client: &C,
     daemon_agent: &AgentDefinition,
+    verified_sender: &VerifiedControllerSender,
     payload: &RuntimeAgentCreatePayload,
 ) -> Result<RuntimeAgentCreateOutcome>
 where
@@ -418,8 +422,8 @@ where
     if controller_did.is_empty() {
         bail!("controller_did must not be empty");
     }
-    if controller_did != daemon_agent.controller_did {
-        bail!("runtime agent controller_did must match daemon controller_did");
+    if controller_did != verified_sender.sender_did {
+        bail!("runtime agent controller_did must match verified sender_did");
     }
     let client_request_id = payload
         .args
@@ -482,9 +486,9 @@ where
 
     let profile = RuntimeAgentProfile {
         agent_did: exchange.did.clone(),
-        controller_user_id: daemon_agent.controller_user_id.clone(),
-        controller_full_handle: daemon_agent.controller_full_handle.clone(),
-        controller_scope_key: daemon_agent.controller_scope_key.clone(),
+        controller_user_id: verified_sender.controller_user_id.clone(),
+        controller_full_handle: verified_sender.controller_full_handle.clone(),
+        controller_scope_key: verified_sender.controller_scope_key.clone(),
         controller_did: exchange.controller_did.clone(),
         runtime_profile_id: profile_id.clone(),
         runtime_plugin_id: plugin_id.clone(),
@@ -497,10 +501,10 @@ where
     state.upsert_runtime_daemon_binding(
         &profile.agent_did,
         &daemon_agent.agent_did,
-        &daemon_agent.controller_user_id,
-        &daemon_agent.controller_full_handle,
-        &daemon_agent.controller_scope_key,
-        &daemon_agent.controller_did,
+        &verified_sender.controller_user_id,
+        &verified_sender.controller_full_handle,
+        &verified_sender.controller_scope_key,
+        &verified_sender.controller_did,
     )?;
     if profile.runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
         let driver_id = resolution
@@ -588,8 +592,8 @@ where
         let now = crate::security::runtime_token::current_time_millis()?;
         state.store_runtime_agent_create_request(&RuntimeAgentCreateRequestRecord {
             daemon_agent_did: daemon_agent.agent_did.clone(),
-            controller_scope_key: daemon_agent.controller_scope_key.clone(),
-            controller_did: daemon_agent.controller_did.clone(),
+            controller_scope_key: verified_sender.controller_scope_key.clone(),
+            controller_did: verified_sender.controller_did.clone(),
             client_request_id: client_request_id.to_string(),
             runtime_agent_did: outcome.agent_did.clone(),
             command_id: payload.command_id.clone(),
@@ -1126,6 +1130,7 @@ where
 fn handle_daemon_upgrade<O>(
     config: &DaemonConfig,
     outbox: &O,
+    state: &DaemonState,
     daemon_agent: &AgentDefinition,
     message: &IncomingAgentPayloadMessage,
     payload: &AgentCommandEnvelope,
@@ -1155,6 +1160,33 @@ where
     }
     let target_version = optional_arg_string(&payload.args, "target_version")
         .unwrap_or_else(|| "latest".to_string());
+    if let Some(existing) = state.try_begin_control_command(
+        &daemon_agent.agent_did,
+        &daemon_agent.controller_scope_key,
+        &payload.command_id,
+        DAEMON_UPGRADE,
+        &message.message_id,
+        Some(&target_version),
+    )? {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            duplicate_upgrade_public_state(&existing.status),
+            Some(duplicate_upgrade_status_message(&existing.status)),
+            if existing.result_json.is_object() {
+                existing.result_json
+            } else {
+                json!({
+                    "command": DAEMON_UPGRADE,
+                    "daemon_agent_did": daemon_agent.agent_did,
+                    "target_version": existing.target_version.unwrap_or(target_version),
+                    "duplicate": true,
+                })
+            },
+        );
+    }
     send_command_status(
         outbox,
         daemon_agent,
@@ -1168,17 +1200,55 @@ where
             "target_version": target_version.clone(),
         }),
     )?;
-    let result = DaemonUpgradeRequest::from_env(config, target_version.clone())
-        .and_then(|request| upgrade_daemon(config, request));
-    match result {
-        Ok(report) => send_command_status(
-            outbox,
-            daemon_agent,
-            message,
+    let request = match DaemonUpgradeRequest::from_env(config, target_version.clone()) {
+        Ok(request) => request,
+        Err(error) => {
+            let summary = sanitize_public_error(&error.to_string());
+            let result = json!({
+                "command": DAEMON_UPGRADE,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "target_version": target_version,
+                "error_code": "upgrade_failed",
+                "last_error_summary": summary,
+            });
+            state.mark_control_command_state(
+                &daemon_agent.agent_did,
+                &daemon_agent.controller_scope_key,
+                &payload.command_id,
+                "failed",
+                result.clone(),
+                Some(&summary),
+            )?;
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("daemon upgrade failed".to_string()),
+                result,
+            );
+        }
+    };
+    if request.restart_service {
+        state.mark_control_command_state(
+            &daemon_agent.agent_did,
+            &daemon_agent.controller_scope_key,
             &payload.command_id,
-            "ready",
-            Some("daemon upgrade completed".to_string()),
+            "restart_scheduled",
             json!({
+                "command": DAEMON_UPGRADE,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "target_version": target_version,
+                "status": "restart_scheduled",
+            }),
+            None,
+        )?;
+    }
+    let result = upgrade_daemon(config, request);
+    match result {
+        Ok(report) => {
+            let result = json!({
                 "command": DAEMON_UPGRADE,
                 "daemon_agent_did": daemon_agent.agent_did,
                 "status": "ready",
@@ -1190,23 +1260,75 @@ where
                 "service": service_label(report.service.platform),
                 "service_running": report.service.running,
                 "restarted": report.restarted,
-            }),
-        ),
-        Err(error) => send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("daemon upgrade failed".to_string()),
-            json!({
+            });
+            state.mark_control_command_state(
+                &daemon_agent.agent_did,
+                &daemon_agent.controller_scope_key,
+                &payload.command_id,
+                if report.restarted {
+                    "restart_scheduled"
+                } else {
+                    "succeeded"
+                },
+                result.clone(),
+                None,
+            )?;
+            send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "ready",
+                Some("daemon upgrade completed".to_string()),
+                result,
+            )
+        }
+        Err(error) => {
+            let summary = sanitize_public_error(&error.to_string());
+            let result = json!({
                 "command": DAEMON_UPGRADE,
                 "daemon_agent_did": daemon_agent.agent_did,
                 "target_version": target_version,
                 "error_code": "upgrade_failed",
-                "last_error_summary": sanitize_public_error(&error.to_string()),
-            }),
-        ),
+                "last_error_summary": summary,
+            });
+            state.mark_control_command_state(
+                &daemon_agent.agent_did,
+                &daemon_agent.controller_scope_key,
+                &payload.command_id,
+                "failed",
+                result.clone(),
+                Some(&summary),
+            )?;
+            send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("daemon upgrade failed".to_string()),
+                result,
+            )
+        }
+    }
+}
+
+fn duplicate_upgrade_status_message(status: &str) -> String {
+    match status {
+        "in_progress" => "daemon upgrade is already in progress",
+        "restart_scheduled" => "daemon upgrade restart was already scheduled",
+        "succeeded" => "daemon upgrade already completed",
+        "failed" => "daemon upgrade already failed",
+        _ => "daemon upgrade command already processed",
+    }
+    .to_string()
+}
+
+fn duplicate_upgrade_public_state(status: &str) -> &'static str {
+    match status {
+        "in_progress" => "upgrading",
+        "failed" => "failed",
+        _ => "ready",
     }
 }
 
@@ -1540,30 +1662,6 @@ fn verify_exchange_result(
         bail!("registration token exchange did not register agent");
     }
     Ok(())
-}
-
-fn sync_controller_scope_for_daemon<C>(
-    config: &DaemonConfig,
-    state: &DaemonState,
-    client: &C,
-    daemon_agent: &AgentDefinition,
-) -> Result<()>
-where
-    C: AgentInventoryClient,
-{
-    let auth_paths =
-        crate::im_core_adapter::agent_identity_auth_paths(config, &daemon_agent.agent_did);
-    let auth = DidAuthMaterial {
-        did_document_path: auth_paths.0,
-        private_key_path: auth_paths.1,
-        bearer_token: state.load_agent_auth_token(&daemon_agent.agent_did)?,
-    };
-    let response = client.sync_controller_scope(&daemon_agent.agent_did, &auth)?;
-    crate::agent_status::sync_controller_scope_from_response(
-        state,
-        &daemon_agent.agent_did,
-        &response,
-    )
 }
 
 fn send_command_status<O>(

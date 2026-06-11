@@ -12,7 +12,9 @@ use awiki_deamon::plugins::hermes::{
     reset_hermes_session_by_route, FakeHermesBehavior, FakeHermesGateway, HermesPromptWrapper,
     HermesRuntimePlugin, AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID,
 };
-use awiki_deamon::runtime::host::{flush_runtime_final_outbox, run_controller_text_task};
+use awiki_deamon::runtime::host::{
+    flush_runtime_final_outbox, run_controller_text_task, run_existing_runtime_task_with_config,
+};
 use awiki_deamon::runtime::{
     RuntimeAgentProfile, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
     RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
@@ -714,8 +716,10 @@ fn hermes_message_send_message_callback_respects_controller_recipient_scope() {
 }
 
 #[test]
-fn hermes_message_non_controller_text_is_rejected_before_gateway() {
+fn hermes_message_scope_mismatch_task_is_rejected_before_gateway() {
     let (root, state) = fixture();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::default();
     let plugin = HermesRuntimePlugin::new(
@@ -723,23 +727,31 @@ fn hermes_message_non_controller_text_is_rejected_before_gateway() {
         hermes_record(root.path().join("runtime/hermes/profile")),
     );
     let profile = profile(root.path().join("workspace"));
+    let task = RuntimeTask {
+        task_id: "task_msg_unauthorized".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-bob".to_string(),
+        controller_full_handle: "bob.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-bob-anpclaw-com".to_string(),
+        controller_did: "did:human:bob".to_string(),
+        sender_did: "did:human:bob".to_string(),
+        conversation_id: None,
+        text: "越权执行".to_string(),
+    };
+    task.validate().unwrap();
 
-    let error = run_controller_text_task(
+    let error = run_existing_runtime_task_with_config(
+        &config,
         &state,
         &profile,
         &plugin,
         &outbox,
-        ControllerTextMessage {
-            message_id: "msg_unauthorized".to_string(),
-            conversation_id: None,
-            sender_did: "did:human:bob".to_string(),
-            target_agent_did: "did:agent:hermes".to_string(),
-            text: "越权执行".to_string(),
-        },
+        task,
+        "run_task_msg_unauthorized",
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("controller_did"));
+    assert!(error.to_string().contains("controller scope"));
     assert!(gateway.submitted_prompts().is_empty());
     assert!(outbox.records().is_empty());
 }

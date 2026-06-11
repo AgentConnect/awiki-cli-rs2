@@ -160,6 +160,45 @@ async fn upgrade_daemon_async(
         target_version
     };
     let package = select_package(&manifest, &version)?;
+    if !version_is_newer(&package.version, CURRENT_DAEMON_VERSION) {
+        let current_dir = request.bin_root.join("current");
+        let previous_version = current_daemon_link_version(&request.bin_root)
+            .or_else(|| Some(CURRENT_DAEMON_VERSION.to_string()));
+        let service = if request.restart_service {
+            manage_service(
+                config,
+                &current_dir.join("awiki-deamon"),
+                ServiceAction::Status,
+            )
+            .unwrap_or_else(|error| ServiceStatus {
+                platform: ServicePlatform::Foreground,
+                installed: false,
+                running: false,
+                unit_path: None,
+                detail: Some(format!(
+                    "service status unavailable during no-op upgrade: {}",
+                    sanitize_error(&error.to_string())
+                )),
+            })
+        } else {
+            ServiceStatus {
+                platform: ServicePlatform::Foreground,
+                installed: false,
+                running: false,
+                unit_path: None,
+                detail: Some("service restart skipped for daemon upgrade".to_string()),
+            }
+        };
+        return Ok(DaemonUpgradeReport {
+            previous_version,
+            target_version: package.version,
+            min_supported_version: manifest.min_supported,
+            package_sha256: package.sha256,
+            manifest_url: public_url(&manifest_url),
+            restarted: false,
+            service,
+        });
+    }
     let archive_bytes = read_url_bytes(&package.url)
         .await
         .with_context(|| format!("download daemon package {}", public_url(&package.url)))?;
@@ -499,6 +538,12 @@ fn version_from_current_target(target: &Path) -> Option<String> {
         })
 }
 
+fn current_daemon_link_version(bin_root: &Path) -> Option<String> {
+    let link = bin_root.join("current").join("awiki-deamon");
+    let target = std::fs::read_link(link).ok()?;
+    version_from_current_target(&target)
+}
+
 fn restore_current_links(current_dir: &Path, backup: &CurrentLinks) -> Result<()> {
     restore_one_link(&current_dir.join("awiki-deamon"), backup.daemon.as_ref())?;
     restore_one_link(
@@ -682,6 +727,48 @@ mod tests {
         assert!(status.latest_version.is_none());
         assert!(!status.needs_upgrade);
         assert!(status.error.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_is_noop_when_latest_is_not_newer_than_running_version() {
+        let (root, config) = fixture();
+        let bin_root = root.path().join("bin");
+        let old_dir = bin_root.join(CURRENT_DAEMON_VERSION);
+        let current_dir = bin_root.join("current");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&current_dir).unwrap();
+        std::fs::write(old_dir.join("awiki-deamon"), "current").unwrap();
+        std::os::unix::fs::symlink(
+            format!("../{CURRENT_DAEMON_VERSION}/awiki-deamon"),
+            current_dir.join("awiki-deamon"),
+        )
+        .unwrap();
+        let (archive, sha) = create_package(root.path(), CURRENT_DAEMON_VERSION);
+        let manifest = write_manifest(root.path(), CURRENT_DAEMON_VERSION, &archive, &sha);
+
+        let report = upgrade_daemon(
+            &config,
+            DaemonUpgradeRequest {
+                target_version: "latest".to_string(),
+                download_base_url: format!("file://{}", manifest.display()),
+                bin_root: bin_root.clone(),
+                restart_service: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.target_version, CURRENT_DAEMON_VERSION);
+        assert!(!report.restarted);
+        assert_eq!(
+            std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
+            PathBuf::from(format!("../{CURRENT_DAEMON_VERSION}/awiki-deamon"))
+        );
+        assert!(!bin_root.read_dir().unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".upgrade-")));
     }
 
     #[cfg(unix)]

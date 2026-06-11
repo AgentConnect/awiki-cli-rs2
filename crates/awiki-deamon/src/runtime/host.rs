@@ -202,10 +202,12 @@ where
     profile.validate()?;
     task.validate()?;
     if task.agent_did != profile.agent_did
-        || task.controller_did != profile.controller_did
-        || task.sender_did != profile.controller_did
+        || task.controller_user_id != profile.controller_user_id
+        || task.controller_full_handle != profile.controller_full_handle
+        || task.controller_scope_key != profile.controller_scope_key
+        || task.sender_did != task.controller_did
     {
-        anyhow::bail!("runtime task does not match profile controller binding");
+        anyhow::bail!("runtime task does not match profile controller scope");
     }
     if run_id.trim().is_empty() {
         anyhow::bail!("run_id must not be empty");
@@ -232,7 +234,8 @@ where
     }
     let task_conversation_id = task.conversation_id.clone();
 
-    let recipient_policy = runtime_recipient_policy(state, profile)?;
+    let task_controller_did = task.controller_did.clone();
+    let recipient_policy = runtime_recipient_policy(state, profile, &task_controller_did)?;
     let mut scope = RuntimeTokenScope::new(
         profile.agent_did.clone(),
         profile.runtime_profile_id.clone(),
@@ -265,6 +268,7 @@ where
                 state,
                 outbox,
                 profile,
+                &task_controller_did,
                 &run,
                 error_code,
                 error_summary.as_str(),
@@ -315,6 +319,7 @@ where
                     state,
                     outbox,
                     profile,
+                    &task_controller_did,
                     &run,
                     error_code,
                     error_summary.as_str(),
@@ -344,12 +349,21 @@ where
                 .map(|error| error.1.clone())
                 .or_else(|| hermes_error_summary(&launch_outcome.metadata))
                 .unwrap_or_else(|| "Hermes run failed".to_string());
-            emit_hermes_failure_outputs(state, outbox, profile, &run, &error_code, &error_summary)?;
+            emit_hermes_failure_outputs(
+                state,
+                outbox,
+                profile,
+                &task_controller_did,
+                &run,
+                &error_code,
+                &error_summary,
+            )?;
         } else {
             let final_text = hermes_final_text(&launch_outcome.metadata)?;
             if let Some(final_text) = final_text.as_deref() {
                 let final_record = runtime_final_outbox_record(
                     profile,
+                    &task_controller_did,
                     &run,
                     task_conversation_id.as_deref(),
                     final_text,
@@ -376,6 +390,7 @@ where
                     state,
                     outbox,
                     profile,
+                    &task_controller_did,
                     &run,
                     "final_text_missing",
                     error_summary,
@@ -594,6 +609,7 @@ fn mark_runtime_final_delivered(
 
 fn runtime_final_outbox_record(
     profile: &RuntimeAgentProfile,
+    controller_did: &str,
     run: &RuntimeRun,
     conversation_id: Option<&str>,
     final_text: &str,
@@ -613,7 +629,7 @@ fn runtime_final_outbox_record(
         agent_did: profile.agent_did.clone(),
         runtime_profile_id: profile.runtime_profile_id.clone(),
         controller_scope_key: profile.controller_scope_key.clone(),
-        controller_did: profile.controller_did.clone(),
+        controller_did: controller_did.to_string(),
         conversation_id: conversation_id.map(str::to_string),
         final_text: final_text.to_string(),
         security: "default_plain".to_string(),
@@ -688,6 +704,7 @@ fn emit_hermes_failure_outputs(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     profile: &RuntimeAgentProfile,
+    controller_did: &str,
     run: &RuntimeRun,
     error_code: &str,
     error_summary: &str,
@@ -699,9 +716,9 @@ fn emit_hermes_failure_outputs(
         &context,
         &crate::outbox::RuntimeMessageSend {
             target: crate::outbox::RuntimeMessageTarget::Direct {
-                recipient: profile.controller_did.clone(),
-                raw_recipient: profile.controller_did.clone(),
-                resolved_did: Some(profile.controller_did.clone()),
+                recipient: controller_did.to_string(),
+                raw_recipient: controller_did.to_string(),
+                resolved_did: Some(controller_did.to_string()),
             },
             text: failure_text,
             file_path: None,
@@ -935,11 +952,11 @@ fn persist_cli_driver_run(
         controller_user_id: profile.controller_user_id.clone(),
         controller_full_handle: profile.controller_full_handle.clone(),
         controller_scope_key: profile.controller_scope_key.clone(),
-        controller_did: profile.controller_did.clone(),
+        controller_did: task.controller_did.clone(),
         conversation_id: task.conversation_id.clone(),
         route_key: generic_cli_route_key(
             &run.agent_did,
-            &profile.controller_did,
+            &profile.controller_scope_key,
             task.conversation_id.as_deref(),
         ),
         workspace_id: profile.workspace_id.clone(),
@@ -965,7 +982,7 @@ fn persist_cli_driver_run(
         native_session_id: None,
         synthetic_session_id: Some(generic_cli_route_key(
             &run.agent_did,
-            &profile.controller_did,
+            &profile.controller_scope_key,
             task.conversation_id.as_deref(),
         )),
         status: launch_outcome.status.as_str().to_string(),
@@ -980,11 +997,11 @@ fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::
 
 fn generic_cli_route_key(
     agent_did: &str,
-    controller_did: &str,
+    controller_scope_key: &str,
     conversation_id: Option<&str>,
 ) -> String {
     format!(
-        "cli:{agent_did}:{controller_did}:{}:message-run",
+        "cli:{agent_did}:{controller_scope_key}:{}:message-run",
         conversation_id.unwrap_or("no-conversation")
     )
 }
@@ -1013,15 +1030,16 @@ fn fallback_final_text(metadata: &Value) -> Result<Option<String>> {
 fn runtime_recipient_policy(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
+    controller_did: &str,
 ) -> Result<RecipientPolicy> {
     if profile.runtime_plugin_id == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
-        return Ok(RecipientPolicy::hermes_default(&profile.controller_did));
+        return Ok(RecipientPolicy::hermes_default(controller_did));
     }
     match state.load_cli_runtime_profile(&profile.runtime_profile_id) {
         Ok(cli_profile) => {
-            RecipientPolicy::from_json(&cli_profile.recipient_policy_json, &profile.controller_did)
+            RecipientPolicy::from_json(&cli_profile.recipient_policy_json, controller_did)
         }
-        Err(_) => Ok(RecipientPolicy::controller_only(&profile.controller_did)),
+        Err(_) => Ok(RecipientPolicy::controller_only(controller_did)),
     }
 }
 

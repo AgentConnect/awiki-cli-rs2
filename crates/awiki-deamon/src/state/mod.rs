@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 16;
+const DAEMON_SCHEMA_VERSION: i64 = 17;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -364,6 +364,21 @@ pub struct RuntimeAgentCreateRequestRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlCommandStateRecord {
+    pub daemon_agent_did: String,
+    pub controller_scope_key: String,
+    pub command_id: String,
+    pub command: String,
+    pub message_id: String,
+    pub status: String,
+    pub target_version: Option<String>,
+    pub result_json: Value,
+    pub error_summary: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 impl RuntimeRetryQueueRecord {
     pub fn validate(&self) -> Result<()> {
         for (field_name, value) in [
@@ -433,6 +448,35 @@ impl RuntimeAgentCreateRequestRecord {
         }
         Ok(())
     }
+}
+
+impl ControlCommandStateRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("controller_scope_key", self.controller_scope_key.as_str()),
+            ("command_id", self.command_id.as_str()),
+            ("command", self.command.as_str()),
+            ("message_id", self.message_id.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        validate_control_command_status(&self.status)?;
+        Ok(())
+    }
+}
+
+fn validate_control_command_status(status: &str) -> Result<()> {
+    if !matches!(
+        status,
+        "in_progress" | "restart_scheduled" | "succeeded" | "failed"
+    ) {
+        bail!("control command status is unsupported");
+    }
+    Ok(())
 }
 
 impl RuntimeDaemonBindingRecord {
@@ -1691,6 +1735,142 @@ WHERE daemon_agent_did = ?1
             )
             .optional()
             .context("load runtime agent create request")
+    }
+
+    pub fn try_begin_control_command(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+        command: &str,
+        message_id: &str,
+        target_version: Option<&str>,
+    ) -> Result<Option<ControlCommandStateRecord>> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command_id", command_id),
+            ("command", command),
+            ("message_id", message_id),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let inserted = connection.execute(
+            r#"
+INSERT OR IGNORE INTO control_command_state (
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, 'in_progress', ?6, '{}', NULL, ?7, ?7)
+"#,
+            rusqlite::params![
+                daemon_agent_did,
+                controller_scope_key,
+                command_id,
+                command,
+                message_id,
+                target_version,
+                now,
+            ],
+        )?;
+        if inserted > 0 {
+            Ok(None)
+        } else {
+            self.load_control_command_state(daemon_agent_did, controller_scope_key, command_id)
+        }
+    }
+
+    pub fn load_control_command_state(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+    ) -> Result<Option<ControlCommandStateRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+FROM control_command_state
+WHERE daemon_agent_did = ?1
+  AND controller_scope_key = ?2
+  AND command_id = ?3
+"#,
+                rusqlite::params![daemon_agent_did, controller_scope_key, command_id],
+                control_command_state_record_from_row,
+            )
+            .optional()
+            .context("load control command state")
+    }
+
+    pub fn mark_control_command_state(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+        status: &str,
+        result_json: Value,
+        error_summary: Option<&str>,
+    ) -> Result<()> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command_id", command_id),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        validate_control_command_status(status)?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE control_command_state
+SET status = ?1,
+    result_json = ?2,
+    error_summary = ?3,
+    updated_at_ms = ?4
+WHERE daemon_agent_did = ?5
+  AND controller_scope_key = ?6
+  AND command_id = ?7
+"#,
+            rusqlite::params![
+                status,
+                result_json.to_string(),
+                error_summary,
+                current_time_millis()?,
+                daemon_agent_did,
+                controller_scope_key,
+                command_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("control command state does not exist: {command_id}");
+        }
+        Ok(())
     }
 
     pub fn list_runtime_agent_definitions_for_daemon(
@@ -3321,6 +3501,24 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
         ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
 
+        CREATE TABLE IF NOT EXISTS control_command_state (
+            daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            command TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            target_version TEXT,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_scope_key, command_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_control_command_state_message
+        ON control_command_state(daemon_agent_did, message_id);
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -3342,6 +3540,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_final_outbox_v14(connection)?;
     migrate_runtime_final_plain_delivery_v15(connection)?;
     migrate_controller_scope_v16(connection)?;
+    migrate_control_command_state_v17(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -3349,6 +3548,31 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_control_command_state_v17(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS control_command_state (
+            daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            command TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            target_version TEXT,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_scope_key, command_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_control_command_state_message
+        ON control_command_state(daemon_agent_did, message_id);
+        "#,
     )?;
     Ok(())
 }
@@ -4399,6 +4623,35 @@ fn runtime_agent_create_request_record_from_row(
     })
 }
 
+fn control_command_state_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ControlCommandStateRecord> {
+    let result_json_raw: String = row.get(7)?;
+    let result_json = serde_json::from_str(&result_json_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            result_json_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    Ok(ControlCommandStateRecord {
+        daemon_agent_did: row.get(0)?,
+        controller_scope_key: row.get(1)?,
+        command_id: row.get(2)?,
+        command: row.get(3)?,
+        message_id: row.get(4)?,
+        status: row.get(5)?,
+        target_version: row.get(6)?,
+        result_json,
+        error_summary: row.get(8)?,
+        created_at_ms: row.get(9)?,
+        updated_at_ms: row.get(10)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4431,6 +4684,7 @@ mod tests {
             "runtime_retry_queue",
             "runtime_agent_create_request",
             "runtime_final_outbox",
+            "control_command_state",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -4441,6 +4695,67 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing table {table}");
         }
+    }
+
+    #[test]
+    fn control_command_state_roundtrips_and_deduplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        let first = state
+            .try_begin_control_command(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+                "daemon.upgrade",
+                "msg_upgrade_1",
+                Some("latest"),
+            )
+            .unwrap();
+        assert!(first.is_none());
+
+        let duplicate = state
+            .try_begin_control_command(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+                "daemon.upgrade",
+                "msg_upgrade_1",
+                Some("latest"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicate.status, "in_progress");
+        assert_eq!(duplicate.target_version.as_deref(), Some("latest"));
+
+        state
+            .mark_control_command_state(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+                "restart_scheduled",
+                serde_json::json!({
+                    "command": "daemon.upgrade",
+                    "status": "ready",
+                    "version": "0.2.0",
+                    "restarted": true,
+                }),
+                None,
+            )
+            .unwrap();
+
+        let stored = state
+            .load_control_command_state(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "restart_scheduled");
+        assert_eq!(stored.result_json["version"], "0.2.0");
     }
 
     #[test]

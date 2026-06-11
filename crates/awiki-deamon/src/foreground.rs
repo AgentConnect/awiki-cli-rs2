@@ -22,6 +22,7 @@ use crate::cli_wrapper::CliWrapperRequest;
 use crate::commands::{
     handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
 };
+use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::inbox::ControllerTextMessage;
 use crate::local_rpc::call_uds_once;
 #[cfg(unix)]
@@ -422,10 +423,12 @@ fn validate_retry_task_binding(
     profile: &crate::runtime::RuntimeAgentProfile,
 ) -> Result<()> {
     if task.agent_did != profile.agent_did
-        || task.controller_did != profile.controller_did
-        || task.sender_did != profile.controller_did
+        || task.controller_user_id != profile.controller_user_id
+        || task.controller_full_handle != profile.controller_full_handle
+        || task.controller_scope_key != profile.controller_scope_key
+        || task.sender_did != task.controller_did
     {
-        bail!("runtime retry task does not match profile binding");
+        bail!("runtime retry task does not match profile controller scope");
     }
     Ok(())
 }
@@ -474,7 +477,13 @@ async fn route_message(
                 .clone()
                 .unwrap_or_else(|| "application/json".to_string());
             if is_attachment_manifest_payload(&content_type, payload) {
-                ensure_runtime_controller_sender(state, target_agent_did, &sender_did)?;
+                let verified_sender = verify_runtime_controller_sender(
+                    config,
+                    state,
+                    registration,
+                    target_agent_did,
+                    &sender_did,
+                )?;
                 let task_text = attachment_runtime_prompt_text(
                     config,
                     target_client,
@@ -493,6 +502,7 @@ async fn route_message(
                     message.id.as_str(),
                     conversation_id,
                     sender_did,
+                    Some(verified_sender),
                     task_text,
                 )?;
                 return Ok(true);
@@ -516,7 +526,7 @@ async fn route_message(
                 payload: payload.clone(),
             };
             if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
-                run_runtime_task_command(config, state, im_core, payload_message)?;
+                run_runtime_task_command(config, state, im_core, registration, payload_message)?;
             } else {
                 let outbox = ImCoreAgentOutbox::new(target_client.clone());
                 let outcome = handle_agent_payload_message(
@@ -543,6 +553,7 @@ async fn route_message(
                 message.id.as_str(),
                 conversation_id,
                 sender_did,
+                None,
                 text.clone(),
             )?;
             Ok(true)
@@ -572,8 +583,23 @@ fn route_runtime_controller_text(
     message_id: &str,
     conversation_id: Option<String>,
     sender_did: String,
+    verified_sender: Option<VerifiedControllerSender>,
     text: String,
 ) -> Result<()> {
+    let _verified_sender = match verified_sender {
+        Some(verified_sender) => verified_sender,
+        None => {
+            let registration =
+                UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
+            verify_runtime_controller_sender(
+                config,
+                state,
+                &registration,
+                target_agent_did,
+                &sender_did,
+            )?
+        }
+    };
     let outbox = ImCoreAgentOutbox::new(target_client.clone());
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
     let runtime_outbox = ControllerRuntimeOutbox::new(
@@ -602,16 +628,26 @@ fn route_runtime_controller_text(
     Ok(())
 }
 
-fn ensure_runtime_controller_sender(
+fn verify_runtime_controller_sender<C>(
+    config: &DaemonConfig,
     state: &DaemonState,
+    registration: &C,
     target_agent_did: &str,
     sender_did: &str,
-) -> Result<()> {
-    let profile = state.load_runtime_agent_profile(target_agent_did)?;
-    if sender_did != profile.controller_did {
-        bail!("message sender is not the configured controller_did");
+) -> Result<VerifiedControllerSender>
+where
+    C: crate::registration::AgentInventoryClient,
+{
+    let binding = state
+        .load_runtime_daemon_binding(target_agent_did)?
+        .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
+    let daemon_agent = state.load_agent_definition(&binding.daemon_agent_did)?;
+    let verified =
+        verify_daemon_controller_sender(config, state, registration, &daemon_agent, sender_did)?;
+    if binding.controller_scope_key != verified.controller_scope_key {
+        bail!("runtime controller scope does not match daemon controller scope");
     }
-    Ok(())
+    Ok(verified)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1194,6 +1230,7 @@ fn run_runtime_task_command(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    registration: &UserServiceAgentRegistrationClient,
     message: IncomingAgentPayloadMessage,
 ) -> Result<()> {
     let payload = RuntimeTaskSubmitPayload::parse(&message.payload)?;
@@ -1202,6 +1239,13 @@ fn run_runtime_task_command(
         .as_deref()
         .unwrap_or(&message.target_agent_did)
         .to_string();
+    let verified_sender = verify_runtime_controller_sender(
+        config,
+        state,
+        registration,
+        &target_agent_did,
+        &message.sender_did,
+    )?;
     let profile = state.load_runtime_agent_profile(&target_agent_did)?;
     let message_id = payload.message_id(&message.message_id);
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, &target_agent_did)?;
@@ -1218,7 +1262,7 @@ fn run_runtime_task_command(
     let task_message = ControllerTextMessage {
         message_id,
         conversation_id: message.conversation_id,
-        sender_did: message.sender_did,
+        sender_did: verified_sender.sender_did,
         target_agent_did,
         text: payload.text,
     };
@@ -2145,8 +2189,8 @@ mod tests {
     use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
     use crate::registration::{
         AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
-        AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, DidAuthMaterial,
-        RegistrationToken,
+        AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
+        DidAuthMaterial, RegistrationToken,
     };
     use crate::runtime::RuntimeAgentProfile;
     use crate::state::HermesProfileRecord;
@@ -2200,6 +2244,24 @@ mod tests {
                 "controller_did": "did:human:alice",
                 "updated_count": 1,
             }))
+        }
+
+        fn verify_controller_sender(
+            &self,
+            _daemon_agent_did: &str,
+            sender_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<ControllerSenderScope> {
+            if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+                Ok(ControllerSenderScope {
+                    controller_user_id: "user-alice".to_string(),
+                    controller_full_handle: "alice.anpclaw.com".to_string(),
+                    controller_did: sender_did.to_string(),
+                    sender_did: sender_did.to_string(),
+                })
+            } else {
+                anyhow::bail!("controller_scope_mismatch")
+            }
         }
 
         fn update_latest_status(
@@ -2653,7 +2715,7 @@ mod tests {
     }
 
     #[test]
-    fn hermes_foreground_non_controller_text_is_rejected_before_gateway() {
+    fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
         let (root, config, state) = fixture();
         let profile = profile(root.path());
         state.upsert_runtime_agent_profile(&profile).unwrap();
@@ -2663,25 +2725,54 @@ mod tests {
         let outbox = MemoryRuntimeOutbox::default();
         let gateway = FakeHermesGateway::default();
 
-        let error = run_runtime_text_message_with_gateway(
+        let result = run_runtime_text_message_with_gateway(
             &config,
             &state,
             &outbox,
             ControllerTextMessage {
-                message_id: "msg_foreground_unauthorized".to_string(),
-                conversation_id: Some("direct:did:human:bob".to_string()),
-                sender_did: "did:human:bob".to_string(),
+                message_id: "msg_foreground_rotated_controller".to_string(),
+                conversation_id: Some("direct:did:human:alice-new".to_string()),
+                sender_did: "did:human:alice-new".to_string(),
                 target_agent_did: "did:agent:hermes".to_string(),
-                text: "unauthorized foreground route".to_string(),
+                text: "rotated controller foreground route".to_string(),
             },
             || gateway.clone(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("controller_did"));
-        assert!(gateway.created_sessions().is_empty());
-        assert!(gateway.submitted_prompts().is_empty());
-        assert!(outbox.records().is_empty());
+        assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
+        assert_eq!(gateway.submitted_prompts().len(), 1);
+        assert_eq!(
+            outbox.records()[0].recipient.as_deref(),
+            Some("did:human:alice-new")
+        );
+    }
+
+    #[test]
+    fn foreground_controller_scope_verification_rejects_unowned_sender_before_gateway() {
+        let (root, config, state) = fixture();
+        let created = create_hermes_runtime(root.path(), &config, &state);
+        let registration = MockRegistrationClient;
+
+        let verified = verify_runtime_controller_sender(
+            &config,
+            &state,
+            &registration,
+            &created.agent_did,
+            "did:human:alice-new",
+        )
+        .unwrap();
+        assert_eq!(verified.controller_did, "did:human:alice-new");
+
+        let error = verify_runtime_controller_sender(
+            &config,
+            &state,
+            &registration,
+            &created.agent_did,
+            "did:human:bob",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("controller_scope_mismatch"));
     }
 
     #[test]

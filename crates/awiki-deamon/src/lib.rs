@@ -4,6 +4,7 @@ pub mod archive;
 pub mod cli_wrapper;
 pub mod commands;
 pub mod config;
+pub mod controller_scope;
 pub mod daemon_cli;
 pub mod foreground;
 pub mod im_core_adapter;

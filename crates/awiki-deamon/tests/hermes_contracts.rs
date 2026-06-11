@@ -89,7 +89,7 @@ fn hermes_msg_send_recipient_scope_is_controlled_by_runtime_token_scope() {
 }
 
 #[test]
-fn hermes_only_controller_text_can_enter_runtime_execution() {
+fn hermes_controller_text_route_preserves_verified_sender_did() {
     let profile = hermes_profile();
     let routed = route_controller_text_task(
         &profile,
@@ -107,18 +107,19 @@ fn hermes_only_controller_text_can_enter_runtime_execution() {
     assert_eq!(routed.controller_did, "did:human:alice");
     assert_eq!(routed.agent_did, "did:agent:hermes");
 
-    let non_controller = route_controller_text_task(
+    let rotated = route_controller_text_task(
         &profile,
         ControllerTextMessage {
             message_id: "msg_002".to_string(),
             conversation_id: None,
-            sender_did: "did:human:bob".to_string(),
+            sender_did: "did:human:alice-new".to_string(),
             target_agent_did: "did:agent:hermes".to_string(),
-            text: "越权执行".to_string(),
+            text: "恢复身份后的控制者消息".to_string(),
         },
     )
-    .unwrap_err();
-    assert!(non_controller.to_string().contains("controller_did"));
+    .unwrap();
+    assert_eq!(rotated.controller_did, "did:human:alice-new");
+    assert_eq!(rotated.controller_scope_key, profile.controller_scope_key);
 
     let wrong_target = route_controller_text_task(
         &profile,

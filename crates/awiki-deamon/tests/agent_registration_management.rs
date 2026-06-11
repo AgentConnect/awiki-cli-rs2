@@ -9,8 +9,8 @@ use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
-    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, DidAuthMaterial,
-    RegistrationToken, RegistrationTokenMetadata,
+    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
+    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::runtime::{RuntimeRun, RuntimeRunStatus};
 use awiki_deamon::state::{HermesNativeSessionRecord, HermesSessionRoute};
@@ -88,6 +88,24 @@ impl AgentInventoryClient for MockRegistrationClient {
             "controller_did": "did:human:alice",
             "updated_count": 1,
         }))
+    }
+
+    fn verify_controller_sender(
+        &self,
+        _daemon_agent_did: &str,
+        sender_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<ControllerSenderScope> {
+        if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+            Ok(ControllerSenderScope {
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_did: sender_did.to_string(),
+                sender_did: sender_did.to_string(),
+            })
+        } else {
+            anyhow::bail!("controller_scope_mismatch")
+        }
     }
 
     fn update_latest_status(
@@ -1364,7 +1382,9 @@ fn non_controller_runtime_create_command_is_rejected_without_creating_agent() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("controller_did"));
+    assert!(error
+        .chain()
+        .any(|cause| cause.to_string().contains("controller_scope_mismatch")));
     assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
     assert!(outbox.agent_statuses().is_empty());
 }

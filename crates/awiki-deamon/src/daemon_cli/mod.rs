@@ -462,6 +462,7 @@ mod tests {
     use crate::agent::{agent_data_paths, generate_agent_identity, AgentKind};
     use crate::registration::{
         AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
+        ControllerSenderScope,
     };
     use std::sync::{Arc, Mutex};
 
@@ -551,6 +552,24 @@ mod tests {
                 "controller_did": "did:human:alice",
                 "updated_count": 1,
             }))
+        }
+
+        fn verify_controller_sender(
+            &self,
+            _daemon_agent_did: &str,
+            sender_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<ControllerSenderScope> {
+            if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+                Ok(ControllerSenderScope {
+                    controller_user_id: "user-alice".to_string(),
+                    controller_full_handle: "alice.anpclaw.com".to_string(),
+                    controller_did: sender_did.to_string(),
+                    sender_did: sender_did.to_string(),
+                })
+            } else {
+                anyhow::bail!("controller_scope_mismatch")
+            }
         }
 
         fn update_latest_status(

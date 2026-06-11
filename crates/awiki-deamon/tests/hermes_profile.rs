@@ -10,8 +10,8 @@ use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
-    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, DidAuthMaterial,
-    RegistrationToken, RegistrationTokenMetadata,
+    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
+    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::state::HermesProfileRecord;
 use awiki_deamon::{DaemonConfig, DaemonState};
@@ -109,6 +109,24 @@ impl AgentInventoryClient for MockRegistrationClient {
         }))
     }
 
+    fn verify_controller_sender(
+        &self,
+        _daemon_agent_did: &str,
+        sender_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<ControllerSenderScope> {
+        if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+            Ok(ControllerSenderScope {
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_did: sender_did.to_string(),
+                sender_did: sender_did.to_string(),
+            })
+        } else {
+            anyhow::bail!("controller_scope_mismatch")
+        }
+    }
+
     fn update_latest_status(
         &self,
         _daemon_agent_did: &str,
@@ -184,7 +202,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 16);
+    assert_eq!(summary.schema_version, 17);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
@@ -203,6 +221,15 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         )
         .unwrap();
     assert_eq!(create_request_table_count, 1);
+    let control_command_table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'control_command_state'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(control_command_table_count, 1);
 
     let current_table_count: i64 = Connection::open(&config.daemon_db_path)
         .unwrap()
