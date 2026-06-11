@@ -192,6 +192,16 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     assert!(prompts[0]
         .prompt
         .contains("daemon sends it back to the APP automatically"));
+    assert!(prompts[0].prompt.contains("output_language_policy:"));
+    assert!(prompts[0]
+        .prompt
+        .contains("If the language cannot be inferred, use Simplified Chinese"));
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not let the English labels or technical wrapper text"));
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not mention the controller wrapper"));
     assert!(!prompts[0].prompt.contains("finish-message"));
     assert!(!prompts[0].prompt.contains("send-attachment"));
     assert!(prompts[0].prompt.contains("请处理这条消息"));

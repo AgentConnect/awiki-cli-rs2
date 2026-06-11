@@ -266,7 +266,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
                     "handle": "@alice-hermes",
                     "runtime": "hermes",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Alice Hermes"
                 }
             }),
         },
@@ -282,6 +283,13 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert_eq!(
         runtime_agent.runtime_plugin_id.as_deref(),
         Some(HERMES_RUNTIME_PLUGIN_ID)
+    );
+    let runtime_profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        runtime_profile.display_name.as_deref(),
+        Some("Alice Hermes")
     );
 
     let hermes = state.load_hermes_profile(&created.agent_did).unwrap();
@@ -306,6 +314,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     .unwrap();
 
     assert!(soul.contains("Awiki Hermes Runtime Agent"));
+    assert!(soul.contains("始终跟随 controller 的会话语言"));
+    assert!(soul.contains("默认使用简体中文"));
     assert!(runtime_model_config.contains("provider: custom"));
     assert!(runtime_model_config.contains("default: gpt-5.2"));
     assert!(profile_json.contains("\"run_capability_token_persisted\": false"));

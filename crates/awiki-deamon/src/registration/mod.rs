@@ -17,6 +17,7 @@ pub struct AgentRegistrationExchangeRequest {
     pub agent_kind: AgentKind,
     pub controller_did: String,
     pub handle: String,
+    pub name: Option<String>,
     pub did_document: Value,
     pub endpoint_url: Option<String>,
     pub key_algorithm: String,
@@ -139,6 +140,7 @@ impl fmt::Debug for AgentRegistrationExchangeRequest {
             .field("agent_kind", &self.agent_kind)
             .field("controller_did", &self.controller_did)
             .field("handle", &self.handle)
+            .field("name", &self.name)
             .field("did_document", &self.did_document)
             .field("endpoint_url", &self.endpoint_url)
             .field("key_algorithm", &self.key_algorithm)
@@ -536,6 +538,7 @@ fn exchange_token_body(request: AgentRegistrationExchangeRequest) -> Value {
             "agent_kind": request.agent_kind.as_str(),
             "controller_did": request.controller_did,
             "handle": request.handle,
+            "name": request.name,
             "did_document": request.did_document,
             "endpoint_url": request.endpoint_url,
             "key_algorithm": request.key_algorithm,

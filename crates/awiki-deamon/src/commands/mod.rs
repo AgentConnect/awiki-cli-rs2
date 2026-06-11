@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent::{
-    agent_data_paths, generate_agent_identity, generate_product_handle, normalize_handle,
-    resolve_runtime, runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
+    agent_data_paths, generate_agent_identity, normalize_handle, resolve_runtime,
+    runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
     GENERIC_CLI_RUNTIME_PLUGIN_ID,
 };
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
@@ -366,6 +366,7 @@ where
         agent_kind: AgentKind::Daemon,
         controller_did: controller_did.to_string(),
         handle: handle.clone(),
+        name: None,
         did_document: identity.did_document.clone(),
         endpoint_url: identity.endpoint_url.clone(),
         key_algorithm: identity.key_algorithm.clone(),
@@ -447,12 +448,21 @@ where
         .as_ref()
         .map(|_| workspace_id(&handle))
         .transpose()?;
+    let display_name = payload
+        .args
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("runtime.agent.create display_name is required")?
+        .to_string();
     let identity = generate_agent_identity(config, AgentKind::Runtime, &handle)?;
     let exchange = registration_client.exchange_token(AgentRegistrationExchangeRequest {
         token: RegistrationToken::new(payload.args.registration_token.clone())?,
         agent_kind: AgentKind::Runtime,
         controller_did: controller_did.to_string(),
         handle: handle.clone(),
+        name: Some(display_name.clone()),
         did_document: identity.did_document.clone(),
         endpoint_url: identity.endpoint_url.clone(),
         key_algorithm: identity.key_algorithm.clone(),
@@ -478,7 +488,7 @@ where
         controller_did: exchange.controller_did.clone(),
         runtime_profile_id: profile_id.clone(),
         runtime_plugin_id: plugin_id.clone(),
-        display_name: Some(exchange.handle.clone()),
+        display_name: Some(display_name.clone()),
         workspace_id: workspace_id.clone(),
         workspace_root,
         workspace_mode: workspace_id.as_ref().map(|_| WorkspaceMode::SharedRoot),
@@ -572,11 +582,7 @@ where
         workspace_id,
         registration_token_id: exchange.token_id,
         runtime_alias: payload.args.runtime.clone(),
-        display_name: payload
-            .args
-            .display_name
-            .clone()
-            .unwrap_or_else(|| "Hermes".to_string()),
+        display_name,
     };
     if let Some(client_request_id) = client_request_id {
         let now = crate::security::runtime_token::current_time_millis()?;
@@ -608,14 +614,7 @@ fn runtime_handle_from_args(args: &RuntimeAgentCreateArgs) -> Result<String> {
     if let Some(handle) = args.handle.as_deref() {
         return normalize_handle(handle);
     }
-    let mut last_error = None;
-    for _ in 0..3 {
-        match generate_product_handle("awiki-agent-") {
-            Ok(handle) => return Ok(handle),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("failed to generate runtime handle")))
+    bail!("runtime.agent.create handle is required")
 }
 
 fn validate_optional_object(value: Option<&Value>, field_name: &str) -> Result<()> {

@@ -807,15 +807,15 @@ fn render_attachment_runtime_prompt(
     attachments: &[RuntimeInboundAttachment],
 ) -> String {
     let mut text = String::new();
-    text.push_str("Controller message:\n");
+    text.push_str("控制者消息:\n");
     if caption.trim().is_empty() {
-        text.push_str("<empty>\n");
+        text.push_str("（控制者只发送了附件，没有输入文本消息。）\n");
     } else {
         text.push_str(caption.trim());
         text.push('\n');
     }
     text.push('\n');
-    text.push_str("Attachments:\n");
+    text.push_str("附件资源:\n");
     for (index, attachment) in attachments.iter().enumerate() {
         text.push_str(&format!(
             "{}. attachment_id: {}\n",
@@ -842,7 +842,7 @@ fn render_attachment_runtime_prompt(
     }
     text.push('\n');
     text.push_str(
-        "Attachment handling: these files are available as controller-provided resources. Do not read or inspect them unless the controller message or conversation context indicates they should be used.\n",
+        "附件处理规则：这些文件是控制者提供的资源。只有当控制者消息或会话上下文表明需要使用文件时，才读取或检查这些文件。\n",
     );
     text
 }
@@ -2345,7 +2345,8 @@ mod tests {
                         "runtime": "hermes",
                         "workspace": root.join("workspace").display().to_string(),
                         "controller_did": "did:human:alice",
-                        "registration_token": "tok_runtime_secret_value"
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Alice Hermes"
                     }
                 }),
             },
@@ -2830,14 +2831,14 @@ mod tests {
             }],
         );
 
-        assert!(prompt.contains("Controller message:"));
+        assert!(prompt.contains("控制者消息:"));
         assert!(prompt.contains("读取我发给你的文件"));
         assert!(prompt.contains("attachment_id: att_1"));
         assert!(prompt.contains("filename: notes.md"));
         assert!(prompt.contains("mime_type: text/markdown"));
         assert!(prompt
             .contains("local_path: /tmp/awiki-state/runtime-attachments/agent/msg/att/notes.md"));
-        assert!(prompt.contains("Do not read or inspect them unless"));
+        assert!(prompt.contains("只有当控制者消息或会话上下文表明需要使用文件时"));
         assert!(!prompt.contains("content:"));
         assert!(!prompt.contains("```"));
     }
@@ -2858,10 +2859,12 @@ mod tests {
             }],
         );
 
-        assert!(prompt.contains("Controller message:\n<empty>"));
+        assert!(prompt.contains("控制者消息:\n（控制者只发送了附件，没有输入文本消息。）"));
         assert!(prompt.contains("filename: image.png"));
         assert!(prompt.contains("mime_type: image/png"));
-        assert!(prompt.contains("Attachment handling:"));
+        assert!(prompt.contains("附件处理规则："));
+        assert!(!prompt.contains("Controller message:"));
+        assert!(!prompt.contains("<empty>"));
     }
 
     #[test]

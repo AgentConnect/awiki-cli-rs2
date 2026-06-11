@@ -315,7 +315,8 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
                     "runtime": "claude-code",
                     "workspace": root.path().join("workspace").display().to_string(),
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Alice Coder"
                 },
                 "reply_policy": {
                     "progress": true,
@@ -406,7 +407,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
 }
 
 #[test]
-fn runtime_agent_create_generates_product_handle_when_app_omits_handle() {
+fn runtime_agent_create_rejects_missing_handle() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
@@ -420,7 +421,7 @@ fn runtime_agent_create_generates_product_handle_when_app_omits_handle() {
     .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
 
-    let outcome = handle_agent_payload_message(
+    let error = handle_agent_payload_message(
         &config,
         &state,
         &registration,
@@ -449,26 +450,12 @@ fn runtime_agent_create_generates_product_handle_when_app_omits_handle() {
             }),
         },
     )
-    .unwrap();
+    .unwrap_err();
 
-    let created = expect_created(outcome);
-    assert!(created.handle.starts_with("awiki-agent-"));
-    assert_eq!(created.handle.len(), "awiki-agent-".len() + 16);
-    assert_eq!(created.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
-
-    let requests = registration.requests();
-    assert_eq!(requests[1].handle, created.handle);
-    let status = outbox.agent_statuses().pop().unwrap();
-    assert_eq!(
-        status.payload["result"]["runtime_agent_did"],
-        created.agent_did
-    );
-    assert_eq!(
-        status.payload["result"]["daemon_agent_did"],
-        daemon.agent_did
-    );
-    assert_eq!(status.payload["result"]["runtime"], "hermes");
-    assert_eq!(status.payload["result"]["display_name"], "Hermes");
+    assert!(error
+        .to_string()
+        .contains("runtime.agent.create handle is required"));
+    assert_eq!(registration.requests().len(), 1);
 }
 
 #[test]
@@ -498,6 +485,7 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
             "command": "runtime.agent.create",
             "target_agent_kind": "runtime",
             "args": {
+                "handle": "@alice-hermes-once",
                 "runtime": "hermes",
                 "controller_did": "did:human:alice",
                 "registration_token": "tok_runtime_secret_value",
@@ -804,7 +792,8 @@ fn runtime_session_reset_rejects_runtime_owned_by_another_daemon() {
                     "handle": "@alice-hermes-daemon-one",
                     "runtime": "generic-cli",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Generic CLI"
                 }
             }),
         },
@@ -875,7 +864,8 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
                     "handle": "@alice-retry-runtime",
                     "runtime": "generic-cli",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Retry Runtime"
                 }
             }),
         },
@@ -1108,7 +1098,8 @@ fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
                         ]
                     },
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Generic CLI"
                 }
             }),
         },
@@ -1190,7 +1181,8 @@ fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() 
                         "handle": format!("@alice-{runtime}"),
                         "runtime": runtime,
                         "controller_did": "did:human:alice",
-                        "registration_token": "tok_runtime_secret_value"
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": format!("{runtime} Runtime")
                     }
                 }),
             },
@@ -1257,7 +1249,8 @@ fn runtime_agent_create_defaults_generic_cli_driver_to_codex() {
                     "handle": "@alice-generic-default",
                     "runtime": "generic-cli",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Generic Default"
                 }
             }),
         },
@@ -1315,7 +1308,8 @@ fn runtime_agent_create_rejects_invalid_generic_cli_contract_fields() {
                     "driver_id": "codex",
                     "driver_config": ["not", "an", "object"],
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Invalid Generic"
                 }
             }),
         },
@@ -1362,7 +1356,8 @@ fn non_controller_runtime_create_command_is_rejected_without_creating_agent() {
                     "handle": "alice-awiki-coder",
                     "runtime": "claude-code",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Unauthorized Runtime"
                 }
             }),
         },
@@ -1412,7 +1407,8 @@ fn registration_token_failure_sends_failed_status_without_persisting_runtime_age
                     "handle": "alice-awiki-coder",
                     "runtime": "claude-code",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Failed Runtime"
                 }
             }),
         },
@@ -1464,7 +1460,8 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
                     "handle": "@alice-inbox-runtime",
                     "runtime": "claude-code",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Inbox Runtime"
                 }
             }),
         },
@@ -1745,7 +1742,8 @@ fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
                         "handle": "@alice-delete-runtime",
                         "runtime": "hermes",
                         "controller_did": "did:human:alice",
-                        "registration_token": "tok_runtime_secret_value"
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Delete Runtime"
                     }
                 }),
             },
@@ -1855,7 +1853,8 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
                         "handle": "@alice-daemon-delete-runtime",
                         "runtime": "hermes",
                         "controller_did": "did:human:alice",
-                        "registration_token": "tok_runtime_secret_value"
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Daemon Delete Runtime"
                     }
                 }),
             },
@@ -1971,7 +1970,8 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
                     "handle": "@alice-hermes-status",
                     "runtime": "hermes",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Hermes Status"
                 }
             }),
         },

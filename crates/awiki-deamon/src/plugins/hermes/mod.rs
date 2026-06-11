@@ -350,6 +350,7 @@ fn soul_content(profile: &RuntimeAgentProfile, hermes_profile: &str) -> String {
 - 不持久化 run capability token。
 - 不安装或依赖 Hermes Python plugin。
 - 对 controller message 使用 message/run 语义，不引入 product task workflow。
+- 回复 controller 时始终跟随 controller 的会话语言；如果当前消息只有附件或无法判断语言，默认使用简体中文，不要因为系统 wrapper 使用英文标签就改用英文。
 "#,
         agent_did = profile.agent_did,
         runtime_profile_id = profile.runtime_profile_id,

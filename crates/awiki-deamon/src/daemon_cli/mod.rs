@@ -376,6 +376,7 @@ where
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| existing.handle.clone()),
+        name: None,
         did_document: identity.did_document.clone(),
         endpoint_url: identity.endpoint_url.clone(),
         key_algorithm: identity.key_algorithm.clone(),

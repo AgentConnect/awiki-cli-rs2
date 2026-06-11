@@ -236,16 +236,7 @@ fn latest_status_items_with_release(
         needs_config: false,
         last_error_code: None,
         last_error_summary: None,
-        diagnostics_summary: json!({
-            "installation_status": if service.installed { "installed" } else { "not_installed" },
-            "runner_status": if service.running { "running" } else { "not_running" },
-            "config_summary": {
-                "service_installed": service.installed,
-                "release_manifest_url": release.manifest_url.clone(),
-                "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
-                "release_error": release.error.clone(),
-            },
-        }),
+        diagnostics_summary: daemon_diagnostics_summary(&service, release),
     }];
     for runtime in state.list_runtime_agent_definitions_for_daemon(&daemon.agent_did)? {
         let runtime_status = runtime_status_summary(config, state, &runtime);
@@ -467,6 +458,20 @@ fn daemon_status_payload(
         "needs_upgrade": release.needs_upgrade,
         "last_error_code": null,
         "last_error_summary": null,
+        "diagnostics_summary": daemon_diagnostics_summary(service, release),
+    })
+}
+
+fn daemon_diagnostics_summary(service: &ServiceStatus, release: &DaemonReleaseStatus) -> Value {
+    json!({
+        "installation_status": if service.installed { "installed" } else { "not_installed" },
+        "runner_status": if service.running { "running" } else { "not_running" },
+        "config_summary": {
+            "service_installed": service.installed,
+            "release_manifest_url": release.manifest_url.clone(),
+            "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+            "release_error": release.error.clone(),
+        },
     })
 }
 
@@ -839,9 +844,45 @@ mod tests {
         let payload = daemon_lightweight_payload(&config, &daemon());
         assert_eq!(payload["schema"], "awiki.agent.status.v1");
         assert_eq!(payload["status_scope"], "daemon");
+        assert_eq!(
+            payload["daemon"]["diagnostics_summary"]["installation_status"],
+            "not_installed"
+        );
+        assert_eq!(
+            payload["daemon"]["diagnostics_summary"]["runner_status"],
+            "not_running"
+        );
+        assert!(payload["daemon"]["diagnostics_summary"]["config_summary"].is_object());
         let dump = payload.to_string();
         assert!(!dump.contains("token"));
         assert!(!dump.contains("private"));
+    }
+
+    #[test]
+    fn daemon_snapshot_payload_includes_daemon_diagnostics_summary() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon = daemon();
+        state.upsert_agent_definition(&daemon).unwrap();
+
+        let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
+
+        assert_eq!(
+            payload["daemon"]["diagnostics_summary"]["installation_status"],
+            "not_installed"
+        );
+        assert_eq!(
+            payload["daemon"]["diagnostics_summary"]["runner_status"],
+            "not_running"
+        );
+        assert!(
+            payload["daemon"]["diagnostics_summary"]["config_summary"]["service_installed"]
+                .as_bool()
+                .is_some()
+        );
     }
 
     #[test]

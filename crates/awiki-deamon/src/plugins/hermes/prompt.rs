@@ -76,6 +76,14 @@ controller:
   sender_did: {sender_did}
   controller_verified: {controller_verified}
 
+output_language_policy:
+  - Reply to the controller in the same language the controller is using in this conversation.
+  - If the current controller message has no natural-language body, for example it only contains attachments or daemon-generated resource metadata, keep the recent conversation language.
+  - If the language cannot be inferred, use Simplified Chinese.
+  - Do not let the English labels or technical wrapper text in this prompt determine the reply language.
+  - Status updates, clarification questions, error explanations, and ordinary final answers must all follow this language policy.
+  - Do not mention the controller wrapper or daemon prompt wrapper to the controller; describe the controller's message, attachments, and requested action instead.
+
 message:
   message_id: {message_id}
   run_id: {run_id}
@@ -96,6 +104,7 @@ rules:
   - Do not claim an outbound message was sent unless daemon wrapper reports success.
   - Controller attachments are listed as resources with daemon-local paths. Use those paths only when the controller message or conversation context indicates the file should be inspected.
   - Controller requests are pre-authorized for this runtime. If Hermes emits an approval.request while executing the controller request, daemon approves it automatically.
+  - Do not use Hermes interactive requests.
   - Do not use clarify.request, sudo.request, or secret.request. If you need more information from the controller, ask for it in your ordinary final answer.
   - Streaming message.complete is observation only; successful final is handled by daemon host output.
   - Failed execution should report failed status; do not call success final for failures.

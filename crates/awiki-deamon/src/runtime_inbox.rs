@@ -916,7 +916,7 @@ fn message_text(message: &LocalMessageRecord) -> (String, bool) {
 }
 
 fn message_text_with_limit(message: &LocalMessageRecord, limit: usize) -> (String, bool) {
-    if message.content_type.trim() == ATTACHMENT_MANIFEST_CONTENT_TYPE {
+    if message_is_attachment_manifest(message) {
         if let Some(payload) = attachment_payload(message) {
             let text = attachment_caption_from_payload(&payload)
                 .or_else(|| payload.get("text").and_then(Value::as_str))
@@ -974,6 +974,7 @@ fn attachment_items_from_manifest(message: &LocalMessageRecord) -> Vec<Value> {
             items
                 .iter()
                 .filter_map(|item| item.as_object())
+                .filter(|item| is_valid_attachment_object(item))
                 .map(|item| {
                     json!({
                         "attachment_id": string_field_any(item, &["attachment_id", "id"]),
@@ -989,7 +990,7 @@ fn attachment_items_from_manifest(message: &LocalMessageRecord) -> Vec<Value> {
 }
 
 fn attachment_payload(message: &LocalMessageRecord) -> Option<Value> {
-    if message.content_type.trim() != ATTACHMENT_MANIFEST_CONTENT_TYPE {
+    if !message_is_attachment_manifest(message) {
         return None;
     }
     let value = serde_json::from_str::<Value>(&message.content).ok()?;
@@ -997,6 +998,23 @@ fn attachment_payload(message: &LocalMessageRecord) -> Option<Value> {
         return Some(value);
     }
     value.get("payload").cloned()
+}
+
+fn message_is_attachment_manifest(message: &LocalMessageRecord) -> bool {
+    message.content_type.trim() == ATTACHMENT_MANIFEST_CONTENT_TYPE
+        || metadata_content_type(&message.metadata)
+            .is_some_and(|value| value == ATTACHMENT_MANIFEST_CONTENT_TYPE)
+}
+
+fn metadata_content_type(metadata: &str) -> Option<String> {
+    metadata_object(metadata).and_then(|object| {
+        object
+            .get("content_type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn attachment_items_from_metadata(message: &LocalMessageRecord) -> Vec<Value> {
@@ -1007,6 +1025,9 @@ fn attachment_items_from_metadata(message: &LocalMessageRecord) -> Vec<Value> {
         .get("attachment_summary")
         .and_then(Value::as_object)
     {
+        if !is_valid_attachment_object(summary) {
+            return Vec::new();
+        }
         return vec![json!({
             "attachment_id": string_field_any(summary, &["attachment_id", "id"]),
             "filename": string_field_any(summary, &["filename", "display_filename", "name"]),
@@ -1032,16 +1053,15 @@ fn attachment_items_from_metadata(message: &LocalMessageRecord) -> Vec<Value> {
     );
     let mime_type = metadata_string_any(
         &metadata,
-        &["attachment_mime_type", "mime_type", "content_type"],
+        &["attachment_mime_type", "attachment_content_type"],
         &["attachment_mime_type"],
     );
     let size_bytes = metadata_size_bytes(&metadata);
-    let has_attachment = metadata_bool_any(&metadata, &["has_attachments", "hasAttachments"])
-        || attachment_id.is_some()
+    let has_attachment = attachment_id.is_some()
         || filename.is_some()
         || mime_type.is_some()
-        || !size_bytes.is_null()
-        || message.content_type.trim() == ATTACHMENT_MANIFEST_CONTENT_TYPE;
+        || (!size_bytes.is_null()
+            && metadata_bool_any(&metadata, &["has_attachments", "hasAttachments"]));
     if !has_attachment {
         return Vec::new();
     }
@@ -1052,6 +1072,17 @@ fn attachment_items_from_metadata(message: &LocalMessageRecord) -> Vec<Value> {
         "size_bytes": size_bytes,
         "download_state": "available",
     })]
+}
+
+fn is_valid_attachment_object(item: &serde_json::Map<String, Value>) -> bool {
+    string_field_option(item.get("attachment_id"))
+        .or_else(|| string_field_option(item.get("id")))
+        .or_else(|| string_field_option(item.get("filename")))
+        .or_else(|| string_field_option(item.get("display_filename")))
+        .or_else(|| string_field_option(item.get("name")))
+        .or_else(|| string_field_option(item.get("mime_type")))
+        .is_some()
+        || !attachment_size_bytes(item).is_null()
 }
 
 fn attachment_caption(message: &LocalMessageRecord) -> Option<String> {
@@ -1288,5 +1319,87 @@ mod tests {
         };
 
         assert!(conversation_id_from_thread_query(&input).is_err());
+    }
+
+    #[test]
+    fn plain_json_metadata_content_type_does_not_create_attachment() {
+        let message = LocalMessageRecord {
+            msg_id: "msg-json".to_string(),
+            direction: 0,
+            sender_did: "did:human:alice".to_string(),
+            receiver_did: "did:agent:runtime".to_string(),
+            group_id: String::new(),
+            group_did: String::new(),
+            content_type: "application/json".to_string(),
+            content: r#"{"text":"hello"}"#.to_string(),
+            sent_at: "2026-06-04T10:00:00Z".to_string(),
+            stored_at: "2026-06-04T10:00:00Z".to_string(),
+            metadata: r#"{"content_type":"application/json","delivery_state":"accepted"}"#
+                .to_string(),
+        };
+
+        assert_eq!(message_content_type(&message), "application/json");
+        assert!(!message_has_attachments(&message));
+        assert!(attachment_items(&message).is_empty());
+        assert_eq!(message_preview(&message), "hello");
+    }
+
+    #[test]
+    fn empty_attachment_manifest_without_summary_is_not_attachment() {
+        let message = LocalMessageRecord {
+            msg_id: "msg-empty-manifest".to_string(),
+            direction: 0,
+            sender_did: "did:human:alice".to_string(),
+            receiver_did: "did:agent:runtime".to_string(),
+            group_id: String::new(),
+            group_did: String::new(),
+            content_type: ATTACHMENT_MANIFEST_CONTENT_TYPE.to_string(),
+            content: r#"{"attachments":[]}"#.to_string(),
+            sent_at: "2026-06-04T10:00:00Z".to_string(),
+            stored_at: "2026-06-04T10:00:00Z".to_string(),
+            metadata: r#"{"has_attachments":true}"#.to_string(),
+        };
+
+        assert_eq!(
+            message_content_type(&message),
+            ATTACHMENT_MANIFEST_CONTENT_TYPE
+        );
+        assert!(!message_has_attachments(&message));
+        assert!(attachment_items(&message).is_empty());
+    }
+
+    #[test]
+    fn metadata_attachment_manifest_content_type_reads_payload_filename() {
+        let message = LocalMessageRecord {
+            msg_id: "msg-attachment".to_string(),
+            direction: 0,
+            sender_did: "did:human:alice".to_string(),
+            receiver_did: "did:agent:runtime".to_string(),
+            group_id: String::new(),
+            group_did: String::new(),
+            content_type: "application/json".to_string(),
+            content: r#"{
+                "attachments": [{
+                    "attachment_id": "att-1",
+                    "filename": "report.md",
+                    "mime_type": "text/markdown",
+                    "size": "42"
+                }],
+                "caption": "read this"
+            }"#
+            .to_string(),
+            sent_at: "2026-06-04T10:00:00Z".to_string(),
+            stored_at: "2026-06-04T10:00:00Z".to_string(),
+            metadata: r#"{"content_type":"application/anp-attachment-manifest+json"}"#.to_string(),
+        };
+
+        let items = attachment_items(&message);
+        assert_eq!(message_content_type(&message), "attachment");
+        assert_eq!(message_preview(&message), "read this");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["attachment_id"], "att-1");
+        assert_eq!(items[0]["filename"], "report.md");
+        assert_eq!(items[0]["mime_type"], "text/markdown");
+        assert_eq!(items[0]["size_bytes"], 42);
     }
 }
