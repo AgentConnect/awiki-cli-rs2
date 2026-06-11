@@ -208,8 +208,12 @@ pub fn finalize_daemon_archive(
         })?;
         state_root_moved = true;
     }
-    let executable = crate::service::default_executable_path()?;
-    let service_uninstalled = manage_service(config, &executable, ServiceAction::Uninstall).is_ok();
+    let service_uninstalled = if should_uninstall_product_service(config)? {
+        let executable = crate::service::default_executable_path()?;
+        manage_service(config, &executable, ServiceAction::Uninstall).is_ok()
+    } else {
+        false
+    };
     write_manifest(
         &archive_dir,
         json!({
@@ -226,6 +230,10 @@ pub fn finalize_daemon_archive(
         service_uninstalled,
         state_root_moved,
     })
+}
+
+fn should_uninstall_product_service(config: &DaemonConfig) -> Result<bool> {
+    Ok(config.state_root == DaemonConfig::default_product_state_root()?)
 }
 
 fn runtime_archive_dir(config: &DaemonConfig, archive_id: &str) -> PathBuf {
@@ -424,5 +432,36 @@ mod tests {
                 .status,
             "archived"
         );
+    }
+
+    #[test]
+    fn daemon_archive_finalizer_skips_service_uninstall_for_dev_state_root() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        std::fs::write(config.state_root.join("daemon.db"), b"state").unwrap();
+        let archive_id = format!(
+            "archive-dev-daemon-{}",
+            root.path()
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("temp")
+        );
+
+        let report = finalize_daemon_archive(&config, &archive_id).unwrap();
+
+        assert_eq!(
+            report.archived_state_root,
+            root.path()
+                .parent()
+                .unwrap()
+                .join("archive")
+                .join("daemon")
+                .join(archive_id)
+                .join("state")
+        );
+        assert!(report.state_root_moved);
+        assert!(!report.service_uninstalled);
+        assert!(report.archived_state_root.join("daemon.db").is_file());
     }
 }
