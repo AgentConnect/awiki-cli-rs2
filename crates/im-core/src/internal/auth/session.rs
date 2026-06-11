@@ -141,13 +141,27 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
         scope: crate::auth::AuthScope,
     ) -> crate::ImResult<crate::auth::SessionBundle> {
         let snapshot = self.snapshot_async().await?;
-        snapshot.ensure_ready(scope)?;
+        snapshot.ensure_identity_ready(scope)?;
+        if snapshot.auth_state.has_valid_token && !snapshot.auth_state.needs_refresh {
+            return Ok(crate::auth::SessionBundle {
+                subject: snapshot.subject,
+                scope,
+                expires_at: snapshot.auth_state.expires_at.clone(),
+                refreshed: false,
+                bearer_token: snapshot.auth_state.bearer_token,
+            });
+        }
+
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+        transport.refresh_jwt_async().await?;
+        let refreshed = self.snapshot_async().await?;
+        refreshed.ensure_ready(scope)?;
         Ok(crate::auth::SessionBundle {
-            subject: snapshot.subject,
+            subject: refreshed.subject,
             scope,
-            expires_at: snapshot.auth_state.expires_at.clone(),
-            refreshed: false,
-            bearer_token: snapshot.auth_state.bearer_token,
+            expires_at: refreshed.auth_state.expires_at.clone(),
+            refreshed: true,
+            bearer_token: refreshed.auth_state.bearer_token,
         })
     }
 
@@ -215,6 +229,17 @@ struct SessionSnapshot {
 
 impl SessionSnapshot {
     fn ensure_ready(&self, scope: crate::auth::AuthScope) -> crate::ImResult<()> {
+        self.ensure_identity_ready(scope)?;
+        if !self.auth_state.has_token {
+            return Err(crate::ImError::AuthRequired);
+        }
+        if self.auth_state.token_expired {
+            return Err(crate::ImError::SessionExpired);
+        }
+        Ok(())
+    }
+
+    fn ensure_identity_ready(&self, scope: crate::auth::AuthScope) -> crate::ImResult<()> {
         if !self.ready_for_auth {
             return Err(crate::ImError::AuthRequired);
         }
@@ -239,12 +264,6 @@ impl SessionSnapshot {
                 path_kind: "private_key".to_string(),
                 detail: "file is missing".to_string(),
             });
-        }
-        if !self.auth_state.has_token {
-            return Err(crate::ImError::AuthRequired);
-        }
-        if self.auth_state.token_expired {
-            return Err(crate::ImError::SessionExpired);
         }
         Ok(())
     }

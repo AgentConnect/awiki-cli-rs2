@@ -814,10 +814,9 @@ async fn realtime_direct_peer_scope_async(
         peer_did.as_str(),
     )
     .ok()?;
-    let raw =
-        AsyncRpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params)
-            .await
-            .ok()?;
+    let raw = AsyncRpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params)
+        .await
+        .ok()?;
     let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
     crate::internal::local_state::owner_scope::DirectPeerScope::new(
         lookup.user_id,

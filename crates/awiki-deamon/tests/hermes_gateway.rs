@@ -514,13 +514,14 @@ import os
 import sys
 
 with open(sys.argv[1], "w", encoding="utf-8") as fh:
-    json.dump({
-        "cwd": os.getcwd(),
-        "HERMES_HOME": os.environ.get("HERMES_HOME"),
-        "HERMES_PROFILE": os.environ.get("HERMES_PROFILE"),
-        "AWIKI_HERMES_HOME": os.environ.get("AWIKI_HERMES_HOME"),
-        "AWIKI_HERMES_PROFILE": os.environ.get("AWIKI_HERMES_PROFILE"),
-    }, fh)
+        json.dump({
+            "cwd": os.getcwd(),
+            "HERMES_HOME": os.environ.get("HERMES_HOME"),
+            "HERMES_PROFILE": os.environ.get("HERMES_PROFILE"),
+            "AWIKI_HERMES_HOME": os.environ.get("AWIKI_HERMES_HOME"),
+            "AWIKI_HERMES_PROFILE": os.environ.get("AWIKI_HERMES_PROFILE"),
+            "HERMES_YOLO_MODE": os.environ.get("HERMES_YOLO_MODE"),
+        }, fh)
 
 print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "gateway.ready", "payload": {"version": "env-shape"}}}), flush=True)
 for line in sys.stdin:
@@ -576,6 +577,7 @@ for line in sys.stdin:
         env_report["AWIKI_HERMES_PROFILE"].as_str(),
         Some("awiki_alice_hermes")
     );
+    assert_eq!(env_report["HERMES_YOLO_MODE"].as_str(), Some("1"));
 }
 
 #[test]
@@ -711,7 +713,7 @@ for line in sys.stdin:
 }
 
 #[test]
-fn hermes_gateway_stdio_maps_known_unsupported_request_events_to_codes() {
+fn hermes_gateway_stdio_auto_approves_approval_requests_and_continues() {
     let root = tempfile::tempdir().unwrap();
     let hermes_home = root.path().join("hermes-home");
     std::fs::create_dir_all(&hermes_home).unwrap();
@@ -732,6 +734,13 @@ for line in sys.stdin:
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "approval.request", "session_id": params.get("session_id"), "payload": {"reason": "needs approval"}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {}}), flush=True)
+    elif method == "approval.respond":
+        params = req.get("params", {})
+        assert params.get("session_id") == "hs_approval"
+        assert params.get("choice") == "once"
+        assert params.get("all") is True
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"accepted": True}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "message.complete", "session_id": "hs_approval", "payload": {"text": "approval approved final", "status": "ok"}}}), flush=True)
     else:
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "error": {"message": "unknown method"}}), flush=True)
 "#,
@@ -767,15 +776,14 @@ for line in sys.stdin:
         )
         .unwrap();
 
-    let error = outcome
-        .error
-        .as_ref()
-        .expect("expected unsupported request");
-    assert_eq!(error.code, "approval_not_supported");
-    assert!(error.summary.contains("approval.request"));
+    assert!(outcome.error.is_none());
+    assert_eq!(
+        outcome.final_text.as_deref(),
+        Some("approval approved final")
+    );
     assert!(outcome.events.iter().any(|event| {
-        event.kind == HermesRuntimeEventKind::Error
-            && event.code.as_deref() == Some("approval_not_supported")
+        event.kind == HermesRuntimeEventKind::ToolCallObserved
+            && event.code.as_deref() == Some("approval_auto_approved")
     }));
 }
 

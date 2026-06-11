@@ -27,6 +27,8 @@ pub(crate) fn list_conversations_for_owner_identity(
     owner_did: &str,
     query: &crate::messages::ConversationQuery,
 ) -> crate::ImResult<Vec<ConversationRecord>> {
+    let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
+    super::messages::reconcile_peer_scope_direct_conversations(connection, &owner_identity_id)?;
     let limit = page_limit(query.limit, 50) + 1;
     let mut statement = String::from(
         r#"
@@ -86,7 +88,6 @@ WHERE t.owner_identity_id = ?1"#,
 ORDER BY t.last_message_at DESC, t.conversation_id ASC
 LIMIT ?2"#,
     );
-    let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
     let _owner = normalize_owner_did(owner_did);
     let mut statement = connection
         .prepare(&statement)
@@ -480,6 +481,72 @@ VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', ?9, ?10, ?10, ?11)
             records[0].last_message.as_ref().unwrap().msg_id,
             "after-did-replace"
         );
+    }
+
+    #[test]
+    fn local_state_conversations_reconcile_legacy_direct_did_rows_on_list() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_identity_message(
+            &db,
+            "alice-id",
+            "did:wba:anpclaw.com:zhuocheng:e1_owner",
+            "legacy",
+            "dm:did:wba:anpclaw.com:zhuochengtest:e1_old",
+            "legacy message",
+            "2026-06-10T00:00:01Z",
+        );
+        let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "peer-user-id",
+            "zhuochengtest.anpclaw.com",
+        )
+        .unwrap();
+        let scoped_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &scope,
+            );
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
+     content_type, content, sent_at, stored_at, is_read, metadata)
+VALUES (?1, ?2, ?3, ?4, ?4, 1, ?3, ?5,
+        'text/plain', 'scoped message', '2026-06-10T00:00:02Z', '2026-06-10T00:00:02Z', 1, ?6)"#,
+            (
+                "scoped",
+                "alice-id",
+                "did:wba:anpclaw.com:zhuocheng:e1_owner",
+                scoped_conversation_id.as_str(),
+                "did:wba:anpclaw.com:zhuochengtest:e1_new",
+                r#"{"peer_user_id":"peer-user-id","peer_full_handle":"zhuochengtest.anpclaw.com","peer_current_did":"did:wba:anpclaw.com:zhuochengtest:e1_new"}"#,
+            ),
+        )
+        .unwrap();
+
+        let records = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:wba:anpclaw.com:zhuocheng:e1_owner",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: false,
+                include_direct: true,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].conversation_id, scoped_conversation_id);
+        assert_eq!(records[0].message_count, 2);
+        let legacy_conversation_id: String = db
+            .query_row(
+                "SELECT conversation_id FROM messages WHERE msg_id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_conversation_id, scoped_conversation_id);
     }
 
     fn seed_identity_message(

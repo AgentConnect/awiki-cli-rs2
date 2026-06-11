@@ -510,7 +510,7 @@ impl HermesGateway for StdioHermesGateway {
             &mut events,
         )?;
         append_events_from_response(&response, session, &request, &mut events);
-        if prompt_response_is_streaming(&response) && !has_terminal_prompt_event(&events) {
+        if should_collect_until_prompt_terminal(&response, &events) {
             process.collect_until_prompt_terminal_after_first_event(
                 self.timeouts.prompt_first_event,
                 self.timeouts.prompt_total,
@@ -597,6 +597,7 @@ impl StdioGatewayProcess {
                 .with_context(|| format!("Hermes gateway {method} response timed out"))?;
             let value: Value = serde_json::from_str(&line)
                 .with_context(|| format!("parse Hermes gateway line: {}", redact_line(&line)))?;
+            self.handle_interaction_request(&value)?;
             if let Some(event) = event_from_gateway_line(&value) {
                 events.push(event);
             }
@@ -638,6 +639,7 @@ impl StdioGatewayProcess {
             })?;
             let value: Value = serde_json::from_str(&line)
                 .with_context(|| format!("parse Hermes gateway line: {}", redact_line(&line)))?;
+            self.handle_interaction_request(&value)?;
             if let Some(error) = response_error(&value) {
                 bail!("Hermes gateway prompt stream failed: {error}");
             }
@@ -650,6 +652,40 @@ impl StdioGatewayProcess {
                 }
             }
         }
+    }
+
+    fn handle_interaction_request(&mut self, value: &Value) -> Result<()> {
+        let Some(request) = interaction_request_from_gateway_line(value) else {
+            return Ok(());
+        };
+        if request.name.as_str() != "approval.request" {
+            return Ok(());
+        }
+        let Some(session_id) = request.session_id else {
+            return Ok(());
+        };
+        self.send_jsonrpc(
+            "approval.respond",
+            json!({
+                "session_id": session_id,
+                "choice": "once",
+                "all": true,
+            }),
+        )
+    }
+
+    fn send_jsonrpc(&mut self, method: &str, params: Value) -> Result<()> {
+        let id = self.next_id.to_string();
+        self.next_id += 1;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        writeln!(self.stdin, "{request}")?;
+        self.stdin.flush()?;
+        Ok(())
     }
 
     fn read_line(&mut self, timeout: Duration) -> Result<String> {
@@ -708,6 +744,7 @@ fn spawn_gateway_process(
         .env("HERMES_HOME", &profile.hermes_home)
         .env("AWIKI_HERMES_PROFILE", &profile.hermes_profile)
         .env("AWIKI_HERMES_HOME", &profile.hermes_home)
+        .env("HERMES_YOLO_MODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -920,6 +957,14 @@ fn event_from_gateway_line(value: &Value) -> Option<HermesRuntimeEvent> {
             HermesRuntimeEvent::new(HermesRuntimeEventKind::Error).with_code("gateway_error")
         }
         "runner.exited" => HermesRuntimeEvent::new(HermesRuntimeEventKind::RunnerExited),
+        "approval.request" => HermesRuntimeEvent {
+            kind: HermesRuntimeEventKind::ToolCallObserved,
+            code: Some("approval_auto_approved".to_string()),
+            session_id: None,
+            run_id: None,
+            text: Some("Hermes approval request approved by daemon controller policy".to_string()),
+            detail: Some(json!({ "event": name })),
+        },
         other if other.ends_with(".request") => HermesRuntimeEvent {
             kind: HermesRuntimeEventKind::Error,
             code: Some(unsupported_request_error_code(other).to_string()),
@@ -965,6 +1010,30 @@ fn event_from_gateway_line(value: &Value) -> Option<HermesRuntimeEvent> {
     Some(event)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HermesInteractionRequest {
+    name: String,
+    session_id: Option<String>,
+}
+
+fn interaction_request_from_gateway_line(value: &Value) -> Option<HermesInteractionRequest> {
+    let name = event_name(value)?;
+    if !name.ends_with(".request") {
+        return None;
+    }
+    let raw_params = value
+        .get("params")
+        .or_else(|| value.get("data"))
+        .or_else(|| value.get("result"))
+        .unwrap_or(value);
+    let params = raw_params.get("payload").unwrap_or(raw_params);
+    Some(HermesInteractionRequest {
+        name,
+        session_id: extract_string(params, &["session_id", "sessionId", "session"])
+            .or_else(|| extract_string(raw_params, &["session_id", "sessionId", "session"])),
+    })
+}
+
 fn unsupported_request_error_code(event_name: &str) -> &'static str {
     match event_name {
         "approval.request" => "approval_not_supported",
@@ -999,6 +1068,17 @@ fn response_error(value: &Value) -> Option<String> {
 
 fn prompt_response_is_streaming(response: &Value) -> bool {
     extract_string(response, &["status"]).as_deref() == Some("streaming")
+}
+
+fn should_collect_until_prompt_terminal(response: &Value, events: &[HermesRuntimeEvent]) -> bool {
+    !has_terminal_prompt_event(events)
+        && (prompt_response_is_streaming(response) || has_auto_approved_approval(events))
+}
+
+fn has_auto_approved_approval(events: &[HermesRuntimeEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| event.code.as_deref() == Some("approval_auto_approved"))
 }
 
 fn has_terminal_prompt_event(events: &[HermesRuntimeEvent]) -> bool {
@@ -1297,13 +1377,17 @@ impl HermesGateway for FakeHermesGateway {
             );
         } else if self.behavior == FakeHermesBehavior::ApprovalRequest {
             events.push(
-                HermesRuntimeEvent::new(HermesRuntimeEventKind::Error)
-                    .with_code("approval_not_supported")
+                HermesRuntimeEvent::new(HermesRuntimeEventKind::ToolCallObserved)
+                    .with_code("approval_auto_approved")
+                    .with_session(session.hermes_session_id.clone())
+                    .with_run(request.run_id.clone())
+                    .with_text("Hermes approval request approved by daemon controller policy"),
+            );
+            events.push(
+                HermesRuntimeEvent::new(HermesRuntimeEventKind::MessageComplete)
                     .with_session(session.hermes_session_id.clone())
                     .with_run(request.run_id)
-                    .with_text(
-                        "approval_not_supported: unsupported Hermes interaction approval.request",
-                    ),
+                    .with_text("fake complete after approval approved"),
             );
         } else if self.behavior == FakeHermesBehavior::CompleteWithoutText {
             events.push(

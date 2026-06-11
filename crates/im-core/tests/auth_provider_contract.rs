@@ -186,6 +186,42 @@ fn file_session_provider_reports_expired_token_as_refreshable_session() {
         .any(|warning| warning.contains("expired")));
 }
 
+#[tokio::test]
+async fn async_file_session_provider_refreshes_expired_token_during_ensure_session() {
+    let server = TestServer::new(
+        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+    );
+    let fixture = AuthFixture::new().with_service_base_url(server.base_url());
+    fixture.write_runtime_with_expires_at(
+        "alice",
+        "did:example:alice",
+        Some("expired-token"),
+        true,
+        "2000-01-01T00:00:00Z",
+    );
+    let client = fixture.client_async("alice").await;
+
+    let session = client
+        .auth()
+        .ensure_session_async(AuthScope::Messaging)
+        .await
+        .unwrap();
+    assert_eq!(session.subject.as_str(), "did:example:alice");
+    assert_eq!(session.scope, AuthScope::Messaging);
+    assert!(session.refreshed);
+    assert_eq!(session.bearer_token.as_deref(), Some("fresh-token"));
+
+    let status = client.auth().status_async().await.unwrap();
+    assert!(status.has_session);
+    assert!(!status.needs_refresh);
+    let auth: Value =
+        serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
+    assert_eq!(auth["jwt_token"], "fresh-token");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+}
+
 #[test]
 fn file_session_provider_reads_legacy_jwt_token_exp_claim_when_metadata_is_missing() {
     let fixture = AuthFixture::new();

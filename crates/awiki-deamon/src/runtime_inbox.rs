@@ -892,10 +892,23 @@ fn message_preview(message: &LocalMessageRecord) -> String {
         return truncate_chars(&caption, PREVIEW_MAX_CHARS).0;
     }
     let (text, _) = message_text_with_limit(message, PREVIEW_MAX_CHARS);
-    if text.trim().is_empty() && message_has_attachments(message) {
+    if !text.trim().is_empty() {
+        return text;
+    }
+    let attachments = attachment_items(message);
+    if let Some(filename) = attachments
+        .first()
+        .and_then(|item| item.get("filename"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return truncate_chars(&format!("附件: {filename}"), PREVIEW_MAX_CHARS).0;
+    }
+    if !attachments.is_empty() {
         return "附件".to_string();
     }
-    text
+    String::new()
 }
 
 fn message_text(message: &LocalMessageRecord) -> (String, bool) {
@@ -943,6 +956,14 @@ fn message_has_attachments(message: &LocalMessageRecord) -> bool {
 }
 
 fn attachment_items(message: &LocalMessageRecord) -> Vec<Value> {
+    let manifest_items = attachment_items_from_manifest(message);
+    if !manifest_items.is_empty() {
+        return manifest_items;
+    }
+    attachment_items_from_metadata(message)
+}
+
+fn attachment_items_from_manifest(message: &LocalMessageRecord) -> Vec<Value> {
     let Some(payload) = attachment_payload(message) else {
         return Vec::new();
     };
@@ -955,9 +976,9 @@ fn attachment_items(message: &LocalMessageRecord) -> Vec<Value> {
                 .filter_map(|item| item.as_object())
                 .map(|item| {
                     json!({
-                        "attachment_id": string_field(item.get("attachment_id")),
-                        "filename": string_field(item.get("filename")),
-                        "mime_type": string_field(item.get("mime_type")),
+                        "attachment_id": string_field_any(item, &["attachment_id", "id"]),
+                        "filename": string_field_any(item, &["filename", "display_filename", "name"]),
+                        "mime_type": string_field_any(item, &["mime_type", "content_type"]),
                         "size_bytes": attachment_size_bytes(item),
                         "download_state": "available",
                     })
@@ -971,7 +992,66 @@ fn attachment_payload(message: &LocalMessageRecord) -> Option<Value> {
     if message.content_type.trim() != ATTACHMENT_MANIFEST_CONTENT_TYPE {
         return None;
     }
-    serde_json::from_str::<Value>(&message.content).ok()
+    let value = serde_json::from_str::<Value>(&message.content).ok()?;
+    if value.get("attachments").is_some() {
+        return Some(value);
+    }
+    value.get("payload").cloned()
+}
+
+fn attachment_items_from_metadata(message: &LocalMessageRecord) -> Vec<Value> {
+    let Some(metadata) = metadata_object(&message.metadata) else {
+        return Vec::new();
+    };
+    if let Some(summary) = metadata
+        .get("attachment_summary")
+        .and_then(Value::as_object)
+    {
+        return vec![json!({
+            "attachment_id": string_field_any(summary, &["attachment_id", "id"]),
+            "filename": string_field_any(summary, &["filename", "display_filename", "name"]),
+            "mime_type": string_field_any(summary, &["mime_type", "content_type"]),
+            "size_bytes": attachment_size_bytes(summary),
+            "download_state": "available",
+        })];
+    }
+    let attachment_id = metadata_string_any(
+        &metadata,
+        &["attachment_id", "attachmentId", "id"],
+        &["attachment_id"],
+    );
+    let filename = metadata_string_any(
+        &metadata,
+        &[
+            "attachment_filename",
+            "filename",
+            "display_filename",
+            "name",
+        ],
+        &["attachment_filename"],
+    );
+    let mime_type = metadata_string_any(
+        &metadata,
+        &["attachment_mime_type", "mime_type", "content_type"],
+        &["attachment_mime_type"],
+    );
+    let size_bytes = metadata_size_bytes(&metadata);
+    let has_attachment = metadata_bool_any(&metadata, &["has_attachments", "hasAttachments"])
+        || attachment_id.is_some()
+        || filename.is_some()
+        || mime_type.is_some()
+        || !size_bytes.is_null()
+        || message.content_type.trim() == ATTACHMENT_MANIFEST_CONTENT_TYPE;
+    if !has_attachment {
+        return Vec::new();
+    }
+    vec![json!({
+        "attachment_id": attachment_id.map(Value::String).unwrap_or(Value::Null),
+        "filename": filename.map(Value::String).unwrap_or(Value::Null),
+        "mime_type": mime_type.map(Value::String).unwrap_or(Value::Null),
+        "size_bytes": size_bytes,
+        "download_state": "available",
+    })]
 }
 
 fn attachment_caption(message: &LocalMessageRecord) -> Option<String> {
@@ -1006,6 +1086,110 @@ fn attachment_size_bytes(item: &serde_json::Map<String, Value>) -> Value {
     Value::Null
 }
 
+fn metadata_object(metadata: &str) -> Option<serde_json::Map<String, Value>> {
+    serde_json::from_str::<Value>(metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+}
+
+fn string_field_any(item: &serde_json::Map<String, Value>, keys: &[&str]) -> Value {
+    keys.iter()
+        .find_map(|key| string_field_option(item.get(*key)))
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
+fn string_field_option(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn metadata_string_any(
+    metadata: &serde_json::Map<String, Value>,
+    direct_keys: &[&str],
+    attribute_keys: &[&str],
+) -> Option<String> {
+    direct_keys
+        .iter()
+        .find_map(|key| string_field_option(metadata.get(*key)))
+        .or_else(|| metadata_attribute_string(metadata, attribute_keys))
+}
+
+fn metadata_attribute_string(
+    metadata: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<String> {
+    let attributes = metadata.get("attributes").and_then(Value::as_array)?;
+    attributes
+        .iter()
+        .filter_map(Value::as_object)
+        .find_map(|item| {
+            let key = string_field_option(item.get("key"))?;
+            if !keys.iter().any(|known| key == *known) {
+                return None;
+            }
+            string_field_option(item.get("value"))
+        })
+}
+
+fn metadata_bool_any(metadata: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
+    keys.iter()
+        .find_map(|key| metadata.get(*key))
+        .is_some_and(value_as_bool)
+}
+
+fn value_as_bool(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes"
+        ),
+        Value::Number(value) => value.as_i64().is_some_and(|value| value != 0),
+        _ => false,
+    }
+}
+
+fn metadata_size_bytes(metadata: &serde_json::Map<String, Value>) -> Value {
+    for key in [
+        "attachment_size_bytes",
+        "size_bytes",
+        "plaintext_size_bytes",
+        "size",
+        "plaintext_size",
+    ] {
+        if let Some(size) = value_size_bytes(metadata.get(key)) {
+            return json!(size);
+        }
+    }
+    if let Some(size) = metadata_attribute_string(
+        metadata,
+        &[
+            "attachment_size_bytes",
+            "size_bytes",
+            "plaintext_size_bytes",
+            "size",
+            "plaintext_size",
+        ],
+    )
+    .and_then(|value| parse_size_bytes(&value))
+    {
+        return json!(size);
+    }
+    Value::Null
+}
+
+fn value_size_bytes(value: Option<&Value>) -> Option<u64> {
+    match value {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::String(value)) => parse_size_bytes(value),
+        _ => None,
+    }
+}
+
 fn parse_size_bytes(value: &str) -> Option<u64> {
     let value = value.trim();
     if value.is_empty() {
@@ -1034,15 +1218,6 @@ impl TimestampExt for &str {
     fn parse_timestamp_ms(self) -> Option<i64> {
         parse_timestamp_ms(self)
     }
-}
-
-fn string_field(value: Option<&Value>) -> Value {
-    value
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| json!(value))
-        .unwrap_or(Value::Null)
 }
 
 fn cursor_offset(cursor: Option<&str>) -> Result<usize> {

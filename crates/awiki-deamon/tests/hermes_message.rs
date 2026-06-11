@@ -453,12 +453,12 @@ fn hermes_message_empty_final_fails_without_success_outbox() {
 }
 
 #[test]
-fn hermes_message_unsupported_interaction_uses_documented_error_code() {
+fn hermes_message_auto_approved_approval_still_returns_final_text() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ApprovalRequest);
     let plugin = HermesRuntimePlugin::new(
-        gateway,
+        gateway.clone(),
         hermes_record(root.path().join("runtime/hermes/profile")),
     );
     let profile = profile(root.path().join("workspace"));
@@ -478,29 +478,28 @@ fn hermes_message_unsupported_interaction_uses_documented_error_code() {
     )
     .unwrap();
 
-    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Message);
     assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(
         records[0].text.as_deref(),
-        Some("Hermes 运行失败：approval_not_supported: unsupported Hermes interaction approval.request")
+        Some("fake complete after approval approved")
     );
     assert_eq!(
         records[0].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("failed"));
-    assert_eq!(
-        records[1].last_error_code.as_deref(),
-        Some("approval_not_supported")
-    );
-    assert_eq!(
-        records[1].last_error_summary.as_deref(),
-        Some("approval_not_supported: unsupported Hermes interaction approval.request")
-    );
+    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[1].text.as_deref(), Some("Hermes response sent"));
+    assert!(records[1].last_error_code.is_none());
+    assert!(records[1].last_error_summary.is_none());
+    assert!(gateway.observed_events().iter().any(|event| {
+        event.kind == awiki_deamon::plugins::hermes::HermesRuntimeEventKind::ToolCallObserved
+            && event.code.as_deref() == Some("approval_auto_approved")
+    }));
 }
 
 #[derive(Debug)]

@@ -196,6 +196,23 @@ fn seed_runtime_inbox_projection(config: &DaemonConfig, runtime_agent_did: &str)
         1,
         "{}",
     );
+    insert_projected_message(
+        &connection,
+        &owner_identity_id,
+        runtime_agent_did,
+        "msg-group-attachment-summary",
+        "group:did:group:summary",
+        0,
+        "did:human:dana",
+        runtime_agent_did,
+        "did:group:summary",
+        "did:group:summary",
+        "application/anp-attachment-manifest+json",
+        r#"{"attachments":[]}"#,
+        "2026-06-04T10:06:00Z",
+        1,
+        r#"{"attachment_summary":{"attachment_id":"att-summary","filename":"summary.md","mime_type":"text/markdown","size_bytes":2048},"has_attachments":true}"#,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1494,19 +1511,24 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     assert_eq!(payload["request_id"], "cmd_runtime_inbox_query");
     assert_eq!(payload["state"], "succeeded");
     let items = payload["result"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
+    assert_eq!(items.len(), 3);
     assert_eq!(items[0]["kind"], "group");
-    assert_eq!(items[0]["group_did"], "did:group:team");
+    assert_eq!(items[0]["group_did"], "did:group:summary");
+    assert_eq!(items[0]["last_message_preview"], "附件: summary.md");
     assert_eq!(items[0]["has_attachments"], true);
     assert_eq!(items[0]["last_content_type"], "attachment");
-    assert_eq!(items[1]["kind"], "direct");
-    let direct_thread_id = items[1]["thread_id"].as_str().unwrap().to_string();
+    assert_eq!(items[1]["kind"], "group");
+    assert_eq!(items[1]["group_did"], "did:group:team");
+    assert_eq!(items[1]["has_attachments"], true);
+    assert_eq!(items[1]["last_content_type"], "attachment");
+    assert_eq!(items[2]["kind"], "direct");
+    let direct_thread_id = items[2]["thread_id"].as_str().unwrap().to_string();
     assert!(direct_thread_id.starts_with("dm:peer-scope:v1:"));
-    assert_eq!(items[1]["title"], "bob.anpclaw.com");
-    assert_eq!(items[1]["peer_user_id"], "user-bob");
-    assert_eq!(items[1]["peer_handle"], "bob.anpclaw.com");
-    assert_eq!(items[1]["peer_did"], "did:human:bob-new");
-    assert_eq!(items[1]["last_message_preview"], "hello from new did");
+    assert_eq!(items[2]["title"], "bob.anpclaw.com");
+    assert_eq!(items[2]["peer_user_id"], "user-bob");
+    assert_eq!(items[2]["peer_handle"], "bob.anpclaw.com");
+    assert_eq!(items[2]["peer_did"], "did:human:bob-new");
+    assert_eq!(items[2]["last_message_preview"], "hello from new did");
 
     let thread_outbox = MemoryRuntimeOutbox::default();
     handle_agent_payload_message(
@@ -1553,6 +1575,50 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     assert!(!payload
         .to_string()
         .contains(&config.state_root.display().to_string()));
+
+    let summary_thread_outbox = MemoryRuntimeOutbox::default();
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &summary_thread_outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_query_runtime_inbox_summary_thread".to_string(),
+            conversation_id: Some("conv_daemon_inbox".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_runtime_inbox_summary_thread_query",
+                "command": "runtime.inbox.thread.query",
+                "target_agent_kind": "daemon",
+                "args": {
+                    "runtime_agent_did": created.agent_did,
+                    "thread_id": "group:did:group:summary",
+                    "kind": "group",
+                    "group_did": "did:group:summary",
+                    "limit": 20
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let statuses = summary_thread_outbox.agent_statuses();
+    assert_eq!(statuses.len(), 1);
+    let payload = &statuses[0].payload;
+    assert_eq!(payload["status_scope"], "runtime_inbox_thread");
+    assert_eq!(payload["state"], "succeeded");
+    let messages = payload["result"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content_type"], "attachment");
+    assert_eq!(
+        messages[0]["attachments"][0]["attachment_id"],
+        "att-summary"
+    );
+    assert_eq!(messages[0]["attachments"][0]["filename"], "summary.md");
+    assert_eq!(messages[0]["attachments"][0]["mime_type"], "text/markdown");
+    assert_eq!(messages[0]["attachments"][0]["size_bytes"], 2048);
 
     let direct_thread_outbox = MemoryRuntimeOutbox::default();
     handle_agent_payload_message(
