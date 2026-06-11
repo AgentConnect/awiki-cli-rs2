@@ -3,6 +3,7 @@ pub struct DartGroupSummary {
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
+    pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
     pub last_message_at: Option<String>,

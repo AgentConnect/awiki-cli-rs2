@@ -32,6 +32,10 @@ impl ImClient {
         self.identity.handle.as_ref()
     }
 
+    pub fn did_domain(&self) -> &str {
+        self.core.sdk_config().did_domain.as_str()
+    }
+
     pub fn auth(&self) -> crate::auth::AuthService<'_> {
         crate::auth::AuthService::new(self)
     }

@@ -5,6 +5,7 @@ class GroupSummary {
     this.id,
     required this.did,
     this.name,
+    this.myRole,
     this.membershipStatus,
     this.memberCount,
     this.lastMessageAt,
@@ -13,6 +14,7 @@ class GroupSummary {
   final String? id;
   final String did;
   final String? name;
+  final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
   final String? lastMessageAt;

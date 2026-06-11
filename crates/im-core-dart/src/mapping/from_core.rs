@@ -857,6 +857,7 @@ impl From<im_core::groups::GroupSummary> for DartGroupSummary {
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
+            my_role: value.my_role,
             membership_status: value.membership_status,
             member_count: value.member_count,
             last_message_at: value.last_message_at,

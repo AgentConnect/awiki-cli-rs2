@@ -714,6 +714,38 @@ class GroupApi {
     return result._toModel();
   }
 
+  Future<GroupReadResult> addMember(
+    String groupDid, {
+    required String memberRef,
+    String role = 'member',
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_groups.addGroupMember(
+        client: _client._inner,
+        groupDid: groupDid,
+        memberRef: memberRef,
+        role: role,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<GroupReadResult> removeMember(
+    String groupDid, {
+    required String memberRef,
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_groups.removeGroupMember(
+        client: _client._inner,
+        groupDid: groupDid,
+        memberRef: memberRef,
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<GroupReadResult> listMessages(
     String groupDid, {
     required int limit,
@@ -1671,6 +1703,7 @@ extension on gen_group_dto.DartGroupSummary {
     id: id,
     did: did,
     name: name,
+    myRole: myRole,
     membershipStatus: membershipStatus,
     memberCount: memberCount,
     lastMessageAt: lastMessageAt,

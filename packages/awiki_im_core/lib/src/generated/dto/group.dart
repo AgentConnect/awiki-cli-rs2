@@ -211,6 +211,7 @@ class DartGroupSummary {
   final String? id;
   final String did;
   final String? name;
+  final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
   final String? lastMessageAt;
@@ -219,6 +220,7 @@ class DartGroupSummary {
     this.id,
     required this.did,
     this.name,
+    this.myRole,
     this.membershipStatus,
     this.memberCount,
     this.lastMessageAt,
@@ -229,6 +231,7 @@ class DartGroupSummary {
       id.hashCode ^
       did.hashCode ^
       name.hashCode ^
+      myRole.hashCode ^
       membershipStatus.hashCode ^
       memberCount.hashCode ^
       lastMessageAt.hashCode;
@@ -241,6 +244,7 @@ class DartGroupSummary {
           id == other.id &&
           did == other.did &&
           name == other.name &&
+          myRole == other.myRole &&
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&
           lastMessageAt == other.lastMessageAt;
