@@ -676,7 +676,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 run_command(
                     [
                         "sh",
-                        "scripts/daemon/install.sh",
+                        "scripts/release/daemon/_install.sh.template",
                         "--token",
                         "test-install-token",
                     ],

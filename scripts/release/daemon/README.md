@@ -155,5 +155,9 @@ releases/<version>/...
 releases/manifest.json
 ```
 
+`_install.sh.template` 是发布产物 `install.sh` 的源模板。`_stage-downloads.sh`
+会把模板里的 base URL 和 download base URL 占位符替换成发布参数，再写入最终
+下载目录。
+
 这些 helper 只用于发布流程排查。正常发布始终使用
 `scripts/release/daemon/publish-linux.sh`。

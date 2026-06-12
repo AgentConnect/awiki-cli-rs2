@@ -205,7 +205,7 @@ for package in "${packages[@]}"; do
 done
 
 (cd "${version_dir}" && checksum_packages)
-python3 - "${ROOT_DIR}/scripts/daemon/install.sh" "${OUTPUT_DIR}/install.sh" "${BASE_URL}" "${DOWNLOAD_BASE_URL}" <<'PY'
+python3 - "${ROOT_DIR}/scripts/release/daemon/_install.sh.template" "${OUTPUT_DIR}/install.sh" "${BASE_URL}" "${DOWNLOAD_BASE_URL}" <<'PY'
 import pathlib
 import sys
 
