@@ -129,6 +129,12 @@ pub fn query_runtime_inbox_thread(
         .iter()
         .map(|message| message_json(message, &runtime_agent.agent_did))
         .collect::<Result<Vec<_>>>()?;
+    mark_local_conversation_read(
+        &config.im_core_sqlite_path,
+        client.current_identity().id.as_str(),
+        &conversation_id,
+    )
+    .context("mark runtime inbox thread read")?;
     let next_offset = offset + messages.len();
     Ok(json!({
         "thread_id": input.thread_id,
@@ -298,6 +304,29 @@ LIMIT ?3 OFFSET ?4"#,
     )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+fn mark_local_conversation_read(
+    sqlite_path: &Path,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> Result<usize> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Ok(0);
+    }
+    let connection = rusqlite::Connection::open(sqlite_path)?;
+    let updated = connection.execute(
+        r#"
+UPDATE messages
+SET is_read = 1
+WHERE owner_identity_id = ?1
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
+  AND direction = 0
+  AND COALESCE(is_read, 0) = 0"#,
+        rusqlite::params![owner_identity_id, conversation_id],
+    )?;
+    Ok(updated)
 }
 
 fn load_local_conversations_from_messages(
@@ -1601,6 +1630,80 @@ VALUES
 
         assert_eq!(items, vec![thread_id]);
         assert_eq!(records[0].unread_count, 1);
+    }
+
+    #[test]
+    fn marks_runtime_inbox_thread_conversation_read() {
+        let root = tempfile::tempdir().unwrap();
+        let sqlite_path = root.path().join("local-state.sqlite");
+        let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
+        create_minimal_runtime_inbox_schema(&connection);
+        let thread_id = scoped_direct_conversation_id(&DirectPeerScope {
+            user_id: "user-alice".to_string(),
+            full_handle: "alice.anpclaw.com".to_string(),
+            current_did: Some("did:human:alice".to_string()),
+        })
+        .unwrap();
+        for (msg_id, direction, is_read) in [
+            ("msg-unread-1", 0, 0),
+            ("msg-unread-2", 0, 0),
+            ("msg-outgoing", 1, 0),
+            ("msg-read", 0, 1),
+        ] {
+            connection
+                .execute(
+                    r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, metadata)
+VALUES
+    (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?3, 'text/plain', 'hello runtime',
+     '2026-06-04T10:00:00Z', '2026-06-04T10:00:00Z', ?7, ?8)"#,
+                    rusqlite::params![
+                        msg_id,
+                        "runtime-owner",
+                        "did:agent:runtime",
+                        thread_id,
+                        direction,
+                        "did:human:alice",
+                        is_read,
+                        r#"{
+                            "peer_user_id": "user-alice",
+                            "peer_full_handle": "alice.anpclaw.com",
+                            "peer_current_did": "did:human:alice"
+                        }"#,
+                    ],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            mark_local_conversation_read(&sqlite_path, "runtime-owner", &thread_id).unwrap(),
+            2
+        );
+        let unread_count: i64 = connection
+            .query_row(
+                r#"
+SELECT COUNT(*)
+FROM messages
+WHERE owner_identity_id = ?1
+  AND conversation_id = ?2
+  AND direction = 0
+  AND COALESCE(is_read, 0) = 0"#,
+                rusqlite::params!["runtime-owner", thread_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let outgoing_read: i64 = connection
+            .query_row(
+                "SELECT is_read FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                rusqlite::params!["runtime-owner", "msg-outgoing"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(unread_count, 0);
+        assert_eq!(outgoing_read, 0);
     }
 
     #[test]
