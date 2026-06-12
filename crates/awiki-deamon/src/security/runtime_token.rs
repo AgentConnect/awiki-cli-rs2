@@ -50,6 +50,7 @@ pub struct IssuedRuntimeToken {
 pub struct RuntimeRpcToken(String);
 
 pub const ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE: &str = "@active_handle_lookup";
+pub const ANY_DIRECT_RECIPIENT_SCOPE: &str = "@any_direct";
 pub const ANY_GROUP_RECIPIENT_SCOPE: &str = "@any_group";
 
 impl RuntimeRpcToken {
@@ -229,6 +230,16 @@ impl RuntimeTokenScope {
 
         if allowed
             .iter()
+            .any(|known| normalize_recipient_for_scope(known) == ANY_DIRECT_RECIPIENT_SCOPE)
+            && recipients
+                .iter()
+                .any(|recipient| normalized_recipient_is_direct(recipient))
+        {
+            return true;
+        }
+
+        if allowed
+            .iter()
             .any(|known| normalize_recipient_for_scope(known) == ANY_GROUP_RECIPIENT_SCOPE)
             && recipients
                 .iter()
@@ -261,7 +272,10 @@ fn normalize_recipient_for_scope(input: &str) -> String {
     let value = input.trim();
     if value.starts_with("did:") {
         value.to_string()
-    } else if value == ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE || value == ANY_GROUP_RECIPIENT_SCOPE {
+    } else if value == ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE
+        || value == ANY_DIRECT_RECIPIENT_SCOPE
+        || value == ANY_GROUP_RECIPIENT_SCOPE
+    {
         value.to_string()
     } else if value.starts_with('@') {
         value.to_ascii_lowercase()
@@ -275,9 +289,15 @@ fn normalized_recipient_is_handle(input: &str) -> bool {
     !value.is_empty() && !value.starts_with("did:")
 }
 
+fn normalized_recipient_is_direct(input: &str) -> bool {
+    let value = input.trim().to_ascii_lowercase();
+    !value.is_empty() && !normalized_recipient_is_group(&value)
+}
+
 fn normalized_recipient_is_group(input: &str) -> bool {
     let value = input.trim().to_ascii_lowercase();
     value.starts_with("did:group:")
+        || (value.starts_with("did:wba:") && value.contains(":groups:"))
         || value.starts_with("group:")
         || value.starts_with("grp_")
         || value.starts_with("group_")
@@ -363,5 +383,33 @@ mod tests {
         assert!(handle_lookup_scope.allows_recipient_candidates(["alice", "did:human:alice"]));
         assert!(!handle_lookup_scope.allows_recipient(Some("did:human:alice")));
         assert!(!handle_lookup_scope.allows_recipient(Some("alice")));
+
+        let direct_scope = RuntimeTokenScope::new(
+            "did:agent:test",
+            "profile_1",
+            "run_3",
+            vec![RpcMethod::MsgSend],
+            Some(vec![ANY_DIRECT_RECIPIENT_SCOPE.to_string()]),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(direct_scope.allows_recipient(Some("alice")));
+        assert!(direct_scope.allows_recipient(Some("did:human:alice")));
+        assert!(!direct_scope.allows_recipient(Some("did:group:team")));
+        assert!(!direct_scope.allows_recipient(Some("did:wba:awiki.ai:groups:demo:e1_group")));
+
+        let group_scope = RuntimeTokenScope::new(
+            "did:agent:test",
+            "profile_1",
+            "run_4",
+            vec![RpcMethod::MsgSend],
+            Some(vec![ANY_GROUP_RECIPIENT_SCOPE.to_string()]),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(group_scope.allows_recipient(Some("did:group:team")));
+        assert!(group_scope.allows_recipient(Some("did:wba:awiki.ai:groups:demo:e1_group")));
+        assert!(group_scope.allows_recipient(Some("group:team")));
+        assert!(!group_scope.allows_recipient(Some("did:human:alice")));
     }
 }

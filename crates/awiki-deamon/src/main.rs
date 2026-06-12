@@ -61,7 +61,7 @@ fn parse_runtime_wrapper_args(args: impl IntoIterator<Item = String>) -> Result<
     };
     let mut socket = None;
     let mut token = None;
-    let mut to_handle = None;
+    let mut to = None;
     let mut group = None;
     let mut text = None;
     let mut file_path = None;
@@ -79,8 +79,14 @@ fn parse_runtime_wrapper_args(args: impl IntoIterator<Item = String>) -> Result<
             "--token" => {
                 token = Some(args.next().context("--token requires a value")?);
             }
+            "--to" => {
+                to = Some(args.next().context("--to requires a direct recipient")?);
+            }
             "--to-handle" => {
-                to_handle = Some(args.next().context("--to-handle requires a handle")?);
+                to = Some(
+                    args.next()
+                        .context("--to-handle requires a direct recipient")?,
+                );
             }
             "--group" => {
                 group = Some(args.next().context("--group requires a group")?);
@@ -110,16 +116,16 @@ fn parse_runtime_wrapper_args(args: impl IntoIterator<Item = String>) -> Result<
     let runtime_rpc_token = runtime_token_from_env_or_arg(token)?;
     match command.as_str() {
         "send" => {
-            let target = match (to_handle, group) {
-                (Some(handle), None) => {
-                    awiki_deamon::cli_wrapper::OutboundMessageTarget::Handle(handle)
+            let target = match (to, group) {
+                (Some(recipient), None) => {
+                    awiki_deamon::cli_wrapper::OutboundMessageTarget::DirectRecipient(recipient)
                 }
                 (None, Some(group)) => {
                     awiki_deamon::cli_wrapper::OutboundMessageTarget::Group(group)
                 }
-                (None, None) => bail!("send requires --to-handle or --group"),
+                (None, None) => bail!("send requires --to or --group"),
                 (Some(_), Some(_)) => {
-                    bail!("send accepts either --to-handle or --group, but not both")
+                    bail!("send accepts either --to or --group, but not both")
                 }
             };
             Ok(CliWrapperCommand::Send {
@@ -135,7 +141,7 @@ fn parse_runtime_wrapper_args(args: impl IntoIterator<Item = String>) -> Result<
         "send-message" => Ok(CliWrapperCommand::SendMessage {
             socket_path,
             runtime_rpc_token,
-            to_handle: to_handle.context("--to-handle is required")?,
+            to_handle: to.context("--to is required")?,
             text: text.context("--text is required")?,
         }),
         "send-attachment" => Ok(CliWrapperCommand::SendAttachment {
@@ -367,5 +373,5 @@ fn usage_error<T>() -> Result<T> {
 }
 
 fn runtime_wrapper_usage_error<T>() -> Result<T> {
-    bail!("usage: awiki-deamon-runtime <send|send-message|send-attachment> [--socket <path>] [--token <runtime-token>] [send: (--to-handle <handle>|--group <group>) --text <text> --file <path> --display-filename <name> --mime-type <mime>] [send-message: --to-handle <handle> --text <text>] [send-attachment: --file <path> --display-filename <name> --caption <text>]")
+    bail!("usage: awiki-deamon-runtime <send|send-message|send-attachment> [--socket <path>] [--token <runtime-token>] [send: (--to <handle-or-did>|--group <group>) --text <text> --file <path> --display-filename <name> --mime-type <mime>] [send-message: --to <handle-or-did> --text <text>] [send-attachment: --file <path> --display-filename <name> --caption <text>]")
 }

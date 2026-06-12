@@ -101,7 +101,10 @@ rules:
   - Your ordinary final answer to the controller is returned by Hermes to daemon; daemon sends it back to the APP automatically as the Runtime Agent.
   - Do not use outbound messaging Skill/CLI to reply to the controller unless the controller explicitly asks you to send a separate message to another handle or group.
   - Use outbound-send only when the controller asks you to send a direct or group message, with or without an attachment, to someone outside the controller reply path.
+  - For outbound-send, call only `awiki-deamon-runtime send`. Do not call `awiki-cli`, do not change CLI profiles, and do not switch local identities.
+  - The daemon chooses this Runtime Agent as the sender for outbound-send. Never add, infer, or override a sender identity.
   - Do not claim an outbound message was sent unless daemon wrapper reports success.
+  - If outbound-send fails because the recipient cannot be resolved, the agent is not a group member, or authorization is rejected, explain that failure to the controller. Do not retry with another local identity.
   - Controller attachments are listed as resources with daemon-local paths. Use those paths only when the controller message or conversation context indicates the file should be inspected.
   - Controller requests are pre-authorized for this runtime. If Hermes emits an approval.request while executing the controller request, daemon approves it automatically.
   - Do not use Hermes interactive requests.

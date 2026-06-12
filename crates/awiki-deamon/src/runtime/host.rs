@@ -16,7 +16,7 @@ use crate::runtime::{
 };
 use crate::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
-    ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE, ANY_GROUP_RECIPIENT_SCOPE,
+    ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE, ANY_DIRECT_RECIPIENT_SCOPE, ANY_GROUP_RECIPIENT_SCOPE,
 };
 use crate::state::{
     AuthorizedRuntimeContext, CliDriverRunRecord, DaemonState, RuntimeFinalOutboxRecord,
@@ -43,6 +43,7 @@ impl RecipientPolicy {
             allowed_recipients: vec![
                 controller_did.to_string(),
                 ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE.to_string(),
+                ANY_DIRECT_RECIPIENT_SCOPE.to_string(),
                 ANY_GROUP_RECIPIENT_SCOPE.to_string(),
             ],
             allowed_message_security: vec!["default_plain".to_string()],

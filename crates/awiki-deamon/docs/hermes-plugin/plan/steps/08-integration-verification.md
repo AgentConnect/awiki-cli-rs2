@@ -74,7 +74,7 @@ test_awiki_daemon_hermes_runtime_e2e.py
 5. fake 或真实 Hermes Gateway 收到 prompt；
 6. Hermes 通过 local RPC 上报 running 和 final；
 7. controller history 收到 status/final；
-8. Hermes `send-message` 给目标 DID，目标 DID history/inbox 收到 direct message；
+8. Hermes 通过 `awiki-deamon-runtime send` 给目标 DID，目标 DID history/inbox 收到 direct message；
 9. non-controller 消息不触发执行；
 10. recipient scope 越权返回失败且无外发。
 
@@ -377,7 +377,7 @@ uv run awiki-system-test tests_v2 -q -ra
 
 - Controller DID：Step 04/07 的 controller text path 仍通过 `run_controller_text_task` 校验 `sender_did == controller_did`；Step 07 非 controller foreground route 测试确认 gateway 前拒绝。
 - Runtime token：local RPC 授权仍从 token 和内部 state 反查 context，不信任请求体 spoof 字段；secret 搜索未发现 token 原文日志。
-- Recipient scope：Step 05 后 controller text run token 默认 `allowed_recipients = Some(controller_did)`；Hermes `msg.send` 不能默认发任意 DID。
+- Recipient scope：Hermes run token 默认允许 controller、direct handle/DID 和 group 目标，以支持用户自然语言要求 Runtime Agent 外发普通消息；发送仍只能经 daemon wrapper/local RPC，且受普通消息、审计、handle 解析和 group 成员权限约束。
 - DID 私钥隔离：Hermes profile/session 表不保存 DID private key/JWT/runtime token；daemon 持有 agent identity 并通过 `im-core` 发送。
 - E2EE 边界：daemon 只把 `direct_e2ee` 映射到 `MessageSecurityMode::SecureDirect`，不处理 E2EE key；完整 remote suite 中 direct-e2ee 相关用例失败，不能声明 remote L3 通过。
 - Prompt 边界：prompt wrapper 不含 runtime token/private key/JWT；`agent-status` `last_error` 已对 token/JWT/private key/secret 片段 fail-closed。

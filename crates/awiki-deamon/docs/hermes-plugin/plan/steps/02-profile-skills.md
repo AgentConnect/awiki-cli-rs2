@@ -109,22 +109,11 @@ CREATE TABLE hermes_profiles (
 
 ### Skills 内容
 
-`awiki-runtime/SKILL.md`：
+`awiki-outbound-messaging/SKILL.md`：
 
-- 指导 Hermes 对当前 message/run 上报状态和最终回复；
-- 使用 wrapper 能力名 `report-status`、`finish-message`；
-- 提醒失败首版使用 failed status，不调用 success final。
-
-`awiki-messaging/SKILL.md`：
-
-- 指导 Hermes 外发消息必须调用 wrapper `send-message`；
+- 指导 Hermes 外发消息必须调用 `awiki-deamon-runtime send`；
 - 说明 daemon 会校验 run token、method scope、recipient scope；
 - 禁止直接连接 message-service 或声称未成功发送的消息已发送。
-
-`awiki-collaboration/SKILL.md`：
-
-- 指导 agent-to-agent 协作仍通过 `awiki-messaging`；
-- 说明非 controller 消息不自动执行。
 
 ### smoke test
 

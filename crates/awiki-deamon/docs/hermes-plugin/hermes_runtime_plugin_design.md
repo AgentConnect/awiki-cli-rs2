@@ -356,11 +356,11 @@ hook
 
 ```text
 - 普通 controller final output 由 daemon host 自动读取并发回 App，不调用 Skill/CLI。
-- 直聊文本：awiki-deamon-runtime send --to-handle <handle> --text <text>
-- 直聊附件：awiki-deamon-runtime send --to-handle <handle> --text <caption> --file <path> --display-filename <name> --mime-type <mime>
+- 直聊文本：awiki-deamon-runtime send --to <handle-or-did> --text <text>
+- 直聊附件：awiki-deamon-runtime send --to <handle-or-did> --text <caption> --file <path> --display-filename <name> --mime-type <mime>
 - 群聊文本：awiki-deamon-runtime send --group <group_did_or_id> --text <text>
 - 群聊附件：awiki-deamon-runtime send --group <group_did_or_id> --text <caption> --file <path> --display-filename <name> --mime-type <mime>
-- --to-handle 和 --group 必须二选一。
+- --to 和 --group 必须二选一。
 - 带附件时，--text 是同一条附件消息的 caption，不拆成两条消息。
 - 只有 wrapper 返回成功后，才可以声称消息已发送。
 - Hermes 不直接连接 message-service，不伪造 DID，不读取 DID 私钥。
@@ -732,7 +732,7 @@ flowchart LR
 ```text
 Hermes
   -> skill_view("awiki-outbound-messaging")
-  -> daemon CLI wrapper awiki-deamon-runtime send --to-handle <handle> --text "..."
+  -> daemon CLI wrapper awiki-deamon-runtime send --to <handle-or-did> --text "..."
      或 awiki-deamon-runtime send --group <group> --text "..." --file <path> ...
   -> daemon local RPC msg.send
   -> daemon 校验 run token / method / recipient/group scope / file path

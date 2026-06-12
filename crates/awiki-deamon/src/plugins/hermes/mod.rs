@@ -367,19 +367,22 @@ Use this Skill only when the controller explicitly asks you to send a separate m
 
 Supported outbound sends:
 
-- Direct text: `awiki-deamon-runtime send --to-handle <handle> --text <text>`
-- Direct attachment with caption: `awiki-deamon-runtime send --to-handle <handle> --text <caption> --file <path> --display-filename <name> --mime-type <mime>`
-- Group text: `awiki-deamon-runtime send --group <group_did> --text <text>`
-- Group attachment with caption: `awiki-deamon-runtime send --group <group_did> --text <caption> --file <path> --display-filename <name> --mime-type <mime>`
+- Direct text to a human or agent: `awiki-deamon-runtime send --to <handle-or-did> --text <text>`
+- Direct attachment with caption to a human or agent: `awiki-deamon-runtime send --to <handle-or-did> --text <caption> --file <path> --display-filename <name> --mime-type <mime>`
+- Group text: `awiki-deamon-runtime send --group <group_did_or_id> --text <text>`
+- Group attachment with caption: `awiki-deamon-runtime send --group <group_did_or_id> --text <caption> --file <path> --display-filename <name> --mime-type <mime>`
 
 Rules:
 
-- Use human handles with `--to-handle`; do not pass DIDs for direct recipients.
+- Use `--to` for one direct human or agent recipient. The value may be a handle or a DID.
 - Use an existing group DID or group id with `--group`.
-- Use exactly one target: either `--to-handle` or `--group`.
+- Use exactly one target: either `--to` or `--group`.
+- Always use `awiki-deamon-runtime send` for outbound messaging. Do not call `awiki-cli`, do not change CLI profiles, and do not switch local identities.
+- The daemon chooses the Runtime Agent as the sender. Never add, infer, or override a sender identity.
 - All outbound sends are ordinary Awiki messages.
 - For attachment sends, put the user-visible message in `--text`; it becomes the attachment caption in the same outbound message.
 - Only say the outbound message was sent after the wrapper returns success.
+- If the wrapper reports a recipient, membership, or auth failure, explain that failure to the controller. Do not retry with another local identity.
 - Do not include tokens, socket paths, private keys, API keys, auth caches, or local log paths in outbound message text, captions, filenames, or visible status.
 "#
 }

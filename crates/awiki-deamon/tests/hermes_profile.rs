@@ -349,7 +349,7 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(profile_json.contains("library:awiki_deamon::cli_wrapper"));
     assert!(profile_json.contains("process wrapper wired in Step 07"));
     assert!(outbound_skill.contains("awiki-deamon-runtime send"));
-    assert!(outbound_skill.contains("--to-handle"));
+    assert!(outbound_skill.contains("--to <handle-or-did>"));
     assert!(outbound_skill.contains("--group"));
     assert!(outbound_skill.contains("--file"));
     assert!(outbound_skill.contains("--display-filename"));
@@ -357,6 +357,12 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(outbound_skill.contains("same outbound message"));
     assert!(outbound_skill.contains("ordinary Awiki messages"));
     assert!(outbound_skill.contains("Do not use it for your ordinary final answer"));
+    assert!(outbound_skill.contains("do not switch local identities"));
+    assert!(outbound_skill.contains("Never add, infer, or override a sender identity"));
+    assert!(outbound_skill.contains("Do not retry with another local identity"));
+    assert!(outbound_skill.contains("Do not call `awiki-cli`"));
+    assert!(!outbound_skill.contains("`awiki-cli "));
+    assert!(!outbound_skill.contains("--to-handle"));
     assert!(!outbound_skill.contains("security"));
     assert!(!outbound_skill.contains("encryption"));
     assert!(!outbound_skill.contains("direct_e2ee"));
