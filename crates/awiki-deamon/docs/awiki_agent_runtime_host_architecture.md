@@ -1026,7 +1026,7 @@ App 侧流程：
 示例安装命令：
 
 ```bash
-curl -fsSL https://install.awiki.ai/daemon.sh | bash -s -- \
+curl -fsSL https://example.com/daemon/install.sh | sh -s -- \
   --token tok_daemon_abc123 \
   --handle @alice-mac-daemon \
   --controller-did did:human:alice \

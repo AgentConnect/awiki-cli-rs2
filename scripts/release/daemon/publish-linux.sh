@@ -1,31 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${ROOT_DIR}"
 export COPYFILE_DISABLE=1
 if [[ -n "${HOME:-}" && -d "${HOME}/.cargo/bin" ]]; then
   export PATH="${HOME}/.cargo/bin:${PATH}"
 fi
 
-NGINX_DAEMON_DIR="/var/www/awiki-web/daemon"
+NGINX_DAEMON_DIR="${AWIKI_DAEMON_NGINX_DIR:-/var/www/awiki-web/daemon}"
 OS_NAME="linux"
 ARCH_NAME="amd64"
 TARGET_TRIPLE="x86_64-unknown-linux-gnu"
 
 usage() {
   cat <<'USAGE'
-Publish the Linux awiki-deamon package to the fixed Nginx daemon download root.
+Publish the Linux awiki-deamon package to the Nginx daemon download root.
 
 Usage:
-  scripts/release/publish-daemon-linux.sh --base-url URL [--dry-run]
+  scripts/release/daemon/publish-linux.sh --base-url URL [--dry-run]
 
 Options:
-  --base-url URL   Backend service base URL, e.g. https://anpclaw.com.
+  --base-url URL   Backend service base URL, e.g. https://example.com.
                    The daemon download root is derived as URL/daemon.
   --dry-run        Validate inputs and print the release plan without building
-                   or writing /var/www/awiki-web/daemon. This mode may run on
+                   or writing the Nginx daemon directory. This mode may run on
                    non-Linux hosts.
+
+Environment:
+  AWIKI_DAEMON_NGINX_DIR
+                   Nginx filesystem directory serving URL path /daemon.
+                   Defaults to /var/www/awiki-web/daemon.
 USAGE
 }
 
@@ -371,14 +376,14 @@ fi
 
 rm -rf "${BUILD_DIR}" "${STAGE_DIR}"
 
-scripts/release/build-daemon-artifact.sh \
+scripts/release/daemon/_build-artifact.sh \
   --version "${VERSION}" \
   --os "${OS_NAME}" \
   --arch "${ARCH_NAME}" \
   --target "${TARGET_TRIPLE}" \
   --dist "${BUILD_DIR}"
 
-scripts/release/stage-daemon-downloads.sh \
+scripts/release/daemon/_stage-downloads.sh \
   --version "${VERSION}" \
   --source-dir "${BUILD_DIR}" \
   --output-dir "${STAGE_DIR}" \

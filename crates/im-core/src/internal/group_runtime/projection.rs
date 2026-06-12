@@ -333,7 +333,8 @@ fn group_record(
     result: &crate::groups::GroupReadResult,
 ) -> Option<crate::internal::local_state::groups::GroupRecord> {
     let raw = result.raw_response().cloned().unwrap_or(Value::Null);
-    let snapshot = snapshot_from_result(result).or_else(|| normalize_group_snapshot(&raw))?;
+    let snapshot =
+        snapshot_from_result(result).or_else(|| group_snapshot_from_raw_response(&raw))?;
     let group_did = string_value(snapshot.get("group_did"));
     if group_did.trim().is_empty() {
         return None;
@@ -655,7 +656,45 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
             "updated_at": raw.get("updated_at").cloned().unwrap_or(Value::Null),
         }));
     }
-    Some(raw.clone())
+    if raw_is_group_snapshot(raw) {
+        Some(raw.clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn group_snapshot_from_raw_response(raw: &Value) -> Option<Value> {
+    if let Some(group) = raw.get("group").filter(|value| value.is_object()) {
+        return normalize_group_snapshot(group);
+    }
+    normalize_group_snapshot(raw)
+}
+
+#[cfg(feature = "sqlite")]
+fn raw_is_group_snapshot(raw: &Value) -> bool {
+    let Some(object) = raw.as_object() else {
+        return false;
+    };
+    if object.contains_key("accepted")
+        || object.contains_key("final_acceptance")
+        || object.contains_key("operation_id")
+        || object.contains_key("group_receipt")
+        || object.contains_key("member_did")
+        || object.contains_key("leaver_did")
+    {
+        return false;
+    }
+    object.contains_key("group_snapshot")
+        || object.contains_key("group_profile")
+        || object.contains_key("name")
+        || object.contains_key("display_name")
+        || object.contains_key("description")
+        || object.contains_key("member_role")
+        || object.contains_key("my_role")
+        || object.contains_key("actor_membership_role")
+        || object.contains_key("member_status")
+        || object.contains_key("actor_membership_status")
 }
 
 #[cfg(feature = "sqlite")]
@@ -705,6 +744,59 @@ fn group_did_from_result(raw: &Value) -> String {
         .trim()
         .to_string()
         .or_else_nonempty(|| string_value(raw.get("did")))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scope() -> OwnerScope {
+        OwnerScope::new("owner-identity", "did:example:alice").expect("owner scope")
+    }
+
+    #[test]
+    fn group_record_ignores_member_mutation_receipt_status() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "accepted": true,
+                "final_acceptance": true,
+                "group_did": "did:example:group",
+                "group_state_version": "12",
+                "group_event_seq": "7",
+                "operation_id": "op-remove-bob",
+                "member_did": "did:example:bob",
+                "membership_status": "removed"
+            }),
+            Vec::new(),
+        );
+
+        assert!(
+            group_record(&scope(), &result).is_none(),
+            "target member removal status must not be projected as the viewer's group membership status"
+        );
+    }
+
+    #[test]
+    fn group_record_accepts_explicit_local_group_snapshot() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "owner",
+                    "member_status": "active",
+                    "member_count": 2
+                }
+            }),
+            Vec::new(),
+        );
+
+        let record = group_record(&scope(), &result).expect("group record");
+        assert_eq!(record.group_did, "did:example:group");
+        assert_eq!(record.my_role, "owner");
+        assert_eq!(record.membership_status, "active");
+    }
 }
 
 #[cfg(feature = "sqlite")]

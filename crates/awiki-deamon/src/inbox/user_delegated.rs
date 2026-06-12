@@ -1058,6 +1058,8 @@ mod tests {
     use im_core::messages::{MessageKind, MessageMetadata, MessageMetadataAttribute, ThreadRef};
     use tempfile::TempDir;
 
+    use crate::runtime::RuntimeAgentProfile;
+
     use super::*;
 
     #[derive(Clone)]
@@ -1456,6 +1458,22 @@ mod tests {
             updated_at_ms: 0,
         };
         state.store_bootstrap_state(&identity, &replay).unwrap();
+        state
+            .upsert_runtime_agent_profile(&RuntimeAgentProfile {
+                agent_did: "did:agent:hermes".to_string(),
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com"
+                    .to_string(),
+                controller_did: identity.daemon_agent_did.clone(),
+                runtime_profile_id: "profile_hermes".to_string(),
+                runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+                display_name: Some("Hermes".to_string()),
+                workspace_id: None,
+                workspace_root: None,
+                workspace_mode: None,
+            })
+            .unwrap();
         let binding = AppMessageAgentBindingRecord {
             binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
             user_did: identity.user_did.clone(),

@@ -60,7 +60,7 @@ pub fn query_runtime_inbox(
         &client,
         &config.im_core_sqlite_path,
         client.current_identity().id.as_str(),
-        &runtime_agent.agent_did,
+        runtime_agent,
     )
     .context("repair runtime inbox direct peer scopes")?;
     let offset = cursor_offset(input.cursor.as_deref())?;
@@ -120,7 +120,7 @@ pub fn query_runtime_inbox_thread(
         &client,
         &config.im_core_sqlite_path,
         client.current_identity().id.as_str(),
-        &runtime_agent.agent_did,
+        runtime_agent,
     )
     .context("repair runtime inbox direct peer scopes")?;
     let conversation_id = conversation_id_from_thread_query(&input)?;
@@ -856,25 +856,33 @@ fn repair_scoped_direct_conversations(
     client: &im_core::ImClient,
     sqlite_path: &Path,
     owner_identity_id: &str,
-    runtime_agent_did: &str,
+    runtime_agent: &AgentDefinition,
 ) -> Result<()> {
     let mut connection = rusqlite::Connection::open(sqlite_path)?;
-    let candidates = load_direct_repair_candidates(&connection, owner_identity_id)?;
+    let mut candidates = load_direct_repair_candidates(&connection, owner_identity_id)?;
+    seed_missing_direct_peer_scopes_from_conversation(&mut candidates);
     if candidates.is_empty() {
         return Ok(());
     }
     let mut lookup_cache = HashMap::<String, Option<DirectPeerScope>>::new();
     let transaction = connection.transaction()?;
     for candidate in candidates {
-        let Some(peer_did) = candidate.peer_did(runtime_agent_did) else {
+        if !candidate.needs_repair {
+            continue;
+        }
+        let Some(peer_did) = candidate.peer_did(&runtime_agent.agent_did) else {
             continue;
         };
-        let scope = candidate.metadata_scope.or_else(|| {
-            lookup_cache
-                .entry(peer_did.clone())
-                .or_insert_with(|| lookup_peer_scope_by_did(client, &peer_did))
-                .clone()
-        });
+        let scope = candidate
+            .metadata_scope
+            .clone()
+            .or_else(|| controller_scope_for_candidate(&candidate, runtime_agent, &peer_did))
+            .or_else(|| {
+                lookup_cache
+                    .entry(peer_did.clone())
+                    .or_insert_with(|| lookup_peer_scope_by_did(client, &peer_did))
+                    .clone()
+            });
         let Some(scope) = scope else {
             continue;
         };
@@ -900,6 +908,24 @@ WHERE owner_identity_id = ?4
     Ok(())
 }
 
+pub fn repair_runtime_controller_inbox_projection(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    runtime_agent_did: &str,
+) -> Result<()> {
+    let runtime_agent = state.load_agent_definition(runtime_agent_did)?;
+    let im_core = ImCoreAdapter::open(config)?;
+    let identity = state.load_agent_identity(runtime_agent_did)?;
+    let jwt_token = state.load_agent_auth_token(runtime_agent_did)?;
+    let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
+    repair_scoped_direct_conversations(
+        &client,
+        &config.im_core_sqlite_path,
+        client.current_identity().id.as_str(),
+        &runtime_agent,
+    )
+}
+
 #[derive(Debug, Clone)]
 struct DirectRepairCandidate {
     msg_id: String,
@@ -908,6 +934,7 @@ struct DirectRepairCandidate {
     conversation_id: String,
     metadata: String,
     metadata_scope: Option<DirectPeerScope>,
+    needs_repair: bool,
 }
 
 impl DirectRepairCandidate {
@@ -918,6 +945,31 @@ impl DirectRepairCandidate {
             })
             .or_else(|| direct_peer_from_conversation_id(&self.conversation_id))
     }
+}
+
+fn controller_scope_for_candidate(
+    candidate: &DirectRepairCandidate,
+    runtime_agent: &AgentDefinition,
+    peer_did: &str,
+) -> Option<DirectPeerScope> {
+    if peer_did.trim() != runtime_agent.controller_did.trim() {
+        return None;
+    }
+    let user_id = runtime_agent.controller_user_id.trim();
+    let full_handle = runtime_agent.controller_full_handle.trim();
+    if user_id.is_empty() || full_handle.is_empty() {
+        return None;
+    }
+    let direct_to_runtime = candidate.receiver_did.trim() == runtime_agent.agent_did.trim()
+        || candidate.sender_did.trim() == runtime_agent.agent_did.trim();
+    if !direct_to_runtime {
+        return None;
+    }
+    Some(DirectPeerScope {
+        user_id: user_id.to_string(),
+        full_handle: full_handle.to_ascii_lowercase(),
+        current_did: Some(peer_did.trim().to_string()),
+    })
 }
 
 fn load_direct_repair_candidates(
@@ -934,25 +986,60 @@ SELECT
     metadata
 FROM messages
 WHERE owner_identity_id = ?1
-  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'group:%'
-  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'dm:peer-scope:%'"#,
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'group:%'"#,
     )?;
     let rows = statement.query_map((owner_identity_id,), |row| {
         let sender_did = optional_string(row, "sender_did")?;
         let receiver_did = optional_string(row, "receiver_did")?;
         let metadata = optional_string(row, "metadata")?;
+        let conversation_id = optional_string(row, "conversation_id")?;
+        let metadata_scope = peer_scope_from_metadata(&metadata);
+        let needs_repair =
+            !conversation_id.trim().starts_with("dm:peer-scope:") || metadata_scope.is_none();
         let candidate = DirectRepairCandidate {
             msg_id: optional_string(row, "msg_id")?,
             sender_did,
             receiver_did,
-            conversation_id: optional_string(row, "conversation_id")?,
-            metadata_scope: peer_scope_from_metadata(&metadata),
+            conversation_id,
             metadata,
+            metadata_scope,
+            needs_repair,
         };
         Ok(candidate)
     })?;
     let candidates = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(candidates)
+}
+
+fn seed_missing_direct_peer_scopes_from_conversation(candidates: &mut [DirectRepairCandidate]) {
+    let mut scope_by_conversation = HashMap::<String, DirectPeerScope>::new();
+    for candidate in candidates.iter() {
+        let Some(scope) = candidate.metadata_scope.clone() else {
+            continue;
+        };
+        let conversation_id = candidate.conversation_id.trim();
+        if conversation_id.is_empty() || conversation_id.starts_with("group:") {
+            continue;
+        }
+        scope_by_conversation
+            .entry(conversation_id.to_string())
+            .or_insert(scope);
+    }
+    if scope_by_conversation.is_empty() {
+        return;
+    }
+    for candidate in candidates.iter_mut() {
+        if candidate.metadata_scope.is_some() {
+            continue;
+        }
+        let Some(scope) = scope_by_conversation
+            .get(candidate.conversation_id.trim())
+            .cloned()
+        else {
+            continue;
+        };
+        candidate.metadata_scope = Some(scope);
+    }
 }
 
 fn lookup_peer_scope_by_did(client: &im_core::ImClient, peer_did: &str) -> Option<DirectPeerScope> {
@@ -1438,10 +1525,10 @@ mod tests {
 
     #[test]
     fn clamps_runtime_inbox_limit() {
-        assert_eq!(clamp_limit(None, INBOX_DEFAULT_LIMIT).unwrap(), 30);
-        assert_eq!(clamp_limit(Some(10), INBOX_DEFAULT_LIMIT).unwrap(), 10);
-        assert_eq!(clamp_limit(Some(150), INBOX_DEFAULT_LIMIT).unwrap(), 100);
-        assert!(clamp_limit(Some(0), INBOX_DEFAULT_LIMIT).is_err());
+        assert_eq!(clamp_limit(None, 30).unwrap(), 30);
+        assert_eq!(clamp_limit(Some(10), 30).unwrap(), 10);
+        assert_eq!(clamp_limit(Some(150), 30).unwrap(), 100);
+        assert!(clamp_limit(Some(0), 30).is_err());
     }
 
     #[test]

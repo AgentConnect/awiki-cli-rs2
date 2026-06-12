@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 CALLER_DIR="$(pwd)"
 cd "${ROOT_DIR}"
 
@@ -10,7 +10,7 @@ usage() {
 Stage daemon installer files into the official download-service layout.
 
 Usage:
-  scripts/release/stage-daemon-downloads.sh --version VERSION (--base-url URL | --download-base-url URL) [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
+  scripts/release/daemon/_stage-downloads.sh --version VERSION (--base-url URL | --download-base-url URL) [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
 
 Options:
   --version VERSION   Daemon release version, with or without a leading v.
@@ -18,7 +18,7 @@ Options:
                       --download-base-url is omitted, it defaults to URL/daemon.
   --download-base-url URL
                       Daemon static download root embedded in install.sh, e.g.
-                      https://awiki.ai/daemon. When --base-url is omitted, URL
+                      https://example.com/daemon. When --base-url is omitted, URL
                       must end with /daemon so the backend service base can be
                       inferred safely.
   --min-supported VERSION
@@ -205,7 +205,7 @@ for package in "${packages[@]}"; do
 done
 
 (cd "${version_dir}" && checksum_packages)
-python3 - "${ROOT_DIR}/scripts/daemon/install.sh" "${OUTPUT_DIR}/install.sh" "${BASE_URL}" "${DOWNLOAD_BASE_URL}" <<'PY'
+python3 - "${ROOT_DIR}/scripts/release/daemon/_install.sh.template" "${OUTPUT_DIR}/install.sh" "${BASE_URL}" "${DOWNLOAD_BASE_URL}" <<'PY'
 import pathlib
 import sys
 
@@ -218,7 +218,7 @@ PY
 chmod 0755 "${OUTPUT_DIR}/install.sh"
 
 manifest_args=(
-  node "${ROOT_DIR}/scripts/release/generate-daemon-manifest.js"
+  node "${ROOT_DIR}/scripts/release/daemon/_generate-manifest.js"
   --version "${VERSION}"
   --dist "${version_dir}"
   --output "${release_dir}/manifest.json"

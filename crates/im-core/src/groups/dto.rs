@@ -19,7 +19,7 @@ pub struct GroupReadResult {
 impl GroupReadResult {
     pub(crate) fn from_raw_response(raw: Value, warnings: Vec<String>) -> Self {
         let warnings = merge_raw_warnings(raw.get("warnings"), warnings);
-        let group = group_snapshot_from_value(raw.get("group").unwrap_or(&raw));
+        let group = group_snapshot_from_response(&raw);
         let groups = values_from_array(raw.get("groups"))
             .into_iter()
             .filter_map(group_summary_from_value)
@@ -798,6 +798,43 @@ pub struct GroupMember {
     pub joined_at: Option<String>,
 }
 
+fn group_snapshot_from_response(raw: &Value) -> Option<GroupSnapshot> {
+    if let Some(group) = raw.get("group") {
+        return group_snapshot_from_value(group);
+    }
+    if let Some(group) = raw.get("group_snapshot") {
+        return group_snapshot_from_value(group);
+    }
+    if raw_is_group_snapshot(raw) {
+        return group_snapshot_from_value(raw);
+    }
+    None
+}
+
+fn raw_is_group_snapshot(raw: &Value) -> bool {
+    let Some(object) = raw.as_object() else {
+        return false;
+    };
+    if object.contains_key("accepted")
+        || object.contains_key("final_acceptance")
+        || object.contains_key("operation_id")
+        || object.contains_key("group_receipt")
+        || object.contains_key("member_did")
+        || object.contains_key("leaver_did")
+    {
+        return false;
+    }
+    object.contains_key("group_profile")
+        || object.contains_key("name")
+        || object.contains_key("display_name")
+        || object.contains_key("description")
+        || object.contains_key("member_role")
+        || object.contains_key("my_role")
+        || object.contains_key("actor_membership_role")
+        || object.contains_key("member_status")
+        || object.contains_key("actor_membership_status")
+}
+
 fn group_snapshot_from_value(value: &Value) -> Option<GroupSnapshot> {
     let object = value.as_object()?;
     let did = group_ref_from_object(object)?;
@@ -1123,6 +1160,76 @@ mod tests {
             result.raw_response().and_then(|raw| raw.get("group_did")),
             Some(&json!("did:example:group"))
         );
+    }
+
+    #[test]
+    fn group_result_does_not_treat_member_mutation_response_as_viewer_snapshot() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "accepted": true,
+                "final_acceptance": true,
+                "group_did": "did:example:group",
+                "group_state_version": "12",
+                "group_event_seq": "7",
+                "operation_id": "op-remove-bob",
+                "member_did": "did:example:bob",
+                "membership_status": "removed"
+            }),
+            Vec::new(),
+        );
+
+        assert!(
+            result.group.is_none(),
+            "target member status in a group.remove response must not be read as the viewer membership status"
+        );
+        assert_eq!(
+            result
+                .raw_response()
+                .and_then(|raw| raw.get("membership_status")),
+            Some(&json!("removed"))
+        );
+    }
+
+    #[test]
+    fn group_result_still_projects_explicit_group_snapshot_wrapper() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "owner",
+                    "membership_status": "active",
+                    "member_count": 2
+                }
+            }),
+            Vec::new(),
+        );
+
+        let group = result.group.as_ref().expect("group snapshot");
+        assert_eq!(group.did.as_str(), "did:example:group");
+        assert_eq!(group.my_role.as_deref(), Some("owner"));
+        assert_eq!(group.membership_status.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn group_result_still_projects_local_group_snapshot_wrapper() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "admin",
+                    "member_status": "active",
+                    "member_count": 3
+                }
+            }),
+            Vec::new(),
+        );
+
+        let group = result.group.as_ref().expect("group snapshot");
+        assert_eq!(group.did.as_str(), "did:example:group");
+        assert_eq!(group.my_role.as_deref(), Some("admin"));
+        assert_eq!(group.membership_status.as_deref(), Some("active"));
     }
 
     #[test]
