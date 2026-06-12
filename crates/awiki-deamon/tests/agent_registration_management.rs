@@ -1855,6 +1855,156 @@ fn runtime_inbox_query_repairs_controller_direct_messages_from_runtime_scope() {
 }
 
 #[test]
+fn runtime_inbox_query_keeps_scoped_thread_when_latest_outgoing_lacks_scope() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let created = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_runtime_scoped_inbox".to_string(),
+                conversation_id: Some("conv_daemon_inbox".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_runtime_scoped_inbox",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-scoped-inbox-runtime",
+                        "runtime": "hermes",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Scoped Inbox Runtime"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let runtime_identity = state.load_agent_identity(&created.agent_did).unwrap();
+    sync_agent_identity_to_im_core(&config, &runtime_identity, None).unwrap();
+    if let Some(parent) = config.im_core_sqlite_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let connection = Connection::open(&config.im_core_sqlite_path).unwrap();
+    im_core::compat::local_state::ensure_schema(&connection).unwrap();
+    let owner_identity_id = test_identity_alias(&created.agent_did);
+    let scoped_thread_id =
+        im_core::messages::direct_peer_scope_thread_id("user-alice", "alice.anpclaw.com")
+            .unwrap()
+            .as_str()
+            .to_string();
+    insert_projected_message(
+        &connection,
+        &owner_identity_id,
+        &created.agent_did,
+        "msg-controller-incoming",
+        &scoped_thread_id,
+        0,
+        "did:human:alice",
+        &created.agent_did,
+        "",
+        "",
+        "text/plain",
+        "现在几点了",
+        "2026-06-04T10:00:00Z",
+        0,
+        r#"{
+            "peer_user_id": "user-alice",
+            "peer_full_handle": "alice.anpclaw.com",
+            "peer_current_did": "did:human:alice"
+        }"#,
+    );
+    insert_projected_message(
+        &connection,
+        &owner_identity_id,
+        &created.agent_did,
+        "msg-runtime-outgoing",
+        &scoped_thread_id,
+        1,
+        &created.agent_did,
+        "did:human:alice",
+        "",
+        "",
+        "text/plain",
+        "现在是 2026-06-04 10:00 UTC。",
+        "2026-06-04T10:00:10Z",
+        1,
+        r#"{"content_type":"text/plain","delivery_state":"accepted"}"#,
+    );
+
+    let inbox_outbox = MemoryRuntimeOutbox::default();
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &inbox_outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_query_runtime_scoped_inbox".to_string(),
+            conversation_id: Some("conv_daemon_inbox".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_runtime_scoped_inbox_query",
+                "command": "runtime.inbox.query",
+                "target_agent_kind": "daemon",
+                "args": {
+                    "runtime_agent_did": created.agent_did,
+                    "scope": "direct",
+                    "limit": 10
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let statuses = inbox_outbox.agent_statuses();
+    assert_eq!(statuses.len(), 1);
+    let payload = &statuses[0].payload;
+    assert_eq!(payload["status_scope"], "runtime_inbox");
+    assert_eq!(payload["state"], "succeeded");
+    let items = payload["result"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["thread_id"], scoped_thread_id);
+    assert_eq!(items[0]["title"], "alice.anpclaw.com");
+    assert_eq!(
+        items[0]["last_message_preview"],
+        "现在是 2026-06-04 10:00 UTC。"
+    );
+    assert_eq!(items[0]["peer_user_id"], "user-alice");
+    assert_eq!(items[0]["peer_handle"], "alice.anpclaw.com");
+    assert_eq!(items[0]["peer_did"], "did:human:alice");
+
+    let repaired_metadata: String = connection
+        .query_row(
+            "SELECT metadata FROM messages WHERE msg_id = 'msg-runtime-outgoing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(repaired_metadata.contains(r#""peer_user_id":"user-alice""#));
+    assert!(repaired_metadata.contains(r#""peer_full_handle":"alice.anpclaw.com""#));
+}
+
+#[test]
 fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();

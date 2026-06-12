@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use im_core::ids::{GroupRef, PageLimit, PeerRef};
-use im_core::messages::{direct_peer_scope_thread_id, HistoryQuery, InboxScope, ThreadRef};
+use im_core::ids::PeerRef;
+use im_core::messages::direct_peer_scope_thread_id;
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path};
 
@@ -9,7 +9,6 @@ use crate::im_core_adapter::ImCoreAdapter;
 use crate::state::DaemonState;
 use crate::DaemonConfig;
 
-const INBOX_DEFAULT_LIMIT: u32 = 30;
 const MAX_LIMIT: u32 = 100;
 const PREVIEW_MAX_CHARS: usize = 120;
 const TEXT_MAX_CHARS: usize = 4_000;
@@ -55,7 +54,6 @@ pub fn query_runtime_inbox(
     input: RuntimeInboxQuery,
 ) -> Result<Value> {
     let client = runtime_agent_client(config, state, runtime_agent)?;
-    let _ = refresh_runtime_conversation_projection(&client, input.scope, input.limit);
     repair_scoped_direct_conversations(
         &client,
         &config.im_core_sqlite_path,
@@ -106,15 +104,6 @@ pub fn query_runtime_inbox_thread(
     input: RuntimeInboxThreadQuery,
 ) -> Result<Value> {
     let client = runtime_agent_client(config, state, runtime_agent)?;
-    if let Ok(thread) = thread_ref_from_query(&input) {
-        let _ = client.messages().history(
-            thread,
-            HistoryQuery {
-                limit: PageLimit(input.limit.min(MAX_LIMIT)),
-                cursor: None,
-            },
-        );
-    }
     repair_scoped_direct_conversations(
         &client,
         &config.im_core_sqlite_path,
@@ -168,14 +157,6 @@ impl RuntimeInboxScope {
             Self::Group => "group",
         }
     }
-
-    fn inbox_scope(self) -> InboxScope {
-        match self {
-            Self::All => InboxScope::All,
-            Self::Direct => InboxScope::DirectOnly,
-            Self::Group => InboxScope::GroupOnly,
-        }
-    }
 }
 
 impl RuntimeInboxThreadKind {
@@ -220,21 +201,6 @@ fn runtime_agent_client(
     let identity = state.load_agent_identity(&runtime_agent.agent_did)?;
     let jwt_token = state.load_agent_auth_token(&runtime_agent.agent_did)?;
     im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())
-}
-
-fn refresh_runtime_conversation_projection(
-    client: &im_core::ImClient,
-    scope: RuntimeInboxScope,
-    limit: u32,
-) -> Result<()> {
-    let inbox_limit = limit.max(INBOX_DEFAULT_LIMIT).min(MAX_LIMIT);
-    client.messages().inbox(im_core::messages::InboxQuery {
-        scope: scope.inbox_scope(),
-        limit: PageLimit(inbox_limit),
-        cursor: None,
-        unread_only: false,
-    })?;
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -617,26 +583,6 @@ fn message_peer_did_from_parts(
     (!peer.is_empty()).then(|| peer.to_string())
 }
 
-fn thread_ref_from_query(input: &RuntimeInboxThreadQuery) -> Result<ThreadRef> {
-    match input.kind {
-        RuntimeInboxThreadKind::Direct => {
-            let peer = direct_history_peer_from_query(input)
-                .context("direct runtime inbox thread requires peer_handle or peer_did")?;
-            Ok(ThreadRef::Direct(PeerRef::parse(peer, "")?))
-        }
-        RuntimeInboxThreadKind::Group => {
-            let group = input
-                .group_did
-                .as_deref()
-                .or_else(|| input.thread_id.strip_prefix("group:"))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("group runtime inbox thread requires group_did")?;
-            Ok(ThreadRef::Group(GroupRef::parse(group)?))
-        }
-    }
-}
-
 fn conversation_id_from_thread_query(input: &RuntimeInboxThreadQuery) -> Result<String> {
     match input.kind {
         RuntimeInboxThreadKind::Direct => {
@@ -723,15 +669,6 @@ fn direct_peer_from_conversation_id(conversation_id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn direct_history_peer_from_query(input: &RuntimeInboxThreadQuery) -> Option<&str> {
-    input
-        .peer_handle
-        .as_deref()
-        .or(input.peer_did.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectPeerScope {
     user_id: String,
@@ -793,13 +730,17 @@ fn repair_scoped_direct_conversations(
     runtime_agent: &AgentDefinition,
 ) -> Result<()> {
     let mut connection = rusqlite::Connection::open(sqlite_path)?;
-    let candidates = load_direct_repair_candidates(&connection, owner_identity_id)?;
+    let mut candidates = load_direct_repair_candidates(&connection, owner_identity_id)?;
+    seed_missing_direct_peer_scopes_from_conversation(&mut candidates);
     if candidates.is_empty() {
         return Ok(());
     }
     let mut lookup_cache = HashMap::<String, Option<DirectPeerScope>>::new();
     let transaction = connection.transaction()?;
     for candidate in candidates {
+        if !candidate.needs_repair {
+            continue;
+        }
         let Some(peer_did) = candidate.peer_did(&runtime_agent.agent_did) else {
             continue;
         };
@@ -864,6 +805,7 @@ struct DirectRepairCandidate {
     conversation_id: String,
     metadata: String,
     metadata_scope: Option<DirectPeerScope>,
+    needs_repair: bool,
 }
 
 impl DirectRepairCandidate {
@@ -915,25 +857,60 @@ SELECT
     metadata
 FROM messages
 WHERE owner_identity_id = ?1
-  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'group:%'
-  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'dm:peer-scope:%'"#,
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) NOT LIKE 'group:%'"#,
     )?;
     let rows = statement.query_map((owner_identity_id,), |row| {
         let sender_did = optional_string(row, "sender_did")?;
         let receiver_did = optional_string(row, "receiver_did")?;
         let metadata = optional_string(row, "metadata")?;
+        let conversation_id = optional_string(row, "conversation_id")?;
+        let metadata_scope = peer_scope_from_metadata(&metadata);
+        let needs_repair =
+            !conversation_id.trim().starts_with("dm:peer-scope:") || metadata_scope.is_none();
         let candidate = DirectRepairCandidate {
             msg_id: optional_string(row, "msg_id")?,
             sender_did,
             receiver_did,
-            conversation_id: optional_string(row, "conversation_id")?,
-            metadata_scope: peer_scope_from_metadata(&metadata),
+            conversation_id,
             metadata,
+            metadata_scope,
+            needs_repair,
         };
         Ok(candidate)
     })?;
     let candidates = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(candidates)
+}
+
+fn seed_missing_direct_peer_scopes_from_conversation(candidates: &mut [DirectRepairCandidate]) {
+    let mut scope_by_conversation = HashMap::<String, DirectPeerScope>::new();
+    for candidate in candidates.iter() {
+        let Some(scope) = candidate.metadata_scope.clone() else {
+            continue;
+        };
+        let conversation_id = candidate.conversation_id.trim();
+        if conversation_id.is_empty() || conversation_id.starts_with("group:") {
+            continue;
+        }
+        scope_by_conversation
+            .entry(conversation_id.to_string())
+            .or_insert(scope);
+    }
+    if scope_by_conversation.is_empty() {
+        return;
+    }
+    for candidate in candidates.iter_mut() {
+        if candidate.metadata_scope.is_some() {
+            continue;
+        }
+        let Some(scope) = scope_by_conversation
+            .get(candidate.conversation_id.trim())
+            .cloned()
+        else {
+            continue;
+        };
+        candidate.metadata_scope = Some(scope);
+    }
 }
 
 fn lookup_peer_scope_by_did(client: &im_core::ImClient, peer_did: &str) -> Option<DirectPeerScope> {
@@ -1419,10 +1396,10 @@ mod tests {
 
     #[test]
     fn clamps_runtime_inbox_limit() {
-        assert_eq!(clamp_limit(None, INBOX_DEFAULT_LIMIT).unwrap(), 30);
-        assert_eq!(clamp_limit(Some(10), INBOX_DEFAULT_LIMIT).unwrap(), 10);
-        assert_eq!(clamp_limit(Some(150), INBOX_DEFAULT_LIMIT).unwrap(), 100);
-        assert!(clamp_limit(Some(0), INBOX_DEFAULT_LIMIT).is_err());
+        assert_eq!(clamp_limit(None, 30).unwrap(), 30);
+        assert_eq!(clamp_limit(Some(10), 30).unwrap(), 10);
+        assert_eq!(clamp_limit(Some(150), 30).unwrap(), 100);
+        assert!(clamp_limit(Some(0), 30).is_err());
     }
 
     #[test]
