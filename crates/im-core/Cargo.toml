@@ -12,6 +12,7 @@ blocking = []
 sqlite = ["dep:rusqlite"]
 http = []
 internal-test-helpers = []
+mcp-trusted-registration = []
 
 # Reserved for later phases.
 email = []

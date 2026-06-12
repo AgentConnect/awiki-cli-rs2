@@ -175,6 +175,51 @@ async fn register_handle_returns_identity_and_default_change() {
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "carol");
     assert!(body["params"]["did_document"].is_object());
+    assert!(!requests[0].headers.contains_key("authorization"));
+}
+
+#[cfg(feature = "mcp-trusted-registration")]
+#[tokio::test]
+async fn register_handle_with_service_bearer_adds_authorization_header() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "did": "did:wba:awiki.test:mcp:e1_registered",
+        "user_id": "user-mcp",
+        "handle": "mcp",
+        "full_handle": "mcp.awiki.test",
+        "access_token": "jwt-mcp"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
+
+    let result = core
+        .identities()
+        .register_handle_with_service_bearer_async(
+            RegisterHandleRequest {
+                local_alias: Some("mcp".to_string()),
+                requested_handle: Handle::parse("mcp.awiki.test", "").unwrap(),
+                verification: VerificationInput::AlreadyVerified,
+                invite_code: None,
+                profile: InitialProfile {
+                    display_name: Some("MCP".to_string()),
+                    avatar_url: None,
+                },
+                make_default: true,
+            },
+            "internal-token",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer internal-token")
+    );
+    assert_eq!(requests[0].json_body()["method"], "register");
 }
 
 #[tokio::test]
@@ -1124,6 +1169,7 @@ impl ExpectedHttp {
 struct CapturedHttp {
     method: String,
     path: String,
+    headers: std::collections::BTreeMap<String, String>,
     body: Vec<u8>,
 }
 
@@ -1188,6 +1234,7 @@ fn read_http_request(stream: &mut TcpStream) -> CapturedHttp {
     CapturedHttp {
         method,
         path,
+        headers,
         body: raw[body_start..body_start + content_length].to_vec(),
     }
 }

@@ -530,6 +530,24 @@ impl<'a> IdentityRegistry<'a> {
         .await
         .map(|result| result.sdk_result)
     }
+
+    #[cfg(feature = "mcp-trusted-registration")]
+    pub async fn register_handle_with_service_bearer_async(
+        &self,
+        request: super::RegisterHandleRequest,
+        bearer_token: impl Into<String>,
+    ) -> crate::ImResult<super::HandleRegistrationResult> {
+        crate::internal::identity_registration_runtime::IdentityRegistrationRuntime::new(
+            self.core,
+            crate::internal::transport::CorePlainTransport::new_with_register_bearer_token(
+                self.core,
+                bearer_token,
+            ),
+        )
+        .register_handle_async(request)
+        .await
+        .map(|result| result.sdk_result)
+    }
 }
 
 impl IdentityRegistry<'_> {

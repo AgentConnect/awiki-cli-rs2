@@ -252,6 +252,7 @@ pub(crate) struct CoreHttpTransport<'a> {
 pub(crate) struct CorePlainTransport<'a> {
     core: &'a crate::core::ImCore,
     http: crate::internal::http::HttpClient,
+    register_authorization: Option<String>,
 }
 
 impl<'a> CoreHttpTransport<'a> {
@@ -716,7 +717,22 @@ impl<'a> CorePlainTransport<'a> {
         Self {
             core,
             http: crate::internal::http::HttpClient::from_config(core.inner().sdk_config()),
+            register_authorization: None,
         }
+    }
+
+    #[cfg(feature = "mcp-trusted-registration")]
+    pub(crate) fn new_with_register_bearer_token(
+        core: &'a crate::core::ImCore,
+        token: impl Into<String>,
+    ) -> Self {
+        let mut transport = Self::new(core);
+        let token = token.into();
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            transport.register_authorization = Some(format!("Bearer {trimmed}"));
+        }
+        transport
     }
 
     fn rpc_url(&self, endpoint: &str) -> String {
@@ -749,14 +765,12 @@ impl<'a> CorePlainTransport<'a> {
         method: &str,
         url: &str,
         body: Vec<u8>,
+        headers: BTreeMap<String, String>,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
         self.http.execute(crate::internal::http::HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
-            headers: BTreeMap::from([(
-                "Content-Type".to_string(),
-                crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
-            )]),
+            headers,
             body,
         })
     }
@@ -766,18 +780,35 @@ impl<'a> CorePlainTransport<'a> {
         method: &str,
         url: &str,
         body: Vec<u8>,
+        headers: BTreeMap<String, String>,
     ) -> crate::ImResult<crate::internal::http::HttpResponse> {
         self.http
             .execute_async(crate::internal::http::HttpRequest {
                 method: method.to_string(),
                 url: url.to_string(),
-                headers: BTreeMap::from([(
-                    "Content-Type".to_string(),
-                    crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
-                )]),
+                headers,
                 body,
             })
             .await
+    }
+
+    fn unsigned_headers(
+        &self,
+        endpoint: &str,
+        rpc_method: Option<&str>,
+    ) -> BTreeMap<String, String> {
+        let mut headers = BTreeMap::from([(
+            "Content-Type".to_string(),
+            crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+        )]);
+        if endpoint == crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT
+            && rpc_method == Some("register")
+        {
+            if let Some(authorization) = self.register_authorization.as_ref() {
+                headers.insert("Authorization".to_string(), authorization.clone());
+            }
+        }
+        headers
     }
 }
 
@@ -1103,7 +1134,12 @@ impl RpcTransport for CorePlainTransport<'_> {
             .map_err(|err| crate::ImError::Serialization {
                 detail: err.to_string(),
             })?;
-        let response = self.execute_unsigned_json_request("POST", &url, body)?;
+        let response = self.execute_unsigned_json_request(
+            "POST",
+            &url,
+            body,
+            self.unsigned_headers(endpoint, Some(method)),
+        )?;
         if response.status_code >= 400 {
             return Err(service_error_from_http(
                 response.status_code,
@@ -1122,7 +1158,12 @@ impl AsyncRpcTransport for CorePlainTransport<'_> {
                 detail: err.to_string(),
             })?;
         let response = self
-            .execute_unsigned_json_request_async("POST", &url, body)
+            .execute_unsigned_json_request_async(
+                "POST",
+                &url,
+                body,
+                self.unsigned_headers(endpoint, Some(method)),
+            )
             .await?;
         if response.status_code >= 400 {
             return Err(service_error_from_http(
@@ -1183,7 +1224,12 @@ impl RestTransport for CorePlainTransport<'_> {
         let body = serde_json::to_vec(&body).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
-        let response = self.execute_unsigned_json_request(method, &url, body)?;
+        let response = self.execute_unsigned_json_request(
+            method,
+            &url,
+            body,
+            self.unsigned_headers(endpoint, None),
+        )?;
         if response.status_code >= 400 {
             return Err(service_error_from_http(
                 response.status_code,
@@ -1200,7 +1246,12 @@ impl RestTransport for CorePlainTransport<'_> {
         query: &BTreeMap<String, String>,
     ) -> crate::ImResult<Value> {
         let url = append_query(&self.rpc_url(endpoint), query);
-        let response = self.execute_unsigned_json_request(method, &url, Vec::new())?;
+        let response = self.execute_unsigned_json_request(
+            method,
+            &url,
+            Vec::new(),
+            self.unsigned_headers(endpoint, None),
+        )?;
         if response.status_code >= 400 {
             return Err(service_error_from_http(
                 response.status_code,
@@ -1223,7 +1274,12 @@ impl AsyncRestTransport for CorePlainTransport<'_> {
             detail: err.to_string(),
         })?;
         let response = self
-            .execute_unsigned_json_request_async(method, &url, body)
+            .execute_unsigned_json_request_async(
+                method,
+                &url,
+                body,
+                self.unsigned_headers(endpoint, None),
+            )
             .await?;
         if response.status_code >= 400 {
             return Err(service_error_from_http(
@@ -1242,7 +1298,12 @@ impl AsyncRestTransport for CorePlainTransport<'_> {
     ) -> crate::ImResult<Value> {
         let url = append_query(&self.rpc_url(endpoint), query);
         let response = self
-            .execute_unsigned_json_request_async(method, &url, Vec::new())
+            .execute_unsigned_json_request_async(
+                method,
+                &url,
+                Vec::new(),
+                self.unsigned_headers(endpoint, None),
+            )
             .await?;
         if response.status_code >= 400 {
             return Err(service_error_from_http(
