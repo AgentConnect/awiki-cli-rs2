@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${ROOT_DIR}"
 export COPYFILE_DISABLE=1
 
@@ -10,7 +10,7 @@ usage() {
 Build an awiki-deamon release archive.
 
 Usage:
-  scripts/release/build-daemon-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--dry-run]
+  scripts/release/daemon/_build-artifact.sh [--version VERSION] [--os OS] [--arch ARCH] [--target TRIPLE] [--dist DIR] [--dry-run]
 
 Options:
   --version VERSION   Package version. Defaults to crates/awiki-deamon/Cargo.toml package version.
@@ -169,7 +169,7 @@ cat >"${stage_dir}/README.txt" <<EOF
 Awiki Daemon Agent Runtime Host ${VERSION}
 
 Install through the official installer:
-curl -fsSL https://awiki.ai/daemon/install.sh | sh -s -- --token <token>
+curl -fsSL https://<service-domain>/daemon/install.sh | sh -s -- --token <token>
 EOF
 
 if [[ -f LICENSE ]]; then

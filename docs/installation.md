@@ -61,12 +61,12 @@ scripts/release/build-release-artifact.sh --os darwin --arch arm64
 Daemon Linux 发布推荐在目标 Ubuntu 服务器上执行高层发布脚本：
 
 ```bash
-scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com
+scripts/release/daemon/publish-linux.sh --base-url https://example.com
 ```
 
-脚本从 `crates/awiki-deamon/Cargo.toml` 读取发布版本，校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致，并要求该版本高于 `/var/www/awiki-web/daemon/releases/manifest.json` 中已发布的 `latest`。脚本只发布 Linux amd64 包到固定 Nginx 目录 `/var/www/awiki-web/daemon`，不会修改版本号、提交代码或推送代码。
+脚本从 `crates/awiki-deamon/Cargo.toml` 读取发布版本，校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致，并要求该版本高于 Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。脚本只发布 Linux amd64 包，默认写入 `/var/www/awiki-web/daemon`，也可通过 `AWIKI_DAEMON_NGINX_DIR` 指定其他 Nginx 目录，不会修改版本号、提交代码或推送代码。
 
-`--base-url` 是后端服务根地址。标准线上路由会从它推导 daemon 下载根地址 `<base-url>/daemon`，例如测试环境 `https://anpclaw.com/daemon`，生产环境 `https://awiki.ai/daemon`。如果只想检查发布计划而不构建、不写 Nginx 目录，可以加 `--dry-run`。
+`--base-url` 是后端服务根地址。标准线上路由会从它推导 daemon 下载根地址 `<base-url>/daemon`。如果只想检查发布计划而不构建、不写 Nginx 目录，可以加 `--dry-run`。Daemon 发布脚本和 Nginx 配置要求见 `scripts/release/daemon/README.md`。
 
 Flutter SDK 变更还需要：
 

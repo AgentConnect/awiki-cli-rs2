@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 function usage() {
   console.error(`Usage:
-  node scripts/release/generate-daemon-manifest.js --version VERSION [--min-supported VERSION] [--dist DIR] [--base-url URL] [--output FILE] [--allow-partial]`);
+  node scripts/release/daemon/_generate-manifest.js --version VERSION --base-url URL [--min-supported VERSION] [--dist DIR] [--output FILE] [--allow-partial]`);
 }
 
 function die(message) {
@@ -22,7 +22,7 @@ function validateVersionSegment(value, fieldName) {
 let version = '';
 let minSupported = '';
 let distDir = path.join(process.cwd(), 'dist', 'daemon');
-let baseUrl = 'https://awiki.ai/daemon/releases';
+let baseUrl = '';
 let output = '';
 let allowPartial = false;
 
@@ -68,6 +68,9 @@ if (!version) {
   die('--version is required');
 }
 validateVersionSegment(version, 'version');
+if (!baseUrl) {
+  die('--base-url is required');
+}
 if (!minSupported) {
   minSupported = version;
 }

@@ -124,11 +124,11 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 create_fake_daemon_package(source_dir, os_name, arch)
 
             output_dir = temp_dir / "daemon"
-            backend_base_url = "https://awiki.ai"
-            download_base_url = "https://awiki.ai/daemon"
+            backend_base_url = "https://example.com"
+            download_base_url = "https://example.com/daemon"
             run_command(
                 [
-                    "scripts/release/stage-daemon-downloads.sh",
+                    "scripts/release/daemon/_stage-downloads.sh",
                     "--version",
                     "v1.2.3",
                     "--source-dir",
@@ -151,11 +151,11 @@ class DaemonReleaseContractTests(unittest.TestCase):
             self.assertEqual(len(manifest["packages"]), len(TARGETS))
             install_text = (output_dir / "install.sh").read_text(encoding="utf-8")
             self.assertIn(
-                "BASE_URL=\"${AWIKI_DAEMON_BASE_URL:-${AWIKI_DAEMON_SERVICE_BASE_URL:-https://awiki.ai}}\"",
+                "BASE_URL=\"${AWIKI_DAEMON_BASE_URL:-${AWIKI_DAEMON_SERVICE_BASE_URL:-https://example.com}}\"",
                 install_text,
             )
             self.assertIn(
-                "DOWNLOAD_BASE_URL=\"${AWIKI_DAEMON_DOWNLOAD_BASE_URL:-https://awiki.ai/daemon}\"",
+                "DOWNLOAD_BASE_URL=\"${AWIKI_DAEMON_DOWNLOAD_BASE_URL:-https://example.com/daemon}\"",
                 install_text,
             )
 
@@ -193,7 +193,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
 
             run_command(
                 [
-                    str(ROOT / "scripts/release/stage-daemon-downloads.sh"),
+                    str(ROOT / "scripts/release/daemon/_stage-downloads.sh"),
                     "--version",
                     "1.2.3",
                     "--source-dir",
@@ -234,7 +234,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             with serve_directory(temp_dir) as base_url:
                 result = subprocess.run(
                     [
-                        "scripts/release/publish-daemon-linux.sh",
+                        "scripts/release/daemon/publish-linux.sh",
                         "--base-url",
                         base_url,
                         "--dry-run",
@@ -262,7 +262,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             with serve_directory(temp_dir) as base_url:
                 result = run_command(
                     [
-                        "scripts/release/publish-daemon-linux.sh",
+                        "scripts/release/daemon/publish-linux.sh",
                         "--base-url",
                         base_url,
                         "--dry-run",
@@ -300,7 +300,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    "scripts/release/stage-daemon-downloads.sh",
+                    "scripts/release/daemon/_stage-downloads.sh",
                     "--version",
                     "1.2.3",
                     "--source-dir",
@@ -308,7 +308,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--output-dir",
                     str(temp_dir / "daemon"),
                     "--download-base-url",
-                    "https://cdn.awiki.ai/static/daemon-assets",
+                    "https://cdn.example.com/static/daemon-assets",
                 ],
                 cwd=ROOT,
                 text=True,
@@ -329,11 +329,13 @@ class DaemonReleaseContractTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     "node",
-                    "scripts/release/generate-daemon-manifest.js",
+                    "scripts/release/daemon/_generate-manifest.js",
                     "--version",
                     "1.2.3",
                     "--dist",
                     str(temp_dir),
+                    "--base-url",
+                    "https://example.com/daemon/releases",
                     "--output",
                     str(temp_dir / "manifest.json"),
                 ],
@@ -347,6 +349,33 @@ class DaemonReleaseContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("missing daemon package", result.stderr)
 
+    def test_generate_daemon_manifest_requires_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            create_fake_daemon_package(temp_dir, "linux", "amd64")
+
+            result = subprocess.run(
+                [
+                    "node",
+                    "scripts/release/daemon/_generate-manifest.js",
+                    "--version",
+                    "1.2.3",
+                    "--dist",
+                    str(temp_dir),
+                    "--output",
+                    str(temp_dir / "manifest.json"),
+                    "--allow-partial",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--base-url is required", result.stderr)
+
     def test_generate_daemon_manifest_can_allow_partial_existing_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
@@ -355,13 +384,13 @@ class DaemonReleaseContractTests(unittest.TestCase):
             run_command(
                 [
                     "node",
-                    "scripts/release/generate-daemon-manifest.js",
+                    "scripts/release/daemon/_generate-manifest.js",
                     "--version",
                     "1.2.3",
                     "--dist",
                     str(temp_dir),
                     "--base-url",
-                    "https://anpclaw.com/daemon/releases",
+                    "https://example.com/daemon/releases",
                     "--output",
                     str(temp_dir / "manifest.json"),
                     "--allow-partial",
@@ -378,7 +407,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                         "version": "1.2.3",
                         "os": "linux",
                         "arch": "amd64",
-                        "url": "https://anpclaw.com/daemon/releases/1.2.3/awiki-deamon-linux-amd64.tar.gz",
+                        "url": "https://example.com/daemon/releases/1.2.3/awiki-deamon-linux-amd64.tar.gz",
                         "sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
                     }
                 ],
@@ -394,7 +423,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             output_dir = temp_dir / "daemon"
             run_command(
                 [
-                    "scripts/release/stage-daemon-downloads.sh",
+                    "scripts/release/daemon/_stage-downloads.sh",
                     "--version",
                     "1.2.3",
                     "--source-dir",
@@ -402,9 +431,9 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--output-dir",
                     str(output_dir),
                     "--base-url",
-                    "https://anpclaw.com",
+                    "https://example.com",
                     "--download-base-url",
-                    "https://anpclaw.com/daemon",
+                    "https://example.com/daemon",
                     "--allow-partial",
                 ]
             )
@@ -436,7 +465,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             with serve_directory(output_dir) as base_url:
                 run_command(
                     [
-                        "scripts/release/stage-daemon-downloads.sh",
+                        "scripts/release/daemon/_stage-downloads.sh",
                         "--version",
                         "1.2.3",
                         "--source-dir",
@@ -444,7 +473,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                         "--output-dir",
                         str(output_dir),
                         "--base-url",
-                        "https://awiki.ai",
+                        "https://example.com",
                         "--download-base-url",
                         base_url,
                     ]
@@ -474,7 +503,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--token",
                     "test-install-token",
                     "--base-url",
-                    "https://awiki.ai",
+                    "https://example.com",
                     "--download-base-url",
                     base_url,
                 ],
@@ -504,7 +533,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             download_base_url = file_url(output_dir)
             run_command(
                 [
-                    "scripts/release/stage-daemon-downloads.sh",
+                    "scripts/release/daemon/_stage-downloads.sh",
                     "--version",
                     "1.2.3",
                     "--source-dir",
@@ -512,7 +541,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--output-dir",
                     str(output_dir),
                     "--base-url",
-                    "https://awiki.ai",
+                    "https://example.com",
                     "--download-base-url",
                     download_base_url,
                 ]
@@ -545,7 +574,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--token",
                     "test-install-token",
                     "--base-url",
-                    "https://awiki.ai",
+                    "https://example.com",
                     "--download-base-url",
                     file_url(output_dir),
                     "--state-root",
@@ -566,7 +595,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             with serve_directory(output_dir) as base_url:
                 run_command(
                     [
-                        "scripts/release/stage-daemon-downloads.sh",
+                        "scripts/release/daemon/_stage-downloads.sh",
                         "--version",
                         "1.2.3",
                         "--source-dir",
@@ -574,7 +603,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                         "--output-dir",
                         str(output_dir),
                         "--base-url",
-                        "https://awiki.ai",
+                        "https://example.com",
                         "--download-base-url",
                         base_url,
                     ]
@@ -625,7 +654,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 download_base_url = f"{base_url}/daemon"
                 run_command(
                     [
-                        "scripts/release/stage-daemon-downloads.sh",
+                        "scripts/release/daemon/_stage-downloads.sh",
                         "--version",
                         "1.2.3",
                         "--source-dir",
@@ -709,7 +738,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             with serve_directory(output_dir) as base_url:
                 run_command(
                     [
-                        "scripts/release/stage-daemon-downloads.sh",
+                        "scripts/release/daemon/_stage-downloads.sh",
                         "--version",
                         "1.2.3",
                         "--source-dir",
@@ -717,7 +746,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                         "--output-dir",
                         str(output_dir),
                         "--base-url",
-                        "https://awiki.ai",
+                        "https://example.com",
                         "--download-base-url",
                         base_url,
                     ]

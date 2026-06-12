@@ -90,30 +90,28 @@ Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core
 Daemon release 包用于客户端安装/升级。当前推荐在目标 Ubuntu 服务器上执行高层发布脚本：
 
 ```bash
-scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com
+scripts/release/daemon/publish-linux.sh --base-url https://example.com
 ```
 
-生产环境使用：
-
-```bash
-scripts/release/publish-daemon-linux.sh --base-url https://awiki.ai
-```
+其中 `--base-url` 是目标环境的后端服务根地址。标准路由下，Daemon 下载根地址固定派生为 `<base-url>/daemon`。
 
 脚本行为：
 
 - 从 `crates/awiki-deamon/Cargo.toml` 读取发布版本。
 - 校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致。
-- 校验本次版本高于 `/var/www/awiki-web/daemon/releases/manifest.json` 中已发布的 `latest`。
+- 校验本次版本高于 Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。
 - 构建 Linux amd64 release 包。
 - 生成 `install.sh`、`releases/manifest.json` 和版本化 release 目录。
-- 发布到固定 Nginx 目录 `/var/www/awiki-web/daemon`。
+- 发布到 Nginx daemon 静态目录，默认 `/var/www/awiki-web/daemon`，可用 `AWIKI_DAEMON_NGINX_DIR` 覆盖。
 - 通过 HTTP 校验 manifest、安装脚本和 tar 包可访问。
 
 脚本不会修改版本号、提交代码、推送代码或执行测试。发布前需要先在 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。只检查发布计划时使用：
 
 ```bash
-scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com --dry-run
+scripts/release/daemon/publish-linux.sh --base-url https://example.com --dry-run
 ```
+
+Daemon 发布脚本、内部 helper 和 Nginx 配置要求见 `scripts/release/daemon/README.md`。
 
 ## 5. 手工准备 daemon 下载目录
 
@@ -122,7 +120,7 @@ scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com --dry-run
 先构建 Linux 包：
 
 ```bash
-scripts/release/build-daemon-artifact.sh \
+scripts/release/daemon/_build-artifact.sh \
   --os linux \
   --arch amd64 \
   --target x86_64-unknown-linux-gnu \
@@ -132,11 +130,11 @@ scripts/release/build-daemon-artifact.sh \
 再生成安装脚本、manifest 和版本化下载目录：
 
 ```bash
-scripts/release/stage-daemon-downloads.sh \
+scripts/release/daemon/_stage-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --download-base-url https://awiki.ai/daemon
+  --download-base-url https://example.com/daemon
 ```
 
 参数含义：
@@ -144,35 +142,25 @@ scripts/release/stage-daemon-downloads.sh \
 - `--download-base-url`：安装脚本、manifest 和 release tar 包的静态下载根地址。脚本会从这里读取 `releases/manifest.json`，manifest 中的包 URL 也会从这里派生。标准线上路由必须使用 `<后端服务根地址>/daemon`，发布脚本会据此推导 daemon 持久配置中的后端服务根地址。
 - `--base-url`：daemon 持久配置中的后端服务根地址，默认派生 user-service、message-service、mail-service、DID domain 和 ANP service。标准线上路由下可省略；如果下载域名和后端 API 域名不同，或者使用 `file://` / 本地路径测试，则必须显式传入。
 
-生产环境手工 staging 使用：
+标准域名手工 staging 使用：
 
 ```bash
-scripts/release/stage-daemon-downloads.sh \
+scripts/release/daemon/_stage-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --download-base-url https://awiki.ai/daemon
-```
-
-线上测试环境手工 staging 使用：
-
-```bash
-scripts/release/stage-daemon-downloads.sh \
-  --version <version> \
-  --source-dir dist/daemon \
-  --output-dir dist/daemon-downloads \
-  --download-base-url https://anpclaw.com/daemon
+  --download-base-url https://example.com/daemon
 ```
 
 如果后续采用 CDN/API 分离部署，则同时传两个 URL，避免发布脚本按 `/daemon` 路由推导：
 
 ```bash
-scripts/release/stage-daemon-downloads.sh \
+scripts/release/daemon/_stage-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir dist/daemon-downloads \
-  --base-url https://api.awiki.ai \
-  --download-base-url https://cdn.awiki.ai/daemon
+  --base-url https://api.example.com \
+  --download-base-url https://cdn.example.com/daemon
 ```
 
 输出目录结构：
@@ -187,16 +175,10 @@ dist/daemon-downloads/
       checksums.txt
 ```
 
-把 `dist/daemon-downloads/` 发布到文件服务的 `/daemon` 路径后，生产安装入口就是：
+把 `dist/daemon-downloads/` 发布到文件服务的 `/daemon` 路径后，安装入口就是：
 
 ```bash
-curl -fsSL https://awiki.ai/daemon/install.sh | sh -s -- --token <install-token>
-```
-
-测试环境安装入口后续对应为：
-
-```bash
-curl -fsSL https://anpclaw.com/daemon/install.sh | sh -s -- --token <install-token>
+curl -fsSL https://example.com/daemon/install.sh | sh -s -- --token <install-token>
 ```
 
 如果当前阶段只做本地联调，也可以直接使用 tar 包或 `file://` 方式验证安装脚本，不需要公网 CDN。
@@ -240,6 +222,6 @@ python3 scripts/test_daemon_release_contract.py
 回滚后重新执行安装命令，确认新安装拿到的是预期版本：
 
 ```bash
-curl -fsSL https://awiki.ai/daemon/install.sh | sh -s -- --token <install-token>
+curl -fsSL https://example.com/daemon/install.sh | sh -s -- --token <install-token>
 awiki-deamon --version
 ```

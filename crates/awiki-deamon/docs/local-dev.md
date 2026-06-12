@@ -111,7 +111,7 @@ cargo test -p awiki-deamon --locked
 本地模拟安装脚本可使用 `file://` 下载根，不需要公网 CDN：
 
 ```bash
-scripts/release/stage-daemon-downloads.sh \
+scripts/release/daemon/_stage-downloads.sh \
   --version <version> \
   --source-dir dist/daemon \
   --output-dir /tmp/awiki-daemon-downloads \
