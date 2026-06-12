@@ -56,16 +56,18 @@ pub fn query_runtime_inbox(
 ) -> Result<Value> {
     let client = runtime_agent_client(config, state, runtime_agent)?;
     let _ = refresh_runtime_conversation_projection(&client, input.scope, input.limit);
-    let _ = repair_scoped_direct_conversations(
+    repair_scoped_direct_conversations(
         &client,
         &config.im_core_sqlite_path,
         client.current_identity().id.as_str(),
         &runtime_agent.agent_did,
-    );
+    )
+    .context("repair runtime inbox direct peer scopes")?;
     let offset = cursor_offset(input.cursor.as_deref())?;
     let records = load_local_conversations(
         &config.im_core_sqlite_path,
         client.current_identity().id.as_str(),
+        &runtime_agent.agent_did,
         input.scope,
         input.limit,
         offset,
@@ -113,12 +115,13 @@ pub fn query_runtime_inbox_thread(
             },
         );
     }
-    let _ = repair_scoped_direct_conversations(
+    repair_scoped_direct_conversations(
         &client,
         &config.im_core_sqlite_path,
         client.current_identity().id.as_str(),
         &runtime_agent.agent_did,
-    );
+    )
+    .context("repair runtime inbox direct peer scopes")?;
     let conversation_id = conversation_id_from_thread_query(&input)?;
     let offset = cursor_offset(input.cursor.as_deref())?;
     let mut records = load_local_messages(
@@ -262,107 +265,19 @@ struct LocalMessageRecord {
 fn load_local_conversations(
     sqlite_path: &Path,
     owner_identity_id: &str,
+    runtime_agent_did: &str,
     scope: RuntimeInboxScope,
     limit: u32,
     offset: usize,
 ) -> Result<Vec<LocalConversationRecord>> {
     let connection = rusqlite::Connection::open(sqlite_path)?;
-    let mut statement = String::from(
-        r#"
-SELECT
-    t.conversation_id,
-    t.message_count,
-    t.unread_count,
-    t.last_message_at,
-    m.msg_id,
-    m.direction,
-    m.sender_did,
-    m.receiver_did,
-    m.group_id,
-    m.group_did,
-    m.content_type,
-    m.content,
-    m.sent_at,
-    m.stored_at,
-    m.metadata
-FROM threads t
-LEFT JOIN messages m
-  ON m.owner_identity_id = t.owner_identity_id
- AND COALESCE(NULLIF(m.conversation_id, ''), m.thread_id) = t.conversation_id
- AND COALESCE(m.sent_at, m.stored_at) = t.last_message_at
- AND m.msg_id = (
-     SELECT m2.msg_id
-     FROM messages m2
-     WHERE m2.owner_identity_id = t.owner_identity_id
-       AND COALESCE(NULLIF(m2.conversation_id, ''), m2.thread_id) = t.conversation_id
-       AND COALESCE(m2.sent_at, m2.stored_at) = t.last_message_at
-     ORDER BY m2.msg_id DESC
-     LIMIT 1
- )
-WHERE t.owner_identity_id = ?1"#,
-    );
-    match scope {
-        RuntimeInboxScope::All => {}
-        RuntimeInboxScope::Direct => {
-            statement.push_str(" AND t.conversation_id NOT LIKE 'group:%'")
-        }
-        RuntimeInboxScope::Group => statement.push_str(" AND t.conversation_id LIKE 'group:%'"),
-    }
-    statement.push_str(
-        r#"
-ORDER BY t.last_message_at DESC, t.conversation_id ASC
-LIMIT ?2 OFFSET ?3"#,
-    );
-    let row_limit = i64::from(limit.min(MAX_LIMIT)) + 1;
-    let row_offset = i64::try_from(offset).context("runtime inbox offset too large")?;
-    let mut records = {
-        let mut statement = connection.prepare(&statement)?;
-        let rows = statement.query_map((owner_identity_id, row_limit, row_offset), |row| {
-            let msg_id = optional_string(row, "msg_id")?;
-            let last_message = if msg_id.trim().is_empty() {
-                None
-            } else {
-                Some(LocalMessageRecord {
-                    msg_id,
-                    direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
-                    sender_did: optional_string(row, "sender_did")?,
-                    receiver_did: optional_string(row, "receiver_did")?,
-                    group_id: optional_string(row, "group_id")?,
-                    group_did: optional_string(row, "group_did")?,
-                    content_type: optional_string(row, "content_type")?,
-                    content: optional_string(row, "content")?,
-                    sent_at: optional_string(row, "sent_at")?,
-                    stored_at: optional_string(row, "stored_at")?,
-                    is_read: true,
-                    metadata: optional_string(row, "metadata")?,
-                })
-            };
-            Ok(LocalConversationRecord {
-                conversation_id: optional_string(row, "conversation_id")?,
-                message_count: u32_from_i64(
-                    row.get::<_, Option<i64>>("message_count")?
-                        .unwrap_or_default(),
-                ),
-                unread_count: u32_from_i64(
-                    row.get::<_, Option<i64>>("unread_count")?
-                        .unwrap_or_default(),
-                ),
-                last_message_at: optional_string(row, "last_message_at")?,
-                last_message,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    let fallback = load_local_conversations_from_messages(
-        &connection,
-        owner_identity_id,
-        scope,
-        limit,
-        offset,
-    )?;
-    merge_conversation_records(&mut records, fallback);
-    records.truncate(limit.min(MAX_LIMIT) as usize + 1);
-    Ok(records)
+    let records = load_local_conversations_from_messages(&connection, owner_identity_id, scope)?;
+    let records = normalize_runtime_inbox_conversation_records(records, runtime_agent_did)?;
+    Ok(records
+        .into_iter()
+        .skip(offset)
+        .take(limit.min(MAX_LIMIT) as usize + 1)
+        .collect())
 }
 
 fn load_local_messages(
@@ -423,8 +338,6 @@ fn load_local_conversations_from_messages(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
     scope: RuntimeInboxScope,
-    limit: u32,
-    offset: usize,
 ) -> Result<Vec<LocalConversationRecord>> {
     let mut statement = String::from(
         r#"
@@ -482,14 +395,11 @@ JOIN messages m
        AND COALESCE(NULLIF(m2.sent_at, ''), m2.stored_at) = l.last_message_at
      ORDER BY m2.msg_id DESC
      LIMIT 1
- )
-ORDER BY l.last_message_at DESC, l.conversation_id ASC
-LIMIT ?2 OFFSET ?3"#,
+)
+ORDER BY l.last_message_at DESC, l.conversation_id ASC"#,
     );
-    let row_limit = i64::from(limit.min(MAX_LIMIT)) + 1;
-    let row_offset = i64::try_from(offset).context("runtime inbox offset too large")?;
     let mut statement = connection.prepare(&statement)?;
-    let rows = statement.query_map((owner_identity_id, row_limit, row_offset), |row| {
+    let rows = statement.query_map((owner_identity_id,), |row| {
         Ok(LocalConversationRecord {
             conversation_id: optional_string(row, "conversation_id")?,
             message_count: u32_from_i64(
@@ -521,25 +431,64 @@ LIMIT ?2 OFFSET ?3"#,
         .map_err(Into::into)
 }
 
-fn merge_conversation_records(
-    records: &mut Vec<LocalConversationRecord>,
-    fallback: Vec<LocalConversationRecord>,
-) {
-    for record in fallback {
-        if records
-            .iter()
-            .any(|existing| existing.conversation_id == record.conversation_id)
-        {
+fn normalize_runtime_inbox_conversation_records(
+    records: Vec<LocalConversationRecord>,
+    runtime_agent_did: &str,
+) -> Result<Vec<LocalConversationRecord>> {
+    let mut by_thread_id = HashMap::<String, LocalConversationRecord>::new();
+    for record in records {
+        let Some(fields) = conversation_fields(&record, runtime_agent_did)? else {
             continue;
-        }
-        records.push(record);
+        };
+        by_thread_id
+            .entry(fields.thread_id.clone())
+            .and_modify(|existing| {
+                merge_normalized_conversation_record(existing, &record, &fields.thread_id);
+            })
+            .or_insert(record);
     }
+    let mut records = by_thread_id.into_values().collect::<Vec<_>>();
     records.sort_by(|left, right| {
         right
             .last_message_at
             .cmp(&left.last_message_at)
             .then_with(|| left.conversation_id.cmp(&right.conversation_id))
     });
+    Ok(records)
+}
+
+fn merge_normalized_conversation_record(
+    existing: &mut LocalConversationRecord,
+    candidate: &LocalConversationRecord,
+    canonical_thread_id: &str,
+) {
+    existing.message_count = existing
+        .message_count
+        .saturating_add(candidate.message_count);
+    existing.unread_count = existing.unread_count.saturating_add(candidate.unread_count);
+    if should_replace_conversation_record(existing, candidate, canonical_thread_id) {
+        let message_count = existing.message_count;
+        let unread_count = existing.unread_count;
+        *existing = candidate.clone();
+        existing.message_count = message_count;
+        existing.unread_count = unread_count;
+    }
+}
+
+fn should_replace_conversation_record(
+    existing: &LocalConversationRecord,
+    candidate: &LocalConversationRecord,
+    canonical_thread_id: &str,
+) -> bool {
+    let existing_is_canonical = existing.conversation_id.trim() == canonical_thread_id;
+    let candidate_is_canonical = candidate.conversation_id.trim() == canonical_thread_id;
+    if candidate_is_canonical != existing_is_canonical {
+        return candidate_is_canonical;
+    }
+    if candidate.last_message_at != existing.last_message_at {
+        return candidate.last_message_at > existing.last_message_at;
+    }
+    existing.last_message.is_none() && candidate.last_message.is_some()
 }
 
 fn optional_string(row: &rusqlite::Row<'_>, name: &str) -> rusqlite::Result<String> {
@@ -641,18 +590,6 @@ fn conversation_fields(
             peer_user_id: Some(scope.user_id),
             peer_handle: Some(scope.full_handle),
             peer_did,
-            group_id: None,
-            group_did: None,
-        }));
-    }
-    if let Some(peer_did) = peer_did {
-        return Ok(Some(ConversationFields {
-            kind: "direct",
-            thread_id: format!("dm:{peer_did}"),
-            title: peer_did.clone(),
-            peer_user_id: None,
-            peer_handle: None,
-            peer_did: Some(peer_did),
             group_id: None,
             group_did: None,
         }));
@@ -1557,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_conversation_without_peer_scope_still_renders_as_inbox_item() {
+    fn direct_conversation_without_peer_scope_is_not_listed() {
         let record = LocalConversationRecord {
             conversation_id: "dm:did:human:alice".to_string(),
             message_count: 1,
@@ -1579,23 +1516,23 @@ mod tests {
             }),
         };
 
-        let item = inbox_item_json(&record, "did:agent:runtime")
-            .unwrap()
-            .expect("inbox item");
+        let item = inbox_item_json(&record, "did:agent:runtime").unwrap();
 
-        assert_eq!(item["kind"], "direct");
-        assert_eq!(item["thread_id"], "dm:did:human:alice");
-        assert_eq!(item["title"], "did:human:alice");
-        assert_eq!(item["peer_did"], "did:human:alice");
-        assert_eq!(item["last_message_preview"], "hello runtime");
+        assert!(item.is_none());
     }
 
     #[test]
-    fn loads_conversations_from_messages_when_thread_projection_is_missing_scope() {
+    fn loads_scoped_conversations_from_messages_when_thread_projection_is_missing() {
         let root = tempfile::tempdir().unwrap();
         let sqlite_path = root.path().join("local-state.sqlite");
         let connection = rusqlite::Connection::open(&sqlite_path).unwrap();
         create_minimal_runtime_inbox_schema(&connection);
+        let thread_id = scoped_direct_conversation_id(&DirectPeerScope {
+            user_id: "user-alice".to_string(),
+            full_handle: "alice.anpclaw.com".to_string(),
+            current_did: Some("did:human:alice".to_string()),
+        })
+        .unwrap();
         connection
             .execute(
                 r#"
@@ -1604,20 +1541,31 @@ INSERT INTO messages
      sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, metadata)
 VALUES
     (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3, 'text/plain', 'hello runtime',
-     '2026-06-04T10:00:00Z', '2026-06-04T10:00:00Z', 0, '{}')"#,
+     '2026-06-04T10:00:00Z', '2026-06-04T10:00:00Z', 0, ?6)"#,
                 rusqlite::params![
                     "msg-direct",
                     "runtime-owner",
                     "did:agent:runtime",
-                    "dm:did:human:alice",
+                    thread_id,
                     "did:human:alice",
+                    r#"{
+                        "peer_user_id": "user-alice",
+                        "peer_full_handle": "alice.anpclaw.com",
+                        "peer_current_did": "did:human:alice"
+                    }"#,
                 ],
             )
             .unwrap();
 
-        let records =
-            load_local_conversations(&sqlite_path, "runtime-owner", RuntimeInboxScope::All, 30, 0)
-                .unwrap();
+        let records = load_local_conversations(
+            &sqlite_path,
+            "runtime-owner",
+            "did:agent:runtime",
+            RuntimeInboxScope::All,
+            30,
+            0,
+        )
+        .unwrap();
         let items = records
             .iter()
             .filter_map(|record| {
@@ -1627,8 +1575,84 @@ VALUES
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(items, vec!["dm:did:human:alice".to_string()]);
+        assert_eq!(items, vec![thread_id]);
         assert_eq!(records[0].unread_count, 1);
+    }
+
+    #[test]
+    fn normalizes_direct_inbox_records_to_stable_peer_scope_only() {
+        let scoped_id = scoped_direct_conversation_id(&DirectPeerScope {
+            user_id: "user-alice".to_string(),
+            full_handle: "alice.anpclaw.com".to_string(),
+            current_did: Some("did:human:alice".to_string()),
+        })
+        .unwrap();
+        let legacy = LocalConversationRecord {
+            conversation_id: "dm:did:human:alice".to_string(),
+            message_count: 1,
+            unread_count: 1,
+            last_message_at: "2026-06-04T09:00:00Z".to_string(),
+            last_message: Some(LocalMessageRecord {
+                msg_id: "msg-legacy-direct".to_string(),
+                direction: 0,
+                sender_did: "did:human:alice".to_string(),
+                receiver_did: "did:agent:runtime".to_string(),
+                group_id: String::new(),
+                group_did: String::new(),
+                content_type: "text/plain".to_string(),
+                content: "legacy hello".to_string(),
+                sent_at: "2026-06-04T09:00:00Z".to_string(),
+                stored_at: "2026-06-04T09:00:00Z".to_string(),
+                is_read: false,
+                metadata: r#"{
+                    "peer_user_id": "user-alice",
+                    "peer_full_handle": "alice.anpclaw.com",
+                    "peer_current_did": "did:human:alice"
+                }"#
+                .to_string(),
+            }),
+        };
+        let scoped = LocalConversationRecord {
+            conversation_id: scoped_id.clone(),
+            message_count: 2,
+            unread_count: 1,
+            last_message_at: "2026-06-04T10:00:00Z".to_string(),
+            last_message: Some(LocalMessageRecord {
+                msg_id: "msg-direct".to_string(),
+                direction: 0,
+                sender_did: "did:human:alice".to_string(),
+                receiver_did: "did:agent:runtime".to_string(),
+                group_id: String::new(),
+                group_did: String::new(),
+                content_type: "text/plain".to_string(),
+                content: "hello runtime".to_string(),
+                sent_at: "2026-06-04T10:00:00Z".to_string(),
+                stored_at: "2026-06-04T10:00:00Z".to_string(),
+                is_read: false,
+                metadata: r#"{
+                    "peer_user_id": "user-alice",
+                    "peer_full_handle": "alice.anpclaw.com",
+                    "peer_current_did": "did:human:alice"
+                }"#
+                .to_string(),
+            }),
+        };
+
+        let records =
+            normalize_runtime_inbox_conversation_records(vec![legacy, scoped], "did:agent:runtime")
+                .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].message_count, 3);
+        assert_eq!(records[0].unread_count, 2);
+        let item = inbox_item_json(&records[0], "did:agent:runtime")
+            .unwrap()
+            .expect("stable scoped inbox item");
+        assert_eq!(item["thread_id"], scoped_id);
+        assert_eq!(item["title"], "alice.anpclaw.com");
+        assert_eq!(item["peer_handle"], "alice.anpclaw.com");
+        assert_eq!(item["peer_user_id"], "user-alice");
+        assert_eq!(item["peer_did"], "did:human:alice");
     }
 
     fn create_minimal_runtime_inbox_schema(connection: &rusqlite::Connection) {
