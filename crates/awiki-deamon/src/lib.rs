@@ -1,9 +1,11 @@
 pub mod agent;
 pub mod agent_status;
 pub mod app_bridge;
+pub mod archive;
 pub mod cli_wrapper;
 pub mod commands;
 pub mod config;
+pub mod controller_scope;
 pub mod daemon_cli;
 pub mod foreground;
 pub mod im_core_adapter;
@@ -51,6 +53,10 @@ pub enum DaemonCommand {
     RuntimeList {
         state_root: PathBuf,
     },
+    ArchiveDaemonFinalize {
+        state_root: PathBuf,
+        archive_id: String,
+    },
     SetupDaemonAgent {
         state_root: PathBuf,
         options: crate::daemon_cli::SetupDaemonAgentOptions,
@@ -73,6 +79,7 @@ pub enum DaemonCommandOutput {
     Foreground(crate::foreground::ForegroundRunSummary),
     Install(crate::daemon_cli::InstallOutput),
     RuntimeList(crate::daemon_cli::AgentListOutput),
+    ArchiveDaemonFinalize(crate::archive::DaemonArchiveFinalizeReport),
     SetupDaemonAgent(crate::daemon_cli::SetupDaemonAgentOutput),
     Service(crate::service::ServiceStatus),
 }
@@ -116,6 +123,7 @@ fn command_output_json(output: DaemonCommandOutput) -> Result<Value> {
         DaemonCommandOutput::AgentStatus(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::Foreground(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::Install(output) => Ok(serde_json::to_value(output)?),
+        DaemonCommandOutput::ArchiveDaemonFinalize(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::SetupDaemonAgent(output) => Ok(serde_json::to_value(output)?),
         DaemonCommandOutput::Service(output) => Ok(serde_json::to_value(output)?),
     }
@@ -150,6 +158,15 @@ pub async fn run_command_async(command: DaemonCommand) -> Result<DaemonCommandOu
             let (_config, state, _status) = initialize_state_for_management(state_root).await?;
             let output = crate::daemon_cli::list_runtime_agents(&state)?;
             Ok(DaemonCommandOutput::RuntimeList(output))
+        }
+        DaemonCommand::ArchiveDaemonFinalize {
+            state_root,
+            archive_id,
+        } => {
+            let config = DaemonConfig::for_state_root(state_root)?;
+            config.validate()?;
+            let output = crate::archive::finalize_daemon_archive(&config, &archive_id)?;
+            Ok(DaemonCommandOutput::ArchiveDaemonFinalize(output))
         }
         DaemonCommand::SetupDaemonAgent {
             state_root,

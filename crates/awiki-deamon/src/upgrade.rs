@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -6,6 +7,9 @@ use sha2::{Digest, Sha256};
 
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
 use crate::DaemonConfig;
+
+pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+const RELEASE_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonUpgradeRequest {
@@ -24,6 +28,15 @@ pub struct DaemonUpgradeReport {
     pub manifest_url: String,
     pub restarted: bool,
     pub service: ServiceStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonReleaseStatus {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub needs_upgrade: bool,
+    pub manifest_url: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +82,35 @@ impl DaemonUpgradeRequest {
     }
 }
 
+pub fn check_release_status(config: &DaemonConfig) -> DaemonReleaseStatus {
+    let current_version = CURRENT_DAEMON_VERSION.to_string();
+    let manifest_url = manifest_url(&config.download_base_url);
+    match read_release_manifest(&manifest_url) {
+        Ok(manifest) => {
+            let latest = manifest.latest.trim().to_string();
+            let latest_version = (!latest.is_empty()).then_some(latest);
+            let needs_upgrade = latest_version
+                .as_deref()
+                .map(|latest| version_is_newer(latest, &current_version))
+                .unwrap_or(false);
+            DaemonReleaseStatus {
+                current_version,
+                latest_version,
+                needs_upgrade,
+                manifest_url: diagnostic_url(&manifest_url),
+                error: None,
+            }
+        }
+        Err(error) => DaemonReleaseStatus {
+            current_version,
+            latest_version: None,
+            needs_upgrade: false,
+            manifest_url: diagnostic_url(&manifest_url),
+            error: Some(sanitize_error(&error.to_string())),
+        },
+    }
+}
+
 pub fn upgrade_daemon(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
@@ -106,11 +148,9 @@ async fn upgrade_daemon_async(
     }
     let target_version = normalize_target_version(&request.target_version)?;
     let manifest_url = manifest_url(&request.download_base_url);
-    let manifest_bytes = read_url_bytes(&manifest_url)
+    let manifest = read_release_manifest_async(&manifest_url)
         .await
         .with_context(|| format!("download daemon manifest {}", public_url(&manifest_url)))?;
-    let manifest: DaemonReleaseManifest =
-        serde_json::from_slice(&manifest_bytes).context("parse daemon release manifest")?;
     if manifest.latest.trim().is_empty() {
         bail!("daemon release manifest latest version is empty");
     }
@@ -120,6 +160,45 @@ async fn upgrade_daemon_async(
         target_version
     };
     let package = select_package(&manifest, &version)?;
+    if !version_is_newer(&package.version, CURRENT_DAEMON_VERSION) {
+        let current_dir = request.bin_root.join("current");
+        let previous_version = current_daemon_link_version(&request.bin_root)
+            .or_else(|| Some(CURRENT_DAEMON_VERSION.to_string()));
+        let service = if request.restart_service {
+            manage_service(
+                config,
+                &current_dir.join("awiki-deamon"),
+                ServiceAction::Status,
+            )
+            .unwrap_or_else(|error| ServiceStatus {
+                platform: ServicePlatform::Foreground,
+                installed: false,
+                running: false,
+                unit_path: None,
+                detail: Some(format!(
+                    "service status unavailable during no-op upgrade: {}",
+                    sanitize_error(&error.to_string())
+                )),
+            })
+        } else {
+            ServiceStatus {
+                platform: ServicePlatform::Foreground,
+                installed: false,
+                running: false,
+                unit_path: None,
+                detail: Some("service restart skipped for daemon upgrade".to_string()),
+            }
+        };
+        return Ok(DaemonUpgradeReport {
+            previous_version,
+            target_version: package.version,
+            min_supported_version: manifest.min_supported,
+            package_sha256: package.sha256,
+            manifest_url: public_url(&manifest_url),
+            restarted: false,
+            service,
+        });
+    }
     let archive_bytes = read_url_bytes(&package.url)
         .await
         .with_context(|| format!("download daemon package {}", public_url(&package.url)))?;
@@ -188,7 +267,7 @@ async fn upgrade_daemon_async(
         match manage_service(
             config,
             &current_dir.join("awiki-deamon"),
-            ServiceAction::Restart,
+            ServiceAction::Install,
         ) {
             Ok(status) => status,
             Err(error) => {
@@ -242,6 +321,40 @@ fn sanitize_version_segment(value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+fn version_is_newer(candidate: &str, current: &str) -> bool {
+    compare_versions(candidate, current).is_gt()
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = version_components(left);
+    let right = version_components(right);
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        match a.cmp(&b) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn version_components(value: &str) -> Vec<u64> {
+    value
+        .trim()
+        .trim_start_matches('v')
+        .split(['.', '-', '_'])
+        .map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+        })
+        .take_while(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect()
+}
+
 fn default_bin_root() -> PathBuf {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -261,6 +374,35 @@ fn manifest_url(base: &str) -> String {
     }
 }
 
+fn read_release_manifest(url: &str) -> Result<DaemonReleaseManifest> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let url = url.to_string();
+        let join = std::thread::Builder::new()
+            .name("awiki-daemon-release-status".to_string())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("create daemon release status runtime")?;
+                runtime.block_on(read_release_manifest_async(&url))
+            })
+            .context("spawn daemon release status runtime thread")?;
+        return join
+            .join()
+            .map_err(|_| anyhow::anyhow!("daemon release status runtime thread panicked"))?;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("create daemon release status runtime")?;
+    runtime.block_on(read_release_manifest_async(url))
+}
+
+async fn read_release_manifest_async(url: &str) -> Result<DaemonReleaseManifest> {
+    let manifest_bytes = read_url_bytes(url).await?;
+    serde_json::from_slice(&manifest_bytes).context("parse daemon release manifest")
+}
+
 async fn read_url_bytes(url: &str) -> Result<Vec<u8>> {
     if let Some(path) = file_url_path(url) {
         return std::fs::read(&path).with_context(|| format!("read {}", path.display()));
@@ -268,7 +410,10 @@ async fn read_url_bytes(url: &str) -> Result<Vec<u8>> {
     if url.starts_with('/') || url.starts_with("./") || url.starts_with("../") {
         return std::fs::read(url).with_context(|| format!("read {url}"));
     }
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(RELEASE_HTTP_TIMEOUT)
+        .build()
+        .context("create HTTP client")?
         .get(url)
         .send()
         .await
@@ -393,6 +538,12 @@ fn version_from_current_target(target: &Path) -> Option<String> {
         })
 }
 
+fn current_daemon_link_version(bin_root: &Path) -> Option<String> {
+    let link = bin_root.join("current").join("awiki-deamon");
+    let target = std::fs::read_link(link).ok()?;
+    version_from_current_target(&target)
+}
+
 fn restore_current_links(current_dir: &Path, backup: &CurrentLinks) -> Result<()> {
     restore_one_link(&current_dir.join("awiki-deamon"), backup.daemon.as_ref())?;
     restore_one_link(
@@ -432,6 +583,15 @@ fn public_url(url: &str) -> String {
         value.chars().take(512).collect::<String>() + "..."
     } else {
         value.to_string()
+    }
+}
+
+fn diagnostic_url(url: &str) -> String {
+    let value = url.trim();
+    if value.starts_with("http://") || value.starts_with("https://") {
+        public_url(value)
+    } else {
+        "<local-release-manifest>".to_string()
     }
 }
 
@@ -515,6 +675,100 @@ mod tests {
         )
         .unwrap();
         manifest
+    }
+
+    fn write_status_manifest(root: &Path, latest: &str) -> PathBuf {
+        let releases = root.join("releases");
+        std::fs::create_dir_all(&releases).unwrap();
+        let manifest = releases.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "latest": latest,
+                "packages": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        manifest
+    }
+
+    #[test]
+    fn version_comparison_uses_numeric_segments() {
+        assert!(version_is_newer("0.10.0", "0.2.0"));
+        assert!(version_is_newer("v1.2.1", "1.2.0"));
+        assert!(!version_is_newer("1.2.0", "1.2.0"));
+        assert!(!version_is_newer("1.1.9", "1.2.0"));
+    }
+
+    #[test]
+    fn release_status_is_latest_version_driven() {
+        let (root, mut config) = fixture();
+        write_status_manifest(root.path(), "0.10.0");
+        config.download_base_url = format!("file://{}", root.path().display());
+
+        let status = check_release_status(&config);
+
+        assert_eq!(status.current_version, CURRENT_DAEMON_VERSION);
+        assert_eq!(status.latest_version.as_deref(), Some("0.10.0"));
+        assert!(status.needs_upgrade);
+        assert!(status.error.is_none());
+        assert_eq!(status.manifest_url, "<local-release-manifest>");
+    }
+
+    #[test]
+    fn release_status_is_unavailable_without_forcing_upgrade() {
+        let (_root, mut config) = fixture();
+        config.download_base_url = "file:///missing-awiki-daemon-download-root".to_string();
+
+        let status = check_release_status(&config);
+
+        assert_eq!(status.current_version, CURRENT_DAEMON_VERSION);
+        assert!(status.latest_version.is_none());
+        assert!(!status.needs_upgrade);
+        assert!(status.error.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_is_noop_when_latest_is_not_newer_than_running_version() {
+        let (root, config) = fixture();
+        let bin_root = root.path().join("bin");
+        let old_dir = bin_root.join(CURRENT_DAEMON_VERSION);
+        let current_dir = bin_root.join("current");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&current_dir).unwrap();
+        std::fs::write(old_dir.join("awiki-deamon"), "current").unwrap();
+        std::os::unix::fs::symlink(
+            format!("../{CURRENT_DAEMON_VERSION}/awiki-deamon"),
+            current_dir.join("awiki-deamon"),
+        )
+        .unwrap();
+        let (archive, sha) = create_package(root.path(), CURRENT_DAEMON_VERSION);
+        let manifest = write_manifest(root.path(), CURRENT_DAEMON_VERSION, &archive, &sha);
+
+        let report = upgrade_daemon(
+            &config,
+            DaemonUpgradeRequest {
+                target_version: "latest".to_string(),
+                download_base_url: format!("file://{}", manifest.display()),
+                bin_root: bin_root.clone(),
+                restart_service: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.target_version, CURRENT_DAEMON_VERSION);
+        assert!(!report.restarted);
+        assert_eq!(
+            std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
+            PathBuf::from(format!("../{CURRENT_DAEMON_VERSION}/awiki-deamon"))
+        );
+        assert!(!bin_root.read_dir().unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".upgrade-")));
     }
 
     #[cfg(unix)]

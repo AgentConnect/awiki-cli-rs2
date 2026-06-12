@@ -48,6 +48,7 @@ class DartProfilePatch {
 class DartUserProfile {
   final String subject;
   final String? handle;
+  final String? fullHandle;
   final String? displayName;
   final String? bio;
   final String? description;
@@ -64,6 +65,7 @@ class DartUserProfile {
   const DartUserProfile({
     required this.subject,
     this.handle,
+    this.fullHandle,
     this.displayName,
     this.bio,
     this.description,
@@ -82,6 +84,7 @@ class DartUserProfile {
   int get hashCode =>
       subject.hashCode ^
       handle.hashCode ^
+      fullHandle.hashCode ^
       displayName.hashCode ^
       bio.hashCode ^
       description.hashCode ^
@@ -102,6 +105,7 @@ class DartUserProfile {
           runtimeType == other.runtimeType &&
           subject == other.subject &&
           handle == other.handle &&
+          fullHandle == other.fullHandle &&
           displayName == other.displayName &&
           bio == other.bio &&
           description == other.description &&

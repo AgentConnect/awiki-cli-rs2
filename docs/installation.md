@@ -58,28 +58,23 @@ scripts/release/build-release-artifact.sh --os linux --arch amd64
 scripts/release/build-release-artifact.sh --os darwin --arch arm64
 ```
 
-Daemon 发布包使用单独脚本构建：
+Daemon Linux 发布推荐在目标 Ubuntu 服务器上执行高层发布脚本：
 
 ```bash
-scripts/release/build-daemon-artifact.sh --os linux --arch amd64
-scripts/release/stage-daemon-downloads.sh \
-  --version <version> \
-  --source-dir dist/daemon \
-  --output-dir dist/daemon-downloads \
-  --download-base-url https://awiki.ai/daemon
+scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com
 ```
 
-`--download-base-url` 是 Nginx 或其他静态文件服务暴露 daemon 安装脚本与 release 包的根路径。标准线上路由约定为 `<后端服务根地址>/daemon`，所以只传 `https://awiki.ai/daemon` 时，发布脚本会自动推导 `--base-url https://awiki.ai`。未来线上测试环境可对应改成 `https://anpclaw.com/daemon`。如果下载服务和后端 API 不在同一个域名，或者使用 `file://` / 本地路径测试，则需要同时显式传入 `--base-url`。
+脚本从 `crates/awiki-deamon/Cargo.toml` 读取发布版本，校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致，并要求该版本高于 `/var/www/awiki-web/daemon/releases/manifest.json` 中已发布的 `latest`。脚本只发布 Linux amd64 包到固定 Nginx 目录 `/var/www/awiki-web/daemon`，不会修改版本号、提交代码或推送代码。
+
+`--base-url` 是后端服务根地址。标准线上路由会从它推导 daemon 下载根地址 `<base-url>/daemon`，例如测试环境 `https://anpclaw.com/daemon`，生产环境 `https://awiki.ai/daemon`。如果只想检查发布计划而不构建、不写 Nginx 目录，可以加 `--dry-run`。
 
 Flutter SDK 变更还需要：
 
 ```bash
-scripts/flutter/codegen-check.sh
-cd packages/awiki_im_core
-flutter pub get
-dart analyze
-flutter test
+scripts/flutter/build-sdk-native.sh
 ```
+
+该脚本会检查 Flutter/Rust bridge 生成文件，并重新构建 macOS、iOS、Android 的 `awiki_im_core` native 产物。只需要单平台验证时可使用 `--macos-only`、`--ios-only` 或 `--android-only`。
 
 ## 3. 工作区布局
 

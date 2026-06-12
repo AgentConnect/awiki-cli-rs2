@@ -67,6 +67,7 @@ pub(crate) fn persist_direct_outgoing_result(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
     let connection = crate::internal::local_state::open_writable(
@@ -74,7 +75,7 @@ pub(crate) fn persist_direct_outgoing_result(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &direct_outgoing_result_record(client, target_did, target_handle, sdk_result),
+        &direct_outgoing_result_record(client, target_did, target_handle, peer_scope, sdk_result),
     )
 }
 
@@ -83,6 +84,7 @@ pub(crate) fn persist_direct_outgoing_result(
     _client: &crate::core::ImClient,
     _target_did: &str,
     _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
     Err(crate::ImError::unsupported("sync-message-projection"))
@@ -93,9 +95,11 @@ pub(crate) async fn persist_direct_outgoing_result_async(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
-    let record = direct_outgoing_result_record(client, target_did, target_handle, sdk_result);
+    let record =
+        direct_outgoing_result_record(client, target_did, target_handle, peer_scope, sdk_result);
     client
         .core_inner()
         .local_state_db()
@@ -109,6 +113,7 @@ pub(crate) fn persist_direct_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
@@ -118,7 +123,15 @@ pub(crate) fn persist_direct_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &direct_outgoing_record(client, target_did, target_handle, text, kind, sdk_result),
+        &direct_outgoing_record(
+            client,
+            target_did,
+            target_handle,
+            peer_scope,
+            text,
+            kind,
+            sdk_result,
+        ),
     )
 }
 
@@ -127,6 +140,7 @@ pub(crate) fn persist_direct_outgoing(
     _client: &crate::core::ImClient,
     _target_did: &str,
     _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _text: &str,
     _kind: &crate::messages::MessageKind,
     _sdk_result: &crate::messages::SendMessageResult,
@@ -139,11 +153,20 @@ pub(crate) async fn persist_direct_outgoing_async(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
-    let record = direct_outgoing_record(client, target_did, target_handle, text, kind, sdk_result);
+    let record = direct_outgoing_record(
+        client,
+        target_did,
+        target_handle,
+        peer_scope,
+        text,
+        kind,
+        sdk_result,
+    );
     client
         .core_inner()
         .local_state_db()
@@ -243,6 +266,7 @@ pub(crate) fn persist_direct_attachment_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
@@ -251,7 +275,14 @@ pub(crate) fn persist_direct_attachment_outgoing(
     )?;
     crate::internal::local_state::messages::upsert_message(
         &connection,
-        &direct_attachment_outgoing_record(client, target_did, target_handle, manifest, sdk_result),
+        &direct_attachment_outgoing_record(
+            client,
+            target_did,
+            target_handle,
+            peer_scope,
+            manifest,
+            sdk_result,
+        ),
     )
 }
 
@@ -260,6 +291,7 @@ pub(crate) fn persist_direct_attachment_outgoing(
     _client: &crate::core::ImClient,
     _target_did: &str,
     _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _manifest: &Value,
     _sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
@@ -271,11 +303,18 @@ pub(crate) async fn persist_direct_attachment_outgoing_async(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
-    let record =
-        direct_attachment_outgoing_record(client, target_did, target_handle, manifest, sdk_result);
+    let record = direct_attachment_outgoing_record(
+        client,
+        target_did,
+        target_handle,
+        peer_scope,
+        manifest,
+        sdk_result,
+    );
     client
         .core_inner()
         .local_state_db()
@@ -332,6 +371,7 @@ pub(crate) async fn persist_direct_attachment_outgoing_async(
     _client: &crate::core::ImClient,
     _target_did: &str,
     _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _manifest: &Value,
     _sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
@@ -635,6 +675,32 @@ pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
     crate::internal::local_state::owner_scope::direct_conversation_id(peer_did)
 }
 
+pub(crate) fn direct_conversation_id_for_peer_scope(
+    scope: &crate::internal::local_state::owner_scope::DirectPeerScope,
+) -> String {
+    crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(scope)
+}
+
+pub(crate) fn scoped_direct_thread_ref_from_metadata(
+    metadata: &crate::messages::MessageMetadata,
+) -> Option<crate::messages::ThreadRef> {
+    peer_scope_from_metadata(metadata).and_then(|scope| {
+        crate::ids::ThreadId::parse(direct_conversation_id_for_peer_scope(&scope))
+            .ok()
+            .map(crate::messages::ThreadRef::Thread)
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_conversation_id_for_scope_or_did(
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    peer_did: &str,
+) -> String {
+    peer_scope
+        .map(direct_conversation_id_for_peer_scope)
+        .unwrap_or_else(|| direct_conversation_id(peer_did))
+}
+
 pub(crate) fn group_thread_id(group_did: &str) -> String {
     group_conversation_id(group_did)
 }
@@ -669,11 +735,12 @@ fn direct_outgoing_record(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
-    let conversation_id = direct_conversation_id(target_did);
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -691,7 +758,7 @@ fn direct_outgoing_record(
         is_read: true,
         metadata: delivery_metadata_json(
             &sdk_result.message.metadata,
-            [("target_handle", target_handle.unwrap_or_default())],
+            direct_metadata_extras(target_handle, peer_scope, target_did),
         ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
@@ -703,10 +770,11 @@ fn direct_outgoing_result_record(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
     let (content_type, content) = body_projection(&sdk_result.message.body);
-    let conversation_id = direct_conversation_id(target_did);
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -724,7 +792,7 @@ fn direct_outgoing_result_record(
         is_read: true,
         metadata: delivery_metadata_json(
             &sdk_result.message.metadata,
-            [("target_handle", target_handle.unwrap_or_default())],
+            direct_metadata_extras(target_handle, peer_scope, target_did),
         ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
@@ -815,7 +883,10 @@ fn group_outgoing_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: false,
         is_read: true,
-        metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
+        metadata: delivery_metadata_json(
+            &sdk_result.message.metadata,
+            Vec::<(&str, String)>::new(),
+        ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -843,7 +914,10 @@ fn group_outgoing_result_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: false,
         is_read: true,
-        metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
+        metadata: delivery_metadata_json(
+            &sdk_result.message.metadata,
+            Vec::<(&str, String)>::new(),
+        ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -854,10 +928,11 @@ fn direct_attachment_outgoing_record(
     client: &crate::core::ImClient,
     target_did: &str,
     target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
-    let conversation_id = direct_conversation_id(target_did);
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -875,7 +950,7 @@ fn direct_attachment_outgoing_record(
         is_read: true,
         metadata: delivery_metadata_json(
             &sdk_result.message.metadata,
-            attachment_metadata_extras(manifest, target_handle),
+            attachment_metadata_extras(manifest, target_handle, peer_scope, target_did),
         ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
@@ -908,7 +983,7 @@ fn group_attachment_outgoing_record(
         is_read: true,
         metadata: delivery_metadata_json(
             &sdk_result.message.metadata,
-            attachment_metadata_extras(manifest, None),
+            attachment_metadata_extras(manifest, None, None, ""),
         ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
@@ -929,7 +1004,10 @@ fn group_touch_record(
         membership_status: "active".to_owned(),
         last_synced_seq: sdk_result.message.metadata.server_sequence,
         last_message_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
-        metadata: delivery_metadata_json(&sdk_result.message.metadata, []),
+        metadata: delivery_metadata_json(
+            &sdk_result.message.metadata,
+            Vec::<(&str, String)>::new(),
+        ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::groups::GroupRecord::default()
     }
@@ -937,7 +1015,7 @@ fn group_touch_record(
 
 fn delivery_metadata_json<'a, I>(metadata: &crate::messages::MessageMetadata, extras: I) -> String
 where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
+    I: IntoIterator<Item = (&'a str, String)>,
 {
     let mut object = Map::new();
     insert_string(
@@ -984,6 +1062,11 @@ where
             | "group_state_version"
             | "attachment_id"
             | "object_uri"
+            | "target_handle"
+            | "resolved_target_did"
+            | "peer_user_id"
+            | "peer_full_handle"
+            | "peer_current_did"
                 if !attribute.value.trim().is_empty() =>
             {
                 object.insert(
@@ -998,25 +1081,48 @@ where
         }
     }
     for (key, value) in extras {
-        insert_string(&mut object, key, Some(value));
+        insert_string(&mut object, key, Some(value.as_str()));
     }
     Value::Object(object).to_string()
 }
 
+fn direct_metadata_extras<'a>(
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    target_did: &str,
+) -> Vec<(&'a str, String)> {
+    let mut extras = Vec::new();
+    if let Some(target_handle) = target_handle
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        extras.push(("target_handle", target_handle.to_owned()));
+    }
+    if let Some(scope) = peer_scope {
+        extras.push(("peer_user_id", scope.user_id.clone()));
+        extras.push(("peer_full_handle", scope.full_handle.clone()));
+    }
+    let target_did = target_did.trim();
+    if !target_did.is_empty() {
+        extras.push(("resolved_target_did", target_did.to_owned()));
+        extras.push(("peer_current_did", target_did.to_owned()));
+    }
+    extras
+}
+
 fn attachment_metadata_extras<'a>(
     manifest: &'a Value,
-    target_handle: Option<&'a str>,
-) -> Vec<(&'a str, &'a str)> {
-    let mut extras = Vec::new();
-    if let Some(target_handle) = target_handle {
-        extras.push(("target_handle", target_handle));
-    }
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    target_did: &str,
+) -> Vec<(&'a str, String)> {
+    let mut extras = direct_metadata_extras(target_handle, peer_scope, target_did);
     if let Some(caption) = manifest
         .get("caption")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        extras.push(("caption", caption));
+        extras.push(("caption", caption.to_owned()));
     }
     if let Some(attachment) = manifest
         .get("attachments")
@@ -1029,7 +1135,7 @@ fn attachment_metadata_extras<'a>(
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         {
-            extras.push(("attachment_id", attachment_id));
+            extras.push(("attachment_id", attachment_id.to_owned()));
         }
         if let Some(object_uri) = attachment
             .get("object_uri")
@@ -1041,7 +1147,7 @@ fn attachment_metadata_extras<'a>(
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         {
-            extras.push(("object_uri", object_uri));
+            extras.push(("object_uri", object_uri.to_owned()));
         }
     }
     extras
@@ -1210,6 +1316,9 @@ fn conversation_id_for_message(owner_did: &str, message: &crate::messages::Messa
     if let Some(group) = group_ref_for_message(message) {
         return group_conversation_id(&group);
     }
+    if let Some(scope) = peer_scope_from_metadata(&message.metadata) {
+        return direct_conversation_id_for_peer_scope(&scope);
+    }
     let peer = direct_peer_for_message(owner_did, message);
     if !peer.trim().is_empty() {
         return direct_conversation_id(&peer);
@@ -1219,6 +1328,26 @@ fn conversation_id_for_message(owner_did: &str, message: &crate::messages::Messa
         crate::messages::ThreadRef::Direct(peer) => direct_conversation_id(peer.as_str()),
         crate::messages::ThreadRef::Group(group) => group_conversation_id(group.as_str()),
     }
+}
+
+pub(crate) fn peer_scope_from_metadata(
+    metadata: &crate::messages::MessageMetadata,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let user_id = metadata_string_attribute(metadata, "peer_user_id")?;
+    let full_handle = metadata_string_attribute(metadata, "peer_full_handle")?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(user_id, full_handle).ok()
+}
+
+fn metadata_string_attribute(
+    metadata: &crate::messages::MessageMetadata,
+    key: &str,
+) -> Option<String> {
+    metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(feature = "sqlite")]
@@ -1355,7 +1484,16 @@ fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "raw_message_id" | "group_event_seq" | "is_read" | "senderName" | "sender_name"
+            "raw_message_id"
+            | "group_event_seq"
+            | "is_read"
+            | "senderName"
+            | "sender_name"
+            | "target_handle"
+            | "resolved_target_did"
+            | "peer_user_id"
+            | "peer_full_handle"
+            | "peer_current_did"
                 if !attribute.value.trim().is_empty() =>
             {
                 object.insert(

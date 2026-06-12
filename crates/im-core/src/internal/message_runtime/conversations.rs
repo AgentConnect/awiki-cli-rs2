@@ -553,7 +553,7 @@ trait ConversationRecordExt {
 }
 
 fn conversation_thread(
-    owner_did: &str,
+    _owner_did: &str,
     record: &impl ConversationRecordExt,
     last_message: Option<&crate::messages::Message>,
 ) -> crate::ImResult<crate::messages::ThreadRef> {
@@ -561,8 +561,15 @@ fn conversation_thread(
         if let Some(group) = &message.group {
             return Ok(crate::messages::ThreadRef::Group(group.clone()));
         }
-        if let Some(peer) = direct_peer_from_message(owner_did, message) {
-            return Ok(crate::messages::ThreadRef::Direct(peer));
+        if let Some(thread) =
+            crate::internal::message_runtime::local_projection::scoped_direct_thread_ref_from_metadata(
+                &message.metadata,
+            )
+        {
+            return Ok(thread);
+        }
+        if let crate::messages::ThreadRef::Direct(peer) = &message.thread {
+            return Ok(crate::messages::ThreadRef::Direct(peer.clone()));
         }
     }
     let thread_id = record.thread_id().trim();
@@ -589,9 +596,9 @@ fn conversation_participants(
             };
             let mut participants = Vec::new();
             for candidate in [
+                direct_peer_from_message(owner_did, message).as_ref(),
                 Some(&message.sender),
                 message.receiver.as_ref(),
-                direct_peer_from_message(owner_did, message).as_ref(),
             ]
             .into_iter()
             .flatten()
@@ -613,6 +620,9 @@ fn direct_peer_from_message(
     owner_did: &str,
     message: &crate::messages::Message,
 ) -> Option<crate::ids::PeerRef> {
+    if let Some(peer) = metadata_attribute(&message.metadata, "peer_full_handle") {
+        return crate::ids::PeerRef::parse(peer, "").ok();
+    }
     if message.sender.as_str() != owner_did {
         return Some(message.sender.clone());
     }
@@ -655,7 +665,7 @@ fn message_from_record(
             retry_plan,
             server_sequence: record.server_seq,
             content_type: non_empty_string(&record.content_type),
-            attributes: Vec::new(),
+            attributes: metadata_attributes(&record.metadata),
         },
     })
 }
@@ -680,6 +690,17 @@ fn message_thread(
 ) -> crate::ImResult<crate::messages::ThreadRef> {
     if let Some(group) = group_ref_from_record(record)? {
         return Ok(crate::messages::ThreadRef::Group(group));
+    }
+    let metadata = crate::messages::MessageMetadata {
+        attributes: metadata_attributes(&record.metadata),
+        ..crate::messages::MessageMetadata::default()
+    };
+    if let Some(thread) =
+        crate::internal::message_runtime::local_projection::scoped_direct_thread_ref_from_metadata(
+            &metadata,
+        )
+    {
+        return Ok(thread);
     }
     let peer = if record.sender_did.trim() != record.owner_did.trim() {
         record.sender_did.as_str()
@@ -754,6 +775,50 @@ fn metadata_string(metadata: &str, key: &str) -> Option<String> {
                 .map(str::to_string)
         })
         .filter(|value| !value.trim().is_empty())
+}
+
+fn metadata_attributes(metadata: &str) -> Vec<crate::messages::MessageMetadataAttribute> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) else {
+        return Vec::new();
+    };
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    [
+        "peer_user_id",
+        "peer_full_handle",
+        "peer_current_did",
+        "resolved_target_did",
+        "target_handle",
+        "is_read",
+        "senderName",
+        "sender_name",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| crate::messages::MessageMetadataAttribute {
+                key: key.to_owned(),
+                value: value.to_owned(),
+            })
+    })
+    .collect()
+}
+
+fn metadata_attribute<'a>(
+    metadata: &'a crate::messages::MessageMetadata,
+    key: &str,
+) -> Option<&'a str> {
+    metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 fn page_limit(limit: crate::ids::PageLimit, fallback: usize) -> usize {
@@ -1001,6 +1066,66 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn direct_conversation_uses_peer_scope_across_did_rotation() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.anpclaw.com",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &scope,
+            );
+        fixture.seed_scoped_direct_message(
+            &client,
+            "msg-old-did",
+            &conversation_id,
+            "did:example:bob-old",
+            "old did",
+            "2026-05-21T00:00:01Z",
+        );
+        fixture.seed_scoped_direct_message(
+            &client,
+            "msg-new-did",
+            &conversation_id,
+            "did:example:bob-new",
+            "new did",
+            "2026-05-21T00:00:02Z",
+        );
+
+        let page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        let conversation = &page.items[0];
+        assert_eq!(conversation.message_count, 2);
+        assert!(matches!(
+            &conversation.thread,
+            crate::messages::ThreadRef::Thread(thread) if thread.as_str() == conversation_id
+        ));
+        assert_eq!(conversation.participants[0].as_str(), "bob.anpclaw.com");
+        assert_eq!(
+            conversation
+                .last_message
+                .as_ref()
+                .unwrap()
+                .receiver
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            client.did().as_str()
+        );
+    }
+
     struct Fixture {
         root: PathBuf,
     }
@@ -1149,6 +1274,42 @@ VALUES (?1, ?2, ?3, 'dm:did:example:bob', 'dm:did:example:bob', ?4, ?5, ?6,
                         content,
                         sent_at,
                         metadata,
+                    ),
+                )
+                .unwrap();
+        }
+
+        fn seed_scoped_direct_message(
+            &self,
+            client: &crate::core::ImClient,
+            message_id: &str,
+            conversation_id: &str,
+            sender_did: &str,
+            content: &str,
+            sent_at: &str,
+        ) {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            connection
+                .execute(
+                    r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
+     content_type, content, sent_at, stored_at, is_read, metadata)
+VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?6,
+        'text/plain', ?7, ?8, ?8, 0,
+        '{"peer_user_id":"user-bob","peer_full_handle":"bob.anpclaw.com"}')"#,
+                    (
+                        message_id,
+                        client.current_identity().id.as_str(),
+                        client.did().as_str(),
+                        conversation_id,
+                        sender_did,
+                        client.did().as_str(),
+                        content,
+                        sent_at,
                     ),
                 )
                 .unwrap();

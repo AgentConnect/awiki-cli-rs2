@@ -76,6 +76,92 @@ async fn identity_service_profile_uses_public_http_transport() {
 }
 
 #[tokio::test]
+async fn identity_service_profile_prefers_full_handle_over_bare_handle() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
+        "/user-service/did/profile/rpc",
+        "get_me",
+        json!({}),
+        json!({
+            "did": "did:wba:anpclaw.com:zhuocheng:e1_key",
+            "handle": "zhuocheng",
+            "full_handle": "zhuocheng.anpclaw.com",
+            "nick_name": "Zhuocheng",
+            "bio": "Rust public API",
+            "tags": ["sdk", "http"],
+            "profile_md": "## Zhuocheng",
+        }),
+    )]);
+    let client = fixture
+        .client_async_with_base_url("alice", server.base_url())
+        .await;
+
+    let profile = client.identity().profile_async().await.unwrap();
+
+    assert_eq!(
+        profile.handle.as_ref().map(|handle| handle.as_str()),
+        Some("zhuocheng.anpclaw.com")
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
+async fn identity_service_profile_expands_bare_handle_with_wba_did_domain() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
+        "/user-service/did/profile/rpc",
+        "get_me",
+        json!({}),
+        json!({
+            "did": "did:wba:anpclaw.com:zhuocheng:e1_key",
+            "handle": "zhuocheng",
+            "nick_name": "Zhuocheng",
+        }),
+    )]);
+    let client = fixture
+        .client_async_with_base_url("alice", server.base_url())
+        .await;
+
+    let profile = client.identity().profile_async().await.unwrap();
+
+    assert_eq!(
+        profile.handle.as_ref().map(|handle| handle.as_str()),
+        Some("zhuocheng.anpclaw.com")
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
+async fn identity_service_profile_uses_domain_qualified_handle_when_full_handle_is_bare() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![ExpectedRpc::new(
+        "/user-service/did/profile/rpc",
+        "get_me",
+        json!({}),
+        json!({
+            "did": "did:wba:anpclaw.com:zhuocheng:e1_key",
+            "handle": "zhuocheng.anpclaw.com",
+            "full_handle": "zhuocheng",
+            "nick_name": "Zhuocheng",
+        }),
+    )]);
+    let client = fixture
+        .client_async_with_base_url("alice", server.base_url())
+        .await;
+
+    let profile = client.identity().profile_async().await.unwrap();
+
+    assert_eq!(
+        profile.handle.as_ref().map(|handle| handle.as_str()),
+        Some("zhuocheng.anpclaw.com")
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
 async fn identity_service_profile_async_uses_public_http_transport() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
@@ -1224,6 +1310,7 @@ fn handle_lookup_value() -> Value {
         "handle": "bob",
         "full_handle": "bob.awiki.test",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.test",
         "status": "active",
     })

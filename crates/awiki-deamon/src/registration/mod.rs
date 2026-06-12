@@ -17,6 +17,7 @@ pub struct AgentRegistrationExchangeRequest {
     pub agent_kind: AgentKind,
     pub controller_did: String,
     pub handle: String,
+    pub name: Option<String>,
     pub did_document: Value,
     pub endpoint_url: Option<String>,
     pub key_algorithm: String,
@@ -30,6 +31,8 @@ pub struct AgentRegistrationExchangeResult {
     pub did: String,
     pub user_id: Option<String>,
     pub agent_kind: AgentKind,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
     pub controller_did: String,
     pub handle: String,
     pub status: String,
@@ -40,9 +43,19 @@ pub struct RegistrationTokenMetadata {
     pub token_id: String,
     pub agent_kind: AgentKind,
     pub handle: Option<String>,
+    pub controller_user_id: Option<String>,
+    pub controller_full_handle: Option<String>,
     pub controller_did: String,
     pub status: String,
     pub scope: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerSenderScope {
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_did: String,
+    pub sender_did: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +65,7 @@ pub struct AgentLatestStatusUpdateItem {
     pub status: String,
     pub last_seen_at: Option<String>,
     pub version: Option<String>,
+    pub latest_version: Option<String>,
     pub min_supported_version: Option<String>,
     pub platform: Option<String>,
     pub service: Option<String>,
@@ -79,10 +93,30 @@ pub trait AgentRegistrationClient {
 pub trait AgentInventoryClient {
     fn verify_token(&self, token: &RegistrationToken) -> Result<RegistrationTokenMetadata>;
 
+    fn sync_controller_scope(
+        &self,
+        daemon_agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value>;
+
+    fn verify_controller_sender(
+        &self,
+        daemon_agent_did: &str,
+        sender_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<ControllerSenderScope>;
+
     fn update_latest_status(
         &self,
         daemon_agent_did: &str,
         statuses: Vec<AgentLatestStatusUpdateItem>,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value>;
+
+    fn archive_agent(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
         auth: &DidAuthMaterial,
     ) -> Result<Value>;
 }
@@ -121,6 +155,7 @@ impl fmt::Debug for AgentRegistrationExchangeRequest {
             .field("agent_kind", &self.agent_kind)
             .field("controller_did", &self.controller_did)
             .field("handle", &self.handle)
+            .field("name", &self.name)
             .field("did_document", &self.did_document)
             .field("endpoint_url", &self.endpoint_url)
             .field("key_algorithm", &self.key_algorithm)
@@ -264,6 +299,121 @@ impl UserServiceAgentRegistrationClient {
             .context("read agent inventory response")?;
         parse_json_rpc_result(&bytes, "agent inventory latest status update")
     }
+
+    pub async fn sync_controller_scope_async(
+        &self,
+        daemon_agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "sync_controller_scope",
+            "params": {
+                "daemon_agent_did": daemon_agent_did,
+            },
+            "id": 1
+        });
+        let body_bytes = body.to_string().into_bytes();
+        let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
+        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "call user-service agent inventory {}",
+                    self.inventory_rpc_url
+                )
+            })?
+            .error_for_status()
+            .context("user-service agent inventory HTTP error")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("read sync controller scope response")?;
+        parse_json_rpc_result(&bytes, "agent inventory sync_controller_scope")
+    }
+
+    pub async fn verify_controller_sender_async(
+        &self,
+        daemon_agent_did: &str,
+        sender_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<ControllerSenderScope> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "verify_controller_sender",
+            "params": {
+                "daemon_agent_did": daemon_agent_did,
+                "sender_did": sender_did,
+            },
+            "id": 1
+        });
+        let body_bytes = body.to_string().into_bytes();
+        let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
+        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "call user-service agent inventory {}",
+                    self.inventory_rpc_url
+                )
+            })?
+            .error_for_status()
+            .context("user-service agent inventory HTTP error")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("read verify controller sender response")?;
+        parse_verify_controller_sender_response(&bytes)
+    }
+
+    pub async fn archive_agent_async(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "archive_agent",
+            "params": {
+                "daemon_agent_did": daemon_agent_did,
+                "agent_did": agent_did,
+            },
+            "id": 1
+        });
+        let body_bytes = body.to_string().into_bytes();
+        let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
+        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "call user-service agent inventory {}",
+                    self.inventory_rpc_url
+                )
+            })?
+            .error_for_status()
+            .context("user-service agent inventory HTTP error")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("read archive agent response")?;
+        parse_json_rpc_result(&bytes, "agent inventory archive_agent")
+    }
 }
 
 impl AgentRegistrationClient for UserServiceAgentRegistrationClient {
@@ -323,6 +473,80 @@ impl AgentInventoryClient for UserServiceAgentRegistrationClient {
         }
         self.update_latest_status_in_new_runtime(daemon_agent_did, statuses, auth)
     }
+
+    fn sync_controller_scope(
+        &self,
+        daemon_agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let daemon_agent_did = daemon_agent_did.to_string();
+            let auth = auth.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-scope-sync".to_string())
+                .spawn(move || {
+                    client.sync_controller_scope_in_new_runtime(&daemon_agent_did, &auth)
+                })
+                .context("spawn scope sync RPC runtime thread")?;
+            return join
+                .join()
+                .map_err(|_| anyhow::anyhow!("scope sync RPC runtime thread panicked"))?;
+        }
+        self.sync_controller_scope_in_new_runtime(daemon_agent_did, auth)
+    }
+
+    fn verify_controller_sender(
+        &self,
+        daemon_agent_did: &str,
+        sender_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<ControllerSenderScope> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let daemon_agent_did = daemon_agent_did.to_string();
+            let sender_did = sender_did.to_string();
+            let auth = auth.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-sender-scope".to_string())
+                .spawn(move || {
+                    client.verify_controller_sender_in_new_runtime(
+                        &daemon_agent_did,
+                        &sender_did,
+                        &auth,
+                    )
+                })
+                .context("spawn sender scope RPC runtime thread")?;
+            return join
+                .join()
+                .map_err(|_| anyhow::anyhow!("sender scope RPC runtime thread panicked"))?;
+        }
+        self.verify_controller_sender_in_new_runtime(daemon_agent_did, sender_did, auth)
+    }
+
+    fn archive_agent(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let daemon_agent_did = daemon_agent_did.to_string();
+            let agent_did = agent_did.to_string();
+            let auth = auth.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-archive".to_string())
+                .spawn(move || {
+                    client.archive_agent_in_new_runtime(&daemon_agent_did, &agent_did, &auth)
+                })
+                .context("spawn archive agent RPC runtime thread")?;
+            return join
+                .join()
+                .map_err(|_| anyhow::anyhow!("archive agent RPC runtime thread panicked"))?;
+        }
+        self.archive_agent_in_new_runtime(daemon_agent_did, agent_did, auth)
+    }
 }
 
 impl UserServiceAgentRegistrationClient {
@@ -360,6 +584,44 @@ impl UserServiceAgentRegistrationClient {
             .context("create inventory RPC runtime")?;
         runtime.block_on(self.update_latest_status_async(daemon_agent_did, statuses, auth))
     }
+
+    fn sync_controller_scope_in_new_runtime(
+        &self,
+        daemon_agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create scope sync RPC runtime")?;
+        runtime.block_on(self.sync_controller_scope_async(daemon_agent_did, auth))
+    }
+
+    fn verify_controller_sender_in_new_runtime(
+        &self,
+        daemon_agent_did: &str,
+        sender_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<ControllerSenderScope> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create sender scope RPC runtime")?;
+        runtime.block_on(self.verify_controller_sender_async(daemon_agent_did, sender_did, auth))
+    }
+
+    fn archive_agent_in_new_runtime(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        auth: &DidAuthMaterial,
+    ) -> Result<Value> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create archive agent RPC runtime")?;
+        runtime.block_on(self.archive_agent_async(daemon_agent_did, agent_did, auth))
+    }
 }
 
 fn exchange_token_body(request: AgentRegistrationExchangeRequest) -> Value {
@@ -371,6 +633,7 @@ fn exchange_token_body(request: AgentRegistrationExchangeRequest) -> Value {
             "agent_kind": request.agent_kind.as_str(),
             "controller_did": request.controller_did,
             "handle": request.handle,
+            "name": request.name,
             "did_document": request.did_document,
             "endpoint_url": request.endpoint_url,
             "key_algorithm": request.key_algorithm,
@@ -389,6 +652,8 @@ fn parse_exchange_response(bytes: &[u8]) -> Result<AgentRegistrationExchangeResu
         user_id: optional_string(&result, "user_id"),
         agent_kind: AgentKind::parse(&required_string(&result, "agent_kind")?)?,
         controller_did: required_string(&result, "controller_did")?,
+        controller_user_id: required_string(&result, "controller_user_id")?,
+        controller_full_handle: required_string(&result, "controller_full_handle")?,
         handle: required_string(&result, "handle")?,
         status: required_string(&result, "status")?,
     };
@@ -401,9 +666,21 @@ fn parse_verify_response(bytes: &[u8]) -> Result<RegistrationTokenMetadata> {
         token_id: required_string(&result, "token_id")?,
         agent_kind: AgentKind::parse(&required_string(&result, "agent_kind")?)?,
         handle: optional_string(&result, "handle"),
+        controller_user_id: optional_string(&result, "controller_user_id"),
+        controller_full_handle: optional_string(&result, "controller_full_handle"),
         controller_did: required_string(&result, "controller_did")?,
         status: required_string(&result, "status")?,
         scope: result.get("scope").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn parse_verify_controller_sender_response(bytes: &[u8]) -> Result<ControllerSenderScope> {
+    let result = parse_json_rpc_result(bytes, "agent inventory verify controller sender")?;
+    Ok(ControllerSenderScope {
+        controller_user_id: required_string(&result, "controller_user_id")?,
+        controller_full_handle: required_string(&result, "controller_full_handle")?,
+        controller_did: required_string(&result, "controller_did")?,
+        sender_did: required_string(&result, "sender_did")?,
     })
 }
 
@@ -433,6 +710,7 @@ fn status_update_item_body(item: AgentLatestStatusUpdateItem) -> Value {
         "status": item.status,
         "last_seen_at": item.last_seen_at,
         "version": item.version,
+        "latest_version": item.latest_version,
         "min_supported_version": item.min_supported_version,
         "platform": item.platform,
         "service": item.service,
@@ -524,6 +802,8 @@ mod tests {
                 "did": "did:agent:daemon",
                 "user_id": "user-1",
                 "agent_kind": "daemon",
+                "controller_user_id": "user-alice",
+                "controller_full_handle": "alice.anpclaw.com",
                 "controller_did": "did:human:alice",
                 "handle": "alice-daemon",
                 "status": "registered"

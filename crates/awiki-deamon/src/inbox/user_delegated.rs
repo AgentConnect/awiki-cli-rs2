@@ -595,7 +595,7 @@ where
             )?;
         }
         let envelope = user_message_envelope(binding, &message, text)?;
-        let task = runtime_task_from_envelope(binding, &envelope)?;
+        let task = runtime_task_from_envelope(state, binding, &envelope)?;
         if let Err(error) = dispatcher.dispatch_user_message(binding, task, &envelope) {
             state.mark_processed_message_status(
                 &binding.user_did,
@@ -684,9 +684,11 @@ fn user_message_envelope(
 }
 
 fn runtime_task_from_envelope(
+    state: &DaemonState,
     binding: &AppMessageAgentBindingRecord,
     envelope: &UserMessageEnvelope,
 ) -> Result<RuntimeTask> {
+    let profile = state.load_runtime_agent_profile(&binding.runtime_agent_did)?;
     let text = serde_json::to_string(&json!({
         "schema": "awiki.runtime.user_message_task.v1",
         "content_role": envelope.content_role,
@@ -709,7 +711,10 @@ fn runtime_task_from_envelope(
             ))
         ),
         agent_did: binding.runtime_agent_did.clone(),
-        controller_did: binding.daemon_agent_did.clone(),
+        controller_user_id: profile.controller_user_id,
+        controller_full_handle: profile.controller_full_handle,
+        controller_scope_key: profile.controller_scope_key,
+        controller_did: profile.controller_did,
         sender_did: binding.daemon_agent_did.clone(),
         conversation_id: envelope.source_conversation_id.clone(),
         text,

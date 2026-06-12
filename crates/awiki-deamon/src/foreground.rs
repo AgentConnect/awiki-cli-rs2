@@ -6,6 +6,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use im_core::attachments::{
+    AttachmentDestination, DownloadAttachmentRequest, DownloadedAttachmentDestination,
+};
+use im_core::ids::{MessageId, ThreadId};
 use im_core::messages::{
     InboxQuery, InboxScope, Message, MessageBodyView, MessageDeliveryOptions, MessageDirection,
     ThreadRef,
@@ -21,6 +25,7 @@ use crate::cli_wrapper::CliWrapperRequest;
 use crate::commands::{
     handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
 };
+use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::inbox::user_delegated::process_user_delegated_inbox_once;
 use crate::inbox::ControllerTextMessage;
 use crate::local_rpc::call_uds_once;
@@ -258,7 +263,9 @@ async fn process_inbox_once(
                 &client,
                 &agent.agent_did,
                 &message,
-            ) {
+            )
+            .await
+            {
                 Ok(true) => {
                     processed_count += 1;
                 }
@@ -422,10 +429,12 @@ fn validate_retry_task_binding(
     profile: &crate::runtime::RuntimeAgentProfile,
 ) -> Result<()> {
     if task.agent_did != profile.agent_did
-        || task.controller_did != profile.controller_did
-        || task.sender_did != profile.controller_did
+        || task.controller_user_id != profile.controller_user_id
+        || task.controller_full_handle != profile.controller_full_handle
+        || task.controller_scope_key != profile.controller_scope_key
+        || task.sender_did != task.controller_did
     {
-        bail!("runtime retry task does not match profile binding");
+        bail!("runtime retry task does not match profile controller scope");
     }
     Ok(())
 }
@@ -455,7 +464,7 @@ fn sanitize_error_message(message: &str) -> String {
     sanitized
 }
 
-fn route_message(
+async fn route_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
@@ -475,8 +484,8 @@ fn route_message(
                 .unwrap_or_else(|| "application/json".to_string());
             let payload_message = IncomingAgentPayloadMessage {
                 message_id: message.id.as_str().to_string(),
-                conversation_id,
-                sender_did,
+                conversation_id: conversation_id.clone(),
+                sender_did: sender_did.clone(),
                 target_agent_did: target_agent_did.to_string(),
                 content_type: content_type.clone(),
                 payload: payload.clone(),
@@ -487,13 +496,44 @@ fn route_message(
                     state,
                     registration,
                     IncomingAppControlPayload {
-                        message_id: payload_message.message_id,
-                        conversation_id: payload_message.conversation_id,
-                        sender_did: payload_message.sender_did,
-                        target_agent_did: payload_message.target_agent_did,
-                        content_type: payload_message.content_type,
-                        payload: payload_message.payload,
+                        message_id: payload_message.message_id.clone(),
+                        conversation_id: payload_message.conversation_id.clone(),
+                        sender_did: payload_message.sender_did.clone(),
+                        target_agent_did: payload_message.target_agent_did.clone(),
+                        content_type: payload_message.content_type.clone(),
+                        payload: payload_message.payload.clone(),
                     },
+                )?;
+                return Ok(true);
+            }
+            if is_attachment_manifest_message(message, &content_type, payload) {
+                let verified_sender = verify_runtime_controller_sender(
+                    config,
+                    state,
+                    registration,
+                    target_agent_did,
+                    &sender_did,
+                )?;
+                let task_text = attachment_runtime_prompt_text(
+                    config,
+                    target_client,
+                    target_agent_did,
+                    message,
+                    &sender_did,
+                    payload,
+                )
+                .await?;
+                route_runtime_controller_text(
+                    config,
+                    state,
+                    im_core,
+                    target_client,
+                    target_agent_did,
+                    message.id.as_str(),
+                    conversation_id.clone(),
+                    sender_did.clone(),
+                    Some(verified_sender),
+                    task_text,
                 )?;
                 return Ok(true);
             }
@@ -508,7 +548,7 @@ fn route_message(
                 return Ok(false);
             }
             if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
-                run_runtime_task_command(config, state, im_core, payload_message)?;
+                run_runtime_task_command(config, state, im_core, registration, payload_message)?;
             } else {
                 let outbox = ImCoreAgentOutbox::new(target_client.clone());
                 let outcome = handle_agent_payload_message(
@@ -526,31 +566,17 @@ fn route_message(
             Ok(true)
         }
         MessageBodyView::Text { text, .. } => {
-            let outbox = ImCoreAgentOutbox::new(target_client.clone());
-            let status_sender =
-                runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
-            let runtime_outbox = ControllerRuntimeOutbox::new(
-                ControllerOutboxSender::ImCore(outbox.clone()),
-                status_sender.sender,
-                Some(status_sender.daemon_agent_did),
-                sender_did.clone(),
-                format!("task_{}", message.id.as_str()),
-                conversation_id.clone(),
-                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                Arc::new(Mutex::new(Vec::new())),
-            );
-            run_runtime_text_message_with_gateway(
+            route_runtime_controller_text(
                 config,
                 state,
-                &runtime_outbox,
-                ControllerTextMessage {
-                    message_id: message.id.as_str().to_string(),
-                    conversation_id,
-                    sender_did,
-                    target_agent_did: target_agent_did.to_string(),
-                    text: text.clone(),
-                },
-                || StdioHermesGateway::from_config(config),
+                im_core,
+                target_client,
+                target_agent_did,
+                message.id.as_str(),
+                conversation_id,
+                sender_did,
+                None,
+                text.clone(),
             )?;
             Ok(true)
         }
@@ -560,6 +586,472 @@ fn route_message(
 
 fn is_awiki_agent_command_payload(payload: &Value) -> bool {
     payload.get("schema").and_then(Value::as_str) == Some("awiki.agent.command.v1")
+}
+
+fn is_attachment_manifest_message(message: &Message, content_type: &str, payload: &Value) -> bool {
+    let manifest_content_type = im_core::attachments::attachment_manifest_content_type();
+    let content_type_matches = content_type.trim() == manifest_content_type
+        || message.metadata.content_type.as_deref().map(str::trim) == Some(manifest_content_type)
+        || message.metadata.attributes.iter().any(|attribute| {
+            attribute.key.trim() == "content_type"
+                && attribute.value.trim() == manifest_content_type
+        });
+    content_type_matches
+        && payload
+            .get("attachments")
+            .and_then(Value::as_array)
+            .is_some()
+}
+
+fn route_runtime_controller_text(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message_id: &str,
+    conversation_id: Option<String>,
+    sender_did: String,
+    verified_sender: Option<VerifiedControllerSender>,
+    text: String,
+) -> Result<()> {
+    let _verified_sender = match verified_sender {
+        Some(verified_sender) => verified_sender,
+        None => {
+            let registration =
+                UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
+            verify_runtime_controller_sender(
+                config,
+                state,
+                &registration,
+                target_agent_did,
+                &sender_did,
+            )?
+        }
+    };
+    let outbox = ImCoreAgentOutbox::new(target_client.clone());
+    let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
+    let runtime_outbox = ControllerRuntimeOutbox::new(
+        ControllerOutboxSender::ImCore(outbox.clone()),
+        status_sender.sender,
+        Some(status_sender.daemon_agent_did),
+        sender_did.clone(),
+        format!("task_{message_id}"),
+        conversation_id.clone(),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    run_runtime_text_message_with_gateway(
+        config,
+        state,
+        &runtime_outbox,
+        ControllerTextMessage {
+            message_id: message_id.to_string(),
+            conversation_id,
+            sender_did,
+            target_agent_did: target_agent_did.to_string(),
+            text,
+        },
+        || StdioHermesGateway::from_config(config),
+    )?;
+    Ok(())
+}
+
+fn verify_runtime_controller_sender<C>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    registration: &C,
+    target_agent_did: &str,
+    sender_did: &str,
+) -> Result<VerifiedControllerSender>
+where
+    C: crate::registration::AgentInventoryClient,
+{
+    let binding = state
+        .load_runtime_daemon_binding(target_agent_did)?
+        .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
+    let daemon_agent = state.load_agent_definition(&binding.daemon_agent_did)?;
+    let verified =
+        verify_daemon_controller_sender(config, state, registration, &daemon_agent, sender_did)?;
+    if binding.controller_scope_key != verified.controller_scope_key {
+        bail!("runtime controller scope does not match daemon controller scope");
+    }
+    Ok(verified)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeInboundAttachment {
+    attachment_id: String,
+    filename: String,
+    mime_type: String,
+    size: String,
+    size_bytes: Option<u64>,
+    local_path: Option<PathBuf>,
+    download_status: String,
+    error: Option<String>,
+}
+
+async fn attachment_runtime_prompt_text(
+    config: &DaemonConfig,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message: &Message,
+    sender_did: &str,
+    payload: &Value,
+) -> Result<String> {
+    let caption = attachment_caption(payload).unwrap_or_default();
+    let attachments = attachment_items_from_payload(payload)?;
+    let mut resolved = Vec::new();
+    for attachment in attachments {
+        resolved.push(
+            resolve_inbound_attachment(
+                config,
+                target_client,
+                target_agent_did,
+                message,
+                sender_did,
+                attachment,
+            )
+            .await,
+        );
+    }
+    Ok(render_attachment_runtime_prompt(&caption, &resolved))
+}
+
+fn attachment_caption(payload: &Value) -> Option<String> {
+    payload
+        .get("caption")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("text").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn attachment_items_from_payload(payload: &Value) -> Result<Vec<RuntimeInboundAttachment>> {
+    let attachments = payload
+        .get("attachments")
+        .and_then(Value::as_array)
+        .context("attachment manifest attachments must be an array")?;
+    let mut items = Vec::new();
+    for item in attachments {
+        let attachment_id = string_field(item.get("attachment_id"));
+        if attachment_id.is_empty() {
+            bail!("attachment manifest item is missing attachment_id");
+        }
+        let filename = first_non_empty_string([
+            string_field(item.get("filename")),
+            "attachment.bin".to_string(),
+        ]);
+        items.push(RuntimeInboundAttachment {
+            attachment_id,
+            filename,
+            mime_type: string_field(item.get("mime_type")),
+            size: string_field(item.get("size")),
+            size_bytes: attachment_size_bytes(item),
+            local_path: None,
+            download_status: "pending".to_string(),
+            error: None,
+        });
+    }
+    if items.is_empty() {
+        bail!("attachment manifest must contain at least one attachment");
+    }
+    Ok(items)
+}
+
+async fn resolve_inbound_attachment(
+    config: &DaemonConfig,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message: &Message,
+    sender_did: &str,
+    mut attachment: RuntimeInboundAttachment,
+) -> RuntimeInboundAttachment {
+    match download_inbound_attachment(
+        config,
+        target_client,
+        target_agent_did,
+        message,
+        sender_did,
+        &attachment,
+    )
+    .await
+    {
+        Ok(path) => {
+            attachment.local_path = Some(path);
+            attachment.download_status = "downloaded".to_string();
+        }
+        Err(error) => {
+            attachment.download_status = "failed".to_string();
+            attachment.error = Some(sanitize_error_message(&error.to_string()));
+        }
+    }
+    attachment
+}
+
+async fn download_inbound_attachment(
+    config: &DaemonConfig,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message: &Message,
+    sender_did: &str,
+    attachment: &RuntimeInboundAttachment,
+) -> Result<PathBuf> {
+    let destination = inbound_attachment_path(
+        config,
+        target_agent_did,
+        message,
+        &attachment.attachment_id,
+        &attachment.filename,
+    )?;
+    if destination.exists() {
+        set_private_file_permissions(&destination)?;
+        return Ok(destination);
+    }
+    let message_id = MessageId::parse(message.id.as_str())?;
+    let download_thread = attachment_download_thread(message, sender_did)?;
+    let downloaded = target_client
+        .attachments()
+        .download_async(DownloadAttachmentRequest {
+            thread: download_thread,
+            message_id,
+            attachment_id: Some(attachment.attachment_id.clone()),
+            destination: AttachmentDestination::LocalFile(destination.clone()),
+            overwrite: false,
+        })
+        .await?;
+    match downloaded.destination {
+        DownloadedAttachmentDestination::LocalFile(path) => {
+            set_private_file_permissions(&path)?;
+            Ok(path)
+        }
+        DownloadedAttachmentDestination::Memory(_) => bail!(
+            "attachment {} downloaded to memory instead of local file for sender {}",
+            attachment.attachment_id,
+            sender_did
+        ),
+    }
+}
+
+fn attachment_download_thread(message: &Message, sender_did: &str) -> Result<ThreadRef> {
+    match &message.thread {
+        ThreadRef::Direct(_) | ThreadRef::Group(_) => Ok(message.thread.clone()),
+        ThreadRef::Thread(thread) => {
+            let raw = thread.as_str();
+            if let Some(group) = raw.strip_prefix("group:") {
+                return Ok(ThreadRef::Group(im_core::ids::GroupRef::parse(group)?));
+            }
+            let peer = if message.sender.as_str().trim().is_empty() {
+                sender_did.trim()
+            } else {
+                message.sender.as_str().trim()
+            };
+            if peer.starts_with("did:") {
+                return Ok(ThreadRef::Direct(im_core::ids::PeerRef::parse(peer, "")?));
+            }
+            Ok(ThreadRef::Thread(ThreadId::parse(raw)?))
+        }
+    }
+}
+
+fn inbound_attachment_path(
+    config: &DaemonConfig,
+    target_agent_did: &str,
+    message: &Message,
+    attachment_id: &str,
+    filename: &str,
+) -> Result<PathBuf> {
+    let file_name = safe_file_name(filename, "attachment.bin");
+    let path = config
+        .state_root
+        .join("runtime-attachments")
+        .join(safe_path_segment(target_agent_did, "agent"))
+        .join(safe_path_segment(
+            thread_ref_segment(&message.thread).as_str(),
+            "conversation",
+        ))
+        .join(safe_path_segment(message.id.as_str(), "message"))
+        .join(safe_path_segment(attachment_id, "attachment"))
+        .join(file_name);
+    ensure_path_under_root(&path, &config.state_root)?;
+    if let Some(parent) = path.parent() {
+        create_private_dir_all(&config.state_root.join("runtime-attachments"), parent)?;
+    }
+    Ok(path)
+}
+
+fn thread_ref_segment(thread: &ThreadRef) -> String {
+    match thread {
+        ThreadRef::Direct(peer) => peer.as_str().to_string(),
+        ThreadRef::Group(group) => group.as_str().to_string(),
+        ThreadRef::Thread(thread) => thread.as_str().to_string(),
+    }
+}
+
+fn render_attachment_runtime_prompt(
+    caption: &str,
+    attachments: &[RuntimeInboundAttachment],
+) -> String {
+    let mut text = String::new();
+    text.push_str("控制者消息:\n");
+    if caption.trim().is_empty() {
+        text.push_str("（控制者只发送了附件，没有输入文本消息。）\n");
+    } else {
+        text.push_str(caption.trim());
+        text.push('\n');
+    }
+    text.push('\n');
+    text.push_str("附件资源:\n");
+    for (index, attachment) in attachments.iter().enumerate() {
+        text.push_str(&format!(
+            "{}. attachment_id: {}\n",
+            index + 1,
+            attachment.attachment_id
+        ));
+        text.push_str(&format!("   filename: {}\n", attachment.filename));
+        text.push_str(&format!("   mime_type: {}\n", attachment.mime_type));
+        if let Some(size_bytes) = attachment.size_bytes {
+            text.push_str(&format!("   size_bytes: {size_bytes}\n"));
+        } else if !attachment.size.trim().is_empty() {
+            text.push_str(&format!("   size: {}\n", attachment.size));
+        }
+        text.push_str(&format!(
+            "   download_status: {}\n",
+            attachment.download_status
+        ));
+        if let Some(path) = attachment.local_path.as_ref() {
+            text.push_str(&format!("   local_path: {}\n", path.display()));
+        }
+        if let Some(error) = attachment.error.as_ref() {
+            text.push_str(&format!("   error: {error}\n"));
+        }
+    }
+    text.push('\n');
+    text.push_str(
+        "附件处理规则：这些文件是控制者提供的资源。只有当控制者消息或会话上下文表明需要使用文件时，才读取或检查这些文件。\n",
+    );
+    text
+}
+
+fn string_field(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn first_non_empty_string(values: impl IntoIterator<Item = String>) -> String {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+}
+
+fn attachment_size_bytes(value: &Value) -> Option<u64> {
+    value
+        .get("size_bytes")
+        .and_then(Value::as_u64)
+        .or_else(|| value.get("size").and_then(Value::as_str)?.parse().ok())
+}
+
+fn create_private_dir_all(root: &Path, target: &Path) -> Result<()> {
+    if !target.starts_with(root) {
+        bail!("private directory target must stay under root");
+    }
+    std::fs::create_dir_all(target)
+        .with_context(|| format!("create inbound attachment directory {}", target.display()))?;
+
+    let mut current = root.to_path_buf();
+    set_private_dir_permissions(&current)?;
+    let relative = target
+        .strip_prefix(root)
+        .with_context(|| format!("strip private directory root {}", root.display()))?;
+    for component in relative.components() {
+        if let std::path::Component::Normal(segment) = component {
+            current.push(segment);
+            set_private_dir_permissions(&current)?;
+        }
+    }
+    Ok(())
+}
+
+fn safe_path_segment(value: &str, fallback: &str) -> String {
+    let segment = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['-', '.'])
+        .to_string();
+    if segment.is_empty() {
+        fallback.to_string()
+    } else {
+        segment
+    }
+}
+
+fn safe_file_name(value: &str, fallback: &str) -> String {
+    let name = Path::new(value)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(value);
+    let segment = safe_path_segment(name, fallback);
+    if segment == "." || segment == ".." {
+        fallback.to_string()
+    } else {
+        segment
+    }
+}
+
+fn ensure_path_under_root(path: &Path, root: &Path) -> Result<()> {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("attachment path must not contain parent/root components");
+    }
+    if !path.starts_with(root) {
+        bail!("attachment path must stay under daemon state root");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_dir_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!(
+            "set private attachment directory permissions {}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("set private attachment file permissions {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn record_ignored_non_command_payload(
@@ -789,6 +1281,7 @@ fn run_runtime_task_command(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    registration: &UserServiceAgentRegistrationClient,
     message: IncomingAgentPayloadMessage,
 ) -> Result<()> {
     let payload = RuntimeTaskSubmitPayload::parse(&message.payload)?;
@@ -797,6 +1290,13 @@ fn run_runtime_task_command(
         .as_deref()
         .unwrap_or(&message.target_agent_did)
         .to_string();
+    let verified_sender = verify_runtime_controller_sender(
+        config,
+        state,
+        registration,
+        &target_agent_did,
+        &message.sender_did,
+    )?;
     let profile = state.load_runtime_agent_profile(&target_agent_did)?;
     let message_id = payload.message_id(&message.message_id);
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, &target_agent_did)?;
@@ -813,7 +1313,7 @@ fn run_runtime_task_command(
     let task_message = ControllerTextMessage {
         message_id,
         conversation_id: message.conversation_id,
-        sender_did: message.sender_did,
+        sender_did: verified_sender.sender_did,
         target_agent_did,
         text: payload.text,
     };
@@ -1745,8 +2245,9 @@ mod tests {
     use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
     use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
     use crate::registration::{
-        AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-        RegistrationToken,
+        AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
+        AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
+        DidAuthMaterial, RegistrationToken,
     };
     use crate::runtime::RuntimeAgentProfile;
     use crate::state::HermesProfileRecord;
@@ -1771,10 +2272,71 @@ mod tests {
                 did,
                 user_id: Some(format!("user_{}", request.handle)),
                 agent_kind: request.agent_kind,
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
             })
+        }
+    }
+
+    impl AgentInventoryClient for MockRegistrationClient {
+        fn verify_token(
+            &self,
+            _token: &RegistrationToken,
+        ) -> Result<crate::registration::RegistrationTokenMetadata> {
+            anyhow::bail!("verify_token is not used in foreground command tests")
+        }
+
+        fn sync_controller_scope(
+            &self,
+            daemon_agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({
+                "agent_did": daemon_agent_did,
+                "controller_user_id": "user-alice",
+                "controller_full_handle": "alice.anpclaw.com",
+                "controller_did": "did:human:alice",
+                "updated_count": 1,
+            }))
+        }
+
+        fn verify_controller_sender(
+            &self,
+            _daemon_agent_did: &str,
+            sender_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<ControllerSenderScope> {
+            if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+                Ok(ControllerSenderScope {
+                    controller_user_id: "user-alice".to_string(),
+                    controller_full_handle: "alice.anpclaw.com".to_string(),
+                    controller_did: sender_did.to_string(),
+                    sender_did: sender_did.to_string(),
+                })
+            } else {
+                anyhow::bail!("controller_scope_mismatch")
+            }
+        }
+
+        fn update_latest_status(
+            &self,
+            _daemon_agent_did: &str,
+            _statuses: Vec<AgentLatestStatusUpdateItem>,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            anyhow::bail!("update_latest_status is not used in foreground command tests")
+        }
+
+        fn archive_agent(
+            &self,
+            _daemon_agent_did: &str,
+            _agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({ "archived": [] }))
         }
     }
 
@@ -1914,7 +2476,8 @@ mod tests {
                         "runtime": "hermes",
                         "workspace": root.join("workspace").display().to_string(),
                         "controller_did": "did:human:alice",
-                        "registration_token": "tok_runtime_secret_value"
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Alice Hermes"
                     }
                 }),
             },
@@ -2250,6 +2813,9 @@ mod tests {
     fn profile(root: &Path) -> RuntimeAgentProfile {
         RuntimeAgentProfile {
             agent_did: "did:agent:hermes".to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_profile_id: "profile_hermes_alice".to_string(),
             runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
@@ -2316,7 +2882,7 @@ mod tests {
     }
 
     #[test]
-    fn hermes_foreground_non_controller_text_is_rejected_before_gateway() {
+    fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
         let (root, config, state) = fixture();
         let profile = profile(root.path());
         state.upsert_runtime_agent_profile(&profile).unwrap();
@@ -2326,25 +2892,54 @@ mod tests {
         let outbox = MemoryRuntimeOutbox::default();
         let gateway = FakeHermesGateway::default();
 
-        let error = run_runtime_text_message_with_gateway(
+        let result = run_runtime_text_message_with_gateway(
             &config,
             &state,
             &outbox,
             ControllerTextMessage {
-                message_id: "msg_foreground_unauthorized".to_string(),
-                conversation_id: Some("direct:did:human:bob".to_string()),
-                sender_did: "did:human:bob".to_string(),
+                message_id: "msg_foreground_rotated_controller".to_string(),
+                conversation_id: Some("direct:did:human:alice-new".to_string()),
+                sender_did: "did:human:alice-new".to_string(),
                 target_agent_did: "did:agent:hermes".to_string(),
-                text: "unauthorized foreground route".to_string(),
+                text: "rotated controller foreground route".to_string(),
             },
             || gateway.clone(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("controller_did"));
-        assert!(gateway.created_sessions().is_empty());
-        assert!(gateway.submitted_prompts().is_empty());
-        assert!(outbox.records().is_empty());
+        assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
+        assert_eq!(gateway.submitted_prompts().len(), 1);
+        assert_eq!(
+            outbox.records()[0].recipient.as_deref(),
+            Some("did:human:alice-new")
+        );
+    }
+
+    #[test]
+    fn foreground_controller_scope_verification_rejects_unowned_sender_before_gateway() {
+        let (root, config, state) = fixture();
+        let created = create_hermes_runtime(root.path(), &config, &state);
+        let registration = MockRegistrationClient;
+
+        let verified = verify_runtime_controller_sender(
+            &config,
+            &state,
+            &registration,
+            &created.agent_did,
+            "did:human:alice-new",
+        )
+        .unwrap();
+        assert_eq!(verified.controller_did, "did:human:alice-new");
+
+        let error = verify_runtime_controller_sender(
+            &config,
+            &state,
+            &registration,
+            &created.agent_did,
+            "did:human:bob",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("controller_scope_mismatch"));
     }
 
     #[test]
@@ -2829,5 +3424,188 @@ WHERE token_id = ?1
         assert!(!detail_json.contains("secret caption"));
         assert!(!detail_json.contains("secret-plan.md"));
         assert!(!detail_json.contains("att_secret_manifest"));
+    }
+
+    #[test]
+    fn attachment_runtime_prompt_lists_paths_without_requesting_auto_read() {
+        let prompt = render_attachment_runtime_prompt(
+            "读取我发给你的文件，看看说的什么内容。",
+            &[RuntimeInboundAttachment {
+                attachment_id: "att_1".to_string(),
+                filename: "notes.md".to_string(),
+                mime_type: "text/markdown".to_string(),
+                size: "42".to_string(),
+                size_bytes: Some(42),
+                local_path: Some(PathBuf::from(
+                    "/tmp/awiki-state/runtime-attachments/agent/msg/att/notes.md",
+                )),
+                download_status: "downloaded".to_string(),
+                error: None,
+            }],
+        );
+
+        assert!(prompt.contains("控制者消息:"));
+        assert!(prompt.contains("读取我发给你的文件"));
+        assert!(prompt.contains("attachment_id: att_1"));
+        assert!(prompt.contains("filename: notes.md"));
+        assert!(prompt.contains("mime_type: text/markdown"));
+        assert!(prompt
+            .contains("local_path: /tmp/awiki-state/runtime-attachments/agent/msg/att/notes.md"));
+        assert!(prompt.contains("只有当控制者消息或会话上下文表明需要使用文件时"));
+        assert!(!prompt.contains("content:"));
+        assert!(!prompt.contains("```"));
+    }
+
+    #[test]
+    fn pure_attachment_runtime_prompt_has_empty_controller_message() {
+        let prompt = render_attachment_runtime_prompt(
+            "",
+            &[RuntimeInboundAttachment {
+                attachment_id: "att_only".to_string(),
+                filename: "image.png".to_string(),
+                mime_type: "image/png".to_string(),
+                size: "1024".to_string(),
+                size_bytes: Some(1024),
+                local_path: Some(PathBuf::from("/tmp/awiki-state/image.png")),
+                download_status: "downloaded".to_string(),
+                error: None,
+            }],
+        );
+
+        assert!(prompt.contains("控制者消息:\n（控制者只发送了附件，没有输入文本消息。）"));
+        assert!(prompt.contains("filename: image.png"));
+        assert!(prompt.contains("mime_type: image/png"));
+        assert!(prompt.contains("附件处理规则："));
+        assert!(!prompt.contains("Controller message:"));
+        assert!(!prompt.contains("<empty>"));
+    }
+
+    #[test]
+    fn scoped_thread_attachment_download_uses_sender_direct_thread() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
+            thread: ThreadRef::Thread(
+                im_core::ids::ThreadId::parse("dm:peer-scope:v1:user-alice:alice.anpclaw.com")
+                    .unwrap(),
+            ),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Payload {
+                payload: serde_json::json!({}),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        let thread = attachment_download_thread(&message, "did:human:alice").unwrap();
+
+        assert_eq!(
+            thread,
+            ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap())
+        );
+    }
+
+    #[test]
+    fn group_thread_attachment_download_uses_group_thread() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_group_attachment").unwrap(),
+            thread: ThreadRef::Thread(
+                im_core::ids::ThreadId::parse("group:did:example:group").unwrap(),
+            ),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: None,
+            group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: MessageBodyView::Payload {
+                payload: serde_json::json!({}),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        let thread = attachment_download_thread(&message, "did:human:alice").unwrap();
+
+        assert_eq!(
+            thread,
+            ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap())
+        );
+    }
+
+    #[test]
+    fn metadata_attribute_content_type_marks_attachment_manifest() {
+        let payload = json!({
+            "attachments": [{
+                "attachment_id": "att_1",
+                "filename": "notes.md"
+            }]
+        });
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_attachment_manifest").unwrap(),
+            thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata {
+                content_type: Some("application/json".to_string()),
+                attributes: vec![im_core::messages::MessageMetadataAttribute {
+                    key: "content_type".to_string(),
+                    value: im_core::attachments::attachment_manifest_content_type().to_string(),
+                }],
+                ..im_core::messages::MessageMetadata::default()
+            },
+        };
+
+        assert!(is_attachment_manifest_message(
+            &message,
+            "application/json",
+            &payload
+        ));
+    }
+
+    #[test]
+    fn inbound_attachment_path_sanitizes_segments_under_state_root() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg/unsafe").unwrap(),
+            thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Payload {
+                payload: serde_json::json!({}),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        let path = inbound_attachment_path(
+            &config,
+            "did:agent:hermes",
+            &message,
+            "../att-secret",
+            "../../secret.md",
+        )
+        .unwrap();
+
+        assert!(path.starts_with(root.path()));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("secret.md")
+        );
+        assert!(!path.to_string_lossy().contains(".."));
+        assert!(path.parent().unwrap().is_dir());
     }
 }

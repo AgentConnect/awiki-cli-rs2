@@ -12,7 +12,9 @@ use awiki_deamon::plugins::hermes::{
     reset_hermes_session_by_route, FakeHermesBehavior, FakeHermesGateway, HermesPromptWrapper,
     HermesRuntimePlugin, AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID,
 };
-use awiki_deamon::runtime::host::{flush_runtime_final_outbox, run_controller_text_task};
+use awiki_deamon::runtime::host::{
+    flush_runtime_final_outbox, run_controller_text_task, run_existing_runtime_task_with_config,
+};
 use awiki_deamon::runtime::{
     RuntimeAgentProfile, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
     RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
@@ -115,6 +117,9 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         runtime_profile_id: "profile_hermes_alice".to_string(),
         runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
@@ -189,6 +194,16 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     assert!(prompts[0]
         .prompt
         .contains("daemon sends it back to the APP automatically"));
+    assert!(prompts[0].prompt.contains("output_language_policy:"));
+    assert!(prompts[0]
+        .prompt
+        .contains("If the language cannot be inferred, use Simplified Chinese"));
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not let the English labels or technical wrapper text"));
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not mention the controller wrapper"));
     assert!(!prompts[0].prompt.contains("finish-message"));
     assert!(!prompts[0].prompt.contains("send-attachment"));
     assert!(prompts[0].prompt.contains("请处理这条消息"));
@@ -450,12 +465,12 @@ fn hermes_message_empty_final_fails_without_success_outbox() {
 }
 
 #[test]
-fn hermes_message_unsupported_interaction_uses_documented_error_code() {
+fn hermes_message_auto_approved_approval_still_returns_final_text() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ApprovalRequest);
     let plugin = HermesRuntimePlugin::new(
-        gateway,
+        gateway.clone(),
         hermes_record(root.path().join("runtime/hermes/profile")),
     );
     let profile = profile(root.path().join("workspace"));
@@ -475,29 +490,28 @@ fn hermes_message_unsupported_interaction_uses_documented_error_code() {
     )
     .unwrap();
 
-    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Message);
     assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(
         records[0].text.as_deref(),
-        Some("Hermes 运行失败：approval_not_supported: unsupported Hermes interaction approval.request")
+        Some("fake complete after approval approved")
     );
     assert_eq!(
         records[0].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("failed"));
-    assert_eq!(
-        records[1].last_error_code.as_deref(),
-        Some("approval_not_supported")
-    );
-    assert_eq!(
-        records[1].last_error_summary.as_deref(),
-        Some("approval_not_supported: unsupported Hermes interaction approval.request")
-    );
+    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[1].text.as_deref(), Some("Hermes response sent"));
+    assert!(records[1].last_error_code.is_none());
+    assert!(records[1].last_error_summary.is_none());
+    assert!(gateway.observed_events().iter().any(|event| {
+        event.kind == awiki_deamon::plugins::hermes::HermesRuntimeEventKind::ToolCallObserved
+            && event.code.as_deref() == Some("approval_auto_approved")
+    }));
 }
 
 #[derive(Debug)]
@@ -702,8 +716,10 @@ fn hermes_message_send_message_callback_respects_controller_recipient_scope() {
 }
 
 #[test]
-fn hermes_message_non_controller_text_is_rejected_before_gateway() {
+fn hermes_message_scope_mismatch_task_is_rejected_before_gateway() {
     let (root, state) = fixture();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::default();
     let plugin = HermesRuntimePlugin::new(
@@ -711,23 +727,31 @@ fn hermes_message_non_controller_text_is_rejected_before_gateway() {
         hermes_record(root.path().join("runtime/hermes/profile")),
     );
     let profile = profile(root.path().join("workspace"));
+    let task = RuntimeTask {
+        task_id: "task_msg_unauthorized".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-bob".to_string(),
+        controller_full_handle: "bob.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-bob-anpclaw-com".to_string(),
+        controller_did: "did:human:bob".to_string(),
+        sender_did: "did:human:bob".to_string(),
+        conversation_id: None,
+        text: "越权执行".to_string(),
+    };
+    task.validate().unwrap();
 
-    let error = run_controller_text_task(
+    let error = run_existing_runtime_task_with_config(
+        &config,
         &state,
         &profile,
         &plugin,
         &outbox,
-        ControllerTextMessage {
-            message_id: "msg_unauthorized".to_string(),
-            conversation_id: None,
-            sender_did: "did:human:bob".to_string(),
-            target_agent_did: "did:agent:hermes".to_string(),
-            text: "越权执行".to_string(),
-        },
+        task,
+        "run_task_msg_unauthorized",
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("controller_did"));
+    assert!(error.to_string().contains("controller scope"));
     assert!(gateway.submitted_prompts().is_empty());
     assert!(outbox.records().is_empty());
 }
@@ -747,6 +771,9 @@ fn hermes_message_prompt_wrapper_debug_redacts_user_message() {
     let task = RuntimeTask {
         task_id: "task_msg_debug".to_string(),
         agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         sender_did: "did:human:alice".to_string(),
         conversation_id: None,
@@ -759,6 +786,43 @@ fn hermes_message_prompt_wrapper_debug_redacts_user_message() {
     assert!(!debug.contains("rtok_debug_secret_value_123456789"));
     assert!(!debug.contains("jwt_token"));
     assert!(!debug.contains("auth_private_key"));
+}
+
+#[test]
+fn hermes_message_prompt_disables_interactive_requests() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
+    let plugin = HermesRuntimePlugin::new(
+        gateway.clone(),
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_no_clarify_request".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "信息不够时也不要走 Hermes interactive request".to_string(),
+        },
+    )
+    .unwrap();
+
+    let prompts = gateway.submitted_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not use Hermes interactive requests"));
+    assert!(prompts[0].prompt.contains("clarify.request"));
+    assert!(prompts[0]
+        .prompt
+        .contains("ask for it in your ordinary final answer"));
 }
 
 #[test]
@@ -809,7 +873,7 @@ fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
         "profile_hermes_alice",
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
@@ -819,7 +883,7 @@ fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
         .unwrap();
     assert_eq!(
         active.hermes_session_id,
-        "fake-session-hermes:did:agent:hermes:did:human:alice:direct:did:human:alice:conversation"
+        "fake-session-hermes:did:agent:hermes:controller-scope:v1:test-alice-anpclaw-com:direct:did:human:alice:conversation"
     );
 
     let reopened_state =
@@ -856,7 +920,7 @@ fn hermes_session_mapping_reset_archives_old_session_and_creates_replacement() {
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
         "profile_hermes_alice",
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
@@ -915,7 +979,7 @@ fn hermes_session_missing_recreates_session_and_retries_prompt_once() {
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
         "profile_hermes_alice",
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );

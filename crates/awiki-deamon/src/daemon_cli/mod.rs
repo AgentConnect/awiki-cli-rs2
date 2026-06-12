@@ -17,7 +17,8 @@ use crate::service::{
     current_platform_label, manage_service, require_service_state_root_is_product, ServiceAction,
     ServicePlatform, ServiceStatus,
 };
-use crate::state::DaemonState;
+use crate::state::{controller_scope_key, DaemonState};
+use crate::upgrade::check_release_status;
 use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,7 +269,7 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
             }),
         }
     } else {
-        let executable = crate::service::default_executable_path()?;
+        let executable = crate::service::product_current_executable_path()?;
         manage_service(&config, &executable, ServiceAction::Install)?
     };
 
@@ -375,6 +376,7 @@ where
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| existing.handle.clone()),
+        name: None,
         did_document: identity.did_document.clone(),
         endpoint_url: identity.endpoint_url.clone(),
         key_algorithm: identity.key_algorithm.clone(),
@@ -391,7 +393,14 @@ where
         bail!("registration token exchange returned an empty controller_did");
     }
     let (local_agent_db_path, message_db_path) = agent_data_paths(&existing.agent_did)?;
+    let exchange_scope_key = controller_scope_key(
+        &exchange.controller_user_id,
+        &exchange.controller_full_handle,
+    )?;
     existing.handle = exchange.handle;
+    existing.controller_user_id = exchange.controller_user_id;
+    existing.controller_full_handle = exchange.controller_full_handle;
+    existing.controller_scope_key = exchange_scope_key;
     existing.controller_did = exchange.controller_did;
     existing.local_agent_db_path = local_agent_db_path;
     existing.message_db_path = message_db_path;
@@ -453,6 +462,7 @@ mod tests {
     use crate::agent::{agent_data_paths, generate_agent_identity, AgentKind};
     use crate::registration::{
         AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
+        ControllerSenderScope,
     };
     use std::sync::{Arc, Mutex};
 
@@ -470,6 +480,8 @@ mod tests {
                     token_id: "agtok_daemon".to_string(),
                     agent_kind: AgentKind::Daemon,
                     handle: Some("alice-mac-daemon".to_string()),
+                    controller_user_id: Some("user-alice".to_string()),
+                    controller_full_handle: Some("alice.anpclaw.com".to_string()),
                     controller_did: "did:human:alice".to_string(),
                     status: "active".to_string(),
                     scope: json!({}),
@@ -511,6 +523,8 @@ mod tests {
                 did,
                 user_id: Some("agent-user-1".to_string()),
                 agent_kind: request.agent_kind,
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
@@ -523,6 +537,38 @@ mod tests {
             match &*self.verify_result.lock().unwrap() {
                 Ok(metadata) => Ok(metadata.clone()),
                 Err(reason) => anyhow::bail!("agent registration token verify failed: {reason}"),
+            }
+        }
+
+        fn sync_controller_scope(
+            &self,
+            daemon_agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({
+                "agent_did": daemon_agent_did,
+                "controller_user_id": "user-alice",
+                "controller_full_handle": "alice.anpclaw.com",
+                "controller_did": "did:human:alice",
+                "updated_count": 1,
+            }))
+        }
+
+        fn verify_controller_sender(
+            &self,
+            _daemon_agent_did: &str,
+            sender_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<ControllerSenderScope> {
+            if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+                Ok(ControllerSenderScope {
+                    controller_user_id: "user-alice".to_string(),
+                    controller_full_handle: "alice.anpclaw.com".to_string(),
+                    controller_did: sender_did.to_string(),
+                    sender_did: sender_did.to_string(),
+                })
+            } else {
+                anyhow::bail!("controller_scope_mismatch")
             }
         }
 
@@ -540,6 +586,15 @@ mod tests {
                     "status": "ready",
                 }]
             }))
+        }
+
+        fn archive_agent(
+            &self,
+            _daemon_agent_did: &str,
+            _agent_did: &str,
+            _auth: &DidAuthMaterial,
+        ) -> Result<Value> {
+            Ok(json!({ "archived": [] }))
         }
     }
 
@@ -563,6 +618,9 @@ mod tests {
             agent_did,
             handle: "alice-mac-daemon".to_string(),
             agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_plugin_id: None,
             runtime_profile_id: None,
@@ -619,12 +677,13 @@ mod tests {
             Some(existing.agent_did.as_str())
         );
         assert_eq!(agent.agent_did, existing.agent_did);
+        let recovered = state.load_agent_definition(&existing.agent_did).unwrap();
+        assert_eq!(recovered.controller_user_id, "user-alice");
+        assert_eq!(recovered.controller_full_handle, "alice.anpclaw.com");
+        assert_eq!(recovered.controller_did, "did:human:alice");
         assert_eq!(
-            state
-                .load_agent_definition(&existing.agent_did)
-                .unwrap()
-                .controller_did,
-            "did:human:alice"
+            recovered.controller_scope_key,
+            crate::state::controller_scope_key("user-alice", "alice.anpclaw.com").unwrap()
         );
     }
 
@@ -707,15 +766,22 @@ fn update_daemon_latest_status(
         private_key_path: auth_paths.1,
         bearer_token: state.load_agent_auth_token(&agent.agent_did)?,
     };
+    let release = check_release_status(config);
     let response = client.update_latest_status(
         &agent.agent_did,
         vec![AgentLatestStatusUpdateItem {
             agent_did: agent.agent_did.clone(),
             agent_kind: AgentKind::Daemon,
-            status: "ready".to_string(),
+            status: if release.needs_upgrade {
+                "needs_upgrade"
+            } else {
+                "ready"
+            }
+            .to_string(),
             last_seen_at: None,
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            min_supported_version: Some("0.1.0".to_string()),
+            version: Some(release.current_version.clone()),
+            latest_version: release.latest_version.clone(),
+            min_supported_version: None,
             platform: Some(current_platform_label()),
             service: Some(
                 match service.platform {
@@ -726,7 +792,7 @@ fn update_daemon_latest_status(
                 }
                 .to_string(),
             ),
-            needs_upgrade: false,
+            needs_upgrade: release.needs_upgrade,
             needs_config: false,
             last_error_code: None,
             last_error_summary: None,
@@ -735,6 +801,9 @@ fn update_daemon_latest_status(
                 "runner_status": if service.running { "running" } else { "not_running" },
                 "config_summary": {
                     "service_installed": service.installed,
+                    "release_manifest_url": release.manifest_url,
+                    "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+                    "release_error": release.error,
                 },
             }),
         }],

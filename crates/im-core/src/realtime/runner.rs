@@ -6,6 +6,8 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 
+#[cfg(feature = "sqlite")]
+use crate::internal::transport::AsyncRpcTransport;
 #[cfg(feature = "blocking")]
 use crate::internal::transport::RpcTransport;
 
@@ -637,6 +639,7 @@ fn project_realtime_message_received(
     client: &crate::core::ImClient,
     event: &super::MessageReceivedEvent,
 ) -> crate::ImResult<()> {
+    let peer_scope = realtime_direct_peer_scope(client, &event.message);
     let Some(projection) =
         crate::internal::realtime::local_projection::plan_realtime_message_local_projection(
             &crate::internal::realtime::local_projection::RealtimeMessageLocalProjectionContext {
@@ -648,6 +651,7 @@ fn project_realtime_message_received(
                     .as_deref()
                     .unwrap_or_else(|| client.current_identity().id.as_str())
                     .to_string(),
+                peer_scope,
             },
             &event.message,
             event.attachment_summary.as_ref(),
@@ -687,6 +691,7 @@ async fn project_realtime_message_received_async(
     client: &crate::core::ImClient,
     event: &super::MessageReceivedEvent,
 ) -> crate::ImResult<()> {
+    let peer_scope = realtime_direct_peer_scope_async(client, &event.message).await;
     let Some(projection) =
         crate::internal::realtime::local_projection::plan_realtime_message_local_projection(
             &crate::internal::realtime::local_projection::RealtimeMessageLocalProjectionContext {
@@ -698,6 +703,7 @@ async fn project_realtime_message_received_async(
                     .as_deref()
                     .unwrap_or_else(|| client.current_identity().id.as_str())
                     .to_string(),
+                peer_scope,
             },
             &event.message,
             event.attachment_summary.as_ref(),
@@ -775,6 +781,73 @@ fn realtime_message_group_record(
             .to_string(),
         ..crate::internal::local_state::groups::GroupRecord::default()
     })
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn realtime_direct_peer_scope(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let peer_did = realtime_direct_peer_did(client, message)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
+        peer_did.as_str(),
+    )
+    .ok()?;
+    let raw = RpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params).ok()?;
+    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str().to_owned(),
+    )
+    .ok()
+}
+
+#[cfg(feature = "sqlite")]
+async fn realtime_direct_peer_scope_async(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let peer_did = realtime_direct_peer_did(client, message)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
+        peer_did.as_str(),
+    )
+    .ok()?;
+    let raw = AsyncRpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params)
+        .await
+        .ok()?;
+    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str().to_owned(),
+    )
+    .ok()
+}
+
+#[cfg(feature = "sqlite")]
+fn realtime_direct_peer_did(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> Option<String> {
+    if message.group.is_some() || matches!(message.thread, crate::messages::ThreadRef::Group(_)) {
+        return None;
+    }
+    let owner = client.did().as_str().trim();
+    let sender = message.sender.as_str().trim();
+    let receiver = message
+        .receiver
+        .as_ref()
+        .map(|peer| peer.as_str().trim())
+        .unwrap_or_default();
+    let peer = if !sender.is_empty() && sender != owner {
+        sender
+    } else if !receiver.is_empty() && receiver != owner {
+        receiver
+    } else {
+        ""
+    };
+    (!peer.is_empty() && peer.starts_with("did:")).then(|| peer.to_owned())
 }
 
 #[cfg(all(feature = "blocking", feature = "sqlite"))]

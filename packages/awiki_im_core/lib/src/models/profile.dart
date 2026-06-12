@@ -2,6 +2,7 @@ class UserProfile {
   const UserProfile({
     required this.subject,
     this.handle,
+    this.fullHandle,
     this.displayName,
     this.bio,
     this.description,
@@ -18,6 +19,7 @@ class UserProfile {
 
   final String subject;
   final String? handle;
+  final String? fullHandle;
   final String? displayName;
   final String? bio;
   final String? description;

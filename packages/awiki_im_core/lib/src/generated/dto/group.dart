@@ -225,6 +225,7 @@ class DartGroupSummary {
   final String? name;
   final String? displayName;
   final String? avatarUri;
+  final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
   final String? lastMessageAt;
@@ -235,6 +236,7 @@ class DartGroupSummary {
     this.name,
     this.displayName,
     this.avatarUri,
+    this.myRole,
     this.membershipStatus,
     this.memberCount,
     this.lastMessageAt,
@@ -247,6 +249,7 @@ class DartGroupSummary {
       name.hashCode ^
       displayName.hashCode ^
       avatarUri.hashCode ^
+      myRole.hashCode ^
       membershipStatus.hashCode ^
       memberCount.hashCode ^
       lastMessageAt.hashCode;
@@ -261,6 +264,7 @@ class DartGroupSummary {
           name == other.name &&
           displayName == other.displayName &&
           avatarUri == other.avatarUri &&
+          myRole == other.myRole &&
           membershipStatus == other.membershipStatus &&
           memberCount == other.memberCount &&
           lastMessageAt == other.lastMessageAt;

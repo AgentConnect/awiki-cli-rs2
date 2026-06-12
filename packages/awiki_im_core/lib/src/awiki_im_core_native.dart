@@ -365,7 +365,9 @@ class DirectoryApi {
     return resolution._toModel();
   }
 
-  Future<List<DisplayProfile>> hydrateDisplayProfiles(List<String> peers) async {
+  Future<List<DisplayProfile>> hydrateDisplayProfiles(
+    List<String> peers,
+  ) async {
     _client._ensureNotDisposed();
     final profiles = await _mapNativeErrors(
       () => gen_directory.hydrateDisplayProfiles(
@@ -750,6 +752,38 @@ class GroupApi {
         client: _client._inner,
         groupDid: groupDid,
         limit: limit,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<GroupReadResult> addMember(
+    String groupDid, {
+    required String memberRef,
+    String role = 'member',
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_groups.addGroupMember(
+        client: _client._inner,
+        groupDid: groupDid,
+        memberRef: memberRef,
+        role: role,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<GroupReadResult> removeMember(
+    String groupDid, {
+    required String memberRef,
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_groups.removeGroupMember(
+        client: _client._inner,
+        groupDid: groupDid,
+        memberRef: memberRef,
       ),
     );
     return result._toModel();
@@ -1314,6 +1348,7 @@ extension on gen_profile_dto.DartUserProfile {
   UserProfile _toModel() => UserProfile(
     subject: subject,
     handle: handle,
+    fullHandle: fullHandle,
     displayName: displayName,
     bio: bio,
     description: description,
@@ -1788,6 +1823,7 @@ extension on gen_group_dto.DartGroupSummary {
     name: name,
     displayName: displayName,
     avatarUri: avatarUri,
+    myRole: myRole,
     membershipStatus: membershipStatus,
     memberCount: memberCount,
     lastMessageAt: lastMessageAt,

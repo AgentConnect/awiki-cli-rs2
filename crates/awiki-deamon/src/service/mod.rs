@@ -21,6 +21,7 @@ pub enum ServiceAction {
     Start,
     Stop,
     Restart,
+    Uninstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +80,15 @@ fn platform_label_for(os: &str, arch: &str) -> String {
 
 pub fn default_executable_path() -> Result<PathBuf> {
     std::env::current_exe().context("resolve awiki-deamon executable path")
+}
+
+pub fn product_current_executable_path() -> Result<PathBuf> {
+    Ok(DaemonConfig::default_product_state_root()?
+        .parent()
+        .context("resolve daemon product root")?
+        .join("bin")
+        .join("current")
+        .join("awiki-deamon"))
 }
 
 fn platform_manager() -> ServicePlatform {
@@ -254,6 +264,18 @@ pub(crate) mod macos {
                         .arg(&path),
                 )?;
             }
+            ServiceAction::Uninstall => {
+                let _ = run_status(
+                    std::process::Command::new("launchctl")
+                        .arg("bootout")
+                        .arg(&domain)
+                        .arg(&path),
+                )?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove LaunchAgent {}", path.display()))?;
+                }
+            }
             ServiceAction::Status => {}
         }
         let running = run_status(
@@ -346,6 +368,19 @@ WantedBy=default.target
             ServiceAction::Restart => {
                 let _ = run_status(
                     std::process::Command::new("systemctl").args(["--user", "restart", UNIT_NAME]),
+                )?;
+            }
+            ServiceAction::Uninstall => {
+                let _ = run_status(
+                    std::process::Command::new("systemctl")
+                        .args(["--user", "disable", "--now", UNIT_NAME]),
+                )?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove systemd unit {}", path.display()))?;
+                }
+                let _ = run_status(
+                    std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
                 )?;
             }
             ServiceAction::Status => {}

@@ -99,12 +99,18 @@ where
         let route = HermesSessionRoute::new(
             self.profile.agent_did.clone(),
             self.profile.runtime_profile_id.clone(),
-            context.task.controller_did.clone(),
+            context.task.controller_scope_key.clone(),
             context.task.conversation_id.clone(),
             "conversation",
         );
         let session = if let Some(state) = self.state.as_ref() {
-            load_or_create_persisted_session(state, &runner, &self.profile, &route)?
+            load_or_create_persisted_session(
+                state,
+                &runner,
+                &self.profile,
+                &route,
+                &context.task.controller_did,
+            )?
         } else {
             runner
                 .create_session(HermesSessionCreateRequest {
@@ -128,9 +134,14 @@ where
                     .state
                     .as_ref()
                     .expect("state checked above for Hermes session recovery");
-                let session =
-                    reset_and_create_persisted_session(state, &runner, &self.profile, &route)
-                        .context("recover missing Hermes session")?;
+                let session = reset_and_create_persisted_session(
+                    state,
+                    &runner,
+                    &self.profile,
+                    &route,
+                    &context.task.controller_did,
+                )
+                .context("recover missing Hermes session")?;
                 runner
                     .submit_prompt(&session, request)
                     .context("submit Hermes prompt after session recovery")?
@@ -165,6 +176,7 @@ fn load_or_create_persisted_session<G>(
     runner: &HermesRunner<G>,
     profile: &HermesProfileRecord,
     route: &HermesSessionRoute,
+    controller_did: &str,
 ) -> Result<super::gateway::HermesSessionRef>
 where
     G: HermesGateway,
@@ -176,7 +188,7 @@ where
             route_key: record.route_key,
         });
     }
-    create_and_store_persisted_session(state, runner, profile, route)
+    create_and_store_persisted_session(state, runner, profile, route, controller_did)
 }
 
 fn reset_and_create_persisted_session<G>(
@@ -184,12 +196,13 @@ fn reset_and_create_persisted_session<G>(
     runner: &HermesRunner<G>,
     profile: &HermesProfileRecord,
     route: &HermesSessionRoute,
+    controller_did: &str,
 ) -> Result<super::gateway::HermesSessionRef>
 where
     G: HermesGateway,
 {
     state.reset_active_hermes_session_by_route(route)?;
-    create_and_store_persisted_session(state, runner, profile, route)
+    create_and_store_persisted_session(state, runner, profile, route, controller_did)
 }
 
 fn create_and_store_persisted_session<G>(
@@ -197,6 +210,7 @@ fn create_and_store_persisted_session<G>(
     runner: &HermesRunner<G>,
     profile: &HermesProfileRecord,
     route: &HermesSessionRoute,
+    controller_did: &str,
 ) -> Result<super::gateway::HermesSessionRef>
 where
     G: HermesGateway,
@@ -209,6 +223,7 @@ where
         .context("create Hermes session")?;
     let record = HermesNativeSessionRecord::active(
         route,
+        controller_did.to_string(),
         profile.hermes_profile.clone(),
         session.hermes_session_id.clone(),
     )?;

@@ -494,7 +494,7 @@ where
     transport.rpc(call.endpoint, call.method, call.params).await
 }
 
-fn handle_lookup_from_value_with_client(
+pub(crate) fn handle_lookup_from_value_with_client(
     client: &crate::core::ImClient,
     value: &Value,
 ) -> crate::ImResult<crate::directory::HandleLookupResult> {
@@ -510,14 +510,49 @@ fn handle_lookup_from_value_with_client(
     }
     let did = crate::ids::Did::parse(did)?;
     let handle = crate::ids::Handle::parse(handle, "")?;
+    let user_id = string_value(value, "user_id");
+    if user_id.trim().is_empty() {
+        return Err(crate::ImError::PeerNotFound {
+            peer: did.as_str().to_string(),
+        });
+    }
     let (profile, warnings) = profile_from_lookup(client, value.get("profile"), &did, &handle)?;
     Ok(crate::directory::HandleLookupResult {
         handle,
         did,
+        user_id: user_id.trim().to_owned(),
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
         profile,
         warnings,
+    })
+}
+
+pub(crate) fn handle_lookup_from_value(
+    value: &Value,
+) -> crate::ImResult<crate::directory::HandleLookupResult> {
+    let did = string_value(value, "did");
+    if did.trim().is_empty() {
+        return Err(crate::ImError::PeerNotFound {
+            peer: "handle lookup".to_string(),
+        });
+    }
+    let handle = first_string_value(value, &["full_handle", "handle"]);
+    if handle.trim().is_empty() {
+        return Err(crate::ImError::PeerNotFound { peer: did.clone() });
+    }
+    let user_id = string_value(value, "user_id");
+    if user_id.trim().is_empty() {
+        return Err(crate::ImError::PeerNotFound { peer: did.clone() });
+    }
+    Ok(crate::directory::HandleLookupResult {
+        handle: crate::ids::Handle::parse(handle, "")?,
+        did: crate::ids::Did::parse(did)?,
+        user_id: user_id.trim().to_owned(),
+        domain: string_option(value, "domain"),
+        status: string_option(value, "status"),
+        profile: None,
+        warnings: Vec::new(),
     })
 }
 

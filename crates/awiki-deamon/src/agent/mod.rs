@@ -28,6 +28,9 @@ pub struct AgentDefinition {
     pub agent_did: String,
     pub handle: String,
     pub agent_kind: AgentKind,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub runtime_plugin_id: Option<String>,
     pub runtime_profile_id: Option<String>,
@@ -96,6 +99,15 @@ impl AgentDefinition {
         }
         if self.handle.trim().is_empty() {
             bail!("handle must not be empty");
+        }
+        if self.controller_user_id.trim().is_empty() {
+            bail!("controller_user_id must not be empty");
+        }
+        if self.controller_full_handle.trim().is_empty() {
+            bail!("controller_full_handle must not be empty");
+        }
+        if self.controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         if self.controller_did.trim().is_empty() {
             bail!("controller_did must not be empty");

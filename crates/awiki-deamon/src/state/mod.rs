@@ -19,7 +19,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 18;
+const DAEMON_SCHEMA_VERSION: i64 = 20;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_CLI_RECIPIENT_POLICY_JSON: &str = r#"{"mode":"controller-only"}"#;
@@ -57,6 +57,9 @@ pub struct CliDriverRunRecord {
     pub agent_did: String,
     pub runtime_profile_id: String,
     pub driver_id: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub conversation_id: Option<String>,
     pub route_key: String,
@@ -81,6 +84,12 @@ impl CliDriverRunRecord {
             ("agent_did", self.agent_did.as_str()),
             ("runtime_profile_id", self.runtime_profile_id.as_str()),
             ("driver_id", self.driver_id.as_str()),
+            ("controller_user_id", self.controller_user_id.as_str()),
+            (
+                "controller_full_handle",
+                self.controller_full_handle.as_str(),
+            ),
+            ("controller_scope_key", self.controller_scope_key.as_str()),
             ("controller_did", self.controller_did.as_str()),
             ("route_key", self.route_key.as_str()),
             ("status", self.status.as_str()),
@@ -511,7 +520,7 @@ impl HermesProfileRecord {
 pub struct HermesSessionRoute {
     pub agent_did: String,
     pub runtime_profile_id: String,
-    pub controller_did: String,
+    pub controller_scope_key: String,
     pub conversation_id: Option<String>,
     pub session_kind: String,
 }
@@ -520,14 +529,14 @@ impl HermesSessionRoute {
     pub fn new(
         agent_did: impl Into<String>,
         runtime_profile_id: impl Into<String>,
-        controller_did: impl Into<String>,
+        controller_scope_key: impl Into<String>,
         conversation_id: Option<String>,
         session_kind: impl Into<String>,
     ) -> Self {
         Self {
             agent_did: agent_did.into(),
             runtime_profile_id: runtime_profile_id.into(),
-            controller_did: controller_did.into(),
+            controller_scope_key: controller_scope_key.into(),
             conversation_id,
             session_kind: session_kind.into(),
         }
@@ -540,8 +549,8 @@ impl HermesSessionRoute {
         if self.runtime_profile_id.trim().is_empty() {
             bail!("runtime_profile_id must not be empty");
         }
-        if self.controller_did.trim().is_empty() {
-            bail!("controller_did must not be empty");
+        if self.controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         if self.session_kind.trim().is_empty() {
             bail!("session_kind must not be empty");
@@ -553,11 +562,11 @@ impl HermesSessionRoute {
         format!(
             "hermes:{}:{}:{}:{}",
             self.agent_did,
-            self.controller_did,
+            self.controller_scope_key,
             self.conversation_id
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or("no-conversation"),
+                .unwrap_or(""),
             self.session_kind
         )
     }
@@ -569,6 +578,7 @@ pub struct HermesNativeSessionRecord {
     pub runtime_session_id: String,
     pub agent_did: String,
     pub runtime_profile_id: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub conversation_id: Option<String>,
     pub route_key: String,
@@ -584,6 +594,9 @@ pub struct HermesNativeSessionRecord {
 pub struct RuntimeDaemonBindingRecord {
     pub runtime_agent_did: String,
     pub daemon_agent_did: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -611,6 +624,7 @@ pub struct RuntimeFinalOutboxRecord {
     pub run_id: String,
     pub agent_did: String,
     pub runtime_profile_id: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub conversation_id: Option<String>,
     pub final_text: String,
@@ -629,11 +643,27 @@ pub struct RuntimeFinalOutboxRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeAgentCreateRequestRecord {
     pub daemon_agent_did: String,
+    pub controller_scope_key: String,
     pub controller_did: String,
     pub client_request_id: String,
     pub runtime_agent_did: String,
     pub command_id: String,
     pub outcome_json: Value,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlCommandStateRecord {
+    pub daemon_agent_did: String,
+    pub controller_scope_key: String,
+    pub command_id: String,
+    pub command: String,
+    pub message_id: String,
+    pub status: String,
+    pub target_version: Option<String>,
+    pub result_json: Value,
+    pub error_summary: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -668,6 +698,7 @@ impl RuntimeFinalOutboxRecord {
             ("run_id", self.run_id.as_str()),
             ("agent_did", self.agent_did.as_str()),
             ("runtime_profile_id", self.runtime_profile_id.as_str()),
+            ("controller_scope_key", self.controller_scope_key.as_str()),
             ("controller_did", self.controller_did.as_str()),
             ("final_text", self.final_text.as_str()),
             ("security", self.security.as_str()),
@@ -691,6 +722,7 @@ impl RuntimeAgentCreateRequestRecord {
     pub fn validate(&self) -> Result<()> {
         for (field_name, value) in [
             ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("controller_scope_key", self.controller_scope_key.as_str()),
             ("controller_did", self.controller_did.as_str()),
             ("client_request_id", self.client_request_id.as_str()),
             ("runtime_agent_did", self.runtime_agent_did.as_str()),
@@ -707,6 +739,35 @@ impl RuntimeAgentCreateRequestRecord {
     }
 }
 
+impl ControlCommandStateRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("daemon_agent_did", self.daemon_agent_did.as_str()),
+            ("controller_scope_key", self.controller_scope_key.as_str()),
+            ("command_id", self.command_id.as_str()),
+            ("command", self.command.as_str()),
+            ("message_id", self.message_id.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        validate_control_command_status(&self.status)?;
+        Ok(())
+    }
+}
+
+fn validate_control_command_status(status: &str) -> Result<()> {
+    if !matches!(
+        status,
+        "in_progress" | "restart_scheduled" | "succeeded" | "failed"
+    ) {
+        bail!("control command status is unsupported");
+    }
+    Ok(())
+}
+
 impl RuntimeDaemonBindingRecord {
     pub fn validate(&self) -> Result<()> {
         if self.runtime_agent_did.trim().is_empty() {
@@ -714,6 +775,15 @@ impl RuntimeDaemonBindingRecord {
         }
         if self.daemon_agent_did.trim().is_empty() {
             bail!("daemon_agent_did must not be empty");
+        }
+        if self.controller_user_id.trim().is_empty() {
+            bail!("controller_user_id must not be empty");
+        }
+        if self.controller_full_handle.trim().is_empty() {
+            bail!("controller_full_handle must not be empty");
+        }
+        if self.controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         if self.controller_did.trim().is_empty() {
             bail!("controller_did must not be empty");
@@ -725,10 +795,15 @@ impl RuntimeDaemonBindingRecord {
 impl HermesNativeSessionRecord {
     pub fn active(
         route: &HermesSessionRoute,
+        controller_did: impl Into<String>,
         hermes_profile: impl Into<String>,
         hermes_session_id: impl Into<String>,
     ) -> Result<Self> {
         route.validate()?;
+        let controller_did = controller_did.into();
+        if controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
         let route_key = route.route_key();
         let hermes_session_id = hermes_session_id.into();
         let id = stable_hermes_session_record_id(&route_key, &hermes_session_id);
@@ -738,7 +813,8 @@ impl HermesNativeSessionRecord {
             id,
             agent_did: route.agent_did.clone(),
             runtime_profile_id: route.runtime_profile_id.clone(),
-            controller_did: route.controller_did.clone(),
+            controller_scope_key: route.controller_scope_key.clone(),
+            controller_did,
             conversation_id: route.conversation_id.clone(),
             route_key,
             hermes_profile: hermes_profile.into(),
@@ -763,8 +839,8 @@ impl HermesNativeSessionRecord {
         if self.runtime_profile_id.trim().is_empty() {
             bail!("runtime_profile_id must not be empty");
         }
-        if self.controller_did.trim().is_empty() {
-            bail!("controller_did must not be empty");
+        if self.controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         if self.route_key.trim().is_empty() {
             bail!("route_key must not be empty");
@@ -789,6 +865,36 @@ fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> 
     let digest = Sha256::digest(route_key.as_bytes());
     let digest = Sha256::digest([digest.as_slice(), hermes_session_id.as_bytes()].concat());
     format!("hns_{:x}", digest)
+}
+
+pub fn controller_scope_key(
+    controller_user_id: &str,
+    controller_full_handle: &str,
+) -> Result<String> {
+    let controller_user_id = controller_user_id.trim();
+    let controller_full_handle = controller_full_handle.trim().to_ascii_lowercase();
+    if controller_user_id.is_empty() {
+        bail!("controller_user_id must not be empty");
+    }
+    if controller_full_handle.is_empty() {
+        bail!("controller_full_handle must not be empty");
+    }
+    let material = format!("user:{controller_user_id}\nhandle:{controller_full_handle}");
+    Ok(format!(
+        "controller-scope:v1:{:x}",
+        Sha256::digest(material.as_bytes())
+    ))
+}
+
+pub fn legacy_controller_scope_key_for_did(controller_did: &str) -> Result<String> {
+    let controller_did = controller_did.trim();
+    if controller_did.is_empty() {
+        bail!("controller_did must not be empty");
+    }
+    Ok(format!(
+        "controller-scope:legacy-did:{:x}",
+        Sha256::digest(controller_did.as_bytes())
+    ))
 }
 
 fn stable_id_suffix(input: &str) -> String {
@@ -927,6 +1033,9 @@ INSERT INTO agent_definition (
     agent_did,
     handle,
     agent_kind,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     runtime_plugin_id,
     runtime_profile_id,
@@ -937,8 +1046,11 @@ INSERT INTO agent_definition (
     status,
     created_at,
     updated_at
-) VALUES (?1, ?2, 'runtime', ?3, ?4, ?5, ?6, 'default', ?7, ?8, 'active', ?9, ?9)
+) VALUES (?1, ?2, 'runtime', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'default', ?10, ?11, 'active', ?12, ?12)
 ON CONFLICT(agent_did) DO UPDATE SET
+    controller_user_id = excluded.controller_user_id,
+    controller_full_handle = excluded.controller_full_handle,
+    controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     handle = excluded.handle,
     agent_kind = excluded.agent_kind,
@@ -953,6 +1065,9 @@ ON CONFLICT(agent_did) DO UPDATE SET
             rusqlite::params![
                 profile.agent_did,
                 handle,
+                profile.controller_user_id,
+                profile.controller_full_handle,
+                profile.controller_scope_key,
                 profile.controller_did,
                 profile.runtime_plugin_id,
                 profile.runtime_profile_id,
@@ -1016,6 +1131,9 @@ INSERT INTO agent_definition (
     agent_did,
     handle,
     agent_kind,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     runtime_plugin_id,
     runtime_profile_id,
@@ -1026,10 +1144,13 @@ INSERT INTO agent_definition (
     status,
     created_at,
     updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
 ON CONFLICT(agent_did) DO UPDATE SET
     handle = excluded.handle,
     agent_kind = excluded.agent_kind,
+    controller_user_id = excluded.controller_user_id,
+    controller_full_handle = excluded.controller_full_handle,
+    controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     runtime_plugin_id = excluded.runtime_plugin_id,
     runtime_profile_id = excluded.runtime_profile_id,
@@ -1044,6 +1165,9 @@ ON CONFLICT(agent_did) DO UPDATE SET
                 definition.agent_did,
                 definition.handle,
                 definition.agent_kind.as_str(),
+                definition.controller_user_id,
+                definition.controller_full_handle,
+                definition.controller_scope_key,
                 definition.controller_did,
                 definition.runtime_plugin_id,
                 definition.runtime_profile_id,
@@ -1125,6 +1249,97 @@ SET controller_did = ?1
 WHERE daemon_agent_did = ?2
 "#,
             rusqlite::params![controller_did, daemon_agent_did],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn mark_agent_archived(&self, agent_did: &str) -> Result<usize> {
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let now_ms = current_time_millis()?;
+        let now = now_ms.to_string();
+        let mut updated = 0usize;
+        updated += connection.execute(
+            r#"
+UPDATE agent_definition
+SET status = 'archived',
+    updated_at = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_profile
+SET status = 'archived',
+    updated_at = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE workspace_binding
+SET status = 'archived',
+    updated_at = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE cli_runtime_profile
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE runtime_profile_id IN (
+    SELECT runtime_profile_id
+    FROM agent_definition
+    WHERE agent_did = ?1
+      AND runtime_profile_id IS NOT NULL
+)
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE hermes_profiles
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+  AND status = 'active'
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_task
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+  AND status IN ('created', 'pending', 'running')
+"#,
+            rusqlite::params![agent_did, now_ms],
+        )?;
+        updated += connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = 'archived',
+    updated_at_ms = ?2
+WHERE agent_did = ?1
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![agent_did, now_ms],
         )?;
         Ok(updated)
     }
@@ -2163,6 +2378,7 @@ INSERT INTO hermes_native_sessions (
     runtime_session_id,
     agent_did,
     runtime_profile_id,
+    controller_scope_key,
     controller_did,
     conversation_id,
     route_key,
@@ -2172,11 +2388,12 @@ INSERT INTO hermes_native_sessions (
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
 ON CONFLICT(id) DO UPDATE SET
     runtime_session_id = excluded.runtime_session_id,
     agent_did = excluded.agent_did,
     runtime_profile_id = excluded.runtime_profile_id,
+    controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     conversation_id = excluded.conversation_id,
     route_key = excluded.route_key,
@@ -2191,6 +2408,7 @@ ON CONFLICT(id) DO UPDATE SET
                     session.runtime_session_id,
                     session.agent_did,
                     session.runtime_profile_id,
+                    session.controller_scope_key,
                     session.controller_did,
                     session.conversation_id,
                     session.route_key,
@@ -2220,6 +2438,7 @@ SELECT
     runtime_session_id,
     agent_did,
     runtime_profile_id,
+    controller_scope_key,
     controller_did,
     conversation_id,
     route_key,
@@ -2286,11 +2505,11 @@ WHERE route_key = ?2
         Ok(updated)
     }
 
-    pub fn reset_active_hermes_sessions_for_runtime_controller(
+    pub fn reset_active_hermes_sessions_for_runtime_controller_scope(
         &self,
         agent_did: &str,
         runtime_profile_id: &str,
-        controller_did: &str,
+        controller_scope_key: &str,
     ) -> Result<usize> {
         if agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
@@ -2298,8 +2517,8 @@ WHERE route_key = ?2
         if runtime_profile_id.trim().is_empty() {
             bail!("runtime_profile_id must not be empty");
         }
-        if controller_did.trim().is_empty() {
-            bail!("controller_did must not be empty");
+        if controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         let connection = self.connection()?;
         let updated = connection.execute(
@@ -2309,14 +2528,14 @@ SET status = 'reset',
     updated_at_ms = ?1
 WHERE agent_did = ?2
   AND runtime_profile_id = ?3
-  AND controller_did = ?4
+  AND controller_scope_key = ?4
   AND status = 'active'
 "#,
             rusqlite::params![
                 current_time_millis()?,
                 agent_did,
                 runtime_profile_id,
-                controller_did,
+                controller_scope_key,
             ],
         )?;
         Ok(updated)
@@ -2326,11 +2545,17 @@ WHERE agent_did = ?2
         &self,
         runtime_agent_did: &str,
         daemon_agent_did: &str,
+        controller_user_id: &str,
+        controller_full_handle: &str,
+        controller_scope_key: &str,
         controller_did: &str,
     ) -> Result<()> {
         let record = RuntimeDaemonBindingRecord {
             runtime_agent_did: runtime_agent_did.to_string(),
             daemon_agent_did: daemon_agent_did.to_string(),
+            controller_user_id: controller_user_id.to_string(),
+            controller_full_handle: controller_full_handle.to_string(),
+            controller_scope_key: controller_scope_key.to_string(),
             controller_did: controller_did.to_string(),
             created_at_ms: current_time_millis()?,
             updated_at_ms: current_time_millis()?,
@@ -2342,18 +2567,27 @@ WHERE agent_did = ?2
 INSERT INTO runtime_daemon_binding (
     runtime_agent_did,
     daemon_agent_did,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
 ON CONFLICT(runtime_agent_did) DO UPDATE SET
     daemon_agent_did = excluded.daemon_agent_did,
+    controller_user_id = excluded.controller_user_id,
+    controller_full_handle = excluded.controller_full_handle,
+    controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     updated_at_ms = excluded.updated_at_ms
 "#,
             rusqlite::params![
                 record.runtime_agent_did,
                 record.daemon_agent_did,
+                record.controller_user_id,
+                record.controller_full_handle,
+                record.controller_scope_key,
                 record.controller_did,
                 record.created_at_ms,
                 record.updated_at_ms,
@@ -2373,7 +2607,15 @@ ON CONFLICT(runtime_agent_did) DO UPDATE SET
         connection
             .query_row(
                 r#"
-SELECT runtime_agent_did, daemon_agent_did, controller_did, created_at_ms, updated_at_ms
+SELECT
+    runtime_agent_did,
+    daemon_agent_did,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    created_at_ms,
+    updated_at_ms
 FROM runtime_daemon_binding
 WHERE runtime_agent_did = ?1
 "#,
@@ -2382,9 +2624,12 @@ WHERE runtime_agent_did = ?1
                     Ok(RuntimeDaemonBindingRecord {
                         runtime_agent_did: row.get(0)?,
                         daemon_agent_did: row.get(1)?,
-                        controller_did: row.get(2)?,
-                        created_at_ms: row.get(3)?,
-                        updated_at_ms: row.get(4)?,
+                        controller_user_id: row.get(2)?,
+                        controller_full_handle: row.get(3)?,
+                        controller_scope_key: row.get(4)?,
+                        controller_did: row.get(5)?,
+                        created_at_ms: row.get(6)?,
+                        updated_at_ms: row.get(7)?,
                     })
                 },
             )
@@ -2392,19 +2637,17 @@ WHERE runtime_agent_did = ?1
             .context("load runtime daemon binding")
     }
 
-    pub fn runtime_agent_belongs_to_daemon(
+    pub fn runtime_agent_belongs_to_daemon_scope(
         &self,
         runtime_agent_did: &str,
         daemon_agent_did: &str,
-        controller_did: &str,
+        controller_scope_key: &str,
     ) -> Result<bool> {
         let Some(binding) = self.load_runtime_daemon_binding(runtime_agent_did)? else {
             return Ok(false);
         };
-        Ok(
-            binding.daemon_agent_did == daemon_agent_did
-                && binding.controller_did == controller_did,
-        )
+        Ok(binding.daemon_agent_did == daemon_agent_did
+            && binding.controller_scope_key == controller_scope_key)
     }
 
     pub fn store_runtime_agent_create_request(
@@ -2417,6 +2660,7 @@ WHERE runtime_agent_did = ?1
             r#"
 INSERT INTO runtime_agent_create_request (
     daemon_agent_did,
+    controller_scope_key,
     controller_did,
     client_request_id,
     runtime_agent_did,
@@ -2424,12 +2668,13 @@ INSERT INTO runtime_agent_create_request (
     outcome_json,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-ON CONFLICT(daemon_agent_did, controller_did, client_request_id) DO UPDATE SET
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+ON CONFLICT(daemon_agent_did, controller_scope_key, client_request_id) DO UPDATE SET
     updated_at_ms = excluded.updated_at_ms
 "#,
             rusqlite::params![
                 record.daemon_agent_did,
+                record.controller_scope_key,
                 record.controller_did,
                 record.client_request_id,
                 record.runtime_agent_did,
@@ -2445,14 +2690,14 @@ ON CONFLICT(daemon_agent_did, controller_did, client_request_id) DO UPDATE SET
     pub fn load_runtime_agent_create_request(
         &self,
         daemon_agent_did: &str,
-        controller_did: &str,
+        controller_scope_key: &str,
         client_request_id: &str,
     ) -> Result<Option<RuntimeAgentCreateRequestRecord>> {
         if daemon_agent_did.trim().is_empty() {
             bail!("daemon_agent_did must not be empty");
         }
-        if controller_did.trim().is_empty() {
-            bail!("controller_did must not be empty");
+        if controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
         }
         if client_request_id.trim().is_empty() {
             bail!("client_request_id must not be empty");
@@ -2463,6 +2708,7 @@ ON CONFLICT(daemon_agent_did, controller_did, client_request_id) DO UPDATE SET
                 r#"
 SELECT
     daemon_agent_did,
+    controller_scope_key,
     controller_did,
     client_request_id,
     runtime_agent_did,
@@ -2472,14 +2718,150 @@ SELECT
     updated_at_ms
 FROM runtime_agent_create_request
 WHERE daemon_agent_did = ?1
-  AND controller_did = ?2
+  AND controller_scope_key = ?2
   AND client_request_id = ?3
 "#,
-                rusqlite::params![daemon_agent_did, controller_did, client_request_id],
+                rusqlite::params![daemon_agent_did, controller_scope_key, client_request_id],
                 runtime_agent_create_request_record_from_row,
             )
             .optional()
             .context("load runtime agent create request")
+    }
+
+    pub fn try_begin_control_command(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+        command: &str,
+        message_id: &str,
+        target_version: Option<&str>,
+    ) -> Result<Option<ControlCommandStateRecord>> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command_id", command_id),
+            ("command", command),
+            ("message_id", message_id),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let inserted = connection.execute(
+            r#"
+INSERT OR IGNORE INTO control_command_state (
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, 'in_progress', ?6, '{}', NULL, ?7, ?7)
+"#,
+            rusqlite::params![
+                daemon_agent_did,
+                controller_scope_key,
+                command_id,
+                command,
+                message_id,
+                target_version,
+                now,
+            ],
+        )?;
+        if inserted > 0 {
+            Ok(None)
+        } else {
+            self.load_control_command_state(daemon_agent_did, controller_scope_key, command_id)
+        }
+    }
+
+    pub fn load_control_command_state(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+    ) -> Result<Option<ControlCommandStateRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+FROM control_command_state
+WHERE daemon_agent_did = ?1
+  AND controller_scope_key = ?2
+  AND command_id = ?3
+"#,
+                rusqlite::params![daemon_agent_did, controller_scope_key, command_id],
+                control_command_state_record_from_row,
+            )
+            .optional()
+            .context("load control command state")
+    }
+
+    pub fn mark_control_command_state(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+        status: &str,
+        result_json: Value,
+        error_summary: Option<&str>,
+    ) -> Result<()> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command_id", command_id),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        validate_control_command_status(status)?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE control_command_state
+SET status = ?1,
+    result_json = ?2,
+    error_summary = ?3,
+    updated_at_ms = ?4
+WHERE daemon_agent_did = ?5
+  AND controller_scope_key = ?6
+  AND command_id = ?7
+"#,
+            rusqlite::params![
+                status,
+                result_json.to_string(),
+                error_summary,
+                current_time_millis()?,
+                daemon_agent_did,
+                controller_scope_key,
+                command_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("control command state does not exist: {command_id}");
+        }
+        Ok(())
     }
 
     pub fn list_runtime_agent_definitions_for_daemon(
@@ -2496,6 +2878,9 @@ SELECT
     agent_definition.agent_did,
     agent_definition.handle,
     agent_definition.agent_kind,
+    agent_definition.controller_user_id,
+    agent_definition.controller_full_handle,
+    agent_definition.controller_scope_key,
     agent_definition.controller_did,
     agent_definition.runtime_plugin_id,
     agent_definition.runtime_profile_id,
@@ -2508,6 +2893,7 @@ FROM agent_definition
 INNER JOIN runtime_daemon_binding
     ON runtime_daemon_binding.runtime_agent_did = agent_definition.agent_did
 WHERE agent_definition.agent_kind = 'runtime'
+  AND agent_definition.status = 'active'
   AND runtime_daemon_binding.daemon_agent_did = ?1
 ORDER BY agent_definition.updated_at DESC, agent_definition.agent_did ASC
 "#,
@@ -2594,6 +2980,9 @@ SELECT
     agent_did,
     handle,
     agent_kind,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     runtime_plugin_id,
     runtime_profile_id,
@@ -2619,6 +3008,9 @@ SELECT
     agent_did,
     handle,
     agent_kind,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     runtime_plugin_id,
     runtime_profile_id,
@@ -2677,6 +3069,9 @@ WHERE runtime_profile_id = ?1
                         agent_did: row.get(1)?,
                         runtime_plugin_id: row.get(2)?,
                         display_name: row.get(3)?,
+                        controller_user_id: definition.controller_user_id.clone(),
+                        controller_full_handle: definition.controller_full_handle.clone(),
+                        controller_scope_key: definition.controller_scope_key.clone(),
                         controller_did: definition.controller_did.clone(),
                         workspace_id: definition.workspace_id.clone(),
                         workspace_root: None,
@@ -2728,6 +3123,9 @@ SELECT
     agent_did,
     handle,
     agent_kind,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     runtime_plugin_id,
     runtime_profile_id,
@@ -2738,6 +3136,7 @@ SELECT
     status
 FROM agent_definition
 WHERE agent_kind = ?1
+  AND status = 'active'
 ORDER BY updated_at DESC, agent_did ASC
 "#
             }
@@ -2747,6 +3146,9 @@ SELECT
     agent_did,
     handle,
     agent_kind,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     runtime_plugin_id,
     runtime_profile_id,
@@ -2756,6 +3158,7 @@ SELECT
     message_db_path,
     status
 FROM agent_definition
+WHERE status = 'active'
 ORDER BY updated_at DESC, agent_did ASC
 "#
             }
@@ -2822,6 +3225,9 @@ ON CONFLICT(workspace_id) DO UPDATE SET
 INSERT INTO runtime_task (
     task_id,
     agent_did,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     sender_did,
     conversation_id,
@@ -2829,7 +3235,7 @@ INSERT INTO runtime_task (
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?7)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'created', ?10, ?10)
 ON CONFLICT(task_id) DO UPDATE SET
     task_text = excluded.task_text,
     updated_at_ms = excluded.updated_at_ms
@@ -2837,6 +3243,9 @@ ON CONFLICT(task_id) DO UPDATE SET
             rusqlite::params![
                 task.task_id,
                 task.agent_did,
+                task.controller_user_id,
+                task.controller_full_handle,
+                task.controller_scope_key,
                 task.controller_did,
                 task.sender_did,
                 task.conversation_id,
@@ -3053,6 +3462,7 @@ INSERT INTO runtime_final_outbox (
     run_id,
     agent_did,
     runtime_profile_id,
+    controller_scope_key,
     controller_did,
     conversation_id,
     final_text,
@@ -3066,7 +3476,7 @@ INSERT INTO runtime_final_outbox (
     created_at_ms,
     updated_at_ms,
     sent_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0, ?9, NULL, NULL, NULL, ?10, ?10, NULL)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', 0, ?10, NULL, NULL, NULL, ?11, ?11, NULL)
 ON CONFLICT(idempotency_key) DO UPDATE SET
     final_text = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
     security = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.security ELSE excluded.security END,
@@ -3081,6 +3491,7 @@ ON CONFLICT(idempotency_key) DO UPDATE SET
                 record.run_id,
                 record.agent_did,
                 record.runtime_profile_id,
+                record.controller_scope_key,
                 record.controller_did,
                 record.conversation_id,
                 record.final_text,
@@ -3105,6 +3516,7 @@ SELECT
     run_id,
     agent_did,
     runtime_profile_id,
+    controller_scope_key,
     controller_did,
     conversation_id,
     final_text,
@@ -3141,6 +3553,7 @@ SELECT
     run_id,
     agent_did,
     runtime_profile_id,
+    controller_scope_key,
     controller_did,
     conversation_id,
     final_text,
@@ -3377,6 +3790,9 @@ WHERE run_id = ?1
 SELECT
     task_id,
     agent_did,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     sender_did,
     conversation_id,
@@ -3389,10 +3805,13 @@ WHERE task_id = ?1
                     Ok(RuntimeTask {
                         task_id: row.get(0)?,
                         agent_did: row.get(1)?,
-                        controller_did: row.get(2)?,
-                        sender_did: row.get(3)?,
-                        conversation_id: row.get(4)?,
-                        text: row.get(5)?,
+                        controller_user_id: row.get(2)?,
+                        controller_full_handle: row.get(3)?,
+                        controller_scope_key: row.get(4)?,
+                        controller_did: row.get(5)?,
+                        sender_did: row.get(6)?,
+                        conversation_id: row.get(7)?,
+                        text: row.get(8)?,
                     })
                 },
             )
@@ -3415,6 +3834,9 @@ INSERT INTO cli_driver_run (
     agent_did,
     runtime_profile_id,
     driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     conversation_id,
     route_key,
@@ -3432,11 +3854,14 @@ INSERT INTO cli_driver_run (
     fallback_final_source,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?23)
 ON CONFLICT(run_id) DO UPDATE SET
     agent_did = excluded.agent_did,
     runtime_profile_id = excluded.runtime_profile_id,
     driver_id = excluded.driver_id,
+    controller_user_id = excluded.controller_user_id,
+    controller_full_handle = excluded.controller_full_handle,
+    controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     conversation_id = excluded.conversation_id,
     route_key = excluded.route_key,
@@ -3459,6 +3884,9 @@ ON CONFLICT(run_id) DO UPDATE SET
                 record.agent_did,
                 record.runtime_profile_id,
                 record.driver_id,
+                record.controller_user_id,
+                record.controller_full_handle,
+                record.controller_scope_key,
                 record.controller_did,
                 record.conversation_id,
                 record.route_key,
@@ -3496,6 +3924,9 @@ SELECT
     agent_did,
     runtime_profile_id,
     driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
     controller_did,
     conversation_id,
     route_key,
@@ -3790,6 +4221,9 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS agent_definition (
             agent_did TEXT PRIMARY KEY,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             runtime_profile_id TEXT,
             status TEXT NOT NULL,
@@ -3839,6 +4273,9 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             agent_did TEXT NOT NULL,
             runtime_profile_id TEXT NOT NULL,
             driver_id TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             route_key TEXT NOT NULL,
@@ -3877,6 +4314,9 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS runtime_task (
             task_id TEXT PRIMARY KEY,
             agent_did TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             sender_did TEXT NOT NULL,
             conversation_id TEXT,
@@ -3956,6 +4396,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             runtime_session_id TEXT NOT NULL,
             agent_did TEXT NOT NULL,
             runtime_profile_id TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             route_key TEXT NOT NULL,
@@ -3974,16 +4415,20 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS runtime_daemon_binding (
             runtime_agent_did TEXT PRIMARY KEY,
             daemon_agent_did TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_runtime_daemon_binding_daemon
-        ON runtime_daemon_binding(daemon_agent_did, controller_did);
+        ON runtime_daemon_binding(daemon_agent_did, controller_scope_key);
 
         CREATE TABLE IF NOT EXISTS agent_status_query_throttle (
             daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             last_snapshot_at_ms INTEGER NOT NULL,
             PRIMARY KEY (daemon_agent_did, controller_did)
@@ -4009,6 +4454,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS runtime_agent_create_request (
             daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             client_request_id TEXT NOT NULL,
             runtime_agent_did TEXT NOT NULL,
@@ -4016,7 +4462,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             outcome_json TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
-            PRIMARY KEY (daemon_agent_did, controller_did, client_request_id)
+            PRIMARY KEY (daemon_agent_did, controller_scope_key, client_request_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_runtime_agent_create_request_runtime
@@ -4027,6 +4473,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             run_id TEXT NOT NULL UNIQUE,
             agent_did TEXT NOT NULL,
             runtime_profile_id TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             final_text TEXT NOT NULL,
@@ -4169,6 +4616,24 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_message_sync_outbox_due
         ON message_sync_outbox(status, next_attempt_at_ms, created_at_ms);
 
+        CREATE TABLE IF NOT EXISTS control_command_state (
+            daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            command TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            target_version TEXT,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_scope_key, command_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_control_command_state_message
+        ON control_command_state(daemon_agent_did, message_id);
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -4192,6 +4657,8 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_user_delegated_identity_v16(connection)?;
     migrate_app_message_agent_binding_v17(connection)?;
     migrate_user_delegated_inbox_sync_v18(connection)?;
+    migrate_controller_scope_v19(connection)?;
+    migrate_control_command_state_v20(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -4348,6 +4815,31 @@ fn migrate_user_delegated_inbox_sync_v18(connection: &Connection) -> Result<()> 
     Ok(())
 }
 
+fn migrate_control_command_state_v20(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS control_command_state (
+            daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            command TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            target_version TEXT,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_scope_key, command_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_control_command_state_message
+        ON control_command_state(daemon_agent_did, message_id);
+        "#,
+    )?;
+    Ok(())
+}
+
 fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"
@@ -4438,6 +4930,189 @@ fn migrate_runtime_final_plain_delivery_v15(connection: &Connection) -> Result<(
             updated_at_ms = strftime('%s','now') * 1000
         WHERE security = 'direct_e2ee'
           AND status != 'sent';
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_controller_scope_v19(connection: &Connection) -> Result<()> {
+    for (table, column, definition) in [
+        (
+            "agent_definition",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "agent_definition",
+            "controller_full_handle",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "agent_definition",
+            "controller_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_task",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_task",
+            "controller_full_handle",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_task",
+            "controller_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "hermes_native_sessions",
+            "controller_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_daemon_binding",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_daemon_binding",
+            "controller_full_handle",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_daemon_binding",
+            "controller_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_final_outbox",
+            "controller_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "cli_driver_run",
+            "controller_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "cli_driver_run",
+            "controller_full_handle",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "cli_driver_run",
+            "controller_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        add_column_if_missing(connection, table, column, definition)?;
+    }
+
+    connection.execute_batch(
+        r#"
+        UPDATE agent_definition
+        SET
+            controller_user_id = CASE WHEN controller_user_id = '' THEN 'legacy-user:' || hex(controller_did) ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN 'legacy-handle:' || hex(controller_did) ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN 'controller-scope:legacy-did:' || hex(controller_did) ELSE controller_scope_key END
+        WHERE controller_did <> '';
+
+        UPDATE runtime_task
+        SET
+            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), 'legacy-user:' || hex(controller_did)) ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), 'legacy-handle:' || hex(controller_did)) ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), 'controller-scope:legacy-did:' || hex(controller_did)) ELSE controller_scope_key END
+        WHERE controller_did <> '';
+
+        UPDATE runtime_daemon_binding
+        SET
+            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), 'legacy-user:' || hex(controller_did)) ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), 'legacy-handle:' || hex(controller_did)) ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), 'controller-scope:legacy-did:' || hex(controller_did)) ELSE controller_scope_key END
+        WHERE controller_did <> '';
+
+        UPDATE hermes_native_sessions
+        SET controller_scope_key = 'controller-scope:legacy-did:' || hex(controller_did)
+        WHERE controller_scope_key = ''
+          AND controller_did <> '';
+
+        UPDATE runtime_final_outbox
+        SET controller_scope_key = COALESCE(
+            (SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_final_outbox.agent_did),
+            'controller-scope:legacy-did:' || hex(controller_did)
+        )
+        WHERE controller_scope_key = ''
+          AND controller_did <> '';
+
+        UPDATE cli_driver_run
+        SET
+            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), 'legacy-user:' || hex(controller_did)) ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), 'legacy-handle:' || hex(controller_did)) ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), 'controller-scope:legacy-did:' || hex(controller_did)) ELSE controller_scope_key END
+        WHERE controller_did <> '';
+        "#,
+    )?;
+
+    rebuild_runtime_agent_create_request_for_scope(connection)?;
+    connection.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_runtime_daemon_binding_daemon_scope
+        ON runtime_daemon_binding(daemon_agent_did, controller_scope_key);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn rebuild_runtime_agent_create_request_for_scope(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_agent_create_request_v19 (
+            daemon_agent_did TEXT NOT NULL,
+            controller_scope_key TEXT NOT NULL DEFAULT '',
+            controller_did TEXT NOT NULL,
+            client_request_id TEXT NOT NULL,
+            runtime_agent_did TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            outcome_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (daemon_agent_did, controller_scope_key, client_request_id)
+        );
+
+        INSERT OR IGNORE INTO runtime_agent_create_request_v19 (
+            daemon_agent_did,
+            controller_scope_key,
+            controller_did,
+            client_request_id,
+            runtime_agent_did,
+            command_id,
+            outcome_json,
+            created_at_ms,
+            updated_at_ms
+        )
+        SELECT
+            daemon_agent_did,
+            COALESCE(
+                (SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_agent_create_request.daemon_agent_did),
+                'controller-scope:legacy-did:' || hex(controller_did)
+            ),
+            controller_did,
+            client_request_id,
+            runtime_agent_did,
+            command_id,
+            outcome_json,
+            created_at_ms,
+            updated_at_ms
+        FROM runtime_agent_create_request;
+
+        DROP TABLE runtime_agent_create_request;
+        ALTER TABLE runtime_agent_create_request_v19 RENAME TO runtime_agent_create_request;
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_agent_create_request_runtime
+        ON runtime_agent_create_request(runtime_agent_did);
         "#,
     )?;
     Ok(())
@@ -5033,7 +5708,7 @@ fn cli_runtime_profile_from_row(
 }
 
 fn cli_driver_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliDriverRunRecord> {
-    let workspace_mode_raw: Option<String> = row.get(10)?;
+    let workspace_mode_raw: Option<String> = row.get(13)?;
     let workspace_mode = match workspace_mode_raw {
         Some(raw) => Some(WorkspaceMode::parse(&raw).map_err(|err| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -5047,7 +5722,7 @@ fn cli_driver_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliDrive
         })?),
         None => None,
     };
-    let command_raw: String = row.get(12)?;
+    let command_raw: String = row.get(15)?;
     let command_json = serde_json::from_str(&command_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
             command_raw.len(),
@@ -5055,7 +5730,7 @@ fn cli_driver_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliDrive
             Box::new(err),
         )
     })?;
-    let output_raw: String = row.get(13)?;
+    let output_raw: String = row.get(16)?;
     let output_json = serde_json::from_str(&output_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
             output_raw.len(),
@@ -5068,21 +5743,24 @@ fn cli_driver_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CliDrive
         agent_did: row.get(1)?,
         runtime_profile_id: row.get(2)?,
         driver_id: row.get(3)?,
-        controller_did: row.get(4)?,
-        conversation_id: row.get(5)?,
-        route_key: row.get(6)?,
-        workspace_id: row.get(7)?,
-        workspace_root: row.get::<_, Option<String>>(8)?.map(PathBuf::from),
-        workspace_instance_path: row.get::<_, Option<String>>(9)?.map(PathBuf::from),
+        controller_user_id: row.get(4)?,
+        controller_full_handle: row.get(5)?,
+        controller_scope_key: row.get(6)?,
+        controller_did: row.get(7)?,
+        conversation_id: row.get(8)?,
+        route_key: row.get(9)?,
+        workspace_id: row.get(10)?,
+        workspace_root: row.get::<_, Option<String>>(11)?.map(PathBuf::from),
+        workspace_instance_path: row.get::<_, Option<String>>(12)?.map(PathBuf::from),
         workspace_mode,
-        is_security_boundary: row.get::<_, i64>(11)? != 0,
+        is_security_boundary: row.get::<_, i64>(14)? != 0,
         command_json,
         output_json,
-        final_output_path: row.get::<_, Option<String>>(14)?.map(PathBuf::from),
-        native_session_id: row.get(15)?,
-        synthetic_session_id: row.get(16)?,
-        status: row.get(17)?,
-        fallback_final_source: row.get(18)?,
+        final_output_path: row.get::<_, Option<String>>(17)?.map(PathBuf::from),
+        native_session_id: row.get(18)?,
+        synthetic_session_id: row.get(19)?,
+        status: row.get(20)?,
+        fallback_final_source: row.get(21)?,
     })
 }
 
@@ -5102,14 +5780,17 @@ fn agent_definition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentD
         agent_did: row.get(0)?,
         handle: row.get(1)?,
         agent_kind,
-        controller_did: row.get(3)?,
-        runtime_plugin_id: row.get(4)?,
-        runtime_profile_id: row.get(5)?,
-        workspace_id: row.get(6)?,
-        policy_id: row.get(7)?,
-        local_agent_db_path: row.get(8)?,
-        message_db_path: row.get(9)?,
-        status: row.get(10)?,
+        controller_user_id: row.get(3)?,
+        controller_full_handle: row.get(4)?,
+        controller_scope_key: row.get(5)?,
+        controller_did: row.get(6)?,
+        runtime_plugin_id: row.get(7)?,
+        runtime_profile_id: row.get(8)?,
+        workspace_id: row.get(9)?,
+        policy_id: row.get(10)?,
+        local_agent_db_path: row.get(11)?,
+        message_db_path: row.get(12)?,
+        status: row.get(13)?,
     })
 }
 
@@ -5121,15 +5802,16 @@ fn hermes_native_session_from_row(
         runtime_session_id: row.get(1)?,
         agent_did: row.get(2)?,
         runtime_profile_id: row.get(3)?,
-        controller_did: row.get(4)?,
-        conversation_id: row.get(5)?,
-        route_key: row.get(6)?,
-        hermes_profile: row.get(7)?,
-        hermes_session_id: row.get(8)?,
-        session_kind: row.get(9)?,
-        status: row.get(10)?,
-        created_at_ms: row.get(11)?,
-        updated_at_ms: row.get(12)?,
+        controller_scope_key: row.get(4)?,
+        controller_did: row.get(5)?,
+        conversation_id: row.get(6)?,
+        route_key: row.get(7)?,
+        hermes_profile: row.get(8)?,
+        hermes_session_id: row.get(9)?,
+        session_kind: row.get(10)?,
+        status: row.get(11)?,
+        created_at_ms: row.get(12)?,
+        updated_at_ms: row.get(13)?,
     })
 }
 
@@ -5160,26 +5842,27 @@ fn runtime_final_outbox_record_from_row(
         run_id: row.get(1)?,
         agent_did: row.get(2)?,
         runtime_profile_id: row.get(3)?,
-        controller_did: row.get(4)?,
-        conversation_id: row.get(5)?,
-        final_text: row.get(6)?,
-        security: row.get(7)?,
-        status: row.get(8)?,
-        attempt_count: row.get(9)?,
-        next_attempt_at_ms: row.get(10)?,
-        last_error_code: row.get(11)?,
-        last_error_summary: row.get(12)?,
-        message_id: row.get(13)?,
-        created_at_ms: row.get(14)?,
-        updated_at_ms: row.get(15)?,
-        sent_at_ms: row.get(16)?,
+        controller_scope_key: row.get(4)?,
+        controller_did: row.get(5)?,
+        conversation_id: row.get(6)?,
+        final_text: row.get(7)?,
+        security: row.get(8)?,
+        status: row.get(9)?,
+        attempt_count: row.get(10)?,
+        next_attempt_at_ms: row.get(11)?,
+        last_error_code: row.get(12)?,
+        last_error_summary: row.get(13)?,
+        message_id: row.get(14)?,
+        created_at_ms: row.get(15)?,
+        updated_at_ms: row.get(16)?,
+        sent_at_ms: row.get(17)?,
     })
 }
 
 fn runtime_agent_create_request_record_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<RuntimeAgentCreateRequestRecord> {
-    let outcome_json: String = row.get(5)?;
+    let outcome_json: String = row.get(6)?;
     let outcome_json = serde_json::from_str(&outcome_json).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
             outcome_json.len(),
@@ -5192,13 +5875,43 @@ fn runtime_agent_create_request_record_from_row(
     })?;
     Ok(RuntimeAgentCreateRequestRecord {
         daemon_agent_did: row.get(0)?,
-        controller_did: row.get(1)?,
-        client_request_id: row.get(2)?,
-        runtime_agent_did: row.get(3)?,
-        command_id: row.get(4)?,
+        controller_scope_key: row.get(1)?,
+        controller_did: row.get(2)?,
+        client_request_id: row.get(3)?,
+        runtime_agent_did: row.get(4)?,
+        command_id: row.get(5)?,
         outcome_json,
-        created_at_ms: row.get(6)?,
-        updated_at_ms: row.get(7)?,
+        created_at_ms: row.get(7)?,
+        updated_at_ms: row.get(8)?,
+    })
+}
+
+fn control_command_state_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ControlCommandStateRecord> {
+    let result_json_raw: String = row.get(7)?;
+    let result_json = serde_json::from_str(&result_json_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            result_json_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    Ok(ControlCommandStateRecord {
+        daemon_agent_did: row.get(0)?,
+        controller_scope_key: row.get(1)?,
+        command_id: row.get(2)?,
+        command: row.get(3)?,
+        message_id: row.get(4)?,
+        status: row.get(5)?,
+        target_version: row.get(6)?,
+        result_json,
+        error_summary: row.get(8)?,
+        created_at_ms: row.get(9)?,
+        updated_at_ms: row.get(10)?,
     })
 }
 
@@ -5241,6 +5954,7 @@ mod tests {
             "processed_message",
             "message_event",
             "message_sync_outbox",
+            "control_command_state",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -5481,6 +6195,67 @@ mod tests {
     }
 
     #[test]
+    fn control_command_state_roundtrips_and_deduplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        let first = state
+            .try_begin_control_command(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+                "daemon.upgrade",
+                "msg_upgrade_1",
+                Some("latest"),
+            )
+            .unwrap();
+        assert!(first.is_none());
+
+        let duplicate = state
+            .try_begin_control_command(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+                "daemon.upgrade",
+                "msg_upgrade_1",
+                Some("latest"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicate.status, "in_progress");
+        assert_eq!(duplicate.target_version.as_deref(), Some("latest"));
+
+        state
+            .mark_control_command_state(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+                "restart_scheduled",
+                serde_json::json!({
+                    "command": "daemon.upgrade",
+                    "status": "ready",
+                    "version": "0.2.0",
+                    "restarted": true,
+                }),
+                None,
+            )
+            .unwrap();
+
+        let stored = state
+            .load_control_command_state(
+                "did:agent:daemon",
+                "controller-scope:v1:test-alice",
+                "cmd_upgrade_1",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "restart_scheduled");
+        assert_eq!(stored.result_json["version"], "0.2.0");
+    }
+
+    #[test]
     fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -5489,10 +6264,12 @@ mod tests {
 
         let now = current_time_millis().unwrap();
         let record = RuntimeFinalOutboxRecord {
-            idempotency_key: "runtime-final:did:agent:hermes:run_1:did:human:alice".to_string(),
+            idempotency_key: "runtime-final:did:agent:hermes:run_1:controller-scope:v1:test-alice"
+                .to_string(),
             run_id: "run_1".to_string(),
             agent_did: "did:agent:hermes".to_string(),
             runtime_profile_id: "profile_hermes".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice".to_string(),
             controller_did: "did:human:alice".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             final_text: "final text".to_string(),
@@ -5581,6 +6358,9 @@ mod tests {
             agent_did: "did:agent:daemon".to_string(),
             handle: "alice-daemon".to_string(),
             agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice".to_string(),
             controller_did: "did:human:alice".to_string(),
             runtime_plugin_id: None,
             runtime_profile_id: None,
@@ -5869,22 +6649,25 @@ mod tests {
             .upsert_runtime_daemon_binding(
                 "did:agent:runtime",
                 "did:agent:daemon",
+                "user-alice",
+                "alice.anpclaw.com",
+                "controller-scope:v1:test-alice",
                 "did:human:alice",
             )
             .unwrap();
 
         assert!(state
-            .runtime_agent_belongs_to_daemon(
+            .runtime_agent_belongs_to_daemon_scope(
                 "did:agent:runtime",
                 "did:agent:daemon",
-                "did:human:alice",
+                "controller-scope:v1:test-alice",
             )
             .unwrap());
         assert!(!state
-            .runtime_agent_belongs_to_daemon(
+            .runtime_agent_belongs_to_daemon_scope(
                 "did:agent:runtime",
                 "did:agent:other-daemon",
-                "did:human:alice",
+                "controller-scope:v1:test-alice",
             )
             .unwrap());
 
@@ -5908,13 +6691,17 @@ mod tests {
         let route = HermesSessionRoute::new(
             "did:agent:hermes",
             "profile_hermes_alice",
-            "did:human:alice",
+            "controller-scope:v1:test-alice",
             Some("direct:did:human:alice".to_string()),
             "conversation",
         );
-        let session =
-            HermesNativeSessionRecord::active(&route, "awiki_alice_hermes", "hermes-session-1")
-                .unwrap();
+        let session = HermesNativeSessionRecord::active(
+            &route,
+            "did:human:alice",
+            "awiki_alice_hermes",
+            "hermes-session-1",
+        )
+        .unwrap();
 
         state.store_hermes_native_session(&session).unwrap();
         assert_eq!(
@@ -5945,9 +6732,13 @@ mod tests {
             .unwrap()
             .is_none());
 
-        let replacement =
-            HermesNativeSessionRecord::active(&route, "awiki_alice_hermes", "hermes-session-2")
-                .unwrap();
+        let replacement = HermesNativeSessionRecord::active(
+            &route,
+            "did:human:alice",
+            "awiki_alice_hermes",
+            "hermes-session-2",
+        )
+        .unwrap();
         state.store_hermes_native_session(&replacement).unwrap();
         assert_eq!(
             state

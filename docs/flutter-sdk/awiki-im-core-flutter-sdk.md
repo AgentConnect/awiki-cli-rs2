@@ -116,23 +116,36 @@ Generated files are committed so the package can be checked out and analyzed wit
 Run:
 
 ```bash
-scripts/flutter/codegen.sh
 scripts/flutter/codegen-check.sh
 ```
 
-If `flutter_rust_bridge_codegen` CLI flags change, update the script but keep the same input/output paths.
+`codegen-check.sh` runs the bridge generator and fails if the committed generated Rust/Dart files are not already in sync. If `flutter_rust_bridge_codegen` CLI flags change, update this script but keep the same input/output paths.
 
 ## Build commands
 
+Rebuild all native SDK artifacts after Rust SDK changes:
+
 ```bash
-scripts/flutter/build-host.sh
-scripts/flutter/build-android.sh --dry-run
-scripts/flutter/build-apple.sh --dry-run
-scripts/flutter/build-all.sh
-scripts/flutter/package.sh --dry-run
+scripts/flutter/build-sdk-native.sh
 ```
 
-Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed.
+The one-step script runs:
+
+```bash
+scripts/flutter/codegen-check.sh
+scripts/flutter/build-apple.sh
+scripts/flutter/build-android.sh
+```
+
+Single-platform builds remain available:
+
+```bash
+scripts/flutter/build-sdk-native.sh --macos-only
+scripts/flutter/build-sdk-native.sh --ios-only
+scripts/flutter/build-sdk-native.sh --android-only
+```
+
+Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Use `--dry-run` to print the selected build steps without compiling native artifacts.
 
 ## Common local errors
 

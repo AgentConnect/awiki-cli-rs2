@@ -7,6 +7,7 @@ class GroupSummary {
     this.name,
     this.displayName,
     this.avatarUri,
+    this.myRole,
     this.membershipStatus,
     this.memberCount,
     this.lastMessageAt,
@@ -17,6 +18,7 @@ class GroupSummary {
   final String? name;
   final String? displayName;
   final String? avatarUri;
+  final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
   final String? lastMessageAt;
@@ -29,15 +31,14 @@ class GroupSnapshot extends GroupSummary {
     super.name,
     super.displayName,
     super.avatarUri,
+    super.myRole,
     this.description,
-    this.myRole,
     super.membershipStatus,
     super.memberCount,
     super.lastMessageAt,
   });
 
   final String? description;
-  final String? myRole;
 }
 
 class GroupMember {

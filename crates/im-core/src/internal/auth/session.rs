@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use super::state::{read_auth_state, read_auth_state_async, AuthStateSnapshot};
 
 pub(crate) trait SessionProvider {
     fn ensure_session(
@@ -104,12 +104,12 @@ impl SessionProvider for FileSessionProvider<'_> {
             has_session: snapshot.ready_for_auth
                 && snapshot.did_document_exists
                 && snapshot.private_key_exists
-                && snapshot.auth_state.has_token,
+                && snapshot.auth_state.has_valid_token,
             expires_at: snapshot.auth_state.expires_at.clone(),
             needs_refresh: snapshot.ready_for_auth
                 && snapshot.did_document_exists
                 && snapshot.private_key_exists
-                && !snapshot.auth_state.has_token,
+                && (!snapshot.auth_state.has_token || snapshot.auth_state.needs_refresh),
             warnings: snapshot.warnings(),
         })
     }
@@ -141,13 +141,27 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
         scope: crate::auth::AuthScope,
     ) -> crate::ImResult<crate::auth::SessionBundle> {
         let snapshot = self.snapshot_async().await?;
-        snapshot.ensure_ready(scope)?;
+        snapshot.ensure_identity_ready(scope)?;
+        if snapshot.auth_state.has_valid_token && !snapshot.auth_state.needs_refresh {
+            return Ok(crate::auth::SessionBundle {
+                subject: snapshot.subject,
+                scope,
+                expires_at: snapshot.auth_state.expires_at.clone(),
+                refreshed: false,
+                bearer_token: snapshot.auth_state.bearer_token,
+            });
+        }
+
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+        transport.refresh_jwt_async().await?;
+        let refreshed = self.snapshot_async().await?;
+        refreshed.ensure_ready(scope)?;
         Ok(crate::auth::SessionBundle {
-            subject: snapshot.subject,
+            subject: refreshed.subject,
             scope,
-            expires_at: snapshot.auth_state.expires_at.clone(),
-            refreshed: false,
-            bearer_token: snapshot.auth_state.bearer_token,
+            expires_at: refreshed.auth_state.expires_at.clone(),
+            refreshed: true,
+            bearer_token: refreshed.auth_state.bearer_token,
         })
     }
 
@@ -173,12 +187,12 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
             has_session: snapshot.ready_for_auth
                 && snapshot.did_document_exists
                 && snapshot.private_key_exists
-                && snapshot.auth_state.has_token,
+                && snapshot.auth_state.has_valid_token,
             expires_at: snapshot.auth_state.expires_at.clone(),
             needs_refresh: snapshot.ready_for_auth
                 && snapshot.did_document_exists
                 && snapshot.private_key_exists
-                && !snapshot.auth_state.has_token,
+                && (!snapshot.auth_state.has_token || snapshot.auth_state.needs_refresh),
             warnings: snapshot.warnings(),
         })
     }
@@ -215,6 +229,17 @@ struct SessionSnapshot {
 
 impl SessionSnapshot {
     fn ensure_ready(&self, scope: crate::auth::AuthScope) -> crate::ImResult<()> {
+        self.ensure_identity_ready(scope)?;
+        if !self.auth_state.has_token {
+            return Err(crate::ImError::AuthRequired);
+        }
+        if self.auth_state.token_expired {
+            return Err(crate::ImError::SessionExpired);
+        }
+        Ok(())
+    }
+
+    fn ensure_identity_ready(&self, scope: crate::auth::AuthScope) -> crate::ImResult<()> {
         if !self.ready_for_auth {
             return Err(crate::ImError::AuthRequired);
         }
@@ -240,9 +265,6 @@ impl SessionSnapshot {
                 detail: "file is missing".to_string(),
             });
         }
-        if !self.auth_state.has_token {
-            return Err(crate::ImError::AuthRequired);
-        }
         Ok(())
     }
 
@@ -256,6 +278,10 @@ impl SessionSnapshot {
         }
         if !self.auth_state.has_token {
             warnings.push("auth state has no JWT".to_string());
+        } else if self.auth_state.token_expired {
+            warnings.push("auth state JWT is expired".to_string());
+        } else if self.auth_state.needs_refresh {
+            warnings.push("auth state JWT expires soon".to_string());
         }
         warnings
     }
@@ -278,94 +304,4 @@ impl SessionSnapshot {
         }
         Ok(())
     }
-}
-
-#[derive(Default)]
-struct AuthStateSnapshot {
-    has_token: bool,
-    bearer_token: Option<String>,
-    expires_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct AuthStateFile {
-    #[serde(default)]
-    jwt_token: Option<String>,
-    #[serde(default)]
-    token: Option<String>,
-    #[serde(default)]
-    access_token: Option<String>,
-    #[serde(default)]
-    expires_at: Option<String>,
-}
-
-fn read_auth_state(path: &std::path::Path) -> crate::ImResult<AuthStateSnapshot> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AuthStateSnapshot::default());
-        }
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "auth_state".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    let parsed: AuthStateFile =
-        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })?;
-    let bearer_token = first_non_empty_token([
-        parsed.jwt_token.as_deref(),
-        parsed.token.as_deref(),
-        parsed.access_token.as_deref(),
-    ]);
-    Ok(AuthStateSnapshot {
-        has_token: bearer_token.is_some(),
-        bearer_token,
-        expires_at: parsed
-            .expires_at
-            .filter(|expires_at| !expires_at.trim().is_empty()),
-    })
-}
-
-async fn read_auth_state_async(path: std::path::PathBuf) -> crate::ImResult<AuthStateSnapshot> {
-    let raw = match tokio::fs::read(path).await {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AuthStateSnapshot::default());
-        }
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "auth_state".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    let parsed: AuthStateFile =
-        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })?;
-    let bearer_token = first_non_empty_token([
-        parsed.jwt_token.as_deref(),
-        parsed.token.as_deref(),
-        parsed.access_token.as_deref(),
-    ]);
-    Ok(AuthStateSnapshot {
-        has_token: bearer_token.is_some(),
-        bearer_token,
-        expires_at: parsed
-            .expires_at
-            .filter(|expires_at| !expires_at.trim().is_empty()),
-    })
-}
-
-fn first_non_empty_token<'a>(tokens: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
-    tokens
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .find(|token| !token.is_empty())
-        .map(ToOwned::to_owned)
 }

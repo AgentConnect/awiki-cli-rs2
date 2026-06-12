@@ -85,45 +85,51 @@ awiki-cli-<version>-windows-<arch>.zip
 
 Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。
 
-## 4. 构建 awiki-deamon 产物
+## 4. 发布 awiki-deamon Linux 包
 
-Daemon release 包用于客户端安装/升级。当前推荐在 Linux build 机或目标 Ubuntu 服务器上构建 Linux 包：
+Daemon release 包用于客户端安装/升级。当前推荐在目标 Ubuntu 服务器上执行高层发布脚本：
+
+```bash
+scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com
+```
+
+生产环境使用：
+
+```bash
+scripts/release/publish-daemon-linux.sh --base-url https://awiki.ai
+```
+
+脚本行为：
+
+- 从 `crates/awiki-deamon/Cargo.toml` 读取发布版本。
+- 校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致。
+- 校验本次版本高于 `/var/www/awiki-web/daemon/releases/manifest.json` 中已发布的 `latest`。
+- 构建 Linux amd64 release 包。
+- 生成 `install.sh`、`releases/manifest.json` 和版本化 release 目录。
+- 发布到固定 Nginx 目录 `/var/www/awiki-web/daemon`。
+- 通过 HTTP 校验 manifest、安装脚本和 tar 包可访问。
+
+脚本不会修改版本号、提交代码、推送代码或执行测试。发布前需要先在 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。只检查发布计划时使用：
+
+```bash
+scripts/release/publish-daemon-linux.sh --base-url https://anpclaw.com --dry-run
+```
+
+## 5. 手工准备 daemon 下载目录
+
+一般发布不需要手工执行底层脚本。只有在本地调试 release 包或下载目录结构时，才直接使用下面两个脚本。
+
+先构建 Linux 包：
 
 ```bash
 scripts/release/build-daemon-artifact.sh \
-  --version <version> \
   --os linux \
   --arch amd64 \
-  --target x86_64-unknown-linux-gnu
+  --target x86_64-unknown-linux-gnu \
+  --dist dist/daemon
 ```
 
-产物默认写入 `dist/daemon/`：
-
-```text
-dist/daemon/awiki-deamon-linux-amd64.tar.gz
-```
-
-包内包含：
-
-- `awiki-deamon`
-- `awiki-deamon-runtime`
-- `README.txt`
-- `LICENSE`
-- `checksums.txt`
-
-macOS 本地验证可使用：
-
-```bash
-scripts/release/build-daemon-artifact.sh \
-  --version <version> \
-  --os darwin \
-  --arch arm64 \
-  --target aarch64-apple-darwin
-```
-
-## 5. 准备 daemon 下载目录
-
-当需要生成安装脚本、manifest 和版本化下载目录时，先确保 `dist/daemon/` 或指定目录中已有 `awiki-deamon-*.tar.gz`，然后执行：
+再生成安装脚本、manifest 和版本化下载目录：
 
 ```bash
 scripts/release/stage-daemon-downloads.sh \
@@ -138,7 +144,7 @@ scripts/release/stage-daemon-downloads.sh \
 - `--download-base-url`：安装脚本、manifest 和 release tar 包的静态下载根地址。脚本会从这里读取 `releases/manifest.json`，manifest 中的包 URL 也会从这里派生。标准线上路由必须使用 `<后端服务根地址>/daemon`，发布脚本会据此推导 daemon 持久配置中的后端服务根地址。
 - `--base-url`：daemon 持久配置中的后端服务根地址，默认派生 user-service、message-service、mail-service、DID domain 和 ANP service。标准线上路由下可省略；如果下载域名和后端 API 域名不同，或者使用 `file://` / 本地路径测试，则必须显式传入。
 
-生产环境当前约定为：
+生产环境手工 staging 使用：
 
 ```bash
 scripts/release/stage-daemon-downloads.sh \
@@ -148,7 +154,7 @@ scripts/release/stage-daemon-downloads.sh \
   --download-base-url https://awiki.ai/daemon
 ```
 
-未来线上测试环境可使用同一流程，只替换为：
+线上测试环境手工 staging 使用：
 
 ```bash
 scripts/release/stage-daemon-downloads.sh \
@@ -209,12 +215,10 @@ python3 scripts/test_daemon_release_contract.py
 如果修改了 Flutter SDK：
 
 ```bash
-scripts/flutter/codegen-check.sh
-cd packages/awiki_im_core
-flutter pub get
-dart analyze
-flutter test
+scripts/flutter/build-sdk-native.sh
 ```
+
+该脚本依次执行 bridge 生成一致性检查、Apple XCFramework 构建和 Android jniLibs 构建。只需要检查执行计划时可使用 `--dry-run`。
 
 如果只发布 daemon，可以至少执行：
 

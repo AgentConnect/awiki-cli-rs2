@@ -9,8 +9,9 @@ use awiki_deamon::commands::{
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
-    AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-    RegistrationToken,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
+    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
+    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::state::HermesProfileRecord;
 use awiki_deamon::{DaemonConfig, DaemonState};
@@ -77,10 +78,71 @@ impl AgentRegistrationClient for MockRegistrationClient {
             did,
             user_id: Some(format!("user_{}", request.handle)),
             agent_kind: request.agent_kind,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
             handle: request.handle,
             status: "registered".to_string(),
         })
+    }
+}
+
+impl AgentInventoryClient for MockRegistrationClient {
+    fn verify_token(
+        &self,
+        _token: &RegistrationToken,
+    ) -> anyhow::Result<RegistrationTokenMetadata> {
+        anyhow::bail!("verify_token is not used in hermes profile tests")
+    }
+
+    fn sync_controller_scope(
+        &self,
+        daemon_agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({
+            "agent_did": daemon_agent_did,
+            "controller_user_id": "user-alice",
+            "controller_full_handle": "alice.anpclaw.com",
+            "controller_did": "did:human:alice",
+            "updated_count": 1,
+        }))
+    }
+
+    fn verify_controller_sender(
+        &self,
+        _daemon_agent_did: &str,
+        sender_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<ControllerSenderScope> {
+        if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+            Ok(ControllerSenderScope {
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_did: sender_did.to_string(),
+                sender_did: sender_did.to_string(),
+            })
+        } else {
+            anyhow::bail!("controller_scope_mismatch")
+        }
+    }
+
+    fn update_latest_status(
+        &self,
+        _daemon_agent_did: &str,
+        _statuses: Vec<AgentLatestStatusUpdateItem>,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("update_latest_status is not used in hermes profile tests")
+    }
+
+    fn archive_agent(
+        &self,
+        _daemon_agent_did: &str,
+        _agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({ "archived": [] }))
     }
 }
 
@@ -140,7 +202,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 18);
+    assert_eq!(summary.schema_version, 20);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
@@ -159,6 +221,15 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         )
         .unwrap();
     assert_eq!(create_request_table_count, 1);
+    let control_command_table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'control_command_state'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(control_command_table_count, 1);
 
     let current_table_count: i64 = Connection::open(&config.daemon_db_path)
         .unwrap()
@@ -222,7 +293,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
                     "handle": "@alice-hermes",
                     "runtime": "hermes",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Alice Hermes"
                 }
             }),
         },
@@ -238,6 +310,13 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert_eq!(
         runtime_agent.runtime_plugin_id.as_deref(),
         Some(HERMES_RUNTIME_PLUGIN_ID)
+    );
+    let runtime_profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        runtime_profile.display_name.as_deref(),
+        Some("Alice Hermes")
     );
 
     let hermes = state.load_hermes_profile(&created.agent_did).unwrap();
@@ -262,6 +341,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     .unwrap();
 
     assert!(soul.contains("Awiki Hermes Runtime Agent"));
+    assert!(soul.contains("始终跟随 controller 的会话语言"));
+    assert!(soul.contains("默认使用简体中文"));
     assert!(runtime_model_config.contains("provider: custom"));
     assert!(runtime_model_config.contains("default: gpt-5.2"));
     assert!(profile_json.contains("\"run_capability_token_persisted\": false"));

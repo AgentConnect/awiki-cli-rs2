@@ -8,8 +8,9 @@ use awiki_deamon::commands::{
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
 use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
-    AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-    RegistrationToken,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
+    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
+    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::runtime::{RuntimeRun, RuntimeRunStatus};
 use awiki_deamon::state::{HermesNativeSessionRecord, HermesSessionRoute};
@@ -24,12 +25,17 @@ use serde_json::json;
 #[derive(Debug, Clone, Default)]
 struct MockRegistrationClient {
     requests: Arc<Mutex<Vec<AgentRegistrationExchangeRequest>>>,
+    archive_requests: Arc<Mutex<Vec<(String, String)>>>,
     fail_reason: Option<String>,
 }
 
 impl MockRegistrationClient {
     fn requests(&self) -> Vec<AgentRegistrationExchangeRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn archive_requests(&self) -> Vec<(String, String)> {
+        self.archive_requests.lock().unwrap().clone()
     }
 }
 
@@ -53,10 +59,75 @@ impl AgentRegistrationClient for MockRegistrationClient {
             did,
             user_id: Some(format!("user_{}", request.handle)),
             agent_kind: request.agent_kind,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_did: request.controller_did,
             handle: request.handle,
             status: "registered".to_string(),
         })
+    }
+}
+
+impl AgentInventoryClient for MockRegistrationClient {
+    fn verify_token(
+        &self,
+        _token: &RegistrationToken,
+    ) -> anyhow::Result<RegistrationTokenMetadata> {
+        anyhow::bail!("verify_token is not used in agent registration management tests")
+    }
+
+    fn sync_controller_scope(
+        &self,
+        daemon_agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({
+            "agent_did": daemon_agent_did,
+            "controller_user_id": "user-alice",
+            "controller_full_handle": "alice.anpclaw.com",
+            "controller_did": "did:human:alice",
+            "updated_count": 1,
+        }))
+    }
+
+    fn verify_controller_sender(
+        &self,
+        _daemon_agent_did: &str,
+        sender_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<ControllerSenderScope> {
+        if sender_did == "did:human:alice" || sender_did == "did:human:alice-new" {
+            Ok(ControllerSenderScope {
+                controller_user_id: "user-alice".to_string(),
+                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_did: sender_did.to_string(),
+                sender_did: sender_did.to_string(),
+            })
+        } else {
+            anyhow::bail!("controller_scope_mismatch")
+        }
+    }
+
+    fn update_latest_status(
+        &self,
+        _daemon_agent_did: &str,
+        _statuses: Vec<AgentLatestStatusUpdateItem>,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("update_latest_status is not used in agent registration management tests")
+    }
+
+    fn archive_agent(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.archive_requests
+            .lock()
+            .unwrap()
+            .push((daemon_agent_did.to_string(), agent_did.to_string()));
+        Ok(json!({ "archived": [] }))
     }
 }
 
@@ -98,6 +169,24 @@ fn seed_runtime_inbox_projection(config: &DaemonConfig, runtime_agent_did: &str)
         "hello runtime",
         "2026-06-04T10:00:00Z",
         0,
+        r#"{"peer_user_id":"user-bob","peer_full_handle":"bob.anpclaw.com","peer_current_did":"did:human:bob"}"#,
+    );
+    insert_projected_message(
+        &connection,
+        &owner_identity_id,
+        runtime_agent_did,
+        "msg-direct-bob-new-did",
+        "dm:did:human:bob-new",
+        0,
+        "did:human:bob-new",
+        runtime_agent_did,
+        "",
+        "",
+        "text/plain",
+        "hello from new did",
+        "2026-06-04T10:01:00Z",
+        0,
+        r#"{"peer_user_id":"user-bob","peer_full_handle":"bob.anpclaw.com","peer_current_did":"did:human:bob-new"}"#,
     );
     insert_projected_message(
         &connection,
@@ -123,6 +212,24 @@ fn seed_runtime_inbox_projection(config: &DaemonConfig, runtime_agent_did: &str)
         }"#,
         "2026-06-04T10:05:00Z",
         1,
+        "{}",
+    );
+    insert_projected_message(
+        &connection,
+        &owner_identity_id,
+        runtime_agent_did,
+        "msg-group-attachment-summary",
+        "group:did:group:summary",
+        0,
+        "did:human:dana",
+        runtime_agent_did,
+        "did:group:summary",
+        "did:group:summary",
+        "application/anp-attachment-manifest+json",
+        r#"{"attachments":[]}"#,
+        "2026-06-04T10:06:00Z",
+        1,
+        r#"{"attachment_summary":{"attachment_id":"att-summary","filename":"summary.md","mime_type":"text/markdown","size_bytes":2048},"has_attachments":true}"#,
     );
 }
 
@@ -142,6 +249,7 @@ fn insert_projected_message(
     content: &str,
     sent_at: &str,
     is_read: i64,
+    metadata: &str,
 ) {
     connection
         .execute(
@@ -149,8 +257,8 @@ fn insert_projected_message(
 INSERT INTO messages
     (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
      sender_did, receiver_did, group_id, group_did, content_type, content,
-     sent_at, stored_at, is_read)
-VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)"#,
+     sent_at, stored_at, is_read, metadata)
+VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14)"#,
             rusqlite::params![
                 msg_id,
                 owner_identity_id,
@@ -165,6 +273,7 @@ VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)"#,
                 content,
                 sent_at,
                 is_read,
+                metadata,
             ],
         )
         .unwrap();
@@ -224,7 +333,8 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
                     "runtime": "claude-code",
                     "workspace": root.path().join("workspace").display().to_string(),
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Alice Coder"
                 },
                 "reply_policy": {
                     "progress": true,
@@ -315,7 +425,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
 }
 
 #[test]
-fn runtime_agent_create_generates_product_handle_when_app_omits_handle() {
+fn runtime_agent_create_rejects_missing_handle() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
@@ -329,7 +439,7 @@ fn runtime_agent_create_generates_product_handle_when_app_omits_handle() {
     .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
 
-    let outcome = handle_agent_payload_message(
+    let error = handle_agent_payload_message(
         &config,
         &state,
         &registration,
@@ -358,26 +468,12 @@ fn runtime_agent_create_generates_product_handle_when_app_omits_handle() {
             }),
         },
     )
-    .unwrap();
+    .unwrap_err();
 
-    let created = expect_created(outcome);
-    assert!(created.handle.starts_with("awiki-agent-"));
-    assert_eq!(created.handle.len(), "awiki-agent-".len() + 16);
-    assert_eq!(created.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
-
-    let requests = registration.requests();
-    assert_eq!(requests[1].handle, created.handle);
-    let status = outbox.agent_statuses().pop().unwrap();
-    assert_eq!(
-        status.payload["result"]["runtime_agent_did"],
-        created.agent_did
-    );
-    assert_eq!(
-        status.payload["result"]["daemon_agent_did"],
-        daemon.agent_did
-    );
-    assert_eq!(status.payload["result"]["runtime"], "hermes");
-    assert_eq!(status.payload["result"]["display_name"], "Hermes");
+    assert!(error
+        .to_string()
+        .contains("runtime.agent.create handle is required"));
+    assert_eq!(registration.requests().len(), 1);
 }
 
 #[test]
@@ -407,6 +503,7 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
             "command": "runtime.agent.create",
             "target_agent_kind": "runtime",
             "args": {
+                "handle": "@alice-hermes-once",
                 "runtime": "hermes",
                 "controller_did": "did:human:alice",
                 "registration_token": "tok_runtime_secret_value",
@@ -512,9 +609,14 @@ fn agent_status_query_returns_snapshot_payload_without_chat_content() {
     assert_eq!(status.payload["status_scope"], "snapshot");
     assert_eq!(status.payload["daemon_agent_did"], daemon.agent_did);
     assert_eq!(status.payload["daemon"]["status"], "ready");
+    assert!(status.payload["daemon"].get("display_name").is_none());
     assert_eq!(status.payload["runs"], json!([]));
+    for runtime in status.payload["runtimes"].as_array().unwrap() {
+        assert!(runtime.get("display_name").is_none());
+    }
     let dump = status.payload.to_string();
     assert!(!dump.contains("tok_daemon_secret_value"));
+    assert!(!dump.contains("alice-mac-daemon"));
     assert!(!dump.contains("prompt"));
 }
 
@@ -614,12 +716,17 @@ fn runtime_session_reset_archives_active_hermes_route() {
     let route = HermesSessionRoute::new(
         created.agent_did.clone(),
         created.runtime_profile_id.clone(),
-        "did:human:alice",
+        daemon.controller_scope_key.clone(),
         Some("dm:alice:hermes".to_string()),
         "conversation",
     );
-    let record =
-        HermesNativeSessionRecord::active(&route, "awiki_alice_hermes", "hsession-1").unwrap();
+    let record = HermesNativeSessionRecord::active(
+        &route,
+        "did:human:alice",
+        "awiki_alice_hermes",
+        "hsession-1",
+    )
+    .unwrap();
     state.store_hermes_native_session(&record).unwrap();
     assert!(state
         .load_active_hermes_session_by_route(&route)
@@ -703,7 +810,8 @@ fn runtime_session_reset_rejects_runtime_owned_by_another_daemon() {
                     "handle": "@alice-hermes-daemon-one",
                     "runtime": "generic-cli",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Generic CLI"
                 }
             }),
         },
@@ -774,7 +882,8 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
                     "handle": "@alice-retry-runtime",
                     "runtime": "generic-cli",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Retry Runtime"
                 }
             }),
         },
@@ -788,6 +897,9 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
         .insert_runtime_task(&awiki_deamon::runtime::RuntimeTask {
             task_id: "task_failed_retry".to_string(),
             agent_did: created.agent_did.clone(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             sender_did: "did:human:alice".to_string(),
             conversation_id: Some("dm:alice:retry".to_string()),
@@ -1004,7 +1116,8 @@ fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
                         ]
                     },
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Generic CLI"
                 }
             }),
         },
@@ -1086,7 +1199,8 @@ fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() 
                         "handle": format!("@alice-{runtime}"),
                         "runtime": runtime,
                         "controller_did": "did:human:alice",
-                        "registration_token": "tok_runtime_secret_value"
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": format!("{runtime} Runtime")
                     }
                 }),
             },
@@ -1153,7 +1267,8 @@ fn runtime_agent_create_defaults_generic_cli_driver_to_codex() {
                     "handle": "@alice-generic-default",
                     "runtime": "generic-cli",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Generic Default"
                 }
             }),
         },
@@ -1211,7 +1326,8 @@ fn runtime_agent_create_rejects_invalid_generic_cli_contract_fields() {
                     "driver_id": "codex",
                     "driver_config": ["not", "an", "object"],
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Invalid Generic"
                 }
             }),
         },
@@ -1258,14 +1374,17 @@ fn non_controller_runtime_create_command_is_rejected_without_creating_agent() {
                     "handle": "alice-awiki-coder",
                     "runtime": "claude-code",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Unauthorized Runtime"
                 }
             }),
         },
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("controller_did"));
+    assert!(error
+        .chain()
+        .any(|cause| cause.to_string().contains("controller_scope_mismatch")));
     assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
     assert!(outbox.agent_statuses().is_empty());
 }
@@ -1308,7 +1427,8 @@ fn registration_token_failure_sends_failed_status_without_persisting_runtime_age
                     "handle": "alice-awiki-coder",
                     "runtime": "claude-code",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Failed Runtime"
                 }
             }),
         },
@@ -1360,7 +1480,8 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
                     "handle": "@alice-inbox-runtime",
                     "runtime": "claude-code",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Inbox Runtime"
                 }
             }),
         },
@@ -1407,21 +1528,34 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     assert_eq!(payload["request_id"], "cmd_runtime_inbox_query");
     assert_eq!(payload["state"], "succeeded");
     let items = payload["result"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
+    assert_eq!(items.len(), 3);
     assert_eq!(items[0]["kind"], "group");
-    assert_eq!(items[0]["group_did"], "did:group:team");
+    assert_eq!(items[0]["group_did"], "did:group:summary");
     assert_eq!(items[0]["peer_did"], serde_json::Value::Null);
-    assert_eq!(items[0]["title"], "did:group:team");
-    assert_eq!(items[0]["display"]["title"], "did:group:team");
+    assert_eq!(items[0]["title"], "did:group:summary");
+    assert_eq!(items[0]["display"]["title"], "did:group:summary");
     assert_eq!(items[0]["display"]["source"], "did_fallback");
+    assert_eq!(items[0]["last_message_preview"], "附件: summary.md");
     assert_eq!(items[0]["has_attachments"], true);
     assert_eq!(items[0]["last_content_type"], "attachment");
-    assert_eq!(items[1]["kind"], "direct");
-    assert_eq!(items[1]["peer_did"], "did:human:bob");
-    assert_eq!(items[1]["group_did"], serde_json::Value::Null);
-    assert_eq!(items[1]["display"]["title"], "did:human:bob");
+    assert_eq!(items[1]["kind"], "group");
+    assert_eq!(items[1]["group_did"], "did:group:team");
+    assert_eq!(items[1]["peer_did"], serde_json::Value::Null);
+    assert_eq!(items[1]["display"]["title"], "did:group:team");
     assert_eq!(items[1]["display"]["source"], "did_fallback");
-    assert_eq!(items[1]["last_message_preview"], "hello runtime");
+    assert_eq!(items[1]["has_attachments"], true);
+    assert_eq!(items[1]["last_content_type"], "attachment");
+    assert_eq!(items[2]["kind"], "direct");
+    let direct_thread_id = items[2]["thread_id"].as_str().unwrap().to_string();
+    assert!(direct_thread_id.starts_with("dm:peer-scope:v1:"));
+    assert_eq!(items[2]["title"], "bob.anpclaw.com");
+    assert_eq!(items[2]["peer_user_id"], "user-bob");
+    assert_eq!(items[2]["peer_handle"], "bob.anpclaw.com");
+    assert_eq!(items[2]["peer_did"], "did:human:bob-new");
+    assert_eq!(items[2]["group_did"], serde_json::Value::Null);
+    assert_eq!(items[2]["display"]["title"], "bob.anpclaw.com");
+    assert_eq!(items[2]["display"]["source"], "did_fallback");
+    assert_eq!(items[2]["last_message_preview"], "hello from new did");
 
     let thread_outbox = MemoryRuntimeOutbox::default();
     handle_agent_payload_message(
@@ -1474,6 +1608,90 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     assert!(!payload
         .to_string()
         .contains(&config.state_root.display().to_string()));
+
+    let summary_thread_outbox = MemoryRuntimeOutbox::default();
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &summary_thread_outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_query_runtime_inbox_summary_thread".to_string(),
+            conversation_id: Some("conv_daemon_inbox".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_runtime_inbox_summary_thread_query",
+                "command": "runtime.inbox.thread.query",
+                "target_agent_kind": "daemon",
+                "args": {
+                    "runtime_agent_did": created.agent_did,
+                    "thread_id": "group:did:group:summary",
+                    "kind": "group",
+                    "group_did": "did:group:summary",
+                    "limit": 20
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let statuses = summary_thread_outbox.agent_statuses();
+    assert_eq!(statuses.len(), 1);
+    let payload = &statuses[0].payload;
+    assert_eq!(payload["status_scope"], "runtime_inbox_thread");
+    assert_eq!(payload["state"], "succeeded");
+    let messages = payload["result"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content_type"], "attachment");
+    assert_eq!(
+        messages[0]["attachments"][0]["attachment_id"],
+        "att-summary"
+    );
+    assert_eq!(messages[0]["attachments"][0]["filename"], "summary.md");
+    assert_eq!(messages[0]["attachments"][0]["mime_type"], "text/markdown");
+    assert_eq!(messages[0]["attachments"][0]["size_bytes"], 2048);
+
+    let direct_thread_outbox = MemoryRuntimeOutbox::default();
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &direct_thread_outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_query_runtime_inbox_direct_thread".to_string(),
+            conversation_id: Some("conv_daemon_inbox".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_runtime_inbox_direct_thread_query",
+                "command": "runtime.inbox.thread.query",
+                "target_agent_kind": "daemon",
+                "args": {
+                    "runtime_agent_did": created.agent_did,
+                    "thread_id": direct_thread_id,
+                    "kind": "direct",
+                    "peer_handle": "bob.anpclaw.com",
+                    "peer_did": "did:human:bob-new",
+                    "limit": 20
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let statuses = direct_thread_outbox.agent_statuses();
+    assert_eq!(statuses.len(), 1);
+    let payload = &statuses[0].payload;
+    assert_eq!(payload["status_scope"], "runtime_inbox_thread");
+    assert_eq!(payload["state"], "succeeded");
+    assert_eq!(payload["result"]["title"], "bob.anpclaw.com");
+    let messages = payload["result"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["sender_handle"], "bob.anpclaw.com");
+    assert_eq!(messages[1]["sender_handle"], "bob.anpclaw.com");
 }
 
 #[test]
@@ -1522,6 +1740,212 @@ fn runtime_inbox_query_rejects_unowned_runtime_without_reading_messages() {
     assert_eq!(
         statuses[0].payload["result"]["error_code"],
         "runtime_not_owned"
+    );
+}
+
+#[test]
+fn runtime_agent_delete_archives_owned_runtime_and_reports_status() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let created = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_for_delete".to_string(),
+                conversation_id: Some("conv_delete".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_for_delete",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-delete-runtime",
+                        "runtime": "hermes",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Delete Runtime"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let runtime = state.load_agent_definition(&created.agent_did).unwrap();
+    let agent_db = config.state_root.join(&runtime.local_agent_db_path);
+    let message_db = config.state_root.join(&runtime.message_db_path);
+    std::fs::create_dir_all(agent_db.parent().unwrap()).unwrap();
+    std::fs::write(&agent_db, b"agent").unwrap();
+    std::fs::write(&message_db, b"message").unwrap();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_delete_runtime".to_string(),
+            conversation_id: Some("conv_delete".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_delete_runtime",
+                "command": "runtime.agent.delete",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": created.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        registration.archive_requests(),
+        vec![(daemon.agent_did.clone(), created.agent_did.clone())]
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(&created.agent_did)
+            .unwrap()
+            .status,
+        "archived"
+    );
+    assert!(state
+        .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)
+        .unwrap()
+        .is_empty());
+    let latest_items =
+        awiki_deamon::agent_status::latest_status_items(&config, &state, &daemon, 1_700_000)
+            .unwrap();
+    assert_eq!(latest_items.len(), 1);
+    assert_eq!(latest_items[0].agent_did, daemon.agent_did);
+    let snapshot =
+        awiki_deamon::agent_status::daemon_snapshot_payload(&config, &state, &daemon).unwrap();
+    assert_eq!(snapshot["runtimes"].as_array().map(Vec::len), Some(0));
+    assert!(!agent_db.exists());
+    assert!(!message_db.exists());
+    let archived = outbox.agent_statuses().last().unwrap().clone();
+    assert_eq!(archived.payload["state"], "archived");
+    assert_eq!(
+        archived.payload["result"]["command"],
+        "runtime.agent.delete"
+    );
+    assert_eq!(
+        archived.payload["result"]["runtime_agent_did"],
+        created.agent_did
+    );
+}
+
+#[test]
+fn daemon_delete_archives_daemon_family_and_reports_status() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let created = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_for_daemon_delete".to_string(),
+                conversation_id: Some("conv_daemon_delete".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_for_daemon_delete",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-daemon-delete-runtime",
+                        "runtime": "hermes",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Daemon Delete Runtime"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_delete_daemon".to_string(),
+            conversation_id: Some("conv_daemon_delete".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_delete_daemon",
+                "command": "daemon.delete",
+                "target_agent_kind": "daemon",
+                "args": {
+                    "daemon_agent_did": daemon.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        registration.archive_requests(),
+        vec![(daemon.agent_did.clone(), daemon.agent_did.clone())]
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(&daemon.agent_did)
+            .unwrap()
+            .status,
+        "archived"
+    );
+    assert_eq!(
+        state
+            .load_agent_definition(&created.agent_did)
+            .unwrap()
+            .status,
+        "archived"
+    );
+    let archived = outbox.agent_statuses().last().unwrap().clone();
+    assert_eq!(archived.payload["state"], "archived");
+    assert_eq!(archived.payload["result"]["command"], "daemon.delete");
+    assert_eq!(
+        archived.payload["result"]["daemon_agent_did"],
+        daemon.agent_did
     );
 }
 
@@ -1582,7 +2006,8 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
                     "handle": "@alice-hermes-status",
                     "runtime": "hermes",
                     "controller_did": "did:human:alice",
-                    "registration_token": "tok_runtime_secret_value"
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Hermes Status"
                 }
             }),
         },
@@ -1593,12 +2018,13 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
     let route = awiki_deamon::state::HermesSessionRoute::new(
         created.agent_did.clone(),
         created.runtime_profile_id.clone(),
-        "did:human:alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
     let session = awiki_deamon::state::HermesNativeSessionRecord::active(
         &route,
+        "did:human:alice",
         "awiki_alice_hermes_status",
         "hermes-session-status",
     )

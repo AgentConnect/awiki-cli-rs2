@@ -1,3 +1,5 @@
+use sha2::{Digest, Sha256};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwnerScope {
     pub(crate) owner_identity_id: String,
@@ -47,6 +49,24 @@ impl OwnerScope {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectPeerScope {
+    pub(crate) user_id: String,
+    pub(crate) full_handle: String,
+}
+
+impl DirectPeerScope {
+    pub(crate) fn new(
+        user_id: impl Into<String>,
+        full_handle: impl Into<String>,
+    ) -> crate::ImResult<Self> {
+        Ok(Self {
+            user_id: require_non_empty("peer_user_id", user_id.into())?,
+            full_handle: normalize_full_handle(full_handle.into())?,
+        })
+    }
+}
+
 pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
     let peer_did = peer_did.trim();
     if peer_did.is_empty() {
@@ -54,6 +74,11 @@ pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
     } else {
         format!("dm:{peer_did}")
     }
+}
+
+pub(crate) fn direct_conversation_id_for_peer_scope(scope: &DirectPeerScope) -> String {
+    let input = format!("user:{}\nhandle:{}", scope.user_id, scope.full_handle);
+    format!("dm:peer-scope:v1:{}", sha256_hex(input.as_bytes()))
 }
 
 pub(crate) fn direct_conversation_id_from_thread_alias(
@@ -112,6 +137,21 @@ fn require_non_empty(field: &'static str, value: String) -> crate::ImResult<Stri
         ));
     }
     Ok(value.to_owned())
+}
+
+fn normalize_full_handle(value: String) -> crate::ImResult<String> {
+    let value = require_non_empty("peer_full_handle", value)?;
+    Ok(value.to_ascii_lowercase())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn optional_trimmed(value: Option<String>) -> Option<String> {
@@ -182,6 +222,29 @@ mod tests {
         assert_eq!(
             direct_conversation_id_from_thread_alias("dm:did:example:bob", "did:example:alice"),
             Some("dm:did:example:bob".to_owned())
+        );
+    }
+
+    #[test]
+    fn direct_peer_scope_conversation_ids_ignore_did_rotation() {
+        let scope = DirectPeerScope::new("user-1", " Alice.AnPClaw.com ").expect("valid scope");
+        let same_scope = DirectPeerScope::new("user-1", "alice.anpclaw.com").expect("valid scope");
+
+        assert_eq!(
+            direct_conversation_id_for_peer_scope(&scope),
+            direct_conversation_id_for_peer_scope(&same_scope)
+        );
+        assert!(direct_conversation_id_for_peer_scope(&scope).starts_with("dm:peer-scope:v1:"));
+    }
+
+    #[test]
+    fn direct_peer_scope_separates_handle_reuse_between_users() {
+        let old_owner = DirectPeerScope::new("user-1", "alice.anpclaw.com").expect("valid scope");
+        let new_owner = DirectPeerScope::new("user-2", "alice.anpclaw.com").expect("valid scope");
+
+        assert_ne!(
+            direct_conversation_id_for_peer_scope(&old_owner),
+            direct_conversation_id_for_peer_scope(&new_owner)
         );
     }
 }

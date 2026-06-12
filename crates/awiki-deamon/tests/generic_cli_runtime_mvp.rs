@@ -28,6 +28,9 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:alice-coder".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         runtime_profile_id: "profile_generic_cli_1".to_string(),
         runtime_plugin_id: "generic-cli".to_string(),
@@ -1102,7 +1105,7 @@ PY
     );
     assert_eq!(
         run_record.route_key,
-        "cli:did:agent:alice-coder:did:human:alice:conv_codex_driver:message-run"
+        "cli:did:agent:alice-coder:controller-scope:v1:test-alice-anpclaw-com:conv_codex_driver:message-run"
     );
     assert_eq!(run_record.workspace_mode, Some(WorkspaceMode::SharedRoot));
     assert!(!run_record.is_security_boundary);
@@ -1327,7 +1330,7 @@ exit 0
     );
     assert_eq!(
         run_record.route_key,
-        "cli:did:agent:alice-coder:did:human:alice:no-conversation:message-run"
+        "cli:did:agent:alice-coder:controller-scope:v1:test-alice-anpclaw-com:no-conversation:message-run"
     );
 }
 
@@ -1394,21 +1397,23 @@ exit 42
 }
 
 #[test]
-fn non_controller_text_is_not_routed_to_runtime_task() {
+fn controller_text_route_preserves_verified_current_sender_did() {
     let profile = profile(std::env::temp_dir().join("awiki-workspace"));
-    let error = route_controller_text_task(
+    let task = route_controller_text_task(
         &profile,
         ControllerTextMessage {
             message_id: "msg_002".to_string(),
             conversation_id: None,
-            sender_did: "did:human:bob".to_string(),
+            sender_did: "did:human:alice-new".to_string(),
             target_agent_did: "did:agent:alice-coder".to_string(),
             text: "请执行".to_string(),
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(error.to_string().contains("controller_did"));
+    assert_eq!(task.controller_did, "did:human:alice-new");
+    assert_eq!(task.sender_did, "did:human:alice-new");
+    assert_eq!(task.controller_scope_key, profile.controller_scope_key);
 }
 
 #[test]

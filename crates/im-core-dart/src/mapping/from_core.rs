@@ -356,9 +356,11 @@ impl From<im_core::auth::SessionUpdate> for DartSessionUpdate {
 
 impl From<im_core::identity::Profile> for DartUserProfile {
     fn from(value: im_core::identity::Profile) -> Self {
+        let full_handle = value.handle.map(|handle| handle.as_str().to_string());
         Self {
             subject: value.subject.as_str().to_string(),
-            handle: value.handle.map(|handle| handle.as_str().to_string()),
+            handle: full_handle.clone(),
+            full_handle,
             display_name: value.display_name,
             bio: value.bio,
             description: value.description,
@@ -895,6 +897,7 @@ impl From<im_core::groups::GroupSummary> for DartGroupSummary {
             name: value.name,
             display_name: value.display_name,
             avatar_uri: value.avatar_uri,
+            my_role: value.my_role,
             membership_status: value.membership_status,
             member_count: value.member_count,
             last_message_at: value.last_message_at,

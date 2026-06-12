@@ -157,6 +157,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
 
     let mut state_root = None;
     let mut agent_did = None;
+    let mut archive_id = None;
     let mut controller_did = None;
     let mut handle = None;
     let mut registration_token = None;
@@ -176,6 +177,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
             "--agent-did" => {
                 let value = args.next().context("--agent-did requires a DID argument")?;
                 agent_did = Some(value);
+            }
+            "--archive-id" => {
+                let value = args.next().context("--archive-id requires a value")?;
+                archive_id = Some(value);
             }
             "--agent-jwt-token" => {
                 let value = args
@@ -302,6 +307,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
         "runtime-list" => Ok(DaemonCommand::RuntimeList {
             state_root: required_state_root(state_root)?,
         }),
+        "archive-daemon-finalize" => Ok(DaemonCommand::ArchiveDaemonFinalize {
+            state_root: required_state_root(state_root)?,
+            archive_id: archive_id.context("--archive-id is required")?,
+        }),
         "setup-daemon-agent" => {
             let state_root = required_state_root(state_root)?;
             let handle = handle
@@ -338,6 +347,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
             state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
             action: ServiceAction::Restart,
         }),
+        "service-uninstall" => Ok(DaemonCommand::Service {
+            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+            action: ServiceAction::Uninstall,
+        }),
         "status" => Ok(DaemonCommand::Status {
             state_root: required_state_root(state_root)?,
         }),
@@ -350,7 +363,7 @@ fn required_state_root(state_root: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 fn usage_error<T>() -> Result<T> {
-    bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|agent-list|agent-status|runtime-list|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [--agent-did <did>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
+    bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|service-uninstall|agent-list|agent-status|runtime-list|archive-daemon-finalize|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [--agent-did <did>] [archive-daemon-finalize: --archive-id <id>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
 }
 
 fn runtime_wrapper_usage_error<T>() -> Result<T> {
