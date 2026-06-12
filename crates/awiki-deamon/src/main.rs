@@ -29,6 +29,15 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("__runtime-wrapper") {
+        let response = run_runtime_wrapper(std::env::args().skip(2))?;
+        println!("{}", serde_json::to_string(&response)?);
+        if !response.ok {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     let command = parse_args(std::env::args().skip(1))?;
     let output = run_command_json(command)?;
     println!("{}", serde_json::to_string_pretty(&output)?);

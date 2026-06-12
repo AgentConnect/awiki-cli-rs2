@@ -13,9 +13,9 @@ pub mod runner;
 
 pub use gateway::{
     FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesGatewayCommandStatus,
-    HermesGatewayTimeouts, HermesPromptOutcome, HermesPromptSubmitRequest, HermesRunnerRef,
-    HermesRuntimeEvent, HermesRuntimeEventKind, HermesSessionCreateRequest, HermesSessionRef,
-    StdioHermesGateway,
+    HermesGatewayLaunchContext, HermesGatewayTimeouts, HermesPromptOutcome,
+    HermesPromptSubmitRequest, HermesRunnerRef, HermesRuntimeEvent, HermesRuntimeEventKind,
+    HermesSessionCreateRequest, HermesSessionRef, StdioHermesGateway,
 };
 pub use prompt::HermesPromptWrapper;
 pub use runner::{reset_hermes_session_by_route, HermesRunner, HermesRuntimePlugin};
@@ -23,7 +23,7 @@ pub use runner::{reset_hermes_session_by_route, HermesRunner, HermesRuntimePlugi
 pub const HERMES_RUNTIME_NAME: &str = "hermes";
 pub const HERMES_RUNTIME_PLUGIN_ID: &str = "runtime.hermes";
 
-pub const AWIKI_SKILLS_VERSION: &str = "awiki-hermes-skills-v2";
+pub const AWIKI_SKILLS_VERSION: &str = "awiki-hermes-skills-v3";
 const HERMES_BASE_CONFIG_PATH_ENV: &str = "AWIKI_HERMES_BASE_CONFIG_PATH";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +78,7 @@ pub fn initialize_hermes_profile(
         runtime_plugin_id: profile.runtime_plugin_id.clone(),
         hermes_profile: hermes_profile.clone(),
         local_rpc_socket_path: config.local_socket_path.clone(),
-        daemon_cli_wrapper: "library:awiki_deamon::cli_wrapper; process wrapper wired in Step 07"
+        daemon_cli_wrapper: "process:awiki-deamon-runtime via daemon-managed Hermes PATH"
             .to_string(),
         awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
         run_capability_token_persisted: false,
@@ -108,6 +108,115 @@ pub fn initialize_hermes_profile(
         awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
         status: "ready".to_string(),
     };
+    state.upsert_hermes_profile(&record)?;
+    Ok(HermesProfileInstallResult {
+        record,
+        soul_path,
+        profile_config_path,
+        model_config_path: runtime_config.model_config_path,
+        dotenv_path: runtime_config.dotenv_path,
+        skill_paths,
+    })
+}
+
+pub fn repair_hermes_profile_if_needed(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    handle: &str,
+) -> Result<Option<HermesProfileInstallResult>> {
+    if profile.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID {
+        return Ok(None);
+    }
+    let record = match state.load_hermes_profile(&profile.agent_did) {
+        Ok(record) => record,
+        Err(_) => return initialize_hermes_profile(config, state, profile, handle).map(Some),
+    };
+    if record.status == "ready"
+        && record.awiki_skills_version == AWIKI_SKILLS_VERSION
+        && hermes_profile_files_are_current(&record)
+    {
+        return Ok(None);
+    }
+    rewrite_existing_hermes_profile(config, state, profile, handle, record).map(Some)
+}
+
+fn hermes_profile_files_are_current(record: &HermesProfileRecord) -> bool {
+    let skill_path = record
+        .hermes_home
+        .join("skills")
+        .join("awiki-outbound-messaging")
+        .join("SKILL.md");
+    let Ok(skill) = std::fs::read_to_string(skill_path) else {
+        return false;
+    };
+    skill.contains("awiki-deamon-runtime send")
+        && skill.contains("--to <handle-or-did>")
+        && skill.contains("--group")
+        && skill.contains("Do not call `awiki-cli`")
+        && !skill.contains("--to-handle")
+}
+
+fn rewrite_existing_hermes_profile(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    handle: &str,
+    mut record: HermesProfileRecord,
+) -> Result<HermesProfileInstallResult> {
+    ensure_child_path(&record.hermes_home, &config.state_root)?;
+    std::fs::create_dir_all(&record.hermes_home).with_context(|| {
+        format!(
+            "create Hermes profile home {}",
+            record.hermes_home.display()
+        )
+    })?;
+    let expected_hermes_profile = hermes_profile_name(handle)?;
+    if record.hermes_profile.trim().is_empty() {
+        record.hermes_profile = expected_hermes_profile;
+    }
+
+    let soul_path = record.hermes_home.join("SOUL.md");
+    let profile_config_path = record.hermes_home.join("awiki-profile.json");
+    std::fs::write(&soul_path, soul_content(profile, &record.hermes_profile))
+        .with_context(|| format!("write {}", soul_path.display()))?;
+    let profile_config = AwikiHermesProfileConfig {
+        schema: "awiki.hermes.profile.v1".to_string(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        controller_did: profile.controller_did.clone(),
+        runtime_plugin_id: profile.runtime_plugin_id.clone(),
+        hermes_profile: record.hermes_profile.clone(),
+        local_rpc_socket_path: config.local_socket_path.clone(),
+        daemon_cli_wrapper: "process:awiki-deamon-runtime via daemon-managed Hermes PATH"
+            .to_string(),
+        awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
+        run_capability_token_persisted: false,
+        notes: vec![
+            "run capability tokens are issued per message run and must not be persisted here"
+                .to_string(),
+            "DID private keys and user JWTs stay in daemon-managed storage".to_string(),
+            "Hermes must call the daemon wrapper for Awiki capabilities".to_string(),
+        ],
+    };
+    std::fs::write(
+        &profile_config_path,
+        serde_json::to_vec_pretty(&profile_config)?,
+    )
+    .with_context(|| format!("write {}", profile_config_path.display()))?;
+
+    let runtime_config = ensure_runtime_model_config(&record.hermes_home)?;
+    let skill_paths = install_skills(&record.hermes_home)?;
+    smoke_check_profile(
+        &record.hermes_home,
+        &soul_path,
+        &profile_config_path,
+        &skill_paths,
+    )?;
+
+    record.runtime_profile_id = profile.runtime_profile_id.clone();
+    record.awiki_skills_version = AWIKI_SKILLS_VERSION.to_string();
+    record.status = "ready".to_string();
     state.upsert_hermes_profile(&record)?;
     Ok(HermesProfileInstallResult {
         record,

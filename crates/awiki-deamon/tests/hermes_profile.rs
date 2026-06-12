@@ -7,7 +7,9 @@ use awiki_deamon::commands::{
     IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
 };
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
-use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
+use awiki_deamon::plugins::hermes::{
+    repair_hermes_profile_if_needed, AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID,
+};
 use awiki_deamon::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
     AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
@@ -346,8 +348,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(runtime_model_config.contains("provider: custom"));
     assert!(runtime_model_config.contains("default: gpt-5.2"));
     assert!(profile_json.contains("\"run_capability_token_persisted\": false"));
-    assert!(profile_json.contains("library:awiki_deamon::cli_wrapper"));
-    assert!(profile_json.contains("process wrapper wired in Step 07"));
+    assert!(profile_json.contains("process:awiki-deamon-runtime"));
+    assert!(profile_json.contains("daemon-managed Hermes PATH"));
     assert!(outbound_skill.contains("awiki-deamon-runtime send"));
     assert!(outbound_skill.contains("--to <handle-or-did>"));
     assert!(outbound_skill.contains("--group"));
@@ -416,6 +418,84 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
         .unwrap();
     assert!(audit_dump.contains("\"status\":\"ready\""));
     assert!(!audit_dump.contains("tok_runtime_secret_value"));
+}
+
+#[test]
+fn hermes_profile_repair_rewrites_stale_outbound_skill_without_changing_identity() {
+    let _env = EnvGuard::clear(&["AWIKI_HERMES_BASE_CONFIG_PATH", "HOME"]);
+    let (root, config, state) = fixture();
+    let home = root.path().join("home");
+    let base_hermes_home = home.join(".hermes");
+    std::fs::create_dir_all(&base_hermes_home).unwrap();
+    std::fs::write(
+        base_hermes_home.join("config.yaml"),
+        "model:\n  provider: custom\n  default: gpt-5.2\n",
+    )
+    .unwrap();
+    std::env::set_var("HOME", &home);
+
+    let profile = awiki_deamon::runtime::RuntimeAgentProfile {
+        agent_did: "did:agent:stale-hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        runtime_profile_id: "profile_hermes_stale".to_string(),
+        runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+        display_name: Some("Stale Hermes".to_string()),
+        workspace_id: None,
+        workspace_root: None,
+        workspace_mode: None,
+    };
+    state
+        .upsert_runtime_agent_profile_with_handle(&profile, "alice-hermes")
+        .unwrap();
+    let stale_home = root.path().join("runtime/hermes/profiles/stale");
+    std::fs::create_dir_all(stale_home.join("skills/awiki-outbound-messaging")).unwrap();
+    std::fs::write(stale_home.join("SOUL.md"), "old soul").unwrap();
+    std::fs::write(stale_home.join("awiki-profile.json"), "{}").unwrap();
+    std::fs::write(
+        stale_home.join("skills/awiki-outbound-messaging/SKILL.md"),
+        "Use awiki-deamon-runtime send --to-handle <handle>. Fallback to awiki-cli if needed.",
+    )
+    .unwrap();
+    state
+        .upsert_hermes_profile(&HermesProfileRecord {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            hermes_profile: "awiki_existing_profile".to_string(),
+            hermes_home: stale_home.clone(),
+            hermes_version: Some("0.15.1".to_string()),
+            awiki_skills_version: "awiki-hermes-skills-v2".to_string(),
+            status: "ready".to_string(),
+        })
+        .unwrap();
+
+    let repaired = repair_hermes_profile_if_needed(&config, &state, &profile, "alice-hermes")
+        .unwrap()
+        .expect("stale Hermes profile should be repaired");
+
+    assert_eq!(repaired.record.agent_did, profile.agent_did);
+    assert_eq!(repaired.record.hermes_profile, "awiki_existing_profile");
+    assert_eq!(repaired.record.hermes_home, stale_home);
+    assert_eq!(repaired.record.status, "ready");
+    assert_eq!(repaired.record.awiki_skills_version, AWIKI_SKILLS_VERSION);
+    let stored = state.load_hermes_profile(&profile.agent_did).unwrap();
+    assert_eq!(stored.awiki_skills_version, AWIKI_SKILLS_VERSION);
+    assert_eq!(stored.hermes_profile, "awiki_existing_profile");
+    let outbound_skill = std::fs::read_to_string(
+        stored
+            .hermes_home
+            .join("skills/awiki-outbound-messaging/SKILL.md"),
+    )
+    .unwrap();
+    assert!(outbound_skill.contains("awiki-deamon-runtime send"));
+    assert!(outbound_skill.contains("--to <handle-or-did>"));
+    assert!(outbound_skill.contains("--group"));
+    assert!(outbound_skill.contains("Do not call `awiki-cli`"));
+    assert!(!outbound_skill.contains("--to-handle"));
+    assert!(!outbound_skill.contains("Fallback to awiki-cli"));
+    assert!(stored.hermes_home.join("config.yaml").exists());
 }
 
 #[test]
