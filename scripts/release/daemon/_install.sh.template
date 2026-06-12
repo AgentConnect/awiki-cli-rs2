@@ -236,6 +236,43 @@ validate_extracted_package() {
   [ -f "$INSTALL_DIR/checksums.txt" ] || die "daemon package does not contain checksums.txt"
 }
 
+is_release_version_dir_name() {
+  name="$1"
+  [ -n "$name" ] || return 1
+  case "$name" in
+    .*|*..*|*[!0123456789._-]*|*.*) ;;
+    *) return 1 ;;
+  esac
+  case "$name" in
+    .*|*..*|*[!0123456789._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+cleanup_daemon_bin_root() {
+  bin_root="$1"
+  current_version="$2"
+  previous_version="$3"
+  [ -d "$bin_root" ] || return 0
+  for entry in "$bin_root"/* "$bin_root"/.upgrade-*; do
+    [ -e "$entry" ] || continue
+    name="$(basename "$entry")"
+    [ "$name" != "current" ] || continue
+    [ "$name" != "$current_version" ] || continue
+    [ -z "$previous_version" ] || [ "$name" != "$previous_version" ] || continue
+    case "$name" in
+      .upgrade-*|*.backup.*)
+        rm -rf "$entry"
+        ;;
+      *)
+        if is_release_version_dir_name "$name"; then
+          rm -rf "$entry"
+        fi
+        ;;
+    esac
+  done
+}
+
 PYTHON_BIN=""
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
@@ -296,6 +333,16 @@ validate_archive_entries
 
 INSTALL_DIR="${HOME}/.awiki-daemon/deamon/bin/${PKG_VERSION}"
 CURRENT_DIR="${HOME}/.awiki-daemon/deamon/bin/current"
+PREVIOUS_VERSION=""
+if [ -L "$CURRENT_DIR/awiki-deamon" ]; then
+  previous_target="$(readlink "$CURRENT_DIR/awiki-deamon" 2>/dev/null || true)"
+  case "$previous_target" in
+    ../*/awiki-deamon)
+      PREVIOUS_VERSION="${previous_target#../}"
+      PREVIOUS_VERSION="${PREVIOUS_VERSION%/awiki-deamon}"
+      ;;
+  esac
+fi
 EXTRACT_DIR="${TMP_DIR}/extract/${PKG_VERSION}"
 mkdir -p "$EXTRACT_DIR" "$CURRENT_DIR"
 tar -C "$EXTRACT_DIR" -xzf "$ARCHIVE_PATH"
@@ -316,6 +363,7 @@ if [ -e "$INSTALL_DIR/awiki-deamon-runtime" ]; then
 else
   ln -s "../${PKG_VERSION}/awiki-deamon" "$CURRENT_DIR/awiki-deamon-runtime"
 fi
+cleanup_daemon_bin_root "${HOME}/.awiki-daemon/deamon/bin" "$PKG_VERSION" "$PREVIOUS_VERSION"
 
 set -- "$CURRENT_DIR/awiki-deamon" install --token "$TOKEN"
 set -- "$@" --base-url "$BASE_URL" --download-base-url "$DOWNLOAD_BASE_URL"

@@ -300,6 +300,22 @@ verify_published_http() {
   curl -fsSIL --max-time 10 "${DOWNLOAD_BASE_URL}/install.sh" >/dev/null
 }
 
+cleanup_local_release_artifacts() {
+  local dist_dir="${ROOT_DIR}/dist"
+  [[ -d "${dist_dir}" ]] || return 0
+  local artifact
+  for artifact in "${dist_dir}"/daemon-build-* "${dist_dir}"/daemon-downloads-*; do
+    [[ -e "${artifact}" ]] || continue
+    case "$(basename "${artifact}")" in
+      "daemon-build-${VERSION}"|"daemon-downloads-${VERSION}")
+        ;;
+      daemon-build-*|daemon-downloads-*)
+        rm -rf "${artifact}"
+        ;;
+    esac
+  done
+}
+
 BASE_URL=""
 DRY_RUN=0
 
@@ -396,6 +412,7 @@ scripts/release/daemon/_stage-downloads.sh \
 
 publish_to_nginx
 verify_published_http
+cleanup_local_release_artifacts
 
 cat <<EOF
 daemon release published
