@@ -47,6 +47,7 @@ use crate::runtime::{
     RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
     RuntimeRunStatus, RuntimeTask,
 };
+use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +608,7 @@ fn route_runtime_controller_text(
             )?
         }
     };
+    repair_runtime_controller_inbox_projection_best_effort(config, state, target_agent_did);
     let outbox = ImCoreAgentOutbox::new(target_client.clone());
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
     let runtime_outbox = ControllerRuntimeOutbox::new(
@@ -1275,6 +1277,7 @@ fn run_runtime_task_command(
         &target_agent_did,
         &message.sender_did,
     )?;
+    repair_runtime_controller_inbox_projection_best_effort(config, state, &target_agent_did);
     let profile = state.load_runtime_agent_profile(&target_agent_did)?;
     let message_id = payload.message_id(&message.message_id);
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, &target_agent_did)?;
@@ -1321,6 +1324,20 @@ fn run_runtime_task_command(
         }
     }
     Ok(())
+}
+
+fn repair_runtime_controller_inbox_projection_best_effort(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    target_agent_did: &str,
+) {
+    if let Err(error) = repair_runtime_controller_inbox_projection(config, state, target_agent_did)
+    {
+        eprintln!(
+            "warning: runtime inbox projection repair failed: {}",
+            sanitize_error_message(&error.to_string())
+        );
+    }
 }
 
 #[derive(Debug, Deserialize)]
