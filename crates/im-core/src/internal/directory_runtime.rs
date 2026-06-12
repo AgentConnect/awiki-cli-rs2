@@ -510,17 +510,12 @@ pub(crate) fn handle_lookup_from_value_with_client(
     }
     let did = crate::ids::Did::parse(did)?;
     let handle = crate::ids::Handle::parse(handle, "")?;
-    let user_id = string_value(value, "user_id");
-    if user_id.trim().is_empty() {
-        return Err(crate::ImError::PeerNotFound {
-            peer: did.as_str().to_string(),
-        });
-    }
+    let user_id = stable_user_id_from_lookup(value, did.as_str());
     let (profile, warnings) = profile_from_lookup(client, value.get("profile"), &did, &handle)?;
     Ok(crate::directory::HandleLookupResult {
         handle,
         did,
-        user_id: user_id.trim().to_owned(),
+        user_id,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
         profile,
@@ -541,19 +536,26 @@ pub(crate) fn handle_lookup_from_value(
     if handle.trim().is_empty() {
         return Err(crate::ImError::PeerNotFound { peer: did.clone() });
     }
-    let user_id = string_value(value, "user_id");
-    if user_id.trim().is_empty() {
-        return Err(crate::ImError::PeerNotFound { peer: did.clone() });
-    }
+    let user_id = stable_user_id_from_lookup(value, &did);
     Ok(crate::directory::HandleLookupResult {
         handle: crate::ids::Handle::parse(handle, "")?,
         did: crate::ids::Did::parse(did)?,
-        user_id: user_id.trim().to_owned(),
+        user_id,
         domain: string_option(value, "domain"),
         status: string_option(value, "status"),
         profile: None,
         warnings: Vec::new(),
     })
+}
+
+fn stable_user_id_from_lookup(value: &Value, did: &str) -> String {
+    let value = first_string_value(value, &["user_id", "userId", "subject_id", "subjectId"]);
+    let value = value.trim();
+    if value.is_empty() {
+        did.trim().to_owned()
+    } else {
+        value.to_owned()
+    }
 }
 
 fn profile_from_lookup(

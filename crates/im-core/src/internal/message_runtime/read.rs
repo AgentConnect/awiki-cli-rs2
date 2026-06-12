@@ -655,10 +655,7 @@ fn annotate_direct_peer_scope(
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
         return;
     }
-    let Ok(raw_lookup) = lookup_handle_by_did(directory_transport, peer_did) else {
-        return;
-    };
-    annotate_object_with_handle_lookup(object, raw_lookup);
+    let _ = directory_transport;
 }
 
 async fn annotate_direct_peer_scopes_async(
@@ -706,10 +703,7 @@ async fn annotate_direct_peer_scope_async(
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
         return;
     }
-    let Ok(raw_lookup) = lookup_handle_by_did_async(directory_transport, peer_did).await else {
-        return;
-    };
-    annotate_object_with_handle_lookup(object, raw_lookup);
+    let _ = directory_transport;
 }
 
 fn annotate_object_with_peer_scope(
@@ -732,56 +726,6 @@ fn annotate_object_with_peer_scope(
             Value::String(did.to_owned()),
         );
     }
-}
-
-fn annotate_object_with_handle_lookup(object: &mut Map<String, Value>, lookup: Value) {
-    let Some(user_id) = lookup
-        .get("user_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    let Some(full_handle) = first_string_lookup(&lookup, &["full_handle", "handle"]) else {
-        return;
-    };
-    let Ok(scope) = crate::internal::local_state::owner_scope::DirectPeerScope::new(
-        user_id.to_owned(),
-        full_handle,
-    ) else {
-        return;
-    };
-    annotate_object_with_peer_scope(
-        object,
-        &scope,
-        lookup
-            .get("did")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-    );
-}
-
-fn first_string_lookup(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .filter_map(|key| value.get(key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn lookup_handle_by_did(transport: &mut impl RpcTransport, did: &str) -> crate::ImResult<Value> {
-    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params)
-}
-
-async fn lookup_handle_by_did_async(
-    transport: &mut impl AsyncRpcTransport,
-    did: &str,
-) -> crate::ImResult<Value> {
-    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)?;
-    transport.rpc(call.endpoint, call.method, call.params).await
 }
 
 fn project_secure_direct_messages(
@@ -2421,6 +2365,7 @@ mod tests {
                     limit: crate::ids::PageLimit(20),
                     cursor: None,
                     unread_only: false,
+                    inbox_history_options: None,
                 },
             })
             .unwrap();

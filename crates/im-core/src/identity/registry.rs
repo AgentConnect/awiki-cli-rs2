@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 pub struct IdentityRegistry<'a> {
@@ -1071,6 +1071,8 @@ struct LegacyIdentityRecord {
     did: String,
     #[serde(default)]
     unique_id: String,
+    #[serde(default, deserialize_with = "deserialize_string_lossy")]
+    user_id: String,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -1300,6 +1302,7 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
         let dir_name = first_non_empty([&record.dir_name, &record.unique_id, &alias])
             .unwrap_or(&alias)
             .to_string();
+        let missing = legacy_readiness_missing(&record, handle);
         entries.push(RegistryEntry {
             local_alias: Some(alias.clone()),
             dir_name: Some(dir_name),
@@ -1313,8 +1316,8 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
                 is_default: record.is_default,
                 readiness: super::IdentityReadiness {
                     ready_for_auth: true,
-                    ready_for_messaging: true,
-                    missing: Vec::new(),
+                    ready_for_messaging: missing.is_empty(),
+                    missing,
                 },
             },
         });
@@ -1326,6 +1329,22 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
     snapshot.apply_default_flags();
     snapshot.validate()?;
     Ok(snapshot)
+}
+
+fn legacy_readiness_missing(
+    record: &LegacyIdentityRecord,
+    handle: Option<&str>,
+) -> Vec<super::IdentityMissingItem> {
+    let mut missing = Vec::new();
+    if record.user_id.trim().is_empty() {
+        missing.push(super::IdentityMissingItem::Other(
+            "registration".to_string(),
+        ));
+    }
+    if handle.map(str::trim).unwrap_or_default().is_empty() {
+        missing.push(super::IdentityMissingItem::Handle);
+    }
+    missing
 }
 
 fn default_alias_from_file(path: Option<&Path>) -> crate::ImResult<Option<String>> {
@@ -1386,6 +1405,16 @@ fn identity_missing_item_to_string(value: &super::IdentityMissingItem) -> String
         super::IdentityMissingItem::MessageEndpoint => "message_endpoint".to_string(),
         super::IdentityMissingItem::Other(value) => value.clone(),
     }
+}
+
+fn deserialize_string_lossy<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_default())
 }
 
 fn first_non_empty<const N: usize>(values: [&str; N]) -> Option<&str> {

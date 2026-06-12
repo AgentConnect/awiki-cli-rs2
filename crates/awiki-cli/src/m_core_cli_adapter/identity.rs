@@ -631,6 +631,7 @@ pub fn bind_contact_via_im_core(
 ) -> Result<CommandResult, ExitError> {
     let request = bind_contact_command_request(command)?;
     let client = super::build_im_client(resolved, cli_identity_selector(identity_flag))?;
+    require_messaging_ready(client.current_identity(), "id bind")?;
     let identity = cli_identity_summary_from_sdk(client.current_identity(), &[]);
     let result = if request.sdk.wait_for_email_verification
         && matches!(request.sdk.method, ContactBindingMethod::Email { .. })
@@ -654,6 +655,7 @@ pub async fn bind_contact_via_im_core_async(
     let request = bind_contact_command_request(command)?;
     let client =
         super::build_im_client_async(resolved, cli_identity_selector(identity_flag)).await?;
+    require_messaging_ready(client.current_identity(), "id bind")?;
     let identity = cli_identity_summary_from_sdk(client.current_identity(), &[]);
     let result = if request.sdk.wait_for_email_verification
         && matches!(request.sdk.method, ContactBindingMethod::Email { .. })
@@ -668,6 +670,16 @@ pub async fn bind_contact_via_im_core_async(
         bind_command_result(&identity, result)?
     };
     Ok(result)
+}
+
+fn require_messaging_ready(
+    identity: &im_core::identity::IdentitySummary,
+    context: &'static str,
+) -> Result<(), ExitError> {
+    if identity.readiness.ready_for_messaging {
+        return Ok(());
+    }
+    Err(super::map_im_error(im_core::ImError::AuthRequired, context))
 }
 
 pub fn recover_handle_request(
@@ -1656,6 +1668,11 @@ fn cli_identity_summary_from_sdk(
         .map(|(local, _)| local)
         .unwrap_or(full_handle.as_str())
         .to_string();
+    let has_private_key = summary
+        .readiness
+        .missing
+        .iter()
+        .all(|item| !matches!(item, im_core::identity::IdentityMissingItem::PrivateKey));
     let user_state = sdk_user_state(summary);
     CliIdentitySummary {
         identity_name,
@@ -1677,14 +1694,10 @@ fn cli_identity_summary_from_sdk(
             .missing
             .iter()
             .all(|item| !matches!(item, im_core::identity::IdentityMissingItem::DidDocument)),
-        has_key1_private: summary
-            .readiness
-            .missing
-            .iter()
-            .all(|item| !matches!(item, im_core::identity::IdentityMissingItem::PrivateKey)),
+        has_key1_private: has_private_key,
         has_key1_public: summary.readiness.ready_for_auth,
-        has_e2ee_signing_private: summary.readiness.ready_for_messaging,
-        has_e2ee_agreement_private: summary.readiness.ready_for_messaging,
+        has_e2ee_signing_private: has_private_key,
+        has_e2ee_agreement_private: has_private_key,
         user_state,
     }
 }
