@@ -192,6 +192,8 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: "https://example.test".to_string(),
+        user_service_endpoint: "https://users.example.test".to_string(),
+        message_service_endpoint: "https://messages.example.test".to_string(),
         did_domain: "awiki.test".to_string(),
         anp_service_endpoint: "https://example.test/anp-im/rpc".to_string(),
         anp_service_did: "did:wba:example.test".to_string(),
@@ -271,6 +273,57 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
         .is_empty());
 }
 
+#[test]
+fn build_im_core_config_uses_resolved_service_endpoints() {
+    let workspace = TempDir::new("build-im-core-config-endpoints").expect("workspace");
+    let resolved = crate::workspace_config::Resolved {
+        paths: test_paths(workspace.path()),
+        config_schema_version: crate::workspace_config::CONFIG_SCHEMA_VERSION,
+        active_identity: "alice".to_string(),
+        runtime_mode: "http".to_string(),
+        runtime_socket_path: String::new(),
+        runtime_listener_enabled: false,
+        runtime_listener_auto_install: false,
+        runtime_listener_auto_start: false,
+        host_notify_enabled: false,
+        host_notify_sink: "log".to_string(),
+        host_notify_file_path: String::new(),
+        host_notify_openclaw_hook_url: String::new(),
+        host_notify_openclaw_agent_id: String::new(),
+        host_notify_openclaw_hook_name: String::new(),
+        host_notify_hermes_notify_url: String::new(),
+        host_notify_hermes_deliver: String::new(),
+        output_format: "json".to_string(),
+        no_color: false,
+        service_base_url: "https://base.example.test".to_string(),
+        user_service_endpoint: "https://users.example.test".to_string(),
+        message_service_endpoint: "https://messages.example.test".to_string(),
+        did_domain: "awiki.test".to_string(),
+        anp_service_endpoint: "https://anp.example.test/rpc".to_string(),
+        anp_service_did: "did:wba:anp.example.test".to_string(),
+        mail_service_url: "https://mail.example.test".to_string(),
+        ca_bundle: String::new(),
+        update_disable_strict_version: false,
+        update_metadata_cache_ttl_seconds: 0,
+        config_exists: false,
+        config_error: String::new(),
+        env_hits: Vec::new(),
+        sources: BTreeMap::new(),
+    };
+
+    let cfg = core_config::build_im_core_config(&resolved).unwrap();
+
+    assert_eq!(cfg.service_base_url.as_str(), "https://base.example.test");
+    assert_eq!(
+        cfg.user_service_endpoint.unwrap().as_str(),
+        "https://users.example.test"
+    );
+    assert_eq!(
+        cfg.message_service_endpoint.unwrap().as_str(),
+        "https://messages.example.test"
+    );
+}
+
 struct TempDir {
     path: PathBuf,
 }
@@ -295,6 +348,27 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn test_paths(root: &Path) -> crate::workspace_config::Paths {
+    crate::workspace_config::Paths {
+        workspace_home_dir: root.to_string_lossy().into_owned(),
+        root_dir: root.to_string_lossy().into_owned(),
+        config_dir: root.join("config").to_string_lossy().into_owned(),
+        data_dir: root.join("data").to_string_lossy().into_owned(),
+        state_dir: root.join("state").to_string_lossy().into_owned(),
+        cache_dir: root.join("cache").to_string_lossy().into_owned(),
+        logs_dir: root.join("logs").to_string_lossy().into_owned(),
+        config_file: root.join("config.yaml").to_string_lossy().into_owned(),
+        identity_dir: root.join("identities").to_string_lossy().into_owned(),
+        database_file: root
+            .join("data")
+            .join("awiki.db")
+            .to_string_lossy()
+            .into_owned(),
+        legacy_credentials_dir: root.join("legacy").to_string_lossy().into_owned(),
+        legacy_data_dir: root.join("legacy-data").to_string_lossy().into_owned(),
     }
 }
 

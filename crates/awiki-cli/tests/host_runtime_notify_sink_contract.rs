@@ -266,6 +266,8 @@ fn test_resolved(root: &std::path::Path) -> Resolved {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: "https://awiki.ai".to_string(),
+        user_service_endpoint: "https://awiki.ai".to_string(),
+        message_service_endpoint: "https://awiki.ai".to_string(),
         did_domain: "awiki.ai".to_string(),
         anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
         anp_service_did: "did:wba:awiki.ai".to_string(),

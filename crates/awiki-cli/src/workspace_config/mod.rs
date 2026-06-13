@@ -106,6 +106,8 @@ pub struct Resolved {
     pub output_format: String,
     pub no_color: bool,
     pub service_base_url: String,
+    pub user_service_endpoint: String,
+    pub message_service_endpoint: String,
     pub did_domain: String,
     pub anp_service_endpoint: String,
     pub anp_service_did: String,
@@ -219,6 +221,10 @@ pub struct ServicesConfig {
     #[serde(default)]
     pub service_base_url: String,
     #[serde(default)]
+    pub user_service_endpoint: String,
+    #[serde(default)]
+    pub message_service_endpoint: String,
+    #[serde(default)]
     pub did_domain: String,
     #[serde(default)]
     pub anp_service_endpoint: String,
@@ -298,6 +304,18 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             value: service_base_url.clone(),
             ..service_source
         },
+    );
+    let user_service_endpoint = resolve_service_endpoint_field(
+        "user_service_endpoint",
+        &file_config.services.user_service_endpoint,
+        &service_base_url,
+        &mut sources,
+    );
+    let message_service_endpoint = resolve_service_endpoint_field(
+        "message_service_endpoint",
+        &file_config.services.message_service_endpoint,
+        &service_base_url,
+        &mut sources,
     );
     let (did_domain, did_source) = choose_value(
         "",
@@ -408,6 +426,8 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
         output_format,
         no_color: file_config.output.no_color.unwrap_or(false),
         service_base_url,
+        user_service_endpoint,
+        message_service_endpoint,
         did_domain,
         anp_service_endpoint: anp_endpoint,
         anp_service_did: anp_did,
@@ -686,6 +706,12 @@ fn set_config_value(config: &mut FileConfig, path: &[String], value: &str) {
         ["output", "format"] => config.output.format = value.to_string(),
         ["output", "no_color"] => config.output.no_color = parse_bool(value),
         ["services", "service_base_url"] => config.services.service_base_url = value.to_string(),
+        ["services", "user_service_endpoint"] => {
+            config.services.user_service_endpoint = value.to_string()
+        }
+        ["services", "message_service_endpoint"] => {
+            config.services.message_service_endpoint = value.to_string()
+        }
         ["services", "did_domain"] => config.services.did_domain = value.to_string(),
         ["services", "anp_service_endpoint"] => {
             config.services.anp_service_endpoint = value.to_string()
@@ -812,6 +838,36 @@ fn choose_value(
             value: default_value.to_string(),
         },
     )
+}
+
+fn resolve_service_endpoint_field(
+    key: &'static str,
+    file_value: &str,
+    service_base_url: &str,
+    sources: &mut BTreeMap<String, ValueSource>,
+) -> String {
+    if file_value.trim().is_empty() {
+        let value = service_base_url.to_string();
+        sources.insert(
+            key.to_string(),
+            ValueSource {
+                source: "derived_default".to_string(),
+                key: "service_base_url".to_string(),
+                value: value.clone(),
+            },
+        );
+        return value;
+    }
+    let value = normalize_base_url(file_value);
+    sources.insert(
+        key.to_string(),
+        ValueSource {
+            source: "config_file".to_string(),
+            key: String::new(),
+            value: value.clone(),
+        },
+    );
+    value
 }
 
 fn normalized_config_schema_version(version: i64) -> i64 {
@@ -1028,4 +1084,55 @@ fn expand_home(home: &Path, value: &str) -> PathBuf {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_config_accepts_distinct_service_endpoints() {
+        let raw = r#"
+schema_version: 1
+services:
+  service_base_url: https://base.example.test/
+  user_service_endpoint: https://users.example.test/
+  message_service_endpoint: https://messages.example.test/
+  did_domain: example.test
+"#;
+
+        let config = parse_file_config(raw).expect("parse config");
+
+        assert_eq!(
+            config.services.service_base_url,
+            "https://base.example.test/"
+        );
+        assert_eq!(
+            config.services.user_service_endpoint,
+            "https://users.example.test/"
+        );
+        assert_eq!(
+            config.services.message_service_endpoint,
+            "https://messages.example.test/"
+        );
+    }
+
+    #[test]
+    fn resolve_service_endpoint_field_defaults_to_service_base_url() {
+        let mut sources = BTreeMap::new();
+
+        let endpoint = super::resolve_service_endpoint_field(
+            "message_service_endpoint",
+            "",
+            "https://base.example.test",
+            &mut sources,
+        );
+
+        assert_eq!(endpoint, "https://base.example.test");
+        let source = sources
+            .get("message_service_endpoint")
+            .expect("source entry");
+        assert_eq!(source.source, "derived_default");
+        assert_eq!(source.key, "service_base_url");
+    }
 }

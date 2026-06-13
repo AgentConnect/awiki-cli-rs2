@@ -9,8 +9,8 @@ pub fn build_im_core_config(
     build_im_core_config_from_parts(
         &resolved.service_base_url,
         &resolved.did_domain,
-        Some(&resolved.service_base_url),
-        Some(&resolved.service_base_url),
+        Some(&resolved.user_service_endpoint),
+        Some(&resolved.message_service_endpoint),
         Some(&resolved.mail_service_url),
         Some(&resolved.anp_service_endpoint),
         Some(&resolved.anp_service_did),
