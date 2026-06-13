@@ -554,14 +554,13 @@ impl StdioGatewayProcess {
     fn wait_for_ready(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
-            let line = self
-                .read_line(remaining_timeout(
+            let value = self.read_json_line(
+                remaining_timeout(
                     deadline,
                     "Hermes gateway did not emit gateway.ready before timeout",
-                )?)
-                .context("Hermes gateway did not emit gateway.ready before timeout")?;
-            let value: Value = serde_json::from_str(&line)
-                .with_context(|| format!("parse Hermes gateway line: {}", redact_line(&line)))?;
+                )?,
+                "Hermes gateway did not emit gateway.ready before timeout",
+            )?;
             if is_gateway_ready_event(&value) {
                 return Ok(());
             }
@@ -592,11 +591,10 @@ impl StdioGatewayProcess {
         loop {
             let timeout = remaining_timeout(deadline, "Hermes gateway response timed out")
                 .with_context(|| format!("Hermes gateway {method} response timed out"))?;
-            let line = self
-                .read_line(timeout)
-                .with_context(|| format!("Hermes gateway {method} response timed out"))?;
-            let value: Value = serde_json::from_str(&line)
-                .with_context(|| format!("parse Hermes gateway line: {}", redact_line(&line)))?;
+            let value = self.read_json_line(
+                timeout,
+                &format!("Hermes gateway {method} response timed out"),
+            )?;
             self.handle_interaction_request(&value)?;
             if let Some(event) = event_from_gateway_line(&value) {
                 events.push(event);
@@ -630,15 +628,12 @@ impl StdioGatewayProcess {
                     "Hermes gateway prompt stream exceeded total timeout",
                 )?
             };
-            let line = self.read_line(timeout).with_context(|| {
-                if saw_prompt_event {
-                    "Hermes gateway prompt stream exceeded total timeout"
-                } else {
-                    "Hermes gateway prompt stream timed out before first event"
-                }
-            })?;
-            let value: Value = serde_json::from_str(&line)
-                .with_context(|| format!("parse Hermes gateway line: {}", redact_line(&line)))?;
+            let timeout_error = if saw_prompt_event {
+                "Hermes gateway prompt stream exceeded total timeout"
+            } else {
+                "Hermes gateway prompt stream timed out before first event"
+            };
+            let value = self.read_json_line(timeout, timeout_error)?;
             self.handle_interaction_request(&value)?;
             if let Some(error) = response_error(&value) {
                 bail!("Hermes gateway prompt stream failed: {error}");
@@ -688,6 +683,28 @@ impl StdioGatewayProcess {
         Ok(())
     }
 
+    fn read_json_line(&mut self, timeout: Duration, timeout_error: &str) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = remaining_timeout(deadline, timeout_error)?;
+            let line = self
+                .read_line(remaining)
+                .with_context(|| timeout_error.to_string())?;
+            match serde_json::from_str::<Value>(&line) {
+                Ok(value) => return Ok(value),
+                Err(_) if is_stdout_noise_line(&line) => {
+                    self.record_stdout_noise(&line);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("parse Hermes gateway line: {}", redact_line(&line))
+                    });
+                }
+            }
+        }
+    }
+
     fn read_line(&mut self, timeout: Duration) -> Result<String> {
         match self.stdout_rx.recv_timeout(timeout) {
             Ok(line) => Ok(line),
@@ -696,6 +713,16 @@ impl StdioGatewayProcess {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 bail!("Hermes gateway exited: {}", self.stderr_summary())
+            }
+        }
+    }
+
+    fn record_stdout_noise(&self, line: &str) {
+        if let Ok(mut lines) = self.stderr_lines.lock() {
+            lines.push(format!("stdout: {}", redact_line(line)));
+            let overflow = lines.len().saturating_sub(20);
+            if overflow > 0 {
+                lines.drain(0..overflow);
             }
         }
     }
@@ -723,11 +750,11 @@ impl StdioGatewayProcess {
     }
 }
 
-fn remaining_timeout(deadline: Instant, timeout_error: &'static str) -> Result<Duration> {
+fn remaining_timeout(deadline: Instant, timeout_error: &str) -> Result<Duration> {
     deadline
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
-        .with_context(|| timeout_error)
+        .with_context(|| timeout_error.to_string())
 }
 
 fn spawn_gateway_process(
@@ -922,6 +949,11 @@ fn sanitize_gateway_command(command: &str) -> String {
                 .join(" ")
         })
         .unwrap_or_else(|_| "<invalid gateway command>".to_string())
+}
+
+fn is_stdout_noise_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.is_empty() || !(trimmed.starts_with('{') || trimmed.starts_with('['))
 }
 
 fn is_gateway_ready_event(value: &Value) -> bool {

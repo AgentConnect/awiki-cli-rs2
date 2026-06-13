@@ -77,6 +77,8 @@ python -m tui_gateway.entry
 
 自动探测会用 daemon 的临时 Hermes home 启动候选命令，只有在短超时内收到 `gateway.ready` 才会认为可用并写入 `config.json`。探测失败不会阻止 daemon foreground、状态上报或非 Hermes runtime 运行；只有真实执行 Hermes runtime 消息时才会返回 gateway 配置缺失/不可用错误。`AWIKI_HERMES_BIN` 仅用于旧的安装存在性检查，不会被当成 TUI Gateway 启动命令。
 
+Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/event。真实 Hermes 首次启动时可能会安装 Node.js、agent-browser 或 Chromium 等可选依赖，并把普通进度日志误写到 stdout。daemon 的 stdio adapter 会跳过不以 `{` 或 `[` 开头的 stdout 噪声行，继续等待合法 JSON-RPC 行；如果输出看起来像 JSON 但无法反序列化，仍会按协议错误失败。这样既兼容首次启动 bootstrap 日志，也不会吞掉真正损坏的 JSON-RPC 帧。
+
 安装包默认写入：
 
 ```text

@@ -70,7 +70,8 @@ where
             .as_deref()
             .unwrap_or_else(|| self.client.did().as_str());
         let message_type = body.message_type();
-        let payload = build_direct_payload(sender_did, &target_did, &body)?;
+        let mut payload = build_direct_payload(sender_did, &target_did, &body)?;
+        apply_delivery_overrides(&mut payload.meta, &input.request);
         let origin_proof = crate::internal::proof::origin::build_origin_proof(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
@@ -133,7 +134,8 @@ where
             .as_deref()
             .unwrap_or_else(|| self.client.did().as_str());
         let message_type = body.message_type();
-        let payload = build_direct_payload(sender_did, &target_did, &body)?;
+        let mut payload = build_direct_payload(sender_did, &target_did, &body)?;
+        apply_delivery_overrides(&mut payload.meta, &input.request);
         let origin_proof = crate::internal::proof::origin::build_origin_proof(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
@@ -497,6 +499,18 @@ fn build_direct_payload(
     }
 }
 
+fn apply_delivery_overrides(meta: &mut Value, request: &crate::messages::SendMessageRequest) {
+    if let Some(message_id) = request.client_message_id.as_ref() {
+        meta["message_id"] = Value::String(message_id.as_str().to_string());
+    }
+    if let Some(idempotency_key) = request.delivery.idempotency_key.as_ref() {
+        let value = idempotency_key.trim();
+        if !value.is_empty() {
+            meta["operation_id"] = Value::String(value.to_string());
+        }
+    }
+}
+
 fn validate_plain_security(security: &crate::messages::MessageSecurityMode) -> crate::ImResult<()> {
     match security {
         crate::messages::MessageSecurityMode::DefaultPlain
@@ -743,6 +757,56 @@ mod tests {
             calls[0].params["auth"]["scheme"],
             crate::internal::proof::origin::ORIGIN_PROOF_SCHEME
         );
+    }
+
+    #[test]
+    fn messages_direct_text_sender_applies_client_message_and_idempotency_ids() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello direct",
+            crate::messages::MessageKind::Text,
+        );
+        request.client_message_id =
+            Some(crate::ids::MessageId::parse("msg_agent_im_run_001").unwrap());
+        request.delivery.idempotency_key = Some("agent-im-run-001".to_string());
+
+        let result = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.sdk_result.message.id.as_str(),
+            "msg_agent_im_run_001"
+        );
+        assert_eq!(
+            result.sdk_result.message.metadata.operation_id.as_deref(),
+            Some("agent-im-run-001")
+        );
+        let calls = calls.borrow();
+        assert_eq!(
+            calls[0].params["meta"]["message_id"],
+            "msg_agent_im_run_001"
+        );
+        assert_eq!(calls[0].params["meta"]["operation_id"], "agent-im-run-001");
     }
 
     #[test]

@@ -26,7 +26,7 @@ use crate::commands::{
     handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
 };
 use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
-use crate::inbox::user_delegated::process_user_delegated_inbox_once;
+use crate::inbox::user_delegated::{flush_message_sync_outbox, process_user_delegated_inbox_once};
 use crate::inbox::ControllerTextMessage;
 use crate::local_rpc::call_uds_once;
 #[cfg(unix)]
@@ -139,6 +139,18 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             )?;
         }
     }
+    if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
+        state.insert_audit_event_json(
+            "message_sync_outbox.flush.failed",
+            None,
+            None,
+            None,
+            None,
+            json!({
+                "error": sanitize_error_message(&error.to_string()),
+            }),
+        )?;
+    }
     if let Some(path) = options.ready_file.as_ref() {
         write_ready_file(path, &status)?;
     }
@@ -154,6 +166,18 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let exit_reason = loop {
         let newly_processed = process_inbox_once(&config, &state, &im_core, &mut processed).await?;
         let delegated_processed = process_user_delegated_inbox_once(&config, &state, &im_core)?;
+        if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
+            state.insert_audit_event_json(
+                "message_sync_outbox.flush.failed",
+                None,
+                None,
+                None,
+                None,
+                json!({
+                    "error": sanitize_error_message(&error.to_string()),
+                }),
+            )?;
+        }
         let retry_processed = {
             let outbox = rpc_outbox
                 .lock()
@@ -176,6 +200,18 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     }),
                 )?;
             }
+        }
+        if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
+            state.insert_audit_event_json(
+                "message_sync_outbox.flush.failed",
+                None,
+                None,
+                None,
+                None,
+                json!({
+                    "error": sanitize_error_message(&error.to_string()),
+                }),
+            )?;
         }
         {
             let outbox = rpc_outbox

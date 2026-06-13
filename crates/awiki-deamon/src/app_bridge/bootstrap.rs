@@ -234,6 +234,7 @@ pub fn process_bootstrap_envelope(
             "status": DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED,
             "replayed": replayed,
             "payload_hash": payload_hash,
+            "run_id": envelope.extra.get("run_id").and_then(Value::as_str),
         }),
     )?;
     Ok(BootstrapProcessOutcome {

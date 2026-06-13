@@ -2060,13 +2060,13 @@ INSERT INTO message_sync_outbox (
     sent_at_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ON CONFLICT(idempotency_key) DO UPDATE SET
-    payload_json = excluded.payload_json,
-    status = excluded.status,
-    next_attempt_at_ms = excluded.next_attempt_at_ms,
-    last_error_code = excluded.last_error_code,
-    last_error_summary = excluded.last_error_summary,
+    payload_json = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.payload_json ELSE excluded.payload_json END,
+    status = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.status ELSE excluded.status END,
+    next_attempt_at_ms = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
+    last_error_code = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.last_error_code ELSE excluded.last_error_code END,
+    last_error_summary = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.last_error_summary ELSE excluded.last_error_summary END,
     updated_at_ms = excluded.updated_at_ms,
-    sent_at_ms = excluded.sent_at_ms
+    sent_at_ms = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.sent_at_ms ELSE excluded.sent_at_ms END
 "#,
             rusqlite::params![
                 &record.idempotency_key,
@@ -2123,6 +2123,166 @@ WHERE idempotency_key = ?1
             )
             .optional()
             .context("load message sync outbox")
+    }
+
+    pub fn list_due_message_sync_outbox(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<MessageSyncOutboxRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    idempotency_key,
+    owner_did,
+    app_instance_id,
+    payload_json,
+    status,
+    attempt_count,
+    next_attempt_at_ms,
+    last_error_code,
+    last_error_summary,
+    created_at_ms,
+    updated_at_ms,
+    sent_at_ms
+FROM message_sync_outbox
+WHERE status = 'pending'
+  AND next_attempt_at_ms <= ?1
+ORDER BY created_at_ms ASC, idempotency_key ASC
+LIMIT ?2
+"#,
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![now_ms, limit.max(1) as i64],
+            message_sync_outbox_from_row,
+        )?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    pub fn mark_message_sync_outbox_sending(&self, idempotency_key: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE message_sync_outbox
+SET status = 'sending',
+    attempt_count = attempt_count + 1,
+    updated_at_ms = ?1
+WHERE idempotency_key = ?2
+  AND status = 'pending'
+"#,
+            rusqlite::params![current_time_millis()?, idempotency_key],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn mark_message_sync_outbox_sent(&self, idempotency_key: &str) -> Result<()> {
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE message_sync_outbox
+SET status = 'sent',
+    sent_at_ms = ?1,
+    updated_at_ms = ?1,
+    last_error_code = NULL,
+    last_error_summary = NULL
+WHERE idempotency_key = ?2
+"#,
+            rusqlite::params![now, idempotency_key],
+        )?;
+        if updated == 0 {
+            bail!("message sync outbox does not exist: {idempotency_key}");
+        }
+        Ok(())
+    }
+
+    pub fn mark_message_sync_outbox_retry(
+        &self,
+        idempotency_key: &str,
+        next_attempt_at_ms: i64,
+        error_code: &str,
+        error_summary: &str,
+    ) -> Result<()> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE message_sync_outbox
+SET status = 'pending',
+    next_attempt_at_ms = ?1,
+    last_error_code = ?2,
+    last_error_summary = ?3,
+    updated_at_ms = ?4
+WHERE idempotency_key = ?5
+  AND status = 'sending'
+"#,
+            rusqlite::params![
+                next_attempt_at_ms,
+                error_code,
+                error_summary,
+                current_time_millis()?,
+                idempotency_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("message sync outbox is not sending: {idempotency_key}");
+        }
+        Ok(())
+    }
+
+    pub fn recover_stale_message_sync_outbox_sending(
+        &self,
+        stale_before_ms: i64,
+        next_attempt_at_ms: i64,
+    ) -> Result<usize> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE message_sync_outbox
+SET status = 'pending',
+    next_attempt_at_ms = ?1,
+    last_error_code = COALESCE(last_error_code, 'message_sync_delivery_recovered'),
+    last_error_summary = COALESCE(last_error_summary, 'Recovered stale message sync delivery attempt'),
+    updated_at_ms = ?2
+WHERE status = 'sending'
+  AND updated_at_ms <= ?3
+"#,
+            rusqlite::params![next_attempt_at_ms, current_time_millis()?, stale_before_ms],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn mark_message_sync_outbox_failed_terminal(
+        &self,
+        idempotency_key: &str,
+        error_code: &str,
+        error_summary: &str,
+    ) -> Result<()> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE message_sync_outbox
+SET status = 'failed_terminal',
+    last_error_code = ?1,
+    last_error_summary = ?2,
+    updated_at_ms = ?3
+WHERE idempotency_key = ?4
+"#,
+            rusqlite::params![
+                error_code,
+                error_summary,
+                current_time_millis()?,
+                idempotency_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("message sync outbox does not exist: {idempotency_key}");
+        }
+        Ok(())
     }
 
     pub fn store_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<()> {
@@ -6192,6 +6352,53 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(loaded_sync.payload_json["message_id"], "msg_1");
+        let due = state.list_due_message_sync_outbox(i64::MAX, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert!(state
+            .mark_message_sync_outbox_sending(&sync.idempotency_key)
+            .unwrap());
+        state
+            .mark_message_sync_outbox_retry(
+                &sync.idempotency_key,
+                i64::MAX - 1,
+                "retry",
+                "retry later",
+            )
+            .unwrap();
+        assert!(state
+            .list_due_message_sync_outbox(0, 10)
+            .unwrap()
+            .is_empty());
+        state
+            .recover_stale_message_sync_outbox_sending(i64::MAX, 0)
+            .unwrap();
+        state
+            .mark_message_sync_outbox_sending(&sync.idempotency_key)
+            .unwrap();
+        state
+            .mark_message_sync_outbox_sent(&sync.idempotency_key)
+            .unwrap();
+        let sent_sync = state
+            .load_message_sync_outbox(&sync.idempotency_key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent_sync.status, "sent");
+        state
+            .upsert_message_sync_outbox(&MessageSyncOutboxRecord {
+                status: "pending".to_string(),
+                payload_json: serde_json::json!({
+                    "schema": "awiki.message.sync.v1",
+                    "message_id": "msg_changed"
+                }),
+                ..sync
+            })
+            .unwrap();
+        let still_sent = state
+            .load_message_sync_outbox("message-sync:did:human:alice:msg_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_sent.status, "sent");
+        assert_eq!(still_sent.payload_json["message_id"], "msg_1");
     }
 
     #[test]
