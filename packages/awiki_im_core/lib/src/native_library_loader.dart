@@ -7,6 +7,9 @@ DynamicLibrary loadAwikiImCoreLibrary() {
   if (Platform.isAndroid) {
     return DynamicLibrary.open('libawiki_im_core.so');
   }
+  if (Platform.isLinux) {
+    return DynamicLibrary.open('libawiki_im_core.so');
+  }
   if (Platform.isMacOS) {
     return DynamicLibrary.process();
   }
@@ -23,6 +26,9 @@ DynamicLibrary loadAwikiImCoreLibrary() {
 
 ExternalLibrary loadAwikiImCoreExternalLibrary() {
   if (Platform.isAndroid) {
+    return ExternalLibrary.open('libawiki_im_core.so');
+  }
+  if (Platform.isLinux) {
     return ExternalLibrary.open('libawiki_im_core.so');
   }
   if (Platform.isMacOS) {

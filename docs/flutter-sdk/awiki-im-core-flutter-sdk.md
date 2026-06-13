@@ -15,11 +15,12 @@ Flutter app
 
 ## Supported platforms
 
-v0.1 targets native Flutter on Android, iOS, and macOS:
+v0.1 targets native Flutter on Android, iOS, macOS, and Linux:
 
 - Android: `arm64-v8a`, `x86_64`, optional `armeabi-v7a`.
 - iOS: device and simulator static-library XCFramework slices.
 - macOS: `aarch64`/`x86_64` XCFramework slices.
+- Linux: `x86_64-unknown-linux-gnu` shared library bundled through the Flutter Linux FFI plugin.
 
 Windows is not declared as a v0.1 Flutter plugin platform. Flutter Web has a stub so dependent apps can analyze; calling `AwikiImCore.open` on Web throws `UnsupportedError` because `dart:ffi` cannot load the native Rust backend there.
 
@@ -137,19 +138,31 @@ scripts/flutter/build-apple.sh
 scripts/flutter/build-android.sh
 ```
 
+Linux native artifacts are host-specific and are built explicitly on Linux.
 Single-platform builds remain available:
 
 ```bash
 scripts/flutter/build-sdk-native.sh --macos-only
 scripts/flutter/build-sdk-native.sh --ios-only
 scripts/flutter/build-sdk-native.sh --android-only
+scripts/flutter/build-sdk-native.sh --linux-only
 ```
 
-Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Use `--dry-run` to print the selected build steps without compiling native artifacts.
+Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Linux native builds must run on Linux with the Flutter Linux desktop prerequisites available in the consuming app, such as `clang`, `cmake`, `ninja-build`, `pkg-config`, GTK development headers, and Xvfb for headless integration tests. Use `--dry-run` to print the selected build steps without compiling native artifacts.
+
+Linux builds generate:
+
+```text
+packages/awiki_im_core/linux/lib/libawiki_im_core.so
+```
+
+The file is copied from `target/<target>/release/libawiki_im_core.so` and is ignored by git, matching the existing Android and Apple native artifact policy. The package's `linux/CMakeLists.txt` adds the generated `.so` to `awiki_im_core_bundled_libraries`, so Flutter installs it into the app bundle's `lib/` directory. The Dart loader opens it as `libawiki_im_core.so`, relying on the Flutter Linux runner's `$ORIGIN/lib` rpath.
 
 ## Common local errors
 
 - Missing `../anp/anp/rust` sibling checkout: this workspace depends on a sibling ANP Rust crate.
 - Missing `cargo-ndk`: required for full Android native library builds.
+- Linux `libawiki_im_core.so` missing from the app bundle or native smoke fails to load it: run `scripts/flutter/build-sdk-native.sh --linux-only` before testing a Flutter Linux app that calls `AwikiImCore.open`.
+- Linux dynamic library load error: verify the app bundle contains `lib/libawiki_im_core.so` and that the Flutter Linux runner preserves `$ORIGIN/lib` in `CMAKE_INSTALL_RPATH`.
 - iOS symbols not found: verify the podspec vendored XCFramework path and `-force_load` slice path.
 - FRB generated files stale: run `scripts/flutter/codegen-check.sh`.
