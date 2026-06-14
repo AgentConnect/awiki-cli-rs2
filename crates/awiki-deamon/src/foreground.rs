@@ -274,56 +274,112 @@ async fn process_inbox_once(
         let jwt_token = state.load_agent_auth_token(&agent.agent_did)?;
         let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
         ensure_agent_messaging_session(&client, &agent.agent_did).await?;
-        let inbox = client
-            .messages()
-            .inbox_with_metadata_async(InboxQuery {
-                scope: InboxScope::DirectOnly,
-                limit: im_core::ids::PageLimit::new(20)?,
-                cursor: None,
-                unread_only: false,
-                inbox_history_options: None,
-            })
-            .await
-            .with_context(|| format!("poll inbox for agent {}", agent.agent_did))?;
-        for message in inbox.items.into_iter().rev() {
-            if message.direction == MessageDirection::Outgoing {
+        for poll_scope in runtime_agent_inbox_poll_scopes() {
+            if poll_scope != RuntimeInboxPollScope::Direct {
                 continue;
             }
-            let message_key = format!("{}:{}", agent.agent_did, message.id.as_str());
-            if !processed.insert(message_key) {
-                continue;
-            }
-            match route_message(
-                config,
-                state,
-                im_core,
-                &registration,
-                &client,
-                &agent.agent_did,
-                &message,
-            )
-            .await
-            {
-                Ok(true) => {
-                    processed_count += 1;
+            let inbox = client
+                .messages()
+                .inbox_with_metadata_async(InboxQuery {
+                    scope: poll_scope.inbox_scope(),
+                    limit: im_core::ids::PageLimit::new(20)?,
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: None,
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "poll {} inbox for agent {}",
+                        poll_scope.as_str(),
+                        agent.agent_did
+                    )
+                })?;
+            for message in inbox.items.into_iter().rev() {
+                if message.direction == MessageDirection::Outgoing {
+                    continue;
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    let sanitized = sanitize_error_message(&error.to_string());
-                    eprintln!("warning: daemon inbox message route failed: {sanitized}");
-                    if let Err(audit_error) =
-                        record_inbox_route_error(state, &agent.agent_did, &message, &error)
-                    {
-                        eprintln!(
-                            "warning: daemon inbox route error audit failed: {}",
-                            sanitize_error_message(&audit_error.to_string())
-                        );
+                let message_key = format!(
+                    "{}:{}",
+                    agent.agent_did,
+                    runtime_processed_message_id(&message)
+                );
+                if !processed.insert(message_key) {
+                    continue;
+                }
+                match route_message(
+                    config,
+                    state,
+                    im_core,
+                    &registration,
+                    &client,
+                    &agent.agent_did,
+                    &message,
+                )
+                .await
+                {
+                    Ok(true) => {
+                        processed_count += 1;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        let sanitized = sanitize_error_message(&error.to_string());
+                        eprintln!("warning: daemon inbox message route failed: {sanitized}");
+                        if let Err(audit_error) =
+                            record_inbox_route_error(state, &agent.agent_did, &message, &error)
+                        {
+                            eprintln!(
+                                "warning: daemon inbox route error audit failed: {}",
+                                sanitize_error_message(&audit_error.to_string())
+                            );
+                        }
                     }
                 }
             }
         }
     }
     Ok(processed_count)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeInboxPollScope {
+    Direct,
+    Group,
+}
+
+impl RuntimeInboxPollScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Group => "group",
+        }
+    }
+
+    fn inbox_scope(self) -> InboxScope {
+        match self {
+            Self::Direct => InboxScope::DirectOnly,
+            Self::Group => InboxScope::GroupOnly,
+        }
+    }
+}
+
+fn runtime_agent_inbox_poll_scopes() -> [RuntimeInboxPollScope; 2] {
+    [RuntimeInboxPollScope::Direct, RuntimeInboxPollScope::Group]
+}
+
+fn runtime_processed_message_id(message: &Message) -> String {
+    match &message.thread {
+        ThreadRef::Group(group) => message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "group_event_seq")
+            .map(|attribute| attribute.value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|seq| format!("group:{}:{seq}", group.as_str()))
+            .unwrap_or_else(|| format!("group:{}:{}", group.as_str(), message.id.as_str())),
+        _ => message.id.as_str().to_string(),
+    }
 }
 
 fn drain_runtime_retry_queue_once(
@@ -3069,6 +3125,93 @@ mod tests {
         assert_eq!(
             conversation_id(&message).as_deref(),
             Some("direct:did:human:alice")
+        );
+    }
+
+    #[test]
+    fn runtime_agent_inbox_poll_scopes_keep_direct_and_group_paths() {
+        let scopes = runtime_agent_inbox_poll_scopes();
+
+        assert_eq!(
+            scopes.map(RuntimeInboxPollScope::as_str),
+            ["direct", "group"]
+        );
+        assert_eq!(scopes[0].inbox_scope(), InboxScope::DirectOnly);
+        assert_eq!(scopes[1].inbox_scope(), InboxScope::GroupOnly);
+    }
+
+    #[test]
+    fn runtime_processed_message_id_prefers_group_event_sequence() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("opaque-message-id").unwrap(),
+            thread: ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:bob", "").unwrap(),
+            receiver: None,
+            group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: MessageBodyView::Text {
+                text: "hello group".to_string(),
+                kind: im_core::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata {
+                attributes: vec![im_core::messages::MessageMetadataAttribute {
+                    key: "group_event_seq".to_string(),
+                    value: "9".to_string(),
+                }],
+                ..im_core::messages::MessageMetadata::default()
+            },
+        };
+
+        assert_eq!(
+            runtime_processed_message_id(&message),
+            "group:did:example:group:9"
+        );
+    }
+
+    #[test]
+    fn runtime_processed_message_id_falls_back_to_message_id() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),
+            thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Text {
+                text: "hello direct".to_string(),
+                kind: im_core::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        assert_eq!(runtime_processed_message_id(&message), "msg_foreground");
+    }
+
+    #[test]
+    fn conversation_id_projects_group_peer_without_message_content() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_group_foreground").unwrap(),
+            thread: ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:bob", "").unwrap(),
+            receiver: None,
+            group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: MessageBodyView::Text {
+                text: "secret group prompt text".to_string(),
+                kind: im_core::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        assert_eq!(
+            conversation_id(&message).as_deref(),
+            Some("group:did:example:group")
         );
     }
 
