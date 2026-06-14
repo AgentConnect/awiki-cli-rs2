@@ -49,6 +49,7 @@ const RETENTION_CLASS_OPAQUE_ONLY: &str = "opaque_no_plaintext";
 const EXCERPT_MAX_CHARS: usize = 240;
 const MAX_MESSAGE_SYNC_OUTBOX_ATTEMPTS: i64 = 5;
 const MESSAGE_SYNC_OUTBOX_SENDING_STALE_MS: i64 = 5 * 60 * 1000;
+const HOST_RUNTIME_FINAL_OUTBOX_TOKEN_ID: &str = "host-runtime-final-outbox";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessUserDelegatedInboxOutcome {
@@ -244,21 +245,16 @@ fn delegated_runtime_run_id(state: &DaemonState, task_id: &str) -> Result<String
 
 pub struct ImCoreDelegatedInboxClient<'a> {
     config: &'a DaemonConfig,
-    state: &'a DaemonState,
     im_core: &'a ImCoreAdapter,
 }
 
 impl<'a> ImCoreDelegatedInboxClient<'a> {
     pub fn new(
         config: &'a DaemonConfig,
-        state: &'a DaemonState,
+        _state: &'a DaemonState,
         im_core: &'a ImCoreAdapter,
     ) -> Self {
-        Self {
-            config,
-            state,
-            im_core,
-        }
+        Self { config, im_core }
     }
 }
 
@@ -270,15 +266,6 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<DelegatedInboxPage> {
-        let daemon_identity = self.state.load_agent_identity(&identity.daemon_agent_did)?;
-        let jwt_token = self
-            .state
-            .load_agent_auth_token(&identity.daemon_agent_did)?;
-        let client = self.im_core.client_for_agent_identity(
-            self.config,
-            &daemon_identity,
-            jwt_token.as_deref(),
-        )?;
         let did_resolver = DefaultBootstrapDidDocumentResolver::new(self.config);
         let did_document = did_resolver
             .resolve_user_did_document(&identity.user_did)
@@ -295,6 +282,17 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
         )?;
         let key_ref = ensure_delegated_inbox_key_ref(self.config, identity)?;
         ensure_delegated_inbox_did_shadow(self.config, identity)?;
+        let client = self.im_core.client_for_did(&identity.user_did)?;
+        let auth_status = client
+            .auth()
+            .status()
+            .context("inspect delegated inbox auth session")?;
+        if !auth_status.has_session || auth_status.needs_refresh {
+            client
+                .auth()
+                .refresh_session()
+                .context("refresh delegated inbox auth session")?;
+        }
         let page = client.messages().inbox_with_metadata(InboxQuery {
             scope: InboxScope::DirectOnly,
             limit: im_core::ids::PageLimit::new(limit)?,
@@ -324,6 +322,64 @@ struct UserDelegatedRuntimeOutbox<'a> {
 impl<'a> UserDelegatedRuntimeOutbox<'a> {
     fn new(state: &'a DaemonState) -> Self {
         Self { state }
+    }
+
+    fn send_host_runtime_final_sync(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
+    ) -> Result<RuntimeMessageSendResult> {
+        let binding = self
+            .state
+            .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+            .with_context(|| {
+                format!(
+                    "missing app message binding for runtime final outbox {}",
+                    context.agent_did
+                )
+            })?;
+        let resolved_did = message
+            .resolved_did()
+            .unwrap_or_else(|| message.resolved_recipient())
+            .trim();
+        if message.target_kind() != "direct" || resolved_did != binding.user_did {
+            self.state.insert_audit_event_json(
+                "user_delegated_inbox.runtime_final.host_sync.rejected",
+                Some(&context.agent_did),
+                Some(&context.runtime_profile_id),
+                Some(&context.run_id),
+                Some(&context.token_id),
+                json!({
+                    "target_kind": message.target_kind(),
+                    "security": message.security.as_str(),
+                    "reason": "host_runtime_final_must_target_controller_did",
+                }),
+            )?;
+            bail!("host runtime final must target the delegated controller DID")
+        }
+        queue_runtime_final_sync(self.state, context, Some(message.text.as_str()))?;
+        self.state.insert_audit_event_json(
+            "user_delegated_inbox.runtime_final.host_sync",
+            Some(&context.agent_did),
+            Some(&context.runtime_profile_id),
+            Some(&context.run_id),
+            Some(&context.token_id),
+            json!({
+                "binding_id": &binding.binding_id,
+                "app_instance_id": &binding.app_instance_id,
+                "target_kind": message.target_kind(),
+                "security": message.security.as_str(),
+                "has_text": !message.text.trim().is_empty(),
+                "text_hash": content_hash(&message.text),
+            }),
+        )?;
+        Ok(RuntimeMessageSendResult {
+            message_id: message.idempotency_key.clone(),
+            raw_recipient: message.raw_recipient().to_string(),
+            resolved_did: binding.user_did.clone(),
+            target_kind: message.target_kind().to_string(),
+            security: message.security,
+        })
     }
 }
 
@@ -403,6 +459,9 @@ impl RuntimeOutbox for UserDelegatedRuntimeOutbox<'_> {
         context: &AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
     ) -> Result<RuntimeMessageSendResult> {
+        if context.token_id == HOST_RUNTIME_FINAL_OUTBOX_TOKEN_ID {
+            return self.send_host_runtime_final_sync(context, message);
+        }
         self.state.insert_audit_event_json(
             "user_delegated_inbox.runtime_msg_send.rejected",
             Some(&context.agent_did),
@@ -941,6 +1000,7 @@ fn runtime_task_from_envelope(
         "content_hash": envelope.content_hash,
         "allowed_actions": envelope.allowed_actions,
     }))?;
+    let controller_did = profile.controller_did.clone();
     let task = RuntimeTask {
         task_id: format!(
             "task_user_msg_{}",
@@ -953,8 +1013,8 @@ fn runtime_task_from_envelope(
         controller_user_id: profile.controller_user_id,
         controller_full_handle: profile.controller_full_handle,
         controller_scope_key: profile.controller_scope_key,
-        controller_did: profile.controller_did,
-        sender_did: binding.daemon_agent_did.clone(),
+        controller_did,
+        sender_did: profile.controller_did,
         conversation_id: envelope.source_conversation_id.clone(),
         text,
     };
@@ -1163,6 +1223,14 @@ fn ensure_delegated_inbox_did_shadow(
         &did_document_path,
         serde_json::to_vec_pretty(&minimal_user_did_document(identity))?,
     )?;
+    let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
+    let private_key_path = identity_dir.join("private.key");
+    fs::write(&private_key_path, private_key_pem.as_bytes())?;
+    set_private_key_file_permissions(&private_key_path)?;
+    let auth_path = identity_dir.join("auth.json");
+    if !auth_path.exists() {
+        fs::write(&auth_path, "{}")?;
+    }
     let mut registry = read_identity_registry(config)?;
     let identities = registry
         .as_object_mut()
@@ -1416,8 +1484,8 @@ mod tests {
         assert_eq!(dispatched.len(), 1);
         let (task, envelope) = &dispatched[0];
         assert_eq!(task.agent_did, binding.runtime_agent_did);
-        assert_eq!(task.controller_did, binding.daemon_agent_did);
-        assert_eq!(task.sender_did, binding.daemon_agent_did);
+        assert_eq!(task.controller_did, binding.user_did);
+        assert_eq!(task.sender_did, binding.user_did);
         assert_eq!(envelope.content_role, "user_message_untrusted");
         assert_eq!(envelope.source_sender_did, "did:human:bob");
         assert_eq!(envelope.content_text, "hello agent");
@@ -1743,6 +1811,88 @@ mod tests {
                 && payload["source_message_id"] == "msg_user_1"));
     }
 
+    #[test]
+    fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let task = RuntimeTask {
+            task_id: "task_user_msg_host_final".to_string(),
+            agent_did: binding.runtime_agent_did.clone(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
+            controller_did: binding.user_did.clone(),
+            sender_did: binding.user_did.clone(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            text: serde_json::to_string(&json!({
+                "schema": "awiki.runtime.user_message_task.v1",
+                "source_message_id": "msg_user_host_final",
+                "source_conversation_id": "direct:did:human:bob",
+                "source_sender_did": "did:human:bob",
+                "content_hash": "sha256:test",
+                "content_text": "hello agent"
+            }))
+            .unwrap(),
+        };
+        state.insert_runtime_task(&task).unwrap();
+        state
+            .insert_runtime_run(&RuntimeRun {
+                run_id: "run_user_msg_host_final".to_string(),
+                task_id: task.task_id.clone(),
+                agent_did: binding.runtime_agent_did.clone(),
+                runtime_profile_id: binding.runtime_profile_id.clone(),
+                runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+                workspace_id: None,
+                status: RuntimeRunStatus::Running,
+            })
+            .unwrap();
+        let outbox = UserDelegatedRuntimeOutbox::new(state);
+        let context = AuthorizedRuntimeContext {
+            token_id: HOST_RUNTIME_FINAL_OUTBOX_TOKEN_ID.to_string(),
+            agent_did: binding.runtime_agent_did.clone(),
+            runtime_profile_id: binding.runtime_profile_id.clone(),
+            run_id: "run_user_msg_host_final".to_string(),
+            method: crate::security::runtime_token::RpcMethod::MsgSend,
+        };
+        let result = outbox
+            .send_message(
+                &context,
+                &RuntimeMessageSend {
+                    target: crate::outbox::RuntimeMessageTarget::Direct {
+                        recipient: binding.user_did.clone(),
+                        raw_recipient: binding.user_did.clone(),
+                        resolved_did: Some(binding.user_did.clone()),
+                    },
+                    text: "final summary text".to_string(),
+                    file_path: None,
+                    display_filename: None,
+                    mime_type: None,
+                    idempotency_key: Some("runtime-final:test".to_string()),
+                    security: crate::outbox::RuntimeMessageSecurity::DefaultPlain,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.message_id.as_deref(), Some("runtime-final:test"));
+        let final_sync = state
+            .load_message_sync_outbox(
+                "message-sync:did:human:alice:runtime-final:run_user_msg_host_final",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_sync.payload_json["sync_type"], "runtime_final");
+        assert_eq!(
+            final_sync.payload_json["source_message_id"],
+            "msg_user_host_final"
+        );
+        assert_eq!(final_sync.payload_json["has_text"], true);
+        assert!(!final_sync
+            .payload_json
+            .to_string()
+            .contains("final summary text"));
+    }
+
     struct TestFixture {
         _root: TempDir,
         state: DaemonState,
@@ -1791,7 +1941,7 @@ mod tests {
                 controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com"
                     .to_string(),
-                controller_did: identity.daemon_agent_did.clone(),
+                controller_did: identity.user_did.clone(),
                 runtime_profile_id: "profile_hermes".to_string(),
                 runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
                 display_name: Some("Hermes".to_string()),

@@ -358,7 +358,7 @@ impl Default for HermesGatewayTimeouts {
     fn default() -> Self {
         Self {
             gateway_ready: Duration::from_secs(10),
-            session_create: Duration::from_secs(30),
+            session_create: Duration::from_secs(120),
             prompt_first_event: Duration::from_secs(60),
             prompt_total: Duration::from_secs(30 * 60),
         }
@@ -1491,5 +1491,19 @@ fn fake_callbacks(
                     .into_rpc_request(),
             ]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_session_create_timeout_allows_cold_agent_initialization() {
+        let timeouts = HermesGatewayTimeouts::default();
+
+        assert_eq!(timeouts.gateway_ready, Duration::from_secs(10));
+        assert!(timeouts.session_create >= Duration::from_secs(120));
+        assert_eq!(timeouts.prompt_first_event, Duration::from_secs(60));
     }
 }

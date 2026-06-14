@@ -1672,6 +1672,30 @@ ON CONFLICT(binding_id) DO UPDATE SET
         Ok(())
     }
 
+    pub fn revoke_other_active_app_message_agent_bindings(
+        &self,
+        user_did: &str,
+        role: &str,
+        keep_binding_id: &str,
+    ) -> Result<usize> {
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let affected = connection.execute(
+            r#"
+UPDATE app_message_agent_binding
+SET revoked_at_ms = ?1,
+    updated_at_ms = ?1
+WHERE user_did = ?2
+  AND role = ?3
+  AND binding_id <> ?4
+  AND revoked_at_ms IS NULL
+  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+"#,
+            rusqlite::params![now, user_did, role, keep_binding_id],
+        )?;
+        Ok(affected)
+    }
+
     pub fn load_active_app_message_agent_binding(
         &self,
         user_did: &str,
@@ -6266,6 +6290,93 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored.status, "message_agent_ready");
+    }
+
+    #[test]
+    fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let mut first = AppMessageAgentBindingRecord {
+            binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+            user_did: "did:human:alice".to_string(),
+            inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
+            app_instance_id: "app_1".to_string(),
+            bootstrap_id: "boot_1".to_string(),
+            idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+            daemon_agent_did: "did:agent:daemon".to_string(),
+            runtime_agent_did: "did:agent:runtime-hermes-1".to_string(),
+            runtime_profile_id: "profile_hermes_app_message_1".to_string(),
+            role: "app_message_handler".to_string(),
+            desired_agent_json: serde_json::json!({
+                "role": "app_message_handler",
+                "runtime": "hermes"
+            }),
+            capability_policy_json: serde_json::json!({
+                "allowed_actions": ["message.summarize_plain"]
+            }),
+            status: "message_agent_ready".to_string(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            revoked_at_ms: None,
+        };
+        let mut second = first.clone();
+        second.binding_id = "app-message-agent:did:human:alice:app_2".to_string();
+        second.app_instance_id = "app_2".to_string();
+        second.bootstrap_id = "boot_2".to_string();
+        second.idempotency_key = "message-agent-bootstrap:did:human:alice:app_2".to_string();
+        second.runtime_agent_did = "did:agent:runtime-hermes-2".to_string();
+        second.runtime_profile_id = "profile_hermes_app_message_2".to_string();
+        let mut other_user = first.clone();
+        other_user.binding_id = "app-message-agent:did:human:bob:app_1".to_string();
+        other_user.user_did = "did:human:bob".to_string();
+        other_user.inbox_auth_verification_method = "did:human:bob#daemon-key-1".to_string();
+        other_user.runtime_agent_did = "did:agent:runtime-hermes-bob".to_string();
+        other_user.runtime_profile_id = "profile_hermes_bob".to_string();
+
+        state.upsert_app_message_agent_binding(&first).unwrap();
+        state.upsert_app_message_agent_binding(&second).unwrap();
+        state.upsert_app_message_agent_binding(&other_user).unwrap();
+
+        let revoked = state
+            .revoke_other_active_app_message_agent_bindings(
+                "did:human:alice",
+                "app_message_handler",
+                &second.binding_id,
+            )
+            .unwrap();
+        assert_eq!(revoked, 1);
+        assert!(state
+            .load_active_app_message_agent_binding(
+                "did:human:alice",
+                "app_1",
+                "app_message_handler",
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            state
+                .load_active_app_message_agent_binding(
+                    "did:human:alice",
+                    "app_2",
+                    "app_message_handler",
+                )
+                .unwrap()
+                .unwrap()
+                .binding_id,
+            second.binding_id
+        );
+        assert!(state
+            .load_active_app_message_agent_binding("did:human:bob", "app_1", "app_message_handler",)
+            .unwrap()
+            .is_some());
+        first.revoked_at_ms = state
+            .load_app_message_agent_binding(&first.binding_id)
+            .unwrap()
+            .unwrap()
+            .revoked_at_ms;
+        assert!(first.revoked_at_ms.is_some());
     }
 
     #[test]
