@@ -85,7 +85,7 @@ Prompt wrapper 必须由 daemon 构造，包含：
 - Agent：handle、agent DID、runtime、profile；
 - Controller：controller DID、sender DID、`controller_verified: true`；
 - Message：message id、run id、conversation id、publisher DID、content type；
-- Allowed actions：report-status、finish-message、send-message；
+- Allowed actions：report-status、outbound-send；
 - 禁止事项：不得直连 message-service、不得声称未成功发送的消息已发送；
 - User message：原始用户文本。
 

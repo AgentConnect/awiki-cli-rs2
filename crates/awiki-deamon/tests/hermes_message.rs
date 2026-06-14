@@ -22,6 +22,7 @@ use awiki_deamon::runtime::{
 use awiki_deamon::state::{HermesProfileRecord, HermesSessionRoute};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
+use rusqlite::Connection;
 
 #[derive(Debug, Clone)]
 struct FlakyFinalOutbox {
@@ -679,40 +680,44 @@ fn hermes_message_send_message_callback_allows_active_handle_lookup() {
 }
 
 #[test]
-fn hermes_message_send_message_callback_respects_controller_recipient_scope() {
+fn hermes_message_run_token_allows_direct_and_group_outbound_targets() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
-    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::SendMessage);
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
     let plugin = HermesRuntimePlugin::new(
         gateway,
         hermes_record(root.path().join("runtime/hermes/profile")),
     );
-    let mut profile = profile(root.path().join("workspace"));
-    profile.controller_did = "did:human:charlie".to_string();
+    let profile = profile(root.path().join("workspace"));
 
-    let error = run_controller_text_task(
+    let result = run_controller_text_task(
         &state,
         &profile,
         &plugin,
         &outbox,
         ControllerTextMessage {
-            message_id: "msg_send_blocked".to_string(),
-            conversation_id: Some("direct:did:human:charlie".to_string()),
-            sender_did: "did:human:charlie".to_string(),
+            message_id: "msg_outbound_scope".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
             target_agent_did: "did:agent:hermes".to_string(),
-            text: "尝试给非 controller 发消息".to_string(),
+            text: "帮我给别人或群发消息".to_string(),
         },
     )
-    .unwrap_err();
-    let error_chain = error
-        .chain()
-        .map(|cause| cause.to_string())
-        .collect::<Vec<_>>()
-        .join(" | ");
+    .unwrap();
 
-    assert!(error_chain.contains("runtime callback"));
-    assert!(error_chain.contains("recipient not allowed"));
-    assert!(outbox.records().is_empty());
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let allowed_recipients_json: String = connection
+        .query_row(
+            "SELECT allowed_recipients_json FROM runtime_rpc_tokens WHERE token_id = ?1",
+            [&result.token_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(allowed_recipients_json.contains("did:human:alice"));
+    assert!(allowed_recipients_json.contains("@active_handle_lookup"));
+    assert!(allowed_recipients_json.contains("@any_direct"));
+    assert!(allowed_recipients_json.contains("@any_group"));
 }
 
 #[test]
@@ -823,6 +828,45 @@ fn hermes_message_prompt_disables_interactive_requests() {
     assert!(prompts[0]
         .prompt
         .contains("ask for it in your ordinary final answer"));
+}
+
+#[test]
+fn hermes_message_prompt_constrains_outbound_send_to_daemon_runtime_wrapper() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
+    let plugin = HermesRuntimePlugin::new(
+        gateway.clone(),
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_outbound_wrapper_rules".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "帮我给 did:human:bob 发消息".to_string(),
+        },
+    )
+    .unwrap();
+
+    let prompts = gateway.submitted_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].prompt.contains("awiki-deamon-runtime send"));
+    assert!(prompts[0].prompt.contains("Do not call `awiki-cli`"));
+    assert!(prompts[0].prompt.contains("do not switch local identities"));
+    assert!(prompts[0]
+        .prompt
+        .contains("Never add, infer, or override a sender identity"));
+    assert!(prompts[0]
+        .prompt
+        .contains("Do not retry with another local identity"));
 }
 
 #[test]

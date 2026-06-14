@@ -820,10 +820,18 @@ fn app_action_request_records_message_sync_side_effect() {
 }
 
 #[test]
-fn product_wrapper_rejects_did_recipient_for_send_message() {
-    let error = awiki_deamon::cli_wrapper::normalize_product_handle("did:human:alice").unwrap_err();
+fn product_wrapper_normalizes_direct_handle_and_preserves_did_recipient() {
+    assert_eq!(
+        awiki_deamon::cli_wrapper::normalize_direct_recipient("@alice").unwrap(),
+        "alice"
+    );
+    assert_eq!(
+        awiki_deamon::cli_wrapper::normalize_direct_recipient("did:human:alice").unwrap(),
+        "did:human:alice"
+    );
 
-    assert!(error.to_string().contains("recipient_must_be_handle"));
+    let error = awiki_deamon::cli_wrapper::normalize_direct_recipient(" ").unwrap_err();
+    assert!(error.to_string().contains("recipient is required"));
 }
 
 #[test]
@@ -990,6 +998,30 @@ fn cli_wrapper_outbound_send_supports_group_attachment_message() {
     assert_eq!(request.params["text"], "caption");
     assert_eq!(request.params["file_path"], "/tmp/group-report.txt");
     assert_eq!(request.params["display_filename"], "group-report.txt");
+    assert_eq!(request.params["mime_type"], "text/plain");
+    assert!(request.params.get("security").is_none());
+    assert!(request.debug.is_none());
+}
+
+#[test]
+fn cli_wrapper_outbound_send_supports_direct_did_attachment_message() {
+    let request = CliWrapperRequest::outbound_send(
+        "rtok_test_secret_value_123456789",
+        awiki_deamon::cli_wrapper::OutboundMessageTarget::DirectRecipient(
+            "did:human:alice".to_string(),
+        ),
+        "caption",
+        Some("/tmp/direct-report.txt"),
+        Some("direct-report.txt"),
+        Some("text/plain"),
+    )
+    .into_rpc_request();
+
+    assert_eq!(request.method, "msg.send");
+    assert_eq!(request.params["to"], "did:human:alice");
+    assert_eq!(request.params["text"], "caption");
+    assert_eq!(request.params["file_path"], "/tmp/direct-report.txt");
+    assert_eq!(request.params["display_filename"], "direct-report.txt");
     assert_eq!(request.params["mime_type"], "text/plain");
     assert!(request.params.get("security").is_none());
     assert!(request.debug.is_none());

@@ -80,8 +80,8 @@ impl CliWrapperRequest {
             "text": text.into(),
         });
         match target {
-            OutboundMessageTarget::Handle(handle) => {
-                params["to"] = Value::String(handle);
+            OutboundMessageTarget::DirectRecipient(recipient) => {
+                params["to"] = Value::String(recipient);
             }
             OutboundMessageTarget::Group(group) => {
                 params["group"] = Value::String(group);
@@ -142,7 +142,7 @@ pub fn call(socket_path: &Path, request: CliWrapperRequest) -> Result<RuntimeRpc
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboundMessageTarget {
-    Handle(String),
+    DirectRecipient(String),
     Group(String),
 }
 
@@ -206,7 +206,7 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
             to_handle,
             text,
         } => {
-            let to_handle = normalize_product_handle(&to_handle)?;
+            let to_handle = normalize_direct_recipient(&to_handle)?;
             let text = text.trim();
             if text.is_empty() {
                 bail!("text is required");
@@ -236,9 +236,9 @@ pub fn run_wrapper_command(command: CliWrapperCommand) -> Result<RuntimeRpcRespo
 
 fn normalize_outbound_target(target: OutboundMessageTarget) -> Result<OutboundMessageTarget> {
     match target {
-        OutboundMessageTarget::Handle(handle) => Ok(OutboundMessageTarget::Handle(
-            normalize_product_handle(&handle)?,
-        )),
+        OutboundMessageTarget::DirectRecipient(recipient) => Ok(
+            OutboundMessageTarget::DirectRecipient(normalize_direct_recipient(&recipient)?),
+        ),
         OutboundMessageTarget::Group(group) => {
             let group = group.trim();
             if group.is_empty() {
@@ -261,13 +261,13 @@ pub fn runtime_token_from_env_or_arg(token: Option<String>) -> Result<String> {
         .context("--token or AWIKI_RUNTIME_RPC_TOKEN is required")
 }
 
-pub fn normalize_product_handle(input: &str) -> Result<String> {
+pub fn normalize_direct_recipient(input: &str) -> Result<String> {
     let value = input.trim();
     if value.is_empty() {
-        bail!("to_handle is required");
+        bail!("recipient is required");
     }
     if value.starts_with("did:") {
-        bail!("recipient_must_be_handle");
+        return Ok(value.to_string());
     }
     Ok(value.trim_start_matches('@').to_string())
 }

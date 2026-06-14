@@ -5,8 +5,9 @@ use time::format_description::well_known::Rfc3339;
 use crate::agent::{AgentDefinition, AgentKind};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
 use crate::plugins::hermes::{
-    ensure_runtime_model_config, hermes_runtime_model_config_status, HermesGatewayCommandStatus,
-    HermesRuntimeModelConfigStatus, StdioHermesGateway,
+    ensure_runtime_model_config, hermes_runtime_model_config_status,
+    repair_hermes_profile_if_needed, HermesGatewayCommandStatus, HermesRuntimeModelConfigStatus,
+    StdioHermesGateway,
 };
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
@@ -489,7 +490,7 @@ fn runtime_status_summary(
     state: &DaemonState,
     runtime: &AgentDefinition,
 ) -> RuntimeStatusSummary {
-    runtime_status_summary_with_gateway_status(state, runtime, || {
+    runtime_status_summary_with_gateway_status(config, state, runtime, || {
         hermes_gateway_command_status(config)
     })
 }
@@ -506,6 +507,7 @@ fn hermes_gateway_command_status(config: &DaemonConfig) -> HermesGatewayCommandS
 }
 
 fn runtime_status_summary_with_gateway_status(
+    config: &DaemonConfig,
     state: &DaemonState,
     runtime: &AgentDefinition,
     gateway_status: impl FnOnce() -> HermesGatewayCommandStatus,
@@ -521,18 +523,30 @@ fn runtime_status_summary_with_gateway_status(
             model_config_status: None,
         };
     }
-    let (profile_needs_config, model_config_status) =
-        match state.load_hermes_profile(&runtime.agent_did) {
-            Ok(profile) => {
-                let _ = ensure_runtime_model_config(&profile.hermes_home);
-                let model_config_status = hermes_runtime_model_config_status(&profile.hermes_home);
-                (
-                    profile.status != "ready" || model_config_status.needs_config(),
-                    Some(model_config_status),
-                )
-            }
-            Err(_) => (true, None),
-        };
+    let (profile_needs_config, model_config_status) = match state
+        .load_hermes_profile(&runtime.agent_did)
+    {
+        Ok(profile) => {
+            let profile = if let Ok(runtime_profile) =
+                state.load_runtime_agent_profile(&runtime.agent_did)
+            {
+                repair_hermes_profile_if_needed(config, state, &runtime_profile, &runtime.handle)
+                    .ok()
+                    .flatten()
+                    .map(|result| result.record)
+                    .unwrap_or(profile)
+            } else {
+                profile
+            };
+            let _ = ensure_runtime_model_config(&profile.hermes_home);
+            let model_config_status = hermes_runtime_model_config_status(&profile.hermes_home);
+            (
+                profile.status != "ready" || model_config_status.needs_config(),
+                Some(model_config_status),
+            )
+        }
+        Err(_) => (true, None),
+    };
     let gateway_command_status = gateway_status();
     let last_error_code = gateway_command_status
         .error_code()
@@ -1013,9 +1027,10 @@ mod tests {
         let hermes_home = root.path().join("runtime/hermes/profile");
         assert!(!hermes_home.join("config.yaml").exists());
 
-        let missing_gateway = runtime_status_summary_with_gateway_status(&state, &runtime, || {
-            HermesGatewayCommandStatus::Missing
-        });
+        let missing_gateway =
+            runtime_status_summary_with_gateway_status(&config, &state, &runtime, || {
+                HermesGatewayCommandStatus::Missing
+            });
         assert!(missing_gateway.needs_config);
         assert_eq!(
             missing_gateway.last_error_code.as_deref(),
@@ -1033,7 +1048,7 @@ mod tests {
         assert!(hermes_home.join("config.yaml").exists());
 
         let configured_gateway =
-            runtime_status_summary_with_gateway_status(&state, &runtime, || {
+            runtime_status_summary_with_gateway_status(&config, &state, &runtime, || {
                 HermesGatewayCommandStatus::Configured
             });
         assert!(!configured_gateway.needs_config);

@@ -80,7 +80,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 - Hermes TUI Gateway 真实命令、stdio JSON-RPC frame 和 event schema 在实现时可能需要以本机 Hermes 安装为准；计划要求先以 trait/adapter 隔离，并用 fake gateway 做 deterministic 测试。
 - 如果真实 Hermes binary 不存在，单元/集成测试必须使用 fake gateway；真实 Hermes smoke test 通过显式环境变量启用并记录 skip 原因。
 - profile token 若后续出现，只能用于低风险 health/ping，不授权 `msg.send`、`task.finish` 或 future `message.finish`。
-- `msg.send` recipient scope 继续由 `runtime_rpc_tokens.allowed_recipients_json` 限制；Step 05 已收敛为保守策略：controller text 触发的 Hermes run token 默认 `allowed_recipients = Some(controller_did)`，不默认开放任意 recipient；更宽协作目标需要后续显式 policy/config。
+- `msg.send` recipient scope 继续由 `runtime_rpc_tokens.allowed_recipients_json` 限制；Hermes run token 默认允许 controller、direct handle/DID 和 group 目标，匹配本期“用户自然语言要求 Runtime Agent 外发普通消息”的产品语义；真正发送仍只能经 daemon wrapper/local RPC，并受普通消息、审计、handle 解析和 group 成员权限约束。
 - Runtime Agent 外发消息本期只支持普通消息；daemon 不接触私聊/群聊加密密钥，也不在 Skill/CLI 暴露加密发送路径。
 
 ### 开放问题

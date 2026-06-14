@@ -133,7 +133,7 @@ audit 不记录 prompt 全文、token secret、private key、JWT。可记录 mes
    - 不引入 awiki-cli crate 依赖。
 7. 增加 tests：
    - foreground fake Hermes 处理一条 text/plain，产生 status/final；
-   - fake Hermes `send-message` 通过 Step 05 sender；
+   - fake Hermes `outbound-send` 通过 Step 05 sender；
    - diagnostics 输出不含 secret；
    - unsupported runtime 不影响 daemon loop；
    - runner stop 被调用。

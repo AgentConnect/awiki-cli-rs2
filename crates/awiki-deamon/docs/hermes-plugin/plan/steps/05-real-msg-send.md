@@ -32,8 +32,8 @@
 | `crates/awiki-deamon/src/outbox/mod.rs` | 分离 status/final controller outbox 与 runtime `msg.send` direct outbox | `send_message` 必须发给 recipient。 |
 | `crates/awiki-deamon/src/local_rpc/mod.rs` | 加强 `msg.send` params 校验、recipient 必填策略、side effect | 不信任请求体身份字段。 |
 | `crates/awiki-deamon/src/im_core_adapter.rs` | 如需增加 agent identity client helper | 不重拼 message-service wire。 |
-| `crates/awiki-deamon/src/security/runtime_token.rs` | 如需明确 allowed_recipients 缺省策略 | 建议 Hermes run 对 `msg.send` 默认要求 non-empty recipient scope，除非明确配置允许任意。 |
-| `crates/awiki-deamon/src/plugins/hermes/skills.rs` | 更新 `awiki-messaging` Skill 文案 | 明确 send-message 成功才可声称已发送。 |
+| `crates/awiki-deamon/src/security/runtime_token.rs` | 明确 allowed_recipients 缺省策略 | Hermes run 默认允许 controller、direct handle/DID 和 group 目标；发送仍只经 daemon wrapper/local RPC。 |
+| `crates/awiki-deamon/src/plugins/hermes/mod.rs` | 更新 `awiki-outbound-messaging` Skill 文案 | 明确 `awiki-deamon-runtime send` 成功才可声称已发送。 |
 | `crates/awiki-deamon/tests/` | 单元和集成测试：recipient scope、真实 outbox adapter、fake im-core adapter | 避免默认打真实网络。 |
 | `../awiki-system-test/tests_v2/daemon/` | 后续 Step 08 可新增系统测试；本步骤可先准备 focused helper | 跨仓变更需单独提交记录。 |
 
@@ -120,7 +120,7 @@ trait RuntimeMessageSender {
    - 授权成功/失败均写 audit；
    - audit 可记录 recipient hash 或 recipient DID，但不能记录 token secret；
    - method_level 保持可检索。
-6. 更新 `awiki-messaging` Skill 文案。
+6. 更新 `awiki-outbound-messaging` Skill 文案。
 7. 增加 tests：
    - `msg.send` 缺 recipient 被拒绝；
    - recipient scope 不匹配被拒绝，且没有 outbox side effect；
@@ -148,7 +148,7 @@ trait RuntimeMessageSender {
 |---|---|---|
 | 格式 | `cargo fmt --all --check` | 通过。 |
 | local RPC send focused | `cargo test -p awiki-deamon --locked msg_send` | recipient scope、side effect、参数校验测试通过。 |
-| Hermes messaging focused | `cargo test -p awiki-deamon --locked hermes_messaging` | Skill / fake Hermes send-message tests 通过。 |
+| Hermes messaging focused | `cargo test -p awiki-deamon --locked hermes_message` | Skill / fake Hermes outbound-send tests 通过。 |
 | daemon 全量 | `cargo test -p awiki-deamon --locked` | 通过。 |
 | 当前仓库 workspace | `cargo test --workspace --locked` | 通过或记录资源限制和 focused 替代。 |
 | 边界搜索 | `rg -n "crates/awiki-cli|awiki_cli" crates/awiki-deamon` | daemon 不依赖 awiki-cli 内部模块。 |
@@ -210,11 +210,11 @@ trait RuntimeMessageSender {
 
 | 审查项 | 结果 | 备注 |
 |---|---|---|
-| 发现 | `msg.send` 若复用 status payload 计数会让 foreground 诊断误把 direct send 当作 controller status；recipient scope 默认开放会扩大 Hermes 外发权限。 | 已按真实 direct send 和 controller-only 默认策略修正。 |
-| 已修复 | `send_message` 生产路径只调用 `ImCoreAgentOutbox::send_text`；status/final 继续用 `send_status_payload`；run token 默认 recipient scope 为 controller DID；补参数校验、security 映射和越权测试。 | prompt 仍不是安全边界，local RPC token 才是授权边界。 |
+| 发现 | `msg.send` 若复用 status payload 计数会让 foreground 诊断误把 direct send 当作 controller status；recipient scope 必须匹配 Hermes 外发产品语义。 | 已按真实 direct/group send、普通消息和 daemon wrapper/local RPC 边界修正。 |
+| 已修复 | `send_message` 生产路径只调用 `ImCoreAgentOutbox`；status/final 继续走 controller final/outbox；Hermes run token 默认允许 controller、direct handle/DID 和 group 目标；补参数校验、security 映射和越权测试。 | prompt 仍不是安全边界，local RPC token 才是授权边界。 |
 | 残余风险 | 没有真实网络 `hermes_real_msg_send` smoke。 | Step 08 远端完整系统测试必须记录真实普通消息结果；若跳过或失败必须写明原因。 |
-| 测试新增或缺失 | 新增 `runtime_message_send_params_validate_and_map_security`、`msg_send_requires_recipient_text_and_supported_security`、`msg_send_records_direct_message_side_effect_with_security_mode`、Hermes fake send-message tests，并扩展 Skill 文案断言。 | 没有新增 live smoke 测试入口。 |
-| 文档更新或缺失 | 主计划假设和变更日志已记录 controller-only recipient scope 默认策略；本步骤记录真实 send path 和验证证据。 | 未修改 Harness 文档，未发生跨仓控制面规则变化。 |
+| 测试新增或缺失 | 新增 `runtime_message_send_params_validate_and_map_security`、`msg_send_requires_recipient_text_and_supported_security`、`msg_send_records_direct_message_side_effect_with_security_mode`、Hermes outbound-send tests，并扩展 Skill 文案断言。 | 没有新增 live smoke 测试入口。 |
+| 文档更新或缺失 | 主计划假设和变更日志已记录 Hermes 默认外发 recipient scope；本步骤记录真实 send path 和验证证据。 | 未修改 Harness 文档，未发生跨仓控制面规则变化。 |
 
 ### 验证记录
 

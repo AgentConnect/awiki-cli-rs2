@@ -40,7 +40,8 @@ use crate::outbox::{
 };
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{
-    HermesGateway, HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID,
+    repair_hermes_profile_if_needed, HermesGateway, HermesRuntimePlugin, StdioHermesGateway,
+    HERMES_RUNTIME_PLUGIN_ID,
 };
 use crate::registration::UserServiceAgentRegistrationClient;
 use crate::runtime::host::{
@@ -416,7 +417,7 @@ fn run_runtime_retry(
     let run_id = format!("run_{}", retry.retry_id);
     match profile.runtime_plugin_id.as_str() {
         HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = state.load_hermes_profile(&profile.agent_did)?;
+            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
             let plugin = HermesRuntimePlugin::with_state(
                 StdioHermesGateway::from_config(config),
                 hermes_profile,
@@ -1295,7 +1296,7 @@ where
     let profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
     match profile.runtime_plugin_id.as_str() {
         HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = state.load_hermes_profile(&profile.agent_did)?;
+            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
             let plugin = HermesRuntimePlugin::with_state(
                 hermes_gateway_factory(),
                 hermes_profile,
@@ -1313,6 +1314,20 @@ where
             run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
         }
     }
+}
+
+fn current_hermes_profile_for_runtime(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &crate::runtime::RuntimeAgentProfile,
+) -> Result<crate::state::HermesProfileRecord> {
+    let definition = state.load_agent_definition(&profile.agent_did)?;
+    if let Some(repaired) =
+        repair_hermes_profile_if_needed(config, state, profile, &definition.handle)?
+    {
+        return Ok(repaired.record);
+    }
+    state.load_hermes_profile(&profile.agent_did)
 }
 
 fn run_runtime_task_command(

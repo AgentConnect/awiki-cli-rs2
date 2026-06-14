@@ -1,7 +1,7 @@
 use awiki_deamon::plugins::hermes::{
-    FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesGatewayTimeouts,
-    HermesPromptSubmitRequest, HermesRunner, HermesRuntimeEventKind, HermesRuntimePlugin,
-    HermesSessionCreateRequest, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID,
+    FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesGatewayLaunchContext,
+    HermesGatewayTimeouts, HermesPromptSubmitRequest, HermesRunner, HermesRuntimeEventKind,
+    HermesRuntimePlugin, HermesSessionCreateRequest, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID,
 };
 use awiki_deamon::runtime::{
     RuntimeLaunchContext, RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
@@ -521,6 +521,9 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
             "AWIKI_HERMES_HOME": os.environ.get("AWIKI_HERMES_HOME"),
             "AWIKI_HERMES_PROFILE": os.environ.get("AWIKI_HERMES_PROFILE"),
             "HERMES_YOLO_MODE": os.environ.get("HERMES_YOLO_MODE"),
+            "AWIKI_DAEMON_RPC_SOCKET": os.environ.get("AWIKI_DAEMON_RPC_SOCKET"),
+            "AWIKI_RUNTIME_RPC_TOKEN": os.environ.get("AWIKI_RUNTIME_RPC_TOKEN"),
+            "PATH": os.environ.get("PATH"),
         }, fh)
 
 print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "gateway.ready", "payload": {"version": "env-shape"}}}), flush=True)
@@ -544,7 +547,13 @@ for line in sys.stdin:
         hermes_home: hermes_home.clone(),
         ..hermes_record()
     };
-    let runner = HermesRunner::start(gateway, &record).unwrap();
+    let launch_context = HermesGatewayLaunchContext::new(
+        "run-env",
+        root.path().join("awiki-deamon.sock"),
+        "rtok_secret_for_env_test_123456789",
+    );
+    assert!(!format!("{launch_context:?}").contains("rtok_secret_for_env_test"));
+    let runner = HermesRunner::start_for_launch(gateway, &record, &launch_context).unwrap();
     runner
         .create_session(HermesSessionCreateRequest {
             route_key: "direct:did:human:alice".to_string(),
@@ -578,6 +587,28 @@ for line in sys.stdin:
         Some("awiki_alice_hermes")
     );
     assert_eq!(env_report["HERMES_YOLO_MODE"].as_str(), Some("1"));
+    assert_eq!(
+        env_report["AWIKI_DAEMON_RPC_SOCKET"].as_str(),
+        Some(
+            root.path()
+                .join("awiki-deamon.sock")
+                .display()
+                .to_string()
+                .as_str()
+        )
+    );
+    assert_eq!(
+        env_report["AWIKI_RUNTIME_RPC_TOKEN"].as_str(),
+        Some("rtok_secret_for_env_test_123456789")
+    );
+    let path_entries =
+        std::env::split_paths(std::ffi::OsStr::new(env_report["PATH"].as_str().unwrap()))
+            .collect::<Vec<_>>();
+    assert_eq!(path_entries.first(), Some(&hermes_home.join("bin")));
+    assert!(hermes_home
+        .join("bin")
+        .join("awiki-deamon-runtime")
+        .exists());
 }
 
 #[test]

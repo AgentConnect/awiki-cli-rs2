@@ -10,6 +10,7 @@ use crate::DaemonConfig;
 
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+const DAEMON_VERSION_RETENTION_EXTRA: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonUpgradeRequest {
@@ -146,6 +147,7 @@ async fn upgrade_daemon_async(
     if release_os().is_none() || release_arch().is_none() {
         bail!("current platform is not supported for awiki daemon upgrade");
     }
+    cleanup_daemon_bin_root(&request.bin_root, &[CURRENT_DAEMON_VERSION.to_string()])?;
     let target_version = normalize_target_version(&request.target_version)?;
     let manifest_url = manifest_url(&request.download_base_url);
     let manifest = read_release_manifest_async(&manifest_url)
@@ -209,6 +211,10 @@ async fn upgrade_daemon_async(
 
     std::fs::create_dir_all(&request.bin_root)
         .with_context(|| format!("create daemon bin root {}", request.bin_root.display()))?;
+    cleanup_daemon_bin_root(
+        &request.bin_root,
+        &[CURRENT_DAEMON_VERSION.to_string(), version.clone()],
+    )?;
     let temp_root = request.bin_root.join(format!(
         ".upgrade-{}-{}",
         sanitize_version_segment(&package.version)?,
@@ -220,6 +226,7 @@ async fn upgrade_daemon_async(
     }
     std::fs::create_dir_all(&temp_root)
         .with_context(|| format!("create daemon upgrade staging {}", temp_root.display()))?;
+    let temp_guard = UpgradeTempRootGuard::new(temp_root.clone());
     let archive_path = temp_root.join("package.tar.gz");
     std::fs::write(&archive_path, &archive_bytes)
         .with_context(|| format!("write daemon package {}", archive_path.display()))?;
@@ -284,7 +291,15 @@ async fn upgrade_daemon_async(
             detail: Some("service restart skipped for daemon upgrade".to_string()),
         }
     };
-    let _ = std::fs::remove_dir_all(&temp_root);
+    temp_guard.cleanup_now();
+    cleanup_daemon_bin_root(
+        &request.bin_root,
+        &[
+            package.version.clone(),
+            previous_version.clone().unwrap_or_default(),
+            CURRENT_DAEMON_VERSION.to_string(),
+        ],
+    )?;
     Ok(DaemonUpgradeReport {
         previous_version,
         target_version: package.version,
@@ -294,6 +309,114 @@ async fn upgrade_daemon_async(
         restarted: request.restart_service,
         service,
     })
+}
+
+struct UpgradeTempRootGuard {
+    path: Option<PathBuf>,
+}
+
+impl UpgradeTempRootGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn cleanup_now(mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+impl Drop for UpgradeTempRootGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn cleanup_daemon_bin_root(bin_root: &Path, keep_versions: &[String]) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(bin_root) else {
+        return Ok(());
+    };
+    let mut keep = keep_versions
+        .iter()
+        .map(|version| version.trim().trim_start_matches('v').to_string())
+        .filter(|version| !version.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(current_version) = current_daemon_link_version(bin_root) {
+        keep.insert(current_version);
+    }
+
+    let mut removable_versions = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("read daemon bin root {}", bin_root.display()))?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "current" {
+            continue;
+        }
+        if name.starts_with(".upgrade-") || is_backup_install_dir_name(&name) {
+            remove_bin_root_entry(&path)?;
+            continue;
+        }
+        if !is_release_version_dir_name(&name) {
+            continue;
+        }
+        if keep.contains(&name) {
+            continue;
+        }
+        let modified_at = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        removable_versions.push((name, path, modified_at));
+    }
+
+    removable_versions.sort_by(|left, right| {
+        compare_versions(&right.0, &left.0)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (index, (_name, path, _modified_at)) in removable_versions.into_iter().enumerate() {
+        if index < DAEMON_VERSION_RETENTION_EXTRA {
+            continue;
+        }
+        remove_bin_root_entry(&path)?;
+    }
+    Ok(())
+}
+
+fn remove_bin_root_entry(path: &Path) -> Result<()> {
+    let metadata =
+        std::fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        std::fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("remove directory {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn is_release_version_dir_name(name: &str) -> bool {
+    if name.is_empty() || name.starts_with('.') || name.contains("..") {
+        return false;
+    }
+    let has_dot = name.contains('.');
+    has_dot
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, '.' | '-' | '_'))
+}
+
+fn is_backup_install_dir_name(name: &str) -> bool {
+    name.contains(".backup.")
+        && name
+            .split(".backup.")
+            .next()
+            .is_some_and(is_release_version_dir_name)
 }
 
 fn normalize_target_version(value: &str) -> Result<String> {
@@ -777,10 +900,22 @@ mod tests {
         let (root, config) = fixture();
         let bin_root = root.path().join("bin");
         let old_dir = bin_root.join("0.1.0");
+        let older_dir = bin_root.join("0.0.9");
+        let oldest_dir = bin_root.join("0.0.7");
+        let old_backup_dir = bin_root.join("0.0.8.backup.20260101000000");
+        let stale_upgrade_dir = bin_root.join(".upgrade-0.0.7-123");
         let current_dir = bin_root.join("current");
         std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&older_dir).unwrap();
+        std::fs::create_dir_all(&oldest_dir).unwrap();
+        std::fs::create_dir_all(&old_backup_dir).unwrap();
+        std::fs::create_dir_all(&stale_upgrade_dir).unwrap();
         std::fs::create_dir_all(&current_dir).unwrap();
         std::fs::write(old_dir.join("awiki-deamon"), "old").unwrap();
+        std::fs::write(older_dir.join("awiki-deamon"), "older").unwrap();
+        std::fs::write(oldest_dir.join("awiki-deamon"), "oldest").unwrap();
+        std::fs::write(old_backup_dir.join("awiki-deamon"), "backup").unwrap();
+        std::fs::write(stale_upgrade_dir.join("package.tar.gz"), "stale").unwrap();
         std::os::unix::fs::symlink("../0.1.0/awiki-deamon", current_dir.join("awiki-deamon"))
             .unwrap();
         std::os::unix::fs::symlink(
@@ -817,6 +952,17 @@ mod tests {
             std::fs::read_to_string(bin_root.join("0.2.0").join("awiki-deamon")).unwrap(),
             "daemon 0.2.0"
         );
+        assert!(bin_root.join("0.2.0").exists());
+        assert!(bin_root.join("0.1.0").exists());
+        assert!(bin_root.join("0.0.9").exists());
+        assert!(!bin_root.join("0.0.7").exists());
+        assert!(!bin_root.join("0.0.8.backup.20260101000000").exists());
+        assert!(!bin_root.join(".upgrade-0.0.7-123").exists());
+        assert!(!bin_root.read_dir().unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".upgrade-")));
     }
 
     #[cfg(unix)]
@@ -839,7 +985,7 @@ mod tests {
             DaemonUpgradeRequest {
                 target_version: "latest".to_string(),
                 download_base_url: format!("file://{}", manifest.display()),
-                bin_root,
+                bin_root: bin_root.clone(),
                 restart_service: false,
             },
         )
@@ -850,5 +996,10 @@ mod tests {
             std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
             PathBuf::from("../0.1.0/awiki-deamon")
         );
+        assert!(!bin_root.read_dir().unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".upgrade-")));
     }
 }

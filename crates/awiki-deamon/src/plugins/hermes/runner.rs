@@ -9,8 +9,8 @@ use crate::state::{
 };
 
 use super::gateway::{
-    HermesGateway, HermesPromptOutcome, HermesPromptSubmitRequest, HermesRunnerRef,
-    HermesSessionCreateRequest, HermesSessionRef,
+    HermesGateway, HermesGatewayLaunchContext, HermesPromptOutcome, HermesPromptSubmitRequest,
+    HermesRunnerRef, HermesSessionCreateRequest, HermesSessionRef,
 };
 use super::prompt::HermesPromptWrapper;
 use super::HERMES_RUNTIME_PLUGIN_ID;
@@ -55,6 +55,15 @@ where
         Ok(Self { gateway, runner })
     }
 
+    pub fn start_for_launch(
+        gateway: G,
+        profile: &HermesProfileRecord,
+        context: &HermesGatewayLaunchContext,
+    ) -> Result<Self> {
+        let runner = gateway.start_for_launch(profile, context)?;
+        Ok(Self { gateway, runner })
+    }
+
     pub fn runner_ref(&self) -> &HermesRunnerRef {
         &self.runner
     }
@@ -94,8 +103,17 @@ where
         {
             bail!("Hermes launch context does not match profile binding");
         }
-        let runner = HermesRunner::start(self.gateway.clone(), &self.profile)
-            .context("start Hermes runner")?;
+        let runner = if let Some(local_socket_path) = context.local_socket_path.as_ref() {
+            let launch_context = HermesGatewayLaunchContext::new(
+                context.run.run_id.clone(),
+                local_socket_path.clone(),
+                context.runtime_rpc_token.as_str().to_string(),
+            );
+            HermesRunner::start_for_launch(self.gateway.clone(), &self.profile, &launch_context)
+        } else {
+            HermesRunner::start(self.gateway.clone(), &self.profile)
+        }
+        .context("start Hermes runner")?;
         let route = HermesSessionRoute::new(
             self.profile.agent_did.clone(),
             self.profile.runtime_profile_id.clone(),
