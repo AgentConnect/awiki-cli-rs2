@@ -954,6 +954,83 @@ fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
 }
 
 #[test]
+fn hermes_group_conversation_uses_group_session_and_final_message_target() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::default();
+    let hermes = hermes_record(root.path().join("runtime/hermes/profile"));
+    let plugin = HermesRuntimePlugin::with_state(gateway.clone(), hermes, state.clone());
+    let profile = profile(root.path().join("workspace"));
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "did:example:group:9".to_string(),
+            conversation_id: Some("group:did:example:group".to_string()),
+            sender_did: "did:human:bob".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "群里请 Hermes 处理一下".to_string(),
+        },
+    )
+    .unwrap();
+
+    let created_sessions = gateway.created_sessions();
+    assert_eq!(created_sessions.len(), 1);
+    assert_eq!(
+        created_sessions[0].conversation_id.as_deref(),
+        Some("group:did:example:group")
+    );
+
+    let route = HermesSessionRoute::new(
+        "did:agent:hermes",
+        "profile_hermes_alice",
+        "controller-scope:v1:test-alice-anpclaw-com",
+        Some("group:did:example:group".to_string()),
+        "conversation",
+    );
+    assert!(state
+        .load_active_hermes_session_by_route(&route)
+        .unwrap()
+        .is_some());
+
+    let stored = state
+        .load_runtime_final_outbox_by_run("run_task_did:example:group:9")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "sent");
+    assert_eq!(
+        stored.conversation_id.as_deref(),
+        Some("group:did:example:group")
+    );
+    assert_eq!(stored.controller_did, "did:human:alice");
+
+    let records = outbox.records();
+    let final_message = records
+        .iter()
+        .find(|record| {
+            record.kind == OutboxRecordKind::Message
+                && record.text.as_deref() == Some("fake complete")
+        })
+        .expect("final message should be sent");
+    assert_eq!(
+        final_message.recipient.as_deref(),
+        Some("did:example:group")
+    );
+    assert_eq!(
+        final_message.raw_recipient.as_deref(),
+        Some("did:example:group")
+    );
+    assert_eq!(final_message.resolved_did, None);
+    assert_eq!(
+        final_message.idempotency_key.as_deref(),
+        Some(stored.idempotency_key.as_str())
+    );
+}
+
+#[test]
 fn hermes_session_mapping_reset_archives_old_session_and_creates_replacement() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
