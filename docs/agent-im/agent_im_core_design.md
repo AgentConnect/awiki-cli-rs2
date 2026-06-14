@@ -7,6 +7,34 @@
 
 ---
 
+## 0.0 当前 E2E 验证状态（2026-06-14）
+
+核心 P0 链路已经通过 `awiki-me` 的真实桌面 E2E 在 `awiki.info`
+环境验证：runId `20260614T024413341Z`、messageId
+`msg_agent_im_20260614T024413341Z`。
+
+已验证内容：
+
+1. App 通过真实 IM payload path 发送 `awiki.daemon.bootstrap.v1`；
+2. Daemon 收到 bootstrap 并导入 `#daemon-key-1` delegated key；
+3. Daemon 创建/复用 Hermes message agent；
+4. `awiki-cli-rs2` 的 `awiki-cli` 作为 peer 向 App 用户发送普通消息；
+5. Daemon/Hermes 完成消息处理并生成 runtime status/final；
+6. Daemon 将 `awiki.message.sync.v1` 回传给 App；
+7. App 侧收到 hidden、non-renderable 的 `runtime_final` payload，不进入普通聊天气泡。
+
+远端 evidence gate 需要同时观测到：
+`daemon_bootstrap_received`、`delegated_key_imported`、
+`hermes_agent_ready`、`cli_message_received`、`hermes_runtime_finished`、
+`summary_return_sent`。本次 run 六项均通过。
+
+仍未声明为本轮完成的 P1/P2 后续项：daemon restart/cursor 恢复、E2EE
+opaque 边界专项、delegated DID revoke 行为、unknown payload negative
+injection。它们可以继续以 skipped/follow-up 形式存在，但不能影响上述 P0
+核心链路通过结论。
+
+---
+
 ## 0. 本次仓库读取结论
 
 ### 0.1 已读到的关键实现
@@ -304,7 +332,7 @@ sequenceDiagram
     "key_algorithm": "Ed25519",
     "public_key_multibase": "z...",
     "private_key_encoding": "pem",
-    "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----",
+    "private_key_pem": "<omitted daemon-key-1 private key PEM>",
     "expires_at": "2026-09-09T00:00:00Z",
     "allowed_scopes": [
       "message.inbox.read.plain",
