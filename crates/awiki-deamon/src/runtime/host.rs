@@ -11,8 +11,8 @@ use crate::outbox::{
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
-    RuntimeAgentProfile, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun,
-    RuntimeRunStatus, RuntimeTask,
+    runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeLaunchContext,
+    RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
 };
 use crate::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
@@ -209,12 +209,7 @@ where
 {
     profile.validate()?;
     task.validate()?;
-    if task.agent_did != profile.agent_did
-        || task.controller_user_id != profile.controller_user_id
-        || task.controller_full_handle != profile.controller_full_handle
-        || task.controller_scope_key != profile.controller_scope_key
-        || task.sender_did != task.controller_did
-    {
+    if !runtime_task_matches_profile_controller_scope(&task, profile) {
         anyhow::bail!("runtime task does not match profile controller scope");
     }
     if run_id.trim().is_empty() {
