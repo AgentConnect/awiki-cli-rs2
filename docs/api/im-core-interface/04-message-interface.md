@@ -404,12 +404,15 @@ SDK 本地校验：
 
 ```text
 1. 注入身份和 owner。
-2. ensure_session。
-3. 构造 internal RPC/wire params。
-4. 拉取远端必要子集。
-5. normalize 成 Page<Message>。
-6. 不在 P1 强制做 conversation projection。
+2. 按查询范围 ensure_session：direct 使用 Messaging，group 使用 GroupMessaging，All 需要两者。
+3. DirectOnly 通过 inbox.get 拉取 direct inbox，并过滤掉任何异常混入的 group 消息。
+4. GroupOnly 先 group.list 获取当前身份所在群，再按群调用 group.list_messages，合并成 group inbox 视图。
+5. All 合并 DirectOnly 与 GroupOnly 的结果，按 message id 去重并应用 limit。
+6. normalize 成 Page<Message>。
+7. 不在 P1 强制做 conversation projection。
 ```
+
+约束：`InboxHistoryOptions` 目前只支持 direct/delegated inbox；`GroupOnly` 如果传入 delegated inbox options，应返回明确 unsupported；`All` 带 delegated options 时保持兼容，只读取 direct/delegated inbox，不进入 group 子路径，避免 daemon 误把用户 delegated inbox proof 用于群消息读取。
 
 ## 7. Dart / Flutter Binding
 

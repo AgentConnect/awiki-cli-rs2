@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::transport::{
@@ -57,14 +57,44 @@ where
     }
 
     pub(crate) fn inbox(mut self, input: InboxRead) -> crate::ImResult<ReadPageResult> {
+        match input.query.scope {
+            crate::messages::InboxScope::DirectOnly => self.direct_inbox(input.query),
+            crate::messages::InboxScope::GroupOnly => self.group_inbox(input.query),
+            crate::messages::InboxScope::All => self.all_inbox(input.query),
+        }
+    }
+
+    fn all_inbox(&mut self, query: crate::messages::InboxQuery) -> crate::ImResult<ReadPageResult> {
+        let requested_limit = query.limit;
+        let mut direct_query = query.clone();
+        direct_query.scope = crate::messages::InboxScope::DirectOnly;
+        if query.inbox_history_options.is_some() {
+            return self.direct_inbox(direct_query);
+        }
+        let mut direct = self.direct_inbox(direct_query)?;
+
+        let mut group_query = query;
+        group_query.scope = crate::messages::InboxScope::GroupOnly;
+        let group = self.group_inbox(group_query)?;
+
+        direct.page.items.extend(group.page.items);
+        direct.page.has_more = direct.page.has_more || group.page.has_more;
+        direct.page.has_more |=
+            dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
+        merge_raw_metadata(&mut direct.raw, &group.raw, "all");
+        persist_projection_best_effort(self.client, &direct.page.items);
+        Ok(direct)
+    }
+
+    fn direct_inbox(
+        &mut self,
+        query: crate::messages::InboxQuery,
+    ) -> crate::ImResult<ReadPageResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)?;
-        let limit = page_limit(input.query.limit, 20);
-        let delegated = delegated_inbox_context(
-            self.client,
-            input.query.inbox_history_options.as_ref(),
-            limit,
-        )?;
+        let limit = page_limit(query.limit, 20);
+        let delegated =
+            delegated_inbox_context(self.client, query.inbox_history_options.as_ref(), limit)?;
         let service_did = delegated
             .as_ref()
             .map(|_| delegated_message_service_did(self.client));
@@ -97,7 +127,63 @@ where
             project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
         }
         annotate_direct_peer_scopes(self.client, &mut raw, &mut self.directory_transport, None);
-        let page = page_from_raw(self.client, &raw, input.query.limit)?;
+        let mut page = page_from_raw(self.client, &raw, query.limit)?;
+        page.items.retain(|message| message.group.is_none());
+        page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
+        persist_projection_best_effort(self.client, &page.items);
+        Ok(ReadPageResult { page, raw })
+    }
+
+    fn group_inbox(
+        &mut self,
+        query: crate::messages::InboxQuery,
+    ) -> crate::ImResult<ReadPageResult> {
+        if query.inbox_history_options.is_some() {
+            return Err(crate::ImError::unsupported("delegated-group-inbox"));
+        }
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let limit = page_limit(query.limit, 20);
+        let group_list_params = crate::internal::wire::group::build_group_list_rpc_params(
+            self.client.did().as_str(),
+            limit,
+        );
+        let group_list_raw = self.transport.authenticated_rpc(
+            MESSAGE_RPC_ENDPOINT,
+            "group.list",
+            group_list_params,
+        )?;
+        let groups = group_refs_from_group_list_raw(&group_list_raw);
+        let mut items = Vec::new();
+        let mut has_more = false;
+        let mut raw = grouped_inbox_raw("group");
+        merge_raw_metadata(&mut raw, &group_list_raw, "group");
+        for group in groups {
+            let params = crate::internal::wire::group::build_group_messages_rpc_params(
+                self.client.did().as_str(),
+                group.as_str(),
+                limit,
+                None,
+                0,
+            )?;
+            let mut group_raw = self.transport.authenticated_rpc(
+                MESSAGE_RPC_ENDPOINT,
+                "group.list_messages",
+                params,
+            )?;
+            project_group_e2ee_messages(self.client, &mut group_raw);
+            let page =
+                page_from_raw_with_group(self.client, &group_raw, query.limit, Some(&group))?;
+            items.extend(page.items);
+            has_more |= page.has_more;
+            merge_raw_metadata(&mut raw, &group_raw, "group");
+        }
+        has_more |= dedupe_and_truncate_messages(&mut items, query.limit);
+        let page = crate::ids::Page {
+            items,
+            next_cursor: None,
+            has_more,
+        };
         persist_projection_best_effort(self.client, &page.items);
         Ok(ReadPageResult { page, raw })
     }
@@ -201,16 +287,49 @@ where
     R: AsyncRpcTransport,
 {
     pub(crate) async fn inbox_async(mut self, input: InboxRead) -> crate::ImResult<ReadPageResult> {
+        match input.query.scope {
+            crate::messages::InboxScope::DirectOnly => self.direct_inbox_async(input.query).await,
+            crate::messages::InboxScope::GroupOnly => self.group_inbox_async(input.query).await,
+            crate::messages::InboxScope::All => self.all_inbox_async(input.query).await,
+        }
+    }
+
+    async fn all_inbox_async(
+        &mut self,
+        query: crate::messages::InboxQuery,
+    ) -> crate::ImResult<ReadPageResult> {
+        let requested_limit = query.limit;
+        let mut direct_query = query.clone();
+        direct_query.scope = crate::messages::InboxScope::DirectOnly;
+        if query.inbox_history_options.is_some() {
+            return self.direct_inbox_async(direct_query).await;
+        }
+        let mut direct = self.direct_inbox_async(direct_query).await?;
+
+        let mut group_query = query;
+        group_query.scope = crate::messages::InboxScope::GroupOnly;
+        let group = self.group_inbox_async(group_query).await?;
+
+        direct.page.items.extend(group.page.items);
+        direct.page.has_more = direct.page.has_more || group.page.has_more;
+        direct.page.has_more |=
+            dedupe_and_truncate_messages(&mut direct.page.items, requested_limit);
+        merge_raw_metadata(&mut direct.raw, &group.raw, "all");
+        persist_projection_best_effort_async(self.client, &direct.page.items).await;
+        Ok(direct)
+    }
+
+    async fn direct_inbox_async(
+        &mut self,
+        query: crate::messages::InboxQuery,
+    ) -> crate::ImResult<ReadPageResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)
             .await?;
-        let limit = page_limit(input.query.limit, 20);
-        let delegated = delegated_inbox_context_async(
-            self.client,
-            input.query.inbox_history_options.as_ref(),
-            limit,
-        )
-        .await?;
+        let limit = page_limit(query.limit, 20);
+        let delegated =
+            delegated_inbox_context_async(self.client, query.inbox_history_options.as_ref(), limit)
+                .await?;
         let service_did = delegated
             .as_ref()
             .map(|_| delegated_message_service_did(self.client));
@@ -255,7 +374,62 @@ where
             None,
         )
         .await;
-        let page = page_from_raw(self.client, &raw, input.query.limit)?;
+        let mut page = page_from_raw(self.client, &raw, query.limit)?;
+        page.items.retain(|message| message.group.is_none());
+        page.has_more |= dedupe_and_truncate_messages(&mut page.items, query.limit);
+        persist_projection_best_effort_async(self.client, &page.items).await;
+        Ok(ReadPageResult { page, raw })
+    }
+
+    async fn group_inbox_async(
+        &mut self,
+        query: crate::messages::InboxQuery,
+    ) -> crate::ImResult<ReadPageResult> {
+        if query.inbox_history_options.is_some() {
+            return Err(crate::ImError::unsupported("delegated-group-inbox"));
+        }
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let limit = page_limit(query.limit, 20);
+        let group_list_params = crate::internal::wire::group::build_group_list_rpc_params(
+            self.client.did().as_str(),
+            limit,
+        );
+        let group_list_raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list", group_list_params)
+            .await?;
+        let groups = group_refs_from_group_list_raw(&group_list_raw);
+        let mut items = Vec::new();
+        let mut has_more = false;
+        let mut raw = grouped_inbox_raw("group");
+        merge_raw_metadata(&mut raw, &group_list_raw, "group");
+        for group in groups {
+            let params = crate::internal::wire::group::build_group_messages_rpc_params(
+                self.client.did().as_str(),
+                group.as_str(),
+                limit,
+                None,
+                0,
+            )?;
+            let mut group_raw = self
+                .transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
+                .await?;
+            project_group_e2ee_messages_async(self.client, &mut group_raw).await;
+            let page =
+                page_from_raw_with_group(self.client, &group_raw, query.limit, Some(&group))?;
+            items.extend(page.items);
+            has_more |= page.has_more;
+            merge_raw_metadata(&mut raw, &group_raw, "group");
+        }
+        has_more |= dedupe_and_truncate_messages(&mut items, query.limit);
+        let page = crate::ids::Page {
+            items,
+            next_cursor: None,
+            has_more,
+        };
         persist_projection_best_effort_async(self.client, &page.items).await;
         Ok(ReadPageResult { page, raw })
     }
@@ -609,6 +783,85 @@ fn page_from_raw_with_group(
         next_cursor,
         has_more,
     })
+}
+
+fn group_refs_from_group_list_raw(raw: &Value) -> Vec<crate::ids::GroupRef> {
+    raw.get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(group_ref_from_group_value)
+        .collect()
+}
+
+fn group_ref_from_group_value(value: &Value) -> Option<crate::ids::GroupRef> {
+    let object = value.as_object()?;
+    for key in ["group_did", "did", "id"] {
+        if let Some(group) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| crate::ids::GroupRef::parse(value).ok())
+        {
+            return Some(group);
+        }
+    }
+    None
+}
+
+fn grouped_inbox_raw(source: &str) -> Value {
+    json!({
+        "source": source,
+        "warnings": [],
+    })
+}
+
+fn merge_raw_metadata(target: &mut Value, source: &Value, fallback_source: &str) {
+    let Some(target_object) = target.as_object_mut() else {
+        return;
+    };
+    let source_name = source
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_source);
+    target_object
+        .entry("source".to_owned())
+        .or_insert_with(|| Value::String(source_name.to_owned()));
+    let warnings = source
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| Value::String(value.to_owned()))
+        .collect::<Vec<_>>();
+    if warnings.is_empty() {
+        return;
+    }
+    let entry = target_object
+        .entry("warnings".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(items) = entry {
+        items.extend(warnings);
+    }
+}
+
+fn dedupe_and_truncate_messages(
+    messages: &mut Vec<crate::messages::Message>,
+    requested_limit: crate::ids::PageLimit,
+) -> bool {
+    let mut seen = HashSet::new();
+    messages.retain(|message| seen.insert(message.id.as_str().to_owned()));
+    let limit = usize::try_from(requested_limit.0).unwrap_or_default();
+    if limit == 0 || messages.len() <= limit {
+        return false;
+    }
+    messages.truncate(limit);
+    true
 }
 
 fn annotate_direct_peer_scopes(
@@ -2046,6 +2299,59 @@ mod tests {
         assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["user_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["limit"], 20);
+    }
+
+    #[test]
+    fn messages_read_runtime_group_inbox_scope_lists_groups_and_messages() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "groups": [{"group_did": "did:example:group"}],
+                    "messages": [{
+                        "id": "msg-group-inbox-1",
+                        "sender_did": "did:example:bob",
+                        "content": "hello group inbox",
+                        "content_type": "text/plain",
+                        "group_event_seq": 12
+                    }],
+                    "has_more": false
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::GroupOnly,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                    inbox_history_options: None,
+                },
+            })
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 1);
+        let message = &result.page.items[0];
+        assert_eq!(message.id.as_str(), "did:example:group:12");
+        assert_eq!(
+            message.thread,
+            crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap()
+            )
+        );
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "group.list");
+        assert_eq!(calls[1].method, "group.list_messages");
+        assert_eq!(calls[1].params["body"]["group_did"], "did:example:group");
     }
 
     #[test]
