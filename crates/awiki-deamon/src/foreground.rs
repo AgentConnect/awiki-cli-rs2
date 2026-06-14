@@ -739,6 +739,10 @@ async fn route_message(
 ) -> Result<bool> {
     let sender_did = message.sender.as_str().to_string();
     let conversation_id = conversation_id(message);
+    if is_opaque_group_e2ee_message(message) {
+        record_ignored_opaque_group_e2ee_message(state, target_agent_did, message)?;
+        return Ok(false);
+    }
     match &message.body {
         MessageBodyView::Payload { payload } => {
             let content_type = message
@@ -865,6 +869,22 @@ fn is_attachment_manifest_message(message: &Message, content_type: &str, payload
             .get("attachments")
             .and_then(Value::as_array)
             .is_some()
+}
+
+fn is_opaque_group_e2ee_message(message: &Message) -> bool {
+    matches!(message.thread, ThreadRef::Group(_))
+        && !matches!(message.body, MessageBodyView::Text { .. })
+        && (message.metadata.attributes.iter().any(|attribute| {
+            matches!(
+                attribute.key.as_str(),
+                "security" | "message_security_profile" | "security_profile"
+            ) && attribute.value == "group-e2ee"
+        }) || matches!(
+            &message.body,
+            MessageBodyView::Payload { payload }
+                if payload.get("group_cipher_object").is_some()
+                    || payload.get("ciphertext_b64u").is_some()
+        ))
 }
 
 fn route_runtime_controller_text(
@@ -1357,6 +1377,27 @@ fn record_ignored_non_command_payload(
             "target_agent_did": target_agent_did,
             "content_type": content_type,
             "schema": payload.get("schema").and_then(Value::as_str),
+        }),
+    )
+}
+
+fn record_ignored_opaque_group_e2ee_message(
+    state: &DaemonState,
+    target_agent_did: &str,
+    message: &Message,
+) -> Result<()> {
+    state.insert_audit_event_json(
+        "daemon.group_e2ee.opaque.ignored",
+        Some(target_agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "reason": "opaque_group_e2ee_not_promptable",
+            "message_id": message.id.as_str(),
+            "sender_did": message.sender.as_str(),
+            "target_agent_did": target_agent_did,
+            "conversation_id": conversation_id(message),
         }),
     )
 }
@@ -3405,6 +3446,54 @@ mod tests {
             "did:agent:other",
             &message
         ));
+    }
+
+    #[test]
+    fn opaque_group_e2ee_payload_is_ignored_without_auditing_ciphertext() {
+        let (_root, _config, state) = fixture();
+        let message = Message {
+            id: im_core::ids::MessageId::parse("did:example:group:11").unwrap(),
+            thread: ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            direction: MessageDirection::Unknown,
+            sender: PeerRef::parse("did:human:bob", "").unwrap(),
+            receiver: None,
+            group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: MessageBodyView::Payload {
+                payload: json!({
+                    "group_cipher_object": {
+                        "ciphertext_b64u": "secret-ciphertext-value",
+                        "aad": "secret-aad"
+                    }
+                }),
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata {
+                attributes: vec![im_core::messages::MessageMetadataAttribute {
+                    key: "message_security_profile".to_string(),
+                    value: "group-e2ee".to_string(),
+                }],
+                ..im_core::messages::MessageMetadata::default()
+            },
+        };
+
+        assert!(is_opaque_group_e2ee_message(&message));
+        record_ignored_opaque_group_e2ee_message(&state, "did:agent:hermes", &message).unwrap();
+
+        let connection = rusqlite::Connection::open(_config.daemon_db_path).unwrap();
+        let detail_json: String = connection
+            .query_row(
+                "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'daemon.group_e2ee.opaque.ignored' ORDER BY created_at_ms DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(detail_json.contains("opaque_group_e2ee_not_promptable"));
+        assert!(detail_json.contains("did:example:group:11"));
+        assert!(detail_json.contains("group:did:example:group"));
+        assert!(!detail_json.contains("secret-ciphertext-value"));
+        assert!(!detail_json.contains("secret-aad"));
+        assert!(!detail_json.contains("group_cipher_object"));
     }
 
     #[test]
