@@ -275,62 +275,47 @@ async fn process_inbox_once(
         let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
         ensure_agent_messaging_session(&client, &agent.agent_did).await?;
         for poll_scope in runtime_agent_inbox_poll_scopes() {
-            if poll_scope != RuntimeInboxPollScope::Direct {
-                continue;
-            }
-            let inbox = client
-                .messages()
-                .inbox_with_metadata_async(InboxQuery {
-                    scope: poll_scope.inbox_scope(),
-                    limit: im_core::ids::PageLimit::new(20)?,
-                    cursor: None,
-                    unread_only: false,
-                    inbox_history_options: None,
-                })
-                .await
-                .with_context(|| {
-                    format!(
-                        "poll {} inbox for agent {}",
-                        poll_scope.as_str(),
-                        agent.agent_did
+            match poll_scope {
+                RuntimeInboxPollScope::Direct => {
+                    processed_count += process_agent_direct_inbox_once(
+                        config,
+                        state,
+                        im_core,
+                        &registration,
+                        &client,
+                        &agent.agent_did,
+                        processed,
                     )
-                })?;
-            for message in inbox.items.into_iter().rev() {
-                if message.direction == MessageDirection::Outgoing {
-                    continue;
+                    .await?;
                 }
-                let message_key = format!(
-                    "{}:{}",
-                    agent.agent_did,
-                    runtime_processed_message_id(&message)
-                );
-                if !processed.insert(message_key) {
-                    continue;
-                }
-                match route_message(
-                    config,
-                    state,
-                    im_core,
-                    &registration,
-                    &client,
-                    &agent.agent_did,
-                    &message,
-                )
-                .await
-                {
-                    Ok(true) => {
-                        processed_count += 1;
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        let sanitized = sanitize_error_message(&error.to_string());
-                        eprintln!("warning: daemon inbox message route failed: {sanitized}");
-                        if let Err(audit_error) =
-                            record_inbox_route_error(state, &agent.agent_did, &message, &error)
-                        {
+                RuntimeInboxPollScope::Group => {
+                    match process_agent_group_inbox_once(
+                        config,
+                        state,
+                        im_core,
+                        &registration,
+                        &client,
+                        &agent.agent_did,
+                        processed,
+                    )
+                    .await
+                    {
+                        Ok(count) => processed_count += count,
+                        Err(error) => {
+                            let sanitized = sanitize_error_message(&error.to_string());
                             eprintln!(
-                                "warning: daemon inbox route error audit failed: {}",
-                                sanitize_error_message(&audit_error.to_string())
+                                "warning: daemon group inbox poll failed for agent {}: {sanitized}",
+                                agent.agent_did
+                            );
+                            let _ = state.insert_audit_event_json(
+                                "daemon.group_inbox.poll.failed",
+                                Some(&agent.agent_did),
+                                None,
+                                None,
+                                None,
+                                json!({
+                                    "error": sanitized,
+                                }),
                             );
                         }
                     }
@@ -339,6 +324,196 @@ async fn process_inbox_once(
         }
     }
     Ok(processed_count)
+}
+
+async fn process_agent_direct_inbox_once(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    registration: &UserServiceAgentRegistrationClient,
+    client: &im_core::ImClient,
+    agent_did: &str,
+    processed: &mut HashSet<String>,
+) -> Result<usize> {
+    let inbox = client
+        .messages()
+        .inbox_with_metadata_async(InboxQuery {
+            scope: RuntimeInboxPollScope::Direct.inbox_scope(),
+            limit: im_core::ids::PageLimit::new(20)?,
+            cursor: None,
+            unread_only: false,
+            inbox_history_options: None,
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "poll {} inbox for agent {agent_did}",
+                RuntimeInboxPollScope::Direct.as_str()
+            )
+        })?;
+    let mut processed_count = 0usize;
+    for message in inbox.items.into_iter().rev() {
+        if process_runtime_inbox_message(
+            config,
+            state,
+            im_core,
+            registration,
+            client,
+            agent_did,
+            &message,
+            processed,
+        )
+        .await?
+        .unwrap_or(false)
+        {
+            processed_count += 1;
+        }
+    }
+    Ok(processed_count)
+}
+
+async fn process_agent_group_inbox_once(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    registration: &UserServiceAgentRegistrationClient,
+    client: &im_core::ImClient,
+    agent_did: &str,
+    processed: &mut HashSet<String>,
+) -> Result<usize> {
+    let groups = client
+        .groups()
+        .list_async(im_core::groups::GroupListRequest {
+            limit: im_core::ids::PageLimit::new(50)?,
+        })
+        .await
+        .with_context(|| format!("list groups for agent {agent_did}"))?;
+    let mut processed_count = 0usize;
+    for group in groups.groups {
+        if group
+            .membership_status
+            .as_deref()
+            .is_some_and(|status| status != "active")
+        {
+            continue;
+        }
+        let messages = client
+            .groups()
+            .messages_async(im_core::groups::GroupMessagesRequest {
+                group: group.did.clone(),
+                limit: im_core::ids::PageLimit::new(20)?,
+                cursor: None,
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "poll group inbox for agent {agent_did} group {}",
+                    group.did.as_str()
+                )
+            })?;
+        for message in messages.messages.items.into_iter().rev() {
+            if process_runtime_inbox_message(
+                config,
+                state,
+                im_core,
+                registration,
+                client,
+                agent_did,
+                &message,
+                processed,
+            )
+            .await?
+            .unwrap_or(false)
+            {
+                processed_count += 1;
+            }
+        }
+    }
+    Ok(processed_count)
+}
+
+async fn process_runtime_inbox_message(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    registration: &UserServiceAgentRegistrationClient,
+    client: &im_core::ImClient,
+    agent_did: &str,
+    message: &Message,
+    processed: &mut HashSet<String>,
+) -> Result<Option<bool>> {
+    if should_skip_runtime_inbox_message(agent_did, message) {
+        return Ok(None);
+    }
+    let processed_message_id = runtime_processed_message_id(message);
+    if runtime_processed_message_is_terminal(state, agent_did, &processed_message_id)? {
+        return Ok(None);
+    }
+    let message_key = format!("{agent_did}:{processed_message_id}");
+    if !processed.insert(message_key) {
+        return Ok(None);
+    }
+    match route_message(
+        config,
+        state,
+        im_core,
+        registration,
+        client,
+        agent_did,
+        message,
+    )
+    .await
+    {
+        Ok(routed) => {
+            record_runtime_processed_message(state, agent_did, &processed_message_id, routed)?;
+            Ok(Some(routed))
+        }
+        Err(error) => {
+            let sanitized = sanitize_error_message(&error.to_string());
+            eprintln!("warning: daemon inbox message route failed: {sanitized}");
+            if let Err(audit_error) = record_inbox_route_error(state, agent_did, message, &error) {
+                eprintln!(
+                    "warning: daemon inbox route error audit failed: {}",
+                    sanitize_error_message(&audit_error.to_string())
+                );
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn should_skip_runtime_inbox_message(agent_did: &str, message: &Message) -> bool {
+    message.direction == MessageDirection::Outgoing || message.sender.as_str() == agent_did
+}
+
+fn record_runtime_processed_message(
+    state: &DaemonState,
+    agent_did: &str,
+    processed_message_id: &str,
+    routed: bool,
+) -> Result<()> {
+    let status = if routed { "done" } else { "ignored" };
+    let inserted = state.try_insert_processed_message(&crate::state::ProcessedMessageRecord {
+        owner_did: agent_did.to_string(),
+        message_id: processed_message_id.to_string(),
+        schema: "awiki.daemon.runtime_inbox.v1".to_string(),
+        processed_at_ms: 0,
+        status: status.to_string(),
+    })?;
+    if !inserted {
+        state.mark_processed_message_status(agent_did, processed_message_id, status)?;
+    }
+    Ok(())
+}
+
+fn runtime_processed_message_is_terminal(
+    state: &DaemonState,
+    agent_did: &str,
+    processed_message_id: &str,
+) -> Result<bool> {
+    Ok(state
+        .load_processed_message(agent_did, processed_message_id)?
+        .is_some_and(|record| matches!(record.status.as_str(), "done" | "ignored")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3189,6 +3364,75 @@ mod tests {
         };
 
         assert_eq!(runtime_processed_message_id(&message), "msg_foreground");
+    }
+
+    #[test]
+    fn runtime_inbox_message_skips_self_sender_even_when_direction_unknown() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("did:example:group:10").unwrap(),
+            thread: ThreadRef::Group(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            direction: MessageDirection::Unknown,
+            sender: PeerRef::parse("did:agent:hermes", "").unwrap(),
+            receiver: None,
+            group: Some(im_core::ids::GroupRef::parse("did:example:group").unwrap()),
+            body: MessageBodyView::Text {
+                text: "agent echo".to_string(),
+                kind: im_core::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        assert!(should_skip_runtime_inbox_message(
+            "did:agent:hermes",
+            &message
+        ));
+        assert!(!should_skip_runtime_inbox_message(
+            "did:agent:other",
+            &message
+        ));
+    }
+
+    #[test]
+    fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
+        let (_root, _config, state) = fixture();
+
+        assert!(
+            !runtime_processed_message_is_terminal(&state, "did:agent:hermes", "msg_missing")
+                .unwrap()
+        );
+
+        record_runtime_processed_message(&state, "did:agent:hermes", "msg_done", true).unwrap();
+        assert!(
+            runtime_processed_message_is_terminal(&state, "did:agent:hermes", "msg_done").unwrap()
+        );
+
+        record_runtime_processed_message(&state, "did:agent:hermes", "msg_ignored", false).unwrap();
+        assert!(
+            runtime_processed_message_is_terminal(&state, "did:agent:hermes", "msg_ignored")
+                .unwrap()
+        );
+
+        state
+            .try_insert_processed_message(&crate::state::ProcessedMessageRecord {
+                owner_did: "did:agent:hermes".to_string(),
+                message_id: "msg_failed".to_string(),
+                schema: "awiki.daemon.runtime_inbox.v1".to_string(),
+                processed_at_ms: 0,
+                status: "failed".to_string(),
+            })
+            .unwrap();
+        assert!(
+            !runtime_processed_message_is_terminal(&state, "did:agent:hermes", "msg_failed")
+                .unwrap()
+        );
+
+        record_runtime_processed_message(&state, "did:agent:hermes", "msg_failed", true).unwrap();
+        assert!(
+            runtime_processed_message_is_terminal(&state, "did:agent:hermes", "msg_failed")
+                .unwrap()
+        );
     }
 
     #[test]
