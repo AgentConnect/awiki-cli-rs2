@@ -99,7 +99,6 @@ where
             || context.run.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID
             || context.run.task_id != context.task.task_id
             || context.task.agent_did != self.profile.agent_did
-            || context.task.sender_did != context.task.controller_did
         {
             bail!("Hermes launch context does not match profile binding");
         }

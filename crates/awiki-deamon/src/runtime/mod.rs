@@ -160,6 +160,30 @@ impl RuntimeTask {
     }
 }
 
+pub fn is_group_conversation_id(conversation_id: Option<&str>) -> bool {
+    conversation_id
+        .map(str::trim)
+        .is_some_and(|value| value.starts_with("group:") && value.len() > "group:".len())
+}
+
+pub fn runtime_task_matches_profile_controller_scope(
+    task: &RuntimeTask,
+    profile: &RuntimeAgentProfile,
+) -> bool {
+    if task.agent_did != profile.agent_did
+        || task.controller_user_id != profile.controller_user_id
+        || task.controller_full_handle != profile.controller_full_handle
+        || task.controller_scope_key != profile.controller_scope_key
+    {
+        return false;
+    }
+    if is_group_conversation_id(task.conversation_id.as_deref()) {
+        task.controller_did == profile.controller_did
+    } else {
+        task.sender_did == task.controller_did
+    }
+}
+
 impl RuntimeRunStatus {
     pub fn as_str(&self) -> &'static str {
         match self {

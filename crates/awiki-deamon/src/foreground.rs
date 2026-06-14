@@ -49,8 +49,8 @@ use crate::runtime::host::{
     run_existing_runtime_task_with_config,
 };
 use crate::runtime::{
-    RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
-    RuntimeRunStatus, RuntimeTask,
+    is_group_conversation_id, runtime_task_matches_profile_controller_scope, RuntimeInstallStatus,
+    RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRunStatus, RuntimeTask,
 };
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
@@ -697,12 +697,7 @@ fn validate_retry_task_binding(
     task: &RuntimeTask,
     profile: &crate::runtime::RuntimeAgentProfile,
 ) -> Result<()> {
-    if task.agent_did != profile.agent_did
-        || task.controller_user_id != profile.controller_user_id
-        || task.controller_full_handle != profile.controller_full_handle
-        || task.controller_scope_key != profile.controller_scope_key
-        || task.sender_did != task.controller_did
-    {
+    if !runtime_task_matches_profile_controller_scope(task, profile) {
         bail!("runtime retry task does not match profile controller scope");
     }
     Ok(())
@@ -884,20 +879,24 @@ fn route_runtime_controller_text(
     verified_sender: Option<VerifiedControllerSender>,
     text: String,
 ) -> Result<()> {
-    let _verified_sender = match verified_sender {
-        Some(verified_sender) => verified_sender,
-        None => {
-            let registration =
-                UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
-            verify_runtime_controller_sender(
-                config,
-                state,
-                &registration,
-                target_agent_did,
-                &sender_did,
-            )?
+    if is_group_conversation_id(conversation_id.as_deref()) {
+        verify_runtime_group_sender(state, target_agent_did, &sender_did)?;
+    } else {
+        match verified_sender {
+            Some(_verified_sender) => {}
+            None => {
+                let registration =
+                    UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
+                verify_runtime_controller_sender(
+                    config,
+                    state,
+                    &registration,
+                    target_agent_did,
+                    &sender_did,
+                )?;
+            }
         }
-    };
+    }
     repair_runtime_controller_inbox_projection_best_effort(config, state, target_agent_did);
     let outbox = ImCoreAgentOutbox::new(target_client.clone());
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
@@ -927,6 +926,21 @@ fn route_runtime_controller_text(
     Ok(())
 }
 
+fn verify_runtime_group_sender(
+    state: &DaemonState,
+    target_agent_did: &str,
+    sender_did: &str,
+) -> Result<()> {
+    if sender_did.trim().is_empty() {
+        bail!("runtime group sender_did must not be empty");
+    }
+    let binding = state
+        .load_runtime_daemon_binding(target_agent_did)?
+        .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
+    state.load_agent_definition(&binding.daemon_agent_did)?;
+    Ok(())
+}
+
 fn verify_runtime_controller_sender<C>(
     config: &DaemonConfig,
     state: &DaemonState,
@@ -948,7 +962,6 @@ where
     }
     Ok(verified)
 }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RuntimeInboundAttachment {
     attachment_id: String,
