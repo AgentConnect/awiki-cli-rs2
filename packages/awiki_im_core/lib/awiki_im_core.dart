@@ -11,6 +11,8 @@ export 'src/models/error.dart';
 export 'src/models/group.dart';
 export 'src/models/identity.dart';
 export 'src/models/message.dart';
+export 'src/models/message_mention.dart';
+export 'src/models/message_payload.dart';
 export 'src/models/profile.dart';
 export 'src/models/realtime.dart';
 export 'src/models/secure.dart';

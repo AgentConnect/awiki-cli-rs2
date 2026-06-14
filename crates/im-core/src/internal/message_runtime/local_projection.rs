@@ -566,6 +566,50 @@ pub(crate) async fn persist_group_e2ee_outgoing_async(
 }
 
 #[cfg(all(feature = "group-e2ee", any(feature = "blocking", test)))]
+pub(crate) fn persist_group_e2ee_payload_outgoing(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &group_e2ee_payload_outgoing_record(client, group_did, payload, sdk_result),
+    )
+}
+
+#[cfg(all(feature = "group-e2ee", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_e2ee_payload_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _payload: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported(
+        "sync-group-e2ee-payload-projection",
+    ))
+}
+
+#[cfg(feature = "group-e2ee")]
+pub(crate) async fn persist_group_e2ee_payload_outgoing_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    let record = group_e2ee_payload_outgoing_record(client, group_did, payload, sdk_result);
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await
+}
+
+#[cfg(all(feature = "group-e2ee", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_e2ee_attachment_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -631,6 +675,36 @@ fn group_e2ee_outgoing_record(
         group_did: group_did.trim().to_owned(),
         content_type: content_type_for_kind(kind).to_owned(),
         content: text.to_owned(),
+        server_seq: sdk_result.message.metadata.server_sequence,
+        sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: true,
+        is_read: true,
+        metadata: secure_metadata_json("group-e2ee", &sdk_result.message.metadata),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_e2ee_payload_outgoing_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    payload: &Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: sdk_result.message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
+        direction: 1,
+        sender_did: client.did().as_str().to_owned(),
+        group_id: group_storage_key(group_did),
+        group_did: group_did.trim().to_owned(),
+        content_type: "application/json".to_owned(),
+        content: serde_json::to_string(payload).unwrap_or_default(),
         server_seq: sdk_result.message.metadata.server_sequence,
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,

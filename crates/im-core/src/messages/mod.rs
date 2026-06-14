@@ -1,4 +1,5 @@
 mod dto;
+mod mention;
 mod service;
 
 pub use self::dto::{
@@ -9,6 +10,12 @@ pub use self::dto::{
     MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
     MessageSendState, MessageSendStateKind, MessageTarget, ScopedInboxToken, SendMessageRequest,
     SendMessageResult, ThreadRef,
+};
+
+pub use self::mention::{
+    is_message_mention_payload, parse_message_mention_payload, validate_message_mention_payload,
+    MessageMention, MessageMentionPayload, MessageMentionRange, MessageMentionRangeUnit,
+    MessageMentionRole, MessageMentionSelector, MessageMentionTarget,
 };
 pub use self::service::MessageService;
 pub use crate::attachments::AttachmentInput;

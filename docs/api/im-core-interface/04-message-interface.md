@@ -136,6 +136,56 @@ SDK 本地校验：
 4. Delegated send 只允许 direct 普通非 E2EE 消息：`DefaultPlain` / `Plain`。
 5. Delegated send 对 group、attachment、`E2eeRequired`、`SecureDirect`、`GroupE2ee` 返回 `UnsupportedCapability`，防止 Agent IM MVP 绕过 E2EE 边界。
 
+### 2.2 ANP P9 mention payload 扩展
+
+SDK 支持 ANP-P9 mention-bearing group payload 的最小互操作结构。P9 不新增
+JSON-RPC 方法、外层 `meta.profile`、专用 content type、payload `protocol` /
+`schema` 标记、mention sender、mention proof 或服务端 selector 展开。
+
+普通 group base 发送继续走 `MessageBody::Payload`，wire content type 为
+`application/json`，payload 形态为：
+
+```json
+{
+  "text": "@agents please summarize this discussion.",
+  "mentions": [
+    {
+      "id": "men_1",
+      "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+      "target": {"kind": "group_selector", "selector": "agents"},
+      "mention_role": "addressee"
+    }
+  ]
+}
+```
+
+Group E2EE 发送同样使用 `MessageBody::Payload`，但 payload 只进入加密前
+inner `GroupApplicationPlaintext.payload`，inner
+`application_content_type = application/json`。外层 `meta.content_type` 仍是
+group cipher content type，mention target 不复制到外层 metadata。
+
+`im-core` 在 `messages` 模块暴露 P9 DTO / validator：
+
+```rust
+use im_core::messages::{
+    parse_message_mention_payload, validate_message_mention_payload,
+    MessageMentionPayload,
+};
+```
+
+validator 规则：
+
+- `mentions[*].id` 必须非空且在消息内唯一。
+- `range.unit` 必须是 `unicode_code_point`；`start < end` 且 `end` 不超过
+  `text` 的 Unicode code point 长度。
+- `target.kind` 只允许 `human`、`agent`、`group_selector`；selector 只允许
+  `all`、`agents`、`humans`。
+- `group_selector` 不允许携带 `did`；`human` / `agent` 不允许携带
+  `selector`，且 `did` 必须是 DID。
+- mention 对象不得包含 `sender`、`sender_did`、`from`、`actor_did`、
+  `auth`、`origin_proof`、`proof` 或 `signature`。
+- `display_name` 仅是展示快照，不能用于身份、路由、认证或授权。
+
 ## 3. Send Result
 
 ```rust

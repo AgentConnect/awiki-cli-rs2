@@ -4,8 +4,8 @@ use anp::group_e2ee::{GroupApplicationPlaintext, GroupStateRef};
 use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::message_runtime::group::{
     content_type_for_message_type, group_target, load_credentials, load_credentials_async,
-    message_type, sdk_text_result_from_group_result, text_body, GroupRpcResult,
-    GroupTextCredentials,
+    message_type, sdk_result_from_group_result, sdk_text_result_from_group_result, GroupRpcResult,
+    GroupTextCredentials, OutgoingGroupBody,
 };
 use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
@@ -57,6 +57,9 @@ enum GroupE2eeApplicationBody {
         text: String,
         kind: crate::messages::MessageKind,
     },
+    Payload {
+        payload: serde_json::Value,
+    },
     Attachment {
         full_manifest: serde_json::Value,
         redacted_manifest: serde_json::Value,
@@ -74,6 +77,15 @@ impl GroupE2eeApplicationBody {
                 annotations: Default::default(),
                 text: Some(text.clone()),
                 payload: None,
+                payload_b64u: None,
+            },
+            Self::Payload { payload } => GroupApplicationPlaintext {
+                application_content_type: "application/json".to_owned(),
+                thread_id: Some(group_did.to_owned()),
+                reply_to_message_id: None,
+                annotations: Default::default(),
+                text: None,
+                payload: Some(payload.clone()),
                 payload_b64u: None,
             },
             Self::Attachment { full_manifest, .. } => GroupApplicationPlaintext {
@@ -99,6 +111,14 @@ impl GroupE2eeApplicationBody {
             Self::Text { text, kind } => {
                 sdk_text_result_from_group_result(result, sender, group, text, kind.clone())
             }
+            Self::Payload { payload } => sdk_result_from_group_result(
+                result,
+                sender,
+                group,
+                &OutgoingGroupBody::Payload {
+                    payload: payload.clone(),
+                },
+            ),
             Self::Attachment {
                 redacted_manifest, ..
             } => sdk_attachment_result_from_group_result(result, sender, group, redacted_manifest),
@@ -118,6 +138,14 @@ impl GroupE2eeApplicationBody {
                     group_did,
                     text,
                     kind,
+                    sdk_result,
+                )
+            }
+            Self::Payload { payload } => {
+                crate::internal::message_runtime::local_projection::persist_group_e2ee_payload_outgoing(
+                    client,
+                    group_did,
+                    payload,
                     sdk_result,
                 )
             }
@@ -149,6 +177,15 @@ impl GroupE2eeApplicationBody {
                 )
                 .await
             }
+            Self::Payload { payload } => {
+                crate::internal::message_runtime::local_projection::persist_group_e2ee_payload_outgoing_async(
+                    client,
+                    group_did,
+                    payload,
+                    sdk_result,
+                )
+                .await
+            }
             Self::Attachment {
                 redacted_manifest, ..
             } => crate::internal::message_runtime::local_projection::persist_group_e2ee_attachment_outgoing_async(
@@ -158,6 +195,37 @@ impl GroupE2eeApplicationBody {
                 sdk_result,
             )
             .await,
+        }
+    }
+}
+
+fn group_e2ee_application_body(
+    body: &crate::messages::MessageBody,
+) -> crate::ImResult<GroupE2eeApplicationBody> {
+    match body {
+        crate::messages::MessageBody::Text { text, .. } if text.trim().is_empty() => {
+            Err(crate::ImError::invalid_input(
+                Some("text".to_owned()),
+                "text message must not be empty",
+            ))
+        }
+        crate::messages::MessageBody::Text { text, kind } => Ok(GroupE2eeApplicationBody::Text {
+            text: text.clone(),
+            kind: kind.clone(),
+        }),
+        crate::messages::MessageBody::Payload { payload } if !payload.is_object() => {
+            Err(crate::ImError::invalid_input(
+                Some("payload".to_owned()),
+                "message payload must be a JSON object",
+            ))
+        }
+        crate::messages::MessageBody::Payload { payload } => {
+            Ok(GroupE2eeApplicationBody::Payload {
+                payload: payload.clone(),
+            })
+        }
+        crate::messages::MessageBody::Attachment { .. } => {
+            Err(crate::ImError::unsupported("attachments"))
         }
     }
 }
@@ -187,7 +255,7 @@ where
         input: GroupE2eeTextSend,
     ) -> crate::ImResult<GroupE2eeTextSendResult> {
         let group = group_target(&input.request.target)?;
-        let (text, kind) = text_body(&input.request.body)?;
+        let body = group_e2ee_application_body(&input.request.body)?;
         validate_group_e2ee_security(&input.request.security)?;
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
@@ -222,10 +290,7 @@ where
             });
         let prepared = GroupE2eePreparedTextSend {
             group,
-            body: GroupE2eeApplicationBody::Text {
-                text: text.to_owned(),
-                kind,
-            },
+            body,
             operation_id,
             message_id,
             credentials,
@@ -448,7 +513,7 @@ where
         input: GroupE2eeTextSend,
     ) -> crate::ImResult<GroupE2eeTextSendResult> {
         let group = group_target(&input.request.target)?;
-        let (text, kind) = text_body(&input.request.body)?;
+        let body = group_e2ee_application_body(&input.request.body)?;
         validate_group_e2ee_security(&input.request.security)?;
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)
@@ -484,10 +549,7 @@ where
             });
         let prepared = GroupE2eePreparedTextSend {
             group,
-            body: GroupE2eeApplicationBody::Text {
-                text: text.to_owned(),
-                kind,
-            },
+            body,
             operation_id,
             message_id,
             credentials,
@@ -1000,6 +1062,36 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 "metadata leaked {forbidden}: {metadata_text}"
             );
         }
+    }
+
+    #[test]
+    fn mention_group_e2ee_application_body_places_payload_in_inner_plaintext() {
+        let payload = json!({
+            "text": "@agents summarize this",
+            "mentions": [
+                {
+                    "id": "men_1",
+                    "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                    "target": {"kind": "group_selector", "selector": "agents"}
+                }
+            ]
+        });
+        crate::messages::parse_message_mention_payload(&payload).unwrap();
+        let body = group_e2ee_application_body(&crate::messages::MessageBody::Payload {
+            payload: payload.clone(),
+        })
+        .unwrap();
+
+        let plaintext = body.application_plaintext("did:example:groups:e2ee");
+
+        assert_eq!(plaintext.application_content_type, "application/json");
+        assert_eq!(
+            plaintext.thread_id.as_deref(),
+            Some("did:example:groups:e2ee")
+        );
+        assert!(plaintext.text.is_none());
+        assert_eq!(plaintext.payload, Some(payload));
+        assert!(plaintext.payload_b64u.is_none());
     }
 
     #[test]

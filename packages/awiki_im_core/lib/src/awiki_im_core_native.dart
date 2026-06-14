@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'generated/api/auth.dart' as gen_auth;
@@ -36,6 +35,7 @@ import 'models/error.dart';
 import 'models/group.dart';
 import 'models/identity.dart';
 import 'models/message.dart';
+import 'models/message_payload.dart';
 import 'models/profile.dart';
 import 'models/realtime.dart';
 import 'models/secure.dart';
@@ -489,7 +489,7 @@ class MessageApi {
 
   Future<SendMessageResult> sendPayload(SendPayloadRequest request) async {
     _client._ensureNotDisposed();
-    _validatePayloadJson(request.payloadJson);
+    validateMessagePayloadJson(request.payloadJson);
     final result = await _mapNativeErrors(
       () => gen_messages.sendPayload(
         client: _client._inner,
@@ -1360,7 +1360,7 @@ extension on gen_profile_dto.DartUserProfile {
     subjectType: subjectType,
     updatedAt: updatedAt,
     versionId: versionId,
-    ttl: ttl == null ? null : ttl!.toInt(),
+    ttl: ttl?.toInt(),
   );
 }
 
@@ -1459,38 +1459,6 @@ extension on InboxAuth {
 extension on ScopedInboxToken {
   gen_message.DartScopedInboxToken _toGen() =>
       gen_message.DartScopedInboxToken(token: token);
-}
-
-void _validatePayloadJson(String payloadJson) {
-  if (utf8.encode(payloadJson).length > 64 * 1024) {
-    throw const AwikiImCoreException(
-      code: 'invalid_payload',
-      message: 'payloadJson must not exceed 64 KB',
-    );
-  }
-  try {
-    final decoded = jsonDecode(payloadJson);
-    if (decoded is! Map) {
-      throw const AwikiImCoreException(
-        code: 'invalid_payload',
-        message: 'payloadJson must be a JSON object',
-      );
-    }
-    final schema = decoded['schema'];
-    if (schema is! String || schema.trim().isEmpty) {
-      throw const AwikiImCoreException(
-        code: 'invalid_payload',
-        message: 'payloadJson must contain a non-empty string schema',
-      );
-    }
-  } on AwikiImCoreException {
-    rethrow;
-  } on Object {
-    throw const AwikiImCoreException(
-      code: 'invalid_payload',
-      message: 'payloadJson must be valid JSON',
-    );
-  }
 }
 
 extension on AttachmentInput {
