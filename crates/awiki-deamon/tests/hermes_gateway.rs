@@ -647,6 +647,72 @@ for line in sys.stdin:
 }
 
 #[test]
+fn hermes_gateway_stdio_ignores_non_json_stdout_noise_during_streaming() {
+    let root = tempfile::tempdir().unwrap();
+    let hermes_home = root.path().join("hermes-home");
+    std::fs::create_dir_all(&hermes_home).unwrap();
+    let script_path = root.path().join("fake_noisy_gateway.py");
+    let mut script = std::fs::File::create(&script_path).unwrap();
+    script
+        .write_all(
+            br#"import json
+import sys
+
+print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "gateway.ready", "payload": {"version": "noisy-shape"}}}), flush=True)
+for line in sys.stdin:
+    req = json.loads(line)
+    method = req.get("method")
+    if method == "session.create":
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_noisy"}}), flush=True)
+    elif method == "prompt.submit":
+        params = req.get("params", {})
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "streaming"}}), flush=True)
+        print("\x1b[0;32mOK\x1b[0m Installing optional browser runtime...", flush=True)
+        print("Chromium install failed. Browser tools may not work without a system browser.", flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "message.complete", "session_id": params.get("session_id"), "payload": {"text": "noisy final", "status": "ok"}}}), flush=True)
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "error": {"message": "unknown method"}}), flush=True)
+"#,
+        )
+        .unwrap();
+    drop(script);
+
+    let command = format!(
+        "{} {}",
+        std::env::var("PYTHON").unwrap_or_else(|_| "python3".into()),
+        script_path.display()
+    );
+    let gateway = StdioHermesGateway::with_gateway_cmd(command);
+    let record = HermesProfileRecord {
+        hermes_home,
+        ..hermes_record()
+    };
+    let runner = HermesRunner::start(gateway, &record).unwrap();
+    let session = runner
+        .create_session(HermesSessionCreateRequest {
+            route_key: "direct:did:human:alice".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+        })
+        .unwrap();
+    let outcome = runner
+        .submit_prompt(
+            &session,
+            HermesPromptSubmitRequest {
+                run_id: "run_noisy_shape".to_string(),
+                message_id: "task_noisy_shape".to_string(),
+                prompt: "hello Hermes".to_string(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(outcome.final_text.as_deref(), Some("noisy final"));
+    assert!(outcome.events.iter().any(|event| {
+        event.kind == HermesRuntimeEventKind::MessageComplete
+            && event.session_id.as_deref() == Some("hs_noisy")
+    }));
+}
+
+#[test]
 fn hermes_gateway_stdio_rejects_streaming_error_complete() {
     let root = tempfile::tempdir().unwrap();
     let hermes_home = root.path().join("hermes-home");

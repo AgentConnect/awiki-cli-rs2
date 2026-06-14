@@ -29,13 +29,18 @@ pub fn send_message_request(
     let target = message_target(command, default_domain)?;
     let body = message_body(command)?;
     let (security, warnings) = message_security(command, &target)?;
+    let client_message_id = optional_message_id_flag(command, "client-message-id")?;
+    let idempotency_key = optional_string_flag(command, "idempotency-key");
     Ok((
         SendMessageRequest {
             target,
             body,
             security,
-            client_message_id: None,
-            delivery: MessageDeliveryOptions::default(),
+            client_message_id,
+            delivery: MessageDeliveryOptions {
+                idempotency_key,
+                wait_for_final_acceptance: false,
+            },
             delegated_signing: None,
         },
         warnings,
@@ -1893,6 +1898,33 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
+}
+
+fn optional_string_flag(command: &ParsedCommand, name: &str) -> Option<String> {
+    let value = string_flag(command, name);
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn optional_message_id_flag(
+    command: &ParsedCommand,
+    name: &str,
+) -> Result<Option<MessageId>, ExitError> {
+    optional_string_flag(command, name)
+        .map(MessageId::parse)
+        .transpose()
+        .map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                format!("invalid --{name}: {err}"),
+                "Use a non-empty message id value.",
+            )
+        })
 }
 
 #[cfg(test)]

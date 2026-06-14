@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use im_core::messages::{
-    InboxHistoryOptions, InboxQuery, InboxScope, Message, MessageBodyView, MessageDirection,
+    InboxHistoryOptions, InboxQuery, InboxScope, Message, MessageBodyView, MessageDeliveryOptions,
+    MessageDirection,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,13 +19,14 @@ use crate::app_bridge::message_agent::APP_MESSAGE_HANDLER_ROLE;
 use crate::app_bridge::secret_store::normalize_delegated_private_key_pem;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
-    RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
+    ImCoreAgentOutbox, RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
     RuntimeMessageSendResult, RuntimeOutbox,
 };
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 use crate::runtime::host::run_existing_runtime_task_with_config;
 use crate::runtime::{RuntimeRunStatus, RuntimeTask};
+use crate::security::runtime_token::current_time_millis;
 use crate::state::{
     AppMessageAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, InboxCursorRecord,
     MessageEventRecord, MessageSyncOutboxRecord, ProcessedMessageRecord,
@@ -45,6 +47,8 @@ const PROCESSED_STATUS_FAILED_RETRYABLE: &str = "failed_retryable";
 const RETENTION_CLASS_SHORT_EXCERPT: &str = "short_excerpt";
 const RETENTION_CLASS_OPAQUE_ONLY: &str = "opaque_no_plaintext";
 const EXCERPT_MAX_CHARS: usize = 240;
+const MAX_MESSAGE_SYNC_OUTBOX_ATTEMPTS: i64 = 5;
+const MESSAGE_SYNC_OUTBOX_SENDING_STALE_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessUserDelegatedInboxOutcome {
@@ -95,6 +99,64 @@ pub trait UserDelegatedMessageDispatcher {
         task: RuntimeTask,
         envelope: &UserMessageEnvelope,
     ) -> Result<()>;
+}
+
+pub trait MessageSyncPayloadSender {
+    fn send_message_sync_payload(
+        &self,
+        binding: &AppMessageAgentBindingRecord,
+        idempotency_key: &str,
+        payload: Value,
+    ) -> Result<Option<String>>;
+}
+
+pub struct ImCoreMessageSyncPayloadSender<'a> {
+    config: &'a DaemonConfig,
+    state: &'a DaemonState,
+    im_core: &'a ImCoreAdapter,
+}
+
+impl<'a> ImCoreMessageSyncPayloadSender<'a> {
+    pub fn new(
+        config: &'a DaemonConfig,
+        state: &'a DaemonState,
+        im_core: &'a ImCoreAdapter,
+    ) -> Self {
+        Self {
+            config,
+            state,
+            im_core,
+        }
+    }
+}
+
+impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
+    fn send_message_sync_payload(
+        &self,
+        binding: &AppMessageAgentBindingRecord,
+        idempotency_key: &str,
+        payload: Value,
+    ) -> Result<Option<String>> {
+        let daemon_identity = self.state.load_agent_identity(&binding.daemon_agent_did)?;
+        let jwt_token = self
+            .state
+            .load_agent_auth_token(&binding.daemon_agent_did)?;
+        let client = self.im_core.client_for_agent_identity(
+            self.config,
+            &daemon_identity,
+            jwt_token.as_deref(),
+        )?;
+        let outbox = ImCoreAgentOutbox::new(client);
+        let result = outbox.send_payload_with_delivery(
+            &binding.user_did,
+            payload,
+            MessageDeliveryOptions {
+                idempotency_key: Some(idempotency_key.to_string()),
+                wait_for_final_acceptance: false,
+            },
+        )?;
+        Ok(Some(result.message.id.as_str().to_string()))
+    }
 }
 
 pub struct RuntimeHostMessageDispatcher<'a> {
@@ -395,6 +457,7 @@ fn queue_runtime_status_sync(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(content_hash);
+    let source = runtime_task_message_source(state, &context.run_id);
     state.upsert_message_sync_outbox(&MessageSyncOutboxRecord {
         idempotency_key: format!(
             "message-sync:{}:runtime-status:{}:{}",
@@ -411,6 +474,10 @@ fn queue_runtime_status_sync(
             "runtime_agent_did": context.agent_did,
             "runtime_profile_id": context.runtime_profile_id,
             "run_id": context.run_id,
+            "source_message_id": source.source_message_id,
+            "source_conversation_id": source.source_conversation_id,
+            "source_sender_did": source.source_sender_did,
+            "source_content_hash": source.source_content_hash,
             "state": run_state,
             "has_text": text_hash.is_some(),
             "text_hash": text_hash,
@@ -446,6 +513,7 @@ fn queue_runtime_final_sync(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(content_hash);
+    let source = runtime_task_message_source(state, &context.run_id);
     state.upsert_message_sync_outbox(&MessageSyncOutboxRecord {
         idempotency_key: format!(
             "message-sync:{}:runtime-final:{}",
@@ -462,6 +530,10 @@ fn queue_runtime_final_sync(
             "runtime_agent_did": context.agent_did,
             "runtime_profile_id": context.runtime_profile_id,
             "run_id": context.run_id,
+            "source_message_id": source.source_message_id,
+            "source_conversation_id": source.source_conversation_id,
+            "source_sender_did": source.source_sender_did,
+            "source_content_hash": source.source_content_hash,
             "state": "finished",
             "has_text": text_hash.is_some(),
             "text_hash": text_hash,
@@ -477,6 +549,173 @@ fn queue_runtime_final_sync(
         sent_at_ms: None,
     })?;
     Ok(())
+}
+
+#[derive(Default)]
+struct RuntimeTaskMessageSource {
+    source_message_id: Option<String>,
+    source_conversation_id: Option<String>,
+    source_sender_did: Option<String>,
+    source_content_hash: Option<String>,
+}
+
+fn runtime_task_message_source(state: &DaemonState, run_id: &str) -> RuntimeTaskMessageSource {
+    let Ok(task) = state.load_runtime_task_for_run(run_id) else {
+        return RuntimeTaskMessageSource::default();
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(&task.text) else {
+        return RuntimeTaskMessageSource::default();
+    };
+    RuntimeTaskMessageSource {
+        source_message_id: string_field(&payload, "source_message_id"),
+        source_conversation_id: string_field(&payload, "source_conversation_id"),
+        source_sender_did: string_field(&payload, "source_sender_did"),
+        source_content_hash: string_field(&payload, "content_hash"),
+    }
+}
+
+fn string_field(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub fn flush_message_sync_outbox(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    limit: usize,
+) -> Result<usize> {
+    let sender = ImCoreMessageSyncPayloadSender::new(config, state, im_core);
+    flush_message_sync_outbox_with_sender(state, &sender, limit)
+}
+
+pub fn flush_message_sync_outbox_with_sender<S>(
+    state: &DaemonState,
+    sender: &S,
+    limit: usize,
+) -> Result<usize>
+where
+    S: MessageSyncPayloadSender,
+{
+    let now = current_time_millis()?;
+    state.recover_stale_message_sync_outbox_sending(
+        now - MESSAGE_SYNC_OUTBOX_SENDING_STALE_MS,
+        now,
+    )?;
+    let records = state.list_due_message_sync_outbox(now, limit)?;
+    let mut sent_count = 0usize;
+    for record in records {
+        if record.status != "pending" {
+            continue;
+        }
+        if !state.mark_message_sync_outbox_sending(&record.idempotency_key)? {
+            continue;
+        }
+        let binding = state
+            .load_active_app_message_agent_binding(
+                &record.owner_did,
+                &record.app_instance_id,
+                APP_MESSAGE_HANDLER_ROLE,
+            )?
+            .with_context(|| {
+                format!(
+                    "missing active app message binding for {} {}",
+                    record.owner_did, record.app_instance_id
+                )
+            });
+        let send_result = match binding {
+            Ok(binding) => sender.send_message_sync_payload(
+                &binding,
+                &record.idempotency_key,
+                record.payload_json.clone(),
+            ),
+            Err(error) => Err(error),
+        };
+        match send_result {
+            Ok(message_id) => {
+                state.mark_message_sync_outbox_sent(&record.idempotency_key)?;
+                state.insert_audit_event_json(
+                    "message_sync_outbox.sent",
+                    None,
+                    None,
+                    record.payload_json.get("run_id").and_then(Value::as_str),
+                    None,
+                    json!({
+                        "idempotency_key": record.idempotency_key,
+                        "owner_did": record.owner_did,
+                        "app_instance_id": record.app_instance_id,
+                        "schema": record.payload_json.get("schema").and_then(Value::as_str),
+                        "sync_type": record.payload_json.get("sync_type").and_then(Value::as_str),
+                        "source_message_id": record.payload_json.get("source_message_id")
+                            .or_else(|| record.payload_json.get("message_id"))
+                            .and_then(Value::as_str),
+                        "message_id": message_id,
+                        "attempt_count": record.attempt_count + 1,
+                    }),
+                )?;
+                sent_count += 1;
+            }
+            Err(error) => {
+                let error_summary = sanitize_error_message(&error.to_string());
+                let attempts = record.attempt_count + 1;
+                if attempts >= MAX_MESSAGE_SYNC_OUTBOX_ATTEMPTS {
+                    state.mark_message_sync_outbox_failed_terminal(
+                        &record.idempotency_key,
+                        "message_sync_delivery_failed",
+                        &error_summary,
+                    )?;
+                    state.insert_audit_event_json(
+                        "message_sync_outbox.failed_terminal",
+                        None,
+                        None,
+                        record.payload_json.get("run_id").and_then(Value::as_str),
+                        None,
+                        json!({
+                            "idempotency_key": record.idempotency_key,
+                            "attempt_count": attempts,
+                            "reason": error_summary,
+                        }),
+                    )?;
+                } else {
+                    let next_attempt_at_ms = now + message_sync_retry_delay_ms(attempts);
+                    state.mark_message_sync_outbox_retry(
+                        &record.idempotency_key,
+                        next_attempt_at_ms,
+                        "message_sync_delivery_retry",
+                        &error_summary,
+                    )?;
+                    state.insert_audit_event_json(
+                        "message_sync_outbox.retry_scheduled",
+                        None,
+                        None,
+                        record.payload_json.get("run_id").and_then(Value::as_str),
+                        None,
+                        json!({
+                            "idempotency_key": record.idempotency_key,
+                            "attempt_count": attempts,
+                            "next_attempt_at_ms": next_attempt_at_ms,
+                            "reason": error_summary,
+                        }),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(sent_count)
+}
+
+fn message_sync_retry_delay_ms(attempts: i64) -> i64 {
+    match attempts {
+        0 | 1 => 10_000,
+        2 => 30_000,
+        3 => 120_000,
+        4 => 300_000,
+        _ => 900_000,
+    }
 }
 
 pub fn process_user_delegated_inbox_once(
@@ -1058,7 +1297,7 @@ mod tests {
     use im_core::messages::{MessageKind, MessageMetadata, MessageMetadataAttribute, ThreadRef};
     use tempfile::TempDir;
 
-    use crate::runtime::RuntimeAgentProfile;
+    use crate::runtime::{RuntimeAgentProfile, RuntimeRun};
 
     use super::*;
 
@@ -1120,6 +1359,34 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingMessageSyncSender {
+        sent: Arc<Mutex<Vec<(String, String, Value)>>>,
+        fail_once: Arc<Mutex<bool>>,
+    }
+
+    impl MessageSyncPayloadSender for RecordingMessageSyncSender {
+        fn send_message_sync_payload(
+            &self,
+            binding: &AppMessageAgentBindingRecord,
+            idempotency_key: &str,
+            payload: Value,
+        ) -> Result<Option<String>> {
+            let mut fail_once = self.fail_once.lock().unwrap();
+            if *fail_once {
+                *fail_once = false;
+                return Err(anyhow!("simulated message sync send failure"));
+            }
+            drop(fail_once);
+            self.sent.lock().unwrap().push((
+                binding.user_did.clone(),
+                idempotency_key.to_string(),
+                payload,
+            ));
+            Ok(Some(format!("sent_{idempotency_key}")))
+        }
+    }
+
     #[test]
     fn delegated_inbox_dispatches_plain_message_as_untrusted_envelope() {
         let fixture = fixture();
@@ -1178,6 +1445,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(sync.payload_json["content_role"], "user_message_untrusted");
+
+        let sync_sender = RecordingMessageSyncSender::default();
+        let sent = flush_message_sync_outbox_with_sender(state, &sync_sender, 10).unwrap();
+        assert_eq!(sent, 1);
+        let sent_payloads = sync_sender.sent.lock().unwrap();
+        assert_eq!(sent_payloads[0].0, binding.user_did);
+        assert_eq!(sent_payloads[0].1, "message-sync:did:human:alice:msg_1");
+        assert_eq!(sent_payloads[0].2["message_id"], "msg_1");
+        let delivered = state
+            .load_message_sync_outbox("message-sync:did:human:alice:msg_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.status, "sent");
     }
 
     #[test]
@@ -1378,6 +1658,37 @@ mod tests {
         let fixture = fixture();
         let state = &fixture.state;
         let binding = &fixture.binding;
+        let task = RuntimeTask {
+            task_id: "task_user_msg_1".to_string(),
+            agent_did: binding.runtime_agent_did.clone(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
+            controller_did: binding.daemon_agent_did.clone(),
+            sender_did: binding.daemon_agent_did.clone(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            text: serde_json::to_string(&json!({
+                "schema": "awiki.runtime.user_message_task.v1",
+                "source_message_id": "msg_user_1",
+                "source_conversation_id": "direct:did:human:bob",
+                "source_sender_did": "did:human:bob",
+                "content_hash": "sha256:test",
+                "content_text": "hello agent"
+            }))
+            .unwrap(),
+        };
+        state.insert_runtime_task(&task).unwrap();
+        state
+            .insert_runtime_run(&RuntimeRun {
+                run_id: "run_user_msg_1".to_string(),
+                task_id: task.task_id.clone(),
+                agent_did: binding.runtime_agent_did.clone(),
+                runtime_profile_id: binding.runtime_profile_id.clone(),
+                runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+                workspace_id: None,
+                status: RuntimeRunStatus::Running,
+            })
+            .unwrap();
         let outbox = UserDelegatedRuntimeOutbox::new(state);
         let context = AuthorizedRuntimeContext {
             token_id: "token_1".to_string(),
@@ -1401,6 +1712,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(status.payload_json["sync_type"], "runtime_status");
+        assert_eq!(status.payload_json["source_message_id"], "msg_user_1");
         assert_eq!(status.payload_json["has_text"], true);
         assert!(status.payload_json["text_hash"].as_str().is_some());
 
@@ -1409,12 +1721,26 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(final_sync.payload_json["sync_type"], "runtime_final");
+        assert_eq!(final_sync.payload_json["source_message_id"], "msg_user_1");
+        assert_eq!(
+            final_sync.payload_json["source_conversation_id"],
+            "direct:did:human:bob"
+        );
         assert_eq!(final_sync.payload_json["retention_class"], "hash_only");
         assert!(final_sync.payload_json["text_hash"].as_str().is_some());
         assert!(!final_sync
             .payload_json
             .to_string()
             .contains("full final text should not be stored"));
+
+        let sync_sender = RecordingMessageSyncSender::default();
+        let sent = flush_message_sync_outbox_with_sender(state, &sync_sender, 10).unwrap();
+        assert_eq!(sent, 2);
+        let sent_payloads = sync_sender.sent.lock().unwrap();
+        assert!(sent_payloads
+            .iter()
+            .any(|(_, _, payload)| payload["sync_type"] == "runtime_final"
+                && payload["source_message_id"] == "msg_user_1"));
     }
 
     struct TestFixture {

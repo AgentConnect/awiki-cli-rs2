@@ -655,7 +655,9 @@ fn annotate_direct_peer_scope(
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
         return;
     }
-    let _ = directory_transport;
+    if let Some(scope) = resolve_direct_peer_scope(directory_transport, peer_did) {
+        annotate_object_with_peer_scope(object, &scope, Some(peer_did));
+    }
 }
 
 async fn annotate_direct_peer_scopes_async(
@@ -703,7 +705,103 @@ async fn annotate_direct_peer_scope_async(
         annotate_object_with_peer_scope(object, scope, Some(peer_did));
         return;
     }
-    let _ = directory_transport;
+    if let Some(scope) = resolve_direct_peer_scope_async(directory_transport, peer_did).await {
+        annotate_object_with_peer_scope(object, &scope, Some(peer_did));
+    }
+}
+
+fn resolve_direct_peer_scope(
+    directory_transport: &mut impl RpcTransport,
+    peer_did: &str,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let call =
+        crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did).ok()?;
+    let raw = directory_transport
+        .rpc(call.endpoint, call.method, call.params)
+        .ok()?;
+    direct_peer_scope_from_profile(raw)
+}
+
+async fn resolve_direct_peer_scope_async(
+    directory_transport: &mut impl AsyncRpcTransport,
+    peer_did: &str,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let call =
+        crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did).ok()?;
+    let raw = directory_transport
+        .rpc(call.endpoint, call.method, call.params)
+        .await
+        .ok()?;
+    direct_peer_scope_from_profile(raw)
+}
+
+fn direct_peer_scope_from_profile(
+    raw: Value,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let user_id = first_string_at(
+        &raw,
+        &[
+            "/user_id",
+            "/userId",
+            "/profile/user_id",
+            "/profile/userId",
+            "/result/user_id",
+            "/result/userId",
+        ],
+    )?;
+    let full_handle = first_string_at(
+        &raw,
+        &[
+            "/full_handle",
+            "/fullHandle",
+            "/profile/full_handle",
+            "/profile/fullHandle",
+            "/result/full_handle",
+            "/result/fullHandle",
+        ],
+    )
+    .or_else(|| {
+        let handle = first_string_at(
+            &raw,
+            &[
+                "/handle",
+                "/profile/handle",
+                "/result/handle",
+                "/local_name",
+                "/result/local_name",
+            ],
+        )?;
+        let domain = first_string_at(
+            &raw,
+            &[
+                "/domain",
+                "/profile/domain",
+                "/result/domain",
+                "/did_domain",
+                "/result/did_domain",
+            ],
+        )?;
+        Some(format!(
+            "{}.{}",
+            handle.trim().trim_start_matches('@'),
+            domain.trim()
+        ))
+    })?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(user_id, full_handle).ok()
+}
+
+fn first_string_at(raw: &Value, pointers: &[&str]) -> Option<String> {
+    for pointer in pointers {
+        let value = raw
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(value) = value {
+            return Some(value.to_owned());
+        }
+    }
+    None
 }
 
 fn annotate_object_with_peer_scope(

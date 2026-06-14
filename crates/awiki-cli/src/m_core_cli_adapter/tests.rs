@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use im_core::prelude::{
     AttachmentInput, AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody,
-    MessageKind, MessageSecurityMode, MessageTarget, ThreadRef, VerificationInput,
+    MessageId, MessageKind, MessageSecurityMode, MessageTarget, ThreadRef, VerificationInput,
 };
 
 use crate::cli_parser::ParsedCommand;
@@ -515,6 +515,27 @@ fn send_message_request_builds_group_text_dto() {
         request.target,
         MessageTarget::Group(ref group) if group == &GroupRef::parse("did:example:group").unwrap()
     ));
+}
+
+#[test]
+fn send_message_request_accepts_client_message_id_and_idempotency_key() {
+    let command = command_with_flags([
+        ("to", "bob"),
+        ("text", "hello"),
+        ("client-message-id", "msg_agent_im_run_001"),
+        ("idempotency-key", "agent-im-run-001"),
+    ]);
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+
+    assert!(warnings.is_empty());
+    assert_eq!(
+        request.client_message_id.as_ref().map(MessageId::as_str),
+        Some("msg_agent_im_run_001")
+    );
+    assert_eq!(
+        request.delivery.idempotency_key.as_deref(),
+        Some("agent-im-run-001")
+    );
 }
 
 #[test]

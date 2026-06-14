@@ -93,6 +93,23 @@ impl ImCoreAgentOutbox {
             recipient_did,
             payload,
             management_payload_security_mode(),
+            MessageDeliveryOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn send_payload_with_delivery_async(
+        &self,
+        recipient_did: &str,
+        payload: serde_json::Value,
+        delivery: MessageDeliveryOptions,
+    ) -> Result<SendMessageResult> {
+        ensure_messaging_session(&self.client).await?;
+        self.send_payload_with_security_async(
+            recipient_did,
+            payload,
+            management_payload_security_mode(),
+            delivery,
         )
         .await
     }
@@ -102,13 +119,19 @@ impl ImCoreAgentOutbox {
         recipient_did: &str,
         payload: serde_json::Value,
         security: MessageSecurityMode,
+        delivery: MessageDeliveryOptions,
     ) -> Result<SendMessageResult> {
+        let client_message_id = delivery
+            .idempotency_key
+            .as_deref()
+            .map(im_core::ids::MessageId::parse)
+            .transpose()?;
         let request = SendMessageRequest {
             target: MessageTarget::Direct(PeerRef::parse(recipient_did, "")?),
             body: MessageBody::Payload { payload },
             security,
-            client_message_id: None,
-            delivery: MessageDeliveryOptions::default(),
+            client_message_id,
+            delivery,
             delegated_signing: None,
         };
         Ok(self.client.messages().send_async(request).await?)
@@ -189,17 +212,26 @@ impl ImCoreAgentOutbox {
         recipient_did: &str,
         payload: serde_json::Value,
     ) -> Result<SendMessageResult> {
+        self.send_payload_with_delivery(recipient_did, payload, MessageDeliveryOptions::default())
+    }
+
+    pub fn send_payload_with_delivery(
+        &self,
+        recipient_did: &str,
+        payload: serde_json::Value,
+        delivery: MessageDeliveryOptions,
+    ) -> Result<SendMessageResult> {
         let outbox = self.clone();
         let recipient_did = recipient_did.to_string();
         if tokio::runtime::Handle::try_current().is_ok() {
             let join = std::thread::Builder::new()
                 .name("awiki-daemon-outbox-send".to_string())
-                .spawn(move || block_on_payload_send(outbox, recipient_did, payload))?;
+                .spawn(move || block_on_payload_send(outbox, recipient_did, payload, delivery))?;
             return join
                 .join()
                 .map_err(|_| anyhow::anyhow!("outbox send thread panicked"))?;
         }
-        block_on_payload_send(outbox, recipient_did, payload)
+        block_on_payload_send(outbox, recipient_did, payload, delivery)
     }
 
     pub fn send_text(
@@ -345,11 +377,12 @@ fn block_on_payload_send(
     outbox: ImCoreAgentOutbox,
     recipient_did: String,
     payload: serde_json::Value,
+    delivery: MessageDeliveryOptions,
 ) -> Result<SendMessageResult> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(outbox.send_payload_async(&recipient_did, payload))
+    runtime.block_on(outbox.send_payload_with_delivery_async(&recipient_did, payload, delivery))
 }
 
 fn block_on_text_send(
