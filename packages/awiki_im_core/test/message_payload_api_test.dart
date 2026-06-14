@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:awiki_im_core/awiki_im_core.dart';
 import 'package:test/test.dart';
 
@@ -80,5 +82,137 @@ void main() {
     );
     expect(awikiPayloadSchema('{"schema":""}'), isNull);
     expect(decodePayloadObject('not-json'), isNull);
+  });
+
+  test('schema-less ANP P9 mention payload validates without schema', () {
+    const payload = MessageMentionPayload(
+      text: '@agents 请总结这段讨论',
+      mentions: <MessageMention>[
+        MessageMention(
+          id: 'men_1',
+          range: MessageMentionRange(start: 0, end: 7),
+          target: MessageMentionTarget.groupSelector(
+            MessageMentionSelector.agents,
+          ),
+        ),
+      ],
+    );
+
+    final payloadJson = payload.toPayloadJson();
+
+    validateMessagePayloadJson(payloadJson);
+    validateMessageMentionPayloadJson(payloadJson);
+    expect(decodePayloadObject(payloadJson)?['schema'], isNull);
+    final decoded = decodeMessageMentionPayloadJson(payloadJson);
+    expect(decoded.mentions.single.mentionRole, MessageMentionRole.addressee);
+    expect(
+      decoded.mentions.single.target,
+      isA<GroupSelectorMessageMentionTarget>(),
+    );
+  });
+
+  test('ANP P9 mention payload keeps display name out of identity checks', () {
+    const payload = MessageMentionPayload(
+      text: '@Alice hello',
+      mentions: <MessageMention>[
+        MessageMention(
+          id: 'men_1',
+          range: MessageMentionRange(start: 0, end: 6),
+          target: MessageMentionTarget.human(
+            did: 'did:wba:example.com:user:alice',
+            displayName: 'Alice',
+          ),
+          mentionRole: MessageMentionRole.cc,
+        ),
+      ],
+    );
+
+    final decoded = decodeMessageMentionPayloadJson(payload.toPayloadJson());
+    final target = decoded.mentions.single.target;
+
+    expect(decoded.mentions.single.mentionRole, MessageMentionRole.cc);
+    expect(target, isA<HumanMessageMentionTarget>());
+    expect(
+      (target as HumanMessageMentionTarget).did,
+      'did:wba:example.com:user:alice',
+    );
+    expect(target.displayName, 'Alice');
+  });
+
+  test('ANP P9 mention payload rejects forbidden sender and proof fields', () {
+    for (final field in <String>[
+      'sender',
+      'sender_did',
+      'from',
+      'actor_did',
+      'auth',
+      'origin_proof',
+      'proof',
+      'signature',
+    ]) {
+      final payload = <String, Object?>{
+        'text': '@agents hi',
+        'mentions': <Object?>[
+          <String, Object?>{
+            'id': 'men_1',
+            'range': <String, Object?>{
+              'start': 0,
+              'end': 7,
+              'unit': messageMentionRangeUnitUnicodeCodePoint,
+            },
+            'target': <String, Object?>{
+              'kind': 'group_selector',
+              'selector': 'agents',
+            },
+            field: 'bad',
+          },
+        ],
+      };
+
+      expect(
+        () => validateMessageMentionPayloadJson(jsonEncode(payload)),
+        throwsA(isA<AwikiImCoreException>()),
+        reason: '$field should be rejected',
+      );
+    }
+  });
+
+  test('ANP P9 mention payload rejects invalid range and selector shape', () {
+    const invalidRange = MessageMentionPayload(
+      text: '@agents hi',
+      mentions: <MessageMention>[
+        MessageMention(
+          id: 'men_1',
+          range: MessageMentionRange(start: 0, end: 99),
+          target: MessageMentionTarget.groupSelector(
+            MessageMentionSelector.agents,
+          ),
+        ),
+      ],
+    );
+    expect(invalidRange.toPayloadJson, throwsA(isA<AwikiImCoreException>()));
+
+    final selectorWithDid = <String, Object?>{
+      'text': '@agents hi',
+      'mentions': <Object?>[
+        <String, Object?>{
+          'id': 'men_1',
+          'range': <String, Object?>{
+            'start': 0,
+            'end': 7,
+            'unit': messageMentionRangeUnitUnicodeCodePoint,
+          },
+          'target': <String, Object?>{
+            'kind': 'group_selector',
+            'selector': 'agents',
+            'did': 'did:wba:example.com:agent:x',
+          },
+        },
+      ],
+    };
+    expect(
+      () => validateMessageMentionPayloadJson(jsonEncode(selectorWithDid)),
+      throwsA(isA<AwikiImCoreException>()),
+    );
   });
 }

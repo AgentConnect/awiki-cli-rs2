@@ -11,8 +11,8 @@ use crate::outbox::{
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
-    RuntimeAgentProfile, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun,
-    RuntimeRunStatus, RuntimeTask,
+    runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeLaunchContext,
+    RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
 };
 use crate::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
@@ -209,12 +209,7 @@ where
 {
     profile.validate()?;
     task.validate()?;
-    if task.agent_did != profile.agent_did
-        || task.controller_user_id != profile.controller_user_id
-        || task.controller_full_handle != profile.controller_full_handle
-        || task.controller_scope_key != profile.controller_scope_key
-        || task.sender_did != task.controller_did
-    {
+    if !runtime_task_matches_profile_controller_scope(&task, profile) {
         anyhow::bail!("runtime task does not match profile controller scope");
     }
     if run_id.trim().is_empty() {
@@ -516,11 +511,7 @@ pub fn flush_runtime_final_outbox(
         };
         let security = RuntimeMessageSecurity::parse(Some(record.security.as_str()))?;
         let message = RuntimeMessageSend {
-            target: RuntimeMessageTarget::Direct {
-                recipient: record.controller_did.clone(),
-                raw_recipient: record.controller_did.clone(),
-                resolved_did: Some(record.controller_did.clone()),
-            },
+            target: runtime_final_message_target(&record)?,
             text: record.final_text.clone(),
             file_path: None,
             display_filename: None,
@@ -592,6 +583,31 @@ pub fn flush_runtime_final_outbox(
         }
     }
     Ok(sent_count)
+}
+
+fn runtime_final_message_target(record: &RuntimeFinalOutboxRecord) -> Result<RuntimeMessageTarget> {
+    if let Some(group_did) = record
+        .conversation_id
+        .as_deref()
+        .and_then(group_did_from_conversation_id)
+    {
+        return Ok(RuntimeMessageTarget::Group {
+            group: group_did.to_string(),
+        });
+    }
+    Ok(RuntimeMessageTarget::Direct {
+        recipient: record.controller_did.clone(),
+        raw_recipient: record.controller_did.clone(),
+        resolved_did: Some(record.controller_did.clone()),
+    })
+}
+
+fn group_did_from_conversation_id(conversation_id: &str) -> Option<&str> {
+    conversation_id
+        .trim()
+        .strip_prefix("group:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn mark_runtime_final_delivered(

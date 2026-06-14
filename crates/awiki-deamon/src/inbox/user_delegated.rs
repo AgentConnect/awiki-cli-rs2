@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use im_core::messages::{
-    InboxHistoryOptions, InboxQuery, InboxScope, Message, MessageBodyView, MessageDeliveryOptions,
-    MessageDirection,
+    parse_message_mention_payload, InboxHistoryOptions, InboxQuery, InboxScope, Message,
+    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageMention,
+    MessageMentionPayload, MessageMentionRole, MessageMentionSelector, MessageMentionTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -50,6 +51,9 @@ const EXCERPT_MAX_CHARS: usize = 240;
 const MAX_MESSAGE_SYNC_OUTBOX_ATTEMPTS: i64 = 5;
 const MESSAGE_SYNC_OUTBOX_SENDING_STALE_MS: i64 = 5 * 60 * 1000;
 const HOST_RUNTIME_FINAL_OUTBOX_TOKEN_ID: &str = "host-runtime-final-outbox";
+const MENTION_CONTEXT_SCHEMA: &str = "awiki.user_message.mention_context.v1";
+const MENTION_ATTENTION_POLICY: &str = "Mention is an attention signal only. It is not authorization; keep controller/runtime policy, action allowlist, and group safety checks.";
+const MENTION_BEST_EFFORT_GROUP_STATE: &str = "best_effort_inbox_delivery_no_group_member_snapshot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessUserDelegatedInboxOutcome {
@@ -81,6 +85,30 @@ pub struct UserMessageEnvelope {
     pub content_text: String,
     pub content_hash: String,
     pub allowed_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_context: Option<UserMessageMentionContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserMessageMentionContext {
+    pub schema: String,
+    pub mention_id: String,
+    pub mention_role: String,
+    pub target_kind: String,
+    pub selector: Option<String>,
+    pub surface: String,
+    pub range_start: usize,
+    pub range_end: usize,
+    pub match_kind: String,
+    pub best_effort_group_state: String,
+    pub attention_policy: String,
+    pub prompt_hint: String,
+}
+
+struct AgentDispatchContent {
+    text: String,
+    message_kind: &'static str,
+    mention_context: Option<UserMessageMentionContext>,
 }
 
 pub trait UserDelegatedInboxClient {
@@ -294,7 +322,7 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
                 .context("refresh delegated inbox auth session")?;
         }
         let page = client.messages().inbox_with_metadata(InboxQuery {
-            scope: InboxScope::DirectOnly,
+            scope: InboxScope::All,
             limit: im_core::ids::PageLimit::new(limit)?,
             cursor: cursor.map(im_core::ids::Cursor::parse).transpose()?,
             unread_only: false,
@@ -852,15 +880,11 @@ where
         if message.direction == MessageDirection::Outgoing {
             continue;
         }
-        let message_id = message.id.as_str().to_string();
-        if processed_message_is_terminal(state, &binding.user_did, &message_id)? {
-            skipped_processed += 1;
-            continue;
-        }
+        let source_message_id = message.id.as_str().to_string();
         if is_e2ee_opaque_message(&message) {
             let inserted = state.try_insert_processed_message(&ProcessedMessageRecord {
                 owner_did: binding.user_did.clone(),
-                message_id: message_id.clone(),
+                message_id: source_message_id.clone(),
                 schema: EVENT_SCHEMA_E2EE_OPAQUE.to_string(),
                 processed_at_ms: 0,
                 status: PROCESSED_STATUS_IGNORED_E2EE.to_string(),
@@ -873,31 +897,39 @@ where
             }
             continue;
         }
-        let Some(text) = plain_text_for_agent(&message) else {
+        let Some(dispatch_content) = dispatch_content_for_agent(binding, &message) else {
             continue;
         };
+        let processed_message_id =
+            processed_message_id_for_dispatch(binding, &source_message_id, &dispatch_content);
+        if processed_message_is_terminal(state, &binding.user_did, &processed_message_id)? {
+            skipped_processed += 1;
+            continue;
+        }
         let inserted = state.try_insert_processed_message(&processing_record(
             binding,
-            &message_id,
+            &processed_message_id,
             EVENT_SCHEMA_USER_MESSAGE,
         ))?;
-        if !inserted && processed_message_is_terminal(state, &binding.user_did, &message_id)? {
+        if !inserted
+            && processed_message_is_terminal(state, &binding.user_did, &processed_message_id)?
+        {
             skipped_processed += 1;
             continue;
         }
         if !inserted {
             state.mark_processed_message_status(
                 &binding.user_did,
-                &message_id,
+                &processed_message_id,
                 PROCESSED_STATUS_PROCESSING,
             )?;
         }
-        let envelope = user_message_envelope(binding, &message, text)?;
+        let envelope = user_message_envelope(binding, &message, dispatch_content)?;
         let task = runtime_task_from_envelope(state, binding, &envelope)?;
         if let Err(error) = dispatcher.dispatch_user_message(binding, task, &envelope) {
             state.mark_processed_message_status(
                 &binding.user_did,
-                &message_id,
+                &processed_message_id,
                 PROCESSED_STATUS_FAILED_RETRYABLE,
             )?;
             return Err(error);
@@ -906,10 +938,33 @@ where
         state.upsert_message_event(&event)?;
         state.mark_processed_message_status(
             &binding.user_did,
-            &message_id,
+            &processed_message_id,
             PROCESSED_STATUS_DISPATCHED,
         )?;
         state.upsert_message_sync_outbox(&message_sync_outbox_record(binding, &envelope)?)?;
+        if let Some(mention_context) = &envelope.mention_context {
+            state.insert_audit_event_json(
+                "user_delegated_inbox.mention_matched",
+                Some(&binding.runtime_agent_did),
+                Some(&binding.runtime_profile_id),
+                None,
+                None,
+                json!({
+                    "binding_id": binding.binding_id,
+                    "owner_did": binding.user_did,
+                    "runtime_agent_did": binding.runtime_agent_did,
+                    "source_message_id": envelope.source_message_id,
+                    "source_conversation_id": envelope.source_conversation_id,
+                    "source_sender_did": envelope.source_sender_did,
+                    "mention_id": mention_context.mention_id,
+                    "mention_role": mention_context.mention_role,
+                    "target_kind": mention_context.target_kind,
+                    "selector": mention_context.selector,
+                    "match_kind": mention_context.match_kind,
+                    "best_effort_group_state": mention_context.best_effort_group_state,
+                }),
+            )?;
+        }
         dispatched += 1;
     }
     state.upsert_inbox_cursor(&InboxCursorRecord {
@@ -960,9 +1015,9 @@ fn processing_record(
 fn user_message_envelope(
     binding: &AppMessageAgentBindingRecord,
     message: &Message,
-    text: &str,
+    dispatch_content: AgentDispatchContent,
 ) -> Result<UserMessageEnvelope> {
-    let content_hash = content_hash(text);
+    let content_hash = content_hash(&dispatch_content.text);
     Ok(UserMessageEnvelope {
         schema: EVENT_SCHEMA_USER_MESSAGE.to_string(),
         content_role: "user_message_untrusted".to_string(),
@@ -970,14 +1025,15 @@ fn user_message_envelope(
         source_conversation_id: conversation_id(message),
         source_sender_did: message.sender.as_str().to_string(),
         inbox_owner_did: binding.user_did.clone(),
-        message_kind: "text".to_string(),
+        message_kind: dispatch_content.message_kind.to_string(),
         received_at: message
             .received_at
             .clone()
             .or_else(|| message.sent_at.clone()),
-        content_text: text.to_string(),
+        content_text: dispatch_content.text,
         content_hash,
         allowed_actions: allowed_actions(binding),
+        mention_context: dispatch_content.mention_context,
     })
 }
 
@@ -987,7 +1043,7 @@ fn runtime_task_from_envelope(
     envelope: &UserMessageEnvelope,
 ) -> Result<RuntimeTask> {
     let profile = state.load_runtime_agent_profile(&binding.runtime_agent_did)?;
-    let text = serde_json::to_string(&json!({
+    let mut payload = json!({
         "schema": "awiki.runtime.user_message_task.v1",
         "content_role": envelope.content_role,
         "source_message_id": envelope.source_message_id,
@@ -999,22 +1055,38 @@ fn runtime_task_from_envelope(
         "content_text": envelope.content_text,
         "content_hash": envelope.content_hash,
         "allowed_actions": envelope.allowed_actions,
-    }))?;
+    });
+    if let Some(mention_context) = &envelope.mention_context {
+        payload["mention_context"] = serde_json::to_value(mention_context)?;
+        payload["attention_policy"] = json!(mention_context.attention_policy);
+    }
+    let text = serde_json::to_string(&payload)?;
     let controller_did = profile.controller_did.clone();
-    let task = RuntimeTask {
-        task_id: format!(
-            "task_user_msg_{}",
-            stable_id_suffix(&format!(
-                "{}:{}",
-                binding.user_did, envelope.source_message_id
-            ))
+    let task_key = match &envelope.mention_context {
+        Some(mention_context) => format!(
+            "{}:{}:{}:{}",
+            binding.user_did,
+            binding.runtime_agent_did,
+            envelope.source_message_id,
+            mention_context.mention_id
         ),
+        None => format!("{}:{}", binding.user_did, envelope.source_message_id),
+    };
+    let sender_did = if envelope.mention_context.is_some()
+        && is_group_conversation_id(envelope.source_conversation_id.as_deref())
+    {
+        envelope.source_sender_did.clone()
+    } else {
+        profile.controller_did.clone()
+    };
+    let task = RuntimeTask {
+        task_id: format!("task_user_msg_{}", stable_id_suffix(&task_key)),
         agent_did: binding.runtime_agent_did.clone(),
         controller_user_id: profile.controller_user_id,
         controller_full_handle: profile.controller_full_handle,
         controller_scope_key: profile.controller_scope_key,
         controller_did,
-        sender_did: profile.controller_did,
+        sender_did,
         conversation_id: envelope.source_conversation_id.clone(),
         text,
     };
@@ -1096,6 +1168,7 @@ fn message_sync_outbox_record(
             "content_role": envelope.content_role,
             "content_hash": envelope.content_hash,
             "retention_class": RETENTION_CLASS_SHORT_EXCERPT,
+            "mention_context": envelope.mention_context,
         }),
         status: "pending".to_string(),
         attempt_count: 0,
@@ -1108,14 +1181,151 @@ fn message_sync_outbox_record(
     })
 }
 
-fn plain_text_for_agent(message: &Message) -> Option<&str> {
+fn dispatch_content_for_agent(
+    binding: &AppMessageAgentBindingRecord,
+    message: &Message,
+) -> Option<AgentDispatchContent> {
     match &message.body {
-        MessageBodyView::Text { text, .. } if !text.trim().is_empty() => Some(text.as_str()),
+        MessageBodyView::Text { text, .. }
+            if !text.trim().is_empty() && !is_group_message(message) =>
+        {
+            Some(AgentDispatchContent {
+                text: text.clone(),
+                message_kind: "text",
+                mention_context: None,
+            })
+        }
         MessageBodyView::Payload { payload } if is_system_control_payload(payload) => None,
+        MessageBodyView::Payload { payload } if is_group_message(message) => {
+            let mention_payload = parse_message_mention_payload(payload).ok()?;
+            let mention_context = mention_context_for_runtime(binding, &mention_payload)?;
+            Some(AgentDispatchContent {
+                text: mention_payload.text,
+                message_kind: "group_mention",
+                mention_context: Some(mention_context),
+            })
+        }
         MessageBodyView::Payload { .. } => None,
         MessageBodyView::Unsupported { .. } => None,
         _ => None,
     }
+}
+
+fn mention_context_for_runtime(
+    binding: &AppMessageAgentBindingRecord,
+    payload: &MessageMentionPayload,
+) -> Option<UserMessageMentionContext> {
+    payload
+        .mentions
+        .iter()
+        .filter_map(|mention| mention_context_for_mention(binding, payload, mention))
+        .max_by_key(mention_context_priority)
+}
+
+fn mention_context_for_mention(
+    binding: &AppMessageAgentBindingRecord,
+    payload: &MessageMentionPayload,
+    mention: &MessageMention,
+) -> Option<UserMessageMentionContext> {
+    let (target_kind, selector, match_kind) = match &mention.target {
+        MessageMentionTarget::Agent { did, .. } if did == &binding.runtime_agent_did => {
+            ("agent", None, "agent_did")
+        }
+        MessageMentionTarget::GroupSelector {
+            selector: MessageMentionSelector::All,
+        } if binding.status == "message_agent_ready" => {
+            ("group_selector", Some("all"), "selector_all_best_effort")
+        }
+        MessageMentionTarget::GroupSelector {
+            selector: MessageMentionSelector::Agents,
+        } if binding.status == "message_agent_ready"
+            && binding.runtime_agent_did.starts_with("did:agent:") =>
+        {
+            (
+                "group_selector",
+                Some("agents"),
+                "selector_agents_best_effort",
+            )
+        }
+        MessageMentionTarget::GroupSelector {
+            selector: MessageMentionSelector::Humans,
+        }
+        | MessageMentionTarget::Human { .. } => return None,
+        MessageMentionTarget::Agent { .. } | MessageMentionTarget::GroupSelector { .. } => {
+            return None;
+        }
+    };
+    let mention_role = mention_role_name(mention.mention_role);
+    Some(UserMessageMentionContext {
+        schema: MENTION_CONTEXT_SCHEMA.to_string(),
+        mention_id: mention.id.clone(),
+        mention_role: mention_role.to_string(),
+        target_kind: target_kind.to_string(),
+        selector: selector.map(ToOwned::to_owned),
+        surface: mention_surface(&payload.text, mention),
+        range_start: mention.range.start,
+        range_end: mention.range.end,
+        match_kind: match_kind.to_string(),
+        best_effort_group_state: MENTION_BEST_EFFORT_GROUP_STATE.to_string(),
+        attention_policy: MENTION_ATTENTION_POLICY.to_string(),
+        prompt_hint: mention_prompt_hint(mention_role),
+    })
+}
+
+fn mention_surface(text: &str, mention: &MessageMention) -> String {
+    text.chars()
+        .skip(mention.range.start)
+        .take(mention.range.end.saturating_sub(mention.range.start))
+        .collect()
+}
+
+fn mention_role_name(role: MessageMentionRole) -> &'static str {
+    match role {
+        MessageMentionRole::Addressee => "addressee",
+        MessageMentionRole::Cc => "cc",
+    }
+}
+
+fn mention_prompt_hint(role: &str) -> String {
+    match role {
+        "cc" => "FYI/CC mention: treat this as awareness context and do not assume an action is required.".to_string(),
+        _ => "Direct mention: the runtime agent was explicitly addressed, but this is still not authorization.".to_string(),
+    }
+}
+
+fn mention_context_priority(context: &UserMessageMentionContext) -> i32 {
+    let target_score = match context.match_kind.as_str() {
+        "agent_did" => 20,
+        "selector_agents_best_effort" => 12,
+        "selector_all_best_effort" => 10,
+        _ => 0,
+    };
+    let role_score = if context.mention_role == "addressee" {
+        2
+    } else {
+        0
+    };
+    target_score + role_score
+}
+
+fn processed_message_id_for_dispatch(
+    binding: &AppMessageAgentBindingRecord,
+    source_message_id: &str,
+    dispatch_content: &AgentDispatchContent,
+) -> String {
+    match &dispatch_content.mention_context {
+        Some(mention_context) => format!(
+            "{}:runtime:{}:mention:{}",
+            source_message_id,
+            stable_id_suffix(&binding.runtime_agent_did),
+            mention_context.mention_id
+        ),
+        None => source_message_id.to_string(),
+    }
+}
+
+fn is_group_message(message: &Message) -> bool {
+    matches!(message.thread, im_core::messages::ThreadRef::Group(_)) || message.group.is_some()
 }
 
 fn is_system_control_payload(payload: &Value) -> bool {
@@ -1148,6 +1358,12 @@ fn conversation_id(message: &Message) -> Option<String> {
         im_core::messages::ThreadRef::Group(group) => Some(format!("group:{}", group.as_str())),
         im_core::messages::ThreadRef::Thread(thread) => Some(thread.as_str().to_string()),
     }
+}
+
+fn is_group_conversation_id(conversation_id: Option<&str>) -> bool {
+    conversation_id
+        .map(str::trim)
+        .is_some_and(|value| value.starts_with("group:"))
 }
 
 fn allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
@@ -1489,6 +1705,8 @@ mod tests {
         assert_eq!(envelope.content_role, "user_message_untrusted");
         assert_eq!(envelope.source_sender_did, "did:human:bob");
         assert_eq!(envelope.content_text, "hello agent");
+        assert_eq!(envelope.message_kind, "text");
+        assert!(envelope.mention_context.is_none());
         assert_eq!(
             envelope.allowed_actions,
             vec![
@@ -1538,7 +1756,8 @@ mod tests {
         });
         let message = plain_message("msg_1", "did:human:bob", "hello agent");
 
-        let envelope = user_message_envelope(&binding, &message, "hello agent").unwrap();
+        let envelope =
+            user_message_envelope(&binding, &message, plain_dispatch("hello agent")).unwrap();
 
         assert!(envelope.allowed_actions.is_empty());
     }
@@ -1719,6 +1938,238 @@ mod tests {
 
         assert_eq!(outcome.dispatched_messages, 0);
         assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delegated_inbox_dispatches_group_agent_did_mention_with_attention_context() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let payload = json!({
+            "text": "@Hermes please summarize",
+            "mentions": [{
+                "id": "men_agent",
+                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                "target": {
+                    "kind": "agent",
+                    "did": binding.runtime_agent_did,
+                    "display_name": "Hermes display ignored"
+                },
+                "mention_role": "addressee"
+            }]
+        });
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![mention_payload_message(
+                    "msg_agent",
+                    "did:human:bob",
+                    payload,
+                )],
+                next_cursor: None,
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+
+        let outcome =
+            process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 1);
+        let dispatched = dispatcher.dispatched.lock().unwrap();
+        assert_eq!(dispatched.len(), 1);
+        let (task, envelope) = &dispatched[0];
+        assert_eq!(task.conversation_id.as_deref(), Some("group:group_1"));
+        assert_eq!(task.sender_did, "did:human:bob");
+        assert_eq!(task.controller_did, binding.user_did);
+        assert_eq!(envelope.message_kind, "group_mention");
+        assert_eq!(envelope.content_text, "@Hermes please summarize");
+        let mention_context = envelope.mention_context.as_ref().unwrap();
+        assert_eq!(mention_context.mention_id, "men_agent");
+        assert_eq!(mention_context.target_kind, "agent");
+        assert_eq!(mention_context.selector, None);
+        assert_eq!(mention_context.surface, "@Hermes");
+        assert_eq!(mention_context.match_kind, "agent_did");
+        assert!(mention_context
+            .attention_policy
+            .contains("not authorization"));
+
+        let task_payload = task_payload(task);
+        assert_eq!(
+            task_payload["mention_context"]["mention_id"],
+            json!("men_agent")
+        );
+        assert_eq!(
+            task_payload["mention_context"]["match_kind"],
+            json!("agent_did")
+        );
+        assert!(task_payload["attention_policy"]
+            .as_str()
+            .unwrap()
+            .contains("not authorization"));
+        let sync = state
+            .load_message_sync_outbox("message-sync:did:human:alice:msg_agent")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            sync.payload_json["mention_context"]["mention_id"],
+            "men_agent"
+        );
+        assert!(state
+            .audit_event_exists(
+                "user_delegated_inbox.mention_matched",
+                Some(&binding.runtime_agent_did),
+                Some("men_agent"),
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn delegated_inbox_dispatches_group_selector_mentions_with_cc_fyi_context() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![
+                    mention_payload_message(
+                        "msg_agents",
+                        "did:human:bob",
+                        json!({
+                            "text": "@agents FYI only",
+                            "mentions": [{
+                                "id": "men_agents",
+                                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                                "target": {"kind": "group_selector", "selector": "agents"},
+                                "mention_role": "cc"
+                            }]
+                        }),
+                    ),
+                    mention_payload_message(
+                        "msg_all",
+                        "did:human:carol",
+                        json!({
+                            "text": "@all please look",
+                            "mentions": [{
+                                "id": "men_all",
+                                "range": {"start": 0, "end": 4, "unit": "unicode_code_point"},
+                                "target": {"kind": "group_selector", "selector": "all"}
+                            }]
+                        }),
+                    ),
+                ],
+                next_cursor: None,
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+
+        let outcome =
+            process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 2);
+        let dispatched = dispatcher.dispatched.lock().unwrap();
+        let (_, agents_envelope) = &dispatched[0];
+        let agents_context = agents_envelope.mention_context.as_ref().unwrap();
+        assert_eq!(agents_context.selector.as_deref(), Some("agents"));
+        assert_eq!(agents_context.mention_role, "cc");
+        assert_eq!(agents_context.match_kind, "selector_agents_best_effort");
+        assert!(agents_context.prompt_hint.contains("FYI/CC"));
+        let agents_task_payload = task_payload(&dispatched[0].0);
+        assert_eq!(
+            agents_task_payload["mention_context"]["prompt_hint"],
+            json!(agents_context.prompt_hint)
+        );
+
+        let (_, all_envelope) = &dispatched[1];
+        let all_context = all_envelope.mention_context.as_ref().unwrap();
+        assert_eq!(all_context.selector.as_deref(), Some("all"));
+        assert_eq!(all_context.mention_role, "addressee");
+        assert_eq!(all_context.match_kind, "selector_all_best_effort");
+        assert!(all_context.best_effort_group_state.contains("best_effort"));
+    }
+
+    #[test]
+    fn delegated_inbox_does_not_dispatch_group_plain_text_humans_or_invalid_mentions() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![
+                    group_plain_message("msg_plain_at", "did:human:bob", "@Hermes hello"),
+                    mention_payload_message(
+                        "msg_humans",
+                        "did:human:bob",
+                        json!({
+                            "text": "@humans please look",
+                            "mentions": [{
+                                "id": "men_humans",
+                                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                                "target": {"kind": "group_selector", "selector": "humans"}
+                            }]
+                        }),
+                    ),
+                    mention_payload_message(
+                        "msg_invalid",
+                        "did:human:bob",
+                        json!({
+                            "text": "@agents broken range",
+                            "mentions": [{
+                                "id": "men_invalid",
+                                "range": {"start": 0, "end": 99, "unit": "unicode_code_point"},
+                                "target": {"kind": "group_selector", "selector": "agents"}
+                            }]
+                        }),
+                    ),
+                ],
+                next_cursor: Some("cursor_after_skips".to_string()),
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+
+        let outcome =
+            process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 0);
+        assert_eq!(outcome.next_cursor.as_deref(), Some("cursor_after_skips"));
+        assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delegated_inbox_ignores_group_e2ee_mention_cipher_without_dispatch() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![group_e2ee_mention_cipher_message(
+                    "msg_group_e2ee",
+                    "did:human:bob",
+                    binding,
+                )],
+                next_cursor: None,
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+
+        let outcome =
+            process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+        assert_eq!(outcome.ignored_e2ee_messages, 1);
+        assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+        let event = state
+            .load_message_event(&event_id(&binding.user_did, "msg_group_e2ee"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.message_kind, "e2ee_opaque");
+        assert_eq!(event.retention_class, RETENTION_CLASS_OPAQUE_ONLY);
+        assert!(event.plain_text_ref_or_excerpt.is_none());
     }
 
     #[test]
@@ -2050,5 +2501,91 @@ mod tests {
                 ..MessageMetadata::default()
             },
         }
+    }
+
+    fn mention_payload_message(id: &str, sender: &str, payload: Value) -> Message {
+        Message {
+            id: MessageId::parse(id).unwrap(),
+            thread: ThreadRef::Group(GroupRef::parse("group_1").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse(sender, "").unwrap(),
+            receiver: None,
+            group: Some(GroupRef::parse("group_1").unwrap()),
+            body: MessageBodyView::Payload { payload },
+            sent_at: Some("2026-06-09T00:00:00Z".to_string()),
+            received_at: Some("2026-06-09T00:00:01Z".to_string()),
+            metadata: MessageMetadata {
+                content_type: Some("application/json".to_string()),
+                ..MessageMetadata::default()
+            },
+        }
+    }
+
+    fn group_plain_message(id: &str, sender: &str, text: &str) -> Message {
+        Message {
+            id: MessageId::parse(id).unwrap(),
+            thread: ThreadRef::Group(GroupRef::parse("group_1").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse(sender, "").unwrap(),
+            receiver: None,
+            group: Some(GroupRef::parse("group_1").unwrap()),
+            body: MessageBodyView::Text {
+                text: text.to_string(),
+                kind: MessageKind::Text,
+            },
+            sent_at: Some("2026-06-09T00:00:00Z".to_string()),
+            received_at: Some("2026-06-09T00:00:01Z".to_string()),
+            metadata: MessageMetadata {
+                content_type: Some("text/plain".to_string()),
+                ..MessageMetadata::default()
+            },
+        }
+    }
+
+    fn group_e2ee_mention_cipher_message(
+        id: &str,
+        sender: &str,
+        binding: &AppMessageAgentBindingRecord,
+    ) -> Message {
+        Message {
+            id: MessageId::parse(id).unwrap(),
+            thread: ThreadRef::Group(GroupRef::parse("group_1").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse(sender, "").unwrap(),
+            receiver: None,
+            group: Some(GroupRef::parse("group_1").unwrap()),
+            body: MessageBodyView::Payload {
+                payload: json!({
+                    "text": "@Hermes encrypted",
+                    "mentions": [{
+                        "id": "men_e2ee",
+                        "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                        "target": {"kind": "agent", "did": binding.runtime_agent_did}
+                    }]
+                }),
+            },
+            sent_at: Some("2026-06-09T00:00:00Z".to_string()),
+            received_at: Some("2026-06-09T00:00:01Z".to_string()),
+            metadata: MessageMetadata {
+                content_type: Some("application/anp-group-cipher+json".to_string()),
+                attributes: vec![MessageMetadataAttribute {
+                    key: "security".to_string(),
+                    value: "group-e2ee".to_string(),
+                }],
+                ..MessageMetadata::default()
+            },
+        }
+    }
+
+    fn plain_dispatch(text: &str) -> AgentDispatchContent {
+        AgentDispatchContent {
+            text: text.to_string(),
+            message_kind: "text",
+            mention_context: None,
+        }
+    }
+
+    fn task_payload(task: &RuntimeTask) -> Value {
+        serde_json::from_str(&task.text).unwrap()
     }
 }

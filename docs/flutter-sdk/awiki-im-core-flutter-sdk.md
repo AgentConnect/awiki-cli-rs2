@@ -74,6 +74,58 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 `retryMessage` is explicitly unsupported in v0.1 and returns `unsupported_capability("message-retry")`. The SDK must not rebuild a send request from display message DTOs because those DTOs can lose target, body, security, idempotency, and retry-plan information.
 
+## Message payloads and ANP P9 mentions
+
+`SendPayloadRequest.payloadJson` accepts any JSON object up to the SDK payload
+size limit. It no longer requires a top-level `schema` field. Existing
+`awiki.agent.*` control payloads may continue to include `schema`, but App code
+must not add a fake `schema`/`protocol` field merely to send ANP-P9 mention
+payloads.
+
+The Dart SDK exposes ANP-P9 mention DTO helpers:
+
+```dart
+final payload = MessageMentionPayload(
+  text: '@agents please summarize this discussion.',
+  mentions: const [
+    MessageMention(
+      id: 'men_1',
+      range: MessageMentionRange(start: 0, end: 7),
+      target: MessageMentionTarget.groupSelector(MessageMentionSelector.agents),
+    ),
+  ],
+);
+
+validateMessageMentionPayloadJson(payload.toPayloadJson());
+await client.messages.sendPayload(
+  SendPayloadRequest(
+    target: const MessageTarget.group('did:wba:example.com:group:team'),
+    security: MessageSecurityMode.defaultPlain,
+    payloadJson: payload.toPayloadJson(),
+  ),
+);
+```
+
+P9 mention DTOs intentionally do not add sender, proof, profile, content type, or
+selector expansion fields. Single-target identity is the target DID; optional
+`displayName` is only a UI snapshot and must not be used for routing,
+authentication, authorization, E2EE binding, or runtime policy decisions.
+
+Flutter/App integration gates:
+
+```bash
+cd packages/awiki_im_core && flutter test test/message_payload_api_test.dart
+cd ../.. && scripts/flutter/codegen-check.sh
+```
+
+AWiki Me adds App-level composer, mapper, and highlight coverage in
+`awiki-me` focused tests. The desktop App + CLI peer group scenario sends a
+schema-less `@agents` P9 payload through `MessagingService.sendMentionText` and
+verifies the projected payload text can be read back by both the App and CLI
+history. Daemon prompt execution is validated separately by
+`cargo test -p awiki-deamon --locked mention` and the dedicated Agent IM /
+daemon integration gate.
+
 ## Realtime ownership
 
 The native SDK exposes realtime as a high-level session and event stream:
