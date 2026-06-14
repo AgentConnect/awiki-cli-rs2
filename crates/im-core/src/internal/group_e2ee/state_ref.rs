@@ -316,6 +316,58 @@ pub(crate) fn group_state_ref_from_service_head(
     })
 }
 
+pub(crate) fn group_state_ref_from_group_response(
+    group_did: &str,
+    response: &Value,
+) -> Option<GroupStateRef> {
+    let group_did = require_non_empty_group(group_did).ok()?;
+    let version = first_non_empty_string(&[
+        response
+            .get("group_state_ref")
+            .and_then(|value| value.get("group_state_version")),
+        response.get("group_state_version"),
+        response
+            .get("group")
+            .and_then(|value| value.get("group_state_ref"))
+            .and_then(|value| value.get("group_state_version")),
+        response
+            .get("group")
+            .and_then(|value| value.get("group_state_version")),
+        response
+            .get("group_snapshot")
+            .and_then(|value| value.get("group_state_ref"))
+            .and_then(|value| value.get("group_state_version")),
+        response
+            .get("group_snapshot")
+            .and_then(|value| value.get("group_state_version")),
+        response
+            .get("delivery")
+            .and_then(|value| value.get("group_state_version")),
+    ]);
+    if version.is_empty() {
+        return None;
+    }
+    let policy_hash = first_non_empty_string(&[
+        response
+            .get("group_state_ref")
+            .and_then(|value| value.get("policy_hash")),
+        response.get("policy_hash"),
+        response
+            .get("group")
+            .and_then(|value| value.get("group_state_ref"))
+            .and_then(|value| value.get("policy_hash")),
+        response
+            .get("group_snapshot")
+            .and_then(|value| value.get("group_state_ref"))
+            .and_then(|value| value.get("policy_hash")),
+    ]);
+    Some(GroupStateRef {
+        group_did: group_did.to_owned(),
+        group_state_version: version,
+        policy_hash: non_empty_string(policy_hash),
+    })
+}
+
 async fn resolve_group_state_ref_async<P, T, M>(
     client: &crate::core::ImClient,
     session_provider: &P,
@@ -750,6 +802,28 @@ mod tests {
         assert_eq!(group_state_ref.group_did, "did:example:groups:e2ee");
         assert_eq!(group_state_ref.group_state_version, "8");
         assert_eq!(group_state_ref.policy_hash, None);
+    }
+
+    #[test]
+    fn group_response_parser_prefers_embedded_state_ref() {
+        let reference = group_state_ref_from_group_response(
+            "did:example:groups:e2ee",
+            &json!({
+                "group": {
+                    "group_did": "did:example:groups:e2ee",
+                    "group_state_version": "12",
+                    "group_state_ref": {
+                        "group_state_version": "13",
+                        "policy_hash": "sha256:policy"
+                    }
+                }
+            }),
+        )
+        .expect("group state ref");
+
+        assert_eq!(reference.group_did, "did:example:groups:e2ee");
+        assert_eq!(reference.group_state_version, "13");
+        assert_eq!(reference.policy_hash.as_deref(), Some("sha256:policy"));
     }
 
     #[test]

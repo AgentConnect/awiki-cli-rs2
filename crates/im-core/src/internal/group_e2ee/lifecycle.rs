@@ -32,6 +32,7 @@ pub(crate) struct GroupE2eeCreateInput {
     pub(crate) group: crate::ids::GroupRef,
     pub(crate) credentials: Option<GroupTextCredentials>,
     pub(crate) service_did: Option<crate::ids::Did>,
+    pub(crate) group_state_ref: Option<GroupStateRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +43,7 @@ pub(crate) struct GroupE2eeMemberMutationInput {
     pub(crate) leave_request_id: Option<String>,
     pub(crate) credentials: Option<GroupTextCredentials>,
     pub(crate) service_did: Option<crate::ids::Did>,
+    pub(crate) group_state_ref: Option<GroupStateRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -291,7 +293,9 @@ where
             request_id: format!("group-e2ee-create-{operation_id}"),
             pending_commit_id: Some(format!("pc-{operation_id}")),
         })?;
-        let group_state_ref = local_group_state_ref(self.client, &group_did);
+        let group_state_ref = input
+            .group_state_ref
+            .or_else(|| local_group_state_ref(self.client, &group_did));
         let params = super::wire::build_group_e2ee_create_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -372,7 +376,9 @@ where
             request_id: format!("group-e2ee-add-{operation_id}"),
             pending_commit_id: Some(format!("pc-{operation_id}")),
         })?;
-        let group_state_ref = local_group_state_ref(self.client, &group_did);
+        let group_state_ref = input
+            .group_state_ref
+            .or_else(|| local_group_state_ref(self.client, &group_did));
         let params = super::wire::build_group_e2ee_add_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -433,8 +439,10 @@ where
         let credentials = self.credentials(input.credentials)?;
         let group_did = require_group(input.group.as_str())?.to_owned();
         let member_did = require_did(input.member.as_str(), "member")?.to_owned();
-        let group_state_ref =
-            self.resolved_group_state_ref(&credentials, &input.group, &group_did)?;
+        let group_state_ref = match input.group_state_ref.clone() {
+            Some(reference) => Some(reference),
+            None => self.resolved_group_state_ref(&credentials, &input.group, &group_did)?,
+        };
         let operation_id = format!(
             "op-{}",
             crate::internal::wire::common::generate_operation_id()
@@ -822,6 +830,7 @@ where
             leave_request_id: Some(leave_request_id),
             credentials: Some(credentials),
             service_did: input.service_did,
+            group_state_ref: input.group_state_ref,
         })?;
         Ok(GroupE2eeLifecycleResult {
             delivery: merge_process_leave_delivery(final_result.delivery, &processing),
@@ -1100,7 +1109,10 @@ where
             mls_provider.create_group_prepare(create_input)
         })
         .await?;
-        let group_state_ref = local_group_state_ref_async(self.client, &group_did).await;
+        let group_state_ref = match input.group_state_ref {
+            Some(reference) => Some(reference),
+            None => local_group_state_ref_async(self.client, &group_did).await,
+        };
         let params = super::wire::build_group_e2ee_create_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -1225,7 +1237,10 @@ where
             mls_provider.add_member_prepare(add_input)
         })
         .await?;
-        let group_state_ref = local_group_state_ref_async(self.client, &group_did).await;
+        let group_state_ref = match input.group_state_ref {
+            Some(reference) => Some(reference),
+            None => local_group_state_ref_async(self.client, &group_did).await,
+        };
         let params = super::wire::build_group_e2ee_add_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -1318,7 +1333,10 @@ where
         };
         let group_did = require_group(input.group.as_str())?.to_owned();
         let member_did = require_did(input.member.as_str(), "member")?.to_owned();
-        let group_state_ref = local_group_state_ref_async(self.client, &group_did).await;
+        let group_state_ref = match input.group_state_ref.clone() {
+            Some(reference) => Some(reference),
+            None => local_group_state_ref_async(self.client, &group_did).await,
+        };
         let operation_id = format!(
             "op-{}",
             crate::internal::wire::common::generate_operation_id()
@@ -1697,6 +1715,7 @@ where
             leave_request_id,
             credentials,
             service_did,
+            group_state_ref,
         } = input;
         let credentials = match credentials {
             Some(credentials) => credentials,
@@ -1737,6 +1756,7 @@ where
                 leave_request_id: Some(leave_request_id),
                 credentials: Some(credentials),
                 service_did,
+                group_state_ref,
             })
             .await?;
         Ok(GroupE2eeLifecycleResult {
@@ -2200,6 +2220,7 @@ mod tests {
             group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
             credentials: Some(fixture.credentials()),
             service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+            group_state_ref: None,
         })
         .unwrap();
 
@@ -2253,6 +2274,7 @@ mod tests {
             group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
             credentials: Some(fixture.credentials()),
             service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+            group_state_ref: None,
         })
         .await
         .unwrap();
@@ -2320,6 +2342,7 @@ mod tests {
             leave_request_id: None,
             credentials: Some(fixture.credentials()),
             service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+            group_state_ref: None,
         })
         .unwrap();
 
@@ -2383,6 +2406,7 @@ mod tests {
             leave_request_id: None,
             credentials: Some(fixture.credentials()),
             service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+            group_state_ref: None,
         })
         .await
         .unwrap();
@@ -2493,6 +2517,7 @@ mod tests {
             leave_request_id: Some("leave-1".to_owned()),
             credentials: Some(fixture.credentials()),
             service_did: None,
+            group_state_ref: None,
         })
         .unwrap_err();
 
@@ -2546,6 +2571,7 @@ mod tests {
             leave_request_id: None,
             credentials: Some(fixture.credentials()),
             service_did: None,
+            group_state_ref: None,
         })
         .unwrap();
 
@@ -2600,6 +2626,7 @@ mod tests {
             leave_request_id: Some("leave-1".to_owned()),
             credentials: Some(fixture.credentials()),
             service_did: None,
+            group_state_ref: None,
         })
         .await
         .unwrap();
@@ -3141,6 +3168,7 @@ mod tests {
             leave_request_id: Some("leave-1".to_owned()),
             credentials: Some(fixture.credentials()),
             service_did: None,
+            group_state_ref: None,
         })
         .unwrap();
 
@@ -3213,6 +3241,7 @@ mod tests {
             leave_request_id: Some("leave-async-1".to_owned()),
             credentials: Some(fixture.credentials()),
             service_did: None,
+            group_state_ref: None,
         })
         .await
         .unwrap();

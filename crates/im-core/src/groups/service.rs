@@ -69,12 +69,14 @@ impl<'a> GroupService<'a> {
         .create(request, None)?;
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state(&mut result, true);
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         #[cfg(feature = "group-e2ee")]
         if secure_required {
             let group =
                 group_did(&result).ok_or_else(|| crate::ImError::LocalStateUnavailable {
                     detail: "group E2EE create requires created group DID".to_owned(),
                 })?;
+            let group_state_ref = group_state_ref_from_result(&group, &result);
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -86,6 +88,7 @@ impl<'a> GroupService<'a> {
                     group: crate::ids::GroupRef::parse(&group)?,
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )?;
             result.warnings.extend(secure.warnings);
@@ -119,12 +122,18 @@ impl<'a> GroupService<'a> {
         )
         .await;
         self.refresh_group_state_async(&mut result, true).await;
+        let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
+            self.client,
+            &result,
+        )
+        .await;
         #[cfg(feature = "group-e2ee")]
         if secure_required {
             let group =
                 group_did(&result).ok_or_else(|| crate::ImError::LocalStateUnavailable {
                     detail: "group E2EE create requires created group DID".to_owned(),
                 })?;
+            let group_state_ref = group_state_ref_from_result(&group, &result);
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -136,6 +145,7 @@ impl<'a> GroupService<'a> {
                     group: crate::ids::GroupRef::parse(&group)?,
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )
             .await?;
@@ -369,6 +379,7 @@ impl<'a> GroupService<'a> {
         self.refresh_group_state_for(&mut result, &group, true);
         #[cfg(feature = "group-e2ee")]
         if let Some(secure_provider) = secure_provider {
+            let group_state_ref = group_state_ref_from_result(&group, &result);
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -383,6 +394,7 @@ impl<'a> GroupService<'a> {
                     leave_request_id: None,
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )?;
             result = super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
@@ -444,6 +456,7 @@ impl<'a> GroupService<'a> {
             .await;
         #[cfg(feature = "group-e2ee")]
         if secure_required {
+            let group_state_ref = group_state_ref_from_result(&group, &result);
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -458,6 +471,7 @@ impl<'a> GroupService<'a> {
                     leave_request_id: None,
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )
             .await?;
@@ -499,6 +513,7 @@ impl<'a> GroupService<'a> {
         if request.security.required() {
             #[cfg(feature = "group-e2ee")]
             {
+                let group_state_ref = group_state_ref_from_current_group(self, &group);
                 let secure =
                     crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                         self.client,
@@ -514,6 +529,7 @@ impl<'a> GroupService<'a> {
                             leave_request_id: request.leave_request_id,
                             credentials: None,
                             service_did: None,
+                            group_state_ref,
                         },
                     )?;
                 let mut result =
@@ -568,6 +584,7 @@ impl<'a> GroupService<'a> {
         }
         #[cfg(feature = "group-e2ee")]
         if secure_required {
+            let group_state_ref = group_state_ref_from_current_group_async(self, &group).await;
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -582,6 +599,7 @@ impl<'a> GroupService<'a> {
                     leave_request_id: request.leave_request_id,
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )
             .await?;
@@ -627,6 +645,7 @@ impl<'a> GroupService<'a> {
             ensure_group_e2ee_service_available(self.client, false)?;
             let group = request.group.as_str().to_owned();
             let resolved_member = resolve_group_member(self.client, &request.member)?;
+            let group_state_ref = group_state_ref_from_current_group(self, &group);
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -641,6 +660,7 @@ impl<'a> GroupService<'a> {
                     leave_request_id: Some(request.leave_request_id),
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )?;
             let mut result =
@@ -665,6 +685,7 @@ impl<'a> GroupService<'a> {
             ensure_group_e2ee_service_available_async(self.client, false).await?;
             let group = request.group.as_str().to_owned();
             let resolved_member = resolve_group_member_async(self.client, &request.member).await?;
+            let group_state_ref = group_state_ref_from_current_group_async(self, &group).await;
             let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -679,6 +700,7 @@ impl<'a> GroupService<'a> {
                     leave_request_id: Some(request.leave_request_id),
                     credentials: None,
                     service_did: None,
+                    group_state_ref,
                 },
             )
             .await?;
@@ -1297,7 +1319,13 @@ impl<'a> GroupService<'a> {
             }
         };
         match self.get(group_ref.clone()) {
-            Ok(snapshot) => result.merge_group_snapshot_from(&snapshot),
+            Ok(snapshot) => {
+                crate::internal::group_runtime::projection::project_group_snapshot(
+                    self.client,
+                    &snapshot,
+                );
+                result.merge_group_snapshot_from(&snapshot);
+            }
             Err(err) => {
                 result.push_warning(format!("Failed to refresh group snapshot: {err}"));
                 return;
@@ -1341,7 +1369,14 @@ impl<'a> GroupService<'a> {
             }
         };
         match self.get_async(group_ref.clone()).await {
-            Ok(snapshot) => result.merge_group_snapshot_from(&snapshot),
+            Ok(snapshot) => {
+                let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
+                    self.client,
+                    &snapshot,
+                )
+                .await;
+                result.merge_group_snapshot_from(&snapshot);
+            }
             Err(err) => {
                 result.push_warning(format!("Failed to refresh group snapshot: {err}"));
                 return;
@@ -1634,6 +1669,41 @@ fn group_did(result: &super::GroupReadResult) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_state_ref_from_result(
+    group_did: &str,
+    result: &super::GroupReadResult,
+) -> Option<anp::group_e2ee::GroupStateRef> {
+    result.raw_response().and_then(|raw| {
+        crate::internal::group_e2ee::state_ref::group_state_ref_from_group_response(group_did, raw)
+    })
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_state_ref_from_current_group(
+    service: &GroupService<'_>,
+    group_did: &str,
+) -> Option<anp::group_e2ee::GroupStateRef> {
+    let group = crate::ids::GroupRef::parse(group_did).ok()?;
+    service
+        .get(group)
+        .ok()
+        .and_then(|result| group_state_ref_from_result(group_did, &result))
+}
+
+#[cfg(feature = "group-e2ee")]
+async fn group_state_ref_from_current_group_async(
+    service: &GroupService<'_>,
+    group_did: &str,
+) -> Option<anp::group_e2ee::GroupStateRef> {
+    let group = crate::ids::GroupRef::parse(group_did).ok()?;
+    service
+        .get_async(group)
+        .await
+        .ok()
+        .and_then(|result| group_state_ref_from_result(group_did, &result))
 }
 
 fn resolve_group_member(
