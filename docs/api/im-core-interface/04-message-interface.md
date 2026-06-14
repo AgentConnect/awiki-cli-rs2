@@ -186,6 +186,20 @@ validator 规则：
   `auth`、`origin_proof`、`proof` 或 `signature`。
 - `display_name` 仅是展示快照，不能用于身份、路由、认证或授权。
 
+验证 gate：
+
+```bash
+cargo test -p im-core --locked mention
+cargo test -p awiki-deamon --locked mention
+```
+
+`awiki-deamon` 只在终端侧解析收到的群 P9 payload。命中 runtime agent DID、
+`@agents` 或 `@all` 后，daemon 会把 `mention_context` 注入 RuntimeTask；
+`@humans`、`human` target、纯文本 `@AgentName`、invalid range 和 E2EE
+opaque 都不能触发 runtime agent。该 prompt context 明确 mention 只是
+attention signal，不是授权；controller/runtime policy 和 allowed actions 仍然
+是执行边界。
+
 ## 3. Send Result
 
 ```rust

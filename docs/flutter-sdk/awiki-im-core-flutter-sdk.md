@@ -111,6 +111,21 @@ selector expansion fields. Single-target identity is the target DID; optional
 `displayName` is only a UI snapshot and must not be used for routing,
 authentication, authorization, E2EE binding, or runtime policy decisions.
 
+Flutter/App integration gates:
+
+```bash
+cd packages/awiki_im_core && flutter test test/message_payload_api_test.dart
+cd ../.. && scripts/flutter/codegen-check.sh
+```
+
+AWiki Me adds App-level composer, mapper, and highlight coverage in
+`awiki-me` focused tests. The desktop App + CLI peer group scenario sends a
+schema-less `@agents` P9 payload through `MessagingService.sendMentionText` and
+verifies the projected payload text can be read back by both the App and CLI
+history. Daemon prompt execution is validated separately by
+`cargo test -p awiki-deamon --locked mention` and the dedicated Agent IM /
+daemon integration gate.
+
 ## Realtime ownership
 
 The native SDK exposes realtime as a high-level session and event stream:
