@@ -180,6 +180,8 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         "content": "hello bob",
         "sent_at": "2026-04-07T01:02:03Z",
         "is_read": false,
+        "peer_user_id": "user-alice",
+        "peer_full_handle": "alice.awiki.ai",
     });
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
