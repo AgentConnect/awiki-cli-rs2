@@ -343,8 +343,7 @@ where
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
-            generate_product_handle("awiki-daemon-")
-                .unwrap_or_else(|_| "awiki-daemon-local".to_string())
+            generate_product_handle("deamon-").unwrap_or_else(|_| "deamon-local".to_string())
         });
     setup_daemon_agent(
         config,
@@ -489,6 +488,17 @@ mod tests {
                 exchange_requests: Arc::new(Mutex::new(Vec::new())),
                 latest_items: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn active_daemon_token_without_handle() -> Self {
+            let client = Self::active_daemon_token();
+            let mut metadata = match &*client.verify_result.lock().unwrap() {
+                Ok(metadata) => metadata.clone(),
+                Err(reason) => panic!("unexpected mock verify error: {reason}"),
+            };
+            metadata.handle = None;
+            *client.verify_result.lock().unwrap() = Ok(metadata);
+            client
         }
 
         fn used_token() -> Self {
@@ -651,6 +661,27 @@ mod tests {
         assert_eq!(agent.controller_did, "did:human:alice");
         assert_eq!(agent.handle, "alice-mac-daemon");
         assert_eq!(client.exchange_count(), 1);
+    }
+
+    #[test]
+    fn product_install_generates_deamon_prefixed_handle_when_token_has_no_handle() {
+        let (_root, config, state) = fixture();
+        let client = MockInstallClient::active_daemon_token_without_handle();
+
+        let agent = install_or_recover_product_daemon_agent_for_test(
+            &config,
+            &state,
+            &client,
+            RegistrationToken::new("raw-token-long-enough").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(agent.agent_kind, AgentKind::Daemon);
+        assert!(agent.handle.starts_with("deamon-"));
+        assert!(!agent.handle.starts_with("awiki-"));
+        let requests = client.exchange_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].handle, agent.handle);
     }
 
     #[test]

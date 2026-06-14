@@ -53,6 +53,14 @@ impl ImCoreAdapter {
                 &identity.agent_did,
             )?))?)
     }
+
+    pub fn client_for_did(&self, did: &str) -> Result<im_core::ImClient> {
+        Ok(self
+            .core
+            .client(im_core::IdentitySelector::Did(im_core::ids::Did::parse(
+                did,
+            )?))?)
+    }
 }
 
 pub fn sync_agent_identity_to_im_core(

@@ -15,7 +15,7 @@ anp.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 bs58.workspace = true
-im-core = { path = "../im-core" }
+im-core = { path = "../im-core", features = ["blocking"] }
 libc.workspace = true
 rand.workspace = true
 reqwest.workspace = true

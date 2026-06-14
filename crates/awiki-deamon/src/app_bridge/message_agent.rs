@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::agent::AgentDefinition;
 use crate::app_bridge::action::{parse_app_capabilities_payload, APP_CAPABILITIES_SCHEMA};
@@ -102,6 +103,13 @@ where
         let _profile = state
             .load_runtime_agent_profile(&existing.runtime_agent_did)
             .context("load existing app message runtime profile")?;
+        revoke_superseded_bindings(
+            state,
+            daemon_agent,
+            &existing.user_did,
+            &existing.binding_id,
+            &existing.app_instance_id,
+        )?;
         return Ok(EnsureAppMessageAgentOutcome {
             binding: existing,
             created_runtime_agent: false,
@@ -164,6 +172,13 @@ where
         revoked_at_ms: None,
     };
     state.upsert_app_message_agent_binding(&binding)?;
+    revoke_superseded_bindings(
+        state,
+        daemon_agent,
+        &binding.user_did,
+        &binding.binding_id,
+        &binding.app_instance_id,
+    )?;
     state.insert_audit_event_json(
         "app_message_agent.binding.ready",
         Some(&daemon_agent.agent_did),
@@ -183,6 +198,37 @@ where
         binding,
         created_runtime_agent: true,
     })
+}
+
+fn revoke_superseded_bindings(
+    state: &DaemonState,
+    daemon_agent: &AgentDefinition,
+    user_did: &str,
+    keep_binding_id: &str,
+    app_instance_id: &str,
+) -> Result<()> {
+    let revoked = state.revoke_other_active_app_message_agent_bindings(
+        user_did,
+        APP_MESSAGE_HANDLER_ROLE,
+        keep_binding_id,
+    )?;
+    if revoked > 0 {
+        state.insert_audit_event_json(
+            "app_message_agent.binding.superseded",
+            Some(&daemon_agent.agent_did),
+            None,
+            None,
+            None,
+            json!({
+                "user_did": user_did,
+                "role": APP_MESSAGE_HANDLER_ROLE,
+                "active_binding_id": keep_binding_id,
+                "active_app_instance_id": app_instance_id,
+                "revoked_count": revoked,
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 fn parse_desired_message_agent(value: &Value) -> Result<DesiredMessageAgent> {
@@ -247,7 +293,45 @@ fn default_binding_id(user_did: &str, app_instance_id: &str) -> String {
 }
 
 fn default_handle(user_did: &str, app_instance_id: &str) -> String {
-    let mut source = format!("hermes-msg-{user_did}-{app_instance_id}")
+    const PREFIX: &str = "hermes-msg";
+    const MAX_HANDLE_LENGTH: usize = 48;
+    let seed = format!("{}|{}", user_did.trim(), app_instance_id.trim());
+    let digest = Sha256::digest(seed.as_bytes());
+    let hash = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let app_part = safe_handle_component(app_instance_id);
+    let max_app_len = MAX_HANDLE_LENGTH - PREFIX.len() - hash.len() - 2;
+    let app_tail = if app_part.chars().count() > max_app_len {
+        app_part
+            .chars()
+            .rev()
+            .take(max_app_len)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<String>()
+    } else {
+        app_part
+    };
+    let app_tail = app_tail.trim_matches('-').to_string();
+    let app_tail = if app_tail.is_empty() {
+        "agent".to_string()
+    } else {
+        app_tail
+    };
+    let handle = format!("{PREFIX}-{app_tail}-{hash}");
+    if handle.chars().count() > MAX_HANDLE_LENGTH {
+        handle.chars().take(MAX_HANDLE_LENGTH).collect::<String>()
+    } else {
+        handle
+    }
+}
+
+fn safe_handle_component(value: &str) -> String {
+    let mut normalized = value
+        .trim()
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() {
@@ -257,20 +341,14 @@ fn default_handle(user_did: &str, app_instance_id: &str) -> String {
             }
         })
         .collect::<String>();
-    while source.contains("--") {
-        source = source.replace("--", "-");
+    while normalized.contains("--") {
+        normalized = normalized.replace("--", "-");
     }
-    let source = source.trim_matches('-');
-    if source.is_empty() {
-        "hermes-msg-agent".to_string()
+    let normalized = normalized.trim_matches('-').to_string();
+    if normalized.is_empty() {
+        "agent".to_string()
     } else {
-        let shortened = source.chars().take(48).collect::<String>();
-        let shortened = shortened.trim_matches('-');
-        if shortened.is_empty() {
-            "hermes-msg-agent".to_string()
-        } else {
-            shortened.to_string()
-        }
+        normalized
     }
 }
 
@@ -301,5 +379,27 @@ mod tests {
         assert!(!sanitized.to_string().contains("tok_runtime_secret"));
         assert!(sanitized.get("runtime_registration_token").is_none());
         assert!(sanitized.get("token").is_none());
+    }
+
+    #[test]
+    fn default_handle_keeps_app_instance_entropy_under_handle_limit() {
+        assert_eq!(
+            default_handle("did:human:me", "app_1"),
+            "hermes-msg-app-1-334c10a06052"
+        );
+
+        let first = default_handle(
+            "did:wba:awiki.info:e2e-agent-app:e1_5evGr1VeOQe1AJVtBkrMvLYOPaVN-PtjDtpOxPvyqaw",
+            "macos-e2e-app-20260614T012433250Z",
+        );
+        let second = default_handle(
+            "did:wba:awiki.info:e2e-agent-app:e1_5evGr1VeOQe1AJVtBkrMvLYOPaVN-PtjDtpOxPvyqaw",
+            "macos-e2e-app-20260614T011342011Z",
+        );
+        assert_ne!(first, second);
+        assert!(first.len() <= 48);
+        assert!(second.len() <= 48);
+        assert!(!first.contains("--"));
+        assert!(!second.contains("--"));
     }
 }
