@@ -92,6 +92,7 @@ class DartGroupMember {
   final String? role;
   final String? status;
   final String? joinedAt;
+  final String? subjectType;
 
   const DartGroupMember({
     this.did,
@@ -99,6 +100,7 @@ class DartGroupMember {
     this.role,
     this.status,
     this.joinedAt,
+    this.subjectType,
   });
 
   @override
@@ -107,7 +109,8 @@ class DartGroupMember {
       handle.hashCode ^
       role.hashCode ^
       status.hashCode ^
-      joinedAt.hashCode;
+      joinedAt.hashCode ^
+      subjectType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -118,7 +121,8 @@ class DartGroupMember {
           handle == other.handle &&
           role == other.role &&
           status == other.status &&
-          joinedAt == other.joinedAt;
+          joinedAt == other.joinedAt &&
+          subjectType == other.subjectType;
 }
 
 class DartGroupReadResult {

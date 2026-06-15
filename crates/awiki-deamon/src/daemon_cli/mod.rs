@@ -460,8 +460,8 @@ mod tests {
     use super::*;
     use crate::agent::{agent_data_paths, generate_agent_identity, AgentKind};
     use crate::registration::{
-        AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
-        ControllerSenderScope,
+        AgentInvocationAuthorization, AgentRegistrationClient, AgentRegistrationExchangeRequest,
+        AgentRegistrationExchangeResult, ControllerSenderScope,
     };
     use std::sync::{Arc, Mutex};
 
@@ -580,6 +580,18 @@ mod tests {
             } else {
                 anyhow::bail!("controller_scope_mismatch")
             }
+        }
+
+        fn authorize_agent_invocation(
+            &self,
+            _daemon_agent_did: &str,
+            _agent_did: &str,
+            _sender_did: &str,
+            _source_conversation_id: Option<&str>,
+            _source_message_id: Option<&str>,
+            _auth: &DidAuthMaterial,
+        ) -> Result<AgentInvocationAuthorization> {
+            anyhow::bail!("authorize_agent_invocation is not used in daemon CLI tests")
         }
 
         fn update_latest_status(

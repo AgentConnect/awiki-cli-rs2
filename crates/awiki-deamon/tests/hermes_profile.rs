@@ -11,9 +11,9 @@ use awiki_deamon::plugins::hermes::{
     repair_hermes_profile_if_needed, AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID,
 };
 use awiki_deamon::registration::{
-    AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
-    AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
-    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
+    AgentInventoryClient, AgentInvocationAuthorization, AgentLatestStatusUpdateItem,
+    AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
+    ControllerSenderScope, DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
 };
 use awiki_deamon::state::HermesProfileRecord;
 use awiki_deamon::{DaemonConfig, DaemonState};
@@ -127,6 +127,18 @@ impl AgentInventoryClient for MockRegistrationClient {
         } else {
             anyhow::bail!("controller_scope_mismatch")
         }
+    }
+
+    fn authorize_agent_invocation(
+        &self,
+        _daemon_agent_did: &str,
+        _agent_did: &str,
+        _sender_did: &str,
+        _source_conversation_id: Option<&str>,
+        _source_message_id: Option<&str>,
+        _auth: &DidAuthMaterial,
+    ) -> anyhow::Result<AgentInvocationAuthorization> {
+        anyhow::bail!("authorize_agent_invocation is not used in hermes profile tests")
     }
 
     fn update_latest_status(

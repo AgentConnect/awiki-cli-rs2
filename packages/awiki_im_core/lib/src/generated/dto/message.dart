@@ -15,6 +15,8 @@ class DartConversation {
   final List<String> participants;
   final DartMessage? lastMessage;
   final int unreadCount;
+  final int unreadMentionCount;
+  final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
 
@@ -25,6 +27,8 @@ class DartConversation {
     required this.participants,
     this.lastMessage,
     required this.unreadCount,
+    required this.unreadMentionCount,
+    this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
   });
@@ -37,6 +41,8 @@ class DartConversation {
       participants.hashCode ^
       lastMessage.hashCode ^
       unreadCount.hashCode ^
+      unreadMentionCount.hashCode ^
+      firstUnreadMentionMessageId.hashCode ^
       messageCount.hashCode ^
       lastMessageAt.hashCode;
 
@@ -51,6 +57,8 @@ class DartConversation {
           participants == other.participants &&
           lastMessage == other.lastMessage &&
           unreadCount == other.unreadCount &&
+          unreadMentionCount == other.unreadMentionCount &&
+          firstUnreadMentionMessageId == other.firstUnreadMentionMessageId &&
           messageCount == other.messageCount &&
           lastMessageAt == other.lastMessageAt;
 }

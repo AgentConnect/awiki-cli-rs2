@@ -2598,9 +2598,9 @@ mod tests {
     use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
     use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
     use crate::registration::{
-        AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationClient,
-        AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult, ControllerSenderScope,
-        DidAuthMaterial, RegistrationToken,
+        AgentInventoryClient, AgentInvocationAuthorization, AgentLatestStatusUpdateItem,
+        AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
+        ControllerSenderScope, DidAuthMaterial, RegistrationToken,
     };
     use crate::runtime::RuntimeAgentProfile;
     use crate::state::HermesProfileRecord;
@@ -2672,6 +2672,18 @@ mod tests {
             } else {
                 anyhow::bail!("controller_scope_mismatch")
             }
+        }
+
+        fn authorize_agent_invocation(
+            &self,
+            _daemon_agent_did: &str,
+            _agent_did: &str,
+            _sender_did: &str,
+            _source_conversation_id: Option<&str>,
+            _source_message_id: Option<&str>,
+            _auth: &DidAuthMaterial,
+        ) -> Result<AgentInvocationAuthorization> {
+            anyhow::bail!("authorize_agent_invocation is not used in foreground command tests")
         }
 
         fn update_latest_status(
@@ -3073,6 +3085,7 @@ mod tests {
                         resolved_did: Some("did:human:alice".to_string()),
                     },
                     text: "Hermes 已准备好。".to_string(),
+                    payload: None,
                     file_path: None,
                     display_filename: None,
                     mime_type: None,

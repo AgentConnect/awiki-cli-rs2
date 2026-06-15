@@ -20,6 +20,7 @@ pub(crate) struct MessageRecord {
     pub(crate) is_read: bool,
     pub(crate) sender_name: String,
     pub(crate) metadata: String,
+    pub(crate) mentions_current_user: bool,
     pub(crate) credential_name: String,
 }
 
@@ -35,14 +36,23 @@ pub(crate) fn upsert_message(
     let conversation_id = required("conversation_id", &stable_conversation_id(record))?;
     let thread_id = conversation_id.clone();
     let stored_at = default_string(&record.stored_at, &now_utc_like());
+    let mentions_current_user = mentions_current_user_for_projection(
+        &owner_did,
+        record.direction,
+        &record.thread_id,
+        &record.group_id,
+        &record.group_did,
+        &record.content_type,
+        &record.content,
+    );
     connection
         .execute(
             r#"
 INSERT INTO messages
     (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
      group_id, group_did, content_type, content, title, server_seq, sent_at, stored_at,
-     is_e2ee, is_read, sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+     is_e2ee, is_read, sender_name, metadata, mentions_current_user, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
 ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     owner_did = excluded.owner_did,
     conversation_id = excluded.conversation_id,
@@ -62,6 +72,7 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     is_read = CASE WHEN excluded.is_read = 1 OR messages.is_read = 1 THEN 1 ELSE 0 END,
     sender_name = excluded.sender_name,
     metadata = excluded.metadata,
+    mentions_current_user = excluded.mentions_current_user,
     credential_name = excluded.credential_name"#,
             rusqlite::params![
                 msg_id,
@@ -84,12 +95,60 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
                 record.is_read,
                 nullable_text(&record.sender_name),
                 nullable_text(&record.metadata),
+                mentions_current_user,
                 record.credential_name.trim(),
             ],
         )
         .map_err(super::local_state_unavailable)?;
     merge_legacy_direct_did_conversation(connection, &owner_identity_id, &conversation_id, record)?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn mentions_current_user_for_projection(
+    owner_did: &str,
+    direction: i64,
+    thread_id: &str,
+    group_id: &str,
+    group_did: &str,
+    content_type: &str,
+    content: &str,
+) -> bool {
+    if direction != 0 || !is_group_projection(thread_id, group_id, group_did) {
+        return false;
+    }
+    if content_type.trim() != "application/json" {
+        return false;
+    }
+    let owner_did = owner_did.trim();
+    if owner_did.is_empty() {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    let Ok(payload) = crate::messages::parse_message_mention_payload(&value) else {
+        return false;
+    };
+    payload
+        .mentions
+        .iter()
+        .any(|mention| match &mention.target {
+            crate::messages::MessageMentionTarget::Human { did, .. } => did.trim() == owner_did,
+            crate::messages::MessageMentionTarget::GroupSelector { selector } => matches!(
+                selector,
+                crate::messages::MessageMentionSelector::All
+                    | crate::messages::MessageMentionSelector::Humans
+            ),
+            crate::messages::MessageMentionTarget::Agent { .. } => false,
+        })
+}
+
+#[cfg(feature = "sqlite")]
+fn is_group_projection(thread_id: &str, group_id: &str, group_did: &str) -> bool {
+    !group_id.trim().is_empty()
+        || !group_did.trim().is_empty()
+        || thread_id.trim().starts_with("group:")
 }
 
 #[cfg(feature = "sqlite")]

@@ -275,6 +275,10 @@ pub struct Conversation {
     pub participants: Vec<crate::ids::PeerRef>,
     pub last_message: Option<Message>,
     pub unread_count: u32,
+    #[serde(default)]
+    pub unread_mention_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_unread_mention_message_id: Option<crate::ids::MessageId>,
     pub message_count: u32,
     pub last_message_at: Option<String>,
 }

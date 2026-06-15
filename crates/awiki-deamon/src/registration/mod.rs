@@ -59,6 +59,16 @@ pub struct ControllerSenderScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInvocationAuthorization {
+    pub allowed: bool,
+    pub reason: String,
+    pub agent_did: String,
+    pub sender_did: String,
+    pub sender_full_handle: Option<String>,
+    pub active_mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentLatestStatusUpdateItem {
     pub agent_did: String,
     pub agent_kind: AgentKind,
@@ -105,6 +115,16 @@ pub trait AgentInventoryClient {
         sender_did: &str,
         auth: &DidAuthMaterial,
     ) -> Result<ControllerSenderScope>;
+
+    fn authorize_agent_invocation(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        sender_did: &str,
+        source_conversation_id: Option<&str>,
+        source_message_id: Option<&str>,
+        auth: &DidAuthMaterial,
+    ) -> Result<AgentInvocationAuthorization>;
 
     fn update_latest_status(
         &self,
@@ -376,6 +396,51 @@ impl UserServiceAgentRegistrationClient {
         parse_verify_controller_sender_response(&bytes)
     }
 
+    pub async fn authorize_agent_invocation_async(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        sender_did: &str,
+        source_conversation_id: Option<&str>,
+        source_message_id: Option<&str>,
+        auth: &DidAuthMaterial,
+    ) -> Result<AgentInvocationAuthorization> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "authorize_agent_invocation",
+            "params": {
+                "daemon_agent_did": daemon_agent_did,
+                "agent_did": agent_did,
+                "sender_did": sender_did,
+                "source_conversation_id": source_conversation_id,
+                "source_message_id": source_message_id,
+            },
+            "id": 1
+        });
+        let body_bytes = body.to_string().into_bytes();
+        let headers = did_auth_headers(&self.inventory_rpc_url, &body_bytes, auth)?;
+        let mut request = self.http.post(&self.inventory_rpc_url).body(body_bytes);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "call user-service agent inventory {}",
+                    self.inventory_rpc_url
+                )
+            })?
+            .error_for_status()
+            .context("user-service agent inventory HTTP error")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("read authorize agent invocation response")?;
+        parse_authorize_agent_invocation_response(&bytes)
+    }
+
     pub async fn archive_agent_async(
         &self,
         daemon_agent_did: &str,
@@ -524,6 +589,50 @@ impl AgentInventoryClient for UserServiceAgentRegistrationClient {
         self.verify_controller_sender_in_new_runtime(daemon_agent_did, sender_did, auth)
     }
 
+    fn authorize_agent_invocation(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        sender_did: &str,
+        source_conversation_id: Option<&str>,
+        source_message_id: Option<&str>,
+        auth: &DidAuthMaterial,
+    ) -> Result<AgentInvocationAuthorization> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let client = self.clone();
+            let daemon_agent_did = daemon_agent_did.to_string();
+            let agent_did = agent_did.to_string();
+            let sender_did = sender_did.to_string();
+            let source_conversation_id = source_conversation_id.map(str::to_string);
+            let source_message_id = source_message_id.map(str::to_string);
+            let auth = auth.clone();
+            let join = std::thread::Builder::new()
+                .name("awiki-agent-invocation-auth".to_string())
+                .spawn(move || {
+                    client.authorize_agent_invocation_in_new_runtime(
+                        &daemon_agent_did,
+                        &agent_did,
+                        &sender_did,
+                        source_conversation_id.as_deref(),
+                        source_message_id.as_deref(),
+                        &auth,
+                    )
+                })
+                .context("spawn invocation authorization RPC runtime thread")?;
+            return join.join().map_err(|_| {
+                anyhow::anyhow!("invocation authorization RPC runtime thread panicked")
+            })?;
+        }
+        self.authorize_agent_invocation_in_new_runtime(
+            daemon_agent_did,
+            agent_did,
+            sender_did,
+            source_conversation_id,
+            source_message_id,
+            auth,
+        )
+    }
+
     fn archive_agent(
         &self,
         daemon_agent_did: &str,
@@ -610,6 +719,29 @@ impl UserServiceAgentRegistrationClient {
         runtime.block_on(self.verify_controller_sender_async(daemon_agent_did, sender_did, auth))
     }
 
+    fn authorize_agent_invocation_in_new_runtime(
+        &self,
+        daemon_agent_did: &str,
+        agent_did: &str,
+        sender_did: &str,
+        source_conversation_id: Option<&str>,
+        source_message_id: Option<&str>,
+        auth: &DidAuthMaterial,
+    ) -> Result<AgentInvocationAuthorization> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create invocation authorization RPC runtime")?;
+        runtime.block_on(self.authorize_agent_invocation_async(
+            daemon_agent_did,
+            agent_did,
+            sender_did,
+            source_conversation_id,
+            source_message_id,
+            auth,
+        ))
+    }
+
     fn archive_agent_in_new_runtime(
         &self,
         daemon_agent_did: &str,
@@ -681,6 +813,21 @@ fn parse_verify_controller_sender_response(bytes: &[u8]) -> Result<ControllerSen
         controller_full_handle: required_string(&result, "controller_full_handle")?,
         controller_did: required_string(&result, "controller_did")?,
         sender_did: required_string(&result, "sender_did")?,
+    })
+}
+
+fn parse_authorize_agent_invocation_response(bytes: &[u8]) -> Result<AgentInvocationAuthorization> {
+    let result = parse_json_rpc_result(bytes, "agent inventory authorize agent invocation")?;
+    Ok(AgentInvocationAuthorization {
+        allowed: result
+            .get("allowed")
+            .and_then(Value::as_bool)
+            .context("authorization response missing bool field allowed")?,
+        reason: required_string(&result, "reason")?,
+        agent_did: required_string(&result, "agent_did")?,
+        sender_did: required_string(&result, "sender_did")?,
+        sender_full_handle: optional_string(&result, "sender_full_handle"),
+        active_mode: required_string(&result, "active_mode")?,
     })
 }
 

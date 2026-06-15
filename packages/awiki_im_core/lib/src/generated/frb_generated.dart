@@ -3795,8 +3795,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartConversation dco_decode_dart_conversation(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return DartConversation(
       threadKind: dco_decode_String(arr[0]),
       threadId: dco_decode_String(arr[1]),
@@ -3804,8 +3804,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       participants: dco_decode_list_String(arr[3]),
       lastMessage: dco_decode_opt_box_autoadd_dart_message(arr[4]),
       unreadCount: dco_decode_u_32(arr[5]),
-      messageCount: dco_decode_u_32(arr[6]),
-      lastMessageAt: dco_decode_opt_String(arr[7]),
+      unreadMentionCount: dco_decode_u_32(arr[6]),
+      firstUnreadMentionMessageId: dco_decode_opt_String(arr[7]),
+      messageCount: dco_decode_u_32(arr[8]),
+      lastMessageAt: dco_decode_opt_String(arr[9]),
     );
   }
 
@@ -5826,6 +5828,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_participants = sse_decode_list_String(deserializer);
     var var_lastMessage = sse_decode_opt_box_autoadd_dart_message(deserializer);
     var var_unreadCount = sse_decode_u_32(deserializer);
+    var var_unreadMentionCount = sse_decode_u_32(deserializer);
+    var var_firstUnreadMentionMessageId = sse_decode_opt_String(deserializer);
     var var_messageCount = sse_decode_u_32(deserializer);
     var var_lastMessageAt = sse_decode_opt_String(deserializer);
     return DartConversation(
@@ -5835,6 +5839,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       participants: var_participants,
       lastMessage: var_lastMessage,
       unreadCount: var_unreadCount,
+      unreadMentionCount: var_unreadMentionCount,
+      firstUnreadMentionMessageId: var_firstUnreadMentionMessageId,
       messageCount: var_messageCount,
       lastMessageAt: var_lastMessageAt,
     );
@@ -8405,6 +8411,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_String(self.participants, serializer);
     sse_encode_opt_box_autoadd_dart_message(self.lastMessage, serializer);
     sse_encode_u_32(self.unreadCount, serializer);
+    sse_encode_u_32(self.unreadMentionCount, serializer);
+    sse_encode_opt_String(self.firstUnreadMentionMessageId, serializer);
     sse_encode_u_32(self.messageCount, serializer);
     sse_encode_opt_String(self.lastMessageAt, serializer);
   }

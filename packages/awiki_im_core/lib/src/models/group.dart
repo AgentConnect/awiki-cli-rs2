@@ -48,6 +48,7 @@ class GroupMember {
     this.role,
     this.status,
     this.joinedAt,
+    this.subjectType,
   });
 
   final String? did;
@@ -55,6 +56,7 @@ class GroupMember {
   final String? role;
   final String? status;
   final String? joinedAt;
+  final String? subjectType;
 }
 
 class GroupDiscoverability {

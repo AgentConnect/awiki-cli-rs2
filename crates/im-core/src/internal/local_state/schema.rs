@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS messages (
     is_read         INTEGER DEFAULT 0,
     sender_name     TEXT,
     metadata        TEXT,
+    mentions_current_user INTEGER NOT NULL DEFAULT 0,
     credential_name TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (msg_id, owner_did)
 );
@@ -551,6 +552,15 @@ SELECT
     COALESCE(NULLIF(conversation_id, ''), thread_id) AS thread_id,
     COUNT(*) AS message_count,
     SUM(CASE WHEN is_read = 0 AND direction = 0 THEN 1 ELSE 0 END) AS unread_count,
+    SUM(CASE WHEN is_read = 0 AND direction = 0 AND mentions_current_user = 1 THEN 1 ELSE 0 END) AS unread_mention_count,
+    (SELECT m3.msg_id FROM messages m3
+     WHERE m3.owner_identity_id = m.owner_identity_id
+       AND COALESCE(NULLIF(m3.conversation_id, ''), m3.thread_id) = COALESCE(NULLIF(m.conversation_id, ''), m.thread_id)
+       AND m3.is_read = 0
+       AND m3.direction = 0
+       AND m3.mentions_current_user = 1
+     ORDER BY COALESCE(m3.sent_at, m3.stored_at) ASC, m3.msg_id ASC
+     LIMIT 1) AS first_unread_mention_message_id,
     MAX(COALESCE(sent_at, stored_at)) AS last_message_at,
     (SELECT m2.content FROM messages m2
      WHERE m2.owner_identity_id = m.owner_identity_id
@@ -863,6 +873,9 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
+    if ensure_message_projection_columns(connection)? {
+        backfill_message_mention_projection(connection)?;
+    }
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -942,6 +955,7 @@ CREATE TABLE IF NOT EXISTS messages{suffix} (
     is_read           INTEGER DEFAULT 0,
     sender_name       TEXT,
     metadata          TEXT,
+    mentions_current_user INTEGER NOT NULL DEFAULT 0,
     credential_name   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner_identity_id, msg_id)
 );
@@ -1175,6 +1189,106 @@ fn ensure_direct_e2ee_session_columns(connection: &Connection) -> crate::ImResul
         "revision",
         "INTEGER NOT NULL DEFAULT 0",
     )
+}
+
+fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult<bool> {
+    if has_column(connection, "messages", "mentions_current_user")? {
+        return Ok(false);
+    }
+    ensure_column(
+        connection,
+        "messages",
+        "mentions_current_user",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(true)
+}
+
+fn backfill_message_mention_projection(connection: &Connection) -> crate::ImResult<()> {
+    let updates = {
+        let mut statement = connection
+            .prepare(
+                r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       direction,
+       thread_id,
+       group_id,
+       group_did,
+       content_type,
+       content
+FROM messages
+WHERE mentions_current_user = 0
+  AND direction = 0
+  AND content_type = 'application/json'
+  AND (
+      TRIM(COALESCE(group_id, '')) <> ''
+      OR TRIM(COALESCE(group_did, '')) <> ''
+      OR thread_id LIKE 'group:%'
+  )"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>("msg_id")?.unwrap_or_default(),
+                    row.get::<_, Option<String>>("owner_identity_id")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("owner_did")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
+                    row.get::<_, Option<String>>("thread_id")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("group_id")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("group_did")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("content_type")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("content")?.unwrap_or_default(),
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        let mut updates = Vec::new();
+        for row in rows {
+            let (
+                msg_id,
+                owner_identity_id,
+                owner_did,
+                direction,
+                thread_id,
+                group_id,
+                group_did,
+                content_type,
+                content,
+            ) = row.map_err(super::local_state_unavailable)?;
+            if crate::internal::local_state::messages::mentions_current_user_for_projection(
+                &owner_did,
+                direction,
+                &thread_id,
+                &group_id,
+                &group_did,
+                &content_type,
+                &content,
+            ) {
+                updates.push((owner_identity_id, msg_id));
+            }
+        }
+        updates
+    };
+    for (owner_identity_id, msg_id) in updates {
+        connection
+            .execute(
+                r#"
+UPDATE messages
+SET mentions_current_user = 1
+WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
+                rusqlite::params![owner_identity_id, msg_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

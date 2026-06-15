@@ -18,6 +18,7 @@ use crate::app_bridge::bootstrap::{
 };
 use crate::app_bridge::message_agent::APP_MESSAGE_HANDLER_ROLE;
 use crate::app_bridge::secret_store::normalize_delegated_private_key_pem;
+use crate::controller_scope::daemon_auth_material;
 use crate::im_core_adapter::ImCoreAdapter;
 use crate::outbox::{
     ImCoreAgentOutbox, RuntimeAttachmentSend, RuntimeAttachmentSendResult, RuntimeMessageSend,
@@ -25,6 +26,9 @@ use crate::outbox::{
 };
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
+use crate::registration::{
+    AgentInventoryClient, AgentInvocationAuthorization, UserServiceAgentRegistrationClient,
+};
 use crate::runtime::host::run_existing_runtime_task_with_config;
 use crate::runtime::{RuntimeRunStatus, RuntimeTask};
 use crate::security::runtime_token::current_time_millis;
@@ -79,6 +83,8 @@ pub struct UserMessageEnvelope {
     pub source_message_id: String,
     pub source_conversation_id: Option<String>,
     pub source_sender_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sender_full_handle: Option<String>,
     pub inbox_owner_did: String,
     pub message_kind: String,
     pub received_at: Option<String>,
@@ -128,6 +134,15 @@ pub trait UserDelegatedMessageDispatcher {
         task: RuntimeTask,
         envelope: &UserMessageEnvelope,
     ) -> Result<()>;
+}
+
+pub trait AgentInvocationAuthorizer {
+    fn authorize_agent_invocation(
+        &self,
+        state: &DaemonState,
+        binding: &AppMessageAgentBindingRecord,
+        envelope: &UserMessageEnvelope,
+    ) -> Result<AgentInvocationAuthorization>;
 }
 
 pub trait MessageSyncPayloadSender {
@@ -188,14 +203,57 @@ impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
     }
 }
 
+pub struct UserServiceAgentInvocationAuthorizer {
+    config: DaemonConfig,
+    client: UserServiceAgentRegistrationClient,
+}
+
+impl UserServiceAgentInvocationAuthorizer {
+    pub fn new(config: &DaemonConfig) -> Result<Self> {
+        Ok(Self {
+            config: config.clone(),
+            client: UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?,
+        })
+    }
+}
+
+impl AgentInvocationAuthorizer for UserServiceAgentInvocationAuthorizer {
+    fn authorize_agent_invocation(
+        &self,
+        state: &DaemonState,
+        binding: &AppMessageAgentBindingRecord,
+        envelope: &UserMessageEnvelope,
+    ) -> Result<AgentInvocationAuthorization> {
+        let daemon = state.load_agent_definition(&binding.daemon_agent_did)?;
+        let auth = daemon_auth_material(&self.config, state, &daemon)?;
+        self.client.authorize_agent_invocation(
+            &binding.daemon_agent_did,
+            &binding.runtime_agent_did,
+            &envelope.source_sender_did,
+            envelope.source_conversation_id.as_deref(),
+            Some(&envelope.source_message_id),
+            &auth,
+        )
+    }
+}
+
 pub struct RuntimeHostMessageDispatcher<'a> {
     config: &'a DaemonConfig,
     state: &'a DaemonState,
+    im_core: &'a ImCoreAdapter,
 }
 
 impl<'a> RuntimeHostMessageDispatcher<'a> {
-    pub fn new(config: &'a DaemonConfig, state: &'a DaemonState) -> Self {
-        Self { config, state }
+    pub fn new(
+        config: &'a DaemonConfig,
+        state: &'a DaemonState,
+        im_core: &'a ImCoreAdapter,
+    ) -> Self {
+        Self {
+            config,
+            state,
+            im_core,
+        }
     }
 }
 
@@ -208,7 +266,7 @@ impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
     ) -> Result<()> {
         let profile = self.state.load_runtime_agent_profile(&task.agent_did)?;
         let run_id = delegated_runtime_run_id(self.state, &task.task_id)?;
-        let outbox = UserDelegatedRuntimeOutbox::new(self.state);
+        let outbox = UserDelegatedRuntimeOutbox::new(self.config, self.state, self.im_core);
         match profile.runtime_plugin_id.as_str() {
             HERMES_RUNTIME_PLUGIN_ID => {
                 let hermes_profile = self.state.load_hermes_profile(&profile.agent_did)?;
@@ -344,12 +402,27 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
 }
 
 struct UserDelegatedRuntimeOutbox<'a> {
+    config: &'a DaemonConfig,
     state: &'a DaemonState,
+    im_core: Option<&'a ImCoreAdapter>,
 }
 
 impl<'a> UserDelegatedRuntimeOutbox<'a> {
-    fn new(state: &'a DaemonState) -> Self {
-        Self { state }
+    fn new(config: &'a DaemonConfig, state: &'a DaemonState, im_core: &'a ImCoreAdapter) -> Self {
+        Self {
+            config,
+            state,
+            im_core: Some(im_core),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test(config: &'a DaemonConfig, state: &'a DaemonState) -> Self {
+        Self {
+            config,
+            state,
+            im_core: None,
+        }
     }
 
     fn send_host_runtime_final_sync(
@@ -357,6 +430,9 @@ impl<'a> UserDelegatedRuntimeOutbox<'a> {
         context: &AuthorizedRuntimeContext,
         message: &RuntimeMessageSend,
     ) -> Result<RuntimeMessageSendResult> {
+        if message.target_kind() == "group" {
+            return self.send_group_runtime_message(context, message);
+        }
         let binding = self
             .state
             .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
@@ -405,6 +481,61 @@ impl<'a> UserDelegatedRuntimeOutbox<'a> {
             message_id: message.idempotency_key.clone(),
             raw_recipient: message.raw_recipient().to_string(),
             resolved_did: binding.user_did.clone(),
+            target_kind: message.target_kind().to_string(),
+            security: message.security,
+        })
+    }
+
+    fn send_group_runtime_message(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
+    ) -> Result<RuntimeMessageSendResult> {
+        let binding = self
+            .state
+            .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+            .with_context(|| {
+                format!(
+                    "missing app message binding for group runtime final {}",
+                    context.agent_did
+                )
+            })?;
+        let daemon_identity = self.state.load_agent_identity(&binding.daemon_agent_did)?;
+        let jwt_token = self
+            .state
+            .load_agent_auth_token(&binding.daemon_agent_did)?;
+        let im_core = self
+            .im_core
+            .context("group runtime outbox requires im-core adapter")?;
+        let client = im_core.client_for_agent_identity(
+            self.config,
+            &daemon_identity,
+            jwt_token.as_deref(),
+        )?;
+        let outbox = ImCoreAgentOutbox::new(client);
+        let result = outbox.send_runtime_message(message.clone())?;
+        self.state.insert_audit_event_json(
+            "user_delegated_inbox.runtime_final.group_sent",
+            Some(&context.agent_did),
+            Some(&context.runtime_profile_id),
+            Some(&context.run_id),
+            Some(&context.token_id),
+            json!({
+                "binding_id": &binding.binding_id,
+                "app_instance_id": &binding.app_instance_id,
+                "target_kind": message.target_kind(),
+                "group": message.resolved_recipient(),
+                "security": message.security.as_str(),
+                "has_payload": message.payload.is_some(),
+                "has_text": !message.text.trim().is_empty(),
+                "text_hash": content_hash(&message.text),
+                "message_id": result.message.id.as_str(),
+            }),
+        )?;
+        Ok(RuntimeMessageSendResult {
+            message_id: Some(result.message.id.as_str().to_string()),
+            raw_recipient: message.raw_recipient().to_string(),
+            resolved_did: message.resolved_recipient().to_string(),
             target_kind: message.target_kind().to_string(),
             security: message.security,
         })
@@ -811,14 +942,31 @@ pub fn process_user_delegated_inbox_once(
     im_core: &ImCoreAdapter,
 ) -> Result<usize> {
     let client = ImCoreDelegatedInboxClient::new(config, state, im_core);
-    let dispatcher = RuntimeHostMessageDispatcher::new(config, state);
+    let dispatcher = RuntimeHostMessageDispatcher::new(config, state, im_core);
+    let authorizer = UserServiceAgentInvocationAuthorizer::new(config)?;
+    process_user_delegated_inbox_once_with_authorizer(state, &client, &dispatcher, &authorizer)
+}
+
+fn process_user_delegated_inbox_once_with_authorizer<C, D, A>(
+    state: &DaemonState,
+    client: &C,
+    dispatcher: &D,
+    authorizer: &A,
+) -> Result<usize>
+where
+    C: UserDelegatedInboxClient,
+    D: UserDelegatedMessageDispatcher,
+    A: AgentInvocationAuthorizer,
+{
     let mut processed = 0usize;
     for binding in state
         .list_active_app_message_agent_bindings()?
         .into_iter()
         .filter(|binding| binding.role == APP_MESSAGE_HANDLER_ROLE)
     {
-        match process_user_delegated_inbox_for_binding(state, &client, &dispatcher, &binding) {
+        match process_user_delegated_inbox_for_binding_with_authorizer(
+            state, client, dispatcher, authorizer, &binding,
+        ) {
             Ok(outcome) => {
                 processed += outcome.dispatched_messages + outcome.ignored_e2ee_messages;
             }
@@ -851,6 +999,28 @@ where
     C: UserDelegatedInboxClient,
     D: UserDelegatedMessageDispatcher,
 {
+    let authorizer = AllowAllAgentInvocationAuthorizer;
+    process_user_delegated_inbox_for_binding_with_authorizer(
+        state,
+        client,
+        dispatcher,
+        &authorizer,
+        binding,
+    )
+}
+
+pub fn process_user_delegated_inbox_for_binding_with_authorizer<C, D, A>(
+    state: &DaemonState,
+    client: &C,
+    dispatcher: &D,
+    authorizer: &A,
+    binding: &AppMessageAgentBindingRecord,
+) -> Result<ProcessUserDelegatedInboxOutcome>
+where
+    C: UserDelegatedInboxClient,
+    D: UserDelegatedMessageDispatcher,
+    A: AgentInvocationAuthorizer,
+{
     binding.validate()?;
     let identity = state
         .load_user_delegated_identity(&binding.inbox_auth_verification_method)?
@@ -867,8 +1037,9 @@ where
     if identity.status != "paired_key_received" {
         bail!("user delegated identity is not active for inbox sync");
     }
+    let inbox_scope = inbox_scope_for_binding(binding);
     let cursor = state
-        .load_inbox_cursor(&binding.user_did, DEFAULT_SCOPE)?
+        .load_inbox_cursor(&binding.user_did, &inbox_scope)?
         .and_then(|record| record.cursor);
     let page =
         client.fetch_user_delegated_inbox(&identity, binding, cursor.as_deref(), DEFAULT_LIMIT)?;
@@ -924,7 +1095,64 @@ where
                 PROCESSED_STATUS_PROCESSING,
             )?;
         }
-        let envelope = user_message_envelope(binding, &message, dispatch_content)?;
+        let mut envelope = user_message_envelope(binding, &message, dispatch_content)?;
+        if envelope.mention_context.is_some() {
+            match authorize_group_invocation(state, authorizer, binding, &envelope) {
+                Ok(authorization) if authorization.allowed => {
+                    envelope.source_sender_full_handle = authorization.sender_full_handle;
+                }
+                Ok(authorization) => {
+                    state.insert_audit_event_json(
+                        "user_delegated_inbox.mention_authorization_denied",
+                        Some(&binding.runtime_agent_did),
+                        Some(&binding.runtime_profile_id),
+                        None,
+                        None,
+                        json!({
+                            "binding_id": binding.binding_id,
+                            "owner_did": binding.user_did,
+                            "runtime_agent_did": binding.runtime_agent_did,
+                            "source_message_id": envelope.source_message_id,
+                            "source_conversation_id": envelope.source_conversation_id,
+                            "source_sender_did": envelope.source_sender_did,
+                            "reason": authorization.reason,
+                            "active_mode": authorization.active_mode,
+                            "sender_full_handle": authorization.sender_full_handle,
+                        }),
+                    )?;
+                    state.mark_processed_message_status(
+                        &binding.user_did,
+                        &processed_message_id,
+                        PROCESSED_STATUS_DISPATCHED,
+                    )?;
+                    continue;
+                }
+                Err(error) => {
+                    state.insert_audit_event_json(
+                        "user_delegated_inbox.mention_authorization_failed",
+                        Some(&binding.runtime_agent_did),
+                        Some(&binding.runtime_profile_id),
+                        None,
+                        None,
+                        json!({
+                            "binding_id": binding.binding_id,
+                            "owner_did": binding.user_did,
+                            "runtime_agent_did": binding.runtime_agent_did,
+                            "source_message_id": envelope.source_message_id,
+                            "source_conversation_id": envelope.source_conversation_id,
+                            "source_sender_did": envelope.source_sender_did,
+                            "error": sanitize_error_message(&error.to_string()),
+                        }),
+                    )?;
+                    state.mark_processed_message_status(
+                        &binding.user_did,
+                        &processed_message_id,
+                        PROCESSED_STATUS_FAILED_RETRYABLE,
+                    )?;
+                    return Err(error);
+                }
+            }
+        }
         let task = runtime_task_from_envelope(state, binding, &envelope)?;
         if let Err(error) = dispatcher.dispatch_user_message(binding, task, &envelope) {
             state.mark_processed_message_status(
@@ -969,7 +1197,7 @@ where
     }
     state.upsert_inbox_cursor(&InboxCursorRecord {
         owner_did: binding.user_did.clone(),
-        inbox_scope: DEFAULT_SCOPE.to_string(),
+        inbox_scope: inbox_scope.clone(),
         cursor: page.next_cursor.clone(),
         updated_at_ms: 0,
     })?;
@@ -981,6 +1209,38 @@ where
         skipped_processed_messages: skipped_processed,
         next_cursor: page.next_cursor,
     })
+}
+
+struct AllowAllAgentInvocationAuthorizer;
+
+impl AgentInvocationAuthorizer for AllowAllAgentInvocationAuthorizer {
+    fn authorize_agent_invocation(
+        &self,
+        _state: &DaemonState,
+        binding: &AppMessageAgentBindingRecord,
+        envelope: &UserMessageEnvelope,
+    ) -> Result<AgentInvocationAuthorization> {
+        Ok(AgentInvocationAuthorization {
+            allowed: true,
+            reason: "test_allow_all".to_string(),
+            agent_did: binding.runtime_agent_did.clone(),
+            sender_did: envelope.source_sender_did.clone(),
+            sender_full_handle: None,
+            active_mode: "whitelist".to_string(),
+        })
+    }
+}
+
+fn authorize_group_invocation<A>(
+    state: &DaemonState,
+    authorizer: &A,
+    binding: &AppMessageAgentBindingRecord,
+    envelope: &UserMessageEnvelope,
+) -> Result<AgentInvocationAuthorization>
+where
+    A: AgentInvocationAuthorizer,
+{
+    authorizer.authorize_agent_invocation(state, binding, envelope)
 }
 
 fn processed_message_is_terminal(
@@ -1024,6 +1284,7 @@ fn user_message_envelope(
         source_message_id: message.id.as_str().to_string(),
         source_conversation_id: conversation_id(message),
         source_sender_did: message.sender.as_str().to_string(),
+        source_sender_full_handle: None,
         inbox_owner_did: binding.user_did.clone(),
         message_kind: dispatch_content.message_kind.to_string(),
         received_at: message
@@ -1049,6 +1310,7 @@ fn runtime_task_from_envelope(
         "source_message_id": envelope.source_message_id,
         "source_conversation_id": envelope.source_conversation_id,
         "source_sender_did": envelope.source_sender_did,
+        "source_sender_full_handle": envelope.source_sender_full_handle,
         "inbox_owner_did": envelope.inbox_owner_did,
         "message_kind": envelope.message_kind,
         "received_at": envelope.received_at,
@@ -1152,10 +1414,7 @@ fn message_sync_outbox_record(
     envelope: &UserMessageEnvelope,
 ) -> Result<MessageSyncOutboxRecord> {
     Ok(MessageSyncOutboxRecord {
-        idempotency_key: format!(
-            "message-sync:{}:{}",
-            binding.user_did, envelope.source_message_id
-        ),
+        idempotency_key: message_sync_idempotency_key(binding, &envelope.source_message_id),
         owner_did: binding.user_did.clone(),
         app_instance_id: binding.app_instance_id.clone(),
         payload_json: json!({
@@ -1163,6 +1422,7 @@ fn message_sync_outbox_record(
             "message_id": envelope.source_message_id,
             "conversation_id": envelope.source_conversation_id,
             "sender_did": envelope.source_sender_did,
+            "sender_full_handle": envelope.source_sender_full_handle,
             "owner_did": envelope.inbox_owner_did,
             "processing_status": MESSAGE_EVENT_STATUS_DISPATCHED,
             "content_role": envelope.content_role,
@@ -1185,6 +1445,9 @@ fn dispatch_content_for_agent(
     binding: &AppMessageAgentBindingRecord,
     message: &Message,
 ) -> Option<AgentDispatchContent> {
+    if is_group_message(message) && is_agent_sender(message) {
+        return None;
+    }
     match &message.body {
         MessageBodyView::Text { text, .. }
             if !text.trim().is_empty() && !is_group_message(message) =>
@@ -1314,11 +1577,10 @@ fn processed_message_id_for_dispatch(
     dispatch_content: &AgentDispatchContent,
 ) -> String {
     match &dispatch_content.mention_context {
-        Some(mention_context) => format!(
-            "{}:runtime:{}:mention:{}",
+        Some(_) => format!(
+            "{}:runtime:{}:group-mention",
             source_message_id,
             stable_id_suffix(&binding.runtime_agent_did),
-            mention_context.mention_id
         ),
         None => source_message_id.to_string(),
     }
@@ -1326,6 +1588,36 @@ fn processed_message_id_for_dispatch(
 
 fn is_group_message(message: &Message) -> bool {
     matches!(message.thread, im_core::messages::ThreadRef::Group(_)) || message.group.is_some()
+}
+
+fn is_agent_sender(message: &Message) -> bool {
+    is_agent_did_like(message.sender.as_str())
+}
+
+fn is_agent_did_like(did: &str) -> bool {
+    let did = did.trim();
+    did.starts_with("did:agent:") || did.contains(":agent:")
+}
+
+fn message_sync_idempotency_key(
+    binding: &AppMessageAgentBindingRecord,
+    source_message_id: &str,
+) -> String {
+    format!(
+        "message-sync:{}:{}:{}",
+        binding.user_did,
+        stable_id_suffix(&binding.runtime_agent_did),
+        source_message_id
+    )
+}
+
+fn inbox_scope_for_binding(binding: &AppMessageAgentBindingRecord) -> String {
+    format!(
+        "{}:binding:{}:runtime:{}",
+        DEFAULT_SCOPE,
+        stable_id_suffix(&binding.binding_id),
+        stable_id_suffix(&binding.runtime_agent_did),
+    )
 }
 
 fn is_system_control_payload(payload: &Value) -> bool {
@@ -1644,6 +1936,58 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct RecordingAuthorizer {
+        allowed: bool,
+        sender_full_handle: Option<String>,
+        calls: Arc<Mutex<Vec<(String, String, String)>>>,
+    }
+
+    impl RecordingAuthorizer {
+        fn allow(sender_full_handle: Option<&str>) -> Self {
+            Self {
+                allowed: true,
+                sender_full_handle: sender_full_handle.map(ToOwned::to_owned),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn deny() -> Self {
+            Self {
+                allowed: false,
+                sender_full_handle: Some("bob.anpclaw.com".to_string()),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl AgentInvocationAuthorizer for RecordingAuthorizer {
+        fn authorize_agent_invocation(
+            &self,
+            _state: &DaemonState,
+            binding: &AppMessageAgentBindingRecord,
+            envelope: &UserMessageEnvelope,
+        ) -> Result<AgentInvocationAuthorization> {
+            self.calls.lock().unwrap().push((
+                binding.runtime_agent_did.clone(),
+                envelope.source_sender_did.clone(),
+                envelope.source_message_id.clone(),
+            ));
+            Ok(AgentInvocationAuthorization {
+                allowed: self.allowed,
+                reason: if self.allowed {
+                    "test_allowed".to_string()
+                } else {
+                    "test_denied".to_string()
+                },
+                agent_did: binding.runtime_agent_did.clone(),
+                sender_did: envelope.source_sender_did.clone(),
+                sender_full_handle: self.sender_full_handle.clone(),
+                active_mode: "whitelist".to_string(),
+            })
+        }
+    }
+
+    #[derive(Default)]
     struct RecordingMessageSyncSender {
         sent: Arc<Mutex<Vec<(String, String, Value)>>>,
         fail_once: Arc<Mutex<bool>>,
@@ -1727,7 +2071,7 @@ mod tests {
             Some("hello agent")
         );
         let sync = state
-            .load_message_sync_outbox("message-sync:did:human:alice:msg_1")
+            .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_1"))
             .unwrap()
             .unwrap();
         assert_eq!(sync.payload_json["content_role"], "user_message_untrusted");
@@ -1737,10 +2081,13 @@ mod tests {
         assert_eq!(sent, 1);
         let sent_payloads = sync_sender.sent.lock().unwrap();
         assert_eq!(sent_payloads[0].0, binding.user_did);
-        assert_eq!(sent_payloads[0].1, "message-sync:did:human:alice:msg_1");
+        assert_eq!(
+            sent_payloads[0].1,
+            message_sync_idempotency_key(binding, "msg_1")
+        );
         assert_eq!(sent_payloads[0].2["message_id"], "msg_1");
         let delivered = state
-            .load_message_sync_outbox("message-sync:did:human:alice:msg_1")
+            .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_1"))
             .unwrap()
             .unwrap();
         assert_eq!(delivered.status, "sent");
@@ -1770,7 +2117,7 @@ mod tests {
         state
             .upsert_inbox_cursor(&InboxCursorRecord {
                 owner_did: binding.user_did.clone(),
-                inbox_scope: DEFAULT_SCOPE.to_string(),
+                inbox_scope: inbox_scope_for_binding(binding),
                 cursor: Some("cursor_1".to_string()),
                 updated_at_ms: 0,
             })
@@ -1803,7 +2150,7 @@ mod tests {
         assert_eq!(calls[1].2.as_deref(), Some("cursor_2"));
         assert_eq!(dispatcher.dispatched.lock().unwrap().len(), 1);
         let cursor = state
-            .load_inbox_cursor(&binding.user_did, DEFAULT_SCOPE)
+            .load_inbox_cursor(&binding.user_did, &inbox_scope_for_binding(binding))
             .unwrap()
             .unwrap();
         assert_eq!(cursor.cursor.as_deref(), Some("cursor_3"));
@@ -1847,7 +2194,7 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(state
-            .load_inbox_cursor(&binding.user_did, DEFAULT_SCOPE)
+            .load_inbox_cursor(&binding.user_did, &inbox_scope_for_binding(binding))
             .unwrap()
             .is_none());
 
@@ -1862,7 +2209,7 @@ mod tests {
             .unwrap();
         assert_eq!(processed.status, PROCESSED_STATUS_DISPATCHED);
         let cursor = state
-            .load_inbox_cursor(&binding.user_did, DEFAULT_SCOPE)
+            .load_inbox_cursor(&binding.user_did, &inbox_scope_for_binding(binding))
             .unwrap()
             .unwrap();
         assert_eq!(cursor.cursor.as_deref(), Some("cursor_after_success"));
@@ -2008,7 +2355,7 @@ mod tests {
             .unwrap()
             .contains("not authorization"));
         let sync = state
-            .load_message_sync_outbox("message-sync:did:human:alice:msg_agent")
+            .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_agent"))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -2022,6 +2369,214 @@ mod tests {
                 Some("men_agent"),
             )
             .unwrap());
+    }
+
+    #[test]
+    fn delegated_inbox_authorization_denial_skips_group_mention_dispatch() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let payload = json!({
+            "text": "@Hermes please summarize",
+            "mentions": [{
+                "id": "men_agent_denied",
+                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                "target": {"kind": "agent", "did": binding.runtime_agent_did}
+            }]
+        });
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![mention_payload_message(
+                    "msg_denied",
+                    "did:human:bob",
+                    payload,
+                )],
+                next_cursor: Some("cursor_denied".to_string()),
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+        let authorizer = RecordingAuthorizer::deny();
+
+        let outcome = process_user_delegated_inbox_for_binding_with_authorizer(
+            state,
+            &client,
+            &dispatcher,
+            &authorizer,
+            binding,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 0);
+        assert_eq!(authorizer.calls.lock().unwrap().len(), 1);
+        assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+        let processed_id = format!(
+            "msg_denied:runtime:{}:group-mention",
+            stable_id_suffix(&binding.runtime_agent_did)
+        );
+        let processed = state
+            .load_processed_message(&binding.user_did, &processed_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(processed.status, PROCESSED_STATUS_DISPATCHED);
+        assert!(state
+            .audit_event_exists(
+                "user_delegated_inbox.mention_authorization_denied",
+                Some(&binding.runtime_agent_did),
+                Some("test_denied"),
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn delegated_inbox_authorization_handle_is_carried_into_group_task() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let payload = json!({
+            "text": "@Hermes hello",
+            "mentions": [{
+                "id": "men_agent_allowed",
+                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                "target": {"kind": "agent", "did": binding.runtime_agent_did}
+            }]
+        });
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![mention_payload_message(
+                    "msg_allowed",
+                    "did:human:bob",
+                    payload,
+                )],
+                next_cursor: None,
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+        let authorizer = RecordingAuthorizer::allow(Some("bob.anpclaw.com"));
+
+        let outcome = process_user_delegated_inbox_for_binding_with_authorizer(
+            state,
+            &client,
+            &dispatcher,
+            &authorizer,
+            binding,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 1);
+        let dispatched = dispatcher.dispatched.lock().unwrap();
+        let task_payload = task_payload(&dispatched[0].0);
+        assert_eq!(
+            task_payload["source_sender_full_handle"],
+            json!("bob.anpclaw.com")
+        );
+        assert_eq!(
+            dispatched[0].1.source_sender_full_handle.as_deref(),
+            Some("bob.anpclaw.com")
+        );
+        let sync = state
+            .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_allowed"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(sync.payload_json["sender_full_handle"], "bob.anpclaw.com");
+    }
+
+    #[test]
+    fn delegated_inbox_ignores_agent_sent_group_mentions_to_prevent_loops() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let payload = json!({
+            "text": "@Hermes follow up",
+            "mentions": [{
+                "id": "men_loop",
+                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                "target": {"kind": "agent", "did": binding.runtime_agent_did}
+            }]
+        });
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![mention_payload_message(
+                    "msg_loop",
+                    "did:wba:example.com:agent:other",
+                    payload,
+                )],
+                next_cursor: None,
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+        let authorizer = RecordingAuthorizer::allow(Some("other-agent.example.com"));
+
+        let outcome = process_user_delegated_inbox_for_binding_with_authorizer(
+            state,
+            &client,
+            &dispatcher,
+            &authorizer,
+            binding,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 0);
+        assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+        assert!(authorizer.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delegated_inbox_deduplicates_exact_and_selector_mentions_for_same_agent() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let payload = json!({
+            "text": "@Hermes @agents please check",
+            "mentions": [
+                {
+                    "id": "men_agent_exact",
+                    "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                    "target": {"kind": "agent", "did": binding.runtime_agent_did}
+                },
+                {
+                    "id": "men_agents_selector",
+                    "range": {"start": 8, "end": 15, "unit": "unicode_code_point"},
+                    "target": {"kind": "group_selector", "selector": "agents"}
+                }
+            ]
+        });
+        let client = MockClient {
+            pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+                messages: vec![mention_payload_message(
+                    "msg_multi_mention",
+                    "did:human:bob",
+                    payload,
+                )],
+                next_cursor: None,
+                has_more: false,
+            }])),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let dispatcher = RecordingDispatcher::default();
+        let authorizer = RecordingAuthorizer::allow(Some("bob.anpclaw.com"));
+
+        let outcome = process_user_delegated_inbox_for_binding_with_authorizer(
+            state,
+            &client,
+            &dispatcher,
+            &authorizer,
+            binding,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.dispatched_messages, 1);
+        assert_eq!(dispatcher.dispatched.lock().unwrap().len(), 1);
+        assert_eq!(authorizer.calls.lock().unwrap().len(), 1);
+        let dispatched = dispatcher.dispatched.lock().unwrap();
+        let mention_context = dispatched[0].1.mention_context.as_ref().unwrap();
+        assert_eq!(mention_context.mention_id, "men_agent_exact");
+        assert_eq!(mention_context.match_kind, "agent_did");
     }
 
     #[test]
@@ -2208,7 +2763,7 @@ mod tests {
                 status: RuntimeRunStatus::Running,
             })
             .unwrap();
-        let outbox = UserDelegatedRuntimeOutbox::new(state);
+        let outbox = UserDelegatedRuntimeOutbox::new_for_test(&fixture.config, state);
         let context = AuthorizedRuntimeContext {
             token_id: "token_1".to_string(),
             agent_did: binding.runtime_agent_did.clone(),
@@ -2298,7 +2853,7 @@ mod tests {
                 status: RuntimeRunStatus::Running,
             })
             .unwrap();
-        let outbox = UserDelegatedRuntimeOutbox::new(state);
+        let outbox = UserDelegatedRuntimeOutbox::new_for_test(&fixture.config, state);
         let context = AuthorizedRuntimeContext {
             token_id: HOST_RUNTIME_FINAL_OUTBOX_TOKEN_ID.to_string(),
             agent_did: binding.runtime_agent_did.clone(),
@@ -2316,6 +2871,7 @@ mod tests {
                         resolved_did: Some(binding.user_did.clone()),
                     },
                     text: "final summary text".to_string(),
+                    payload: None,
                     file_path: None,
                     display_filename: None,
                     mime_type: None,
@@ -2346,6 +2902,7 @@ mod tests {
 
     struct TestFixture {
         _root: TempDir,
+        config: DaemonConfig,
         state: DaemonState,
         identity: UserDelegatedIdentityRecord,
         binding: AppMessageAgentBindingRecord,
@@ -2429,6 +2986,7 @@ mod tests {
         state.upsert_app_message_agent_binding(&binding).unwrap();
         TestFixture {
             _root: root,
+            config,
             state,
             identity,
             binding,

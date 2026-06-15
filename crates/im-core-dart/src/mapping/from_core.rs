@@ -582,6 +582,10 @@ impl From<im_core::messages::Conversation> for DartConversation {
                 .collect(),
             last_message: value.last_message.map(Into::into),
             unread_count: value.unread_count,
+            unread_mention_count: value.unread_mention_count,
+            first_unread_mention_message_id: value
+                .first_unread_mention_message_id
+                .map(|message_id| message_id.as_str().to_string()),
             message_count: value.message_count,
             last_message_at: value.last_message_at,
         }

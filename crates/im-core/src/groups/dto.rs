@@ -796,6 +796,7 @@ pub struct GroupMember {
     pub role: Option<String>,
     pub status: Option<String>,
     pub joined_at: Option<String>,
+    pub subject_type: Option<String>,
 }
 
 fn group_snapshot_from_response(raw: &Value) -> Option<GroupSnapshot> {
@@ -892,11 +893,17 @@ fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
 
 fn group_member_from_value(value: Value) -> Option<GroupMember> {
     let object = value.as_object()?;
+    let did = optional_string(object.get("did"))
+        .or_else(|| optional_string(object.get("member_did")))
+        .or_else(|| optional_string(object.get("agent_did")))
+        .and_then(|value| crate::ids::Did::parse(value).ok());
+    let subject_type = optional_string(object.get("subject_type"))
+        .or_else(|| optional_string(object.get("subjectType")))
+        .or_else(|| optional_string(object.get("member_subject_type")))
+        .or_else(|| optional_string(object.get("agent_subject_type")))
+        .or_else(|| inferred_subject_type(did.as_ref(), object));
     Some(GroupMember {
-        did: optional_string(object.get("did"))
-            .or_else(|| optional_string(object.get("member_did")))
-            .or_else(|| optional_string(object.get("agent_did")))
-            .and_then(|value| crate::ids::Did::parse(value).ok()),
+        did,
         handle: optional_string(object.get("handle"))
             .or_else(|| optional_string(object.get("member_handle")))
             .or_else(|| optional_string(object.get("agent_handle")))
@@ -904,7 +911,25 @@ fn group_member_from_value(value: Value) -> Option<GroupMember> {
         role: optional_string(object.get("role")),
         status: optional_string(object.get("status")),
         joined_at: optional_string(object.get("joined_at")),
+        subject_type,
     })
+}
+
+fn inferred_subject_type(
+    did: Option<&crate::ids::Did>,
+    object: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    if object.get("agent_did").is_some() || object.get("agent_handle").is_some() {
+        return Some("agent".to_string());
+    }
+    let did = did?.as_str().trim();
+    if did.starts_with("did:agent:") {
+        return Some("agent".to_string());
+    }
+    if did.starts_with("did:") {
+        return Some("human".to_string());
+    }
+    None
 }
 
 fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {

@@ -1733,6 +1733,8 @@ extension on gen_message.DartConversation {
     participants: participants,
     lastMessage: lastMessage?._toModel(),
     unreadCount: unreadCount,
+    unreadMentionCount: unreadMentionCount,
+    firstUnreadMentionMessageId: firstUnreadMentionMessageId,
     messageCount: messageCount,
     lastMessageAt: lastMessageAt,
   );
@@ -1820,6 +1822,7 @@ extension on gen_group_dto.DartGroupMember {
     role: role,
     status: status,
     joinedAt: joinedAt,
+    subjectType: subjectType,
   );
 }
 

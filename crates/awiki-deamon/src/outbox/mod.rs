@@ -514,6 +514,7 @@ impl RuntimeMessageSecurity {
 pub struct RuntimeMessageSend {
     pub target: RuntimeMessageTarget,
     pub text: String,
+    pub payload: Option<Value>,
     pub file_path: Option<PathBuf>,
     pub display_filename: Option<String>,
     pub mime_type: Option<String>,
@@ -616,6 +617,7 @@ impl RuntimeMessageSend {
         Ok(Self {
             target,
             text: text.to_string(),
+            payload: None,
             file_path,
             display_filename,
             mime_type,
@@ -692,7 +694,9 @@ impl RuntimeMessageSend {
             RuntimeMessageTarget::Group { group } => MessageTarget::Group(GroupRef::parse(group)?),
         };
         let security = self.security.to_im_core(&self.target)?;
-        let body = if let Some(file_path) = self.file_path {
+        let body = if let Some(payload) = self.payload {
+            MessageBody::Payload { payload }
+        } else if let Some(file_path) = self.file_path {
             MessageBody::Attachment {
                 input: AttachmentInput::LocalFile(file_path),
                 caption: Some(self.text).filter(|value| !value.trim().is_empty()),

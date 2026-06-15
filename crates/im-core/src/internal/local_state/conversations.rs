@@ -6,6 +6,8 @@ pub(crate) struct ConversationRecord {
     pub(crate) thread_id: String,
     pub(crate) message_count: i64,
     pub(crate) unread_count: i64,
+    pub(crate) unread_mention_count: i64,
+    pub(crate) first_unread_mention_message_id: Option<String>,
     pub(crate) last_message_at: String,
     pub(crate) last_content: String,
     pub(crate) last_message: Option<super::messages::MessageRecord>,
@@ -39,6 +41,8 @@ SELECT
     t.thread_id,
     t.message_count,
     t.unread_count,
+    t.unread_mention_count,
+    t.first_unread_mention_message_id,
     t.last_message_at,
     t.last_content,
     m.msg_id,
@@ -57,6 +61,7 @@ SELECT
     m.is_read,
     m.sender_name,
     m.metadata,
+    m.mentions_current_user,
     m.credential_name
 FROM threads t
 LEFT JOIN messages m
@@ -143,6 +148,10 @@ LIMIT ?2"#,
                     metadata: row
                         .get::<_, Option<String>>("metadata")?
                         .unwrap_or_default(),
+                    mentions_current_user: row
+                        .get::<_, Option<i64>>("mentions_current_user")?
+                        .unwrap_or_default()
+                        != 0,
                     credential_name: row
                         .get::<_, Option<String>>("credential_name")?
                         .unwrap_or_default(),
@@ -167,6 +176,12 @@ LIMIT ?2"#,
                 unread_count: row
                     .get::<_, Option<i64>>("unread_count")?
                     .unwrap_or_default(),
+                unread_mention_count: row
+                    .get::<_, Option<i64>>("unread_mention_count")?
+                    .unwrap_or_default(),
+                first_unread_mention_message_id: row
+                    .get::<_, Option<String>>("first_unread_mention_message_id")?
+                    .filter(|value| !value.trim().is_empty()),
                 last_message_at: row
                     .get::<_, Option<String>>("last_message_at")?
                     .unwrap_or_default(),
@@ -302,6 +317,7 @@ mod tests {
         );
         assert_eq!(all[0].message_count, 1);
         assert_eq!(all[0].unread_count, 1);
+        assert_eq!(all[0].unread_mention_count, 0);
         assert_eq!(all[1].message_count, 2);
         assert_eq!(all[1].last_content, "new");
         assert_eq!(all[1].last_message.as_ref().unwrap().msg_id, "direct-new");
@@ -334,6 +350,87 @@ mod tests {
         )
         .unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn local_state_conversations_projects_unread_mentions_for_owner() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_payload_message(
+            &db,
+            "alice-mention",
+            "did:example:alice",
+            "group:mentions",
+            "did:example:bob",
+            human_mention_payload("did:example:alice"),
+            "2026-05-21T00:00:01Z",
+            0,
+        );
+        seed_payload_message(
+            &db,
+            "alice-read-mention",
+            "did:example:alice",
+            "group:mentions",
+            "did:example:bob",
+            human_mention_payload("did:example:alice"),
+            "2026-05-21T00:00:02Z",
+            1,
+        );
+        seed_payload_message(
+            &db,
+            "all-humans",
+            "did:example:alice",
+            "group:mentions",
+            "did:example:bob",
+            selector_mention_payload("humans"),
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        seed_payload_message(
+            &db,
+            "all-agents",
+            "did:example:alice",
+            "group:mentions",
+            "did:example:bob",
+            selector_mention_payload("agents"),
+            "2026-05-21T00:00:04Z",
+            0,
+        );
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "plain-at",
+            "group:mentions",
+            0,
+            "did:example:bob",
+            "",
+            "did:example:mentions",
+            "@alice 不是结构化 mention",
+            "2026-05-21T00:00:05Z",
+            0,
+        );
+
+        let conversations = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: false,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].unread_count, 4);
+        assert_eq!(conversations[0].unread_mention_count, 2);
+        assert_eq!(
+            conversations[0].first_unread_mention_message_id.as_deref(),
+            Some("alice-mention")
+        );
     }
 
     fn seed_message(
@@ -371,6 +468,86 @@ VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', ?9, ?10, ?10, ?11)
             ),
         )
         .unwrap();
+    }
+
+    fn seed_payload_message(
+        db: &Connection,
+        msg_id: &str,
+        owner: &str,
+        thread_id: &str,
+        sender_did: &str,
+        payload: serde_json::Value,
+        sent_at: &str,
+        is_read: i64,
+    ) {
+        let content = payload.to_string();
+        let mentions_current_user = super::super::messages::mentions_current_user_for_projection(
+            owner,
+            0,
+            thread_id,
+            "did:example:mentions",
+            "did:example:mentions",
+            "application/json",
+            &content,
+        );
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, group_id, group_did,
+     content_type, content, sent_at, stored_at, is_read, mentions_current_user)
+VALUES (?1, 'alice-id', ?2, ?3, ?3, 0, ?4, 'did:example:mentions', 'did:example:mentions',
+        'application/json', ?5, ?6, ?6, ?7, ?8)"#,
+            (
+                msg_id,
+                owner,
+                thread_id,
+                sender_did,
+                content,
+                sent_at,
+                is_read,
+                mentions_current_user,
+            ),
+        )
+        .unwrap();
+    }
+
+    fn human_mention_payload(did: &str) -> serde_json::Value {
+        serde_json::json!({
+            "text": "@Alice 请看",
+            "mentions": [{
+                "id": "mention-1",
+                "range": {
+                    "start": 0,
+                    "end": 6,
+                    "unit": "unicode_code_point"
+                },
+                "target": {
+                    "kind": "human",
+                    "did": did,
+                    "display_name": "Alice"
+                },
+                "mention_role": "addressee"
+            }]
+        })
+    }
+
+    fn selector_mention_payload(selector: &str) -> serde_json::Value {
+        serde_json::json!({
+            "text": "@所有人 请看",
+            "mentions": [{
+                "id": "mention-selector",
+                "range": {
+                    "start": 0,
+                    "end": 4,
+                    "unit": "unicode_code_point"
+                },
+                "target": {
+                    "kind": "group_selector",
+                    "selector": selector
+                },
+                "mention_role": "addressee"
+            }]
+        })
     }
 
     #[test]

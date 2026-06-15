@@ -228,6 +228,8 @@ class Conversation {
     this.participants = const [],
     this.lastMessage,
     required this.unreadCount,
+    this.unreadMentionCount = 0,
+    this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
   });
@@ -238,6 +240,8 @@ class Conversation {
   final List<String> participants;
   final Message? lastMessage;
   final int unreadCount;
+  final int unreadMentionCount;
+  final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
 }

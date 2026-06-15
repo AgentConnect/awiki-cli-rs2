@@ -4726,6 +4726,8 @@ impl SseDecode for crate::dto::message::DartConversation {
         let mut var_lastMessage =
             <Option<crate::dto::message::DartMessage>>::sse_decode(deserializer);
         let mut var_unreadCount = <u32>::sse_decode(deserializer);
+        let mut var_unreadMentionCount = <u32>::sse_decode(deserializer);
+        let mut var_firstUnreadMentionMessageId = <Option<String>>::sse_decode(deserializer);
         let mut var_messageCount = <u32>::sse_decode(deserializer);
         let mut var_lastMessageAt = <Option<String>>::sse_decode(deserializer);
         return crate::dto::message::DartConversation {
@@ -4735,6 +4737,8 @@ impl SseDecode for crate::dto::message::DartConversation {
             participants: var_participants,
             last_message: var_lastMessage,
             unread_count: var_unreadCount,
+            unread_mention_count: var_unreadMentionCount,
+            first_unread_mention_message_id: var_firstUnreadMentionMessageId,
             message_count: var_messageCount,
             last_message_at: var_lastMessageAt,
         };
@@ -7196,6 +7200,10 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartConversation {
             self.participants.into_into_dart().into_dart(),
             self.last_message.into_into_dart().into_dart(),
             self.unread_count.into_into_dart().into_dart(),
+            self.unread_mention_count.into_into_dart().into_dart(),
+            self.first_unread_mention_message_id
+                .into_into_dart()
+                .into_dart(),
             self.message_count.into_into_dart().into_dart(),
             self.last_message_at.into_into_dart().into_dart(),
         ]
@@ -9439,6 +9447,8 @@ impl SseEncode for crate::dto::message::DartConversation {
         <Vec<String>>::sse_encode(self.participants, serializer);
         <Option<crate::dto::message::DartMessage>>::sse_encode(self.last_message, serializer);
         <u32>::sse_encode(self.unread_count, serializer);
+        <u32>::sse_encode(self.unread_mention_count, serializer);
+        <Option<String>>::sse_encode(self.first_unread_mention_message_id, serializer);
         <u32>::sse_encode(self.message_count, serializer);
         <Option<String>>::sse_encode(self.last_message_at, serializer);
     }

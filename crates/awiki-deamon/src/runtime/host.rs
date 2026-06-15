@@ -513,6 +513,7 @@ pub fn flush_runtime_final_outbox(
         let message = RuntimeMessageSend {
             target: runtime_final_message_target(&record)?,
             text: record.final_text.clone(),
+            payload: runtime_final_payload(state, &record)?,
             file_path: None,
             display_filename: None,
             mime_type: None,
@@ -602,12 +603,100 @@ fn runtime_final_message_target(record: &RuntimeFinalOutboxRecord) -> Result<Run
     })
 }
 
+fn runtime_final_payload(
+    state: &DaemonState,
+    record: &RuntimeFinalOutboxRecord,
+) -> Result<Option<serde_json::Value>> {
+    let Some(_) = record
+        .conversation_id
+        .as_deref()
+        .and_then(group_did_from_conversation_id)
+    else {
+        return Ok(None);
+    };
+    let task = match state.load_runtime_task_for_run(&record.run_id) {
+        Ok(task) => task,
+        Err(_) => return Ok(None),
+    };
+    let payload = match serde_json::from_str::<serde_json::Value>(&task.text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    if payload.get("mention_context").is_none() {
+        return Ok(None);
+    }
+    let Some(sender_did) = payload
+        .get("source_sender_did")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mention_surface = mention_surface_for_sender(&payload, sender_did);
+    let text = format!("{} {}", mention_surface, record.final_text.trim());
+    let mention_end = mention_surface.chars().count();
+    Ok(Some(serde_json::json!({
+        "text": text,
+        "mentions": [{
+            "id": format!("reply_{}", stable_id_suffix(&format!("{}:{}", record.run_id, sender_did))),
+            "range": {
+                "start": 0,
+                "end": mention_end,
+                "unit": "unicode_code_point"
+            },
+            "target": {
+                "kind": "human",
+                "did": sender_did,
+                "display_name": mention_surface.trim_start_matches('@')
+            },
+            "mention_role": "addressee"
+        }],
+        "annotations": {
+            "awiki_reply_to_message_id": payload.get("source_message_id").cloned().unwrap_or(serde_json::Value::Null),
+            "awiki_reply_from_agent_did": record.agent_did
+        }
+    })))
+}
+
+fn mention_surface_for_sender(payload: &serde_json::Value, sender_did: &str) -> String {
+    if let Some(handle) = payload
+        .get("source_sender_full_handle")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("@{handle}");
+    }
+    let compact = if sender_did.len() <= 18 {
+        sender_did.to_string()
+    } else {
+        format!(
+            "{}…{}",
+            &sender_did[..10],
+            &sender_did[sender_did.len().saturating_sub(6)..]
+        )
+    };
+    format!("@{compact}")
+}
+
 fn group_did_from_conversation_id(conversation_id: &str) -> Option<&str> {
     conversation_id
         .trim()
         .strip_prefix("group:")
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+fn stable_id_suffix(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(input.as_bytes());
+    digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn mark_runtime_final_delivered(
@@ -746,6 +835,7 @@ fn emit_hermes_failure_outputs(
                 resolved_did: Some(controller_did.to_string()),
             },
             text: failure_text,
+            payload: None,
             file_path: None,
             display_filename: None,
             mime_type: None,

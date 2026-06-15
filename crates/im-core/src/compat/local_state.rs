@@ -239,6 +239,7 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             is_read: record.is_read,
             sender_name: record.sender_name,
             metadata: record.metadata,
+            mentions_current_user: false,
             credential_name: record.credential_name,
         }
     }

@@ -484,6 +484,11 @@ fn conversation_from_record(
         participants,
         last_message,
         unread_count: u32_count(record.unread_count()),
+        unread_mention_count: u32_count(record.unread_mention_count()),
+        first_unread_mention_message_id: record
+            .first_unread_mention_message_id()
+            .map(crate::ids::MessageId::parse)
+            .transpose()?,
         message_count: u32_count(record.message_count()),
         last_message_at: non_empty_string(record.last_message_at()),
     })
@@ -512,6 +517,14 @@ impl ConversationRecordExt for crate::internal::local_state::conversations::Conv
         self.unread_count
     }
 
+    fn unread_mention_count(&self) -> i64 {
+        self.unread_mention_count
+    }
+
+    fn first_unread_mention_message_id(&self) -> Option<&str> {
+        self.first_unread_mention_message_id.as_deref()
+    }
+
     fn last_message_at(&self) -> &str {
         &self.last_message_at
     }
@@ -535,6 +548,14 @@ impl ConversationRecordExt for NoSqliteConversationRecord {
         0
     }
 
+    fn unread_mention_count(&self) -> i64 {
+        0
+    }
+
+    fn first_unread_mention_message_id(&self) -> Option<&str> {
+        None
+    }
+
     fn last_message_at(&self) -> &str {
         ""
     }
@@ -548,6 +569,8 @@ trait ConversationRecordExt {
     fn thread_id(&self) -> &str;
     fn message_count(&self) -> i64;
     fn unread_count(&self) -> i64;
+    fn unread_mention_count(&self) -> i64;
+    fn first_unread_mention_message_id(&self) -> Option<&str>;
     fn last_message_at(&self) -> &str;
     fn last_message(&self) -> Option<&crate::internal::local_state::messages::MessageRecord>;
 }

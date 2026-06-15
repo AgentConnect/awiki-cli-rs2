@@ -132,6 +132,8 @@ pub struct DartConversation {
     pub participants: Vec<String>,
     pub last_message: Option<DartMessage>,
     pub unread_count: u32,
+    pub unread_mention_count: u32,
+    pub first_unread_mention_message_id: Option<String>,
     pub message_count: u32,
     pub last_message_at: Option<String>,
 }

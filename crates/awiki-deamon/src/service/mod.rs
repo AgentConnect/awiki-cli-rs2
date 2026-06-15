@@ -150,6 +150,51 @@ fn run_status(command: &mut std::process::Command) -> Result<bool> {
         .unwrap_or(false))
 }
 
+fn compact_command_error(command: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let message = if !stderr.is_empty() { stderr } else { stdout };
+    let base = if message.is_empty() {
+        format!("{command} exited with {}", output.status)
+    } else {
+        format!("{command}: {message}")
+    };
+    compact_detail(&base)
+}
+
+fn compact_detail(value: &str) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    const LIMIT: usize = 240;
+    if normalized.chars().count() <= LIMIT {
+        normalized
+    } else {
+        let mut truncated = normalized.chars().take(LIMIT).collect::<String>();
+        truncated.push_str("...");
+        truncated
+    }
+}
+
+fn current_user_name() -> Option<String> {
+    for key in ["USER", "LOGNAME"] {
+        if let Some(value) = std::env::var_os(key)
+            .and_then(|value| value.into_string().ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value);
+        }
+    }
+
+    std::process::Command::new("id")
+        .arg("-un")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -298,6 +343,13 @@ pub(crate) mod linux {
 
     pub const UNIT_NAME: &str = "awiki-deamon.service";
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum LingerState {
+        Enabled,
+        Disabled,
+        Unknown,
+    }
+
     pub fn unit_path() -> Result<PathBuf> {
         Ok(home_dir()?
             .join(".config")
@@ -325,6 +377,83 @@ WantedBy=default.target
         )
     }
 
+    pub(super) fn parse_linger_state(raw: &str) -> LingerState {
+        for line in raw.lines() {
+            let value = line
+                .trim()
+                .strip_prefix("Linger=")
+                .unwrap_or_else(|| line.trim())
+                .trim()
+                .to_ascii_lowercase();
+            match value.as_str() {
+                "yes" | "true" | "1" => return LingerState::Enabled,
+                "no" | "false" | "0" => return LingerState::Disabled,
+                _ => {}
+            }
+        }
+        LingerState::Unknown
+    }
+
+    fn current_user_linger_state() -> LingerState {
+        let Some(user) = current_user_name() else {
+            return LingerState::Unknown;
+        };
+        std::process::Command::new("loginctl")
+            .args(["show-user", &user, "-p", "Linger"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| parse_linger_state(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or(LingerState::Unknown)
+    }
+
+    fn enable_linger_for_current_user() -> Option<String> {
+        if current_user_linger_state() == LingerState::Enabled {
+            return None;
+        }
+        let Some(user) = current_user_name() else {
+            return Some("unable to resolve current user for login linger".to_string());
+        };
+        match std::process::Command::new("loginctl")
+            .env("SYSTEMD_ASK_PASSWORD", "0")
+            .args(["enable-linger", &user])
+            .output()
+        {
+            Ok(output) if output.status.success() => None,
+            Ok(output) => Some(compact_command_error("loginctl enable-linger", &output)),
+            Err(error) => Some(compact_detail(&format!(
+                "loginctl enable-linger unavailable: {error}"
+            ))),
+        }
+    }
+
+    pub(super) fn service_detail(
+        installed: bool,
+        linger_state: LingerState,
+        enable_linger_error: Option<&str>,
+    ) -> Option<String> {
+        if !installed {
+            return enable_linger_error.map(compact_detail);
+        }
+
+        let base = match linger_state {
+            LingerState::Enabled => return None,
+            LingerState::Disabled => {
+                "systemd user service is enabled, but login linger is disabled; daemon starts after user login, not after unattended reboot"
+            }
+            LingerState::Unknown => {
+                "systemd user service is enabled, but login linger could not be verified; unattended reboot autostart may require loginctl enable-linger"
+            }
+        };
+
+        Some(match enable_linger_error {
+            Some(error) if !error.trim().is_empty() => {
+                compact_detail(&format!("{base}; automatic enable-linger failed: {error}"))
+            }
+            _ => base.to_string(),
+        })
+    }
+
     pub fn manage(
         config: &DaemonConfig,
         executable: &Path,
@@ -342,6 +471,7 @@ WantedBy=default.target
             });
         }
         let path = unit_path()?;
+        let mut enable_linger_error = None;
         match action {
             ServiceAction::Install => {
                 write_if_changed(&path, &unit_content(config, executable))?;
@@ -351,6 +481,7 @@ WantedBy=default.target
                 let _ = run_status(
                     std::process::Command::new("systemctl").args(["--user", "enable", UNIT_NAME]),
                 )?;
+                enable_linger_error = enable_linger_for_current_user();
                 let _ = run_status(
                     std::process::Command::new("systemctl").args(["--user", "restart", UNIT_NAME]),
                 )?;
@@ -392,12 +523,14 @@ WantedBy=default.target
             "--quiet",
             UNIT_NAME,
         ]))?;
+        let linger_state = current_user_linger_state();
+        let detail = service_detail(installed, linger_state, enable_linger_error.as_deref());
         Ok(ServiceStatus {
             platform: ServicePlatform::SystemdUser,
             installed,
             running,
             unit_path: Some(path),
-            detail: None,
+            detail,
         })
     }
 }
@@ -452,5 +585,42 @@ mod tests {
 
         assert!(error.to_string().contains("product state root"));
         assert!(error.to_string().contains("--foreground"));
+    }
+
+    #[test]
+    fn linux_linger_state_parser_accepts_loginctl_show_user_output() {
+        assert_eq!(
+            linux::parse_linger_state("Linger=yes\n"),
+            linux::LingerState::Enabled
+        );
+        assert_eq!(
+            linux::parse_linger_state("Linger=no\n"),
+            linux::LingerState::Disabled
+        );
+        assert_eq!(
+            linux::parse_linger_state("no\n"),
+            linux::LingerState::Disabled
+        );
+        assert_eq!(
+            linux::parse_linger_state("unexpected\n"),
+            linux::LingerState::Unknown
+        );
+    }
+
+    #[test]
+    fn linux_service_detail_warns_when_linger_is_not_ready() {
+        assert!(linux::service_detail(true, linux::LingerState::Enabled, None).is_none());
+
+        let disabled = linux::service_detail(
+            true,
+            linux::LingerState::Disabled,
+            Some("permission denied"),
+        )
+        .unwrap();
+        assert!(disabled.contains("login linger is disabled"));
+        assert!(disabled.contains("automatic enable-linger failed"));
+
+        let unknown = linux::service_detail(true, linux::LingerState::Unknown, None).unwrap();
+        assert!(unknown.contains("could not be verified"));
     }
 }
