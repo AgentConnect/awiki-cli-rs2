@@ -242,13 +242,10 @@ impl UserServiceAgentRegistrationClient {
             .body(body.to_string())
             .send()
             .await
-            .with_context(|| format!("call user-service agent registration {}", self.rpc_url))?
-            .error_for_status()
-            .context("user-service agent registration HTTP error")?;
-        let bytes = response
-            .bytes()
-            .await
-            .context("read registration response")?;
+            .with_context(|| format!("call user-service agent registration {}", self.rpc_url))?;
+        let bytes =
+            read_user_service_json_rpc_response(response, "agent registration token exchange")
+                .await?;
         parse_exchange_response(&bytes)
     }
 
@@ -271,13 +268,9 @@ impl UserServiceAgentRegistrationClient {
             .body(body.to_string())
             .send()
             .await
-            .with_context(|| format!("call user-service verify token {}", self.rpc_url))?
-            .error_for_status()
-            .context("user-service verify token HTTP error")?;
-        let bytes = response
-            .bytes()
-            .await
-            .context("read verify token response")?;
+            .with_context(|| format!("call user-service verify token {}", self.rpc_url))?;
+        let bytes = read_user_service_json_rpc_response(response, "agent registration token verify")
+            .await?;
         parse_verify_response(&bytes)
     }
 
@@ -806,6 +799,33 @@ fn parse_verify_response(bytes: &[u8]) -> Result<RegistrationTokenMetadata> {
     })
 }
 
+async fn read_user_service_json_rpc_response(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<Vec<u8>> {
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("read {context} response"))?
+        .to_vec();
+    if status.is_success() {
+        return Ok(bytes);
+    }
+    match parse_json_rpc_result(&bytes, context) {
+        Ok(_) => bail!("{context} HTTP error: HTTP status {status}"),
+        Err(error) if is_json_rpc_business_error(&bytes) => Err(error),
+        Err(_) => bail!("{context} HTTP error: HTTP status {status}"),
+    }
+}
+
+fn is_json_rpc_business_error(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("error").cloned())
+        .is_some_and(|error| !error.is_null())
+}
+
 fn parse_verify_controller_sender_response(bytes: &[u8]) -> Result<ControllerSenderScope> {
     let result = parse_json_rpc_result(bytes, "agent inventory verify controller sender")?;
     Ok(ControllerSenderScope {
@@ -938,6 +958,23 @@ mod tests {
         }"#;
         let error = parse_exchange_response(response).unwrap_err();
         assert!(error.to_string().contains("scope_mismatch"));
+    }
+
+    #[test]
+    fn json_rpc_business_error_is_detected_before_http_status_mapping() {
+        let response = br#"{
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32000,
+                "message": "Registration token is expired",
+                "data": { "reason": "expired" }
+            },
+            "id": 1
+        }"#;
+
+        assert!(is_json_rpc_business_error(response));
+        let error = parse_verify_response(response).unwrap_err();
+        assert!(error.to_string().contains("expired"));
     }
 
     #[test]
