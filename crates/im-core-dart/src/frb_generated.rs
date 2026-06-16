@@ -5249,12 +5249,14 @@ impl SseDecode for crate::dto::group::DartGroupMember {
         let mut var_role = <Option<String>>::sse_decode(deserializer);
         let mut var_status = <Option<String>>::sse_decode(deserializer);
         let mut var_joinedAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_subjectType = <Option<String>>::sse_decode(deserializer);
         return crate::dto::group::DartGroupMember {
             did: var_did,
             handle: var_handle,
             role: var_role,
             status: var_status,
             joined_at: var_joinedAt,
+            subject_type: var_subjectType,
         };
     }
 }
@@ -7849,6 +7851,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupMember {
             self.role.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
             self.joined_at.into_into_dart().into_dart(),
+            self.subject_type.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -9780,6 +9783,7 @@ impl SseEncode for crate::dto::group::DartGroupMember {
         <Option<String>>::sse_encode(self.role, serializer);
         <Option<String>>::sse_encode(self.status, serializer);
         <Option<String>>::sse_encode(self.joined_at, serializer);
+        <Option<String>>::sse_encode(self.subject_type, serializer);
     }
 }
 

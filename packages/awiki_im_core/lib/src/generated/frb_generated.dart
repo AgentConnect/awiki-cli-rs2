@@ -4218,14 +4218,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartGroupMember dco_decode_dart_group_member(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return DartGroupMember(
       did: dco_decode_opt_String(arr[0]),
       handle: dco_decode_opt_String(arr[1]),
       role: dco_decode_opt_String(arr[2]),
       status: dco_decode_opt_String(arr[3]),
       joinedAt: dco_decode_opt_String(arr[4]),
+      subjectType: dco_decode_opt_String(arr[5]),
     );
   }
 
@@ -6353,12 +6354,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_role = sse_decode_opt_String(deserializer);
     var var_status = sse_decode_opt_String(deserializer);
     var var_joinedAt = sse_decode_opt_String(deserializer);
+    var var_subjectType = sse_decode_opt_String(deserializer);
     return DartGroupMember(
       did: var_did,
       handle: var_handle,
       role: var_role,
       status: var_status,
       joinedAt: var_joinedAt,
+      subjectType: var_subjectType,
     );
   }
 
@@ -8775,6 +8778,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.role, serializer);
     sse_encode_opt_String(self.status, serializer);
     sse_encode_opt_String(self.joinedAt, serializer);
+    sse_encode_opt_String(self.subjectType, serializer);
   }
 
   @protected

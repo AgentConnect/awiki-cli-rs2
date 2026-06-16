@@ -32,6 +32,7 @@ pub struct DartGroupMember {
     pub role: Option<String>,
     pub status: Option<String>,
     pub joined_at: Option<String>,
+    pub subject_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

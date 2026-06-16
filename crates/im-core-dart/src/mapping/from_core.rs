@@ -934,6 +934,7 @@ impl From<im_core::groups::GroupMember> for DartGroupMember {
             role: value.role,
             status: value.status,
             joined_at: value.joined_at,
+            subject_type: value.subject_type,
         }
     }
 }
