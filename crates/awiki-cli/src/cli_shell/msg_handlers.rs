@@ -15,10 +15,17 @@ struct MsgSendPlan<'a> {
     group: &'a str,
     text: &'a str,
     message_type: &'a str,
+    payload: Option<&'a Value>,
     file_path: &'a str,
     mime_type: &'a str,
     has_attachment: bool,
     secure: bool,
+}
+
+struct MsgSendPlanBody<'a> {
+    text: String,
+    message_type: &'static str,
+    payload: Option<&'a Value>,
 }
 
 impl App {
@@ -53,16 +60,17 @@ impl App {
                 &resolved.did_domain,
             )?;
         let secure = message_security_is_required(&request.security);
-        let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
+            let body = send_message_plan_body(&request)?;
             return self.render_msg_send_plan(
                 &resolved,
                 MsgSendPlan {
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
-                    text: &text,
-                    message_type,
+                    text: &body.text,
+                    message_type: body.message_type,
+                    payload: body.payload,
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
@@ -76,14 +84,15 @@ impl App {
             &resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let mut result =
-            crate::m_core_cli_adapter::messages::send_text_via_im_core(&resolved, &client, request)
-                .map_err(|err| {
-                    message_exit(
-                        err,
-                        "Ensure the active identity is ready and the message service is reachable.",
-                    )
-                })?;
+        let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core(
+            &resolved, &client, request,
+        )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and the message service is reachable.",
+            )
+        })?;
         result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", &resolved, result)
     }
@@ -112,16 +121,17 @@ impl App {
                 &resolved.did_domain,
             )?;
         let secure = message_security_is_required(&request.security);
-        let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
+            let body = send_message_plan_body(&request)?;
             return self.render_msg_send_plan(
                 &resolved,
                 MsgSendPlan {
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
-                    text: &text,
-                    message_type,
+                    text: &body.text,
+                    message_type: body.message_type,
+                    payload: body.payload,
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
@@ -136,7 +146,7 @@ impl App {
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
         .await?;
-        let mut result = crate::m_core_cli_adapter::messages::send_text_via_im_core_async(
+        let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core_async(
             &resolved, &client, request,
         )
         .await
@@ -178,6 +188,7 @@ impl App {
                     group: &string_flag(command, "group"),
                     text: &caption,
                     message_type: "",
+                    payload: None,
                     file_path,
                     mime_type,
                     has_attachment: true,
@@ -232,6 +243,7 @@ impl App {
                     group: &string_flag(command, "group"),
                     text: &caption,
                     message_type: "",
+                    payload: None,
                     file_path,
                     mime_type,
                     has_attachment: true,
@@ -323,6 +335,9 @@ impl App {
                     "caption": input.text,
                 }),
             );
+        }
+        if let Some(payload) = input.payload {
+            plan.insert("payload".to_string(), payload.clone());
         }
 
         self.render_success(
@@ -1033,17 +1048,20 @@ fn default_string(value: &str, fallback: &str) -> String {
     }
 }
 
-fn send_text_plan_fields(
+fn send_message_plan_body(
     request: &im_core::prelude::SendMessageRequest,
-) -> Result<(String, &'static str), ExitError> {
+) -> Result<MsgSendPlanBody<'_>, ExitError> {
     match &request.body {
-        MessageBody::Text { text, kind } => Ok((text.clone(), message_type_for_kind(kind))),
-        MessageBody::Payload { .. } => Err(ExitError::new(
-            "unsupported_capability",
-            2,
-            "payload messages are not supported by this CLI dry-run renderer.",
-            "Use im-core payload APIs from SDK callers until the CLI message command adds payload input.",
-        )),
+        MessageBody::Text { text, kind } => Ok(MsgSendPlanBody {
+            text: text.clone(),
+            message_type: message_type_for_kind(kind),
+            payload: None,
+        }),
+        MessageBody::Payload { payload } => Ok(MsgSendPlanBody {
+            text: String::new(),
+            message_type: "application/json",
+            payload: Some(payload),
+        }),
         MessageBody::Attachment { .. } => Err(ExitError::new(
             "unsupported_capability",
             2,

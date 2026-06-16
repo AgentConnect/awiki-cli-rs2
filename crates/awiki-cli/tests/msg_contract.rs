@@ -381,6 +381,53 @@ fn msg_send_default_cutover_dry_run_routes_direct_and_group_text() {
         group_text_file["data"]["plan"]["target"],
         json!({ "did": "did:wba:awiki.ai:groups:demo:e1_group", "kind": "group" })
     );
+
+    let group_payload = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--group",
+            "did:wba:awiki.ai:groups:demo:e1_group",
+            "--payload",
+            r#"{"text":"@agent hi","mentions":[]}"#,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(group_payload["data"]["plan"]["action"], "group.send");
+    assert_eq!(
+        group_payload["data"]["plan"]["message_type"],
+        "application/json"
+    );
+    assert_eq!(
+        group_payload["data"]["plan"]["payload"],
+        json!({"text":"@agent hi","mentions":[]})
+    );
+
+    let payload_path = workspace.path().join("payload.json");
+    std::fs::write(&payload_path, r#"{"schema":"awiki.test.v1","ok":true}"#)
+        .expect("write payload file");
+    let direct_payload_file = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload-file",
+            payload_path.to_str().unwrap(),
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(direct_payload_file["data"]["plan"]["action"], "direct.send");
+    assert_eq!(
+        direct_payload_file["data"]["plan"]["payload"],
+        json!({"schema":"awiki.test.v1","ok":true})
+    );
 }
 
 #[test]
@@ -684,6 +731,46 @@ fn msg_validation_errors_match_go_handler_boundary() {
     assert_contains(
         &envelope["error"]["message"],
         "msg send requires --text or --text-file.",
+    );
+
+    let payload_text_conflict = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            r#"{"text":"structured"}"#,
+            "--text",
+            "plain",
+        ],
+        workspace.path(),
+    );
+    assert_code(&payload_text_conflict, 2);
+    let envelope = error_json(&payload_text_conflict);
+    assert_contains(
+        &envelope["error"]["message"],
+        "--payload/--payload-file cannot be combined",
+    );
+
+    let payload_not_object = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            r#"["not","object"]"#,
+        ],
+        workspace.path(),
+    );
+    assert_code(&payload_not_object, 2);
+    let envelope = error_json(&payload_not_object);
+    assert_contains(
+        &envelope["error"]["message"],
+        "payload must be a JSON object",
     );
 
     let mime_without_file = awiki_cmd(

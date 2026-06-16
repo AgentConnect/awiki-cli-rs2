@@ -518,6 +518,53 @@ fn send_message_request_builds_group_text_dto() {
 }
 
 #[test]
+fn send_message_request_builds_group_payload_dto() {
+    let command = command_with_flags([
+        ("group", "did:example:group"),
+        ("payload", r#"{"text":"@agent hi","mentions":[]}"#),
+        ("client-message-id", "msg_payload_1"),
+        ("idempotency-key", "idem-payload-1"),
+    ]);
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+
+    assert!(warnings.is_empty());
+    assert!(matches!(
+        request.target,
+        MessageTarget::Group(ref group) if group == &GroupRef::parse("did:example:group").unwrap()
+    ));
+    assert!(matches!(
+        request.body,
+        MessageBody::Payload { ref payload }
+            if payload["text"] == "@agent hi"
+                && payload["mentions"].as_array().is_some_and(Vec::is_empty)
+    ));
+    assert_eq!(
+        request.client_message_id.as_ref().map(MessageId::as_str),
+        Some("msg_payload_1")
+    );
+    assert_eq!(
+        request.delivery.idempotency_key.as_deref(),
+        Some("idem-payload-1")
+    );
+}
+
+#[test]
+fn send_message_request_rejects_payload_text_conflict() {
+    let command = command_with_flags([
+        ("to", "bob"),
+        ("payload", r#"{"text":"structured"}"#),
+        ("text", "plain"),
+    ]);
+    let err = messages::send_message_request(&command, "awiki.test").unwrap_err();
+
+    assert_eq!(err.detail.code, "invalid_argument");
+    assert!(err
+        .detail
+        .message
+        .contains("--payload/--payload-file cannot be combined"));
+}
+
+#[test]
 fn send_message_request_accepts_client_message_id_and_idempotency_key() {
     let command = command_with_flags([
         ("to", "bob"),

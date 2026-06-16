@@ -182,7 +182,7 @@ pub fn history_request(
     ))
 }
 
-pub fn send_text_via_im_core(
+pub fn send_message_via_im_core(
     _resolved: &Resolved,
     client: &im_core::ImClient,
     request: SendMessageRequest,
@@ -212,7 +212,7 @@ pub fn send_text_via_im_core(
     }
 }
 
-pub async fn send_text_via_im_core_async(
+pub async fn send_message_via_im_core_async(
     _resolved: &Resolved,
     client: &im_core::ImClient,
     request: SendMessageRequest,
@@ -847,6 +847,12 @@ fn message_target(
 }
 
 fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
+    if has_payload_input(command) {
+        reject_payload_conflicts(command)?;
+        return Ok(MessageBody::Payload {
+            payload: message_payload(command)?,
+        });
+    }
     let file_path = string_flag(command, "file");
     if !file_path.trim().is_empty() {
         let text = message_text(command, true)?;
@@ -863,6 +869,85 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
         text,
         kind: message_kind(&string_flag(command, "type"))?,
     })
+}
+
+fn has_payload_input(command: &ParsedCommand) -> bool {
+    !string_flag(command, "payload").trim().is_empty()
+        || !string_flag(command, "payload-file").trim().is_empty()
+}
+
+fn reject_payload_conflicts(command: &ParsedCommand) -> Result<(), ExitError> {
+    for flag in ["text", "text-file", "file"] {
+        if !string_flag(command, flag).trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "--payload/--payload-file cannot be combined with text or attachment inputs.",
+                "Use payload input by itself, or use --text/--text-file/--file for non-payload messages.",
+            ));
+        }
+    }
+    if !string_flag(command, "mime-type").trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--mime-type requires an attachment file",
+            "Use --mime-type only together with --file.",
+        ));
+    }
+    let message_type = string_flag(command, "type");
+    let message_type = message_type.trim();
+    if !message_type.is_empty() && !message_type.eq_ignore_ascii_case("text") {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--type cannot be used with payload messages.",
+            "Payload messages always use application/json.",
+        ));
+    }
+    Ok(())
+}
+
+fn message_payload(command: &ParsedCommand) -> Result<Value, ExitError> {
+    let inline = string_flag(command, "payload");
+    let payload_file = string_flag(command, "payload-file");
+    if !inline.trim().is_empty() && !payload_file.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "Use either --payload or --payload-file, not both.",
+            "Choose one JSON payload source.",
+        ));
+    }
+    let raw = if !payload_file.trim().is_empty() {
+        fs::read_to_string(payload_file.trim()).map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                format!("read payload file {:?}: {err}", payload_file.trim()),
+                "Check the --payload-file path and permissions.",
+            )
+        })?
+    } else {
+        inline
+    };
+    let payload = serde_json::from_str::<Value>(&raw).map_err(|err| {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            format!("payload must be valid JSON: {err}"),
+            "Pass a JSON object with --payload or --payload-file.",
+        )
+    })?;
+    if !payload.is_object() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "payload must be a JSON object.",
+            "Pass an object such as '{\"text\":\"hello\"}'.",
+        ));
+    }
+    Ok(payload)
 }
 
 fn message_text(command: &ParsedCommand, allow_empty: bool) -> Result<String, ExitError> {

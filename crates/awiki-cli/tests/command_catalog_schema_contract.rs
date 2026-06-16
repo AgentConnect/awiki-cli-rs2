@@ -27,6 +27,14 @@ fn schema_flags_omit_empty_fields_like_go_catalog() {
     assert_eq!(secure["choices"], serde_json::json!(["off", "required"]));
     assert!(secure.get("required").is_none());
     assert!(secure.get("deprecated").is_none());
+    assert_eq!(
+        schema_flag(schema_command(&msg_send), "payload")["type"],
+        "string"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&msg_send), "payload-file")["type"],
+        "string"
+    );
 }
 
 #[test]
