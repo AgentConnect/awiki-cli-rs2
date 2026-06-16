@@ -1474,15 +1474,15 @@ high risk task             → task-scoped + worktree/container
 用户委托的 App Message Agent 可以拉取 controller 的 direct 与 group inbox。对群消息，daemon 只在消息 body 是合法 ANP P9 `text + mentions` JSON payload，并且 mention 命中当前 runtime agent 时创建 RuntimeTask：
 
 - `target.kind = agent` 时只按 `target.did == runtime_agent_did` 精确命中；`display_name` 只可作为展示快照，不能参与身份判断。
-- `target.kind = group_selector` 且 `selector = all` / `agents` 时，当前实现只做终端侧 best-effort 命中：要求本地 binding 仍为 active，并把 `@agents` 限定在 runtime agent DID 形态；daemon 不在服务端展开 selector，也不做 mention 专属授权。
-- `selector = humans` 和 `target.kind = human` 不触发 runtime agent。
+- `target.kind = group_selector` 不触发 runtime agent，包括 `selector = all` / `agents` / `humans`。当前版本不做群 selector 展开，也不允许 `@agents` / `@all` 作为 Agent 调用入口。
+- `target.kind = human` 不触发 runtime agent。
 - 群文本里只有 `@AgentName` 但没有合法 `mentions` 数组时，不触发 runtime agent。
 - `mention_role = cc` 可以进入 runtime，但 prompt metadata 标为 FYI / 抄送，不默认代表必须执行。
 - E2EE opaque cipher 不解析 mention，也不写入 ciphertext 内容到 audit。
 
 RuntimeTask 的 `user_message` JSON 会包含 `mention_context` 与 `attention_policy`。`attention_policy` 必须明确：mention 只是注意力信号，不是授权；controller/runtime policy、allowed actions、群消息安全规则仍然生效。对非 controller 群成员触发的 mention，task 的 `sender_did` 保持原群消息发送者 DID，使 Hermes prompt wrapper 将其识别为 `untrusted_group_member`，避免绕过 controller 授权。
 
-Audit 只记录命中类型、message id、sender DID、conversation id、role、selector 和 best-effort 状态；不记录 token、私钥或 raw secret。
+Audit 只记录命中类型、message id、sender DID、conversation id、role 和精确 mention metadata；不记录 token、私钥或 raw secret。
 
 ### 9.6 Runtime 对外发消息流程
 
