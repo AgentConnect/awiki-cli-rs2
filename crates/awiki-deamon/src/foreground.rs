@@ -273,15 +273,54 @@ async fn process_inbox_once(
     for agent in agents {
         let identity = match state.load_agent_identity(&agent.agent_did) {
             Ok(identity) => identity,
-            Err(_) => continue,
+            Err(error) => {
+                record_runtime_inbox_poll_error(
+                    state,
+                    "daemon.runtime_inbox.agent_identity.failed",
+                    &agent.agent_did,
+                    error,
+                );
+                continue;
+            }
         };
-        let jwt_token = state.load_agent_auth_token(&agent.agent_did)?;
-        let client = im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref())?;
-        ensure_agent_messaging_session(&client, &agent.agent_did).await?;
+        let jwt_token = match state.load_agent_auth_token(&agent.agent_did) {
+            Ok(token) => token,
+            Err(error) => {
+                record_runtime_inbox_poll_error(
+                    state,
+                    "daemon.runtime_inbox.agent_token.failed",
+                    &agent.agent_did,
+                    error,
+                );
+                continue;
+            }
+        };
+        let client =
+            match im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref()) {
+                Ok(client) => client,
+                Err(error) => {
+                    record_runtime_inbox_poll_error(
+                        state,
+                        "daemon.runtime_inbox.client.failed",
+                        &agent.agent_did,
+                        error,
+                    );
+                    continue;
+                }
+            };
+        if let Err(error) = ensure_agent_messaging_session(&client, &agent.agent_did).await {
+            record_runtime_inbox_poll_error(
+                state,
+                "daemon.runtime_inbox.session.failed",
+                &agent.agent_did,
+                error,
+            );
+            continue;
+        }
         for poll_scope in runtime_agent_inbox_poll_scopes() {
             match poll_scope {
                 RuntimeInboxPollScope::Direct => {
-                    processed_count += process_agent_direct_inbox_once(
+                    match process_agent_direct_inbox_once(
                         config,
                         state,
                         im_core,
@@ -290,7 +329,16 @@ async fn process_inbox_once(
                         &agent.agent_did,
                         processed,
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(count) => processed_count += count,
+                        Err(error) => record_runtime_inbox_poll_error(
+                            state,
+                            "daemon.direct_inbox.poll.failed",
+                            &agent.agent_did,
+                            error,
+                        ),
+                    }
                 }
                 RuntimeInboxPollScope::Group => {
                     match process_agent_group_inbox_once(
@@ -305,23 +353,12 @@ async fn process_inbox_once(
                     .await
                     {
                         Ok(count) => processed_count += count,
-                        Err(error) => {
-                            let sanitized = sanitize_error_message(&error.to_string());
-                            eprintln!(
-                                "warning: daemon group inbox poll failed for agent {}: {sanitized}",
-                                agent.agent_did
-                            );
-                            let _ = state.insert_audit_event_json(
-                                "daemon.group_inbox.poll.failed",
-                                Some(&agent.agent_did),
-                                None,
-                                None,
-                                None,
-                                json!({
-                                    "error": sanitized,
-                                }),
-                            );
-                        }
+                        Err(error) => record_runtime_inbox_poll_error(
+                            state,
+                            "daemon.group_inbox.poll.failed",
+                            &agent.agent_did,
+                            error,
+                        ),
                     }
                 }
             }
@@ -557,6 +594,57 @@ impl RuntimeInboxPollScope {
 
 fn runtime_agent_inbox_poll_scopes() -> [RuntimeInboxPollScope; 2] {
     [RuntimeInboxPollScope::Direct, RuntimeInboxPollScope::Group]
+}
+
+fn runtime_task_status_correlation(task: &RuntimeTask) -> (Option<String>, Option<String>) {
+    let fallback_source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+    let Ok(payload) = serde_json::from_str::<Value>(&task.text) else {
+        return (fallback_source_message_id, None);
+    };
+    let source_message_id = payload
+        .get("source_message_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or(fallback_source_message_id);
+    let mention_id = payload
+        .get("mention_context")
+        .and_then(|context| context.get("mention_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    (source_message_id, mention_id)
+}
+
+fn record_runtime_inbox_poll_error(
+    state: &DaemonState,
+    event_type: &str,
+    agent_did: &str,
+    error: impl std::fmt::Display,
+) {
+    let sanitized = sanitize_error_message(&error.to_string());
+    eprintln!("warning: {event_type} for agent {agent_did}: {sanitized}");
+    if let Err(audit_error) = state.insert_audit_event_json(
+        event_type,
+        Some(agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "error": sanitized,
+        }),
+    ) {
+        eprintln!(
+            "warning: daemon inbox poll error audit failed: {}",
+            sanitize_error_message(&audit_error.to_string())
+        );
+    }
 }
 
 fn runtime_processed_message_id(message: &Message) -> String {
@@ -985,13 +1073,17 @@ where
         &mention_context,
         authorization.sender_full_handle.as_deref(),
     );
-    let runtime_outbox = ControllerRuntimeOutbox::new(
+    let task_message_id =
+        group_agent_mention_task_message_id(message, &mention_context.mention_id, target_agent_did);
+    let runtime_outbox = ControllerRuntimeOutbox::with_status_correlation(
         ControllerOutboxSender::ImCore(ImCoreAgentOutbox::new(target_client.clone())),
         status_sender.sender,
         Some(status_sender.daemon_agent_did),
         message.sender.as_str().to_string(),
-        format!("task_{}", message.id.as_str()),
+        format!("task_{task_message_id}"),
         conversation_id.clone(),
+        Some(message.id.as_str().to_string()),
+        Some(mention_context.mention_id.clone()),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -1000,11 +1092,7 @@ where
         state,
         &runtime_outbox,
         ControllerTextMessage {
-            message_id: group_agent_mention_task_message_id(
-                message,
-                &mention_context.mention_id,
-                target_agent_did,
-            ),
+            message_id: task_message_id,
             conversation_id: conversation_id.clone(),
             sender_did: message.sender.as_str().to_string(),
             target_agent_did: target_agent_did.to_string(),
@@ -1289,13 +1377,15 @@ fn route_runtime_controller_text(
     repair_runtime_controller_inbox_projection_best_effort(config, state, target_agent_did);
     let outbox = ImCoreAgentOutbox::new(target_client.clone());
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
-    let runtime_outbox = ControllerRuntimeOutbox::new(
+    let runtime_outbox = ControllerRuntimeOutbox::with_status_correlation(
         ControllerOutboxSender::ImCore(outbox.clone()),
         status_sender.sender,
         Some(status_sender.daemon_agent_did),
         sender_did.clone(),
         format!("task_{message_id}"),
         conversation_id.clone(),
+        Some(message_id.to_string()),
+        None,
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -2140,6 +2230,8 @@ struct ControllerRuntimeOutbox {
     recipient_did: String,
     task_id: String,
     conversation_id: Option<String>,
+    status_source_message_id: Option<String>,
+    status_mention_id: Option<String>,
     sent_counter: Arc<std::sync::atomic::AtomicUsize>,
     sent_message_ids: Arc<Mutex<Vec<String>>>,
 }
@@ -2155,6 +2247,33 @@ impl ControllerRuntimeOutbox {
         sent_counter: Arc<std::sync::atomic::AtomicUsize>,
         sent_message_ids: Arc<Mutex<Vec<String>>>,
     ) -> Self {
+        Self::with_status_correlation(
+            message_sender,
+            status_sender,
+            daemon_agent_did,
+            recipient_did,
+            task_id,
+            conversation_id,
+            None,
+            None,
+            sent_counter,
+            sent_message_ids,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_status_correlation(
+        message_sender: ControllerOutboxSender,
+        status_sender: ControllerOutboxSender,
+        daemon_agent_did: Option<String>,
+        recipient_did: impl Into<String>,
+        task_id: impl Into<String>,
+        conversation_id: Option<String>,
+        status_source_message_id: Option<String>,
+        status_mention_id: Option<String>,
+        sent_counter: Arc<std::sync::atomic::AtomicUsize>,
+        sent_message_ids: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
         Self {
             message_sender,
             status_sender,
@@ -2162,6 +2281,8 @@ impl ControllerRuntimeOutbox {
             recipient_did: recipient_did.into(),
             task_id: task_id.into(),
             conversation_id,
+            status_source_message_id,
+            status_mention_id,
             sent_counter,
             sent_message_ids,
         }
@@ -2482,6 +2603,8 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
                 "runs": [{
                     "run_id": context.run_id.clone(),
                     "message_id": self.task_id.clone(),
+                    "source_message_id": self.status_source_message_id.clone(),
+                    "mention_id": self.status_mention_id.clone(),
                     "runtime_agent_did": context.agent_did.clone(),
                     "conversation_id": self.conversation_id.clone(),
                     "status": state,
@@ -2520,6 +2643,8 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
                 "runs": [{
                     "run_id": context.run_id.clone(),
                     "message_id": self.task_id.clone(),
+                    "source_message_id": self.status_source_message_id.clone(),
+                    "mention_id": self.status_mention_id.clone(),
                     "runtime_agent_did": context.agent_did.clone(),
                     "conversation_id": self.conversation_id.clone(),
                     "status": "finished",
@@ -2642,13 +2767,16 @@ impl RuntimeCallbackOutbox {
                 status_sender.sender,
             )
         };
-        Ok(ControllerRuntimeOutbox::new(
+        let (status_source_message_id, status_mention_id) = runtime_task_status_correlation(&task);
+        Ok(ControllerRuntimeOutbox::with_status_correlation(
             message_sender,
             status_sender,
             daemon_agent_did,
             task.sender_did,
             task.task_id,
             task.conversation_id,
+            status_source_message_id,
+            status_mention_id,
             Arc::clone(&self.sent_counter),
             Arc::clone(&self.sent_message_ids),
         ))
@@ -3710,6 +3838,51 @@ mod tests {
         assert_eq!(task_payload["mention_context"]["mention_id"], "men_agent");
         assert_eq!(task_payload["mention_context"]["surface"], "@Hermes");
         assert_eq!(task_payload["mention_context"]["match_kind"], "agent_did");
+    }
+
+    #[test]
+    fn runtime_task_status_correlation_prefers_group_mention_source_metadata() {
+        let payload = group_mention_payload("did:agent:hermes");
+        let context = group_agent_mention_context("did:agent:hermes", &payload).unwrap();
+        let message = group_mention_message("did:group:team:11", "did:agent:hermes");
+        let task_payload =
+            group_agent_mention_task_payload(&message, &payload, &context, Some("bob.example.com"));
+        let task = RuntimeTask {
+            task_id: "task_group_mention_generated".to_string(),
+            agent_did: "did:agent:hermes".to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            sender_did: "did:human:bob".to_string(),
+            conversation_id: Some("group:did:group:team".to_string()),
+            text: task_payload.to_string(),
+        };
+
+        let (source_message_id, mention_id) = runtime_task_status_correlation(&task);
+
+        assert_eq!(source_message_id.as_deref(), Some("did:group:team:11"));
+        assert_eq!(mention_id.as_deref(), Some("men_agent"));
+    }
+
+    #[test]
+    fn runtime_task_status_correlation_falls_back_to_task_message_id() {
+        let task = RuntimeTask {
+            task_id: "task_msg_direct_1".to_string(),
+            agent_did: "did:agent:hermes".to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            sender_did: "did:human:alice".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            text: "direct prompt".to_string(),
+        };
+
+        let (source_message_id, mention_id) = runtime_task_status_correlation(&task);
+
+        assert_eq!(source_message_id.as_deref(), Some("msg_direct_1"));
+        assert_eq!(mention_id, None);
     }
 
     #[test]
