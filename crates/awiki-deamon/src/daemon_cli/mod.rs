@@ -343,7 +343,7 @@ where
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
-            generate_product_handle("deamon-").unwrap_or_else(|_| "deamon-local".to_string())
+            generate_product_handle("edgehost-").unwrap_or_else(|_| "edgehost-local".to_string())
         });
     setup_daemon_agent(
         config,
@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn product_install_generates_deamon_prefixed_handle_when_token_has_no_handle() {
+    fn product_install_generates_policy_safe_handle_when_token_has_no_handle() {
         let (_root, config, state) = fixture();
         let client = MockInstallClient::active_daemon_token_without_handle();
 
@@ -689,7 +689,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(agent.agent_kind, AgentKind::Daemon);
-        assert!(agent.handle.starts_with("deamon-"));
+        assert!(agent.handle.starts_with("edgehost-"));
         assert!(!agent.handle.starts_with("awiki-"));
         let requests = client.exchange_requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
