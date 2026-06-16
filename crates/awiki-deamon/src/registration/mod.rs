@@ -269,8 +269,9 @@ impl UserServiceAgentRegistrationClient {
             .send()
             .await
             .with_context(|| format!("call user-service verify token {}", self.rpc_url))?;
-        let bytes = read_user_service_json_rpc_response(response, "agent registration token verify")
-            .await?;
+        let bytes =
+            read_user_service_json_rpc_response(response, "agent registration token verify")
+                .await?;
         parse_verify_response(&bytes)
     }
 

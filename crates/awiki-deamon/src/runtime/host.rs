@@ -663,9 +663,11 @@ fn mention_surface_for_sender(payload: &serde_json::Value, sender_did: &str) -> 
     if let Some(handle) = payload
         .get("source_sender_full_handle")
         .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .and_then(short_handle)
     {
+        return format!("@{handle}");
+    }
+    if let Some(handle) = short_handle_from_wba_did(sender_did) {
         return format!("@{handle}");
     }
     let compact = if sender_did.len() <= 18 {
@@ -678,6 +680,43 @@ fn mention_surface_for_sender(payload: &serde_json::Value, sender_did: &str) -> 
         )
     };
     format!("@{compact}")
+}
+
+fn short_handle(value: &str) -> Option<String> {
+    let mut trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.starts_with("did:") {
+        return None;
+    }
+    while let Some(rest) = trimmed.strip_prefix('@') {
+        trimmed = rest.trim_start();
+    }
+    if let Some(rest) = trimmed.strip_prefix("wba://") {
+        trimmed = rest.trim_start();
+    }
+    let handle = match trimmed.find('.') {
+        Some(index) if index > 0 => &trimmed[..index],
+        _ => trimmed,
+    }
+    .trim();
+    if handle.is_empty() {
+        None
+    } else {
+        Some(handle.to_string())
+    }
+}
+
+fn short_handle_from_wba_did(did: &str) -> Option<String> {
+    let parts = did.trim().split(':').collect::<Vec<_>>();
+    if parts.len() >= 6 && parts[0] == "did" && parts[1] == "wba" {
+        if parts[3] == "user" {
+            return short_handle(parts[4]);
+        }
+        if parts[3] == "agent" && parts.len() >= 7 {
+            return short_handle(parts[5]);
+        }
+        return short_handle(parts[3]);
+    }
+    None
 }
 
 fn group_did_from_conversation_id(conversation_id: &str) -> Option<&str> {
@@ -1179,4 +1218,33 @@ fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Resu
         output.push(item.to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn mention_surface_for_sender_uses_short_handle_from_full_handle() {
+        let payload = json!({
+            "source_sender_full_handle": "bob.anpclaw.com"
+        });
+
+        assert_eq!(
+            mention_surface_for_sender(&payload, "did:human:bob"),
+            "@bob"
+        );
+    }
+
+    #[test]
+    fn mention_surface_for_sender_derives_short_handle_from_wba_did() {
+        let payload = json!({});
+
+        assert_eq!(
+            mention_surface_for_sender(&payload, "did:wba:awiki.info:user:alice:e1_sender"),
+            "@alice"
+        );
+    }
 }

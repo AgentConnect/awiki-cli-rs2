@@ -26,7 +26,10 @@ use crate::commands::{
     handle_agent_payload_message, AgentCommandOutcome, IncomingAgentPayloadMessage,
 };
 use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
-use crate::inbox::user_delegated::{flush_message_sync_outbox, process_user_delegated_inbox_once};
+use crate::inbox::user_delegated::{
+    flush_message_sync_outbox, process_user_delegated_group_message_for_runtime,
+    process_user_delegated_inbox_once, RuntimeHostMessageDispatcher,
+};
 use crate::inbox::ControllerTextMessage;
 use crate::local_rpc::call_uds_once;
 #[cfg(unix)]
@@ -742,6 +745,16 @@ async fn route_message(
     if is_opaque_group_e2ee_message(message) {
         record_ignored_opaque_group_e2ee_message(state, target_agent_did, message)?;
         return Ok(false);
+    }
+    if matches!(message.thread, ThreadRef::Group(_)) || message.group.is_some() {
+        let dispatcher = RuntimeHostMessageDispatcher::new(config, state, im_core);
+        return process_user_delegated_group_message_for_runtime(
+            config,
+            state,
+            target_agent_did,
+            message,
+            &dispatcher,
+        );
     }
     match &message.body {
         MessageBodyView::Payload { payload } => {

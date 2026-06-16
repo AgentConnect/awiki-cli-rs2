@@ -117,6 +117,15 @@ struct AgentDispatchContent {
     mention_context: Option<UserMessageMentionContext>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DelegatedMessageProcessOutcome {
+    Dispatched,
+    AuthorizationDenied,
+    Ignored,
+    IgnoredE2ee,
+    SkippedProcessed,
+}
+
 pub trait UserDelegatedInboxClient {
     fn fetch_user_delegated_inbox(
         &self,
@@ -1051,149 +1060,15 @@ where
         if message.direction == MessageDirection::Outgoing {
             continue;
         }
-        let source_message_id = message.id.as_str().to_string();
-        if is_e2ee_opaque_message(&message) {
-            let inserted = state.try_insert_processed_message(&ProcessedMessageRecord {
-                owner_did: binding.user_did.clone(),
-                message_id: source_message_id.clone(),
-                schema: EVENT_SCHEMA_E2EE_OPAQUE.to_string(),
-                processed_at_ms: 0,
-                status: PROCESSED_STATUS_IGNORED_E2EE.to_string(),
-            })?;
-            if inserted {
-                state.upsert_message_event(&ignored_e2ee_event(binding, &message)?)?;
-                ignored_e2ee += 1;
-            } else {
-                skipped_processed += 1;
-            }
-            continue;
+        match process_user_delegated_message_for_binding_with_authorizer(
+            state, dispatcher, authorizer, binding, &message,
+        )? {
+            DelegatedMessageProcessOutcome::Dispatched => dispatched += 1,
+            DelegatedMessageProcessOutcome::IgnoredE2ee => ignored_e2ee += 1,
+            DelegatedMessageProcessOutcome::SkippedProcessed => skipped_processed += 1,
+            DelegatedMessageProcessOutcome::AuthorizationDenied
+            | DelegatedMessageProcessOutcome::Ignored => {}
         }
-        let Some(dispatch_content) = dispatch_content_for_agent(binding, &message) else {
-            continue;
-        };
-        let processed_message_id =
-            processed_message_id_for_dispatch(binding, &source_message_id, &dispatch_content);
-        if processed_message_is_terminal(state, &binding.user_did, &processed_message_id)? {
-            skipped_processed += 1;
-            continue;
-        }
-        let inserted = state.try_insert_processed_message(&processing_record(
-            binding,
-            &processed_message_id,
-            EVENT_SCHEMA_USER_MESSAGE,
-        ))?;
-        if !inserted
-            && processed_message_is_terminal(state, &binding.user_did, &processed_message_id)?
-        {
-            skipped_processed += 1;
-            continue;
-        }
-        if !inserted {
-            state.mark_processed_message_status(
-                &binding.user_did,
-                &processed_message_id,
-                PROCESSED_STATUS_PROCESSING,
-            )?;
-        }
-        let mut envelope = user_message_envelope(binding, &message, dispatch_content)?;
-        if envelope.mention_context.is_some() {
-            match authorize_group_invocation(state, authorizer, binding, &envelope) {
-                Ok(authorization) if authorization.allowed => {
-                    envelope.source_sender_full_handle = authorization.sender_full_handle;
-                }
-                Ok(authorization) => {
-                    state.insert_audit_event_json(
-                        "user_delegated_inbox.mention_authorization_denied",
-                        Some(&binding.runtime_agent_did),
-                        Some(&binding.runtime_profile_id),
-                        None,
-                        None,
-                        json!({
-                            "binding_id": binding.binding_id,
-                            "owner_did": binding.user_did,
-                            "runtime_agent_did": binding.runtime_agent_did,
-                            "source_message_id": envelope.source_message_id,
-                            "source_conversation_id": envelope.source_conversation_id,
-                            "source_sender_did": envelope.source_sender_did,
-                            "reason": authorization.reason,
-                            "active_mode": authorization.active_mode,
-                            "sender_full_handle": authorization.sender_full_handle,
-                        }),
-                    )?;
-                    state.mark_processed_message_status(
-                        &binding.user_did,
-                        &processed_message_id,
-                        PROCESSED_STATUS_DISPATCHED,
-                    )?;
-                    continue;
-                }
-                Err(error) => {
-                    state.insert_audit_event_json(
-                        "user_delegated_inbox.mention_authorization_failed",
-                        Some(&binding.runtime_agent_did),
-                        Some(&binding.runtime_profile_id),
-                        None,
-                        None,
-                        json!({
-                            "binding_id": binding.binding_id,
-                            "owner_did": binding.user_did,
-                            "runtime_agent_did": binding.runtime_agent_did,
-                            "source_message_id": envelope.source_message_id,
-                            "source_conversation_id": envelope.source_conversation_id,
-                            "source_sender_did": envelope.source_sender_did,
-                            "error": sanitize_error_message(&error.to_string()),
-                        }),
-                    )?;
-                    state.mark_processed_message_status(
-                        &binding.user_did,
-                        &processed_message_id,
-                        PROCESSED_STATUS_FAILED_RETRYABLE,
-                    )?;
-                    return Err(error);
-                }
-            }
-        }
-        let task = runtime_task_from_envelope(state, binding, &envelope)?;
-        if let Err(error) = dispatcher.dispatch_user_message(binding, task, &envelope) {
-            state.mark_processed_message_status(
-                &binding.user_did,
-                &processed_message_id,
-                PROCESSED_STATUS_FAILED_RETRYABLE,
-            )?;
-            return Err(error);
-        }
-        let event = message_event_from_envelope(binding, &message, &envelope)?;
-        state.upsert_message_event(&event)?;
-        state.mark_processed_message_status(
-            &binding.user_did,
-            &processed_message_id,
-            PROCESSED_STATUS_DISPATCHED,
-        )?;
-        state.upsert_message_sync_outbox(&message_sync_outbox_record(binding, &envelope)?)?;
-        if let Some(mention_context) = &envelope.mention_context {
-            state.insert_audit_event_json(
-                "user_delegated_inbox.mention_matched",
-                Some(&binding.runtime_agent_did),
-                Some(&binding.runtime_profile_id),
-                None,
-                None,
-                json!({
-                    "binding_id": binding.binding_id,
-                    "owner_did": binding.user_did,
-                    "runtime_agent_did": binding.runtime_agent_did,
-                    "source_message_id": envelope.source_message_id,
-                    "source_conversation_id": envelope.source_conversation_id,
-                    "source_sender_did": envelope.source_sender_did,
-                    "mention_id": mention_context.mention_id,
-                    "mention_role": mention_context.mention_role,
-                    "target_kind": mention_context.target_kind,
-                    "selector": mention_context.selector,
-                    "match_kind": mention_context.match_kind,
-                    "best_effort_group_state": mention_context.best_effort_group_state,
-                }),
-            )?;
-        }
-        dispatched += 1;
     }
     state.upsert_inbox_cursor(&InboxCursorRecord {
         owner_did: binding.user_did.clone(),
@@ -1209,6 +1084,60 @@ where
         skipped_processed_messages: skipped_processed,
         next_cursor: page.next_cursor,
     })
+}
+
+pub fn process_user_delegated_group_message_for_runtime<D>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    runtime_agent_did: &str,
+    message: &Message,
+    dispatcher: &D,
+) -> Result<bool>
+where
+    D: UserDelegatedMessageDispatcher,
+{
+    let authorizer = UserServiceAgentInvocationAuthorizer::new(config)?;
+    process_user_delegated_group_message_for_runtime_with_authorizer(
+        state,
+        runtime_agent_did,
+        message,
+        dispatcher,
+        &authorizer,
+    )
+}
+
+fn process_user_delegated_group_message_for_runtime_with_authorizer<D, A>(
+    state: &DaemonState,
+    runtime_agent_did: &str,
+    message: &Message,
+    dispatcher: &D,
+    authorizer: &A,
+) -> Result<bool>
+where
+    D: UserDelegatedMessageDispatcher,
+    A: AgentInvocationAuthorizer,
+{
+    if !is_group_message(message) || message.direction == MessageDirection::Outgoing {
+        return Ok(false);
+    }
+    let Some(binding) =
+        state.load_active_app_message_agent_binding_by_runtime(runtime_agent_did)?
+    else {
+        return Ok(false);
+    };
+    if binding.role != APP_MESSAGE_HANDLER_ROLE {
+        return Ok(false);
+    }
+    let outcome = process_user_delegated_message_for_binding_with_authorizer(
+        state, dispatcher, authorizer, &binding, message,
+    )?;
+    Ok(matches!(
+        outcome,
+        DelegatedMessageProcessOutcome::Dispatched
+            | DelegatedMessageProcessOutcome::AuthorizationDenied
+            | DelegatedMessageProcessOutcome::IgnoredE2ee
+            | DelegatedMessageProcessOutcome::SkippedProcessed
+    ))
 }
 
 struct AllowAllAgentInvocationAuthorizer;
@@ -1256,6 +1185,157 @@ fn processed_message_is_terminal(
                 PROCESSED_STATUS_DISPATCHED | PROCESSED_STATUS_IGNORED_E2EE
             )
         }))
+}
+
+fn process_user_delegated_message_for_binding_with_authorizer<D, A>(
+    state: &DaemonState,
+    dispatcher: &D,
+    authorizer: &A,
+    binding: &AppMessageAgentBindingRecord,
+    message: &Message,
+) -> Result<DelegatedMessageProcessOutcome>
+where
+    D: UserDelegatedMessageDispatcher,
+    A: AgentInvocationAuthorizer,
+{
+    let source_message_id = message.id.as_str().to_string();
+    if is_e2ee_opaque_message(message) {
+        let inserted = state.try_insert_processed_message(&ProcessedMessageRecord {
+            owner_did: binding.user_did.clone(),
+            message_id: source_message_id.clone(),
+            schema: EVENT_SCHEMA_E2EE_OPAQUE.to_string(),
+            processed_at_ms: 0,
+            status: PROCESSED_STATUS_IGNORED_E2EE.to_string(),
+        })?;
+        if inserted {
+            state.upsert_message_event(&ignored_e2ee_event(binding, message)?)?;
+            return Ok(DelegatedMessageProcessOutcome::IgnoredE2ee);
+        }
+        return Ok(DelegatedMessageProcessOutcome::SkippedProcessed);
+    }
+    let Some(dispatch_content) = dispatch_content_for_agent(binding, message) else {
+        return Ok(DelegatedMessageProcessOutcome::Ignored);
+    };
+    let processed_message_id =
+        processed_message_id_for_dispatch(binding, &source_message_id, &dispatch_content);
+    if processed_message_is_terminal(state, &binding.user_did, &processed_message_id)? {
+        return Ok(DelegatedMessageProcessOutcome::SkippedProcessed);
+    }
+    let inserted = state.try_insert_processed_message(&processing_record(
+        binding,
+        &processed_message_id,
+        EVENT_SCHEMA_USER_MESSAGE,
+    ))?;
+    if !inserted && processed_message_is_terminal(state, &binding.user_did, &processed_message_id)?
+    {
+        return Ok(DelegatedMessageProcessOutcome::SkippedProcessed);
+    }
+    if !inserted {
+        state.mark_processed_message_status(
+            &binding.user_did,
+            &processed_message_id,
+            PROCESSED_STATUS_PROCESSING,
+        )?;
+    }
+    let mut envelope = user_message_envelope(binding, message, dispatch_content)?;
+    if envelope.mention_context.is_some() {
+        match authorize_group_invocation(state, authorizer, binding, &envelope) {
+            Ok(authorization) if authorization.allowed => {
+                envelope.source_sender_full_handle = authorization.sender_full_handle;
+            }
+            Ok(authorization) => {
+                state.insert_audit_event_json(
+                    "user_delegated_inbox.mention_authorization_denied",
+                    Some(&binding.runtime_agent_did),
+                    Some(&binding.runtime_profile_id),
+                    None,
+                    None,
+                    json!({
+                        "binding_id": binding.binding_id,
+                        "owner_did": binding.user_did,
+                        "runtime_agent_did": binding.runtime_agent_did,
+                        "source_message_id": envelope.source_message_id,
+                        "source_conversation_id": envelope.source_conversation_id,
+                        "source_sender_did": envelope.source_sender_did,
+                        "reason": authorization.reason,
+                        "active_mode": authorization.active_mode,
+                        "sender_full_handle": authorization.sender_full_handle,
+                    }),
+                )?;
+                state.mark_processed_message_status(
+                    &binding.user_did,
+                    &processed_message_id,
+                    PROCESSED_STATUS_DISPATCHED,
+                )?;
+                return Ok(DelegatedMessageProcessOutcome::AuthorizationDenied);
+            }
+            Err(error) => {
+                state.insert_audit_event_json(
+                    "user_delegated_inbox.mention_authorization_failed",
+                    Some(&binding.runtime_agent_did),
+                    Some(&binding.runtime_profile_id),
+                    None,
+                    None,
+                    json!({
+                        "binding_id": binding.binding_id,
+                        "owner_did": binding.user_did,
+                        "runtime_agent_did": binding.runtime_agent_did,
+                        "source_message_id": envelope.source_message_id,
+                        "source_conversation_id": envelope.source_conversation_id,
+                        "source_sender_did": envelope.source_sender_did,
+                        "error": sanitize_error_message(&error.to_string()),
+                    }),
+                )?;
+                state.mark_processed_message_status(
+                    &binding.user_did,
+                    &processed_message_id,
+                    PROCESSED_STATUS_FAILED_RETRYABLE,
+                )?;
+                return Err(error);
+            }
+        }
+    }
+    let task = runtime_task_from_envelope(state, binding, &envelope)?;
+    if let Err(error) = dispatcher.dispatch_user_message(binding, task, &envelope) {
+        state.mark_processed_message_status(
+            &binding.user_did,
+            &processed_message_id,
+            PROCESSED_STATUS_FAILED_RETRYABLE,
+        )?;
+        return Err(error);
+    }
+    let event = message_event_from_envelope(binding, message, &envelope)?;
+    state.upsert_message_event(&event)?;
+    state.mark_processed_message_status(
+        &binding.user_did,
+        &processed_message_id,
+        PROCESSED_STATUS_DISPATCHED,
+    )?;
+    state.upsert_message_sync_outbox(&message_sync_outbox_record(binding, &envelope)?)?;
+    if let Some(mention_context) = &envelope.mention_context {
+        state.insert_audit_event_json(
+            "user_delegated_inbox.mention_matched",
+            Some(&binding.runtime_agent_did),
+            Some(&binding.runtime_profile_id),
+            None,
+            None,
+            json!({
+                "binding_id": binding.binding_id,
+                "owner_did": binding.user_did,
+                "runtime_agent_did": binding.runtime_agent_did,
+                "source_message_id": envelope.source_message_id,
+                "source_conversation_id": envelope.source_conversation_id,
+                "source_sender_did": envelope.source_sender_did,
+                "mention_id": mention_context.mention_id,
+                "mention_role": mention_context.mention_role,
+                "target_kind": mention_context.target_kind,
+                "selector": mention_context.selector,
+                "match_kind": mention_context.match_kind,
+                "best_effort_group_state": mention_context.best_effort_group_state,
+            }),
+        )?;
+    }
+    Ok(DelegatedMessageProcessOutcome::Dispatched)
 }
 
 fn processing_record(
@@ -1502,7 +1582,7 @@ fn mention_context_for_mention(
         MessageMentionTarget::GroupSelector {
             selector: MessageMentionSelector::Agents,
         } if binding.status == "message_agent_ready"
-            && binding.runtime_agent_did.starts_with("did:agent:") =>
+            && is_agent_did_like(&binding.runtime_agent_did) =>
         {
             (
                 "group_selector",
@@ -2285,6 +2365,65 @@ mod tests {
 
         assert_eq!(outcome.dispatched_messages, 0);
         assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delegated_group_runtime_ignores_plain_group_text() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let dispatcher = RecordingDispatcher::default();
+        let authorizer = RecordingAuthorizer::allow(Some("bob.anpclaw.com"));
+        let handled = process_user_delegated_group_message_for_runtime_with_authorizer(
+            state,
+            &fixture.binding.runtime_agent_did,
+            &group_plain_message("msg_group_plain", "did:human:bob", "@Hermes hello"),
+            &dispatcher,
+            &authorizer,
+        )
+        .unwrap();
+
+        assert!(!handled);
+        assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+        assert!(authorizer.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delegated_group_runtime_dispatches_structured_agent_mention() {
+        let fixture = fixture();
+        let state = &fixture.state;
+        let binding = &fixture.binding;
+        let payload = json!({
+            "text": "@Hermes hello",
+            "mentions": [{
+                "id": "men_group_runtime",
+                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                "target": {"kind": "agent", "did": binding.runtime_agent_did}
+            }]
+        });
+        let dispatcher = RecordingDispatcher::default();
+        let authorizer = RecordingAuthorizer::allow(Some("bob.anpclaw.com"));
+        let handled = process_user_delegated_group_message_for_runtime_with_authorizer(
+            state,
+            &binding.runtime_agent_did,
+            &mention_payload_message("msg_group_runtime", "did:human:bob", payload),
+            &dispatcher,
+            &authorizer,
+        )
+        .unwrap();
+
+        assert!(handled);
+        let dispatched = dispatcher.dispatched.lock().unwrap();
+        assert_eq!(dispatched.len(), 1);
+        assert_eq!(
+            dispatched[0].0.conversation_id.as_deref(),
+            Some("group:group_1")
+        );
+        assert_eq!(dispatched[0].1.message_kind, "group_mention");
+        assert_eq!(
+            dispatched[0].1.mention_context.as_ref().unwrap().mention_id,
+            "men_group_runtime"
+        );
+        assert_eq!(authorizer.calls.lock().unwrap().len(), 1);
     }
 
     #[test]
