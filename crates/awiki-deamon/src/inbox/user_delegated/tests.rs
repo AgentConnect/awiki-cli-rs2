@@ -125,7 +125,9 @@ fn delegated_inbox_dispatches_plain_message_as_untrusted_envelope() {
     let (task, envelope) = &dispatched[0];
     assert_eq!(task.agent_did, binding.runtime_agent_did);
     assert_eq!(task.controller_did, binding.user_did);
-    assert_eq!(task.sender_did, binding.user_did);
+    assert_eq!(task.sender_did, "did:human:bob");
+    assert_eq!(task.requester_did, "did:human:bob");
+    assert_eq!(task.reply_recipient_did, "did:human:bob");
     assert_eq!(envelope.content_role, "user_message_untrusted");
     assert_eq!(envelope.source_sender_did, "did:human:bob");
     assert_eq!(envelope.content_text, "hello agent");
@@ -546,8 +548,12 @@ fn delegated_runtime_status_and_final_are_queued_without_plaintext_final() {
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
-        controller_did: binding.daemon_agent_did.clone(),
-        sender_did: binding.daemon_agent_did.clone(),
+        controller_did: binding.user_did.clone(),
+        sender_did: "did:human:bob".to_string(),
+        requester_did: "did:human:bob".to_string(),
+        requester_full_handle: Some("bob.example.com".to_string()),
+        trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        reply_recipient_did: "did:human:bob".to_string(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::to_string(&json!({
             "schema": "awiki.runtime.user_message_task.v1",
@@ -637,7 +643,11 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
         controller_did: binding.user_did.clone(),
-        sender_did: binding.user_did.clone(),
+        sender_did: "did:human:bob".to_string(),
+        requester_did: "did:human:bob".to_string(),
+        requester_full_handle: Some("bob.example.com".to_string()),
+        trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        reply_recipient_did: "did:human:bob".to_string(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::to_string(&json!({
             "schema": "awiki.runtime.user_message_task.v1",

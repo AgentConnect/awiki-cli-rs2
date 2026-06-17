@@ -1,5 +1,6 @@
 use super::schema::DAEMON_SCHEMA_VERSION;
 use super::*;
+use crate::runtime::RuntimeTaskTriggerKind;
 
 #[test]
 fn initialize_creates_required_tables() {
@@ -459,6 +460,59 @@ fn control_command_state_roundtrips_and_deduplicates() {
 }
 
 #[test]
+fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let task = RuntimeTask {
+        task_id: "task_state_roundtrip".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        sender_did: "did:human:bob".to_string(),
+        requester_did: "did:human:bob".to_string(),
+        requester_full_handle: Some("bob.example.com".to_string()),
+        trigger_kind: RuntimeTaskTriggerKind::ExternalDirect,
+        reply_recipient_did: "did:human:bob".to_string(),
+        conversation_id: Some("direct:did:human:bob".to_string()),
+        text: serde_json::json!({
+            "schema": "awiki.runtime.user_message_task.v1",
+            "source_message_id": "msg_state_roundtrip",
+            "content_text": "hello"
+        })
+        .to_string(),
+    };
+    state.insert_runtime_task(&task).unwrap();
+    state
+        .insert_runtime_run(&RuntimeRun {
+            run_id: "run_state_roundtrip".to_string(),
+            task_id: task.task_id.clone(),
+            agent_did: task.agent_did.clone(),
+            runtime_profile_id: "profile_hermes".to_string(),
+            runtime_plugin_id: "hermes".to_string(),
+            workspace_id: None,
+            status: RuntimeRunStatus::Running,
+        })
+        .unwrap();
+
+    let loaded = state
+        .load_runtime_task_for_run("run_state_roundtrip")
+        .unwrap();
+    assert_eq!(loaded.trigger_kind, RuntimeTaskTriggerKind::ExternalDirect);
+    assert_eq!(loaded.requester_did, "did:human:bob");
+    assert_eq!(
+        loaded.requester_full_handle.as_deref(),
+        Some("bob.example.com")
+    );
+    assert_eq!(loaded.reply_recipient_did, "did:human:bob");
+    assert_eq!(loaded.text, task.text);
+}
+
+#[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -474,6 +528,7 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         runtime_profile_id: "profile_hermes".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice".to_string(),
         controller_did: "did:human:alice".to_string(),
+        recipient_did: "did:human:alice".to_string(),
         conversation_id: Some("direct:did:human:alice".to_string()),
         final_text: "final text".to_string(),
         security: "default_plain".to_string(),
@@ -895,6 +950,7 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
         "did:agent:hermes",
         "profile_hermes_alice",
         "controller-scope:v1:test-alice",
+        "did:human:alice",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );

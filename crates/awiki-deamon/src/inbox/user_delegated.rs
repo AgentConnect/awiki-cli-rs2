@@ -25,7 +25,7 @@ use crate::outbox::{
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 use crate::runtime::host::run_existing_runtime_task_with_config;
-use crate::runtime::{RuntimeRunStatus, RuntimeTask};
+use crate::runtime::{RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind};
 use crate::security::runtime_token::current_time_millis;
 use crate::state::{
     AppMessageAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, InboxCursorRecord,
@@ -1053,6 +1053,7 @@ fn runtime_task_from_envelope(
     });
     let text = serde_json::to_string(&payload)?;
     let controller_did = profile.controller_did.clone();
+    let requester_did = envelope.source_sender_did.clone();
     let task_key = format!("{}:{}", binding.user_did, envelope.source_message_id);
     let task = RuntimeTask {
         task_id: format!("task_user_msg_{}", stable_id_suffix(&task_key)),
@@ -1061,7 +1062,11 @@ fn runtime_task_from_envelope(
         controller_full_handle: profile.controller_full_handle,
         controller_scope_key: profile.controller_scope_key,
         controller_did,
-        sender_did: profile.controller_did.clone(),
+        sender_did: requester_did.clone(),
+        requester_did: requester_did.clone(),
+        requester_full_handle: envelope.source_sender_full_handle.clone(),
+        trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        reply_recipient_did: requester_did,
         conversation_id: envelope.source_conversation_id.clone(),
         text,
     };

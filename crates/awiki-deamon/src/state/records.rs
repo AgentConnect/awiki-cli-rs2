@@ -502,6 +502,7 @@ pub struct HermesSessionRoute {
     pub agent_did: String,
     pub runtime_profile_id: String,
     pub controller_scope_key: String,
+    pub session_actor_did: String,
     pub conversation_id: Option<String>,
     pub session_kind: String,
 }
@@ -511,6 +512,7 @@ impl HermesSessionRoute {
         agent_did: impl Into<String>,
         runtime_profile_id: impl Into<String>,
         controller_scope_key: impl Into<String>,
+        session_actor_did: impl Into<String>,
         conversation_id: Option<String>,
         session_kind: impl Into<String>,
     ) -> Self {
@@ -518,6 +520,7 @@ impl HermesSessionRoute {
             agent_did: agent_did.into(),
             runtime_profile_id: runtime_profile_id.into(),
             controller_scope_key: controller_scope_key.into(),
+            session_actor_did: session_actor_did.into(),
             conversation_id,
             session_kind: session_kind.into(),
         }
@@ -533,6 +536,9 @@ impl HermesSessionRoute {
         if self.controller_scope_key.trim().is_empty() {
             bail!("controller_scope_key must not be empty");
         }
+        if self.session_actor_did.trim().is_empty() {
+            bail!("session_actor_did must not be empty");
+        }
         if self.session_kind.trim().is_empty() {
             bail!("session_kind must not be empty");
         }
@@ -541,9 +547,10 @@ impl HermesSessionRoute {
 
     pub fn route_key(&self) -> String {
         format!(
-            "hermes:{}:{}:{}:{}",
+            "hermes:{}:{}:{}:{}:{}",
             self.agent_did,
             self.controller_scope_key,
+            self.session_actor_did,
             self.conversation_id
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
@@ -561,6 +568,7 @@ pub struct HermesNativeSessionRecord {
     pub runtime_profile_id: String,
     pub controller_scope_key: String,
     pub controller_did: String,
+    pub session_actor_did: String,
     pub conversation_id: Option<String>,
     pub route_key: String,
     pub hermes_profile: String,
@@ -607,6 +615,7 @@ pub struct RuntimeFinalOutboxRecord {
     pub runtime_profile_id: String,
     pub controller_scope_key: String,
     pub controller_did: String,
+    pub recipient_did: String,
     pub conversation_id: Option<String>,
     pub final_text: String,
     pub security: String,
@@ -681,6 +690,7 @@ impl RuntimeFinalOutboxRecord {
             ("runtime_profile_id", self.runtime_profile_id.as_str()),
             ("controller_scope_key", self.controller_scope_key.as_str()),
             ("controller_did", self.controller_did.as_str()),
+            ("recipient_did", self.recipient_did.as_str()),
             ("final_text", self.final_text.as_str()),
             ("security", self.security.as_str()),
             ("status", self.status.as_str()),
@@ -796,6 +806,7 @@ impl HermesNativeSessionRecord {
             runtime_profile_id: route.runtime_profile_id.clone(),
             controller_scope_key: route.controller_scope_key.clone(),
             controller_did,
+            session_actor_did: route.session_actor_did.clone(),
             conversation_id: route.conversation_id.clone(),
             route_key,
             hermes_profile: hermes_profile.into(),
@@ -822,6 +833,12 @@ impl HermesNativeSessionRecord {
         }
         if self.controller_scope_key.trim().is_empty() {
             bail!("controller_scope_key must not be empty");
+        }
+        if self.controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        if self.session_actor_did.trim().is_empty() {
+            bail!("session_actor_did must not be empty");
         }
         if self.route_key.trim().is_empty() {
             bail!("route_key must not be empty");

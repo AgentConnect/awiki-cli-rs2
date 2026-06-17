@@ -1,5 +1,6 @@
 use super::row_mappers::*;
 use super::*;
+use crate::runtime::RuntimeTaskTriggerKind;
 
 impl DaemonState {
     pub fn insert_runtime_task(&self, task: &RuntimeTask) -> Result<()> {
@@ -16,14 +17,24 @@ INSERT INTO runtime_task (
     controller_scope_key,
     controller_did,
     sender_did,
+    requester_did,
+    requester_full_handle,
+    trigger_kind,
+    reply_recipient_did,
     conversation_id,
     task_text,
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'created', ?10, ?10)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'created', ?14, ?14)
 ON CONFLICT(task_id) DO UPDATE SET
     task_text = excluded.task_text,
+    sender_did = excluded.sender_did,
+    requester_did = excluded.requester_did,
+    requester_full_handle = excluded.requester_full_handle,
+    trigger_kind = excluded.trigger_kind,
+    reply_recipient_did = excluded.reply_recipient_did,
+    conversation_id = excluded.conversation_id,
     updated_at_ms = excluded.updated_at_ms
 "#,
             rusqlite::params![
@@ -34,6 +45,10 @@ ON CONFLICT(task_id) DO UPDATE SET
                 task.controller_scope_key,
                 task.controller_did,
                 task.sender_did,
+                task.requester_did,
+                task.requester_full_handle,
+                task.trigger_kind.as_str(),
+                task.reply_recipient_did,
                 task.conversation_id,
                 task.text,
                 now,
@@ -250,6 +265,7 @@ INSERT INTO runtime_final_outbox (
     runtime_profile_id,
     controller_scope_key,
     controller_did,
+    recipient_did,
     conversation_id,
     final_text,
     security,
@@ -262,10 +278,12 @@ INSERT INTO runtime_final_outbox (
     created_at_ms,
     updated_at_ms,
     sent_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', 0, ?10, NULL, NULL, NULL, ?11, ?11, NULL)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', 0, ?11, NULL, NULL, NULL, ?12, ?12, NULL)
 ON CONFLICT(idempotency_key) DO UPDATE SET
     final_text = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
     security = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.security ELSE excluded.security END,
+    recipient_did = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.recipient_did ELSE excluded.recipient_did END,
+    conversation_id = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.conversation_id ELSE excluded.conversation_id END,
     status = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.status ELSE 'pending' END,
     next_attempt_at_ms = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
     last_error_code = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_code ELSE NULL END,
@@ -279,6 +297,7 @@ ON CONFLICT(idempotency_key) DO UPDATE SET
                 record.runtime_profile_id,
                 record.controller_scope_key,
                 record.controller_did,
+                record.recipient_did,
                 record.conversation_id,
                 record.final_text,
                 record.security,
@@ -304,6 +323,7 @@ SELECT
     runtime_profile_id,
     controller_scope_key,
     controller_did,
+    recipient_did,
     conversation_id,
     final_text,
     security,
@@ -341,6 +361,7 @@ SELECT
     runtime_profile_id,
     controller_scope_key,
     controller_did,
+    recipient_did,
     conversation_id,
     final_text,
     security,
@@ -581,6 +602,10 @@ SELECT
     controller_scope_key,
     controller_did,
     sender_did,
+    requester_did,
+    requester_full_handle,
+    trigger_kind,
+    reply_recipient_did,
     conversation_id,
     task_text
 FROM runtime_task
@@ -588,6 +613,18 @@ WHERE task_id = ?1
 "#,
                 [task_id],
                 |row| {
+                    let trigger_raw: String = row.get(9)?;
+                    let trigger_kind =
+                        RuntimeTaskTriggerKind::parse(&trigger_raw).map_err(|err| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                trigger_raw.len(),
+                                rusqlite::types::Type::Text,
+                                Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    err.to_string(),
+                                )),
+                            )
+                        })?;
                     Ok(RuntimeTask {
                         task_id: row.get(0)?,
                         agent_did: row.get(1)?,
@@ -596,8 +633,12 @@ WHERE task_id = ?1
                         controller_scope_key: row.get(4)?,
                         controller_did: row.get(5)?,
                         sender_did: row.get(6)?,
-                        conversation_id: row.get(7)?,
-                        text: row.get(8)?,
+                        requester_did: row.get(7)?,
+                        requester_full_handle: row.get(8)?,
+                        trigger_kind,
+                        reply_recipient_did: row.get(10)?,
+                        conversation_id: row.get(11)?,
+                        text: row.get(12)?,
                     })
                 },
             )

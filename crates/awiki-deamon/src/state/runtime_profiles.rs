@@ -533,6 +533,7 @@ INSERT INTO hermes_native_sessions (
     runtime_profile_id,
     controller_scope_key,
     controller_did,
+    session_actor_did,
     conversation_id,
     route_key,
     hermes_profile,
@@ -541,13 +542,14 @@ INSERT INTO hermes_native_sessions (
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
 ON CONFLICT(id) DO UPDATE SET
     runtime_session_id = excluded.runtime_session_id,
     agent_did = excluded.agent_did,
     runtime_profile_id = excluded.runtime_profile_id,
     controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
+    session_actor_did = excluded.session_actor_did,
     conversation_id = excluded.conversation_id,
     route_key = excluded.route_key,
     hermes_profile = excluded.hermes_profile,
@@ -563,6 +565,7 @@ ON CONFLICT(id) DO UPDATE SET
                     session.runtime_profile_id,
                     session.controller_scope_key,
                     session.controller_did,
+                    session.session_actor_did,
                     session.conversation_id,
                     session.route_key,
                     session.hermes_profile,
@@ -593,6 +596,7 @@ SELECT
     runtime_profile_id,
     controller_scope_key,
     controller_did,
+    session_actor_did,
     conversation_id,
     route_key,
     hermes_profile,

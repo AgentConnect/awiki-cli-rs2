@@ -2,7 +2,11 @@ use std::time::Duration;
 
 use awiki_deamon::agent::resolve_runtime;
 use awiki_deamon::agent::runtime_plugin_id;
-use awiki_deamon::inbox::{route_controller_text_task, ControllerTextMessage};
+use awiki_deamon::controller_scope::VerifiedControllerSender;
+use awiki_deamon::inbox::{
+    route_controller_text_task, route_controller_text_task_with_verified_sender,
+    ControllerTextMessage,
+};
 use awiki_deamon::plugins::hermes::{HERMES_RUNTIME_NAME, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::runtime::RuntimeAgentProfile;
 use awiki_deamon::security::runtime_token::{RpcMethod, RuntimeTokenScope};
@@ -97,6 +101,8 @@ fn hermes_controller_text_route_preserves_verified_sender_did() {
             message_id: "msg_001".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
             target_agent_did: "did:agent:hermes".to_string(),
             text: "请处理这条消息".to_string(),
         },
@@ -107,12 +113,22 @@ fn hermes_controller_text_route_preserves_verified_sender_did() {
     assert_eq!(routed.controller_did, "did:human:alice");
     assert_eq!(routed.agent_did, "did:agent:hermes");
 
-    let rotated = route_controller_text_task(
+    let verified_sender = VerifiedControllerSender {
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: "did:human:alice-new".to_string(),
+        sender_did: "did:human:alice-new".to_string(),
+    };
+    let rotated = route_controller_text_task_with_verified_sender(
         &profile,
+        &verified_sender,
         ControllerTextMessage {
             message_id: "msg_002".to_string(),
             conversation_id: None,
             sender_did: "did:human:alice-new".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
             target_agent_did: "did:agent:hermes".to_string(),
             text: "恢复身份后的控制者消息".to_string(),
         },
@@ -127,6 +143,8 @@ fn hermes_controller_text_route_preserves_verified_sender_did() {
             message_id: "msg_003".to_string(),
             conversation_id: None,
             sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
             target_agent_did: "did:agent:other".to_string(),
             text: "错误目标".to_string(),
         },

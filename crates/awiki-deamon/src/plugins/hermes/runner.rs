@@ -117,6 +117,7 @@ where
             self.profile.agent_did.clone(),
             self.profile.runtime_profile_id.clone(),
             context.task.controller_scope_key.clone(),
+            context.task.requester_did.clone(),
             context.task.conversation_id.clone(),
             "conversation",
         );

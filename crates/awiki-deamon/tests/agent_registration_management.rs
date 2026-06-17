@@ -731,6 +731,7 @@ fn runtime_session_reset_archives_active_hermes_route() {
         created.agent_did.clone(),
         created.runtime_profile_id.clone(),
         daemon.controller_scope_key.clone(),
+        "did:human:alice",
         Some("dm:alice:hermes".to_string()),
         "conversation",
     );
@@ -916,6 +917,10 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
             controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             sender_did: "did:human:alice".to_string(),
+            requester_did: "did:human:alice".to_string(),
+            requester_full_handle: Some("alice.anpclaw.com".to_string()),
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            reply_recipient_did: "did:human:alice".to_string(),
             conversation_id: Some("dm:alice:retry".to_string()),
             text: "super secret prompt".to_string(),
         })
@@ -2310,6 +2315,7 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
         created.agent_did.clone(),
         created.runtime_profile_id.clone(),
         "controller-scope:v1:test-alice-anpclaw-com",
+        "did:human:alice",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );

@@ -797,6 +797,7 @@ where
             runtime_agent.agent_did.clone(),
             runtime_profile_id.to_string(),
             daemon_agent.controller_scope_key.clone(),
+            daemon_agent.controller_did.clone(),
             Some(conversation_id.to_string()),
             "conversation",
         );

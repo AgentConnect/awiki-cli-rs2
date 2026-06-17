@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 20;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 21;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -126,6 +126,10 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             sender_did TEXT NOT NULL,
+            requester_did TEXT NOT NULL DEFAULT '',
+            requester_full_handle TEXT,
+            trigger_kind TEXT NOT NULL DEFAULT 'controller_direct',
+            reply_recipient_did TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             task_text TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -205,6 +209,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             runtime_profile_id TEXT NOT NULL,
             controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
+            session_actor_did TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             route_key TEXT NOT NULL,
             hermes_profile TEXT NOT NULL,
@@ -282,6 +287,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             runtime_profile_id TEXT NOT NULL,
             controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
+            recipient_did TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             final_text TEXT NOT NULL,
             security TEXT NOT NULL DEFAULT 'default_plain',
@@ -466,6 +472,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_user_delegated_inbox_sync_v18(connection)?;
     migrate_controller_scope_v19(connection)?;
     migrate_control_command_state_v20(connection)?;
+    migrate_runtime_requester_contract_v21(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -642,6 +649,64 @@ fn migrate_control_command_state_v20(connection: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_control_command_state_message
         ON control_command_state(daemon_agent_did, message_id);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_requester_contract_v21(connection: &Connection) -> Result<()> {
+    for (table, column, definition) in [
+        ("runtime_task", "requester_did", "TEXT NOT NULL DEFAULT ''"),
+        ("runtime_task", "requester_full_handle", "TEXT"),
+        (
+            "runtime_task",
+            "trigger_kind",
+            "TEXT NOT NULL DEFAULT 'controller_direct'",
+        ),
+        (
+            "runtime_task",
+            "reply_recipient_did",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_final_outbox",
+            "recipient_did",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "hermes_native_sessions",
+            "session_actor_did",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        add_column_if_missing(connection, table, column, definition)?;
+    }
+
+    connection.execute_batch(
+        r#"
+        UPDATE runtime_task
+        SET requester_did = CASE WHEN requester_did = '' THEN sender_did ELSE requester_did END,
+            reply_recipient_did = CASE WHEN reply_recipient_did = '' THEN sender_did ELSE reply_recipient_did END,
+            trigger_kind = CASE
+                WHEN trigger_kind = '' THEN
+                    CASE
+                        WHEN conversation_id LIKE 'group:%' THEN 'group_mention'
+                        WHEN sender_did = controller_did THEN 'controller_direct'
+                        ELSE 'external_direct'
+                    END
+                ELSE trigger_kind
+            END
+        WHERE sender_did <> '';
+
+        UPDATE runtime_final_outbox
+        SET recipient_did = controller_did
+        WHERE recipient_did = ''
+          AND controller_did <> '';
+
+        UPDATE hermes_native_sessions
+        SET session_actor_did = controller_did
+        WHERE session_actor_did = ''
+          AND controller_did <> '';
         "#,
     )?;
     Ok(())

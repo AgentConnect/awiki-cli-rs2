@@ -7,7 +7,9 @@ use awiki_deamon::local_rpc::{
     RuntimeRpcRequest,
 };
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
-use awiki_deamon::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
+use awiki_deamon::runtime::{
+    RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
+};
 use awiki_deamon::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
 };
@@ -79,6 +81,10 @@ fn insert_runtime_task_context(
             controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:controller".to_string(),
             sender_did: "did:human:controller".to_string(),
+            requester_did: "did:human:controller".to_string(),
+            requester_full_handle: Some("alice.anpclaw.com".to_string()),
+            trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+            reply_recipient_did: "did:human:controller".to_string(),
             conversation_id: Some("dm:controller-agent".to_string()),
             text: "send attachment".to_string(),
         })

@@ -50,7 +50,7 @@ use crate::plugins::hermes::{
 use crate::registration::{AgentInventoryClient, UserServiceAgentRegistrationClient};
 use crate::runtime::host::{
     flush_runtime_final_outbox, run_controller_text_task_with_config,
-    run_existing_runtime_task_with_config,
+    run_controller_text_task_with_verified_sender_config, run_existing_runtime_task_with_config,
 };
 use crate::runtime::{
     is_group_conversation_id, runtime_task_matches_profile_controller_scope, RuntimeInstallStatus,
@@ -976,16 +976,16 @@ async fn route_message(
             Ok(true)
         }
         MessageBodyView::Text { text, .. } => {
-            route_runtime_controller_text(
+            route_runtime_direct_text(
                 config,
                 state,
                 im_core,
+                registration,
                 target_client,
                 target_agent_did,
                 message.id.as_str(),
                 conversation_id,
                 sender_did,
-                None,
                 text.clone(),
             )?;
             Ok(true)
@@ -1107,6 +1107,13 @@ where
         conversation_id.clone(),
         Some(message.id.as_str().to_string()),
         Some(mention_context.mention_id.clone()),
+        Some(message.sender.as_str().to_string()),
+        authorization.sender_full_handle.clone(),
+        Some(
+            crate::runtime::RuntimeTaskTriggerKind::GroupMention
+                .as_str()
+                .to_string(),
+        ),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -1118,9 +1125,12 @@ where
             message_id: task_message_id,
             conversation_id: conversation_id.clone(),
             sender_did: message.sender.as_str().to_string(),
+            requester_full_handle: authorization.sender_full_handle.clone(),
+            trigger_kind: crate::runtime::RuntimeTaskTriggerKind::GroupMention,
             target_agent_did: target_agent_did.to_string(),
             text: task_payload.to_string(),
         },
+        None,
         || StdioHermesGateway::from_config(config),
     )?;
     state.insert_audit_event_json(
@@ -1353,6 +1363,43 @@ fn group_agent_mention_task_message_id(
     )
 }
 
+fn external_direct_agent_task_payload(
+    message_id: &str,
+    conversation_id: Option<&str>,
+    sender_did: &str,
+    sender_full_handle: Option<&str>,
+    text: &str,
+) -> Value {
+    let content_hash = foreground_content_hash(text);
+    json!({
+        "schema": "awiki.runtime.user_message_task.v1",
+        "content_role": "user_message_untrusted",
+        "source_message_id": message_id,
+        "source_conversation_id": conversation_id,
+        "source_sender_did": sender_did,
+        "source_sender_full_handle": sender_full_handle,
+        "inbox_owner_did": sender_did,
+        "message_kind": "external_direct",
+        "content_text": text,
+        "content_hash": content_hash,
+        "allowed_actions": ["reply-in-current-direct-via-final"],
+        "direct_request_context": {
+            "schema": "awiki.user_message.direct_request_context.v1",
+            "requester_did": sender_did,
+            "requester_full_handle": sender_full_handle,
+            "prompt_hint": "This is a direct private request from a non-controller user to this agent."
+        },
+        "attention_policy": "Direct access is allowed only because user-service invocation policy authorized this requester for this agent. The requester is not the controller.",
+    })
+}
+
+fn external_direct_task_message_id(message_id: &str, target_agent_did: &str) -> String {
+    format!(
+        "external_direct_{}",
+        foreground_stable_id_suffix(&format!("{message_id}:{target_agent_did}"))
+    )
+}
+
 fn foreground_content_hash(text: &str) -> String {
     let digest = sha2::Sha256::digest(text.as_bytes());
     format!("{digest:x}")
@@ -1382,7 +1429,7 @@ fn route_runtime_controller_text(
     if is_group_conversation_id(conversation_id.as_deref()) {
         verify_runtime_group_sender(state, target_agent_did, &sender_did)?;
     } else {
-        match verified_sender {
+        match verified_sender.as_ref() {
             Some(_verified_sender) => {}
             None => {
                 let registration =
@@ -1409,6 +1456,13 @@ fn route_runtime_controller_text(
         conversation_id.clone(),
         Some(message_id.to_string()),
         None,
+        Some(sender_did.clone()),
+        None,
+        Some(
+            crate::runtime::RuntimeTaskTriggerKind::ControllerDirect
+                .as_str()
+                .to_string(),
+        ),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -1419,12 +1473,216 @@ fn route_runtime_controller_text(
         ControllerTextMessage {
             message_id: message_id.to_string(),
             conversation_id,
-            sender_did,
+            sender_did: sender_did.clone(),
+            requester_full_handle: None,
+            trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
             target_agent_did: target_agent_did.to_string(),
             text,
         },
+        verified_sender,
         || StdioHermesGateway::from_config(config),
     )?;
+    Ok(())
+}
+
+fn route_runtime_direct_text<C>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    registration: &C,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message_id: &str,
+    conversation_id: Option<String>,
+    sender_did: String,
+    text: String,
+) -> Result<()>
+where
+    C: AgentInventoryClient,
+{
+    match verify_runtime_controller_sender(
+        config,
+        state,
+        registration,
+        target_agent_did,
+        &sender_did,
+    ) {
+        Ok(verified_sender) => route_runtime_controller_text(
+            config,
+            state,
+            im_core,
+            target_client,
+            target_agent_did,
+            message_id,
+            conversation_id,
+            sender_did,
+            Some(verified_sender),
+            text,
+        ),
+        Err(controller_error) => route_runtime_external_direct_text(
+            config,
+            state,
+            im_core,
+            registration,
+            target_client,
+            target_agent_did,
+            message_id,
+            conversation_id,
+            sender_did,
+            text,
+            &controller_error,
+        ),
+    }
+}
+
+fn route_runtime_external_direct_text<C>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    registration: &C,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message_id: &str,
+    conversation_id: Option<String>,
+    sender_did: String,
+    text: String,
+    controller_error: &anyhow::Error,
+) -> Result<()>
+where
+    C: AgentInventoryClient,
+{
+    if is_group_conversation_id(conversation_id.as_deref()) {
+        return Err(anyhow::anyhow!(
+            "group runtime text requires structured mention"
+        ));
+    }
+    let binding = state
+        .load_runtime_daemon_binding(target_agent_did)?
+        .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
+    let daemon_agent = state.load_agent_definition(&binding.daemon_agent_did)?;
+    let auth = daemon_auth_material(config, state, &daemon_agent)?;
+    let authorization = registration.authorize_agent_invocation(
+        &binding.daemon_agent_did,
+        target_agent_did,
+        &sender_did,
+        conversation_id.as_deref(),
+        Some(message_id),
+        &auth,
+    )?;
+    if !authorization.allowed {
+        state.insert_audit_event_json(
+            "daemon.direct_invocation.rejected",
+            Some(target_agent_did),
+            Some(&binding.controller_scope_key),
+            None,
+            None,
+            json!({
+                "runtime_agent_did": target_agent_did,
+                "daemon_agent_did": binding.daemon_agent_did,
+                "source_message_id": message_id,
+                "source_conversation_id": conversation_id,
+                "source_sender_did": sender_did,
+                "reason": authorization.reason,
+                "active_mode": authorization.active_mode,
+            }),
+        )?;
+        let status_sender =
+            runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
+        let runtime_outbox = ControllerRuntimeOutbox::with_status_correlation(
+            ControllerOutboxSender::ImCore(ImCoreAgentOutbox::new(target_client.clone())),
+            status_sender.sender,
+            Some(status_sender.daemon_agent_did),
+            sender_did.clone(),
+            format!(
+                "task_{}",
+                external_direct_task_message_id(message_id, target_agent_did)
+            ),
+            conversation_id.clone(),
+            Some(message_id.to_string()),
+            None,
+            Some(sender_did),
+            authorization.sender_full_handle,
+            Some(
+                crate::runtime::RuntimeTaskTriggerKind::ExternalDirect
+                    .as_str()
+                    .to_string(),
+            ),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let context = crate::state::AuthorizedRuntimeContext {
+            token_id: "host-direct-invocation-rejected".to_string(),
+            agent_did: target_agent_did.to_string(),
+            runtime_profile_id: state
+                .load_runtime_agent_profile(target_agent_did)?
+                .runtime_profile_id,
+            run_id: format!(
+                "run_task_{}",
+                external_direct_task_message_id(message_id, target_agent_did)
+            ),
+            method: crate::security::runtime_token::RpcMethod::TaskStatus,
+        };
+        runtime_outbox.send_status_with_detail(
+            &context,
+            "failed",
+            Some("Agent invocation is not allowed"),
+            Some("agent_invocation_denied"),
+            None,
+        )?;
+        return Ok(());
+    }
+    repair_runtime_controller_inbox_projection_best_effort(config, state, target_agent_did);
+    let task_payload = external_direct_agent_task_payload(
+        message_id,
+        conversation_id.as_deref(),
+        &sender_did,
+        authorization.sender_full_handle.as_deref(),
+        &text,
+    );
+    let outbox = ImCoreAgentOutbox::new(target_client.clone());
+    let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
+    let task_message_id = external_direct_task_message_id(message_id, target_agent_did);
+    let runtime_outbox = ControllerRuntimeOutbox::with_status_correlation(
+        ControllerOutboxSender::ImCore(outbox.clone()),
+        status_sender.sender,
+        Some(status_sender.daemon_agent_did),
+        sender_did.clone(),
+        format!("task_{task_message_id}"),
+        conversation_id.clone(),
+        Some(message_id.to_string()),
+        None,
+        Some(sender_did.clone()),
+        authorization.sender_full_handle.clone(),
+        Some(
+            crate::runtime::RuntimeTaskTriggerKind::ExternalDirect
+                .as_str()
+                .to_string(),
+        ),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    run_runtime_text_message_with_gateway(
+        config,
+        state,
+        &runtime_outbox,
+        ControllerTextMessage {
+            message_id: task_message_id,
+            conversation_id,
+            sender_did,
+            requester_full_handle: authorization.sender_full_handle,
+            trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ExternalDirect,
+            target_agent_did: target_agent_did.to_string(),
+            text: task_payload.to_string(),
+        },
+        None,
+        || StdioHermesGateway::from_config(config),
+    )
+    .with_context(|| {
+        format!(
+            "route external direct runtime text after controller verification failed: {}",
+            sanitize_error_message(&controller_error.to_string())
+        )
+    })?;
     Ok(())
 }
 
@@ -1679,31 +1937,91 @@ fn run_runtime_text_message_with_gateway<G, F>(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     message: ControllerTextMessage,
+    verified_sender: Option<VerifiedControllerSender>,
     hermes_gateway_factory: F,
 ) -> Result<crate::runtime::host::RuntimeTaskRunResult>
 where
     G: HermesGateway + Clone,
     F: Fn() -> G,
 {
-    let profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
-    match profile.runtime_plugin_id.as_str() {
+    let current_profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
+    match current_profile.runtime_plugin_id.as_str() {
         HERMES_RUNTIME_PLUGIN_ID => {
-            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
+            let hermes_profile =
+                current_hermes_profile_for_runtime(config, state, &current_profile)?;
             let plugin = HermesRuntimePlugin::with_state(
                 hermes_gateway_factory(),
                 hermes_profile,
                 state.clone(),
             );
-            run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
+            if let Some(verified) = verified_sender.as_ref() {
+                run_controller_text_task_with_verified_sender_config(
+                    config,
+                    state,
+                    &current_profile,
+                    verified,
+                    &plugin,
+                    outbox,
+                    message,
+                )
+            } else {
+                run_controller_text_task_with_config(
+                    config,
+                    state,
+                    &current_profile,
+                    &plugin,
+                    outbox,
+                    message,
+                )
+            }
         }
         GENERIC_CLI_RUNTIME_PLUGIN_ID => {
-            let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+            let cli_profile =
+                state.load_cli_runtime_profile(&current_profile.runtime_profile_id)?;
             let plugin = GenericCliDriverRegistry::new(cli_profile);
-            run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
+            if let Some(verified) = verified_sender.as_ref() {
+                run_controller_text_task_with_verified_sender_config(
+                    config,
+                    state,
+                    &current_profile,
+                    verified,
+                    &plugin,
+                    outbox,
+                    message,
+                )
+            } else {
+                run_controller_text_task_with_config(
+                    config,
+                    state,
+                    &current_profile,
+                    &plugin,
+                    outbox,
+                    message,
+                )
+            }
         }
         _ => {
             let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_controller_text_task_with_config(config, state, &profile, &plugin, outbox, message)
+            if let Some(verified) = verified_sender.as_ref() {
+                run_controller_text_task_with_verified_sender_config(
+                    config,
+                    state,
+                    &current_profile,
+                    verified,
+                    &plugin,
+                    outbox,
+                    message,
+                )
+            } else {
+                run_controller_text_task_with_config(
+                    config,
+                    state,
+                    &current_profile,
+                    &plugin,
+                    outbox,
+                    message,
+                )
+            }
         }
     }
 }
@@ -1760,6 +2078,8 @@ fn run_runtime_task_command(
         message_id,
         conversation_id: message.conversation_id,
         sender_did: verified_sender.sender_did,
+        requester_full_handle: Some(verified_sender.controller_full_handle),
+        trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
         target_agent_did,
         text: payload.text,
     };

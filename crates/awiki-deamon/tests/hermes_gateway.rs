@@ -5,6 +5,7 @@ use awiki_deamon::plugins::hermes::{
 };
 use awiki_deamon::runtime::{
     RuntimeLaunchContext, RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
+    RuntimeTaskTriggerKind,
 };
 use awiki_deamon::security::runtime_token::{issue_runtime_token, RpcMethod, RuntimeTokenScope};
 use awiki_deamon::state::HermesProfileRecord;
@@ -139,6 +140,10 @@ fn hermes_gateway_plugin_launch_observes_complete_without_final_callback() {
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:alice".to_string(),
                 sender_did: "did:human:alice".to_string(),
+                requester_did: "did:human:alice".to_string(),
+                requester_full_handle: Some("alice.anpclaw.com".to_string()),
+                trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+                reply_recipient_did: "did:human:alice".to_string(),
                 conversation_id: Some("direct:did:human:alice".to_string()),
                 text: "不要把 complete 直接当 final".to_string(),
             },
@@ -193,6 +198,10 @@ fn hermes_gateway_plugin_rejects_mismatched_profile_binding() {
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:alice".to_string(),
                 sender_did: "did:human:alice".to_string(),
+                requester_did: "did:human:alice".to_string(),
+                requester_full_handle: Some("alice.anpclaw.com".to_string()),
+                trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+                reply_recipient_did: "did:human:alice".to_string(),
                 conversation_id: None,
                 text: "wrong binding".to_string(),
             },
@@ -241,6 +250,10 @@ fn hermes_gateway_plugin_rejects_mismatched_task_context() {
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:alice".to_string(),
                 sender_did: "did:human:bob".to_string(),
+                requester_did: "did:human:bob".to_string(),
+                requester_full_handle: Some("bob.anpclaw.com".to_string()),
+                trigger_kind: RuntimeTaskTriggerKind::ExternalDirect,
+                reply_recipient_did: "did:human:bob".to_string(),
                 conversation_id: None,
                 text: "wrong task binding".to_string(),
             },

@@ -34,8 +34,21 @@ pub struct RuntimeTask {
     pub controller_scope_key: String,
     pub controller_did: String,
     pub sender_did: String,
+    pub requester_did: String,
+    pub requester_full_handle: Option<String>,
+    pub trigger_kind: RuntimeTaskTriggerKind,
+    pub reply_recipient_did: String,
     pub conversation_id: Option<String>,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTaskTriggerKind {
+    ControllerDirect,
+    ExternalDirect,
+    GroupMention,
+    DelegatedDirect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +166,21 @@ impl RuntimeTask {
         if self.sender_did.trim().is_empty() {
             bail!("sender_did must not be empty");
         }
+        if self.requester_did.trim().is_empty() {
+            bail!("requester_did must not be empty");
+        }
+        if self
+            .requester_full_handle
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("requester_full_handle must not be empty when present");
+        }
+        if self.reply_recipient_did.trim().is_empty() {
+            bail!("reply_recipient_did must not be empty");
+        }
+        self.trigger_kind
+            .validate_against_conversation(self.conversation_id.as_deref())?;
         if self.text.trim().is_empty() {
             bail!("runtime task text must not be empty");
         }
@@ -177,10 +205,30 @@ pub fn runtime_task_matches_profile_controller_scope(
     {
         return false;
     }
-    if is_group_conversation_id(task.conversation_id.as_deref()) {
-        task.controller_did == profile.controller_did
-    } else {
-        task.sender_did == task.controller_did
+    if task.controller_did != profile.controller_did {
+        return false;
+    }
+    match task.trigger_kind {
+        RuntimeTaskTriggerKind::ControllerDirect => {
+            !is_group_conversation_id(task.conversation_id.as_deref())
+                && task.sender_did == profile.controller_did
+                && task.requester_did == profile.controller_did
+                && task.reply_recipient_did == profile.controller_did
+        }
+        RuntimeTaskTriggerKind::ExternalDirect => {
+            !is_group_conversation_id(task.conversation_id.as_deref())
+                && task.requester_did == task.sender_did
+                && task.reply_recipient_did == task.requester_did
+                && task.requester_did != profile.controller_did
+        }
+        RuntimeTaskTriggerKind::GroupMention => {
+            is_group_conversation_id(task.conversation_id.as_deref())
+                && task.requester_did == task.sender_did
+                && task.reply_recipient_did == task.requester_did
+        }
+        RuntimeTaskTriggerKind::DelegatedDirect => {
+            task.requester_did == task.sender_did && task.reply_recipient_did == task.requester_did
+        }
     }
 }
 
@@ -201,6 +249,43 @@ impl RuntimeRunStatus {
             "finished" => Ok(Self::Finished),
             "failed" => Ok(Self::Failed),
             other => bail!("unsupported runtime run status: {other}"),
+        }
+    }
+}
+
+impl RuntimeTaskTriggerKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ControllerDirect => "controller_direct",
+            Self::ExternalDirect => "external_direct",
+            Self::GroupMention => "group_mention",
+            Self::DelegatedDirect => "delegated_direct",
+        }
+    }
+
+    pub fn parse(input: &str) -> Result<Self> {
+        match input {
+            "controller_direct" => Ok(Self::ControllerDirect),
+            "external_direct" => Ok(Self::ExternalDirect),
+            "group_mention" => Ok(Self::GroupMention),
+            "delegated_direct" => Ok(Self::DelegatedDirect),
+            other => bail!("unsupported runtime task trigger kind: {other}"),
+        }
+    }
+
+    pub(crate) fn validate_against_conversation(
+        &self,
+        conversation_id: Option<&str>,
+    ) -> Result<()> {
+        let group = is_group_conversation_id(conversation_id);
+        match (self, group) {
+            (Self::GroupMention, false) => {
+                bail!("group_mention trigger requires a group conversation")
+            }
+            (Self::ControllerDirect | Self::ExternalDirect, true) => {
+                bail!("direct trigger must not use a group conversation")
+            }
+            _ => Ok(()),
         }
     }
 }

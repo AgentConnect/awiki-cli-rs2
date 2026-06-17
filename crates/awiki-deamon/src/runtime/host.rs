@@ -4,7 +4,11 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::cli_wrapper::CliWrapperRequest;
-use crate::inbox::{route_controller_text_task, ControllerTextMessage};
+use crate::controller_scope::VerifiedControllerSender;
+use crate::inbox::{
+    route_controller_text_task, route_controller_text_task_with_verified_sender,
+    ControllerTextMessage,
+};
 use crate::local_rpc::execute_runtime_rpc_request_with_outbox;
 use crate::outbox::{
     RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
@@ -140,6 +144,31 @@ where
     )
 }
 
+pub fn run_controller_text_task_with_verified_sender_config<P, O>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    verified_sender: &VerifiedControllerSender,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    run_controller_text_task_with_verified_sender_socket(
+        state,
+        profile,
+        verified_sender,
+        plugin,
+        outbox,
+        message,
+        Some(config.local_socket_path.clone()),
+        Some(config.runtime_temp_dir.clone()),
+    )
+}
+
 fn run_controller_text_task_with_socket<P, O>(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
@@ -155,6 +184,35 @@ where
 {
     profile.validate()?;
     let task = route_controller_text_task(profile, message)?;
+    let run_id = format!("run_{}", task.task_id);
+    run_existing_runtime_task_with_socket(
+        state,
+        profile,
+        plugin,
+        outbox,
+        task,
+        run_id,
+        local_socket_path,
+        runtime_temp_dir,
+    )
+}
+
+fn run_controller_text_task_with_verified_sender_socket<P, O>(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    verified_sender: &VerifiedControllerSender,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+    local_socket_path: Option<std::path::PathBuf>,
+    runtime_temp_dir: Option<std::path::PathBuf>,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    profile.validate()?;
+    let task = route_controller_text_task_with_verified_sender(profile, verified_sender, message)?;
     let run_id = format!("run_{}", task.task_id);
     run_existing_runtime_task_with_socket(
         state,
@@ -236,9 +294,9 @@ where
         }
     }
     let task_conversation_id = task.conversation_id.clone();
-
     let task_controller_did = task.controller_did.clone();
-    let recipient_policy = runtime_recipient_policy(state, profile, &task_controller_did)?;
+    let task_reply_recipient_did = task.reply_recipient_did.clone();
+    let recipient_policy = runtime_recipient_policy(state, profile, &task_reply_recipient_did)?;
     let mut scope = RuntimeTokenScope::new(
         profile.agent_did.clone(),
         profile.runtime_profile_id.clone(),
@@ -272,7 +330,7 @@ where
                 state,
                 outbox,
                 profile,
-                &task_controller_did,
+                &task_reply_recipient_did,
                 &run,
                 error_code,
                 error_summary.as_str(),
@@ -323,7 +381,7 @@ where
                     state,
                     outbox,
                     profile,
-                    &task_controller_did,
+                    &task_reply_recipient_did,
                     &run,
                     error_code,
                     error_summary.as_str(),
@@ -357,7 +415,7 @@ where
                 state,
                 outbox,
                 profile,
-                &task_controller_did,
+                &task_reply_recipient_did,
                 &run,
                 &error_code,
                 &error_summary,
@@ -368,6 +426,7 @@ where
                 let final_record = runtime_final_outbox_record(
                     profile,
                     &task_controller_did,
+                    &task_reply_recipient_did,
                     &run,
                     task_conversation_id.as_deref(),
                     final_text,
@@ -394,7 +453,7 @@ where
                     state,
                     outbox,
                     profile,
-                    &task_controller_did,
+                    &task_reply_recipient_did,
                     &run,
                     "final_text_missing",
                     error_summary,
@@ -597,9 +656,9 @@ fn runtime_final_message_target(record: &RuntimeFinalOutboxRecord) -> Result<Run
         });
     }
     Ok(RuntimeMessageTarget::Direct {
-        recipient: record.controller_did.clone(),
-        raw_recipient: record.controller_did.clone(),
-        resolved_did: Some(record.controller_did.clone()),
+        recipient: record.recipient_did.clone(),
+        raw_recipient: record.recipient_did.clone(),
+        resolved_did: Some(record.recipient_did.clone()),
     })
 }
 
@@ -763,6 +822,7 @@ fn mark_runtime_final_delivered(
 fn runtime_final_outbox_record(
     profile: &RuntimeAgentProfile,
     controller_did: &str,
+    recipient_did: &str,
     run: &RuntimeRun,
     conversation_id: Option<&str>,
     final_text: &str,
@@ -783,6 +843,7 @@ fn runtime_final_outbox_record(
         runtime_profile_id: profile.runtime_profile_id.clone(),
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: controller_did.to_string(),
+        recipient_did: recipient_did.to_string(),
         conversation_id: conversation_id.map(str::to_string),
         final_text: final_text.to_string(),
         security: "default_plain".to_string(),
