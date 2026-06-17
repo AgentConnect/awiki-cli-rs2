@@ -432,20 +432,23 @@ fn group_member_record(
     member: &Value,
 ) -> Option<crate::internal::local_state::groups::GroupMemberRecord> {
     let member_did = default_string(
-        &string_value(member.get("agent_did")),
+        &string_value(member.get("did")),
         &default_string(
             &string_value(member.get("member_did")),
-            &string_value(member.get("did")),
+            &string_value(member.get("agent_did")),
         ),
     );
     if member_did.trim().is_empty() {
         return None;
     }
+    let use_agent_handle = member_identity_uses_agent_fields(member);
     let member_handle = normalize_handle_value(&default_string(
         &string_value(member.get("handle")),
         &default_string(
             &string_value(member.get("member_handle")),
-            &string_value(member.get("agent_handle")),
+            &use_agent_handle
+                .then(|| string_value(member.get("agent_handle")))
+                .unwrap_or_default(),
         ),
     ));
     Some(crate::internal::local_state::groups::GroupMemberRecord {
@@ -605,6 +608,7 @@ fn members_from_result(result: &crate::groups::GroupReadResult, raw: &Value) -> 
                     "did": did,
                     "member_handle": handle,
                     "handle": handle,
+                    "subject_type": member.subject_type,
                     "role": member.role,
                     "status": member.status,
                     "joined_at": member.joined_at,
@@ -702,11 +706,12 @@ fn normalize_group_member_json(mut member: Value) -> Value {
     let Some(object) = member.as_object_mut() else {
         return member;
     };
+    let use_agent_handle = member_identity_uses_agent_fields_object(object);
     let did = default_string(
-        &string_value(object.get("agent_did")),
+        &string_value(object.get("did")),
         &default_string(
             &string_value(object.get("member_did")),
-            &string_value(object.get("did")),
+            &string_value(object.get("agent_did")),
         ),
     );
     if !did.trim().is_empty() {
@@ -721,7 +726,9 @@ fn normalize_group_member_json(mut member: Value) -> Value {
         &string_value(object.get("handle")),
         &default_string(
             &string_value(object.get("member_handle")),
-            &string_value(object.get("agent_handle")),
+            &use_agent_handle
+                .then(|| string_value(object.get("agent_handle")))
+                .unwrap_or_default(),
         ),
     ));
     if !handle.is_empty() {
@@ -731,6 +738,36 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .or_insert_with(|| Value::String(handle));
     }
     member
+}
+
+#[cfg(feature = "sqlite")]
+fn member_identity_uses_agent_fields(member: &Value) -> bool {
+    let Some(object) = member.as_object() else {
+        return false;
+    };
+    member_identity_uses_agent_fields_object(object)
+}
+
+#[cfg(feature = "sqlite")]
+fn member_identity_uses_agent_fields_object(object: &serde_json::Map<String, Value>) -> bool {
+    let explicit_member_did =
+        string_value(object.get("did")).or_else_nonempty(|| string_value(object.get("member_did")));
+    if explicit_member_did.trim().is_empty() {
+        return true;
+    }
+    if let Some(subject_type) = object
+        .get("subject_type")
+        .or_else(|| object.get("subjectType"))
+        .or_else(|| object.get("member_subject_type"))
+        .and_then(Value::as_str)
+    {
+        return matches!(
+            subject_type.trim().to_ascii_lowercase().as_str(),
+            "agent" | "runtime_agent" | "bot"
+        );
+    }
+    let normalized_did = explicit_member_did.trim().to_ascii_lowercase();
+    normalized_did.starts_with("did:agent:") || normalized_did.contains(":agent:")
 }
 
 #[cfg(feature = "sqlite")]
@@ -796,6 +833,35 @@ mod tests {
         assert_eq!(record.group_did, "did:example:group");
         assert_eq!(record.my_role, "owner");
         assert_eq!(record.membership_status, "active");
+    }
+
+    #[test]
+    fn group_member_record_prefers_member_identity_over_auxiliary_agent_fields() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "members": [{
+                    "member_did": "did:wba:anpclaw.com:zhuocheng:e1_human",
+                    "agent_did": "did:wba:anpclaw.com:agent:runtime:helper:e1_agent",
+                    "handle": "zhuocheng",
+                    "agent_handle": "helper.anpclaw.com",
+                    "agent_subject_type": "agent",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        let records = group_member_records(&scope(), "did:example:group", &result);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].member_did,
+            "did:wba:anpclaw.com:zhuocheng:e1_human"
+        );
+        assert_eq!(records[0].user_id, records[0].member_did);
+        assert_eq!(records[0].member_handle, "zhuocheng");
     }
 }
 

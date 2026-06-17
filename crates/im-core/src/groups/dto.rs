@@ -893,20 +893,32 @@ fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
 
 fn group_member_from_value(value: Value) -> Option<GroupMember> {
     let object = value.as_object()?;
-    let did = optional_string(object.get("did"))
-        .or_else(|| optional_string(object.get("member_did")))
+    let explicit_member_did =
+        optional_string(object.get("did")).or_else(|| optional_string(object.get("member_did")));
+    let did_source_is_agent = explicit_member_did.is_none();
+    let did = explicit_member_did
         .or_else(|| optional_string(object.get("agent_did")))
         .and_then(|value| crate::ids::Did::parse(value).ok());
     let subject_type = optional_string(object.get("subject_type"))
         .or_else(|| optional_string(object.get("subjectType")))
         .or_else(|| optional_string(object.get("member_subject_type")))
-        .or_else(|| optional_string(object.get("agent_subject_type")))
+        .or_else(|| {
+            did_source_is_agent
+                .then(|| optional_string(object.get("agent_subject_type")))
+                .flatten()
+        })
         .or_else(|| inferred_subject_type(did.as_ref(), object));
+    let use_agent_handle =
+        did_source_is_agent || subject_type.as_deref().is_some_and(is_agent_subject_type);
     Some(GroupMember {
         did,
         handle: optional_string(object.get("handle"))
             .or_else(|| optional_string(object.get("member_handle")))
-            .or_else(|| optional_string(object.get("agent_handle")))
+            .or_else(|| {
+                use_agent_handle
+                    .then(|| optional_string(object.get("agent_handle")))
+                    .flatten()
+            })
             .and_then(|value| crate::ids::Handle::parse(value, "").ok()),
         role: optional_string(object.get("role")),
         status: optional_string(object.get("status")),
@@ -919,19 +931,28 @@ fn inferred_subject_type(
     did: Option<&crate::ids::Did>,
     object: &serde_json::Map<String, Value>,
 ) -> Option<String> {
+    if let Some(did) = did {
+        let did = did.as_str().trim();
+        if did.starts_with("did:agent:") || did.contains(":agent:") {
+            return Some("agent".to_string());
+        }
+        if did.starts_with("did:") {
+            return Some("human".to_string());
+        }
+    }
     if optional_string(object.get("agent_did")).is_some()
         || optional_string(object.get("agent_handle")).is_some()
     {
         return Some("agent".to_string());
     }
-    let did = did?.as_str().trim();
-    if did.starts_with("did:agent:") {
-        return Some("agent".to_string());
-    }
-    if did.starts_with("did:") {
-        return Some("human".to_string());
-    }
     None
+}
+
+fn is_agent_subject_type(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "agent" | "runtime_agent" | "bot"
+    )
 }
 
 fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
@@ -1214,6 +1235,39 @@ mod tests {
         assert_eq!(result.members.len(), 2);
         assert_eq!(result.members[0].subject_type.as_deref(), Some("human"));
         assert_eq!(result.members[1].subject_type.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn group_member_subject_type_prefers_member_did_over_auxiliary_agent_fields() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "members": [{
+                    "member_did": "did:wba:anpclaw.com:zhuocheng:e1_human",
+                    "agent_did": "did:wba:anpclaw.com:agent:runtime:helper:e1_agent",
+                    "handle": "zhuocheng",
+                    "agent_handle": "helper.anpclaw.com",
+                    "agent_subject_type": "agent",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        assert_eq!(result.members.len(), 1);
+        assert_eq!(
+            result.members[0].did.as_ref().map(|did| did.as_str()),
+            Some("did:wba:anpclaw.com:zhuocheng:e1_human")
+        );
+        assert_eq!(
+            result.members[0]
+                .handle
+                .as_ref()
+                .map(|handle| handle.as_str()),
+            Some("zhuocheng")
+        );
+        assert_eq!(result.members[0].subject_type.as_deref(), Some("human"));
     }
 
     #[test]
