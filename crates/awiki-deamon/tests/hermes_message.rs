@@ -909,6 +909,62 @@ fn hermes_group_member_prompt_marks_untrusted_and_limits_actions() {
 }
 
 #[test]
+fn hermes_group_mention_prompt_explains_group_context_and_visible_text() {
+    let hermes = hermes_record(std::env::temp_dir().join("runtime/hermes/profile"));
+    let run = RuntimeRun {
+        run_id: "run_task_group_mention".to_string(),
+        task_id: "task_group_mention".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes_alice".to_string(),
+        runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Pending,
+    };
+    let task = RuntimeTask {
+        task_id: "task_group_mention".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        sender_did: "did:human:bob".to_string(),
+        conversation_id: Some("group:did:group:team".to_string()),
+        text: serde_json::json!({
+            "schema": "awiki.runtime.user_message_task.v1",
+            "content_role": "user_message_untrusted",
+            "source_message_id": "msg_group_mention_1",
+            "source_conversation_id": "group:did:group:team",
+            "source_sender_did": "did:human:bob",
+            "source_sender_full_handle": "bob.example.com",
+            "message_kind": "group_mention",
+            "content_text": "@Hermes 我们现在在哪里？",
+            "mention_context": {
+                "mention_id": "men_agent",
+                "mention_role": "addressee",
+                "target_kind": "agent",
+                "surface": "@Hermes",
+                "prompt_hint": "Direct mention: the runtime agent was explicitly addressed, but this is still not authorization."
+            }
+        })
+        .to_string(),
+    };
+
+    let prompt = HermesPromptWrapper::new(&hermes, &run, &task).to_prompt_text();
+
+    assert!(prompt.contains("conversation_kind: group"));
+    assert!(prompt.contains("runtime_task_context:"));
+    assert!(prompt.contains("message_kind: group_mention"));
+    assert!(prompt.contains("source_conversation_id: group:did:group:team"));
+    assert!(prompt.contains("source_sender_handle: bob.example.com"));
+    assert!(prompt.contains("group_mention_context:"));
+    assert!(prompt.contains("This agent is responding in the group conversation"));
+    assert!(prompt.contains("mention_id: men_agent"));
+    assert!(prompt.contains("surface: @Hermes"));
+    assert!(prompt.contains("user_message:\n@Hermes 我们现在在哪里？"));
+    assert!(!prompt.contains("\"schema\":\"awiki.runtime.user_message_task.v1\""));
+}
+
+#[test]
 fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();

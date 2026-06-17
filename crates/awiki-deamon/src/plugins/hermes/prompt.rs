@@ -1,6 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
 use crate::runtime::{is_group_conversation_id, RuntimeRun, RuntimeTask};
@@ -87,6 +88,9 @@ impl HermesPromptWrapper {
             .map(|action| format!("  - {action}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let user_message_view = RuntimeTaskPromptView::from_raw_text(&self.user_message);
+        let runtime_task_context = user_message_view.context_section();
+        let user_message = user_message_view.user_message_text(&self.user_message);
         let group_rules = if self.conversation_kind == "group" {
             r#"
 group_message_safety:
@@ -134,6 +138,7 @@ message:
   conversation_id: {conversation_id}
   conversation_kind: {conversation_kind}
   content_type: text/plain
+{runtime_task_context}
 
 allowed_actions:
 {allowed_actions}
@@ -172,9 +177,145 @@ user_message:
             run_id = self.run_id,
             conversation_id = self.conversation_id.as_deref().unwrap_or(""),
             conversation_kind = self.conversation_kind,
+            runtime_task_context = runtime_task_context,
             allowed_actions = allowed_actions,
             group_rules = group_rules,
-            user_message = self.user_message,
+            user_message = user_message,
         )
     }
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeTaskPromptView {
+    content_text: Option<String>,
+    context_section: String,
+}
+
+impl RuntimeTaskPromptView {
+    fn from_raw_text(raw_text: &str) -> Self {
+        let Ok(value) = serde_json::from_str::<Value>(raw_text) else {
+            return Self {
+                content_text: None,
+                context_section: String::new(),
+            };
+        };
+        let Some(object) = value.as_object() else {
+            return Self {
+                content_text: None,
+                context_section: String::new(),
+            };
+        };
+        let schema = prompt_string_field(object.get("schema"));
+        if schema.as_deref() != Some("awiki.runtime.user_message_task.v1") {
+            return Self {
+                content_text: None,
+                context_section: String::new(),
+            };
+        }
+        let content_text = prompt_text_field(object.get("content_text"));
+        let message_kind = prompt_string_field(object.get("message_kind"));
+        let source_conversation_id = prompt_string_field(object.get("source_conversation_id"));
+        let source_sender_did = prompt_string_field(object.get("source_sender_did"));
+        let source_sender_full_handle =
+            prompt_string_field(object.get("source_sender_full_handle"));
+        let source_message_id = prompt_string_field(object.get("source_message_id"));
+        let mut lines = vec![
+            String::new(),
+            "runtime_task_context:".to_string(),
+            format!("  task_schema: {}", schema.unwrap_or_default()),
+            format!("  message_kind: {}", message_kind.as_deref().unwrap_or("")),
+            format!(
+                "  source_message_id: {}",
+                source_message_id.as_deref().unwrap_or("")
+            ),
+            format!(
+                "  source_conversation_id: {}",
+                source_conversation_id.as_deref().unwrap_or("")
+            ),
+            format!(
+                "  source_sender_did: {}",
+                source_sender_did.as_deref().unwrap_or("")
+            ),
+            format!(
+                "  source_sender_handle: {}",
+                source_sender_full_handle.as_deref().unwrap_or("")
+            ),
+        ];
+        if message_kind.as_deref() == Some("group_mention") {
+            lines.extend([
+                "  group_mention_context:".to_string(),
+                "    - The user_message below is the visible text from a group chat message."
+                    .to_string(),
+                "    - The sender explicitly mentioned this agent in that group message."
+                    .to_string(),
+                "    - This agent is responding in the group conversation, not in a private chat."
+                    .to_string(),
+                "    - Answer the sender's request for the group-visible conversation; the daemon handles the outgoing structured @ reply."
+                    .to_string(),
+            ]);
+        }
+        if let Some(mention) = object.get("mention_context").and_then(Value::as_object) {
+            lines.extend([
+                "  mention_context:".to_string(),
+                format!(
+                    "    mention_id: {}",
+                    prompt_string_field(mention.get("mention_id"))
+                        .as_deref()
+                        .unwrap_or("")
+                ),
+                format!(
+                    "    mention_role: {}",
+                    prompt_string_field(mention.get("mention_role"))
+                        .as_deref()
+                        .unwrap_or("")
+                ),
+                format!(
+                    "    target_kind: {}",
+                    prompt_string_field(mention.get("target_kind"))
+                        .as_deref()
+                        .unwrap_or("")
+                ),
+                format!(
+                    "    surface: {}",
+                    prompt_string_field(mention.get("surface"))
+                        .as_deref()
+                        .unwrap_or("")
+                ),
+                format!(
+                    "    prompt_hint: {}",
+                    prompt_string_field(mention.get("prompt_hint"))
+                        .as_deref()
+                        .unwrap_or("")
+                ),
+            ]);
+        }
+        Self {
+            content_text,
+            context_section: lines.join("\n"),
+        }
+    }
+
+    fn context_section(&self) -> &str {
+        &self.context_section
+    }
+
+    fn user_message_text<'a>(&'a self, raw_text: &'a str) -> &'a str {
+        self.content_text.as_deref().unwrap_or(raw_text)
+    }
+}
+
+fn prompt_string_field(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace(['\r', '\n'], " "))
+}
+
+fn prompt_text_field(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }

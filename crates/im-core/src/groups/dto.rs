@@ -919,7 +919,9 @@ fn inferred_subject_type(
     did: Option<&crate::ids::Did>,
     object: &serde_json::Map<String, Value>,
 ) -> Option<String> {
-    if object.get("agent_did").is_some() || object.get("agent_handle").is_some() {
+    if optional_string(object.get("agent_did")).is_some()
+        || optional_string(object.get("agent_handle")).is_some()
+    {
         return Some("agent".to_string());
     }
     let did = did?.as_str().trim();
@@ -1185,6 +1187,33 @@ mod tests {
             result.raw_response().and_then(|raw| raw.get("group_did")),
             Some(&json!("did:example:group"))
         );
+    }
+
+    #[test]
+    fn group_member_subject_type_ignores_empty_agent_fields() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "name": "Demo",
+                "members": [{
+                    "member_did": "did:wba:awiki.info:user:zhuocheng:e1",
+                    "handle": "zhuocheng",
+                    "agent_handle": "",
+                    "role": "member",
+                    "status": "active"
+                }, {
+                    "agent_did": "did:wba:awiki.info:agent:runtime:hermes:e1",
+                    "agent_handle": "hermes.awiki.info",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        assert_eq!(result.members.len(), 2);
+        assert_eq!(result.members[0].subject_type.as_deref(), Some("human"));
+        assert_eq!(result.members[1].subject_type.as_deref(), Some("agent"));
     }
 
     #[test]
