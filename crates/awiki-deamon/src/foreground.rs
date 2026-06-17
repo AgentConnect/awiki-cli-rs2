@@ -74,12 +74,12 @@ use lifecycle_support::{
     ensure_agent_messaging_session, runtime_callback_outbox, start_runtime_rpc_worker,
     store_agent_token_for_configured_agents, sync_configured_agent_identities, write_ready_file,
 };
-#[cfg(test)]
-use outbox::ControllerOutboxRecorder;
 use outbox::{
     runtime_message_sender_for_agent, runtime_status_sender_for_agent, ControllerOutboxSender,
     ControllerRuntimeOutbox, RuntimeCallbackOutbox, RuntimeStatusSender,
 };
+#[cfg(test)]
+use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
 use runtime_support::UdsTestRuntimePlugin;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1570,64 +1570,20 @@ where
         &auth,
     )?;
     if !authorization.allowed {
-        state.insert_audit_event_json(
-            "daemon.direct_invocation.rejected",
-            Some(target_agent_did),
-            Some(&binding.controller_scope_key),
-            None,
-            None,
-            json!({
-                "runtime_agent_did": target_agent_did,
-                "daemon_agent_did": binding.daemon_agent_did,
-                "source_message_id": message_id,
-                "source_conversation_id": conversation_id,
-                "source_sender_did": sender_did,
-                "reason": authorization.reason,
-                "active_mode": authorization.active_mode,
-            }),
-        )?;
         let status_sender =
             runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
-        let runtime_outbox = ControllerRuntimeOutbox::with_status_correlation(
-            ControllerOutboxSender::ImCore(ImCoreAgentOutbox::new(target_client.clone())),
-            status_sender.sender,
-            Some(status_sender.daemon_agent_did),
-            sender_did.clone(),
-            format!(
-                "task_{}",
-                external_direct_task_message_id(message_id, target_agent_did)
-            ),
-            conversation_id.clone(),
-            Some(message_id.to_string()),
-            None,
-            Some(sender_did),
-            authorization.sender_full_handle,
-            Some(
-                crate::runtime::RuntimeTaskTriggerKind::ExternalDirect
-                    .as_str()
-                    .to_string(),
-            ),
-            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let context = crate::state::AuthorizedRuntimeContext {
-            token_id: "host-direct-invocation-rejected".to_string(),
-            agent_did: target_agent_did.to_string(),
-            runtime_profile_id: state
-                .load_runtime_agent_profile(target_agent_did)?
-                .runtime_profile_id,
-            run_id: format!(
-                "run_task_{}",
-                external_direct_task_message_id(message_id, target_agent_did)
-            ),
-            method: crate::security::runtime_token::RpcMethod::TaskStatus,
-        };
-        runtime_outbox.send_status_with_detail(
-            &context,
-            "failed",
-            Some("Agent invocation is not allowed"),
-            Some("agent_invocation_denied"),
-            None,
+        emit_external_direct_invocation_rejection(
+            state,
+            &status_sender,
+            target_agent_did,
+            &binding.daemon_agent_did,
+            &binding.controller_scope_key,
+            message_id,
+            conversation_id.as_deref(),
+            &sender_did,
+            authorization.sender_full_handle.as_deref(),
+            authorization.reason.as_str(),
+            authorization.active_mode.as_str(),
         )?;
         return Ok(());
     }
@@ -1683,6 +1639,81 @@ where
             sanitize_error_message(&controller_error.to_string())
         )
     })?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_external_direct_invocation_rejection(
+    state: &DaemonState,
+    status_sender: &RuntimeStatusSender,
+    target_agent_did: &str,
+    daemon_agent_did: &str,
+    controller_scope_key: &str,
+    source_message_id: &str,
+    conversation_id: Option<&str>,
+    sender_did: &str,
+    sender_full_handle: Option<&str>,
+    reason: &str,
+    active_mode: &str,
+) -> Result<()> {
+    state.insert_audit_event_json(
+        "daemon.direct_invocation.rejected",
+        Some(target_agent_did),
+        Some(controller_scope_key),
+        None,
+        None,
+        json!({
+            "runtime_agent_did": target_agent_did,
+            "daemon_agent_did": daemon_agent_did,
+            "source_message_id": source_message_id,
+            "source_conversation_id": conversation_id,
+            "source_sender_did": sender_did,
+            "reason": reason,
+            "active_mode": active_mode,
+        }),
+    )?;
+    let task_id = format!(
+        "task_{}",
+        external_direct_task_message_id(source_message_id, target_agent_did)
+    );
+    let runtime_outbox = ControllerRuntimeOutbox::with_status_correlation(
+        ControllerOutboxSender::Mock,
+        status_sender.sender.clone(),
+        Some(status_sender.daemon_agent_did.clone()),
+        sender_did.to_string(),
+        task_id.clone(),
+        conversation_id.map(str::to_string),
+        Some(source_message_id.to_string()),
+        None,
+        Some(sender_did.to_string()),
+        sender_full_handle.map(str::to_string),
+        Some(
+            crate::runtime::RuntimeTaskTriggerKind::ExternalDirect
+                .as_str()
+                .to_string(),
+        ),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let context = crate::state::AuthorizedRuntimeContext {
+        token_id: "host-direct-invocation-rejected".to_string(),
+        agent_did: target_agent_did.to_string(),
+        runtime_profile_id: state
+            .load_runtime_agent_profile(target_agent_did)?
+            .runtime_profile_id,
+        run_id: format!(
+            "run_task_{}",
+            external_direct_task_message_id(source_message_id, target_agent_did)
+        ),
+        method: crate::security::runtime_token::RpcMethod::TaskStatus,
+    };
+    runtime_outbox.send_status_with_detail(
+        &context,
+        "failed",
+        Some("Agent invocation is not allowed"),
+        Some("agent_invocation_denied"),
+        Some(reason),
+    )?;
     Ok(())
 }
 

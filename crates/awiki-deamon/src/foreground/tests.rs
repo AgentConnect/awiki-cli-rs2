@@ -629,6 +629,58 @@ fn hermes_record(root: &Path) -> HermesProfileRecord {
     }
 }
 
+fn register_runtime_family(root: &Path, state: &DaemonState) {
+    let profile = profile(root);
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    state.upsert_hermes_profile(&hermes_record(root)).unwrap();
+    let (daemon_local_db, daemon_message_db) =
+        crate::agent::agent_data_paths("did:agent:daemon").unwrap();
+    state
+        .upsert_agent_definition(&crate::agent::AgentDefinition {
+            agent_did: "did:agent:daemon".to_string(),
+            handle: "alice-daemon".to_string(),
+            agent_kind: crate::agent::AgentKind::Daemon,
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: profile.controller_did.clone(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: daemon_local_db,
+            message_db_path: daemon_message_db,
+            status: "active".to_string(),
+        })
+        .unwrap();
+    state
+        .upsert_runtime_daemon_binding(
+            &profile.agent_did,
+            "did:agent:daemon",
+            &profile.controller_user_id,
+            &profile.controller_full_handle,
+            &profile.controller_scope_key,
+            &profile.controller_did,
+        )
+        .unwrap();
+}
+
+fn recording_status_sender(
+    sender_id: &str,
+) -> (RuntimeStatusSender, Arc<Mutex<Vec<ControllerOutboxCall>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    (
+        RuntimeStatusSender {
+            daemon_agent_did: "did:agent:daemon".to_string(),
+            sender: ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+                sender_id,
+                Arc::clone(&calls),
+            )),
+        },
+        calls,
+    )
+}
+
 fn group_mention_message(message_id: &str, target_agent_did: &str) -> Message {
     Message {
         id: MessageId::parse(message_id).unwrap(),
@@ -835,6 +887,124 @@ fn group_agent_mention_ignores_group_selectors_and_other_agents() {
     .unwrap();
 
     assert!(group_agent_mention_context("did:agent:hermes", &payload).is_none());
+}
+
+#[test]
+fn denied_group_agent_mention_emits_failed_status_without_runtime_task() {
+    let (root, _config, state) = fixture();
+    register_runtime_family(root.path(), &state);
+    let message = group_mention_message("msg_group_denied", "did:agent:hermes");
+    let payload = group_mention_payload("did:agent:hermes");
+    let mention_context = group_agent_mention_context("did:agent:hermes", &payload).unwrap();
+    let (status_sender, calls) = recording_status_sender("daemon-status");
+
+    emit_group_agent_mention_rejection(
+        &state,
+        &status_sender,
+        "did:agent:hermes",
+        &message,
+        "did:agent:daemon",
+        "controller-scope:v1:test-alice-anpclaw-com",
+        &mention_context,
+        "not_in_whitelist",
+        "whitelist",
+    )
+    .unwrap();
+
+    let calls = calls.lock().expect("recorded calls lock poisoned");
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.sender_id, "daemon-status");
+    assert_eq!(call.kind, "payload");
+    assert_eq!(call.recipient_did, "did:human:bob");
+    let payload = call.payload.as_ref().expect("status payload");
+    assert_eq!(payload["schema"], "awiki.agent.status.v1");
+    assert_eq!(payload["status_scope"], "run");
+    assert_eq!(payload["state"], "failed");
+    assert_eq!(payload["runs"][0]["status"], "failed");
+    assert_eq!(
+        payload["runs"][0]["last_error_code"],
+        "agent_invocation_denied"
+    );
+    assert_eq!(payload["runs"][0]["last_error_summary"], "not_in_whitelist");
+    assert_eq!(payload["runs"][0]["source_message_id"], "msg_group_denied");
+    assert_eq!(payload["runs"][0]["mention_id"], "men_agent");
+    assert_eq!(payload["runs"][0]["runtime_agent_did"], "did:agent:hermes");
+    assert_eq!(
+        payload["runs"][0]["conversation_id"],
+        "group:did:group:team"
+    );
+    assert!(state
+        .audit_event_exists(
+            "daemon.group_mention.authorization_denied",
+            Some("did:agent:hermes"),
+            Some("not_in_whitelist"),
+        )
+        .unwrap());
+    assert!(state
+        .load_runtime_task_for_run(payload["runs"][0]["run_id"].as_str().unwrap())
+        .is_err());
+}
+
+#[test]
+fn denied_external_direct_invocation_emits_failed_status_without_runtime_task() {
+    let (root, _config, state) = fixture();
+    register_runtime_family(root.path(), &state);
+    let (status_sender, calls) = recording_status_sender("daemon-status");
+
+    emit_external_direct_invocation_rejection(
+        &state,
+        &status_sender,
+        "did:agent:hermes",
+        "did:agent:daemon",
+        "controller-scope:v1:test-alice-anpclaw-com",
+        "msg_direct_denied",
+        Some("direct:did:human:bob"),
+        "did:human:bob",
+        Some("bob.anpclaw.com"),
+        "blacklist_denied",
+        "blacklist",
+    )
+    .unwrap();
+
+    let calls = calls.lock().expect("recorded calls lock poisoned");
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.sender_id, "daemon-status");
+    assert_eq!(call.kind, "payload");
+    assert_eq!(call.recipient_did, "did:human:bob");
+    let payload = call.payload.as_ref().expect("status payload");
+    assert_eq!(payload["schema"], "awiki.agent.status.v1");
+    assert_eq!(payload["status_scope"], "run");
+    assert_eq!(payload["state"], "failed");
+    assert_eq!(payload["runs"][0]["status"], "failed");
+    assert_eq!(
+        payload["runs"][0]["last_error_code"],
+        "agent_invocation_denied"
+    );
+    assert_eq!(payload["runs"][0]["last_error_summary"], "blacklist_denied");
+    assert_eq!(payload["runs"][0]["source_message_id"], "msg_direct_denied");
+    assert_eq!(payload["runs"][0]["requester_did"], "did:human:bob");
+    assert_eq!(
+        payload["runs"][0]["requester_full_handle"],
+        "bob.anpclaw.com"
+    );
+    assert_eq!(payload["runs"][0]["trigger_kind"], "external_direct");
+    assert_eq!(payload["runs"][0]["runtime_agent_did"], "did:agent:hermes");
+    assert_eq!(
+        payload["runs"][0]["conversation_id"],
+        "direct:did:human:bob"
+    );
+    assert!(state
+        .audit_event_exists(
+            "daemon.direct_invocation.rejected",
+            Some("did:agent:hermes"),
+            Some("blacklist_denied"),
+        )
+        .unwrap());
+    assert!(state
+        .load_runtime_task_for_run(payload["runs"][0]["run_id"].as_str().unwrap())
+        .is_err());
 }
 
 #[test]
