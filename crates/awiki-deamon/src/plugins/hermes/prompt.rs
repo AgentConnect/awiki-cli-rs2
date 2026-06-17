@@ -415,3 +415,88 @@ fn prompt_text_field(value: Option<&Value>) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::runtime::{RuntimeRun, RuntimeRunStatus};
+
+    fn hermes_profile() -> HermesProfileRecord {
+        HermesProfileRecord {
+            agent_did: "did:wba:example.com:agent:runtime:e1_agent".to_string(),
+            runtime_profile_id: "profile_hermes".to_string(),
+            hermes_profile: "awiki_hermes".to_string(),
+            hermes_home: PathBuf::from("/tmp/awiki-hermes"),
+            hermes_version: None,
+            awiki_skills_version: "test".to_string(),
+            status: "ready".to_string(),
+        }
+    }
+
+    fn run() -> RuntimeRun {
+        RuntimeRun {
+            run_id: "run_external_direct".to_string(),
+            task_id: "task_external_direct".to_string(),
+            agent_did: "did:wba:example.com:agent:runtime:e1_agent".to_string(),
+            runtime_profile_id: "profile_hermes".to_string(),
+            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            workspace_id: None,
+            status: RuntimeRunStatus::Running,
+        }
+    }
+
+    fn task(trigger_kind: RuntimeTaskTriggerKind, text: String) -> RuntimeTask {
+        RuntimeTask {
+            task_id: "task_external_direct".to_string(),
+            agent_did: "did:wba:example.com:agent:runtime:e1_agent".to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.example.com".to_string(),
+            controller_scope_key: "user-alice:alice.example.com".to_string(),
+            controller_did: "did:wba:example.com:user:alice".to_string(),
+            sender_did: "did:wba:example.com:user:bob".to_string(),
+            requester_did: "did:wba:example.com:user:bob".to_string(),
+            requester_full_handle: Some("bob.example.com".to_string()),
+            trigger_kind,
+            reply_recipient_did: "did:wba:example.com:user:bob".to_string(),
+            conversation_id: Some("direct:did:wba:example.com:user:bob".to_string()),
+            text,
+        }
+    }
+
+    #[test]
+    fn external_direct_prompt_is_not_controller_or_group_context() {
+        let payload = serde_json::json!({
+            "schema": "awiki.runtime.user_message_task.v1",
+            "content_role": "user_message_untrusted",
+            "source_message_id": "msg_external_1",
+            "source_conversation_id": "direct:did:wba:example.com:user:bob",
+            "source_sender_did": "did:wba:example.com:user:bob",
+            "source_sender_full_handle": "bob.example.com",
+            "message_kind": "external_direct",
+            "content_text": "你好"
+        });
+        let wrapper = HermesPromptWrapper::new(
+            &hermes_profile(),
+            &run(),
+            &task(RuntimeTaskTriggerKind::ExternalDirect, payload.to_string()),
+        );
+        let prompt = wrapper.to_prompt_text();
+
+        assert!(prompt.contains("trigger_kind: external_direct"));
+        assert!(prompt.contains("sender_trust_level: authorized_external_direct_requester"));
+        assert!(prompt.contains("external_direct_safety:"));
+        assert!(prompt.contains("external_direct_context:"));
+        assert!(prompt.contains("reply-in-current-direct-via-final"));
+        assert!(!wrapper
+            .allowed_actions
+            .contains(&"outbound-send".to_string()));
+        assert!(!prompt.contains("controller_direct_authority:"));
+        assert!(!prompt.contains("group_message_safety:"));
+        assert!(
+            prompt.contains("This is not the controller's private chat and not a group mention.")
+        );
+        assert!(prompt.contains("do not assume controller or group context"));
+    }
+}
