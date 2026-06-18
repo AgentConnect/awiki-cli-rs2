@@ -314,12 +314,14 @@ fn bootstrap_payload_fixture() -> Value {
             "allowed_scopes": [
                 "message.inbox.read.plain",
                 "message.history.read.plain",
-                "message.send.plain"
+                "message.summarize_plain"
             ]
         },
         "desired_message_agent": {
             "role": "app_message_handler",
             "runtime": "hermes",
+            "runtime_provider": "hermes",
+            "runtime_profile": "message_agent",
             "display_name": "Hermes Message Agent",
             "ensure_once_key": "app-message-agent:did:human:alice:app_1",
             "runtime_registration_token": "tok_runtime_secret_value"

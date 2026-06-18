@@ -17,6 +17,7 @@ use crate::state::{
 use crate::DaemonConfig;
 
 pub const DAEMON_BOOTSTRAP_SCHEMA: &str = "awiki.daemon.bootstrap.v1";
+pub const DAEMON_BOOTSTRAP_SECURE_SCHEMA: &str = "awiki.daemon.bootstrap.secure.v1";
 pub const USER_SUBKEY_PACKAGE_SCHEMA: &str = "awiki.daemon.user_subkey_package.v1";
 pub const USER_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
 pub const DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED: &str = "paired_key_received";
@@ -40,6 +41,25 @@ pub struct DaemonBootstrapEnvelope {
     pub desired_message_agent: Value,
     #[serde(default)]
     pub sync_policy: Value,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonSecureBootstrapEnvelope {
+    pub schema: String,
+    pub recipient_daemon_did: String,
+    pub recipient_key_id: String,
+    pub sender_human_did: String,
+    pub operation_id: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub nonce: String,
+    pub ciphertext: String,
+    #[serde(default)]
+    pub aad: Value,
+    #[serde(default)]
+    pub payload_sha256: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -138,6 +158,25 @@ impl std::fmt::Debug for DaemonBootstrapEnvelope {
     }
 }
 
+impl std::fmt::Debug for DaemonSecureBootstrapEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonSecureBootstrapEnvelope")
+            .field("schema", &self.schema)
+            .field("recipient_daemon_did", &self.recipient_daemon_did)
+            .field("recipient_key_id", &self.recipient_key_id)
+            .field("sender_human_did", &self.sender_human_did)
+            .field("operation_id", &self.operation_id)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("nonce", &self.nonce)
+            .field("ciphertext", &"<redacted-bootstrap-ciphertext>")
+            .field("aad", &"<redacted-bootstrap-aad>")
+            .field("payload_sha256", &self.payload_sha256)
+            .field("extra", &"<redacted-control-payload>")
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for UserSubkeyPackage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UserSubkeyPackage")
@@ -161,8 +200,19 @@ pub fn parse_bootstrap_payload(payload: Value) -> Result<DaemonBootstrapEnvelope
     serde_json::from_value(payload).context("parse daemon bootstrap payload")
 }
 
+pub fn parse_secure_bootstrap_payload(payload: Value) -> Result<DaemonSecureBootstrapEnvelope> {
+    let envelope: DaemonSecureBootstrapEnvelope =
+        serde_json::from_value(payload).context("parse secure daemon bootstrap payload")?;
+    validate_secure_bootstrap_envelope(&envelope)?;
+    Ok(envelope)
+}
+
 pub fn is_daemon_bootstrap_payload(payload: &Value) -> bool {
     payload.get("schema").and_then(Value::as_str) == Some(DAEMON_BOOTSTRAP_SCHEMA)
+}
+
+pub fn is_daemon_secure_bootstrap_payload(payload: &Value) -> bool {
+    payload.get("schema").and_then(Value::as_str) == Some(DAEMON_BOOTSTRAP_SECURE_SCHEMA)
 }
 
 pub fn process_bootstrap_envelope(
@@ -274,6 +324,39 @@ fn validate_bootstrap_envelope(
     Ok(())
 }
 
+fn validate_secure_bootstrap_envelope(envelope: &DaemonSecureBootstrapEnvelope) -> Result<()> {
+    require_non_empty("recipient_daemon_did", &envelope.recipient_daemon_did)?;
+    require_non_empty("recipient_key_id", &envelope.recipient_key_id)?;
+    require_non_empty("sender_human_did", &envelope.sender_human_did)?;
+    require_non_empty("operation_id", &envelope.operation_id)?;
+    require_non_empty("issued_at", &envelope.issued_at)?;
+    require_non_empty("expires_at", &envelope.expires_at)?;
+    require_non_empty("nonce", &envelope.nonce)?;
+    require_non_empty("ciphertext", &envelope.ciphertext)?;
+    if envelope.schema != DAEMON_BOOTSTRAP_SECURE_SCHEMA {
+        bail!(
+            "unsupported secure daemon bootstrap schema: {}",
+            envelope.schema
+        );
+    }
+    let issued_at = OffsetDateTime::parse(&envelope.issued_at, &Rfc3339)
+        .context("secure daemon bootstrap issued_at must be RFC3339")?;
+    let expires_at = OffsetDateTime::parse(&envelope.expires_at, &Rfc3339)
+        .context("secure daemon bootstrap expires_at must be RFC3339")?;
+    if expires_at <= issued_at {
+        bail!("secure daemon bootstrap expires_at must be after issued_at");
+    }
+    reject_forbidden_private_state_keys(&envelope.aad)?;
+    reject_forbidden_private_state_keys(&serde_json::to_value(&envelope.extra)?)?;
+    if let Some(payload_sha256) = envelope.payload_sha256.as_deref() {
+        require_non_empty("payload_sha256", payload_sha256)?;
+        if payload_sha256.len() != 64 || !payload_sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            bail!("secure daemon bootstrap payload_sha256 must be a 64-character hex digest");
+        }
+    }
+    Ok(())
+}
+
 fn validate_user_subkey_package(package: &UserSubkeyPackage) -> Result<()> {
     require_non_empty("user_did", &package.user_did)?;
     require_non_empty("verification_method", &package.verification_method)?;
@@ -319,7 +402,9 @@ fn validate_user_subkey_package(package: &UserSubkeyPackage) -> Result<()> {
     validate_daemon_key_verification_method(&package.user_did, &package.verification_method)?;
     for scope in &package.allowed_scopes {
         let scope_lower = scope.to_ascii_lowercase();
-        if scope_lower.contains("e2ee")
+        if scope_lower == "message.send.plain"
+            || scope_lower.contains("message.send")
+            || scope_lower.contains("e2ee")
             || scope_lower.contains("private_state")
             || scope_lower.contains("private-state")
             || scope_lower.contains("session_private")
@@ -912,12 +997,14 @@ mod tests {
                 "allowed_scopes": [
                     "message.inbox.read.plain",
                     "message.history.read.plain",
-                    "message.send.plain"
+                    "message.summarize_plain"
                 ]
             },
             "desired_message_agent": {
                 "role": "app_message_handler",
                 "runtime": "hermes",
+                "runtime_provider": "hermes",
+                "runtime_profile": "message_agent",
                 "e2ee_visible": false
             },
             "sync_policy": {
@@ -941,6 +1028,73 @@ mod tests {
         validate_bootstrap_envelope(&envelope, "did:wba:example.com:user:alice:e1_user").unwrap();
         let hash = stable_payload_hash(&envelope).unwrap();
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn secure_bootstrap_payload_validates_contract_and_redacts_ciphertext() {
+        let payload = json!({
+            "schema": DAEMON_BOOTSTRAP_SECURE_SCHEMA,
+            "recipient_daemon_did": "did:agent:daemon",
+            "recipient_key_id": "did:agent:daemon#bootstrap-key-1",
+            "sender_human_did": "did:wba:example.com:user:alice:e1_user",
+            "operation_id": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
+            "issued_at": "2026-06-19T01:00:00Z",
+            "expires_at": "2026-06-19T01:05:00Z",
+            "nonce": "nonce_1",
+            "ciphertext": "base64:encrypted-private-package",
+            "payload_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "aad": {
+                "human_did": "did:wba:example.com:user:alice:e1_user",
+                "daemon_agent_did": "did:agent:daemon",
+                "binding_id": "app-message-agent:did:wba:example.com:user:alice:e1_user:app_1"
+            }
+        });
+
+        let envelope = parse_secure_bootstrap_payload(payload).unwrap();
+        let debug = format!("{envelope:?}");
+
+        assert_eq!(envelope.schema, DAEMON_BOOTSTRAP_SECURE_SCHEMA);
+        assert_eq!(envelope.recipient_daemon_did, "did:agent:daemon");
+        assert!(!debug.contains("encrypted-private-package"));
+        assert!(debug.contains("<redacted-bootstrap-ciphertext>"));
+        assert!(debug.contains("<redacted-bootstrap-aad>"));
+    }
+
+    #[test]
+    fn secure_bootstrap_payload_rejects_private_state_in_aad() {
+        let payload = json!({
+            "schema": DAEMON_BOOTSTRAP_SECURE_SCHEMA,
+            "recipient_daemon_did": "did:agent:daemon",
+            "recipient_key_id": "did:agent:daemon#bootstrap-key-1",
+            "sender_human_did": "did:wba:example.com:user:alice:e1_user",
+            "operation_id": "message-agent-bootstrap:did:wba:example.com:user:alice:e1_user:app_1",
+            "issued_at": "2026-06-19T01:00:00Z",
+            "expires_at": "2026-06-19T01:05:00Z",
+            "nonce": "nonce_1",
+            "ciphertext": "base64:encrypted-private-package",
+            "aad": {
+                "private_key_pem": "secret"
+            }
+        });
+
+        let error = parse_secure_bootstrap_payload(payload).unwrap_err();
+
+        assert!(error.to_string().contains("forbidden private state"));
+    }
+
+    #[test]
+    fn message_send_scope_is_rejected_for_mvp_bootstrap() {
+        let mut payload = valid_payload();
+        payload["user_subkey_package"]["allowed_scopes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("message.send.plain"));
+        let envelope = parse_bootstrap_payload(payload).unwrap();
+        let error =
+            validate_bootstrap_envelope(&envelope, "did:wba:example.com:user:alice:e1_user")
+                .unwrap_err();
+
+        assert!(error.to_string().contains("not allowed"));
     }
 
     #[test]

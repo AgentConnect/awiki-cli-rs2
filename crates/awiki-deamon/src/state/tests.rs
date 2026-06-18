@@ -62,7 +62,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
         allowed_scopes_json: serde_json::json!([
             "message.inbox.read.plain",
             "message.history.read.plain",
-            "message.send.plain"
+            "message.summarize_plain"
         ]),
         status: "paired_key_received".to_string(),
         expires_at: Some("2026-09-09T00:00:00Z".to_string()),
