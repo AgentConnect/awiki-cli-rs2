@@ -1,6 +1,13 @@
 
 # Agent IM Hutong Core Design
 
+> 历史文档说明：本文件记录的是 2026-06-14 前后的 Agent IM Hutong
+> 方案和验证记录，其中关于明文 `awiki.daemon.bootstrap.v1`、默认
+> `message.send.plain` scope、普通 payload 传递 private package 的描述已经不是当前
+> Message Agent MVP 契约。当前权威方案以
+> `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
+> 以及本仓库代码中的 secure bootstrap / no-send 实现为准。
+
 > 目标分支：`feature/release-0526/agent-im-hutong`  
 > 相关仓库：`awiki-cli-rs2`、`awiki-me`、`user-service`、`message-service`、ANP SDK / `im-core` 兼容扩展；长期再涉及 `AgentNetworkProtocol` delegated proof  
 > 输出目的：把“每个 IM 应用配置一个 Agent，由 Agent 处理消息并管理智能体；Agent 能反向操纵 APP”的产品需求、设计评审和技术落地方案收敛成一份可执行核心文档。

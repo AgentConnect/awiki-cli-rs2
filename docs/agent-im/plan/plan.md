@@ -1,5 +1,12 @@
 # Plan：Agent IM MVP 可落地实施方案
 
+> 历史计划说明：本计划记录的是 2026-06-09 的 Agent IM Hutong
+> 实施结果。它包含当时允许明文 `awiki.daemon.bootstrap.v1` 和
+> `message.send.plain` scope 的历史决策，已经不是当前 Message Agent MVP
+> 的权威契约。当前方案以
+> `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
+> 和 `plan/20260619-message-agent-mvp/plan.md` 为准。
+
 状态：done
 DOC：`awiki-cli-rs2/docs/agent-im/plan`  
 Harness：`awiki-harness`  
