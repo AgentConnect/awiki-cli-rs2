@@ -365,7 +365,55 @@ fn delegated_inbox_does_not_dispatch_system_payload_as_user_text() {
         process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
 
     assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.skipped_unsupported_messages, 1);
+    assert_eq!(outcome.skipped_processed_messages, 0);
     assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+}
+
+#[test]
+fn delegated_inbox_syncs_unsupported_system_payload_without_dispatch() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![system_payload_message("msg_control", "did:human:bob")],
+            next_cursor: None,
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    let event = state
+        .load_message_event(&event_id(&binding.user_did, "msg_control"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.processing_status, "skipped_unsupported");
+    assert_eq!(event.retention_class, RETENTION_CLASS_OPAQUE_ONLY);
+    assert!(event.plain_text_ref_or_excerpt.is_none());
+    let sync = state
+        .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_control"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(sync.payload_json["schema"], MESSAGE_SYNC_SCHEMA);
+    assert_eq!(
+        sync.payload_json["processing_status"],
+        "skipped_unsupported"
+    );
+    assert_eq!(
+        sync.payload_json["unsupported_reason"],
+        "system_control_payload"
+    );
+    assert_eq!(
+        sync.payload_json["retention_class"],
+        RETENTION_CLASS_OPAQUE_ONLY
+    );
 }
 
 #[test]
@@ -500,8 +548,26 @@ fn delegated_inbox_does_not_dispatch_group_plain_text_humans_or_invalid_mentions
         process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
 
     assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.skipped_unsupported_messages, 3);
+    assert_eq!(outcome.skipped_processed_messages, 0);
     assert_eq!(outcome.next_cursor.as_deref(), Some("cursor_after_skips"));
     assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+
+    for (message_id, reason) in [
+        ("msg_plain_at", "group_message"),
+        ("msg_humans", "group_message"),
+        ("msg_invalid", "group_message"),
+    ] {
+        let sync = state
+            .load_message_sync_outbox(&message_sync_idempotency_key(binding, message_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            sync.payload_json["processing_status"],
+            "skipped_unsupported"
+        );
+        assert_eq!(sync.payload_json["unsupported_reason"], reason);
+    }
 }
 
 #[test]

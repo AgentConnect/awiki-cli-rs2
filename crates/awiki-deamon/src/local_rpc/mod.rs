@@ -145,6 +145,11 @@ pub fn execute_runtime_rpc_request_with_outbox(
             let message = RuntimeMessageSend::from_params(&request.params)?;
             let preliminary_context =
                 state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
+            ensure_message_agent_runtime_cannot_send(
+                state,
+                &preliminary_context,
+                RpcMethod::MsgSend.as_str(),
+            )?;
             if let Some(file_path) = message.file_path.as_ref() {
                 ensure_attachment_under_allowed_roots(
                     state,
@@ -166,6 +171,11 @@ pub fn execute_runtime_rpc_request_with_outbox(
         RpcMethod::SendAttachment => {
             let preliminary_context =
                 state.authorize_runtime_rpc_for_recipient_resolution(&token, &method)?;
+            ensure_message_agent_runtime_cannot_send(
+                state,
+                &preliminary_context,
+                RpcMethod::SendAttachment.as_str(),
+            )?;
             let task = state
                 .load_runtime_task_for_run(&preliminary_context.run_id)
                 .context("attachment.send requires a runtime task context")?;
@@ -321,6 +331,7 @@ fn apply_attachment_send_side_effect(
     context: &AuthorizedRuntimeContext,
     attachment: &RuntimeAttachmentSend,
 ) -> Result<()> {
+    ensure_message_agent_runtime_cannot_send(state, context, RpcMethod::SendAttachment.as_str())?;
     let (file_sha256, file_size_bytes) = attachment_file_audit(&attachment.file_path)?;
     let result = outbox.send_attachment(context, attachment);
     match result {
@@ -427,6 +438,7 @@ fn apply_msg_send_side_effect(
     context: &AuthorizedRuntimeContext,
     message: &RuntimeMessageSend,
 ) -> Result<()> {
+    ensure_message_agent_runtime_cannot_send(state, context, RpcMethod::MsgSend.as_str())?;
     let result = outbox.send_message(context, message);
     match result {
         Ok(send_result) => {
@@ -466,6 +478,31 @@ fn apply_msg_send_side_effect(
             Err(error).context("send runtime message")
         }
     }
+}
+
+fn ensure_message_agent_runtime_cannot_send(
+    state: &DaemonState,
+    context: &AuthorizedRuntimeContext,
+    method: &str,
+) -> Result<()> {
+    let Some(binding) =
+        state.load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
+    else {
+        return Ok(());
+    };
+    state.insert_audit_event_json(
+        "runtime.message_agent_outbound_send.rejected",
+        Some(&context.agent_did),
+        Some(&context.runtime_profile_id),
+        Some(&context.run_id),
+        Some(&context.token_id),
+        serde_json::json!({
+            "binding_id": binding.binding_id,
+            "method": method,
+            "reason": "message_agent_outbound_send_not_enabled",
+        }),
+    )?;
+    bail!("message agent outbound send is not enabled");
 }
 
 impl From<AuthorizedRuntimeContext> for RuntimeRpcExecution {
