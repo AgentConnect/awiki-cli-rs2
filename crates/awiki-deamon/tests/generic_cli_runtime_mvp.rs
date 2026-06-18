@@ -1215,10 +1215,12 @@ exit 0
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
     assert!(result.launch_outcome.callbacks.is_empty());
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Final);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
     assert_eq!(
-        records[0].text.as_deref(),
+        records[1].text.as_deref(),
         Some("fallback final from codex")
     );
     let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
@@ -1417,7 +1419,16 @@ exit 42
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
     assert_eq!(result.launch_outcome.exit_code, Some(42));
     assert!(result.launch_outcome.callbacks.is_empty());
-    assert!(outbox.records().is_empty());
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_summary.as_deref(),
+        Some("Runtime exited with status 42")
+    );
     assert!(std::fs::read_to_string(output_dir.join("codex-stderr.log"))
         .unwrap()
         .contains("codex failed"));

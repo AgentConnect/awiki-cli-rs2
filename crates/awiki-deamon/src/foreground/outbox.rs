@@ -6,6 +6,7 @@ pub(super) struct ControllerRuntimeOutbox {
     status_sender: ControllerOutboxSender,
     daemon_agent_did: Option<String>,
     recipient_did: String,
+    controller_did: Option<String>,
     task_id: String,
     conversation_id: Option<String>,
     status_source_message_id: Option<String>,
@@ -23,6 +24,7 @@ impl ControllerRuntimeOutbox {
         status_sender: ControllerOutboxSender,
         daemon_agent_did: Option<String>,
         recipient_did: impl Into<String>,
+        controller_did: Option<String>,
         task_id: impl Into<String>,
         conversation_id: Option<String>,
         sent_counter: Arc<std::sync::atomic::AtomicUsize>,
@@ -33,6 +35,7 @@ impl ControllerRuntimeOutbox {
             status_sender,
             daemon_agent_did,
             recipient_did,
+            controller_did,
             task_id,
             conversation_id,
             None,
@@ -51,6 +54,7 @@ impl ControllerRuntimeOutbox {
         status_sender: ControllerOutboxSender,
         daemon_agent_did: Option<String>,
         recipient_did: impl Into<String>,
+        controller_did: Option<String>,
         task_id: impl Into<String>,
         conversation_id: Option<String>,
         status_source_message_id: Option<String>,
@@ -66,6 +70,7 @@ impl ControllerRuntimeOutbox {
             status_sender,
             daemon_agent_did,
             recipient_did: recipient_did.into(),
+            controller_did,
             task_id: task_id.into(),
             conversation_id,
             status_source_message_id,
@@ -86,6 +91,61 @@ impl ControllerRuntimeOutbox {
             ids.push(message_id);
         }
         Ok(())
+    }
+
+    fn should_send_controller_activity(&self) -> Option<&str> {
+        let controller_did = self.controller_did.as_deref()?.trim();
+        if controller_did.is_empty() || controller_did == self.recipient_did.trim() {
+            return None;
+        }
+        Some(controller_did)
+    }
+
+    fn send_controller_activity_payload_best_effort(
+        &self,
+        context: &crate::state::AuthorizedRuntimeContext,
+        state: &str,
+        sent_at: &str,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) {
+        let Some(controller_did) = self.should_send_controller_activity() else {
+            return;
+        };
+        if self.send_status_payload(
+            controller_did,
+            json!({
+                "schema": "awiki.agent.status.v1",
+                "event_id": format!("evt_activity_{}", crate::security::runtime_token::current_time_millis().unwrap_or(0)),
+                "sent_at": sent_at,
+                "daemon_agent_did": self.daemon_agent_did.clone(),
+                "status_scope": "runtime_activity",
+                "run_id": context.run_id.clone(),
+                "state": state,
+                "daemon": null,
+                "runtimes": [],
+                "runs": [{
+                    "run_id": context.run_id.clone(),
+                    "runtime_agent_did": context.agent_did.clone(),
+                    "agent_did": context.agent_did.clone(),
+                    "requester_did": self.requester_did.clone(),
+                    "requester_full_handle": self.requester_full_handle.clone(),
+                    "trigger_kind": self.trigger_kind.clone(),
+                    "status": state,
+                    "started_at": sent_at,
+                    "updated_at": sent_at,
+                    "last_error_code": last_error_code,
+                    "last_error_summary": last_error_summary,
+                }],
+            }),
+        )
+        .is_err()
+        {
+            eprintln!(
+                "warning: controller runtime activity status send failed for {}",
+                context.agent_did
+            );
+        }
     }
 }
 
@@ -411,7 +471,15 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
                     "last_error_summary": last_error_summary,
                 }],
             }),
-        )
+        )?;
+        self.send_controller_activity_payload_best_effort(
+            context,
+            state,
+            &sent_at,
+            last_error_code,
+            last_error_summary,
+        );
+        Ok(())
     }
 
     fn send_final(
@@ -459,7 +527,11 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
                     "content": text.unwrap_or_default(),
                 },
             }),
-        )
+        )?;
+        self.send_controller_activity_payload_best_effort(
+            context, "finished", &sent_at, None, None,
+        );
+        Ok(())
     }
 
     fn send_message(
@@ -574,6 +646,7 @@ impl RuntimeCallbackOutbox {
             status_sender,
             daemon_agent_did,
             task.reply_recipient_did,
+            Some(task.controller_did),
             task.task_id,
             task.conversation_id,
             status_source_message_id,

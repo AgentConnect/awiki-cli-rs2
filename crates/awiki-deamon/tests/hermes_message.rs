@@ -176,17 +176,20 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
 
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
-    assert_eq!(records[0].text.as_deref(), Some("fake complete"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[0].text.as_deref(), Some("Runtime started"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
     assert_eq!(
-        records[0].security,
+        records[1].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
-    assert_eq!(records[1].text.as_deref(), Some("Hermes response sent"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[2].text.as_deref(), Some("Hermes response sent"));
 
     let prompts = gateway.submitted_prompts();
     assert_eq!(prompts.len(), 1);
@@ -255,11 +258,14 @@ fn hermes_external_direct_final_replies_to_requester_not_controller() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:bob"));
-    assert_ne!(records[0].recipient.as_deref(), Some("did:human:alice"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:bob"));
+    assert_ne!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
 }
 
 #[test]
@@ -286,7 +292,7 @@ fn hermes_message_duplicate_controller_text_reuses_existing_run_without_relaunch
         .unwrap();
     assert_eq!(first.run.status, RuntimeRunStatus::Finished);
     assert_eq!(gateway.submitted_prompts().len(), 1);
-    assert_eq!(first_outbox.records().len(), 2);
+    assert_eq!(first_outbox.records().len(), 3);
 
     let second_outbox = MemoryRuntimeOutbox::default();
     let second =
@@ -499,25 +505,27 @@ fn hermes_message_empty_final_fails_without_success_outbox() {
         .is_none());
 
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(
-        records[0].text.as_deref(),
+        records[1].text.as_deref(),
         Some("Hermes 运行失败：Hermes run completed without final text")
     );
     assert_eq!(
-        records[0].security,
+        records[1].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("failed"));
     assert_eq!(
-        records[1].last_error_code.as_deref(),
+        records[2].last_error_code.as_deref(),
         Some("final_text_missing")
     );
     assert_eq!(
-        records[1].last_error_summary.as_deref(),
+        records[2].last_error_summary.as_deref(),
         Some("Hermes run completed without final text")
     );
 }
@@ -552,22 +560,24 @@ fn hermes_message_auto_approved_approval_still_returns_final_text() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(
-        records[0].text.as_deref(),
+        records[1].text.as_deref(),
         Some("fake complete after approval approved")
     );
     assert_eq!(
-        records[0].security,
+        records[1].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
-    assert_eq!(records[1].text.as_deref(), Some("Hermes response sent"));
-    assert!(records[1].last_error_code.is_none());
-    assert!(records[1].last_error_summary.is_none());
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[2].text.as_deref(), Some("Hermes response sent"));
+    assert!(records[2].last_error_code.is_none());
+    assert!(records[2].last_error_summary.is_none());
     assert!(gateway.observed_events().iter().any(|event| {
         event.kind == awiki_deamon::plugins::hermes::HermesRuntimeEventKind::ToolCallObserved
             && event.code.as_deref() == Some("approval_auto_approved")
@@ -672,7 +682,7 @@ fn hermes_message_send_message_callback_records_direct_message() {
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 4);
     assert_eq!(records[0].kind, OutboxRecordKind::Message);
     assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(records[0].text.as_deref(), Some("Hermes says hello"));
@@ -680,14 +690,16 @@ fn hermes_message_send_message_callback_records_direct_message() {
         records[0].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Message);
-    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("running"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Message);
+    assert_eq!(records[2].text.as_deref(), Some("fake complete"));
     assert_eq!(
-        records[1].security,
+        records[2].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[2].kind, OutboxRecordKind::Status);
-    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[3].kind, OutboxRecordKind::Status);
+    assert_eq!(records[3].state.as_deref(), Some("succeeded"));
 }
 
 #[test]
@@ -721,7 +733,7 @@ fn hermes_message_send_message_callback_allows_active_handle_lookup() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 4);
     assert_eq!(records[0].kind, OutboxRecordKind::Message);
     assert_eq!(
         records[0].recipient.as_deref(),
@@ -737,11 +749,13 @@ fn hermes_message_send_message_callback_allows_active_handle_lookup() {
         records[0].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Message);
-    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
-    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
-    assert_eq!(records[2].kind, OutboxRecordKind::Status);
-    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("running"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Message);
+    assert_eq!(records[2].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[2].text.as_deref(), Some("fake complete"));
+    assert_eq!(records[3].kind, OutboxRecordKind::Status);
+    assert_eq!(records[3].state.as_deref(), Some("succeeded"));
 }
 
 #[test]
@@ -1486,9 +1500,11 @@ fn hermes_session_missing_recreates_session_and_retries_prompt_once() {
         .unwrap();
     assert!(active.hermes_session_id.ends_with("-2"));
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].text.as_deref(), Some("fake complete"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
 }

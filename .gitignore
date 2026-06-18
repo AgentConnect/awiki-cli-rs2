@@ -22,6 +22,7 @@ profile.cov
 __pycache__/
 *.pyc
 scripts/release/*.local
+scripts/release/daemon/publish-multi-platform.toml
 
 # Flutter/Dart local package resolution and build outputs
 **/.dart_tool/

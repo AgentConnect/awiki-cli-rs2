@@ -1,0 +1,5 @@
+base_url = "https://anpclaw.com" # 当前服务器对外服务根地址。daemon 下载根地址固定为 base_url/daemon。
+
+source_ref = "release/0526" # 要发布的 Git ref。可以是远端分支、tag 或 commit SHA；GitHub Actions 会 checkout 这个 ref 来构建。
+
+github_token = "ghp_replace_with_token" # GitHub Token，必须有 repo 和 workflow 权限。真实配置文件不要提交到仓库。

@@ -396,6 +396,7 @@ where
     }
     if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
+        emit_runtime_status(outbox, &run, "running", Some("Runtime started"), None, None)?;
     }
 
     if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
@@ -486,8 +487,18 @@ where
         }
     }
 
-    if launch_outcome.status == RuntimeRunStatus::Failed {
+    if launch_outcome.status == RuntimeRunStatus::Failed
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+    {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+        emit_runtime_status(
+            outbox,
+            &run,
+            "failed",
+            Some("Runtime failed"),
+            Some("runtime_failed"),
+            Some(&runtime_launch_failure_summary(&launch_outcome)),
+        )?;
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
         persist_cli_driver_run(
@@ -978,6 +989,13 @@ fn emit_runtime_status(
         last_error_summary,
     )?;
     Ok(())
+}
+
+fn runtime_launch_failure_summary(launch_outcome: &RuntimeLaunchOutcome) -> String {
+    launch_outcome
+        .exit_code
+        .map(|code| format!("Runtime exited with status {code}"))
+        .unwrap_or_else(|| "Runtime failed".to_string())
 }
 
 fn runtime_output_context(

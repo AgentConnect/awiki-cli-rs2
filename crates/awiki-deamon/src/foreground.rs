@@ -1103,6 +1103,7 @@ where
         status_sender.sender,
         Some(status_sender.daemon_agent_did),
         message.sender.as_str().to_string(),
+        Some(binding.controller_did.clone()),
         format!("task_{task_message_id}"),
         conversation_id.clone(),
         Some(message.id.as_str().to_string()),
@@ -1452,6 +1453,11 @@ fn route_runtime_controller_text(
         status_sender.sender,
         Some(status_sender.daemon_agent_did),
         sender_did.clone(),
+        Some(
+            state
+                .load_runtime_agent_profile(target_agent_did)?
+                .controller_did,
+        ),
         format!("task_{message_id}"),
         conversation_id.clone(),
         Some(message_id.to_string()),
@@ -1603,6 +1609,7 @@ where
         status_sender.sender,
         Some(status_sender.daemon_agent_did),
         sender_did.clone(),
+        Some(binding.controller_did.clone()),
         format!("task_{task_message_id}"),
         conversation_id.clone(),
         Some(message_id.to_string()),
@@ -1681,6 +1688,7 @@ fn emit_external_direct_invocation_rejection(
         status_sender.sender.clone(),
         Some(status_sender.daemon_agent_did.clone()),
         sender_did.to_string(),
+        None,
         task_id.clone(),
         conversation_id.map(str::to_string),
         Some(source_message_id.to_string()),
@@ -2100,6 +2108,7 @@ fn run_runtime_task_command(
         status_sender.sender,
         Some(status_sender.daemon_agent_did),
         message.sender_did.clone(),
+        Some(profile.controller_did.clone()),
         format!("task_{message_id}"),
         message.conversation_id.clone(),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),

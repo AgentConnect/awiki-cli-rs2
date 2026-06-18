@@ -85,45 +85,67 @@ awiki-cli-<version>-windows-<arch>.zip
 
 Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。
 
-## 4. 发布 awiki-deamon Linux 包
+## 4. 发布 awiki-deamon 包
 
-Daemon release 包用于客户端安装/升级。当前推荐在目标 Ubuntu 服务器上执行高层发布脚本：
+Daemon release 包用于客户端安装/升级。当前统一在目标服务器上执行高层发布脚本，
+由 GitHub Actions 构建 Linux amd64、macOS arm64 和 macOS amd64 三个平台包，
+再发布到本机 Nginx daemon 静态目录：
 
 ```bash
-scripts/release/daemon/publish-linux.sh --base-url https://example.com
+scripts/release/daemon/publish-multi-platform.sh
 ```
 
-其中 `--base-url` 是目标环境的后端服务根地址。标准路由下，Daemon 下载根地址固定派生为 `<base-url>/daemon`。
+脚本不接受参数，也不依赖外部环境变量。发布前复制并填写同级配置文件：
+
+```bash
+cp scripts/release/daemon/publish-multi-platform.toml.template \
+  scripts/release/daemon/publish-multi-platform.toml
+```
+
+配置文件只保存发布环境和触发构建所需的信息：`base_url`、`source_ref` 和 `github_token`。
+它不配置当前版本号或最低可用版本号。当前发布版本固定来自
+`crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验；第一版发布流程中，
+manifest 的 `min_supported` 自动等于当前 Daemon 版本。标准路由下，Daemon 下载根地址固定派生为 `<base_url>/daemon`。
+其中 `source_ref` 是实际要构建的源码 ref，可以是分支、tag 或 commit SHA。GitHub
+`workflow_dispatch` 入口本身需要存在于仓库默认分支；发布脚本固定从默认分支触发 workflow，
+再把 `source_ref` 传给 workflow checkout。
 
 脚本行为：
 
 - 从 `crates/awiki-deamon/Cargo.toml` 读取发布版本。
 - 校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致。
 - 校验本次版本高于 Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。
-- 构建 Linux amd64 release 包。
+- 使用配置中的 GitHub token 触发 GitHub Actions，从配置中的 `source_ref` 构建三平台 release 包。
 - 生成 `install.sh`、`releases/manifest.json` 和版本化 release 目录。
-- 发布到 Nginx daemon 静态目录，默认 `/var/www/awiki-web/daemon`，可用 `AWIKI_DAEMON_NGINX_DIR` 覆盖。
-- 通过 HTTP 校验 manifest、安装脚本和 tar 包可访问。
+- 发布到本机 Nginx daemon 静态目录 `/var/www/awiki-web/daemon`。
+- 通过 HTTP 校验 manifest、安装脚本和三个平台 tar 包可访问。
 
-脚本不会修改版本号、提交代码、推送代码或执行测试。发布前需要先在 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。只检查发布计划时使用：
-
-```bash
-scripts/release/daemon/publish-linux.sh --base-url https://example.com --dry-run
-```
-
-Daemon 发布脚本、内部 helper 和 Nginx 配置要求见 `scripts/release/daemon/README.md`。
+脚本不会修改版本号、提交代码或推送代码。发布前需要先在
+`crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。
 
 ## 5. 手工准备 daemon 下载目录
 
 一般发布不需要手工执行底层脚本。只有在本地调试 release 包或下载目录结构时，才直接使用下面两个脚本。
 
-先构建 Linux 包：
+先构建三个平台包：
 
 ```bash
 scripts/release/daemon/_build-artifact.sh \
   --os linux \
   --arch amd64 \
   --target x86_64-unknown-linux-gnu \
+  --dist dist/daemon
+
+scripts/release/daemon/_build-artifact.sh \
+  --os darwin \
+  --arch arm64 \
+  --target aarch64-apple-darwin \
+  --dist dist/daemon
+
+scripts/release/daemon/_build-artifact.sh \
+  --os darwin \
+  --arch amd64 \
+  --target x86_64-apple-darwin \
   --dist dist/daemon
 ```
 
@@ -172,6 +194,8 @@ dist/daemon-downloads/
     manifest.json
     <version>/
       awiki-deamon-linux-amd64.tar.gz
+      awiki-deamon-darwin-arm64.tar.gz
+      awiki-deamon-darwin-amd64.tar.gz
       checksums.txt
 ```
 

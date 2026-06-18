@@ -58,15 +58,21 @@ scripts/release/build-release-artifact.sh --os linux --arch amd64
 scripts/release/build-release-artifact.sh --os darwin --arch arm64
 ```
 
-Daemon Linux 发布推荐在目标 Ubuntu 服务器上执行高层发布脚本：
+Daemon 发布推荐在目标服务器上执行高层发布脚本：
 
 ```bash
-scripts/release/daemon/publish-linux.sh --base-url https://example.com
+scripts/release/daemon/publish-multi-platform.sh
 ```
 
-脚本从 `crates/awiki-deamon/Cargo.toml` 读取发布版本，校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致，并要求该版本高于 Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。脚本只发布 Linux amd64 包，默认写入 `/var/www/awiki-web/daemon`，也可通过 `AWIKI_DAEMON_NGINX_DIR` 指定其他 Nginx 目录，不会修改版本号、提交代码或推送代码。
-
-`--base-url` 是后端服务根地址。标准线上路由会从它推导 daemon 下载根地址 `<base-url>/daemon`。如果只想检查发布计划而不构建、不写 Nginx 目录，可以加 `--dry-run`。Daemon 发布脚本和 Nginx 配置要求见 `scripts/release/daemon/README.md`。
+脚本不接受参数，也不依赖外部环境变量。发布前复制并填写
+`scripts/release/daemon/publish-multi-platform.toml.template` 为同级
+`publish-multi-platform.toml`。脚本从 `crates/awiki-deamon/Cargo.toml`
+读取发布版本，校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致，并要求该版本高于
+Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。GitHub Actions
+构建 Linux amd64、macOS arm64 和 macOS amd64 三个平台包；目标服务器下载 artifacts
+后发布到本机 `/var/www/awiki-web/daemon`。
+发布配置文件不配置当前版本号或最低可用版本号；第一版流程中，manifest 的
+`min_supported` 自动等于当前 Daemon 版本。
 
 Flutter SDK 变更还需要：
 

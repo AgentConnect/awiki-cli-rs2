@@ -481,6 +481,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
         daemon_sender,
         Some("did:agent:daemon-control".to_string()),
         "did:human:alice",
+        Some("did:human:alice".to_string()),
         "task_identity_split",
         Some("direct:did:human:alice".to_string()),
         Arc::clone(&sent_counter),
@@ -599,6 +600,135 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
     assert!(message_ids[0].contains("daemon-payload"));
     assert!(message_ids[1].contains("daemon-payload"));
     assert!(message_ids[2].contains("runtime-attachment"));
+}
+
+#[test]
+fn controller_runtime_outbox_emits_owner_activity_for_external_runs() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let runtime_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime",
+        Arc::clone(&calls),
+    ));
+    let daemon_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "daemon",
+        Arc::clone(&calls),
+    ));
+    let sent_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sent_message_ids = Arc::new(Mutex::new(Vec::new()));
+    let outbox = ControllerRuntimeOutbox::with_status_correlation(
+        runtime_sender,
+        daemon_sender,
+        Some("did:agent:daemon-control".to_string()),
+        "did:human:bob",
+        Some("did:human:alice".to_string()),
+        "task_external",
+        Some("direct:did:human:bob".to_string()),
+        Some("msg_bob_1".to_string()),
+        None,
+        Some("did:human:bob".to_string()),
+        Some("bob.anpclaw.com".to_string()),
+        Some("external_direct".to_string()),
+        Arc::clone(&sent_counter),
+        Arc::clone(&sent_message_ids),
+    );
+    let context = crate::state::AuthorizedRuntimeContext {
+        token_id: "rtok_external_activity".to_string(),
+        agent_did: "did:agent:runtime-hermes".to_string(),
+        runtime_profile_id: "profile_external_activity".to_string(),
+        run_id: "run_external_activity".to_string(),
+        method: crate::security::runtime_token::RpcMethod::TaskStatus,
+    };
+
+    outbox
+        .send_status(
+            &context,
+            "running",
+            Some("Hermes is processing Bob's message"),
+        )
+        .unwrap();
+
+    assert_eq!(sent_counter.load(Ordering::Relaxed), 2);
+    let calls = calls.lock().expect("recorded calls lock poisoned").clone();
+    assert_eq!(calls.len(), 2);
+
+    let requester_status = calls[0].payload.as_ref().expect("requester payload");
+    assert_eq!(calls[0].recipient_did, "did:human:bob");
+    assert_eq!(requester_status["status_scope"], "run");
+    assert_eq!(requester_status["conversation_id"], "direct:did:human:bob");
+    assert_eq!(
+        requester_status["message"],
+        "Hermes is processing Bob's message"
+    );
+    assert_eq!(
+        requester_status["runs"][0]["source_message_id"],
+        "msg_bob_1"
+    );
+
+    let owner_activity = calls[1].payload.as_ref().expect("owner activity");
+    assert_eq!(calls[1].recipient_did, "did:human:alice");
+    assert_eq!(owner_activity["schema"], "awiki.agent.status.v1");
+    assert_eq!(owner_activity["status_scope"], "runtime_activity");
+    assert_eq!(owner_activity["message"], Value::Null);
+    assert_eq!(owner_activity["conversation_id"], Value::Null);
+    assert_eq!(
+        owner_activity["runs"][0]["runtime_agent_did"],
+        "did:agent:runtime-hermes"
+    );
+    assert_eq!(owner_activity["runs"][0]["status"], "running");
+    assert_eq!(owner_activity["runs"][0]["requester_did"], "did:human:bob");
+    assert_eq!(owner_activity["runs"][0]["trigger_kind"], "external_direct");
+    assert_eq!(owner_activity["runs"][0]["conversation_id"], Value::Null);
+    assert_eq!(owner_activity["runs"][0]["source_message_id"], Value::Null);
+    assert_eq!(owner_activity["runs"][0]["message_id"], Value::Null);
+}
+
+#[test]
+fn controller_runtime_outbox_does_not_duplicate_owner_activity_for_controller_run() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let runtime_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime",
+        Arc::clone(&calls),
+    ));
+    let daemon_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "daemon",
+        Arc::clone(&calls),
+    ));
+    let sent_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sent_message_ids = Arc::new(Mutex::new(Vec::new()));
+    let outbox = ControllerRuntimeOutbox::with_status_correlation(
+        runtime_sender,
+        daemon_sender,
+        Some("did:agent:daemon-control".to_string()),
+        "did:human:alice",
+        Some("did:human:alice".to_string()),
+        "task_controller",
+        Some("direct:did:human:alice".to_string()),
+        Some("msg_alice_1".to_string()),
+        None,
+        Some("did:human:alice".to_string()),
+        Some("alice.anpclaw.com".to_string()),
+        Some("controller_direct".to_string()),
+        Arc::clone(&sent_counter),
+        Arc::clone(&sent_message_ids),
+    );
+    let context = crate::state::AuthorizedRuntimeContext {
+        token_id: "rtok_controller_activity".to_string(),
+        agent_did: "did:agent:runtime-hermes".to_string(),
+        runtime_profile_id: "profile_controller_activity".to_string(),
+        run_id: "run_controller_activity".to_string(),
+        method: crate::security::runtime_token::RpcMethod::TaskStatus,
+    };
+
+    outbox
+        .send_status(&context, "running", Some("Hermes is processing"))
+        .unwrap();
+
+    assert_eq!(sent_counter.load(Ordering::Relaxed), 1);
+    let calls = calls.lock().expect("recorded calls lock poisoned").clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].recipient_did, "did:human:alice");
+    let payload = calls[0].payload.as_ref().expect("requester payload");
+    assert_eq!(payload["status_scope"], "run");
 }
 
 fn profile(root: &Path) -> RuntimeAgentProfile {
@@ -778,11 +908,13 @@ fn hermes_foreground_runtime_route_uses_hermes_plugin_and_persists_session() {
             >= 1
     );
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].text.as_deref(), Some("fake complete"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("succeeded"));
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
+    assert_eq!(records[1].text.as_deref(), Some("fake complete"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
 }
 
 #[test]
@@ -1059,8 +1191,13 @@ fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
 
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
     assert_eq!(gateway.submitted_prompts().len(), 1);
+    let records = outbox.records();
+    let final_message = records
+        .iter()
+        .find(|record| record.kind == OutboxRecordKind::Message)
+        .expect("final Hermes message should be emitted");
     assert_eq!(
-        outbox.records()[0].recipient.as_deref(),
+        final_message.recipient.as_deref(),
         Some("did:human:alice-new")
     );
 }
