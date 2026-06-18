@@ -32,6 +32,7 @@ fn initialize_creates_required_tables() {
         "runtime_final_outbox",
         "user_delegated_identity",
         "bootstrap_replay",
+        "secure_bootstrap_replay",
         "app_message_agent_binding",
         "inbox_cursor",
         "processed_message",
@@ -85,6 +86,74 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
         updated_at_ms: 0,
     };
     (identity, replay)
+}
+
+fn secure_bootstrap_replay_fixture() -> SecureBootstrapReplayRecord {
+    SecureBootstrapReplayRecord {
+        operation_id: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        nonce: "AQEBAQEBAQEBAQEB".to_string(),
+        envelope_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        recipient_daemon_did: "did:agent:daemon".to_string(),
+        recipient_key_id: "did:agent:daemon#key-3".to_string(),
+        sender_human_did: "did:human:alice".to_string(),
+        bootstrap_id: "boot_1".to_string(),
+        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        payload_sha256: Some(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        ),
+        expires_at: "2026-09-09T00:00:00Z".to_string(),
+        status: "paired_key_received".to_string(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+    }
+}
+
+#[test]
+fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let replay = secure_bootstrap_replay_fixture();
+
+    assert_eq!(
+        state.store_secure_bootstrap_replay(&replay).unwrap(),
+        BootstrapStoreOutcome::Inserted
+    );
+    assert_eq!(
+        state.store_secure_bootstrap_replay(&replay).unwrap(),
+        BootstrapStoreOutcome::Duplicate
+    );
+
+    let loaded = state
+        .load_secure_bootstrap_replay(&replay.operation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.nonce, replay.nonce);
+    assert_eq!(loaded.payload_sha256, replay.payload_sha256);
+
+    let mut operation_conflict = replay.clone();
+    operation_conflict.nonce = "AgICAgICAgICAgIC".to_string();
+    operation_conflict.envelope_hash =
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string();
+    let error = state
+        .store_secure_bootstrap_replay(&operation_conflict)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("secure daemon bootstrap replay conflict"));
+
+    let mut nonce_conflict = replay.clone();
+    nonce_conflict.operation_id = "message-agent-bootstrap:did:human:alice:app_2".to_string();
+    nonce_conflict.idempotency_key = nonce_conflict.operation_id.clone();
+    nonce_conflict.bootstrap_id = "boot_2".to_string();
+    nonce_conflict.envelope_hash =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string();
+    let error = state
+        .store_secure_bootstrap_replay(&nonce_conflict)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("secure daemon bootstrap replay conflict"));
 }
 
 #[test]

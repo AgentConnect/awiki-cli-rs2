@@ -261,6 +261,101 @@ WHERE bootstrap_id = ?1
             .context("load bootstrap replay")
     }
 
+    pub fn store_secure_bootstrap_replay(
+        &self,
+        replay: &SecureBootstrapReplayRecord,
+    ) -> Result<BootstrapStoreOutcome> {
+        replay.validate()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_secure_bootstrap_replay_by_operation_or_nonce(
+            &transaction,
+            &replay.operation_id,
+            &replay.nonce,
+        )? {
+            if existing.envelope_hash != replay.envelope_hash
+                || existing.operation_id != replay.operation_id
+                || existing.nonce != replay.nonce
+                || existing.recipient_daemon_did != replay.recipient_daemon_did
+                || existing.recipient_key_id != replay.recipient_key_id
+                || existing.sender_human_did != replay.sender_human_did
+                || existing.bootstrap_id != replay.bootstrap_id
+                || existing.idempotency_key != replay.idempotency_key
+            {
+                bail!("secure daemon bootstrap replay conflict");
+            }
+            return Ok(BootstrapStoreOutcome::Duplicate);
+        }
+        let now = current_time_millis()?;
+        transaction.execute(
+            r#"
+INSERT INTO secure_bootstrap_replay (
+    operation_id,
+    nonce,
+    envelope_hash,
+    recipient_daemon_did,
+    recipient_key_id,
+    sender_human_did,
+    bootstrap_id,
+    idempotency_key,
+    payload_sha256,
+    expires_at,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+"#,
+            rusqlite::params![
+                &replay.operation_id,
+                &replay.nonce,
+                &replay.envelope_hash,
+                &replay.recipient_daemon_did,
+                &replay.recipient_key_id,
+                &replay.sender_human_did,
+                &replay.bootstrap_id,
+                &replay.idempotency_key,
+                &replay.payload_sha256,
+                &replay.expires_at,
+                &replay.status,
+                now,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(BootstrapStoreOutcome::Inserted)
+    }
+
+    pub fn load_secure_bootstrap_replay(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<SecureBootstrapReplayRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    operation_id,
+    nonce,
+    envelope_hash,
+    recipient_daemon_did,
+    recipient_key_id,
+    sender_human_did,
+    bootstrap_id,
+    idempotency_key,
+    payload_sha256,
+    expires_at,
+    status,
+    created_at_ms,
+    updated_at_ms
+FROM secure_bootstrap_replay
+WHERE operation_id = ?1
+"#,
+                [operation_id],
+                secure_bootstrap_replay_from_row,
+            )
+            .optional()
+            .context("load secure bootstrap replay")
+    }
+
     pub fn upsert_app_message_agent_binding(
         &self,
         record: &AppMessageAgentBindingRecord,

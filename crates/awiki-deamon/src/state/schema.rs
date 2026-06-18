@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 21;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 22;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -341,6 +341,25 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_bootstrap_replay_identity
         ON bootstrap_replay(user_did, verification_method, app_instance_id);
 
+        CREATE TABLE IF NOT EXISTS secure_bootstrap_replay (
+            operation_id TEXT PRIMARY KEY,
+            nonce TEXT NOT NULL UNIQUE,
+            envelope_hash TEXT NOT NULL,
+            recipient_daemon_did TEXT NOT NULL,
+            recipient_key_id TEXT NOT NULL,
+            sender_human_did TEXT NOT NULL,
+            bootstrap_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            payload_sha256 TEXT,
+            expires_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_secure_bootstrap_replay_sender
+        ON secure_bootstrap_replay(sender_human_did, recipient_daemon_did, status);
+
         CREATE TABLE IF NOT EXISTS app_message_agent_binding (
             binding_id TEXT PRIMARY KEY,
             user_did TEXT NOT NULL,
@@ -473,6 +492,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_controller_scope_v19(connection)?;
     migrate_control_command_state_v20(connection)?;
     migrate_runtime_requester_contract_v21(connection)?;
+    migrate_secure_bootstrap_replay_v22(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -556,6 +576,32 @@ fn migrate_app_message_agent_binding_v17(connection: &Connection) -> Result<()> 
         ON app_message_agent_binding(user_did, app_instance_id, role)
         WHERE revoked_at_ms IS NULL
           AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring');
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_secure_bootstrap_replay_v22(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS secure_bootstrap_replay (
+            operation_id TEXT PRIMARY KEY,
+            nonce TEXT NOT NULL UNIQUE,
+            envelope_hash TEXT NOT NULL,
+            recipient_daemon_did TEXT NOT NULL,
+            recipient_key_id TEXT NOT NULL,
+            sender_human_did TEXT NOT NULL,
+            bootstrap_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            payload_sha256 TEXT,
+            expires_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_secure_bootstrap_replay_sender
+        ON secure_bootstrap_replay(sender_human_did, recipient_daemon_did, status);
         "#,
     )?;
     Ok(())
