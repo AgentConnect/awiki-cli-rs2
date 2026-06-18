@@ -460,6 +460,173 @@ fn control_command_state_roundtrips_and_deduplicates() {
 }
 
 #[test]
+fn daemon_upgrade_command_reconciliation_finishes_pending_state() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_pending",
+            "daemon.upgrade",
+            "msg_upgrade_pending",
+            Some("latest"),
+        )
+        .unwrap();
+
+    state
+        .reconcile_daemon_upgrade_commands(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "0.2.0",
+            Some("0.2.0"),
+            false,
+        )
+        .unwrap();
+
+    let stored = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_pending",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "succeeded");
+    assert_eq!(stored.result_json["status"], "ready");
+    assert_eq!(stored.result_json["version"], "0.2.0");
+    assert_eq!(stored.result_json["reconciled"], true);
+    assert!(stored.error_summary.is_none());
+}
+
+#[test]
+fn daemon_upgrade_command_reconciliation_keeps_recent_pending_old_version() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_stale",
+            "daemon.upgrade",
+            "msg_upgrade_stale",
+            Some("latest"),
+        )
+        .unwrap();
+    state
+        .mark_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_stale",
+            "restart_scheduled",
+            serde_json::json!({
+                "command": "daemon.upgrade",
+                "status": "restart_scheduled",
+            }),
+            None,
+        )
+        .unwrap();
+
+    state
+        .reconcile_daemon_upgrade_commands(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "0.1.31",
+            Some("0.1.34"),
+            true,
+        )
+        .unwrap();
+
+    let stored = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_stale",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "restart_scheduled");
+    assert_eq!(stored.result_json["status"], "restart_scheduled");
+    assert!(stored.error_summary.is_none());
+}
+
+#[test]
+fn daemon_upgrade_command_reconciliation_fails_stale_old_version() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_stale",
+            "daemon.upgrade",
+            "msg_upgrade_stale",
+            Some("latest"),
+        )
+        .unwrap();
+    state
+        .mark_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_stale",
+            "restart_scheduled",
+            serde_json::json!({
+                "command": "daemon.upgrade",
+                "status": "restart_scheduled",
+            }),
+            None,
+        )
+        .unwrap();
+
+    {
+        let connection = state.connection().unwrap();
+        connection
+            .execute(
+                r#"
+UPDATE control_command_state
+SET updated_at_ms = updated_at_ms - 180000
+WHERE command_id = ?1
+"#,
+                rusqlite::params!["cmd_upgrade_stale"],
+            )
+            .unwrap();
+    }
+
+    state
+        .reconcile_daemon_upgrade_commands(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "0.1.31",
+            Some("0.1.34"),
+            true,
+        )
+        .unwrap();
+
+    let stored = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_stale",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    assert_eq!(stored.result_json["status"], "failed");
+    assert_eq!(stored.result_json["error_code"], "upgrade_not_applied");
+    assert_eq!(stored.result_json["version"], "0.1.31");
+    assert!(stored.error_summary.is_some());
+}
+
+#[test]
 fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

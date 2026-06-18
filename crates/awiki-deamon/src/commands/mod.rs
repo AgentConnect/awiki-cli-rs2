@@ -1341,11 +1341,7 @@ where
                 &daemon_agent.agent_did,
                 &daemon_agent.controller_scope_key,
                 &payload.command_id,
-                if report.restarted {
-                    "restart_scheduled"
-                } else {
-                    "succeeded"
-                },
+                "succeeded",
                 result.clone(),
                 None,
             )?;
@@ -1392,7 +1388,7 @@ where
 fn duplicate_upgrade_status_message(status: &str) -> String {
     match status {
         "in_progress" => "daemon upgrade is already in progress",
-        "restart_scheduled" => "daemon upgrade restart was already scheduled",
+        "restart_scheduled" => "daemon upgrade is waiting for service restart confirmation",
         "succeeded" => "daemon upgrade already completed",
         "failed" => "daemon upgrade already failed",
         _ => "daemon upgrade command already processed",
@@ -1402,7 +1398,7 @@ fn duplicate_upgrade_status_message(status: &str) -> String {
 
 fn duplicate_upgrade_public_state(status: &str) -> &'static str {
     match status {
-        "in_progress" => "upgrading",
+        "in_progress" | "restart_scheduled" => "upgrading",
         "failed" => "failed",
         _ => "ready",
     }

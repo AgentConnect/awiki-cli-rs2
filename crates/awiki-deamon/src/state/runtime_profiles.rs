@@ -1021,6 +1021,114 @@ WHERE daemon_agent_did = ?5
         Ok(())
     }
 
+    pub fn reconcile_daemon_upgrade_commands(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        current_version: &str,
+        latest_version: Option<&str>,
+        needs_upgrade: bool,
+    ) -> Result<()> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("current_version", current_version),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        const UPGRADE_RECONCILE_FAILURE_GRACE_MS: i64 = 2 * 60 * 1000;
+        let latest_version = latest_version
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let pending = connection
+            .prepare(
+                r#"
+SELECT
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+FROM control_command_state
+WHERE daemon_agent_did = ?1
+  AND controller_scope_key = ?2
+  AND command = 'daemon.upgrade'
+  AND status IN ('in_progress', 'restart_scheduled')
+ORDER BY created_at_ms ASC
+"#,
+            )
+            .context("prepare pending daemon upgrade reconciliation")?
+            .query_map(
+                rusqlite::params![daemon_agent_did, controller_scope_key],
+                control_command_state_record_from_row,
+            )
+            .context("query pending daemon upgrade reconciliation")?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("read pending daemon upgrade reconciliation")?;
+
+        for record in pending {
+            let target = record
+                .target_version
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let reached_target = match target {
+                Some("latest") | None => !needs_upgrade,
+                Some(target) => crate::upgrade::version_is_at_least(current_version, target),
+            };
+            if reached_target {
+                self.mark_control_command_state(
+                    daemon_agent_did,
+                    controller_scope_key,
+                    &record.command_id,
+                    "succeeded",
+                    serde_json::json!({
+                        "command": "daemon.upgrade",
+                        "daemon_agent_did": daemon_agent_did,
+                        "status": "ready",
+                        "version": current_version,
+                        "latest_version": latest_version,
+                        "reconciled": true,
+                    }),
+                    None,
+                )?;
+                continue;
+            }
+
+            let age_ms = now.saturating_sub(record.updated_at_ms);
+            if age_ms < UPGRADE_RECONCILE_FAILURE_GRACE_MS {
+                continue;
+            }
+            self.mark_control_command_state(
+                daemon_agent_did,
+                controller_scope_key,
+                &record.command_id,
+                "failed",
+                serde_json::json!({
+                    "command": "daemon.upgrade",
+                    "daemon_agent_did": daemon_agent_did,
+                    "status": "failed",
+                    "version": current_version,
+                    "latest_version": latest_version,
+                    "reconciled": true,
+                    "error_code": "upgrade_not_applied",
+                }),
+                Some("daemon upgrade did not reach the requested version"),
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn list_runtime_agent_definitions_for_daemon(
         &self,
         daemon_agent_did: &str,

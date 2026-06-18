@@ -84,6 +84,7 @@ impl HeartbeatScheduler {
         let mut wrote_latest = false;
         for daemon in daemon_agents {
             let release = check_release_status(config);
+            reconcile_daemon_upgrade_state(state, &daemon, &release)?;
             if let Err(error) =
                 emit_daemon_heartbeat(config, state, im_core, outbox, &daemon, &release)
             {
@@ -148,6 +149,7 @@ pub fn daemon_snapshot_payload(
     let now = rfc3339_now();
     let service = service_status(config);
     let release = check_release_status(config);
+    reconcile_daemon_upgrade_state(state, daemon, &release)?;
     let runtimes = state
         .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)?
         .into_iter()
@@ -474,6 +476,23 @@ fn daemon_diagnostics_summary(service: &ServiceStatus, release: &DaemonReleaseSt
             "release_error": release.error.clone(),
         },
     })
+}
+
+fn reconcile_daemon_upgrade_state(
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+    release: &DaemonReleaseStatus,
+) -> Result<()> {
+    if release.error.is_some() || release.latest_version.is_none() {
+        return Ok(());
+    }
+    state.reconcile_daemon_upgrade_commands(
+        &daemon.agent_did,
+        &daemon.controller_scope_key,
+        &release.current_version,
+        release.latest_version.as_deref(),
+        release.needs_upgrade,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

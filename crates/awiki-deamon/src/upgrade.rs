@@ -449,6 +449,10 @@ fn version_is_newer(candidate: &str, current: &str) -> bool {
     compare_versions(candidate, current).is_gt()
 }
 
+pub(crate) fn version_is_at_least(current: &str, target: &str) -> bool {
+    compare_versions(current, target).is_ge()
+}
+
 fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
     let left = version_components(left);
     let right = version_components(right);
