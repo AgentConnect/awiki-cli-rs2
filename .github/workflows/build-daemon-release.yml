@@ -1,0 +1,98 @@
+name: Build Daemon Release
+run-name: "daemon ${{ inputs.expected_version }} from ${{ inputs.source_ref }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref to build: branch, tag, or commit SHA."
+        required: true
+        type: string
+      expected_version:
+        description: "Expected awiki-deamon version."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os_name }}/${{ matrix.arch_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: linux
+            arch_name: amd64
+            target_triple: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - os_name: darwin
+            arch_name: arm64
+            target_triple: aarch64-apple-darwin
+            runner: macos-15
+          - os_name: darwin
+            arch_name: amd64
+            target_triple: x86_64-apple-darwin
+            runner: macos-15-intel
+
+    steps:
+      - name: Checkout awiki-cli-rs2
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: awiki-cli-rs2
+
+      - name: Checkout ANP SDK
+        uses: actions/checkout@v4
+        with:
+          repository: agent-network-protocol/anp
+          ref: master
+          path: anp/anp
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target_triple }}
+
+      - name: Verify daemon version
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(
+            awk '
+              /^\[package\]$/ { in_package = 1; next }
+              /^\[/ { if (in_package) exit }
+              in_package && $1 == "version" && $2 == "=" {
+                gsub(/"/, "", $3);
+                print $3;
+                exit;
+              }
+            ' crates/awiki-deamon/Cargo.toml
+          )"
+          if [[ "${version#v}" != "${{ inputs.expected_version }}" ]]; then
+            echo "expected awiki-deamon version ${{ inputs.expected_version }}, got ${version}" >&2
+            exit 1
+          fi
+
+      - name: Build daemon archive
+        working-directory: awiki-cli-rs2
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/release/daemon/_build-artifact.sh \
+            --version "${{ inputs.expected_version }}" \
+            --os "${{ matrix.os_name }}" \
+            --arch "${{ matrix.arch_name }}" \
+            --target "${{ matrix.target_triple }}" \
+            --dist dist/daemon-release
+
+      - name: Upload daemon archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: awiki-deamon-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          path: awiki-cli-rs2/dist/daemon-release/awiki-deamon-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz
+          if-no-files-found: error
