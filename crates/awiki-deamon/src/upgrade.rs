@@ -254,6 +254,7 @@ async fn upgrade_daemon_async(
     if runtime_binary.exists() {
         set_executable_mode(&runtime_binary)?;
     }
+    verify_candidate_binary(&install_dir.join("awiki-deamon"), &package.version)?;
 
     let current_dir = request.bin_root.join("current");
     std::fs::create_dir_all(&current_dir).with_context(|| {
@@ -606,6 +607,37 @@ fn validate_extracted_package(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+fn verify_candidate_binary(binary: &Path, expected_version: &str) -> Result<()> {
+    let output = std::process::Command::new(binary)
+        .arg("__self-check")
+        .arg("--expected-version")
+        .arg(expected_version)
+        .output()
+        .with_context(|| {
+            format!(
+                "run daemon candidate self-check {}",
+                binary
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("awiki-deamon")
+            )
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    bail!(
+        "daemon candidate self-check failed: {}",
+        sanitize_error(detail)
+    )
+}
+
 fn set_executable_mode(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -757,7 +789,14 @@ mod tests {
     fn create_package(root: &Path, version: &str) -> (PathBuf, String) {
         let stage = root.join(format!("stage-{version}"));
         std::fs::create_dir_all(&stage).unwrap();
-        std::fs::write(stage.join("awiki-deamon"), format!("daemon {version}")).unwrap();
+        std::fs::write(
+            stage.join("awiki-deamon"),
+            format!(
+                "#!/bin/sh\nif [ \"${{1-}}\" = \"__self-check\" ]; then exit 0; fi\nprintf '%s\\n' 'daemon {version}'\n"
+            ),
+        )
+        .unwrap();
+        set_executable_mode(&stage.join("awiki-deamon")).unwrap();
         std::fs::write(
             stage.join("awiki-deamon-runtime"),
             format!("runtime {version}"),
@@ -948,10 +987,13 @@ mod tests {
             std::fs::read_link(current_dir.join("awiki-deamon-runtime")).unwrap(),
             PathBuf::from("../0.2.0/awiki-deamon-runtime")
         );
-        assert_eq!(
-            std::fs::read_to_string(bin_root.join("0.2.0").join("awiki-deamon")).unwrap(),
-            "daemon 0.2.0"
-        );
+        let self_check = std::process::Command::new(bin_root.join("0.2.0").join("awiki-deamon"))
+            .arg("__self-check")
+            .arg("--expected-version")
+            .arg("0.2.0")
+            .output()
+            .unwrap();
+        assert!(self_check.status.success());
         assert!(bin_root.join("0.2.0").exists());
         assert!(bin_root.join("0.1.0").exists());
         assert!(bin_root.join("0.0.9").exists());
@@ -1001,5 +1043,53 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with(".upgrade-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_preserves_current_symlink_when_candidate_self_check_fails() {
+        let (root, config) = fixture();
+        let bin_root = root.path().join("bin");
+        let old_dir = bin_root.join("0.1.0");
+        let current_dir = bin_root.join("current");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&current_dir).unwrap();
+        std::fs::write(old_dir.join("awiki-deamon"), "old").unwrap();
+        std::os::unix::fs::symlink("../0.1.0/awiki-deamon", current_dir.join("awiki-deamon"))
+            .unwrap();
+
+        let bad_stage = root.path().join("bad-stage");
+        std::fs::create_dir_all(&bad_stage).unwrap();
+        std::fs::write(bad_stage.join("awiki-deamon"), "#!/bin/sh\nexit 42\n").unwrap();
+        set_executable_mode(&bad_stage.join("awiki-deamon")).unwrap();
+        let bad_archive = root.path().join("bad-package.tar.gz");
+        let output = std::process::Command::new("tar")
+            .arg("-C")
+            .arg(&bad_stage)
+            .arg("-czf")
+            .arg(&bad_archive)
+            .arg("awiki-deamon")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let sha = sha256_hex(&std::fs::read(&bad_archive).unwrap());
+        let manifest = write_manifest(root.path(), "0.2.0", &bad_archive, &sha);
+
+        let error = upgrade_daemon(
+            &config,
+            DaemonUpgradeRequest {
+                target_version: "latest".to_string(),
+                download_base_url: format!("file://{}", manifest.display()),
+                bin_root: bin_root.clone(),
+                restart_service: false,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("self-check"));
+        assert_eq!(
+            std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
+            PathBuf::from("../0.1.0/awiki-deamon")
+        );
     }
 }

@@ -29,18 +29,53 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("__runtime-wrapper") {
-        let response = run_runtime_wrapper(std::env::args().skip(2))?;
-        println!("{}", serde_json::to_string(&response)?);
-        if !response.ok {
-            std::process::exit(2);
+    if let Some(command) = std::env::args().nth(1) {
+        match command.as_str() {
+            "__runtime-wrapper" => {
+                let response = run_runtime_wrapper(std::env::args().skip(2))?;
+                println!("{}", serde_json::to_string(&response)?);
+                if !response.ok {
+                    std::process::exit(2);
+                }
+                return Ok(());
+            }
+            "__self-check" => {
+                run_self_check(std::env::args().skip(2))?;
+                return Ok(());
+            }
+            _ => {}
         }
-        return Ok(());
     }
     let command = parse_args(std::env::args().skip(1))?;
     let output = run_command_json(command)?;
     println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn run_self_check(args: impl IntoIterator<Item = String>) -> Result<()> {
+    let mut args = args.into_iter();
+    let mut expected_version = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--expected-version" => {
+                expected_version =
+                    Some(args.next().context("--expected-version requires a value")?);
+            }
+            "--help" | "-h" => return self_check_usage_error(),
+            other => bail!("unknown self-check argument: {other}"),
+        }
+    }
+    if let Some(expected) = expected_version {
+        let expected = expected.trim().trim_start_matches('v');
+        let actual = env!("CARGO_PKG_VERSION").trim().trim_start_matches('v');
+        if expected != actual {
+            bail!("daemon self-check version mismatch: expected {expected}, got {actual}");
+        }
+    }
+    println!(
+        "{{\"ok\":true,\"name\":\"awiki-deamon\",\"version\":\"{}\"}}",
+        env!("CARGO_PKG_VERSION")
+    );
     Ok(())
 }
 
@@ -379,6 +414,10 @@ fn required_state_root(state_root: Option<PathBuf>) -> Result<PathBuf> {
 
 fn usage_error<T>() -> Result<T> {
     bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|service-uninstall|agent-list|agent-status|runtime-list|archive-daemon-finalize|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [--agent-did <did>] [archive-daemon-finalize: --archive-id <id>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
+}
+
+fn self_check_usage_error<T>() -> Result<T> {
+    bail!("usage: awiki-deamon __self-check [--expected-version <version>]")
 }
 
 fn runtime_wrapper_usage_error<T>() -> Result<T> {

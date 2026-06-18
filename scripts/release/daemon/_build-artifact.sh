@@ -55,12 +55,23 @@ host_arch() {
 
 target_for() {
   case "$1/$2" in
-    linux/amd64) printf '%s\n' "x86_64-unknown-linux-gnu" ;;
+    linux/amd64) printf '%s\n' "x86_64-unknown-linux-musl" ;;
     linux/arm64) printf '%s\n' "aarch64-unknown-linux-gnu" ;;
     darwin/amd64) printf '%s\n' "x86_64-apple-darwin" ;;
     darwin/arm64) printf '%s\n' "aarch64-apple-darwin" ;;
     *) die "unsupported daemon release target $1/$2" ;;
   esac
+}
+
+verify_release_binary() {
+  local binary="$1"
+  local expected_version="$2"
+  "${binary}" __self-check --expected-version "${expected_version}" >/dev/null
+  if [[ "${OS_NAME}" == "linux" ]]; then
+    if command -v strings >/dev/null 2>&1 && strings "${binary}" | grep -q 'GLIBC_[0-9]'; then
+      die "Linux daemon release binary contains GLIBC symbol requirements; build a musl/static-compatible package"
+    fi
+  fi
 }
 
 VERSION=""
@@ -149,6 +160,7 @@ fi
 
 "${cargo_cmd[@]}" build -p awiki-deamon --bin awiki-deamon --release --locked --target "${TARGET_TRIPLE}"
 [[ -f "${build_bin}" ]] || die "built daemon binary not found: ${build_bin}"
+verify_release_binary "${build_bin}" "${VERSION}"
 
 mkdir -p "${DIST_DIR}"
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/awiki-daemon-release.XXXXXX")"
