@@ -689,6 +689,10 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "route_hash": generic_cli_route_hash_summary(state),
                 "route_session_counts": empty_route_session_counts(),
                 "route_message_queue": unsupported_route_message_queue_summary("profile_missing"),
+                "runtime_card": generic_cli_missing_runtime_card_summary(
+                    "profile_missing",
+                    "contact_admin",
+                ),
                 "max_parallel_runs_per_profile": 1,
                 "runtime_target_required": true,
                 "setup": generic_cli_setup_summary(
@@ -743,6 +747,10 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "route_hash": generic_cli_route_hash_summary(state),
                 "route_session_counts": empty_route_session_counts(),
                 "route_message_queue": unsupported_route_message_queue_summary("profile_missing"),
+                "runtime_card": generic_cli_missing_runtime_card_summary(
+                    "profile_missing",
+                    "contact_admin",
+                ),
                 "max_parallel_runs_per_profile": 1,
                 "runtime_target_required": true,
                 "setup": generic_cli_setup_summary(
@@ -807,6 +815,15 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
         &profile.driver_id,
         &runtime.controller_scope_key,
     );
+    let runtime_card = generic_cli_runtime_card_summary(
+        &profile.driver_id,
+        setup_ready,
+        setup_status,
+        driver_status_code,
+        next_action,
+        &route_session_counts,
+        &route_message_queue,
+    );
     let active_session_count = route_session_counts
         .get("active")
         .and_then(Value::as_u64)
@@ -851,6 +868,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
             "route_hash": generic_cli_route_hash_summary(state),
             "route_session_counts": route_session_counts,
             "route_message_queue": route_message_queue,
+            "runtime_card": runtime_card,
             "max_parallel_runs_per_profile": 1,
             "runtime_target_required": true,
             "setup": generic_cli_setup_summary(
@@ -989,6 +1007,234 @@ fn unsupported_route_message_queue_summary(reason: &str) -> Value {
     summary["supported"] = json!(false);
     summary["unsupported_reason"] = json!(reason);
     summary
+}
+
+fn generic_cli_missing_runtime_card_summary(setup_state: &str, next_action: &str) -> Value {
+    json!({
+        "supported": false,
+        "status_schema_version": 1,
+        "runtime_family": "generic-cli",
+        "driver_id": null,
+        "lifecycle_state": "manual_review_required",
+        "setup_ready": false,
+        "setup_state": setup_state,
+        "queue_state": "idle",
+        "active_run_state": "idle",
+        "route_session_state": "none",
+        "queued_count": 0,
+        "running_count": 0,
+        "dead_letter_count": 0,
+        "failed_count": 0,
+        "oldest_queued_age_ms": null,
+        "next_action": next_action,
+        "contains_user_content": false,
+        "contains_provider_auth_material": false,
+        "last_message_id_watermark_policy": "final_only",
+    })
+}
+
+fn generic_cli_runtime_card_summary(
+    driver_id: &str,
+    setup_ready: bool,
+    setup_status: &str,
+    driver_status_code: &str,
+    setup_next_action: &str,
+    route_session_counts: &Value,
+    route_message_queue: &Value,
+) -> Value {
+    let queue_supported = route_message_queue
+        .get("supported")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let queued_count = route_message_queue_i64(route_message_queue, "queued_count");
+    let running_count = route_message_queue_i64(route_message_queue, "running_count");
+    let dead_letter_count = route_message_queue_i64(route_message_queue, "dead_letter_count");
+    let failed_count = route_message_queue_i64(route_message_queue, "failed_count");
+    let oldest_queued_age_ms = route_message_queue
+        .get("oldest_queued_age_ms")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let route_session_state = generic_cli_route_session_card_state(route_session_counts);
+    let queue_state = generic_cli_queue_card_state(
+        queue_supported,
+        queued_count,
+        running_count,
+        dead_letter_count,
+    );
+    let active_run_state =
+        generic_cli_active_run_card_state(queue_state, queued_count, running_count, failed_count);
+    let lifecycle_state = generic_cli_runtime_card_lifecycle_state(
+        setup_ready,
+        setup_status,
+        queue_state,
+        queued_count,
+        running_count,
+        dead_letter_count,
+        route_session_state,
+    );
+    let next_action = generic_cli_runtime_card_next_action(
+        lifecycle_state,
+        setup_next_action,
+        dead_letter_count,
+        queued_count,
+        running_count,
+        driver_status_code,
+    );
+    json!({
+        "supported": true,
+        "status_schema_version": 1,
+        "runtime_family": "generic-cli",
+        "driver_id": driver_id,
+        "lifecycle_state": lifecycle_state,
+        "setup_ready": setup_ready,
+        "setup_state": generic_cli_runtime_card_setup_state(setup_status, driver_status_code),
+        "queue_state": queue_state,
+        "active_run_state": active_run_state,
+        "route_session_state": route_session_state,
+        "queued_count": queued_count,
+        "running_count": running_count,
+        "dead_letter_count": dead_letter_count,
+        "failed_count": failed_count,
+        "oldest_queued_age_ms": oldest_queued_age_ms,
+        "next_action": next_action,
+        "contains_user_content": false,
+        "contains_provider_auth_material": false,
+        "last_message_id_watermark_policy": "final_only",
+    })
+}
+
+fn route_message_queue_i64(summary: &Value, field: &str) -> i64 {
+    summary.get(field).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn route_session_count_u64(counts: &Value, field: &str) -> u64 {
+    counts.get(field).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn generic_cli_route_session_card_state(route_session_counts: &Value) -> &'static str {
+    if route_session_count_u64(route_session_counts, "running") > 0 {
+        "active"
+    } else if route_session_count_u64(route_session_counts, "failed") > 0 {
+        "failed"
+    } else if route_session_count_u64(route_session_counts, "active") > 0 {
+        "active"
+    } else if route_session_count_u64(route_session_counts, "reset") > 0 {
+        "reset"
+    } else if route_session_count_u64(route_session_counts, "total") > 0 {
+        "active"
+    } else {
+        "none"
+    }
+}
+
+fn generic_cli_queue_card_state(
+    queue_supported: bool,
+    queued_count: i64,
+    running_count: i64,
+    dead_letter_count: i64,
+) -> &'static str {
+    if !queue_supported {
+        "blocked"
+    } else if dead_letter_count > 0 {
+        "dead_letter"
+    } else if running_count > 0 {
+        "running"
+    } else if queued_count > 0 {
+        "queued"
+    } else {
+        "idle"
+    }
+}
+
+fn generic_cli_active_run_card_state(
+    queue_state: &str,
+    queued_count: i64,
+    running_count: i64,
+    failed_count: i64,
+) -> &'static str {
+    if running_count > 0 || queue_state == "running" {
+        "running"
+    } else if queued_count > 0 || queue_state == "queued" {
+        "queued"
+    } else if failed_count > 0 {
+        "failed"
+    } else {
+        "idle"
+    }
+}
+
+fn generic_cli_runtime_card_lifecycle_state(
+    setup_ready: bool,
+    setup_status: &str,
+    queue_state: &str,
+    queued_count: i64,
+    running_count: i64,
+    dead_letter_count: i64,
+    route_session_state: &str,
+) -> &'static str {
+    if !setup_ready {
+        if matches!(setup_status, "unsupported" | "profile_missing") {
+            return "manual_review_required";
+        }
+        return "needs_setup";
+    }
+    if dead_letter_count > 0 || queue_state == "dead_letter" {
+        "dead_letter"
+    } else if running_count > 0 || queue_state == "running" {
+        "running"
+    } else if queued_count > 0 || queue_state == "queued" {
+        "queued"
+    } else if route_session_state == "failed" {
+        "failed"
+    } else {
+        "created"
+    }
+}
+
+fn generic_cli_runtime_card_next_action(
+    lifecycle_state: &str,
+    setup_next_action: &str,
+    dead_letter_count: i64,
+    queued_count: i64,
+    running_count: i64,
+    driver_status_code: &str,
+) -> &'static str {
+    if lifecycle_state == "manual_review_required" {
+        return "contact_admin";
+    }
+    if !matches!(driver_status_code, "ok") {
+        return match setup_next_action {
+            "install_driver" => "setup_required",
+            "upgrade_daemon" => "upgrade_required",
+            "manual_review_required" => "manual_review_required",
+            _ => "setup_required",
+        };
+    }
+    if dead_letter_count > 0 {
+        "manual_review_required"
+    } else if queued_count > 0 || running_count > 0 {
+        "retry_later"
+    } else if setup_next_action == "manual_review_required" {
+        "manual_review_required"
+    } else {
+        "none"
+    }
+}
+
+fn generic_cli_runtime_card_setup_state(
+    setup_status: &str,
+    driver_status_code: &str,
+) -> &'static str {
+    match driver_status_code {
+        "profile_missing" => "profile_missing",
+        "config_home_missing" => "profile_incomplete",
+        "missing_binary" => "binary_missing",
+        "probe_failed" => "binary_probe_failed",
+        "not_implemented" | "unsupported_driver" => "unsupported_driver_version",
+        "ok" if setup_status == "ready" => "ready",
+        "ok" => "auth_unknown",
+        _ => "unknown",
+    }
 }
 
 fn empty_generic_cli_runtime_lock_summary() -> Value {
@@ -1542,6 +1788,25 @@ mod tests {
         }
     }
 
+    fn command_generic_cli_runtime() -> AgentDefinition {
+        AgentDefinition {
+            agent_did: "did:agent:command".to_string(),
+            handle: "alice-command".to_string(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: TEST_CONTROLLER_USER_ID.to_string(),
+            controller_full_handle: TEST_CONTROLLER_FULL_HANDLE.to_string(),
+            controller_scope_key: TEST_CONTROLLER_SCOPE_KEY.to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: Some(GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string()),
+            runtime_profile_id: Some("profile_command_alice".to_string()),
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/command/agent.db".to_string(),
+            message_db_path: "agents/command/messages.db".to_string(),
+            status: "active".to_string(),
+        }
+    }
+
     fn create_test_route_session(
         root: &std::path::Path,
         conversation_id: &str,
@@ -1927,6 +2192,26 @@ mod tests {
             diagnostics["config_summary"]["next_action"],
             "install_driver"
         );
+        let card = &diagnostics["config_summary"]["runtime_card"];
+        assert_eq!(card["supported"], true);
+        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["runtime_family"], "generic-cli");
+        assert_eq!(card["driver_id"], "codex");
+        assert_eq!(card["lifecycle_state"], "needs_setup");
+        assert_eq!(card["setup_ready"], false);
+        assert_eq!(card["setup_state"], "binary_missing");
+        assert_eq!(card["queue_state"], "idle");
+        assert_eq!(card["active_run_state"], "idle");
+        assert_eq!(card["route_session_state"], "none");
+        assert_eq!(card["queued_count"], 0);
+        assert_eq!(card["running_count"], 0);
+        assert_eq!(card["dead_letter_count"], 0);
+        assert_eq!(card["failed_count"], 0);
+        assert!(card["oldest_queued_age_ms"].is_null());
+        assert_eq!(card["next_action"], "setup_required");
+        assert_eq!(card["contains_user_content"], false);
+        assert_eq!(card["contains_provider_auth_material"], false);
+        assert_eq!(card["last_message_id_watermark_policy"], "final_only");
         assert_eq!(diagnostics["config_summary"]["auth_status"], "unknown");
         assert_eq!(
             diagnostics["config_summary"]["home_isolation"],
@@ -2021,6 +2306,224 @@ mod tests {
         assert!(!dump.contains("route_key"));
         assert!(!dump.contains("did:human:bob"));
         assert!(!dump.contains("tok_"));
+    }
+
+    #[test]
+    fn generic_cli_runtime_card_reports_created_when_setup_ready_without_routes() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let runtime = command_generic_cli_runtime();
+        state.upsert_agent_definition(&runtime).unwrap();
+
+        let fake_program = root.path().join("fake-command");
+        std::fs::write(&fake_program, "ready").unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_command_alice", "command").unwrap();
+        cli_profile.binary_path = Some(fake_program);
+        cli_profile.default_workspace_mode = WorkspaceMode::RouteRoot;
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+        let card = &diagnostics["config_summary"]["runtime_card"];
+
+        assert!(!status.needs_config);
+        assert!(status.last_error_code.is_none());
+        assert_eq!(diagnostics["config_summary"]["setup_ready"], true);
+        assert_eq!(card["supported"], true);
+        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["runtime_family"], "generic-cli");
+        assert_eq!(card["driver_id"], "command");
+        assert_eq!(card["lifecycle_state"], "created");
+        assert_eq!(card["setup_ready"], true);
+        assert_eq!(card["setup_state"], "ready");
+        assert_eq!(card["queue_state"], "blocked");
+        assert_eq!(card["active_run_state"], "idle");
+        assert_eq!(card["route_session_state"], "none");
+        assert_eq!(card["queued_count"], 0);
+        assert_eq!(card["running_count"], 0);
+        assert_eq!(card["dead_letter_count"], 0);
+        assert_eq!(card["failed_count"], 0);
+        assert!(card["oldest_queued_age_ms"].is_null());
+        assert_eq!(card["next_action"], "none");
+        assert_eq!(card["contains_user_content"], false);
+        assert_eq!(card["contains_provider_auth_material"], false);
+        assert_eq!(card["last_message_id_watermark_policy"], "final_only");
+
+        let dump = diagnostics.to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("fake-command"));
+        assert!(!dump.contains("route_key"));
+        assert!(!dump.contains("native_session_id"));
+        assert!(!dump.contains("tok_"));
+    }
+
+    #[test]
+    fn generic_cli_runtime_card_reports_profile_missing_without_sensitive_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let mut runtime = generic_cli_runtime();
+        runtime.runtime_profile_id = None;
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+        let card = &diagnostics["config_summary"]["runtime_card"];
+
+        assert!(status.needs_config);
+        assert_eq!(
+            status.last_error_code.as_deref(),
+            Some("generic_cli_profile_missing")
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["driver_status_code"],
+            "profile_missing"
+        );
+        assert_eq!(card["supported"], false);
+        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["runtime_family"], "generic-cli");
+        assert!(card["driver_id"].is_null());
+        assert_eq!(card["lifecycle_state"], "manual_review_required");
+        assert_eq!(card["setup_ready"], false);
+        assert_eq!(card["setup_state"], "profile_missing");
+        assert_eq!(card["queue_state"], "idle");
+        assert_eq!(card["active_run_state"], "idle");
+        assert_eq!(card["route_session_state"], "none");
+        assert_eq!(card["queued_count"], 0);
+        assert_eq!(card["running_count"], 0);
+        assert_eq!(card["dead_letter_count"], 0);
+        assert_eq!(card["failed_count"], 0);
+        assert!(card["oldest_queued_age_ms"].is_null());
+        assert_eq!(card["next_action"], "contact_admin");
+        assert_eq!(card["contains_user_content"], false);
+        assert_eq!(card["contains_provider_auth_material"], false);
+        assert_eq!(card["last_message_id_watermark_policy"], "final_only");
+
+        let dump = diagnostics.to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("route_key"));
+        assert!(!dump.contains("native_session_id"));
+        assert!(!dump.contains("did:human:bob"));
+        assert!(!dump.contains("tok_"));
+    }
+
+    #[test]
+    fn generic_cli_runtime_card_prioritizes_setup_before_queue_states() {
+        let route_counts = json!({
+            "total": 1,
+            "active": 1,
+            "running": 0,
+            "failed": 0,
+            "reset": 0,
+        });
+        let queue = json!({
+            "supported": true,
+            "queued_count": 3,
+            "running_count": 1,
+            "failed_count": 1,
+            "dead_letter_count": 1,
+            "oldest_queued_age_ms": 42,
+        });
+
+        let card = generic_cli_runtime_card_summary(
+            "codex",
+            false,
+            "needs_setup",
+            "missing_binary",
+            "install_driver",
+            &route_counts,
+            &queue,
+        );
+
+        assert_eq!(card["supported"], true);
+        assert_eq!(card["driver_id"], "codex");
+        assert_eq!(card["lifecycle_state"], "needs_setup");
+        assert_eq!(card["setup_ready"], false);
+        assert_eq!(card["setup_state"], "binary_missing");
+        assert_eq!(card["queue_state"], "dead_letter");
+        assert_eq!(card["active_run_state"], "running");
+        assert_eq!(card["route_session_state"], "active");
+        assert_eq!(card["queued_count"], 3);
+        assert_eq!(card["running_count"], 1);
+        assert_eq!(card["dead_letter_count"], 1);
+        assert_eq!(card["failed_count"], 1);
+        assert_eq!(card["oldest_queued_age_ms"], 42);
+        assert_eq!(card["next_action"], "setup_required");
+        assert_eq!(card["contains_user_content"], false);
+        assert_eq!(card["contains_provider_auth_material"], false);
+        assert_eq!(card["last_message_id_watermark_policy"], "final_only");
+    }
+
+    #[test]
+    fn generic_cli_runtime_card_prioritizes_dead_letter_running_and_queued() {
+        let no_routes = empty_route_session_counts();
+        let dead = generic_cli_runtime_card_summary(
+            "codex",
+            true,
+            "ready",
+            "ok",
+            "none",
+            &no_routes,
+            &json!({
+                "supported": true,
+                "queued_count": 0,
+                "running_count": 1,
+                "failed_count": 0,
+                "dead_letter_count": 1,
+                "oldest_queued_age_ms": null,
+            }),
+        );
+        assert_eq!(dead["lifecycle_state"], "dead_letter");
+        assert_eq!(dead["queue_state"], "dead_letter");
+        assert_eq!(dead["active_run_state"], "running");
+        assert_eq!(dead["next_action"], "manual_review_required");
+
+        let running = generic_cli_runtime_card_summary(
+            "codex",
+            true,
+            "ready",
+            "ok",
+            "none",
+            &no_routes,
+            &json!({
+                "supported": true,
+                "queued_count": 2,
+                "running_count": 1,
+                "failed_count": 0,
+                "dead_letter_count": 0,
+                "oldest_queued_age_ms": 7,
+            }),
+        );
+        assert_eq!(running["lifecycle_state"], "running");
+        assert_eq!(running["queue_state"], "running");
+        assert_eq!(running["active_run_state"], "running");
+        assert_eq!(running["next_action"], "retry_later");
+
+        let queued = generic_cli_runtime_card_summary(
+            "codex",
+            true,
+            "ready",
+            "ok",
+            "none",
+            &no_routes,
+            &json!({
+                "supported": true,
+                "queued_count": 2,
+                "running_count": 0,
+                "failed_count": 0,
+                "dead_letter_count": 0,
+                "oldest_queued_age_ms": 7,
+            }),
+        );
+        assert_eq!(queued["lifecycle_state"], "queued");
+        assert_eq!(queued["queue_state"], "queued");
+        assert_eq!(queued["active_run_state"], "queued");
+        assert_eq!(queued["next_action"], "retry_later");
     }
 
     #[cfg(unix)]
@@ -2421,6 +2924,7 @@ mod tests {
         let status = runtime_status_summary(&config, &state, &runtime);
         let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
         let queue = &diagnostics["config_summary"]["route_message_queue"];
+        let card = &diagnostics["config_summary"]["runtime_card"];
 
         assert_eq!(queue["supported"], true);
         assert_eq!(queue["queued_count"], 4);
@@ -2434,6 +2938,25 @@ mod tests {
         assert!(queue["oldest_queued_age_ms"].as_i64().unwrap() >= 0);
         assert_eq!(queue["next_action"], "manual_review_required");
         assert_eq!(queue["last_message_id_watermark_policy"], "final_only");
+        assert_eq!(card["supported"], true);
+        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["runtime_family"], "generic-cli");
+        assert_eq!(card["driver_id"], "codex");
+        assert_eq!(card["lifecycle_state"], "needs_setup");
+        assert_eq!(card["setup_ready"], false);
+        assert_eq!(card["setup_state"], "binary_missing");
+        assert_eq!(card["queue_state"], "dead_letter");
+        assert_eq!(card["active_run_state"], "running");
+        assert_eq!(card["route_session_state"], "active");
+        assert_eq!(card["queued_count"], 4);
+        assert_eq!(card["running_count"], 1);
+        assert_eq!(card["dead_letter_count"], 1);
+        assert_eq!(card["failed_count"], 1);
+        assert!(card["oldest_queued_age_ms"].as_i64().unwrap() >= 0);
+        assert_eq!(card["next_action"], "setup_required");
+        assert_eq!(card["contains_user_content"], false);
+        assert_eq!(card["contains_provider_auth_material"], false);
+        assert_eq!(card["last_message_id_watermark_policy"], "final_only");
 
         let dump = diagnostics.to_string();
         assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
