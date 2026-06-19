@@ -4,6 +4,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::agent::{AgentDefinition, AgentKind};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
+use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{
     ensure_runtime_model_config, hermes_runtime_model_config_status,
     repair_hermes_profile_if_needed, HermesGatewayCommandStatus, HermesRuntimeModelConfigStatus,
@@ -13,6 +14,7 @@ use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
     UserServiceAgentRegistrationClient,
 };
+use crate::runtime::RuntimePlugin;
 use crate::security::runtime_token::current_time_millis;
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
 use crate::state::DaemonState;
@@ -515,6 +517,16 @@ fn runtime_status_summary_with_gateway_status(
     let is_hermes = runtime.runtime_plugin_id.as_deref()
         == Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID);
     if !is_hermes {
+        if runtime.runtime_plugin_id.as_deref() == Some(GENERIC_CLI_RUNTIME_PLUGIN_ID) {
+            let (needs_config, last_error_code) = generic_cli_runtime_status(state, runtime);
+            return RuntimeStatusSummary {
+                is_hermes,
+                needs_config,
+                last_error_code,
+                gateway_command_status: None,
+                model_config_status: None,
+            };
+        }
         return RuntimeStatusSummary {
             is_hermes,
             needs_config: false,
@@ -569,6 +581,9 @@ fn runtime_diagnostics_summary(
     if runtime.runtime_plugin_id.as_deref()
         != Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID)
     {
+        if runtime.runtime_plugin_id.as_deref() == Some(GENERIC_CLI_RUNTIME_PLUGIN_ID) {
+            return generic_cli_diagnostics_summary(state, runtime);
+        }
         return json!({});
     }
     match state.load_hermes_profile(&runtime.agent_did) {
@@ -601,6 +616,91 @@ fn runtime_diagnostics_summary(
             },
         }),
     }
+}
+
+fn generic_cli_runtime_status(
+    state: &DaemonState,
+    runtime: &AgentDefinition,
+) -> (bool, Option<String>) {
+    let Some(runtime_profile_id) = runtime.runtime_profile_id.as_deref() else {
+        return (true, Some("generic_cli_profile_missing".to_string()));
+    };
+    let Ok(profile) = state.load_cli_runtime_profile(runtime_profile_id) else {
+        return (true, Some("generic_cli_profile_missing".to_string()));
+    };
+    let missing_config_home = profile.driver_id == "codex"
+        && !profile
+            .config_home
+            .as_ref()
+            .is_some_and(|path| path.is_dir());
+    let install_status = GenericCliDriverRegistry::new(profile).check_install_status();
+    let missing_binary = install_status
+        .as_ref()
+        .map(|status| !status.installed)
+        .unwrap_or(true);
+    let last_error_code = if missing_config_home {
+        Some("generic_cli_config_home_missing".to_string())
+    } else if missing_binary {
+        Some("generic_cli_driver_missing".to_string())
+    } else if install_status.is_err() {
+        Some("generic_cli_driver_probe_failed".to_string())
+    } else {
+        None
+    };
+    (missing_config_home || missing_binary, last_error_code)
+}
+
+fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinition) -> Value {
+    let Some(runtime_profile_id) = runtime.runtime_profile_id.as_deref() else {
+        return json!({
+            "profile_status": "missing",
+            "config_summary": {
+                "driver_id": null,
+                "binary_installed": false,
+                "binary_detail": "missing runtime_profile_id",
+                "config_home": null,
+                "config_home_exists": false,
+                "default_workspace_mode": null,
+                "default_sandbox": null,
+            },
+        });
+    };
+    let Ok(profile) = state.load_cli_runtime_profile(runtime_profile_id) else {
+        return json!({
+            "profile_status": "missing",
+            "config_summary": {
+                "driver_id": null,
+                "binary_installed": false,
+                "binary_detail": "missing cli runtime profile",
+                "config_home": null,
+                "config_home_exists": false,
+                "default_workspace_mode": null,
+                "default_sandbox": null,
+            },
+        });
+    };
+    let config_home_exists = profile
+        .config_home
+        .as_ref()
+        .is_some_and(|path| path.is_dir());
+    let install_status = GenericCliDriverRegistry::new(profile.clone())
+        .check_install_status()
+        .unwrap_or_else(|error| crate::runtime::RuntimeInstallStatus {
+            installed: false,
+            detail: Some(sanitize_public_error(&error.to_string())),
+        });
+    json!({
+        "profile_status": profile.status,
+        "config_summary": {
+            "driver_id": profile.driver_id,
+            "binary_installed": install_status.installed,
+            "binary_detail": install_status.detail.map(|detail| sanitize_public_error(&detail)),
+            "config_home": if profile.config_home.is_some() { "configured" } else { "missing" },
+            "config_home_exists": config_home_exists,
+            "default_workspace_mode": profile.default_workspace_mode.as_str(),
+            "default_sandbox": profile.default_sandbox,
+        },
+    })
 }
 
 fn service_status(config: &DaemonConfig) -> ServiceStatus {
@@ -751,8 +851,9 @@ fn sanitize_public_error(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::AgentDefinition;
+    use crate::plugins::generic_cli::GENERIC_CLI_RUNTIME_PLUGIN_ID;
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
-    use crate::state::HermesProfileRecord;
+    use crate::state::{CliRuntimeProfileRecord, HermesProfileRecord};
     use std::collections::BTreeSet;
     use std::sync::{Mutex, MutexGuard};
 
@@ -835,6 +936,25 @@ mod tests {
         }
     }
 
+    fn generic_cli_runtime() -> AgentDefinition {
+        AgentDefinition {
+            agent_did: "did:agent:codex".to_string(),
+            handle: "alice-codex".to_string(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: TEST_CONTROLLER_USER_ID.to_string(),
+            controller_full_handle: TEST_CONTROLLER_FULL_HANDLE.to_string(),
+            controller_scope_key: TEST_CONTROLLER_SCOPE_KEY.to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: Some(GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string()),
+            runtime_profile_id: Some("profile_codex_alice".to_string()),
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/codex/agent.db".to_string(),
+            message_db_path: "agents/codex/messages.db".to_string(),
+            status: "active".to_string(),
+        }
+    }
+
     fn allowed_latest_diagnostics_keys() -> BTreeSet<&'static str> {
         [
             "installation_status",
@@ -842,6 +962,7 @@ mod tests {
             "runner_status",
             "active_session_count",
             "runtime_version",
+            "driver_id",
             "config_summary",
             "release_manifest_url",
             "release_status",
@@ -1063,6 +1184,50 @@ mod tests {
             configured_diagnostics["config_summary"]["model_config"],
             "configured"
         );
+    }
+
+    #[test]
+    fn generic_cli_runtime_status_reports_profile_home_without_leaking_local_path() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let runtime = generic_cli_runtime();
+        state.upsert_agent_definition(&runtime).unwrap();
+        let config_home = root
+            .path()
+            .join("runtime/profiles/profile_codex_alice/codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_codex_alice", "codex").unwrap();
+        cli_profile.binary_path = Some(root.path().join("missing-codex"));
+        cli_profile.config_home = Some(config_home);
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+
+        assert!(status.needs_config);
+        assert_eq!(
+            status.last_error_code.as_deref(),
+            Some("generic_cli_driver_missing")
+        );
+        assert_eq!(diagnostics["profile_status"], "active");
+        assert_eq!(diagnostics["config_summary"]["driver_id"], "codex");
+        assert_eq!(diagnostics["config_summary"]["config_home"], "configured");
+        assert_eq!(diagnostics["config_summary"]["config_home_exists"], true);
+        assert_eq!(
+            diagnostics["config_summary"]["default_workspace_mode"],
+            "shared-root"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["default_sandbox"],
+            "read-only"
+        );
+        let dump = diagnostics.to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("tok_"));
     }
 
     #[test]

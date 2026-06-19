@@ -161,6 +161,29 @@ fn expect_created(outcome: AgentCommandOutcome) -> RuntimeAgentCreateOutcome {
     }
 }
 
+fn assert_codex_profile_home(
+    config: &DaemonConfig,
+    runtime_profile_id: &str,
+) -> std::path::PathBuf {
+    let expected = config
+        .state_root
+        .join("runtime")
+        .join("profiles")
+        .join(runtime_profile_id)
+        .join("codex-home");
+    assert!(expected.is_dir(), "missing {}", expected.display());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let profile_dir = expected.parent().unwrap();
+        let profile_mode = std::fs::metadata(profile_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(profile_mode, 0o700);
+        let mode = std::fs::metadata(&expected).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+    expected
+}
+
 fn seed_runtime_inbox_projection(config: &DaemonConfig, runtime_agent_did: &str) {
     if let Some(parent) = config.im_core_sqlite_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -1163,6 +1186,8 @@ fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
         .load_cli_runtime_profile(&created.runtime_profile_id)
         .unwrap();
     assert_eq!(cli_profile.driver_id, "codex");
+    let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
+    assert_eq!(cli_profile.config_home, Some(codex_home));
     assert_eq!(
         cli_profile.driver_config_json,
         json!({ "profile": "awiki" })
@@ -1240,6 +1265,12 @@ fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() 
             .load_cli_runtime_profile(&created.runtime_profile_id)
             .unwrap();
         assert_eq!(cli_profile.driver_id, expected_driver_id);
+        if expected_driver_id == "codex" {
+            let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
+            assert_eq!(cli_profile.config_home, Some(codex_home));
+        } else {
+            assert_eq!(cli_profile.config_home, None);
+        }
         assert_eq!(
             cli_profile.recipient_policy_json,
             json!({ "mode": "controller-only" })
@@ -1306,6 +1337,8 @@ fn runtime_agent_create_defaults_generic_cli_driver_to_codex() {
         .load_cli_runtime_profile(&created.runtime_profile_id)
         .unwrap();
     assert_eq!(cli_profile.driver_id, "codex");
+    let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
+    assert_eq!(cli_profile.config_home, Some(codex_home));
 }
 
 #[test]

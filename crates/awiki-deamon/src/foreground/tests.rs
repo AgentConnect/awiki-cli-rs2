@@ -1242,6 +1242,9 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
         crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex")
             .unwrap();
     cli_profile.binary_path = Some(root.path().join("missing-codex"));
+    let codex_home = root.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    cli_profile.config_home = Some(codex_home);
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::default();

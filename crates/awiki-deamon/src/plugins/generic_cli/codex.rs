@@ -18,6 +18,7 @@ const DEFAULT_CLI_WRAPPER: &str = "library:awiki_deamon::cli_wrapper";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexDriverConfig {
     pub binary_path: PathBuf,
+    pub config_home: PathBuf,
     pub profile: Option<String>,
     pub model: Option<String>,
     pub sandbox: String,
@@ -69,8 +70,14 @@ impl CodexDriverConfig {
             .or_else(|| profile.default_sandbox.clone())
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
         let output_dir = string_field(config, "output_dir").map(PathBuf::from);
+        let config_home = profile
+            .config_home
+            .clone()
+            .or_else(|| string_field(config, "config_home").map(PathBuf::from))
+            .context("Codex generic-cli profile requires config_home for CODEX_HOME")?;
         let record = Self {
             binary_path,
+            config_home,
             profile: string_field(config, "profile"),
             model: profile
                 .default_model
@@ -79,7 +86,7 @@ impl CodexDriverConfig {
             sandbox,
             ignore_user_config: bool_field(config, "ignore_user_config", false),
             ignore_rules: bool_field(config, "ignore_rules", false),
-            ephemeral: bool_field(config, "ephemeral", true),
+            ephemeral: bool_field(config, "ephemeral", false),
             output_dir,
             cli_wrapper: string_field(config, "cli_wrapper")
                 .unwrap_or_else(|| DEFAULT_CLI_WRAPPER.to_string()),
@@ -91,6 +98,9 @@ impl CodexDriverConfig {
     pub fn validate(&self) -> Result<()> {
         if self.binary_path.as_os_str().is_empty() {
             bail!("codex binary_path must not be empty");
+        }
+        if self.config_home.as_os_str().is_empty() {
+            bail!("codex config_home must not be empty");
         }
         if !matches!(self.sandbox.as_str(), "read-only" | "workspace-write") {
             bail!("codex sandbox must be read-only or workspace-write");
@@ -152,6 +162,9 @@ impl GenericCliDriver for CodexDriver {
             .context("Codex driver requires daemon local RPC socket")?;
         std::fs::create_dir_all(&workspace_root)
             .with_context(|| format!("create Codex workspace {}", workspace_root.display()))?;
+        if !self.config.config_home.is_dir() {
+            bail!("Codex CODEX_HOME is not configured or does not exist");
+        }
         let paths = self.run_paths(&invocation)?;
         std::fs::create_dir_all(&paths.output_dir)
             .with_context(|| format!("create Codex output dir {}", paths.output_dir.display()))?;
@@ -175,6 +188,7 @@ impl GenericCliDriver for CodexDriver {
             )
             .env("AWIKI_DAEMON_SOCKET", &socket_path)
             .env("AWIKI_DAEMON_CLI_WRAPPER", &self.config.cli_wrapper)
+            .env("CODEX_HOME", &self.config.config_home)
             .env(
                 "AWIKI_DAEMON_RUNTIME_RPC_TOKEN",
                 &invocation.runtime_rpc_token,
@@ -224,6 +238,7 @@ impl GenericCliDriver for CodexDriver {
             callbacks: Vec::new(),
             metadata: serde_json::json!({
                 "driver_id": "codex",
+                "config_home": "configured",
                 "command": {
                     "program": self.config.binary_path,
                     "args": args,

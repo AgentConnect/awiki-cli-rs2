@@ -587,6 +587,13 @@ where
             .clone()
             .context("generic-cli runtime must have driver_id")?;
         let mut cli_profile = CliRuntimeProfileRecord::for_driver(&profile_id, driver_id)?;
+        if cli_profile.driver_id == "codex" {
+            let profile_dir = codex_profile_dir(config, &profile_id);
+            create_private_dir_all(&profile_dir)?;
+            let config_home = profile_dir.join("codex-home");
+            create_private_dir_all(&config_home)?;
+            cli_profile.config_home = Some(config_home);
+        }
         if let Some(recipient_policy) = payload.args.recipient_policy.clone() {
             cli_profile.recipient_policy_json = recipient_policy;
         }
@@ -678,6 +685,26 @@ where
         })?;
     }
     Ok(outcome)
+}
+
+fn codex_profile_dir(config: &DaemonConfig, runtime_profile_id: &str) -> std::path::PathBuf {
+    config
+        .state_root
+        .join("runtime")
+        .join("profiles")
+        .join(runtime_profile_id)
+}
+
+fn create_private_dir_all(path: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("create runtime profile directory {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("set private permissions on {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn validate_runtime_create_args_contract(

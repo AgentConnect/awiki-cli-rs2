@@ -800,14 +800,20 @@ PY
 }
 
 fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
+    let config_home = binary_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("codex-home");
+    std::fs::create_dir_all(&config_home).unwrap();
     CodexDriverConfig {
         binary_path,
+        config_home,
         profile: Some("awiki".to_string()),
         model: Some("gpt-test".to_string()),
         sandbox: "workspace-write".to_string(),
         ignore_user_config: true,
         ignore_rules: true,
-        ephemeral: true,
+        ephemeral: false,
         output_dir: None,
         cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
     }
@@ -833,7 +839,7 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
     assert!(args.windows(2).any(|pair| pair == ["--profile", "awiki"]));
     assert!(args.contains(&"--ignore-user-config".to_string()));
     assert!(args.contains(&"--ignore-rules".to_string()));
-    assert!(args.contains(&"--ephemeral".to_string()));
+    assert!(!args.contains(&"--ephemeral".to_string()));
     assert!(args.contains(&"--json".to_string()));
     assert!(args
         .windows(2)
@@ -841,6 +847,20 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
     assert_eq!(args.last().map(String::as_str), Some("-"));
     assert!(!args.contains(&"danger-full-access".to_string()));
     assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+}
+
+#[test]
+fn codex_driver_command_builder_allows_explicit_ephemeral_debug_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let final_output = root.path().join("final.txt");
+    let mut config = codex_config(root.path().join("codex"));
+    config.ephemeral = true;
+    let driver = CodexDriver::new(config).unwrap();
+
+    let args = driver.command_args(&workspace, &final_output);
+
+    assert!(args.contains(&"--ephemeral".to_string()));
 }
 
 #[test]
@@ -860,6 +880,9 @@ fn codex_driver_config_prefers_driver_config_sandbox_over_profile_default() {
     let mut cli_profile =
         CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "codex").unwrap();
     cli_profile.binary_path = Some(root.path().join("codex-from-profile"));
+    let config_home = root.path().join("codex-home-from-profile");
+    std::fs::create_dir_all(&config_home).unwrap();
+    cli_profile.config_home = Some(config_home.clone());
     cli_profile.default_model = Some("model-from-profile".to_string());
     cli_profile.default_sandbox = Some("read-only".to_string());
     cli_profile.driver_config_json = json!({
@@ -873,12 +896,24 @@ fn codex_driver_config_prefers_driver_config_sandbox_over_profile_default() {
     let config = CodexDriverConfig::from_profile(&cli_profile).unwrap();
 
     assert_eq!(config.binary_path, root.path().join("codex-from-profile"));
+    assert_eq!(config.config_home, config_home);
     assert_eq!(config.model.as_deref(), Some("model-from-profile"));
     assert_eq!(config.sandbox, "workspace-write");
     assert_eq!(config.profile.as_deref(), Some("codex-profile"));
     assert!(config.ignore_user_config);
     assert!(config.ignore_rules);
     assert!(!config.ephemeral);
+}
+
+#[test]
+fn codex_driver_config_requires_profile_config_home() {
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "codex").unwrap();
+    cli_profile.binary_path = Some(std::path::PathBuf::from("codex"));
+
+    let error = CodexDriverConfig::from_profile(&cli_profile).unwrap_err();
+
+    assert!(error.to_string().contains("config_home"));
 }
 
 #[cfg(unix)]
@@ -956,6 +991,7 @@ TASK_ID=${{AWIKI_DAEMON_TASK_ID-}}
 AGENT_DID=${{AWIKI_DAEMON_AGENT_DID-}}
 PROFILE_ID=${{AWIKI_DAEMON_RUNTIME_PROFILE_ID-}}
 WRAPPER=${{AWIKI_DAEMON_CLI_WRAPPER-}}
+CODEX_HOME=${{CODEX_HOME-}}
 EOF
 FINAL_OUTPUT=""
 PREV=""
@@ -1037,6 +1073,7 @@ PY
 
     let mut driver_config = codex_config(fake_codex);
     let binary_path = driver_config.binary_path.clone();
+    let codex_home = driver_config.config_home.clone();
     driver_config.output_dir = Some(output_dir.clone());
     let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
     let result = run_controller_text_task_with_config(
@@ -1095,6 +1132,7 @@ PY
     assert!(env_dump.contains("AGENT_DID=did:agent:alice-coder"));
     assert!(env_dump.contains("PROFILE_ID=profile_generic_cli_1"));
     assert!(env_dump.contains("WRAPPER=library:awiki_deamon::cli_wrapper"));
+    assert!(env_dump.contains(&format!("CODEX_HOME={}", codex_home.display())));
 
     assert_eq!(
         std::fs::read_to_string(output_dir.join("final-output.txt")).unwrap(),
