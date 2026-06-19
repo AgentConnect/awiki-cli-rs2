@@ -43,6 +43,19 @@ fn upsert_test_cli_profile(
     cli_profile
 }
 
+fn assert_busy_retry_metadata(record: &awiki_deamon::outbox::OutboxRecord, reason: &str) {
+    let metadata = record
+        .metadata
+        .as_ref()
+        .expect("busy status should include metadata");
+    assert_eq!(metadata["retryable"].as_bool(), Some(true));
+    assert_eq!(metadata["deferred"].as_bool(), Some(false));
+    assert_eq!(metadata["next_action"].as_str(), Some("retry_later"));
+    assert_eq!(metadata["retry_after_ms"].as_i64(), Some(10_000));
+    assert_eq!(metadata["retry_after_seconds"].as_i64(), Some(10));
+    assert_eq!(metadata["busy_reason"].as_str(), Some(reason));
+}
+
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:alice-coder".to_string(),
@@ -451,6 +464,107 @@ fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("failed"));
     assert_eq!(records[0].last_error_code.as_deref(), Some("profile_busy"));
+    assert_busy_retry_metadata(&records[0], "profile_busy");
+}
+
+#[test]
+fn route_root_route_busy_does_not_launch_driver_or_release_existing_lease() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let conversation_id = "direct:did:human:bob";
+    let route_key = awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        conversation_id,
+    )
+    .unwrap();
+    let route_hash = state.cli_route_key_hash(&route_key).unwrap();
+    let workspace_root = profile.workspace_root.as_ref().unwrap();
+    let session_root = workspace_root
+        .parent()
+        .and_then(|runtime_workspaces_root| runtime_workspaces_root.parent())
+        .unwrap()
+        .join("sessions")
+        .join(&profile.runtime_profile_id);
+    let paths =
+        awiki_deamon::workspace::route_workspace_paths(workspace_root, &session_root, &route_hash)
+            .unwrap();
+    let route = state
+        .get_or_create_cli_route_session(awiki_deamon::state::CreateCliRouteSession {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: "codex".to_string(),
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: profile.controller_did.clone(),
+            conversation_id: conversation_id.to_string(),
+            workspace_path: paths.workspace_path,
+            session_dir: paths.session_dir,
+        })
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &route.route_key,
+            "run_existing",
+            "test",
+            awiki_deamon::security::runtime_token::current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_busy".to_string(),
+            conversation_id: Some(conversation_id.to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "route busy".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("route session is busy"));
+    let run = state.load_runtime_run("run_task_msg_route_busy").unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "running");
+    assert_eq!(route.lock_run_id.as_deref(), Some("run_existing"));
+    assert_eq!(route.last_error_code, None);
+    assert!(state
+        .load_cli_driver_run("run_task_msg_route_busy")
+        .unwrap_err()
+        .to_string()
+        .contains("load cli driver run"));
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].last_error_code.as_deref(), Some("route_busy"));
+    assert_busy_retry_metadata(&records[0], "route_busy");
 }
 
 #[test]
@@ -545,6 +659,7 @@ fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
         records[0].last_error_code.as_deref(),
         Some("host_home_busy")
     );
+    assert_busy_retry_metadata(&records[0], "host_home_busy");
 }
 
 #[test]

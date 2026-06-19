@@ -435,9 +435,52 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
         last_error_code: Option<&str>,
         last_error_summary: Option<&str>,
     ) -> Result<()> {
+        self.send_status_with_metadata(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+            None,
+        )
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &crate::state::AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
         let sent_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        let mut run_payload = json!({
+            "run_id": context.run_id.clone(),
+            "message_id": self.task_id.clone(),
+            "source_message_id": self.status_source_message_id.clone(),
+            "mention_id": self.status_mention_id.clone(),
+            "runtime_agent_did": context.agent_did.clone(),
+            "agent_did": context.agent_did.clone(),
+            "requester_did": self.requester_did.clone(),
+            "requester_full_handle": self.requester_full_handle.clone(),
+            "trigger_kind": self.trigger_kind.clone(),
+            "conversation_id": self.conversation_id.clone(),
+            "status": state,
+            "started_at": sent_at,
+            "updated_at": sent_at,
+            "last_error_code": last_error_code,
+            "last_error_summary": last_error_summary,
+        });
+        if let (Some(metadata), Some(run_object)) = (metadata, run_payload.as_object_mut()) {
+            if let Some(metadata_object) = metadata.as_object() {
+                for (key, value) in metadata_object {
+                    run_object.insert(key.clone(), value.clone());
+                }
+            }
+        }
         self.send_status_payload(
             &self.recipient_did,
             json!({
@@ -453,23 +496,7 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
                 "message": text,
                 "daemon": null,
                 "runtimes": [],
-                "runs": [{
-                    "run_id": context.run_id.clone(),
-                    "message_id": self.task_id.clone(),
-                    "source_message_id": self.status_source_message_id.clone(),
-                    "mention_id": self.status_mention_id.clone(),
-                    "runtime_agent_did": context.agent_did.clone(),
-                    "agent_did": context.agent_did.clone(),
-                    "requester_did": self.requester_did.clone(),
-                    "requester_full_handle": self.requester_full_handle.clone(),
-                    "trigger_kind": self.trigger_kind.clone(),
-                    "conversation_id": self.conversation_id.clone(),
-                    "status": state,
-                    "started_at": sent_at,
-                    "updated_at": sent_at,
-                    "last_error_code": last_error_code,
-                    "last_error_summary": last_error_summary,
-                }],
+                "runs": [run_payload],
             }),
         )?;
         self.send_controller_activity_payload_best_effort(
@@ -690,6 +717,25 @@ impl RuntimeOutbox for RuntimeCallbackOutbox {
     ) -> Result<()> {
         self.controller_outbox(context)?
             .send_status(context, state, text)
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &crate::state::AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
+        self.controller_outbox(context)?.send_status_with_metadata(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+            metadata,
+        )
     }
 
     fn send_final(

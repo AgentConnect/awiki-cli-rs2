@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::controller_scope::VerifiedControllerSender;
@@ -31,6 +31,9 @@ use crate::workspace::{
     WorkspaceMode,
 };
 use crate::DaemonConfig;
+
+const GENERIC_CLI_BUSY_RETRY_AFTER_MS: i64 = 10_000;
+const GENERIC_CLI_BUSY_NEXT_ACTION: &str = "retry_later";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipientPolicy {
@@ -352,15 +355,17 @@ where
             Ok(session) => session,
             Err(error) => {
                 state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-                emit_runtime_status(
+                let metadata = error.status_metadata();
+                emit_runtime_status_with_metadata(
                     outbox,
                     &run,
                     "failed",
-                    Some("Runtime route session preparation failed"),
-                    Some("route_session_preparation_failed"),
-                    Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                    Some(error.user_message()),
+                    Some(error.code),
+                    Some(&error.summary),
+                    metadata.as_ref(),
                 )?;
-                return Err(error).context("prepare generic-cli route session");
+                return Err(error.into_error()).context("prepare generic-cli route session");
             }
         }
     } else {
@@ -384,13 +389,15 @@ where
                     );
                 }
                 state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-                emit_runtime_status(
+                let metadata = error.status_metadata();
+                emit_runtime_status_with_metadata(
                     outbox,
                     &run,
                     "failed",
                     Some(error.user_message()),
                     Some(error.code),
                     Some(&error.summary),
+                    metadata.as_ref(),
                 )?;
                 return Err(error.into_error()).context("acquire generic-cli runtime lock");
             }
@@ -779,6 +786,10 @@ impl GenericCliRuntimeLockError {
     fn into_error(self) -> anyhow::Error {
         anyhow::anyhow!(self.message)
     }
+
+    fn status_metadata(&self) -> Option<Value> {
+        generic_cli_busy_status_metadata(self.code)
+    }
 }
 
 impl From<anyhow::Error> for GenericCliRuntimeLockError {
@@ -787,6 +798,69 @@ impl From<anyhow::Error> for GenericCliRuntimeLockError {
             "runtime_lock_unavailable",
             format!("generic-cli runtime lock unavailable: {error}"),
         )
+    }
+}
+
+#[derive(Debug)]
+struct GenericCliRouteSessionPreparationError {
+    code: &'static str,
+    message: String,
+    summary: String,
+}
+
+impl GenericCliRouteSessionPreparationError {
+    fn route_busy(route_key_hash: &str) -> Self {
+        Self::new(
+            "route_busy",
+            format!("generic-cli route session is busy: {route_key_hash}"),
+        )
+    }
+
+    fn new(code: &'static str, message: String) -> Self {
+        let summary = sanitize_user_visible_error_summary(&message);
+        Self {
+            code,
+            message,
+            summary,
+        }
+    }
+
+    fn user_message(&self) -> &'static str {
+        match self.code {
+            "route_busy" => "Runtime route session is busy",
+            _ => "Runtime route session preparation failed",
+        }
+    }
+
+    fn status_metadata(&self) -> Option<Value> {
+        generic_cli_busy_status_metadata(self.code)
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::anyhow!(self.message)
+    }
+}
+
+impl From<anyhow::Error> for GenericCliRouteSessionPreparationError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(
+            "route_session_preparation_failed",
+            format!("generic-cli route session preparation failed: {error}"),
+        )
+    }
+}
+
+fn generic_cli_busy_status_metadata(code: &str) -> Option<Value> {
+    match code {
+        "route_busy" | "profile_busy" | "host_home_busy" => Some(json!({
+            "retryable": true,
+            "deferred": false,
+            "next_action": GENERIC_CLI_BUSY_NEXT_ACTION,
+            "retry_after_ms": GENERIC_CLI_BUSY_RETRY_AFTER_MS,
+            "retry_after_seconds": GENERIC_CLI_BUSY_RETRY_AFTER_MS / 1000,
+            "busy_reason": code,
+        })),
+        _ => None,
     }
 }
 
@@ -875,7 +949,10 @@ fn prepare_generic_cli_route_session(
     profile: &RuntimeAgentProfile,
     task: &RuntimeTask,
     run: &RuntimeRun,
-) -> Result<Option<crate::state::CliRouteSessionRecord>> {
+) -> std::result::Result<
+    Option<crate::state::CliRouteSessionRecord>,
+    GenericCliRouteSessionPreparationError,
+> {
     if profile.workspace_mode != Some(WorkspaceMode::RouteRoot) {
         return Ok(None);
     }
@@ -937,7 +1014,7 @@ fn prepare_generic_cli_route_session(
             "route_workspace_create_failed",
             &summary,
         );
-        return Err(error);
+        return Err(error.into());
     }
     if let Err(error) = std::fs::create_dir_all(&session.session_dir).with_context(|| {
         format!(
@@ -952,7 +1029,7 @@ fn prepare_generic_cli_route_session(
             "route_session_dir_create_failed",
             &summary,
         );
-        return Err(error);
+        return Err(error.into());
     }
     if !state.try_acquire_cli_route_session_lease(
         &session.route_key,
@@ -960,10 +1037,9 @@ fn prepare_generic_cli_route_session(
         "runtime.host",
         current_time_millis()? + 10 * 60 * 1000,
     )? {
-        anyhow::bail!(
-            "generic-cli route session is busy: {}",
-            session.route_key_hash
-        );
+        return Err(GenericCliRouteSessionPreparationError::route_busy(
+            &session.route_key_hash,
+        ));
     }
     Ok(Some(session))
 }
@@ -1389,6 +1465,26 @@ fn emit_runtime_status(
     last_error_code: Option<&str>,
     last_error_summary: Option<&str>,
 ) -> Result<()> {
+    emit_runtime_status_with_metadata(
+        outbox,
+        run,
+        status,
+        message,
+        last_error_code,
+        last_error_summary,
+        None,
+    )
+}
+
+fn emit_runtime_status_with_metadata(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    status: &str,
+    message: Option<&str>,
+    last_error_code: Option<&str>,
+    last_error_summary: Option<&str>,
+    metadata: Option<&Value>,
+) -> Result<()> {
     let context = crate::state::AuthorizedRuntimeContext {
         token_id: "host-run-status".to_string(),
         agent_did: run.agent_did.clone(),
@@ -1396,12 +1492,13 @@ fn emit_runtime_status(
         run_id: run.run_id.clone(),
         method: RpcMethod::TaskStatus,
     };
-    outbox.send_status_with_detail(
+    outbox.send_status_with_metadata(
         &context,
         status,
         message,
         last_error_code,
         last_error_summary,
+        metadata,
     )?;
     Ok(())
 }

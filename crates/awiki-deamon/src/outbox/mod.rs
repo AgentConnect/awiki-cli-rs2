@@ -46,6 +46,18 @@ pub trait RuntimeOutbox {
         self.send_status(context, state, text)
     }
 
+    fn send_status_with_metadata(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        _metadata: Option<&Value>,
+    ) -> Result<()> {
+        self.send_status_with_detail(context, state, text, last_error_code, last_error_summary)
+    }
+
     fn send_final(&self, context: &AuthorizedRuntimeContext, text: Option<&str>) -> Result<()>;
 
     fn send_message(
@@ -458,6 +470,7 @@ pub struct OutboxRecord {
     pub state: Option<String>,
     pub last_error_code: Option<String>,
     pub last_error_summary: Option<String>,
+    pub metadata: Option<Value>,
     pub recipient: Option<String>,
     pub raw_recipient: Option<String>,
     pub resolved_did: Option<String>,
@@ -1003,6 +1016,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some(state.to_string()),
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1032,6 +1046,38 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some(state.to_string()),
             last_error_code: last_error_code.map(str::to_string),
             last_error_summary: last_error_summary.map(str::to_string),
+            metadata: None,
+            recipient: None,
+            raw_recipient: None,
+            resolved_did: None,
+            message_id: None,
+            text: text.map(str::to_string),
+            security: None,
+            file_path: None,
+            display_filename: None,
+            mime_type: None,
+            idempotency_key: None,
+        });
+        Ok(())
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
+        self.push(OutboxRecord {
+            run_id: context.run_id.clone(),
+            agent_did: context.agent_did.clone(),
+            kind: OutboxRecordKind::Status,
+            state: Some(state.to_string()),
+            last_error_code: last_error_code.map(str::to_string),
+            last_error_summary: last_error_summary.map(str::to_string),
+            metadata: metadata.cloned(),
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1054,6 +1100,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some("finished".to_string()),
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1084,6 +1131,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: None,
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: Some(message.resolved_recipient().to_string()),
             raw_recipient: Some(message.raw_recipient().to_string()),
             resolved_did: message.resolved_did().map(str::to_string),
@@ -1120,6 +1168,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: None,
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: attachment.target_did.clone(),
             raw_recipient: Some(attachment.target.clone()),
             resolved_did: attachment.target_did.clone(),
