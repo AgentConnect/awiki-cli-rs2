@@ -257,6 +257,56 @@ fn app_message_agent_binding_roundtrips_and_restores_active_record() {
 }
 
 #[test]
+fn app_message_agent_binding_disable_removes_record_from_active_queries() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let record = AppMessageAgentBindingRecord {
+        binding_id: "app-message-agent:did:human:alice:app_1".to_string(),
+        user_did: "did:human:alice".to_string(),
+        inbox_auth_verification_method: "did:human:alice#daemon-key-1".to_string(),
+        app_instance_id: "app_1".to_string(),
+        bootstrap_id: "boot_1".to_string(),
+        idempotency_key: "message-agent-bootstrap:did:human:alice:app_1".to_string(),
+        daemon_agent_did: "did:agent:daemon".to_string(),
+        runtime_agent_did: "did:agent:runtime-hermes".to_string(),
+        runtime_profile_id: "profile_hermes_app_message".to_string(),
+        role: "app_message_handler".to_string(),
+        desired_agent_json: serde_json::json!({"role": "app_message_handler"}),
+        capability_policy_json: serde_json::json!({"allowed_actions": []}),
+        status: "message_agent_ready".to_string(),
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        revoked_at_ms: None,
+    };
+
+    state.upsert_app_message_agent_binding(&record).unwrap();
+    let updated = state
+        .update_app_message_agent_binding_status_by_runtime(
+            "did:agent:runtime-hermes",
+            "message_agent_disabled",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(updated.status, "message_agent_disabled");
+    assert!(updated.revoked_at_ms.is_none());
+    assert!(state
+        .load_active_app_message_agent_binding_by_runtime("did:agent:runtime-hermes")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        state
+            .list_active_app_message_agent_bindings()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn app_message_agent_binding_revokes_superseded_records_for_same_user_role() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

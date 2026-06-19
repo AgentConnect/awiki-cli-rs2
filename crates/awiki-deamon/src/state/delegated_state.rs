@@ -527,6 +527,77 @@ WHERE binding_id = ?1
             .context("load app message agent binding")
     }
 
+    pub fn update_app_message_agent_binding_status_by_runtime(
+        &self,
+        runtime_agent_did: &str,
+        status: &str,
+        revoked: bool,
+    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+        let runtime_agent_did = runtime_agent_did.trim();
+        if runtime_agent_did.is_empty() {
+            anyhow::bail!("runtime_agent_did must not be empty");
+        }
+        let status = status.trim();
+        if status.is_empty() {
+            anyhow::bail!("status must not be empty");
+        }
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let affected = connection.execute(
+            r#"
+UPDATE app_message_agent_binding
+SET status = ?1,
+    updated_at_ms = ?2,
+    revoked_at_ms = CASE WHEN ?3 THEN COALESCE(revoked_at_ms, ?2) ELSE revoked_at_ms END
+WHERE runtime_agent_did = ?4
+  AND revoked_at_ms IS NULL
+  AND status IN ('message_agent_ready', 'message_agent_active', 'message_agent_ensuring')
+"#,
+            rusqlite::params![status, now, revoked, runtime_agent_did],
+        )?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        self.load_active_or_inactive_app_message_agent_binding_by_runtime(runtime_agent_did)
+    }
+
+    pub fn load_active_or_inactive_app_message_agent_binding_by_runtime(
+        &self,
+        runtime_agent_did: &str,
+    ) -> Result<Option<AppMessageAgentBindingRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    binding_id,
+    user_did,
+    inbox_auth_verification_method,
+    app_instance_id,
+    bootstrap_id,
+    idempotency_key,
+    daemon_agent_did,
+    runtime_agent_did,
+    runtime_profile_id,
+    role,
+    desired_agent_json,
+    capability_policy_json,
+    status,
+    created_at_ms,
+    updated_at_ms,
+    revoked_at_ms
+FROM app_message_agent_binding
+WHERE runtime_agent_did = ?1
+ORDER BY updated_at_ms DESC
+LIMIT 1
+"#,
+                [runtime_agent_did],
+                app_message_agent_binding_from_row,
+            )
+            .optional()
+            .context("load app message agent binding by runtime")
+    }
+
     pub fn load_active_app_message_agent_binding_by_runtime(
         &self,
         runtime_agent_did: &str,
