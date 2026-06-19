@@ -1142,6 +1142,70 @@ LIMIT ?2
         Ok(records)
     }
 
+    pub fn list_due_cli_route_message_queue_fair(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<CliRouteMessageQueueRecord>> {
+        if now_ms < 0 {
+            bail!("now_ms must not be negative");
+        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            cli_route_message_queue_select_sql(
+                r#"
+WHERE queue_id IN (
+    SELECT head.queue_id
+    FROM cli_route_message_queue AS head
+    WHERE head.status = 'queued'
+      AND head.next_attempt_at_ms <= ?1
+      AND NOT EXISTS (
+          SELECT 1
+          FROM cli_route_message_queue AS candidate
+          WHERE candidate.runtime_profile_id = head.runtime_profile_id
+            AND candidate.route_key = head.route_key
+            AND candidate.status = 'queued'
+            AND candidate.next_attempt_at_ms <= ?1
+            AND (
+                candidate.route_sequence < head.route_sequence
+                OR (
+                    candidate.route_sequence = head.route_sequence
+                    AND candidate.created_at_ms < head.created_at_ms
+                )
+                OR (
+                    candidate.route_sequence = head.route_sequence
+                    AND candidate.created_at_ms = head.created_at_ms
+                    AND candidate.queue_id < head.queue_id
+                )
+            )
+      )
+)
+ORDER BY next_attempt_at_ms ASC,
+         created_at_ms ASC,
+         runtime_profile_id ASC,
+         route_key ASC,
+         route_sequence ASC,
+         queue_id ASC
+LIMIT ?2
+"#,
+            )
+            .as_str(),
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![now_ms, limit.max(1) as i64],
+            cli_route_message_queue_record_from_row,
+        )?;
+        let mut records = Vec::new();
+        for row in rows {
+            let record = row?;
+            record
+                .validate()
+                .context("validate fair cli route message queue row")?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
     pub fn list_cli_route_message_queue_for_route(
         &self,
         runtime_profile_id: &str,
@@ -1185,6 +1249,51 @@ ORDER BY route_sequence ASC, created_at_ms ASC, queue_id ASC
         )
     }
 
+    pub fn claim_cli_route_message_queue_item(
+        &self,
+        queue_id: &str,
+        run_id: &str,
+    ) -> Result<Option<CliRouteMessageQueueRecord>> {
+        if queue_id.trim().is_empty() {
+            bail!("queue_id must not be empty");
+        }
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'running',
+    run_id = ?1,
+    attempts = attempts + 1,
+    last_error_code = NULL,
+    last_error_summary = NULL,
+    updated_at_ms = ?2
+WHERE queue_id = ?3
+  AND status = 'queued'
+"#,
+            rusqlite::params![run_id, current_time_millis()?, queue_id],
+        )?;
+        if updated == 0 {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let record = transaction
+            .query_row(
+                cli_route_message_queue_select_sql("WHERE queue_id = ?1").as_str(),
+                [queue_id],
+                cli_route_message_queue_record_from_row,
+            )
+            .optional()
+            .context("load claimed cli route message queue item")?
+            .with_context(|| format!("claimed cli route message queue item missing: {queue_id}"))?;
+        transaction.commit()?;
+        record.validate()?;
+        Ok(Some(record))
+    }
+
     pub fn mark_cli_route_message_queue_succeeded(
         &self,
         queue_id: &str,
@@ -1199,6 +1308,83 @@ ORDER BY route_sequence ASC, created_at_ms ASC, queue_id ASC
             None,
             None,
         )
+    }
+
+    pub fn retry_or_dead_letter_cli_route_message_queue_item(
+        &self,
+        queue_id: &str,
+        max_attempts: i64,
+        next_attempt_at_ms: i64,
+        last_error_code: &str,
+        last_error_summary: &str,
+    ) -> Result<CliRouteMessageQueueRecord> {
+        if queue_id.trim().is_empty() {
+            bail!("queue_id must not be empty");
+        }
+        if max_attempts <= 0 {
+            bail!("max_attempts must be positive");
+        }
+        if next_attempt_at_ms < 0 {
+            bail!("next_attempt_at_ms must not be negative");
+        }
+        if last_error_code.trim().is_empty() {
+            bail!("last_error_code must not be empty");
+        }
+        let sanitized_summary = sanitize_cli_queue_error_summary(last_error_summary)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let attempts: i64 = transaction
+            .query_row(
+                "SELECT attempts FROM cli_route_message_queue WHERE queue_id = ?1",
+                [queue_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("load cli route message queue attempts")?
+            .with_context(|| format!("cli route message queue item does not exist: {queue_id}"))?;
+        let next_status = if attempts >= max_attempts {
+            "dead_letter"
+        } else {
+            "queued"
+        };
+        let next_attempt_at_ms_param = if next_status == "queued" {
+            Some(next_attempt_at_ms)
+        } else {
+            None
+        };
+        let updated = transaction.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = ?1,
+    next_attempt_at_ms = COALESCE(?2, next_attempt_at_ms),
+    last_error_code = ?3,
+    last_error_summary = ?4,
+    updated_at_ms = ?5
+WHERE queue_id = ?6
+  AND status = 'running'
+"#,
+            rusqlite::params![
+                next_status,
+                next_attempt_at_ms_param,
+                last_error_code,
+                sanitized_summary.as_str(),
+                current_time_millis()?,
+                queue_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route message queue item is not running: {queue_id}");
+        }
+        let record = transaction
+            .query_row(
+                cli_route_message_queue_select_sql("WHERE queue_id = ?1").as_str(),
+                [queue_id],
+                cli_route_message_queue_record_from_row,
+            )
+            .context("load retry/dead-letter cli route message queue item")?;
+        transaction.commit()?;
+        record.validate()?;
+        Ok(record)
     }
 
     pub fn mark_cli_route_message_queue_failed_or_queued(
@@ -2256,6 +2442,59 @@ fn sanitized_queue_reason(reason: &str) -> Result<String> {
         bail!("queue cancellation reason contains unsupported characters");
     }
     Ok(reason.to_string())
+}
+
+fn sanitize_cli_queue_error_summary(summary: &str) -> Result<String> {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        bail!("last_error_summary must not be empty");
+    }
+    let mut redact_next = false;
+    let mut parts = Vec::new();
+    for part in summary.split_whitespace() {
+        if is_cli_queue_path_like(part) {
+            parts.push("<path>");
+            redact_next = false;
+            continue;
+        }
+        if redact_next {
+            parts.push("<redacted>");
+            redact_next = false;
+            continue;
+        }
+        if is_cli_queue_sensitive_marker(part) {
+            parts.push("<redacted>");
+            redact_next = !part.contains('=') && !part.contains(":/");
+        } else {
+            parts.push(part);
+        }
+    }
+    let mut sanitized = parts.join(" ");
+    if sanitized.chars().count() > 240 {
+        sanitized = sanitized.chars().take(240).collect();
+    }
+    Ok(sanitized)
+}
+
+fn is_cli_queue_path_like(part: &str) -> bool {
+    part.starts_with('/') || part.starts_with("file://") || is_windows_absolute_path_like(part)
+}
+
+fn is_windows_absolute_path_like(part: &str) -> bool {
+    let bytes = part.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+fn is_cli_queue_sensitive_marker(part: &str) -> bool {
+    let lower = part.to_ascii_lowercase();
+    lower.contains("token")
+        || lower.contains("secret")
+        || lower.contains("jwt")
+        || lower.contains("oauth")
+        || lower.contains("key")
 }
 
 fn cli_route_message_queue_select_sql(where_clause: &str) -> String {

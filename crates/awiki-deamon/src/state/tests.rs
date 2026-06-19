@@ -222,6 +222,184 @@ fn cli_route_message_queue_orders_due_items_by_route_sequence() {
 }
 
 #[test]
+fn cli_route_message_queue_fair_due_returns_route_heads_only() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let bob = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let charlie = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:charlie",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let bob_first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &bob,
+            "msg_bob_first",
+            Some("task_msg_bob_first"),
+            Some("run_task_msg_bob_first"),
+            now,
+        ))
+        .unwrap();
+    let bob_second = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &bob,
+            "msg_bob_second",
+            Some("task_msg_bob_second"),
+            Some("run_task_msg_bob_second"),
+            now,
+        ))
+        .unwrap();
+    let charlie_first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &charlie,
+            "msg_charlie_first",
+            Some("task_msg_charlie_first"),
+            Some("run_task_msg_charlie_first"),
+            now,
+        ))
+        .unwrap();
+
+    let plain_due = state.list_due_cli_route_message_queue(now, 10).unwrap();
+    assert_eq!(
+        plain_due
+            .iter()
+            .map(|record| record.source_message_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["msg_bob_first", "msg_bob_second", "msg_charlie_first"]
+    );
+
+    let fair_due = state
+        .list_due_cli_route_message_queue_fair(now, 10)
+        .unwrap();
+    let fair_ids = fair_due
+        .iter()
+        .map(|record| record.source_message_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(fair_ids.contains(&"msg_bob_first"));
+    assert!(fair_ids.contains(&"msg_charlie_first"));
+    assert!(!fair_ids.contains(&"msg_bob_second"));
+    assert_eq!(fair_due.len(), 2);
+
+    assert_eq!(bob_first.route_sequence, 1);
+    assert_eq!(bob_second.route_sequence, 2);
+    assert_eq!(charlie_first.route_sequence, 1);
+
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute(
+            r#"
+UPDATE cli_route_message_queue
+SET route_sequence = ?1,
+    created_at_ms = ?2
+WHERE queue_id = ?3
+"#,
+            rusqlite::params![
+                bob_first.route_sequence,
+                bob_first.created_at_ms,
+                bob_second.queue_id
+            ],
+        )
+        .unwrap();
+    let fair_due_with_duplicate_sequence = state
+        .list_due_cli_route_message_queue_fair(now, 10)
+        .unwrap();
+    let bob_due_count = fair_due_with_duplicate_sequence
+        .iter()
+        .filter(|record| record.route_key == bob.route_key)
+        .count();
+    assert_eq!(bob_due_count, 1);
+}
+
+#[test]
+fn cli_route_message_queue_claim_retry_and_dead_letter_are_state_only() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let item = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_claim_retry",
+            Some("task_msg_claim_retry"),
+            Some("run_task_msg_claim_retry"),
+            now,
+        ))
+        .unwrap();
+
+    let claimed = state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_claim_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.status, "running");
+    assert_eq!(claimed.run_id.as_deref(), Some("run_replay_claim_1"));
+    assert_eq!(claimed.attempts, 1);
+    assert!(state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_claim_2")
+        .unwrap()
+        .is_none());
+
+    let retry = state
+        .retry_or_dead_letter_cli_route_message_queue_item(
+            &item.queue_id,
+            2,
+            now + 30_000,
+            "provider_unavailable",
+            "token: abc /tmp/secret-path should be redacted",
+        )
+        .unwrap();
+    assert_eq!(retry.status, "queued");
+    assert_eq!(retry.attempts, 1);
+    assert_eq!(retry.next_attempt_at_ms, now + 30_000);
+    let retry_summary = retry.last_error_summary.unwrap();
+    assert!(retry_summary.contains("<redacted>"));
+    assert!(retry_summary.contains("<path>"));
+    assert!(!retry_summary.contains("abc"));
+    assert!(!retry_summary.contains("/tmp/secret-path"));
+
+    let claimed_again = state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_claim_2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed_again.attempts, 2);
+    let dead_letter = state
+        .retry_or_dead_letter_cli_route_message_queue_item(
+            &item.queue_id,
+            2,
+            now + 60_000,
+            "provider_unavailable",
+            "final retry failed without user payload",
+        )
+        .unwrap();
+    assert_eq!(dead_letter.status, "dead_letter");
+    assert_eq!(dead_letter.attempts, 2);
+    assert_eq!(dead_letter.next_attempt_at_ms, now + 30_000);
+
+    let route_after = state
+        .load_cli_route_session(&route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route_after.last_message_id, None);
+}
+
+#[test]
 fn cli_route_message_queue_cancel_helpers_cancel_pending_items() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
