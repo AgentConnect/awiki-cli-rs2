@@ -921,40 +921,72 @@ where
             }),
         );
     };
-    let reset_count =
-        if runtime_agent.runtime_plugin_id.as_deref() == Some(GENERIC_CLI_RUNTIME_PLUGIN_ID) {
-            if let Some(conversation_id) = conversation_id.as_deref() {
-                let conversation_id = crate::state::canonical_cli_conversation_id(conversation_id)?;
-                let route_key = crate::state::cli_route_session_key(
-                    &runtime_agent.agent_did,
-                    &daemon_agent.controller_scope_key,
-                    &conversation_id,
-                )?;
-                state.reset_cli_route_session_by_route(&route_key)?
-            } else {
-                state.reset_cli_route_sessions_for_runtime_controller_scope(
-                    &runtime_agent.agent_did,
-                    runtime_profile_id,
-                    &daemon_agent.controller_scope_key,
-                )?
+    let runtime_plugin_id = runtime_agent
+        .runtime_plugin_id
+        .as_deref()
+        .unwrap_or("unknown");
+    let driver_id = if runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        let profile = match state.load_cli_runtime_profile(runtime_profile_id) {
+            Ok(profile) => profile,
+            Err(_) => {
+                return send_command_status(
+                    outbox,
+                    daemon_agent,
+                    message,
+                    &payload.command_id,
+                    "failed",
+                    Some("generic-cli runtime profile is unavailable".to_string()),
+                    json!({
+                        "command": RUNTIME_SESSION_RESET,
+                        "runtime_agent_did": runtime_agent_did,
+                        "runtime_plugin_id": runtime_plugin_id,
+                        "error_code": "runtime_profile_unavailable",
+                    }),
+                );
             }
-        } else if let Some(conversation_id) = conversation_id.as_deref() {
-            let route = HermesSessionRoute::new(
-                runtime_agent.agent_did.clone(),
-                runtime_profile_id.to_string(),
-                daemon_agent.controller_scope_key.clone(),
-                daemon_agent.controller_did.clone(),
-                Some(conversation_id.to_string()),
-                "conversation",
-            );
-            state.reset_active_hermes_session_by_route(&route)?
+        };
+        Some(profile.driver_id)
+    } else {
+        None
+    };
+    let reset_scope = if conversation_id.is_some() {
+        "route"
+    } else {
+        "controller_scope"
+    };
+    let reset_count = if runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        if let Some(conversation_id) = conversation_id.as_deref() {
+            let conversation_id = crate::state::canonical_cli_conversation_id(conversation_id)?;
+            let route_key = crate::state::cli_route_session_key(
+                &runtime_agent.agent_did,
+                &daemon_agent.controller_scope_key,
+                &conversation_id,
+            )?;
+            state.reset_cli_route_session_by_route(&route_key)?
         } else {
-            state.reset_active_hermes_sessions_for_runtime_controller_scope(
+            state.reset_cli_route_sessions_for_runtime_controller_scope(
                 &runtime_agent.agent_did,
                 runtime_profile_id,
                 &daemon_agent.controller_scope_key,
             )?
-        };
+        }
+    } else if let Some(conversation_id) = conversation_id.as_deref() {
+        let route = HermesSessionRoute::new(
+            runtime_agent.agent_did.clone(),
+            runtime_profile_id.to_string(),
+            daemon_agent.controller_scope_key.clone(),
+            daemon_agent.controller_did.clone(),
+            Some(conversation_id.to_string()),
+            "conversation",
+        );
+        state.reset_active_hermes_session_by_route(&route)?
+    } else {
+        state.reset_active_hermes_sessions_for_runtime_controller_scope(
+            &runtime_agent.agent_did,
+            runtime_profile_id,
+            &daemon_agent.controller_scope_key,
+        )?
+    };
     state.insert_audit_event_json(
         "runtime.session.reset",
         Some(&runtime_agent.agent_did),
@@ -963,6 +995,9 @@ where
         None,
         json!({
             "command_id": payload.command_id,
+            "runtime_plugin_id": runtime_plugin_id,
+            "driver_id": driver_id,
+            "reset_scope": reset_scope,
             "conversation_id_present": conversation_id.is_some(),
             "reset_count": reset_count,
         }),
@@ -978,6 +1013,10 @@ where
             "command": RUNTIME_SESSION_RESET,
             "runtime_agent_did": runtime_agent.agent_did,
             "daemon_agent_did": daemon_agent.agent_did,
+            "runtime_plugin_id": runtime_plugin_id,
+            "driver_id": driver_id,
+            "reset_scope": reset_scope,
+            "conversation_id_present": conversation_id.is_some(),
             "reset_count": reset_count,
         }),
     )
