@@ -148,10 +148,10 @@ impl ClaudeCodeDriverConfig {
 
 impl GenericCliDriver for ClaudeCodeDriver {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
-        match Command::new(&self.config.binary_path)
-            .arg("--version")
-            .output()
-        {
+        let mut command = Command::new(&self.config.binary_path);
+        command.arg("--version");
+        apply_claude_code_probe_env(&mut command);
+        match command.output() {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let detail = if version.is_empty() {
@@ -490,19 +490,7 @@ fn apply_claude_code_env(
     config: &ClaudeCodeDriverConfig,
 ) {
     command.env_clear();
-    for key in [
-        "PATH",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "LC_MESSAGES",
-        "TERM",
-        "HOME",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
+    apply_claude_code_base_env(command);
     command
         .env("AWIKI_DAEMON_RUN_ID", &invocation.run_id)
         .env("AWIKI_DAEMON_TASK_ID", &invocation.task_id)
@@ -517,6 +505,27 @@ fn apply_claude_code_env(
             "AWIKI_DAEMON_RUNTIME_RPC_TOKEN",
             &invocation.runtime_rpc_token,
         );
+}
+
+fn apply_claude_code_probe_env(command: &mut Command) {
+    command.env_clear();
+    apply_claude_code_base_env(command);
+}
+
+fn apply_claude_code_base_env(command: &mut Command) {
+    for key in [
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TERM",
+        "HOME",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
 }
 
 pub fn claude_code_native_session_id_from_stream_json(stdout: &[u8]) -> Option<String> {

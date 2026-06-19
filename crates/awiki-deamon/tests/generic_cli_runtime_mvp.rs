@@ -1497,6 +1497,79 @@ fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn claude_code_driver_check_install_status_uses_probe_env_allowlist() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let fake_claude = root.path().join("claude");
+    let env_capture = root.path().join("claude-version-env.txt");
+    std::fs::write(
+        &fake_claude,
+        format!(
+            r#"#!/bin/sh
+if [ "${{1-}}" = "--version" ]; then
+  cat > "{env_capture}" <<EOF
+HOME=${{HOME-}}
+CODEX_HOME=${{CODEX_HOME-}}
+OPENAI_API_KEY=${{OPENAI_API_KEY-}}
+ANTHROPIC_API_KEY=${{ANTHROPIC_API_KEY-}}
+AWS_SECRET_ACCESS_KEY=${{AWS_SECRET_ACCESS_KEY-}}
+GITHUB_TOKEN=${{GITHUB_TOKEN-}}
+NPM_TOKEN=${{NPM_TOKEN-}}
+AWIKI_DAEMON_SOCKET=${{AWIKI_DAEMON_SOCKET-}}
+AWIKI_DAEMON_RUNTIME_RPC_TOKEN=${{AWIKI_DAEMON_RUNTIME_RPC_TOKEN-}}
+AWIKI_DAEMON_RUN_ID=${{AWIKI_DAEMON_RUN_ID-}}
+AWIKI_DAEMON_TASK_ID=${{AWIKI_DAEMON_TASK_ID-}}
+EOF
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+exit 0
+"#,
+            env_capture = env_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let _secret_env = EnvVarGuard::set(&[
+        ("OPENAI_API_KEY", "openai-secret"),
+        ("ANTHROPIC_API_KEY", "anthropic-secret"),
+        ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+        ("GITHUB_TOKEN", "github-secret"),
+        ("NPM_TOKEN", "npm-secret"),
+        ("CODEX_HOME", "/tmp/host-codex-home"),
+        ("AWIKI_DAEMON_SOCKET", "/tmp/awiki.sock"),
+        ("AWIKI_DAEMON_RUNTIME_RPC_TOKEN", "rtok_secret"),
+        ("AWIKI_DAEMON_RUN_ID", "run_secret"),
+        ("AWIKI_DAEMON_TASK_ID", "task_secret"),
+    ]);
+
+    let installed = ClaudeCodeDriver::new(claude_code_config(fake_claude))
+        .unwrap()
+        .check_install_status()
+        .unwrap();
+
+    assert!(installed.installed);
+    assert!(installed.detail.unwrap().contains("Claude Code"));
+    let env_dump = std::fs::read_to_string(env_capture).unwrap();
+    assert!(env_dump.contains("HOME="));
+    assert!(env_dump.contains("CODEX_HOME=\n"));
+    assert!(env_dump.contains("OPENAI_API_KEY=\n"));
+    assert!(env_dump.contains("ANTHROPIC_API_KEY=\n"));
+    assert!(env_dump.contains("AWS_SECRET_ACCESS_KEY=\n"));
+    assert!(env_dump.contains("GITHUB_TOKEN=\n"));
+    assert!(env_dump.contains("NPM_TOKEN=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_SOCKET=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_RUNTIME_RPC_TOKEN=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_RUN_ID=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_TASK_ID=\n"));
+}
+
 #[test]
 fn claude_code_driver_command_builder_uses_safe_print_contract() {
     let root = tempfile::tempdir().unwrap();
@@ -1721,27 +1794,64 @@ fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {
 
     let root = tempfile::tempdir().unwrap();
     let fake_codex = root.path().join("codex");
+    let env_capture = root.path().join("codex-version-env.txt");
     std::fs::write(
         &fake_codex,
-        r#"#!/bin/sh
-if [ "${1-}" = "--version" ]; then
+        format!(
+            r#"#!/bin/sh
+if [ "${{1-}}" = "--version" ]; then
+  cat > "{env_capture}" <<EOF
+CODEX_HOME=${{CODEX_HOME-}}
+OPENAI_API_KEY=${{OPENAI_API_KEY-}}
+ANTHROPIC_API_KEY=${{ANTHROPIC_API_KEY-}}
+AWS_SECRET_ACCESS_KEY=${{AWS_SECRET_ACCESS_KEY-}}
+GITHUB_TOKEN=${{GITHUB_TOKEN-}}
+NPM_TOKEN=${{NPM_TOKEN-}}
+AWIKI_DAEMON_SOCKET=${{AWIKI_DAEMON_SOCKET-}}
+AWIKI_DAEMON_RUNTIME_RPC_TOKEN=${{AWIKI_DAEMON_RUNTIME_RPC_TOKEN-}}
+AWIKI_DAEMON_RUN_ID=${{AWIKI_DAEMON_RUN_ID-}}
+AWIKI_DAEMON_TASK_ID=${{AWIKI_DAEMON_TASK_ID-}}
+EOF
   echo "codex-cli 9.9.9"
   exit 0
 fi
 exit 0
 "#,
+            env_capture = env_capture.display(),
+        ),
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(&fake_codex, permissions).unwrap();
 
-    let installed = CodexDriver::new(codex_config(fake_codex))
-        .unwrap()
-        .check_install_status()
-        .unwrap();
+    let _secret_env = EnvVarGuard::set(&[
+        ("OPENAI_API_KEY", "openai-secret"),
+        ("ANTHROPIC_API_KEY", "anthropic-secret"),
+        ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+        ("GITHUB_TOKEN", "github-secret"),
+        ("NPM_TOKEN", "npm-secret"),
+        ("AWIKI_DAEMON_SOCKET", "/tmp/awiki.sock"),
+        ("AWIKI_DAEMON_RUNTIME_RPC_TOKEN", "rtok_secret"),
+        ("AWIKI_DAEMON_RUN_ID", "run_secret"),
+        ("AWIKI_DAEMON_TASK_ID", "task_secret"),
+    ]);
+    let driver = CodexDriver::new(codex_config(fake_codex.clone())).unwrap();
+    let codex_home = driver.config().config_home.clone();
+    let installed = driver.check_install_status().unwrap();
     assert!(installed.installed);
     assert!(installed.detail.unwrap().contains("codex-cli 9.9.9"));
+    let env_dump = std::fs::read_to_string(env_capture).unwrap();
+    assert!(env_dump.contains(&format!("CODEX_HOME={}", codex_home.display())));
+    assert!(env_dump.contains("OPENAI_API_KEY=\n"));
+    assert!(env_dump.contains("ANTHROPIC_API_KEY=\n"));
+    assert!(env_dump.contains("AWS_SECRET_ACCESS_KEY=\n"));
+    assert!(env_dump.contains("GITHUB_TOKEN=\n"));
+    assert!(env_dump.contains("NPM_TOKEN=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_SOCKET=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_RUNTIME_RPC_TOKEN=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_RUN_ID=\n"));
+    assert!(env_dump.contains("AWIKI_DAEMON_TASK_ID=\n"));
 
     let missing = CodexDriver::new(codex_config(root.path().join("missing-codex")))
         .unwrap()

@@ -142,10 +142,10 @@ impl CodexDriverConfig {
 
 impl GenericCliDriver for CodexDriver {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
-        match Command::new(&self.config.binary_path)
-            .arg("--version")
-            .output()
-        {
+        let mut command = Command::new(&self.config.binary_path);
+        command.arg("--version");
+        apply_codex_probe_env(&mut command, &self.config);
+        match command.output() {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let detail = if version.is_empty() {
@@ -440,11 +440,7 @@ fn apply_codex_env(
     config: &CodexDriverConfig,
 ) {
     command.env_clear();
-    for key in ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM"] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
+    apply_minimal_process_env(command);
     command
         .env("AWIKI_DAEMON_RUN_ID", &invocation.run_id)
         .env("AWIKI_DAEMON_TASK_ID", &invocation.task_id)
@@ -460,6 +456,20 @@ fn apply_codex_env(
             "AWIKI_DAEMON_RUNTIME_RPC_TOKEN",
             &invocation.runtime_rpc_token,
         );
+}
+
+fn apply_codex_probe_env(command: &mut Command, config: &CodexDriverConfig) {
+    command.env_clear();
+    apply_minimal_process_env(command);
+    command.env("CODEX_HOME", &config.config_home);
+}
+
+fn apply_minimal_process_env(command: &mut Command) {
+    for key in ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
 }
 
 pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String> {
