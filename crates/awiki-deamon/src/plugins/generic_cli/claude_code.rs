@@ -9,7 +9,10 @@ use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
 use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
-use super::{process::ManagedChild, GenericCliDriver, GenericCliExit, GenericCliInvocation};
+use super::{
+    process::ManagedChild, validate_native_session_id, GenericCliDriver, GenericCliExit,
+    GenericCliInvocation,
+};
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
 const DEFAULT_SANDBOX: &str = "read-only";
@@ -472,8 +475,7 @@ fn claude_code_session_mode(invocation: &GenericCliInvocation) -> ClaudeCodeSess
         .route_session
         .as_ref()
         .and_then(|session| session.native_session_id.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| validate_native_session_id("claude-code", value))
     {
         return ClaudeCodeSessionMode::ResumeId(id.to_string());
     }
@@ -537,7 +539,9 @@ pub fn claude_code_native_session_id_from_stream_json(stdout: &[u8]) -> Option<S
         let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
-        if let Some(id) = native_session_id_from_json_value(&value) {
+        if let Some(id) = native_session_id_from_json_value(&value)
+            .filter(|id| validate_native_session_id("claude-code", id))
+        {
             return Some(id);
         }
     }

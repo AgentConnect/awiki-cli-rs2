@@ -8,7 +8,10 @@ use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
 use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
-use super::{process::ManagedChild, GenericCliDriver, GenericCliExit, GenericCliInvocation};
+use super::{
+    process::ManagedChild, validate_native_session_id, GenericCliDriver, GenericCliExit,
+    GenericCliInvocation,
+};
 
 const DEFAULT_CODEX_BINARY: &str = "codex";
 const DEFAULT_SANDBOX: &str = "read-only";
@@ -421,8 +424,7 @@ fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
     if let Some(id) = session
         .native_session_id
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| validate_native_session_id("codex", value))
     {
         return CodexResumeMode::ResumeId(id.to_string());
     }
@@ -481,7 +483,9 @@ pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String
         let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
-        if let Some(id) = native_session_id_from_json_value(&value) {
+        if let Some(id) = native_session_id_from_json_value(&value)
+            .filter(|id| validate_native_session_id("codex", id))
+        {
             return Some(id);
         }
     }

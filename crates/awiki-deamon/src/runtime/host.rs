@@ -13,6 +13,7 @@ use crate::local_rpc::execute_runtime_rpc_request_with_outbox;
 use crate::outbox::{
     RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
 };
+use crate::plugins::generic_cli::{validate_native_session_id, validate_native_session_source};
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
     runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeLaunchContext,
@@ -615,28 +616,27 @@ where
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
         if let Some(route_session) = cli_route_session.as_ref() {
-            let native_session_id = launch_outcome
+            let driver_id = launch_outcome
                 .metadata
-                .get("native_session_id")
+                .get("driver_id")
                 .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
+                .filter(|value| !value.is_empty())
+                .unwrap_or("generic-cli");
+            let native_session =
+                trusted_native_session_metadata(driver_id, &launch_outcome.metadata);
             let final_status = state.load_runtime_run(&run.run_id)?.status;
             if final_status == RuntimeRunStatus::Finished
                 && launch_outcome.status == RuntimeRunStatus::Finished
-                && native_session_id.is_some()
+                && native_session.is_some()
             {
-                let native_session_source = launch_outcome
-                    .metadata
-                    .get("native_session_source")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
+                let (native_session_id, native_session_source) = native_session
+                    .as_ref()
+                    .expect("native_session checked above");
                 state.update_cli_route_session_native_id_if_locked(
                     &route_session.route_key,
                     &run.run_id,
-                    native_session_id,
-                    native_session_source,
+                    Some(native_session_id.as_str()),
+                    Some(native_session_source.as_str()),
                     Some(&route_session.route_key),
                 )?;
             }
@@ -1716,6 +1716,8 @@ fn persist_cli_driver_run(
             task.conversation_id.as_deref(),
         )
     };
+    let native_session_id = trusted_native_session_metadata(&driver_id, &launch_outcome.metadata)
+        .map(|metadata| metadata.0);
     state.upsert_cli_driver_run(&CliDriverRunRecord {
         run_id: run.run_id.clone(),
         agent_did: run.agent_did.clone(),
@@ -1747,13 +1749,7 @@ fn persist_cli_driver_run(
             .get("final_output_path")
             .and_then(Value::as_str)
             .map(std::path::PathBuf::from),
-        native_session_id: launch_outcome
-            .metadata
-            .get("native_session_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
+        native_session_id,
         synthetic_session_id: Some(route_key),
         status: launch_outcome.status.as_str().to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
@@ -1763,6 +1759,21 @@ fn persist_cli_driver_run(
 
 fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
     path.map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+}
+
+fn trusted_native_session_metadata(driver_id: &str, metadata: &Value) -> Option<(String, String)> {
+    let native_session_id = metadata
+        .get("native_session_id")
+        .and_then(Value::as_str)
+        .filter(|value| validate_native_session_id(driver_id, value))?;
+    let native_session_source = metadata
+        .get("native_session_source")
+        .and_then(Value::as_str)
+        .filter(|value| validate_native_session_source(driver_id, value))?;
+    Some((
+        native_session_id.to_string(),
+        native_session_source.to_string(),
+    ))
 }
 
 fn generic_cli_route_key(

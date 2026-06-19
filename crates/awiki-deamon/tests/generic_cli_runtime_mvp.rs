@@ -9,8 +9,8 @@ use awiki_deamon::plugins::generic_cli::{
     codex::{
         codex_native_session_id_from_stdout_jsonl, CodexDriver, CodexDriverConfig, CodexResumeMode,
     },
-    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
-    TestGenericCliDriver,
+    validate_native_session_id, validate_native_session_source, CommandGenericCliDriver,
+    GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin, TestGenericCliDriver,
 };
 use awiki_deamon::runtime::host::{run_controller_text_task, run_controller_text_task_with_config};
 use awiki_deamon::runtime::{
@@ -868,6 +868,46 @@ impl RuntimePlugin for DuplicateFinishCallbackPlugin {
 }
 
 #[derive(Debug, Clone)]
+struct NativeSessionMetadataPlugin {
+    driver_id: &'static str,
+    native_session_id: &'static str,
+    native_session_source: &'static str,
+}
+
+impl RuntimePlugin for NativeSessionMetadataPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("native session metadata test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        let token = context.runtime_rpc_token.as_str().to_string();
+        Ok(RuntimeLaunchOutcome {
+            run_id: context.run.run_id,
+            status: RuntimeRunStatus::Finished,
+            exit_code: Some(0),
+            callbacks: vec![awiki_deamon::cli_wrapper::CliWrapperRequest::task_finish(
+                token,
+                context.task.task_id,
+                "done without trusted native id",
+            )
+            .into_rpc_request()],
+            metadata: json!({
+                "driver_id": self.driver_id,
+                "native_session_id": self.native_session_id,
+                "native_session_source": self.native_session_source,
+            }),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct UnauthorizedMsgSendCallbackPlugin;
 
 impl RuntimePlugin for UnauthorizedMsgSendCallbackPlugin {
@@ -927,6 +967,115 @@ fn duplicate_task_finish_callback_is_idempotent() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Final);
     assert_eq!(records[0].text.as_deref(), Some("first done"));
+}
+
+#[test]
+fn generic_cli_host_does_not_persist_untrusted_native_session_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &NativeSessionMetadataPlugin {
+            driver_id: "codex",
+            native_session_id: " codex-valid-looking-id ",
+            native_session_source: "json_event",
+        },
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_invalid_native".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "return untrusted native id".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.native_session_id, None);
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.native_session_source, None);
+    assert!(outbox
+        .records()
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+}
+
+#[test]
+fn generic_cli_host_requires_matching_native_session_source() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &NativeSessionMetadataPlugin {
+            driver_id: "codex",
+            native_session_id: "codex-valid-looking-id",
+            native_session_source: " json_event ",
+        },
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_invalid_native_source".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "return invalid native source".to_string(),
+        },
+    )
+    .unwrap();
+
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.native_session_id, None);
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.native_session_source, None);
 }
 
 #[test]
@@ -1528,6 +1677,74 @@ not json
         codex_native_session_id_from_stdout_jsonl(br#"{"conversation_id":"awiki-route"}"#),
         None
     );
+}
+
+#[test]
+fn native_session_id_validation_rejects_path_control_and_overlong_values() {
+    assert!(validate_native_session_id("codex", "codex-session-123"));
+    assert!(validate_native_session_id(
+        "claude-code",
+        "11111111-2222-4333-8444-555555555555"
+    ));
+    assert!(validate_native_session_source("codex", "json_event"));
+    assert!(validate_native_session_source(
+        "claude-code",
+        "generated_session_id"
+    ));
+    assert!(!validate_native_session_id("codex", " codex-session-123 "));
+    assert!(!validate_native_session_id(
+        "claude-code",
+        " 11111111-2222-4333-8444-555555555555 "
+    ));
+
+    let bad_ids = vec![
+        "../codex".to_string(),
+        "codex/session".to_string(),
+        "codex\\session".to_string(),
+        "codex session".to_string(),
+        "codex\nsession".to_string(),
+        "..".to_string(),
+        ".".to_string(),
+        "a".repeat(129),
+    ];
+    for bad in bad_ids {
+        assert!(
+            !validate_native_session_id("codex", &bad),
+            "unexpected valid codex native id: {bad:?}"
+        );
+        assert!(
+            !validate_native_session_id("claude-code", &bad),
+            "unexpected valid claude native id: {bad:?}"
+        );
+    }
+    assert!(!validate_native_session_source("codex", "stream_json"));
+    assert!(!validate_native_session_source("codex", " json_event "));
+    assert!(!validate_native_session_source("claude-code", "json_event"));
+    assert!(!validate_native_session_source(
+        "claude-code",
+        " stream_json "
+    ));
+    assert!(!validate_native_session_id("gemini", "session-123"));
+}
+
+#[test]
+fn native_session_id_parsers_ignore_untrusted_values() {
+    for stdout in [
+        br#"{"session_id":"../codex"}"#.as_slice(),
+        br#"{"session_id":"codex/session"}"#.as_slice(),
+        br#"{"thread":{"id":"codex session"}}"#.as_slice(),
+        br#"{"msg":{"session":{"id":".."}}}"#.as_slice(),
+    ] {
+        assert_eq!(codex_native_session_id_from_stdout_jsonl(stdout), None);
+    }
+    for stdout in [
+        br#"{"type":"system","session_id":"../claude"}"#.as_slice(),
+        br#"{"type":"system","session_id":"claude/session"}"#.as_slice(),
+        br#"{"message":{"session":{"id":"claude session"}}}"#.as_slice(),
+        br#"{"conversation":{"id":"..evil"}}"#.as_slice(),
+    ] {
+        assert_eq!(claude_code_native_session_id_from_stream_json(stdout), None);
+    }
 }
 
 #[test]

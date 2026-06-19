@@ -18,10 +18,47 @@ use crate::state::{CliRouteSessionRecord, CliRuntimeProfileRecord};
 use self::process::ManagedChild;
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
+const MAX_NATIVE_SESSION_ID_LEN: usize = 128;
 
 pub trait GenericCliDriver {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus>;
     fn run(&self, invocation: GenericCliInvocation) -> Result<GenericCliExit>;
+}
+
+pub fn validate_native_session_id(driver_id: &str, native_session_id: &str) -> bool {
+    let id = native_session_id.trim();
+    if id.is_empty() || id.len() > MAX_NATIVE_SESSION_ID_LEN || id != native_session_id {
+        return false;
+    }
+    if matches!(id, "." | "..") || id.contains("..") {
+        return false;
+    }
+    if id
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return false;
+    }
+    let allowed: fn(u8) -> bool = match driver_id {
+        "codex" => |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'),
+        "claude-code" => {
+            |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+        }
+        _ => return false,
+    };
+    id.bytes().all(allowed)
+}
+
+pub fn validate_native_session_source(driver_id: &str, native_session_source: &str) -> bool {
+    matches!(
+        (driver_id, native_session_source),
+        ("codex", "json_event")
+            | ("codex", "resume_id")
+            | ("codex", "resume_last")
+            | ("claude-code", "stream_json")
+            | ("claude-code", "generated_session_id")
+            | ("claude-code", "resume_id")
+    )
 }
 
 #[derive(Clone, PartialEq, Eq)]
