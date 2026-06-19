@@ -101,6 +101,52 @@ pub struct CliRuntimeLockRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliRouteMessageQueueRecord {
+    pub queue_id: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub driver_id: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
+    pub controller_did: String,
+    pub conversation_id: String,
+    pub route_key: String,
+    pub route_key_hash: String,
+    pub source_message_id: String,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub status: String,
+    pub enqueue_reason: String,
+    pub attempts: i64,
+    pub next_attempt_at_ms: i64,
+    pub route_sequence: i64,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateCliRouteMessageQueueReference {
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub driver_id: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
+    pub controller_did: String,
+    pub conversation_id: String,
+    pub source_message_id: String,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub enqueue_reason: String,
+    pub next_attempt_at_ms: i64,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateCliRouteSession {
     pub agent_did: String,
@@ -140,6 +186,90 @@ impl CliRuntimeLockRecord {
             .is_some_and(|value| value.trim().is_empty())
         {
             bail!("driver_id must not be empty when present");
+        }
+        Ok(())
+    }
+}
+
+impl CliRouteMessageQueueRecord {
+    pub fn validate(&self) -> Result<()> {
+        validate_cli_route_message_queue_fields(
+            &self.queue_id,
+            &self.agent_did,
+            &self.runtime_profile_id,
+            &self.driver_id,
+            &self.controller_user_id,
+            &self.controller_full_handle,
+            &self.controller_scope_key,
+            &self.controller_did,
+            &self.conversation_id,
+            &self.route_key,
+            &self.route_key_hash,
+            &self.source_message_id,
+            &self.status,
+            &self.enqueue_reason,
+            self.attempts,
+            self.next_attempt_at_ms,
+            self.route_sequence,
+        )?;
+        for (field_name, value) in [
+            ("task_id", self.task_id.as_deref()),
+            ("run_id", self.run_id.as_deref()),
+            ("last_error_code", self.last_error_code.as_deref()),
+            ("last_error_summary", self.last_error_summary.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                bail!("{field_name} must not be empty when present");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CreateCliRouteMessageQueueReference {
+    pub fn route_key(&self) -> Result<String> {
+        cli_route_session_key(
+            &self.agent_did,
+            &self.controller_scope_key,
+            &self.conversation_id,
+        )
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let conversation_id = canonical_cli_conversation_id(&self.conversation_id)?;
+        let route_key = cli_route_session_key(
+            &self.agent_did,
+            &self.controller_scope_key,
+            &conversation_id,
+        )?;
+        validate_cli_route_message_queue_fields(
+            "queue_dry_run",
+            &self.agent_did,
+            &self.runtime_profile_id,
+            &self.driver_id,
+            &self.controller_user_id,
+            &self.controller_full_handle,
+            &self.controller_scope_key,
+            &self.controller_did,
+            &conversation_id,
+            &route_key,
+            "route_000000000000000000000000",
+            &self.source_message_id,
+            "queued",
+            &self.enqueue_reason,
+            0,
+            self.next_attempt_at_ms,
+            1,
+        )?;
+        for (field_name, value) in [
+            ("task_id", self.task_id.as_deref()),
+            ("run_id", self.run_id.as_deref()),
+            ("last_error_code", self.last_error_code.as_deref()),
+            ("last_error_summary", self.last_error_summary.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                bail!("{field_name} must not be empty when present");
+            }
         }
         Ok(())
     }
@@ -1181,7 +1311,7 @@ fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> 
     format!("hns_{:x}", digest)
 }
 
-fn validate_cli_route_key(route_key: &str) -> Result<()> {
+pub(crate) fn validate_cli_route_key(route_key: &str) -> Result<()> {
     let route_key = route_key.trim();
     if route_key.is_empty() {
         bail!("route_key must not be empty");
@@ -1243,6 +1373,75 @@ pub(crate) fn validate_cli_route_session_fields(
     }
     if session_dir.as_os_str().is_empty() {
         bail!("session_dir must not be empty");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_cli_route_message_queue_fields(
+    queue_id: &str,
+    agent_did: &str,
+    runtime_profile_id: &str,
+    driver_id: &str,
+    controller_user_id: &str,
+    controller_full_handle: &str,
+    controller_scope_key: &str,
+    controller_did: &str,
+    conversation_id: &str,
+    route_key: &str,
+    route_key_hash: &str,
+    source_message_id: &str,
+    status: &str,
+    enqueue_reason: &str,
+    attempts: i64,
+    next_attempt_at_ms: i64,
+    route_sequence: i64,
+) -> Result<()> {
+    for (field_name, value) in [
+        ("queue_id", queue_id),
+        ("agent_did", agent_did),
+        ("runtime_profile_id", runtime_profile_id),
+        ("driver_id", driver_id),
+        ("controller_user_id", controller_user_id),
+        ("controller_full_handle", controller_full_handle),
+        ("controller_scope_key", controller_scope_key),
+        ("controller_did", controller_did),
+        ("conversation_id", conversation_id),
+        ("route_key", route_key),
+        ("route_key_hash", route_key_hash),
+        ("source_message_id", source_message_id),
+        ("status", status),
+        ("enqueue_reason", enqueue_reason),
+    ] {
+        if value.trim().is_empty() {
+            bail!("{field_name} must not be empty");
+        }
+    }
+    if !queue_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("queue_id contains unsupported characters");
+    }
+    if !matches!(
+        status,
+        "queued" | "running" | "succeeded" | "failed" | "cancelled" | "dead_letter"
+    ) {
+        bail!("unsupported cli route message queue status: {status}");
+    }
+    if !matches!(driver_id, "codex" | "claude-code") {
+        bail!("unsupported cli route message queue driver: {driver_id}");
+    }
+    canonical_cli_conversation_id(conversation_id)?;
+    validate_cli_route_key(route_key)?;
+    validate_cli_route_key_hash(route_key_hash)?;
+    if attempts < 0 {
+        bail!("attempts must not be negative");
+    }
+    if next_attempt_at_ms < 0 {
+        bail!("next_attempt_at_ms must not be negative");
+    }
+    if route_sequence <= 0 {
+        bail!("route_sequence must be positive");
     }
     Ok(())
 }

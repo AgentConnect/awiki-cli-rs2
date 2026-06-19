@@ -26,6 +26,7 @@ fn initialize_creates_required_tables() {
         "cli_driver_run",
         "cli_route_sessions",
         "cli_runtime_locks",
+        "cli_route_message_queue",
         "hermes_profiles",
         "hermes_native_sessions",
         "runtime_daemon_binding",
@@ -77,6 +78,271 @@ fn cli_route_create(workspace: PathBuf, conversation_id: &str) -> CreateCliRoute
         workspace_path: workspace.join("workspaces").join("route"),
         session_dir: workspace.join("sessions").join("route"),
     }
+}
+
+fn cli_route_queue_reference(
+    route: &CliRouteSessionRecord,
+    source_message_id: &str,
+    task_id: Option<&str>,
+    run_id: Option<&str>,
+    next_attempt_at_ms: i64,
+) -> CreateCliRouteMessageQueueReference {
+    CreateCliRouteMessageQueueReference {
+        agent_did: route.agent_did.clone(),
+        runtime_profile_id: route.runtime_profile_id.clone(),
+        driver_id: route.driver_id.clone(),
+        controller_user_id: route.controller_user_id.clone(),
+        controller_full_handle: route.controller_full_handle.clone(),
+        controller_scope_key: route.controller_scope_key.clone(),
+        controller_did: route.controller_did.clone(),
+        conversation_id: route.conversation_id.clone(),
+        source_message_id: source_message_id.to_string(),
+        task_id: task_id.map(str::to_string),
+        run_id: run_id.map(str::to_string),
+        enqueue_reason: "profile_busy".to_string(),
+        next_attempt_at_ms,
+        last_error_code: Some("profile_busy".to_string()),
+        last_error_summary: Some("profile busy sanitized".to_string()),
+    }
+}
+
+#[test]
+fn cli_route_message_queue_enqueues_minimal_reference_and_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_1",
+            Some("task_msg_queue_1"),
+            Some("run_task_msg_queue_1"),
+            now,
+        ))
+        .unwrap();
+    let duplicate = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_1",
+            Some("task_msg_queue_1_changed"),
+            Some("run_task_msg_queue_1_changed"),
+            now + 60_000,
+        ))
+        .unwrap();
+
+    assert_eq!(first.queue_id, duplicate.queue_id);
+    assert_eq!(first.route_sequence, 1);
+    assert_eq!(duplicate.route_sequence, 1);
+    assert_eq!(first.source_message_id, "msg_queue_1");
+    assert_eq!(first.task_id.as_deref(), Some("task_msg_queue_1"));
+    assert_eq!(first.run_id.as_deref(), Some("run_task_msg_queue_1"));
+    assert_eq!(first.route_key, route.route_key);
+    assert_eq!(first.route_key_hash, route.route_key_hash);
+    assert_eq!(
+        state
+            .list_cli_route_message_queue_for_route(&route.runtime_profile_id, &route.route_key)
+            .unwrap()
+            .len(),
+        1
+    );
+    let dump = format!("{first:?}");
+    assert!(!dump.contains("secret prompt"));
+    assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+}
+
+#[test]
+fn cli_route_message_queue_orders_due_items_by_route_sequence() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_first",
+            Some("task_msg_queue_first"),
+            Some("run_task_msg_queue_first"),
+            now,
+        ))
+        .unwrap();
+    let second = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_second",
+            Some("task_msg_queue_second"),
+            Some("run_task_msg_queue_second"),
+            now,
+        ))
+        .unwrap();
+
+    assert_eq!(first.route_sequence, 1);
+    assert_eq!(second.route_sequence, 2);
+    let due = state.list_due_cli_route_message_queue(now, 10).unwrap();
+    assert_eq!(
+        due.iter()
+            .map(|record| record.source_message_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["msg_queue_first", "msg_queue_second"]
+    );
+    state
+        .mark_cli_route_message_queue_running(&first.queue_id, "run_replay_first")
+        .unwrap();
+    let running = state
+        .load_cli_route_message_queue_item(&first.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(running.status, "running");
+    assert_eq!(running.attempts, 1);
+    assert_eq!(running.run_id.as_deref(), Some("run_replay_first"));
+    state
+        .mark_cli_route_message_queue_succeeded(&first.queue_id, "run_replay_first")
+        .unwrap();
+    let succeeded = state
+        .load_cli_route_message_queue_item(&first.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(succeeded.status, "succeeded");
+}
+
+#[test]
+fn cli_route_message_queue_cancel_helpers_cancel_pending_items() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_cancel_route",
+            Some("task_msg_queue_cancel_route"),
+            Some("run_task_msg_queue_cancel_route"),
+            now,
+        ))
+        .unwrap();
+    assert_eq!(
+        state
+            .cancel_cli_route_message_queue_for_route(
+                &route.runtime_profile_id,
+                &route.route_key,
+                "route_reset",
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        state
+            .load_cli_route_message_queue_item(&first.queue_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+
+    let second = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_cancel_scope",
+            Some("task_msg_queue_cancel_scope"),
+            Some("run_task_msg_queue_cancel_scope"),
+            now,
+        ))
+        .unwrap();
+    assert_eq!(
+        state
+            .cancel_cli_route_message_queue_for_runtime_controller_scope(
+                &route.agent_did,
+                &route.runtime_profile_id,
+                &route.controller_scope_key,
+                "runtime_scope_reset",
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        state
+            .load_cli_route_message_queue_item(&second.queue_id)
+            .unwrap()
+            .unwrap()
+            .last_error_code
+            .as_deref(),
+        Some("runtime_scope_reset")
+    );
+}
+
+#[test]
+fn cli_route_message_queue_route_session_reset_cancels_queued_items() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    state
+        .mark_cli_route_session_deferred(
+            &route.route_key,
+            Some("run_task_msg_deferred"),
+            "profile_busy",
+            "profile busy sanitized",
+        )
+        .unwrap();
+    let item = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_deferred",
+            Some("task_msg_deferred"),
+            Some("run_task_msg_deferred"),
+            current_time_millis().unwrap(),
+        ))
+        .unwrap();
+
+    assert_eq!(
+        state
+            .reset_cli_route_session_by_route(&route.route_key)
+            .unwrap(),
+        1
+    );
+    let reset = state
+        .load_cli_route_session(&route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.status, "reset");
+    assert_eq!(reset.last_message_id, None);
+    let cancelled = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.last_error_code.as_deref(), Some("route_reset"));
 }
 
 #[test]

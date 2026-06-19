@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID};
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::controller_scope::VerifiedControllerSender;
 use crate::inbox::{
@@ -25,7 +26,8 @@ use crate::security::runtime_token::{
 };
 use crate::state::{
     canonical_cli_conversation_id, cli_route_session_key, AuthorizedRuntimeContext,
-    CliDriverRunRecord, CreateCliRouteSession, DaemonState, RuntimeFinalOutboxRecord,
+    CliDriverRunRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession, DaemonState,
+    RuntimeFinalOutboxRecord,
 };
 use crate::workspace::{
     prepare_workspace_instance, route_workspace_paths, WorkspaceBindingConfig, WorkspaceInstance,
@@ -969,6 +971,15 @@ fn maybe_enqueue_generic_cli_busy_retry(
         GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID,
         next_attempt_at_ms,
     )?;
+    let queued_message = maybe_enqueue_cli_route_message_reference(
+        state,
+        profile,
+        task,
+        run,
+        error_code,
+        error_summary,
+        next_attempt_at_ms,
+    )?;
     if error_code != "route_busy" {
         if let Some(conversation_id) = task.conversation_id.as_deref() {
             if let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) {
@@ -995,12 +1006,69 @@ fn maybe_enqueue_generic_cli_busy_retry(
         None,
         json!({
             "retry_id": retry.retry_id.as_str(),
+            "queue_id": queued_message.as_ref().map(|record| record.queue_id.as_str()),
             "task_id": failed_run.task_id.as_str(),
             "busy_reason": error_code,
             "next_attempt_at_ms": retry.next_attempt_at_ms,
         }),
     )?;
     Ok(Some(retry))
+}
+
+fn maybe_enqueue_cli_route_message_reference(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+    next_attempt_at_ms: i64,
+) -> Result<Option<crate::state::CliRouteMessageQueueRecord>> {
+    let Some(conversation_id) = task.conversation_id.as_deref() else {
+        return Ok(None);
+    };
+    let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) else {
+        return Ok(None);
+    };
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    if state.load_cli_route_session(&route_key)?.is_none() {
+        return Ok(None);
+    }
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    if !matches!(
+        cli_profile.driver_id.as_str(),
+        CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID
+    ) {
+        return Ok(None);
+    }
+    let source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .unwrap_or(&task.task_id)
+        .to_string();
+    let record =
+        state.enqueue_cli_route_message_reference(CreateCliRouteMessageQueueReference {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: cli_profile.driver_id,
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: task.controller_did.clone(),
+            conversation_id,
+            source_message_id,
+            task_id: Some(task.task_id.clone()),
+            run_id: Some(run.run_id.clone()),
+            enqueue_reason: error_code.to_string(),
+            next_attempt_at_ms,
+            last_error_code: Some(error_code.to_string()),
+            last_error_summary: Some(error_summary.to_string()),
+        })?;
+    Ok(Some(record))
 }
 
 fn existing_runtime_run(

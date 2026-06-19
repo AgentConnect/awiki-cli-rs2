@@ -940,6 +940,424 @@ WHERE run_id = ?1
             .context("load cli driver run")
     }
 
+    pub fn enqueue_cli_route_message_reference(
+        &self,
+        reference: CreateCliRouteMessageQueueReference,
+    ) -> Result<CliRouteMessageQueueRecord> {
+        reference.validate()?;
+        let conversation_id = canonical_cli_conversation_id(&reference.conversation_id)?;
+        let route_key = cli_route_session_key(
+            &reference.agent_did,
+            &reference.controller_scope_key,
+            &conversation_id,
+        )?;
+        let route_session = self
+            .load_cli_route_session(&route_key)?
+            .with_context(|| format!("cli route session does not exist: {route_key}"))?;
+        if route_session.agent_did != reference.agent_did
+            || route_session.runtime_profile_id != reference.runtime_profile_id
+            || route_session.driver_id != reference.driver_id
+            || route_session.controller_scope_key != reference.controller_scope_key
+            || route_session.conversation_id != conversation_id
+        {
+            bail!("cli route message queue binding conflict for route {route_key}");
+        }
+
+        let now = current_time_millis()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                cli_route_message_queue_select_sql(
+                    "WHERE runtime_profile_id = ?1 AND route_key = ?2 AND source_message_id = ?3",
+                )
+                .as_str(),
+                rusqlite::params![
+                    reference.runtime_profile_id.as_str(),
+                    route_key.as_str(),
+                    reference.source_message_id.as_str()
+                ],
+                cli_route_message_queue_record_from_row,
+            )
+            .optional()
+            .context("load existing cli route message queue item")?;
+        if let Some(existing) = existing {
+            transaction.commit()?;
+            existing.validate()?;
+            return Ok(existing);
+        }
+        let route_sequence: i64 = transaction.query_row(
+            r#"
+SELECT COALESCE(MAX(route_sequence), 0) + 1
+FROM cli_route_message_queue
+WHERE runtime_profile_id = ?1
+  AND route_key = ?2
+"#,
+            rusqlite::params![reference.runtime_profile_id.as_str(), route_key.as_str()],
+            |row| row.get(0),
+        )?;
+        let queue_id = format!(
+            "queue_{}_{}_{}_{}",
+            now,
+            stable_id_suffix(&reference.runtime_profile_id),
+            stable_id_suffix(&route_key),
+            stable_id_suffix(&reference.source_message_id)
+        );
+        let record = CliRouteMessageQueueRecord {
+            queue_id,
+            agent_did: reference.agent_did,
+            runtime_profile_id: reference.runtime_profile_id,
+            driver_id: reference.driver_id,
+            controller_user_id: reference.controller_user_id,
+            controller_full_handle: reference.controller_full_handle,
+            controller_scope_key: reference.controller_scope_key,
+            controller_did: reference.controller_did,
+            conversation_id,
+            route_key,
+            route_key_hash: route_session.route_key_hash,
+            source_message_id: reference.source_message_id,
+            task_id: reference.task_id,
+            run_id: reference.run_id,
+            status: "queued".to_string(),
+            enqueue_reason: reference.enqueue_reason,
+            attempts: 0,
+            next_attempt_at_ms: reference.next_attempt_at_ms,
+            route_sequence,
+            last_error_code: reference.last_error_code,
+            last_error_summary: reference.last_error_summary,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        record.validate()?;
+        transaction.execute(
+            r#"
+INSERT INTO cli_route_message_queue (
+    queue_id,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    route_key,
+    route_key_hash,
+    source_message_id,
+    task_id,
+    run_id,
+    status,
+    enqueue_reason,
+    attempts,
+    next_attempt_at_ms,
+    route_sequence,
+    last_error_code,
+    last_error_summary,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'queued', ?15, 0, ?16, ?17, ?18, ?19, ?20, ?20)
+"#,
+            rusqlite::params![
+                record.queue_id.as_str(),
+                record.agent_did.as_str(),
+                record.runtime_profile_id.as_str(),
+                record.driver_id.as_str(),
+                record.controller_user_id.as_str(),
+                record.controller_full_handle.as_str(),
+                record.controller_scope_key.as_str(),
+                record.controller_did.as_str(),
+                record.conversation_id.as_str(),
+                record.route_key.as_str(),
+                record.route_key_hash.as_str(),
+                record.source_message_id.as_str(),
+                record.task_id.as_deref(),
+                record.run_id.as_deref(),
+                record.enqueue_reason.as_str(),
+                record.next_attempt_at_ms,
+                record.route_sequence,
+                record.last_error_code.as_deref(),
+                record.last_error_summary.as_deref(),
+                now,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    pub fn load_cli_route_message_queue_item(
+        &self,
+        queue_id: &str,
+    ) -> Result<Option<CliRouteMessageQueueRecord>> {
+        if queue_id.trim().is_empty() {
+            bail!("queue_id must not be empty");
+        }
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                cli_route_message_queue_select_sql("WHERE queue_id = ?1").as_str(),
+                [queue_id],
+                cli_route_message_queue_record_from_row,
+            )
+            .optional()
+            .context("load cli route message queue item")
+    }
+
+    pub fn list_due_cli_route_message_queue(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<CliRouteMessageQueueRecord>> {
+        if now_ms < 0 {
+            bail!("now_ms must not be negative");
+        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            cli_route_message_queue_select_sql(
+                r#"
+WHERE status = 'queued'
+  AND next_attempt_at_ms <= ?1
+ORDER BY next_attempt_at_ms ASC,
+         runtime_profile_id ASC,
+         route_key ASC,
+         route_sequence ASC,
+         created_at_ms ASC,
+         queue_id ASC
+LIMIT ?2
+"#,
+            )
+            .as_str(),
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![now_ms, limit.max(1) as i64],
+            cli_route_message_queue_record_from_row,
+        )?;
+        let mut records = Vec::new();
+        for row in rows {
+            let record = row?;
+            record
+                .validate()
+                .context("validate cli route message queue row")?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    pub fn list_cli_route_message_queue_for_route(
+        &self,
+        runtime_profile_id: &str,
+        route_key: &str,
+    ) -> Result<Vec<CliRouteMessageQueueRecord>> {
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        validate_cli_route_key(route_key)?;
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            cli_route_message_queue_select_sql(
+                r#"
+WHERE runtime_profile_id = ?1
+  AND route_key = ?2
+ORDER BY route_sequence ASC, created_at_ms ASC, queue_id ASC
+"#,
+            )
+            .as_str(),
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![runtime_profile_id, route_key],
+            cli_route_message_queue_record_from_row,
+        )?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    pub fn mark_cli_route_message_queue_running(&self, queue_id: &str, run_id: &str) -> Result<()> {
+        self.update_cli_route_message_queue_status(
+            queue_id,
+            "running",
+            Some(run_id),
+            true,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn mark_cli_route_message_queue_succeeded(
+        &self,
+        queue_id: &str,
+        run_id: &str,
+    ) -> Result<()> {
+        self.update_cli_route_message_queue_status(
+            queue_id,
+            "succeeded",
+            Some(run_id),
+            false,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn mark_cli_route_message_queue_failed_or_queued(
+        &self,
+        queue_id: &str,
+        status: &str,
+        next_attempt_at_ms: Option<i64>,
+        last_error_code: &str,
+        last_error_summary: &str,
+    ) -> Result<()> {
+        if !matches!(status, "failed" | "queued" | "dead_letter") {
+            bail!("unsupported queue retry status: {status}");
+        }
+        if last_error_code.trim().is_empty() {
+            bail!("last_error_code must not be empty");
+        }
+        if last_error_summary.trim().is_empty() {
+            bail!("last_error_summary must not be empty");
+        }
+        self.update_cli_route_message_queue_status(
+            queue_id,
+            status,
+            None,
+            false,
+            next_attempt_at_ms,
+            Some(last_error_code),
+            Some(last_error_summary),
+        )
+    }
+
+    pub fn cancel_cli_route_message_queue_for_route(
+        &self,
+        runtime_profile_id: &str,
+        route_key: &str,
+        reason: &str,
+    ) -> Result<usize> {
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        validate_cli_route_key(route_key)?;
+        let reason = sanitized_queue_reason(reason)?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'cancelled',
+    last_error_code = ?1,
+    last_error_summary = 'Route reset cancelled pending message',
+    updated_at_ms = ?2
+WHERE runtime_profile_id = ?3
+  AND route_key = ?4
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![
+                reason,
+                current_time_millis()?,
+                runtime_profile_id,
+                route_key
+            ],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn cancel_cli_route_message_queue_for_runtime_controller_scope(
+        &self,
+        agent_did: &str,
+        runtime_profile_id: &str,
+        controller_scope_key: &str,
+        reason: &str,
+    ) -> Result<usize> {
+        for (field_name, value) in [
+            ("agent_did", agent_did),
+            ("runtime_profile_id", runtime_profile_id),
+            ("controller_scope_key", controller_scope_key),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let reason = sanitized_queue_reason(reason)?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'cancelled',
+    last_error_code = ?1,
+    last_error_summary = 'Runtime scope reset cancelled pending message',
+    updated_at_ms = ?2
+WHERE agent_did = ?3
+  AND runtime_profile_id = ?4
+  AND controller_scope_key = ?5
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![
+                reason,
+                current_time_millis()?,
+                agent_did,
+                runtime_profile_id,
+                controller_scope_key,
+            ],
+        )?;
+        Ok(updated)
+    }
+
+    fn update_cli_route_message_queue_status(
+        &self,
+        queue_id: &str,
+        status: &str,
+        run_id: Option<&str>,
+        increment_attempts: bool,
+        next_attempt_at_ms: Option<i64>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) -> Result<()> {
+        if queue_id.trim().is_empty() {
+            bail!("queue_id must not be empty");
+        }
+        if !matches!(
+            status,
+            "queued" | "running" | "succeeded" | "failed" | "cancelled" | "dead_letter"
+        ) {
+            bail!("unsupported cli route message queue status: {status}");
+        }
+        if run_id.is_some_and(|value| value.trim().is_empty()) {
+            bail!("run_id must not be empty when present");
+        }
+        if next_attempt_at_ms.is_some_and(|value| value < 0) {
+            bail!("next_attempt_at_ms must not be negative");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = ?1,
+    run_id = COALESCE(?2, run_id),
+    attempts = attempts + ?3,
+    next_attempt_at_ms = COALESCE(?4, next_attempt_at_ms),
+    last_error_code = ?5,
+    last_error_summary = ?6,
+    updated_at_ms = ?7
+WHERE queue_id = ?8
+"#,
+            rusqlite::params![
+                status,
+                run_id,
+                if increment_attempts { 1 } else { 0 },
+                next_attempt_at_ms,
+                last_error_code,
+                last_error_summary,
+                current_time_millis()?,
+                queue_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route message queue item does not exist: {queue_id}");
+        }
+        Ok(())
+    }
+
     pub fn get_or_create_cli_route_session(
         &self,
         create: CreateCliRouteSession,
@@ -1511,8 +1929,10 @@ WHERE route_key = ?5
         if route_key.trim().is_empty() {
             bail!("route_key must not be empty");
         }
-        let connection = self.connection()?;
-        let updated = connection.execute(
+        let mut connection = self.connection()?;
+        let now = current_time_millis()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
             r#"
 UPDATE cli_route_sessions
 SET status = 'reset',
@@ -1524,10 +1944,23 @@ SET status = 'reset',
     version = version + 1,
     updated_at_ms = ?1
 WHERE route_key = ?2
-  AND status IN ('active', 'running', 'failed')
+  AND status IN ('active', 'running', 'failed', 'queued')
 "#,
-            rusqlite::params![current_time_millis()?, route_key],
+            rusqlite::params![now, route_key],
         )?;
+        transaction.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'cancelled',
+    last_error_code = 'route_reset',
+    last_error_summary = 'Route reset cancelled pending message',
+    updated_at_ms = ?1
+WHERE route_key = ?2
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![now, route_key],
+        )?;
+        transaction.commit()?;
         Ok(updated)
     }
 
@@ -1546,8 +1979,10 @@ WHERE route_key = ?2
                 bail!("{field_name} must not be empty");
             }
         }
-        let connection = self.connection()?;
-        let updated = connection.execute(
+        let mut connection = self.connection()?;
+        let now = current_time_millis()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
             r#"
 UPDATE cli_route_sessions
 SET status = 'reset',
@@ -1561,15 +1996,25 @@ SET status = 'reset',
 WHERE agent_did = ?2
   AND runtime_profile_id = ?3
   AND controller_scope_key = ?4
-  AND status IN ('active', 'running', 'failed')
+  AND status IN ('active', 'running', 'failed', 'queued')
 "#,
-            rusqlite::params![
-                current_time_millis()?,
-                agent_did,
-                runtime_profile_id,
-                controller_scope_key,
-            ],
+            rusqlite::params![now, agent_did, runtime_profile_id, controller_scope_key,],
         )?;
+        transaction.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'cancelled',
+    last_error_code = 'runtime_scope_reset',
+    last_error_summary = 'Runtime scope reset cancelled pending message',
+    updated_at_ms = ?1
+WHERE agent_did = ?2
+  AND runtime_profile_id = ?3
+  AND controller_scope_key = ?4
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![now, agent_did, runtime_profile_id, controller_scope_key],
+        )?;
+        transaction.commit()?;
         Ok(updated)
     }
 
@@ -1797,6 +2242,53 @@ pub fn cli_host_home_lock_key(driver_id: &str) -> Result<String> {
         bail!("driver_id must not be empty");
     }
     Ok(format!("host-home:{}:default", driver_id.trim()))
+}
+
+fn sanitized_queue_reason(reason: &str) -> Result<String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        bail!("queue cancellation reason must not be empty");
+    }
+    if !reason
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("queue cancellation reason contains unsupported characters");
+    }
+    Ok(reason.to_string())
+}
+
+fn cli_route_message_queue_select_sql(where_clause: &str) -> String {
+    format!(
+        r#"
+SELECT
+    queue_id,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    route_key,
+    route_key_hash,
+    source_message_id,
+    task_id,
+    run_id,
+    status,
+    enqueue_reason,
+    attempts,
+    next_attempt_at_ms,
+    route_sequence,
+    last_error_code,
+    last_error_summary,
+    created_at_ms,
+    updated_at_ms
+FROM cli_route_message_queue
+{where_clause}
+"#
+    )
 }
 
 fn cli_route_session_select_sql(where_clause: &str) -> String {

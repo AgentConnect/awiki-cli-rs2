@@ -154,6 +154,36 @@ pub(super) fn cli_runtime_lock_from_row(
     })
 }
 
+pub(super) fn cli_route_message_queue_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CliRouteMessageQueueRecord> {
+    Ok(CliRouteMessageQueueRecord {
+        queue_id: row.get(0)?,
+        agent_did: row.get(1)?,
+        runtime_profile_id: row.get(2)?,
+        driver_id: row.get(3)?,
+        controller_user_id: row.get(4)?,
+        controller_full_handle: row.get(5)?,
+        controller_scope_key: row.get(6)?,
+        controller_did: row.get(7)?,
+        conversation_id: row.get(8)?,
+        route_key: row.get(9)?,
+        route_key_hash: row.get(10)?,
+        source_message_id: row.get(11)?,
+        task_id: row.get(12)?,
+        run_id: row.get(13)?,
+        status: row.get(14)?,
+        enqueue_reason: row.get(15)?,
+        attempts: row.get(16)?,
+        next_attempt_at_ms: row.get(17)?,
+        route_sequence: row.get(18)?,
+        last_error_code: row.get(19)?,
+        last_error_summary: row.get(20)?,
+        created_at_ms: row.get(21)?,
+        updated_at_ms: row.get(22)?,
+    })
+}
+
 pub(super) fn agent_definition_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AgentDefinition> {

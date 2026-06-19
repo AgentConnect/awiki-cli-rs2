@@ -56,6 +56,34 @@ fn assert_busy_retry_metadata(record: &awiki_deamon::outbox::OutboxRecord, reaso
     assert_eq!(metadata["busy_reason"].as_str(), Some(reason));
 }
 
+fn assert_busy_route_message_queue_item(
+    state: &DaemonState,
+    runtime_profile_id: &str,
+    route_key: &str,
+    source_message_id: &str,
+    run_id: &str,
+    reason: &str,
+    forbidden_prompt_text: &str,
+) {
+    let queue = state
+        .list_cli_route_message_queue_for_route(runtime_profile_id, route_key)
+        .unwrap();
+    assert_eq!(queue.len(), 1);
+    let item = &queue[0];
+    let expected_task_id = format!("task_{source_message_id}");
+    assert_eq!(item.status, "queued");
+    assert_eq!(item.source_message_id, source_message_id);
+    assert_eq!(item.task_id.as_deref(), Some(expected_task_id.as_str()));
+    assert_eq!(item.run_id.as_deref(), Some(run_id));
+    assert_eq!(item.enqueue_reason, reason);
+    assert_eq!(item.last_error_code.as_deref(), Some(reason));
+    assert!(
+        item.next_attempt_at_ms
+            > awiki_deamon::security::runtime_token::current_time_millis().unwrap()
+    );
+    assert!(!format!("{item:?}").contains(forbidden_prompt_text));
+}
+
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:alice-coder".to_string(),
@@ -481,6 +509,15 @@ fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
             > awiki_deamon::security::runtime_token::current_time_millis().unwrap()
     );
     assert!(!format!("{:?}", retries[0]).contains("profile busy"));
+    assert_busy_route_message_queue_item(
+        &state,
+        &profile.runtime_profile_id,
+        &route_key,
+        "msg_profile_busy",
+        "run_task_msg_profile_busy",
+        "profile_busy",
+        "profile busy",
+    );
 }
 
 #[test]
@@ -592,6 +629,15 @@ fn route_root_route_busy_does_not_launch_driver_or_release_existing_lease() {
         "runtime.busy.auto-deferred"
     );
     assert!(!format!("{:?}", retries[0]).contains("route busy"));
+    assert_busy_route_message_queue_item(
+        &state,
+        &profile.runtime_profile_id,
+        &route_key,
+        "msg_route_busy",
+        "run_task_msg_route_busy",
+        "route_busy",
+        "route busy",
+    );
 }
 
 #[test]
@@ -699,6 +745,15 @@ fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
         "runtime.busy.auto-deferred"
     );
     assert!(!format!("{:?}", retries[0]).contains("host home busy"));
+    assert_busy_route_message_queue_item(
+        &state,
+        &profile.runtime_profile_id,
+        &route_key,
+        "msg_host_home_busy",
+        "run_task_msg_host_home_busy",
+        "host_home_busy",
+        "host home busy",
+    );
 }
 
 #[test]
