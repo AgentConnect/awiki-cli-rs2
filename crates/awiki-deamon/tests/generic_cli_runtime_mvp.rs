@@ -1482,6 +1482,74 @@ fn codex_driver_config_requires_profile_config_home() {
     assert!(error.to_string().contains("config_home"));
 }
 
+#[cfg(unix)]
+#[test]
+fn codex_driver_runs_in_isolated_process_group() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let fake_codex = root.path().join("codex-process-group");
+    let process_capture = root.path().join("codex-process.txt");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+cat >/dev/null
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+printf 'PID=%s\n' "$$" > "{process_capture}"
+ps -o pgid= -p "$$" | tr -d ' ' | sed 's/^/PGID=/' >> "{process_capture}"
+printf 'codex process group final\n' > "$FINAL_OUTPUT"
+printf '{{"session_id":"codex-process-group-session"}}\n'
+"#,
+            process_capture = process_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    let output_dir = root.path().join("codex-output");
+    let mut config = codex_config(fake_codex);
+    config.output_dir = Some(output_dir);
+    let driver = CodexDriver::new(config).unwrap();
+    let invocation = generic_cli_invocation_for_process_test(root.path(), &workspace_root);
+
+    let exit = driver.run(invocation).unwrap();
+
+    assert_eq!(exit.status, RuntimeRunStatus::Finished);
+    assert_eq!(
+        exit.metadata["process"]["process_group_isolated"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        exit.metadata["process"]["process_tree_cleanup_supported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        exit.metadata["process"]["process_tree_cleanup_strategy"].as_str(),
+        Some("unix_process_group")
+    );
+    let capture = std::fs::read_to_string(process_capture).unwrap();
+    let child_pgid = captured_value(&capture, "PGID").parse::<i32>().unwrap();
+    let parent_pgid = unsafe { libc::getpgrp() };
+    assert_ne!(child_pgid, parent_pgid);
+}
+
 fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig {
     ClaudeCodeDriverConfig {
         binary_path,
@@ -1568,6 +1636,66 @@ exit 0
     assert!(env_dump.contains("AWIKI_DAEMON_RUNTIME_RPC_TOKEN=\n"));
     assert!(env_dump.contains("AWIKI_DAEMON_RUN_ID=\n"));
     assert!(env_dump.contains("AWIKI_DAEMON_TASK_ID=\n"));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_code_driver_runs_in_isolated_process_group() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let fake_claude = root.path().join("claude-process-group");
+    let process_capture = root.path().join("claude-process.txt");
+    std::fs::write(
+        &fake_claude,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+cat >/dev/null
+printf 'PID=%s\n' "$$" > "{process_capture}"
+ps -o pgid= -p "$$" | tr -d ' ' | sed 's/^/PGID=/' >> "{process_capture}"
+printf '{{"type":"system","session_id":"claude-process-group-session"}}\n'
+printf '{{"type":"result","result":"claude process group final"}}\n'
+"#,
+            process_capture = process_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    let output_dir = root.path().join("claude-output");
+    let mut config = claude_code_config(fake_claude);
+    config.output_dir = Some(output_dir);
+    let driver = ClaudeCodeDriver::new(config).unwrap();
+    let invocation = generic_cli_invocation_for_process_test(root.path(), &workspace_root);
+
+    let exit = driver.run(invocation).unwrap();
+
+    assert_eq!(exit.status, RuntimeRunStatus::Finished);
+    assert_eq!(
+        exit.metadata["process"]["process_group_isolated"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        exit.metadata["process"]["process_tree_cleanup_supported"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        exit.metadata["process"]["process_tree_cleanup_strategy"].as_str(),
+        Some("unix_process_group")
+    );
+    let capture = std::fs::read_to_string(process_capture).unwrap();
+    let child_pgid = captured_value(&capture, "PGID").parse::<i32>().unwrap();
+    let parent_pgid = unsafe { libc::getpgrp() };
+    assert_ne!(child_pgid, parent_pgid);
 }
 
 #[test]
@@ -3231,4 +3359,34 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
     assert!(debug.contains("<redacted>"));
     assert!(!debug.contains("secret prompt"));
     assert!(!debug.contains("rtok_debug_secret_value_123456789"));
+}
+
+fn generic_cli_invocation_for_process_test(
+    root: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> awiki_deamon::plugins::generic_cli::GenericCliInvocation {
+    awiki_deamon::plugins::generic_cli::GenericCliInvocation {
+        run_id: "run_process_group".to_string(),
+        task_id: "task_process_group".to_string(),
+        message_id: "msg_process_group".to_string(),
+        conversation_id: Some("direct:did:human:bob".to_string()),
+        task_text: "process group test".to_string(),
+        agent_did: "did:agent:alice-coder".to_string(),
+        runtime_profile_id: "profile_generic_cli_1".to_string(),
+        workspace_root: Some(workspace_root.to_path_buf()),
+        workspace_instance: None,
+        route_session: None,
+        runtime_temp_dir: Some(root.join("runtime-tmp")),
+        runtime_rpc_token: "rtok_process_group_secret".to_string(),
+        local_socket_path: Some(root.join("awiki-deamon.sock")),
+        callbacks: Vec::new(),
+    }
+}
+
+fn captured_value<'a>(capture: &'a str, key: &str) -> &'a str {
+    capture
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .unwrap_or_else(|| panic!("missing captured value for {key} in {capture:?}"))
+        .trim()
 }

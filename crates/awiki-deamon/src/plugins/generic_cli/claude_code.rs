@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -10,7 +9,7 @@ use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
 use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
-use super::{GenericCliDriver, GenericCliExit, GenericCliInvocation};
+use super::{process::ManagedChild, GenericCliDriver, GenericCliExit, GenericCliInvocation};
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
 const DEFAULT_SANDBOX: &str = "read-only";
@@ -272,15 +271,14 @@ impl GenericCliDriver for ClaudeCodeDriver {
             .stderr(Stdio::piped());
         apply_claude_code_env(&mut command, &invocation, &socket_path, &self.config);
 
-        let mut child = command.spawn().context("spawn claude-code print")?;
-        child
-            .stdin
-            .as_mut()
-            .context("open claude-code stdin")?
-            .write_all(prompt.as_bytes())
-            .context("write Claude Code prompt envelope to stdin")?;
-        drop(child.stdin.take());
-        let output = child.wait_with_output().context("wait for claude-code")?;
+        let managed = ManagedChild::spawn(&mut command, "spawn claude-code print")?;
+        let managed_output = managed.write_stdin_and_wait(
+            prompt.as_bytes(),
+            "write Claude Code prompt envelope to stdin",
+            "wait for claude-code",
+        )?;
+        let process_metadata = managed_output.process_metadata();
+        let output = managed_output.output;
         std::fs::write(
             &paths.stdout_path,
             redact_token_bytes(&output.stdout, &invocation.runtime_rpc_token),
@@ -351,6 +349,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
             metadata: serde_json::json!({
                 "driver_id": "claude-code",
                 "home_isolation": home_isolation(),
+                "process": process_metadata,
                 "native_session_id": native_session_id,
                 "native_session_source": native_session_source,
                 "session": {

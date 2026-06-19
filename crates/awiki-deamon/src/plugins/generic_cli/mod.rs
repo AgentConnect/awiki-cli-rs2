@@ -5,6 +5,7 @@ use serde_json::Value;
 
 pub mod claude_code;
 pub mod codex;
+mod process;
 
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::local_rpc::RuntimeRpcRequest;
@@ -13,6 +14,8 @@ use crate::runtime::{
     RuntimeRunStatus,
 };
 use crate::state::{CliRouteSessionRecord, CliRuntimeProfileRecord};
+
+use self::process::ManagedChild;
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
@@ -279,8 +282,13 @@ impl GenericCliDriver for CommandGenericCliDriver {
                 &invocation.runtime_rpc_token,
             )
             .env_remove("AWIKI_DAEMON_TASK_TEXT");
-        let status = command.status().context("run generic CLI runtime")?;
-        Ok(GenericCliExit::from_exit_code(status.code().unwrap_or(1)))
+        let managed = ManagedChild::spawn(&mut command, "spawn generic CLI runtime")?;
+        let output = managed.wait("wait for generic CLI runtime")?;
+        let mut exit = GenericCliExit::from_exit_code(output.output.status.code().unwrap_or(1));
+        exit.metadata = serde_json::json!({
+            "process": output.metadata_json(),
+        });
+        Ok(exit)
     }
 }
 
