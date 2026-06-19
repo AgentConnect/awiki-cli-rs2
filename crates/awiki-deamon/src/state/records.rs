@@ -1082,7 +1082,7 @@ fn validate_cli_route_key(route_key: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_cli_route_key_hash(route_key_hash: &str) -> Result<()> {
+pub(crate) fn validate_cli_route_key_hash(route_key_hash: &str) -> Result<()> {
     let value = route_key_hash.trim();
     if !value.starts_with("route_") || value.len() != "route_".len() + 24 {
         bail!("route_key_hash must use route_<24 hex> format");

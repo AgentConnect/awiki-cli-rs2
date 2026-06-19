@@ -34,6 +34,8 @@ const AGENT_STATUS_SCHEMA: &str = "awiki.agent.status.v1";
 const RUNTIME_AGENT_CREATE: &str = "runtime.agent.create";
 const AGENT_STATUS_QUERY: &str = "agent.status.query";
 const RUNTIME_SESSION_RESET: &str = "runtime.session.reset";
+const RUNTIME_SESSION_LIST: &str = "runtime.session.list";
+const RUNTIME_SESSION_STATUS: &str = "runtime.session.status";
 const RUNTIME_RUN_RETRY: &str = "runtime.run.retry";
 const DAEMON_UPGRADE: &str = "daemon.upgrade";
 const RUNTIME_AGENT_REBUILD: &str = "runtime.agent.rebuild";
@@ -294,6 +296,12 @@ where
         }
         RUNTIME_SESSION_RESET => {
             handle_runtime_session_reset(outbox, state, &daemon_agent, &message, &envelope)?;
+            Ok(AgentCommandOutcome::StatusReported {
+                command_id: envelope.command_id,
+            })
+        }
+        RUNTIME_SESSION_LIST | RUNTIME_SESSION_STATUS => {
+            handle_runtime_session_list(outbox, state, &daemon_agent, &message, &envelope)?;
             Ok(AgentCommandOutcome::StatusReported {
                 command_id: envelope.command_id,
             })
@@ -1018,6 +1026,264 @@ where
             "reset_scope": reset_scope,
             "conversation_id_present": conversation_id.is_some(),
             "reset_count": reset_count,
+        }),
+    )
+}
+
+fn handle_runtime_session_list<O>(
+    outbox: &O,
+    state: &DaemonState,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    payload: &AgentCommandEnvelope,
+) -> Result<()>
+where
+    O: AgentManagementOutbox,
+{
+    let runtime_agent_did = required_arg_string(&payload.args, "runtime_agent_did")?;
+    let command = payload.command.as_str();
+    let runtime_agent = match load_owned_runtime_agent(state, daemon_agent, &runtime_agent_did) {
+        Ok(runtime_agent) => runtime_agent,
+        Err(_) => {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("runtime agent does not belong to this daemon".to_string()),
+                json!({
+                    "command": command,
+                    "runtime_agent_did": runtime_agent_did,
+                    "error_code": "runtime_not_owned",
+                }),
+            );
+        }
+    };
+    let Some(runtime_profile_id) = runtime_agent.runtime_profile_id.as_deref() else {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("runtime agent profile is missing".to_string()),
+            json!({
+                "command": command,
+                "runtime_agent_did": runtime_agent_did,
+                "error_code": "runtime_profile_missing",
+            }),
+        );
+    };
+    let runtime_plugin_id = runtime_agent
+        .runtime_plugin_id
+        .as_deref()
+        .unwrap_or("unknown");
+    if runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("runtime session list is not supported for this runtime".to_string()),
+            json!({
+                "command": command,
+                "runtime_agent_did": runtime_agent.agent_did,
+                "runtime_plugin_id": runtime_plugin_id,
+                "error_code": "unsupported_for_runtime",
+            }),
+        );
+    }
+    let profile = match state.load_cli_runtime_profile(runtime_profile_id) {
+        Ok(profile) => profile,
+        Err(_) => {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("generic-cli runtime profile is unavailable".to_string()),
+                json!({
+                    "command": command,
+                    "runtime_agent_did": runtime_agent_did,
+                    "runtime_plugin_id": runtime_plugin_id,
+                    "error_code": "runtime_profile_unavailable",
+                }),
+            );
+        }
+    };
+
+    let status_filter = optional_arg_string(&payload.args, "status");
+    let conversation_filter = optional_arg_string(&payload.args, "conversation_id")
+        .map(|conversation_id| crate::state::canonical_cli_conversation_id(&conversation_id))
+        .transpose();
+    let conversation_filter = match conversation_filter {
+        Ok(filter) => filter,
+        Err(error) => {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("invalid runtime session list filter".to_string()),
+                json!({
+                    "command": command,
+                    "runtime_agent_did": runtime_agent.agent_did,
+                    "runtime_plugin_id": runtime_plugin_id,
+                    "driver_id": profile.driver_id,
+                    "error_code": "invalid_filter",
+                    "filter": "conversation_id",
+                    "error_summary": sanitize_public_error(&error.to_string()),
+                }),
+            );
+        }
+    };
+    let route_key_hash_filter = optional_arg_string(&payload.args, "route_key_hash");
+    let limit = match runtime_session_list_limit(&payload.args) {
+        Ok(limit) => limit,
+        Err(error) => {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("invalid runtime session list limit".to_string()),
+                json!({
+                    "command": command,
+                    "runtime_agent_did": runtime_agent.agent_did,
+                    "runtime_plugin_id": runtime_plugin_id,
+                    "driver_id": profile.driver_id,
+                    "error_code": "invalid_filter",
+                    "filter": "limit",
+                    "error_summary": sanitize_public_error(&error.to_string()),
+                }),
+            );
+        }
+    };
+
+    let driver_id = profile.driver_id.clone();
+    let workspace_mode = profile.default_workspace_mode.as_str();
+    let sessions = match state.list_cli_route_sessions_for_runtime_profile(
+        &runtime_agent.agent_did,
+        runtime_profile_id,
+        &daemon_agent.controller_scope_key,
+        status_filter.as_deref(),
+        conversation_filter.as_deref(),
+        route_key_hash_filter.as_deref(),
+        limit,
+    ) {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                "failed",
+                Some("runtime session list failed".to_string()),
+                json!({
+                    "command": command,
+                    "runtime_agent_did": runtime_agent.agent_did,
+                    "runtime_plugin_id": runtime_plugin_id,
+                    "driver_id": driver_id.clone(),
+                    "error_code": "invalid_filter",
+                    "error_summary": sanitize_public_error(&error.to_string()),
+                }),
+            );
+        }
+    };
+    if command == RUNTIME_SESSION_STATUS
+        && sessions.is_empty()
+        && (conversation_filter.is_some() || route_key_hash_filter.is_some())
+    {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("runtime route session was not found".to_string()),
+            json!({
+                "command": command,
+                "runtime_agent_did": runtime_agent.agent_did,
+                "runtime_plugin_id": runtime_plugin_id,
+                "driver_id": driver_id,
+                "error_code": "route_session_not_found",
+                "filters": {
+                    "conversation_id_present": conversation_filter.is_some(),
+                    "route_key_hash_present": route_key_hash_filter.is_some(),
+                },
+            }),
+        );
+    }
+    let items: Vec<Value> = sessions
+        .iter()
+        .map(|session| {
+            json!({
+                "route_key_hash": session.route_key_hash,
+                "conversation_id_present": !session.conversation_id.trim().is_empty(),
+                "conversation_kind": generic_cli_conversation_kind(&session.conversation_id),
+                "status": session.status,
+                "workspace_mode": workspace_mode,
+                "native_session_present": session.native_session_id.is_some(),
+                "last_run_id": session.last_run_id,
+                "last_message_id": session.last_message_id,
+                "last_error_code": session.last_error_code,
+                "next_action": next_action_for_route_session(session.last_error_code.as_deref()),
+                "created_at_ms": session.created_at_ms,
+                "updated_at_ms": session.updated_at_ms,
+            })
+        })
+        .collect();
+
+    state.insert_audit_event_json(
+        command,
+        Some(&runtime_agent.agent_did),
+        Some(runtime_profile_id),
+        None,
+        None,
+        json!({
+            "command_id": payload.command_id,
+            "runtime_plugin_id": runtime_plugin_id,
+            "driver_id": driver_id.clone(),
+            "filter_status_present": status_filter.is_some(),
+            "filter_conversation_present": conversation_filter.is_some(),
+            "filter_route_key_hash_present": route_key_hash_filter.is_some(),
+            "limit": limit,
+            "returned_count": items.len(),
+            "local_only": false,
+        }),
+    )?;
+
+    send_command_status(
+        outbox,
+        daemon_agent,
+        message,
+        &payload.command_id,
+        "ready",
+        Some("runtime session list ready".to_string()),
+        json!({
+            "command": command,
+            "runtime_agent_did": runtime_agent.agent_did,
+            "daemon_agent_did": daemon_agent.agent_did,
+            "runtime_plugin_id": runtime_plugin_id,
+            "driver_id": driver_id,
+            "runtime_profile_id_present": true,
+            "controller_scope_key_present": true,
+            "filters": {
+                "status_present": status_filter.is_some(),
+                "conversation_id_present": conversation_filter.is_some(),
+                "route_key_hash_present": route_key_hash_filter.is_some(),
+            },
+            "items": items,
+            "page": {
+                "limit": limit,
+                "next_cursor": Value::Null,
+            },
         }),
     )
 }
@@ -1858,6 +2124,48 @@ fn optional_arg_u64(args: &Value, field: &str) -> Option<u64> {
                 .and_then(|text| text.parse::<u64>().ok())
         })
     })
+}
+
+fn runtime_session_list_limit(args: &Value) -> Result<usize> {
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => 50,
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .with_context(|| "limit must be an unsigned integer")?,
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<u64>()
+            .with_context(|| "limit must be an unsigned integer")?,
+        Some(_) => bail!("limit must be an unsigned integer"),
+    };
+    if !(1..=100).contains(&limit) {
+        bail!("limit must be between 1 and 100");
+    }
+    Ok(limit as usize)
+}
+
+fn generic_cli_conversation_kind(conversation_id: &str) -> &'static str {
+    if conversation_id.starts_with("direct:") {
+        "direct"
+    } else if conversation_id.starts_with("group:") {
+        "group"
+    } else if conversation_id.starts_with("thread:") {
+        "thread"
+    } else {
+        "unknown"
+    }
+}
+
+fn next_action_for_route_session(error_code: Option<&str>) -> Option<&'static str> {
+    match error_code {
+        Some("resume_not_found") | Some("resume_invalid") => Some("reset_route_session"),
+        Some("route_busy") | Some("backpressure_rejected") => Some("retry_later"),
+        Some("missing_binary") => Some("install_driver"),
+        Some("auth_missing") | Some("needs_login") => Some("login_driver"),
+        Some("unsupported_driver_version") | Some("unsupported_driver") => Some("upgrade_daemon"),
+        Some(_) => Some("manual_review_required"),
+        None => None,
+    }
 }
 
 fn sanitize_public_error(message: &str) -> String {

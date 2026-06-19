@@ -922,6 +922,76 @@ WHERE route_key = ?3
             .context("load cli route session by profile hash")
     }
 
+    pub fn list_cli_route_sessions_for_runtime_profile(
+        &self,
+        agent_did: &str,
+        runtime_profile_id: &str,
+        controller_scope_key: &str,
+        status: Option<&str>,
+        conversation_id: Option<&str>,
+        route_key_hash: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CliRouteSessionRecord>> {
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        if controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
+        }
+        if limit == 0 {
+            bail!("limit must be greater than zero");
+        }
+        let conversation_id = conversation_id
+            .map(canonical_cli_conversation_id)
+            .transpose()?;
+        if let Some(route_key_hash) = route_key_hash {
+            validate_cli_route_key_hash(route_key_hash)?;
+        }
+
+        let mut where_clause =
+            "WHERE agent_did = ? AND runtime_profile_id = ? AND controller_scope_key = ?"
+                .to_string();
+        let mut params: Vec<String> = vec![
+            agent_did.to_string(),
+            runtime_profile_id.to_string(),
+            controller_scope_key.to_string(),
+        ];
+        if let Some(status) = status {
+            if status.trim().is_empty() {
+                bail!("status must not be empty when present");
+            }
+            where_clause.push_str(" AND status = ?");
+            params.push(status.trim().to_string());
+        }
+        if let Some(conversation_id) = conversation_id {
+            where_clause.push_str(" AND conversation_id = ?");
+            params.push(conversation_id);
+        }
+        if let Some(route_key_hash) = route_key_hash {
+            where_clause.push_str(" AND route_key_hash = ?");
+            params.push(route_key_hash.trim().to_string());
+        }
+        where_clause.push_str(&format!(
+            " ORDER BY updated_at_ms DESC, created_at_ms DESC LIMIT {limit}"
+        ));
+
+        let sql = cli_route_session_select_sql(&where_clause);
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            rusqlite::params_from_iter(params.iter().map(String::as_str)),
+            cli_route_session_from_row,
+        )?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(sessions)
+    }
+
     pub fn count_cli_route_sessions_for_runtime_profile(
         &self,
         runtime_profile_id: &str,
