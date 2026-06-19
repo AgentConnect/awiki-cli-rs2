@@ -138,6 +138,22 @@ pub(super) fn cli_route_session_from_row(
     })
 }
 
+pub(super) fn cli_runtime_lock_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CliRuntimeLockRecord> {
+    Ok(CliRuntimeLockRecord {
+        lock_key: row.get(0)?,
+        lock_kind: row.get(1)?,
+        runtime_profile_id: row.get(2)?,
+        driver_id: row.get(3)?,
+        run_id: row.get(4)?,
+        lock_owner: row.get(5)?,
+        lock_expires_at_ms: row.get(6)?,
+        created_at_ms: row.get(7)?,
+        updated_at_ms: row.get(8)?,
+    })
+}
+
 pub(super) fn agent_definition_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AgentDefinition> {

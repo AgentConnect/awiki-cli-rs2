@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 22;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 23;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -137,6 +137,24 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_cli_route_sessions_lock
         ON cli_route_sessions(status, lock_expires_at_ms);
+
+        CREATE TABLE IF NOT EXISTS cli_runtime_locks (
+            lock_key TEXT PRIMARY KEY,
+            lock_kind TEXT NOT NULL,
+            runtime_profile_id TEXT,
+            driver_id TEXT,
+            run_id TEXT NOT NULL,
+            lock_owner TEXT NOT NULL,
+            lock_expires_at_ms INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_kind
+        ON cli_runtime_locks(lock_kind, runtime_profile_id, driver_id);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_expiry
+        ON cli_runtime_locks(lock_expires_at_ms);
 
         CREATE TABLE IF NOT EXISTS runtime_run (
             run_id TEXT PRIMARY KEY,
@@ -510,6 +528,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_control_command_state_v20(connection)?;
     migrate_runtime_requester_contract_v21(connection)?;
     migrate_cli_route_sessions_v22(connection)?;
+    migrate_cli_runtime_locks_v23(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -517,6 +536,31 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_cli_runtime_locks_v23(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS cli_runtime_locks (
+            lock_key TEXT PRIMARY KEY,
+            lock_kind TEXT NOT NULL,
+            runtime_profile_id TEXT,
+            driver_id TEXT,
+            run_id TEXT NOT NULL,
+            lock_owner TEXT NOT NULL,
+            lock_expires_at_ms INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_kind
+        ON cli_runtime_locks(lock_kind, runtime_profile_id, driver_id);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_expiry
+        ON cli_runtime_locks(lock_expires_at_ms);
+        "#,
     )?;
     Ok(())
 }

@@ -29,7 +29,18 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
     config.ensure_state_layout().unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
+    upsert_test_cli_profile(&state, "profile_generic_cli_1", "codex");
     (root, state)
+}
+
+fn upsert_test_cli_profile(
+    state: &DaemonState,
+    runtime_profile_id: &str,
+    driver_id: &str,
+) -> CliRuntimeProfileRecord {
+    let cli_profile = CliRuntimeProfileRecord::for_driver(runtime_profile_id, driver_id).unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    cli_profile
 }
 
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
@@ -83,6 +94,9 @@ fn controller_text_task_runs_generic_cli_and_records_callbacks() {
     let outbox = MemoryRuntimeOutbox::default();
     let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
     let profile = profile(root.path().join("workspace"));
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 
     let result = run_controller_text_task(
         &state,
@@ -146,6 +160,9 @@ fn failed_generic_cli_marks_run_failed_without_final_callback() {
     let outbox = MemoryRuntimeOutbox::default();
     let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver { exit_code: 7 });
     let profile = profile(root.path().join("workspace"));
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 
     let result = run_controller_text_task(
         &state,
@@ -337,6 +354,184 @@ fn route_root_requires_conversation_id_and_does_not_create_long_term_session() {
     assert_eq!(
         records[0].last_error_code.as_deref(),
         Some("route_session_preparation_failed")
+    );
+}
+
+#[test]
+fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            &profile.runtime_profile_id,
+            "codex",
+            "run_existing",
+            "test",
+            awiki_deamon::security::runtime_token::current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_profile_busy".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "profile busy".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("runtime profile is busy"));
+    let run = state.load_runtime_run("run_task_msg_profile_busy").unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let route_key = awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        "direct:did:human:bob",
+    )
+    .unwrap();
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.last_error_code.as_deref(), Some("profile_busy"));
+    assert!(state
+        .load_cli_driver_run("run_task_msg_profile_busy")
+        .unwrap_err()
+        .to_string()
+        .contains("load cli driver run"));
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(
+                Some("profile"),
+                Some(&profile.runtime_profile_id),
+                Some("codex"),
+                false,
+            )
+            .unwrap(),
+        1
+    );
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].last_error_code.as_deref(), Some("profile_busy"));
+}
+
+#[test]
+fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "claude-code").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    assert!(state
+        .try_acquire_cli_host_home_lock(
+            "claude-code",
+            "run_existing",
+            "test",
+            awiki_deamon::security::runtime_token::current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_host_home_busy".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "host home busy".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("host home is busy"));
+    let run = state
+        .load_runtime_run("run_task_msg_host_home_busy")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let route_key = awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        "direct:did:human:bob",
+    )
+    .unwrap();
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.last_error_code.as_deref(), Some("host_home_busy"));
+    assert!(state
+        .load_cli_driver_run("run_task_msg_host_home_busy")
+        .unwrap_err()
+        .to_string()
+        .contains("load cli driver run"));
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(
+                Some("profile"),
+                Some(&profile.runtime_profile_id),
+                Some("claude-code"),
+                false,
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(Some("host-home"), None, Some("claude-code"), false)
+            .unwrap(),
+        1
+    );
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("host_home_busy")
     );
 }
 
@@ -846,6 +1041,7 @@ fn command_driver_uses_local_rpc_without_task_text_env_or_callbacks() {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "command");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let script_path = root.path().join("generic-cli-driver.sh");
@@ -979,6 +1175,7 @@ fn generic_cli_driver_registry_runs_command_profile() {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let script_path = root.path().join("registry-driver.sh");
@@ -1435,6 +1632,7 @@ fn claude_code_registry_runs_profile_instead_of_not_implemented() {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "claude-code");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let fake_claude = root.path().join("claude-registry");
@@ -1553,6 +1751,7 @@ fn codex_driver_fake_binary_uses_stdin_env_outputs_and_local_rpc() {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let fake_codex = root.path().join("codex");
@@ -2363,6 +2562,7 @@ fn claude_code_driver_nonzero_exit_does_not_record_generated_session_or_final() 
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "claude-code");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let fake_claude = root.path().join("claude-fail");
@@ -2546,6 +2746,7 @@ fn codex_driver_success_without_finish_uses_fallback_final_once() {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let fake_codex = root.path().join("codex-no-final");
@@ -2670,6 +2871,7 @@ fn worktree_per_task_uses_daemon_runtime_temp_and_records_metadata() {
         .success());
     let mut profile = profile(workspace.clone());
     profile.workspace_mode = Some(WorkspaceMode::WorktreePerTask);
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
 
     let fake_codex = root.path().join("codex-worktree");
     let pwd_capture = root.path().join("codex-pwd.txt");
@@ -2758,6 +2960,7 @@ fn codex_driver_nonzero_exit_does_not_forge_success_final() {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     let profile = profile(root.path().join("workspace"));
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
     let fake_codex = root.path().join("codex-fail");

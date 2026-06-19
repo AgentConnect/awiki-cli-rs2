@@ -24,6 +24,7 @@ fn initialize_creates_required_tables() {
         "cli_runtime_profile",
         "cli_driver_run",
         "cli_route_sessions",
+        "cli_runtime_locks",
         "hermes_profiles",
         "hermes_native_sessions",
         "runtime_daemon_binding",
@@ -230,6 +231,112 @@ fn cli_route_session_reset_reactivates_same_route_without_native_pointer() {
             current_time_millis().unwrap() + 60_000,
         )
         .unwrap());
+}
+
+#[test]
+fn cli_runtime_profile_lock_is_exclusive_and_stale_recoverable() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_1",
+            "test",
+            now + 60_000,
+        )
+        .unwrap());
+    assert!(!state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_2",
+            "test",
+            now + 60_000,
+        )
+        .unwrap());
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(
+                Some("profile"),
+                Some("profile_codex_alice"),
+                Some("codex"),
+                false,
+            )
+            .unwrap(),
+        1
+    );
+    assert!(state
+        .release_cli_runtime_profile_lock("profile_codex_alice", "run_1")
+        .unwrap());
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_expired",
+            "test",
+            now - 1,
+        )
+        .unwrap());
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_2",
+            "test",
+            now + 60_000,
+        )
+        .unwrap());
+    assert!(!state
+        .release_cli_runtime_profile_lock("profile_codex_alice", "run_expired")
+        .unwrap());
+    assert!(state
+        .release_cli_runtime_profile_lock("profile_codex_alice", "run_2")
+        .unwrap());
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(
+                Some("profile"),
+                Some("profile_codex_alice"),
+                Some("codex"),
+                true,
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn cli_host_home_lock_is_driver_scoped() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    assert!(state
+        .try_acquire_cli_host_home_lock("claude-code", "run_1", "test", now + 60_000)
+        .unwrap());
+    assert!(!state
+        .try_acquire_cli_host_home_lock("claude-code", "run_2", "test", now + 60_000)
+        .unwrap());
+    assert!(state
+        .try_acquire_cli_host_home_lock("codex", "run_3", "test", now + 60_000)
+        .unwrap());
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(Some("host-home"), None, Some("claude-code"), false)
+            .unwrap(),
+        1
+    );
+    assert!(state
+        .release_cli_host_home_lock("claude-code", "run_1")
+        .unwrap());
+    assert!(state.release_cli_host_home_lock("codex", "run_3").unwrap());
 }
 
 #[test]

@@ -88,6 +88,19 @@ pub struct CliRouteSessionRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliRuntimeLockRecord {
+    pub lock_key: String,
+    pub lock_kind: String,
+    pub runtime_profile_id: Option<String>,
+    pub driver_id: Option<String>,
+    pub run_id: String,
+    pub lock_owner: String,
+    pub lock_expires_at_ms: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateCliRouteSession {
     pub agent_did: String,
@@ -100,6 +113,36 @@ pub struct CreateCliRouteSession {
     pub conversation_id: String,
     pub workspace_path: PathBuf,
     pub session_dir: PathBuf,
+}
+
+impl CliRuntimeLockRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("lock_key", self.lock_key.as_str()),
+            ("lock_kind", self.lock_kind.as_str()),
+            ("run_id", self.run_id.as_str()),
+            ("lock_owner", self.lock_owner.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if self
+            .runtime_profile_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("runtime_profile_id must not be empty when present");
+        }
+        if self
+            .driver_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("driver_id must not be empty when present");
+        }
+        Ok(())
+    }
 }
 
 impl CliDriverRunRecord {

@@ -366,6 +366,36 @@ where
     } else {
         None
     };
+    let mut cli_runtime_locks = CliRuntimeLeaseGuard::default();
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        match acquire_generic_cli_runtime_locks(state, profile, &run) {
+            Ok(locks) => {
+                cli_runtime_locks = locks;
+            }
+            Err(error) => {
+                if let Some(route_session) = cli_route_session.as_ref() {
+                    let _ = state.release_cli_route_session_lease(
+                        &route_session.route_key,
+                        &run.run_id,
+                        "failed",
+                        Some(&task_source_message_id),
+                        Some(error.code),
+                        Some(&error.summary),
+                    );
+                }
+                state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                emit_runtime_status(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some(error.user_message()),
+                    Some(error.code),
+                    Some(&error.summary),
+                )?;
+                return Err(error.into_error()).context("acquire generic-cli runtime lock");
+            }
+        }
+    }
     let workspace_instance = match (
         profile.workspace_id.as_ref(),
         profile.workspace_root.as_ref(),
@@ -403,6 +433,7 @@ where
                             Some(&sanitize_user_visible_error_summary(&error.to_string())),
                         );
                     }
+                    cli_runtime_locks.release_all();
                     emit_runtime_status(
                         outbox,
                         &run,
@@ -442,6 +473,7 @@ where
                     Some(&sanitize_user_visible_error_summary(&error.to_string())),
                 );
             }
+            cli_runtime_locks.release_all();
             if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
                 emit_hermes_failure_outputs(
@@ -641,6 +673,7 @@ where
                 },
             )?;
         }
+        cli_runtime_locks.release_all();
     }
 
     Ok(RuntimeTaskRunResult {
@@ -648,6 +681,158 @@ where
         launch_outcome,
         token_id: issued.token_id,
     })
+}
+
+#[derive(Default)]
+struct CliRuntimeLeaseGuard {
+    state: Option<DaemonState>,
+    runtime_profile_id: Option<String>,
+    host_home_driver_id: Option<String>,
+    run_id: Option<String>,
+}
+
+impl CliRuntimeLeaseGuard {
+    fn profile(state: DaemonState, runtime_profile_id: String, run_id: String) -> Self {
+        Self {
+            state: Some(state),
+            runtime_profile_id: Some(runtime_profile_id),
+            host_home_driver_id: None,
+            run_id: Some(run_id),
+        }
+    }
+
+    fn mark_host_home(&mut self, driver_id: String) {
+        self.host_home_driver_id = Some(driver_id);
+    }
+
+    fn release_profile(&mut self) {
+        if let (Some(state), Some(runtime_profile_id), Some(run_id)) = (
+            self.state.as_ref(),
+            self.runtime_profile_id.take(),
+            self.run_id.as_deref(),
+        ) {
+            let _ = state.release_cli_runtime_profile_lock(&runtime_profile_id, run_id);
+        }
+    }
+
+    fn release_host_home(&mut self) {
+        if let (Some(state), Some(driver_id), Some(run_id)) = (
+            self.state.as_ref(),
+            self.host_home_driver_id.take(),
+            self.run_id.as_deref(),
+        ) {
+            let _ = state.release_cli_host_home_lock(&driver_id, run_id);
+        }
+    }
+
+    fn release_all(&mut self) {
+        self.release_host_home();
+        self.release_profile();
+    }
+}
+
+impl Drop for CliRuntimeLeaseGuard {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GenericCliRuntimeLockError {
+    code: &'static str,
+    message: String,
+    summary: String,
+}
+
+impl GenericCliRuntimeLockError {
+    fn profile_busy(runtime_profile_id: &str) -> Self {
+        Self::new(
+            "profile_busy",
+            format!("generic-cli runtime profile is busy: {runtime_profile_id}"),
+        )
+    }
+
+    fn host_home_busy(driver_id: &str) -> Self {
+        Self::new(
+            "host_home_busy",
+            format!("generic-cli host home is busy: {driver_id}"),
+        )
+    }
+
+    fn new(code: &'static str, message: String) -> Self {
+        let summary = sanitize_user_visible_error_summary(&message);
+        Self {
+            code,
+            message,
+            summary,
+        }
+    }
+
+    fn user_message(&self) -> &'static str {
+        match self.code {
+            "host_home_busy" => "Runtime host home concurrency limit is busy",
+            "runtime_lock_unavailable" => "Runtime concurrency lock is unavailable",
+            _ => "Runtime profile concurrency limit is busy",
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::anyhow!(self.message)
+    }
+}
+
+impl From<anyhow::Error> for GenericCliRuntimeLockError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(
+            "runtime_lock_unavailable",
+            format!("generic-cli runtime lock unavailable: {error}"),
+        )
+    }
+}
+
+fn acquire_generic_cli_runtime_locks(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+) -> std::result::Result<CliRuntimeLeaseGuard, GenericCliRuntimeLockError> {
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let expires_at_ms = current_time_millis()? + 10 * 60 * 1000;
+    let acquired_profile = state.try_acquire_cli_runtime_profile_lock(
+        &profile.runtime_profile_id,
+        &cli_profile.driver_id,
+        &run.run_id,
+        "runtime.host",
+        expires_at_ms,
+    )?;
+    if !acquired_profile {
+        return Err(GenericCliRuntimeLockError::profile_busy(
+            &profile.runtime_profile_id,
+        ));
+    }
+
+    let mut guard = CliRuntimeLeaseGuard::profile(
+        state.clone(),
+        profile.runtime_profile_id.clone(),
+        run.run_id.clone(),
+    );
+    let needs_host_home_lock =
+        cli_profile.driver_id == "claude-code" && cli_profile.config_home.is_none();
+    if needs_host_home_lock {
+        let acquired_host_home = state.try_acquire_cli_host_home_lock(
+            &cli_profile.driver_id,
+            &run.run_id,
+            "runtime.host",
+            expires_at_ms,
+        )?;
+        if !acquired_host_home {
+            guard.release_profile();
+            return Err(GenericCliRuntimeLockError::host_home_busy(
+                &cli_profile.driver_id,
+            ));
+        }
+        guard.mark_host_home(cli_profile.driver_id);
+    }
+    Ok(guard)
 }
 
 fn existing_runtime_run(

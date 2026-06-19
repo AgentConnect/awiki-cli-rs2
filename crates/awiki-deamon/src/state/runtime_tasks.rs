@@ -1310,6 +1310,231 @@ WHERE agent_did = ?2
         )?;
         Ok(updated)
     }
+
+    pub fn try_acquire_cli_runtime_profile_lock(
+        &self,
+        runtime_profile_id: &str,
+        driver_id: &str,
+        run_id: &str,
+        lock_owner: &str,
+        lock_expires_at_ms: i64,
+    ) -> Result<bool> {
+        let lock_key = cli_runtime_profile_lock_key(runtime_profile_id)?;
+        self.try_acquire_cli_runtime_lock(
+            &lock_key,
+            "profile",
+            Some(runtime_profile_id),
+            Some(driver_id),
+            run_id,
+            lock_owner,
+            lock_expires_at_ms,
+        )
+    }
+
+    pub fn try_acquire_cli_host_home_lock(
+        &self,
+        driver_id: &str,
+        run_id: &str,
+        lock_owner: &str,
+        lock_expires_at_ms: i64,
+    ) -> Result<bool> {
+        let lock_key = cli_host_home_lock_key(driver_id)?;
+        self.try_acquire_cli_runtime_lock(
+            &lock_key,
+            "host-home",
+            None,
+            Some(driver_id),
+            run_id,
+            lock_owner,
+            lock_expires_at_ms,
+        )
+    }
+
+    fn try_acquire_cli_runtime_lock(
+        &self,
+        lock_key: &str,
+        lock_kind: &str,
+        runtime_profile_id: Option<&str>,
+        driver_id: Option<&str>,
+        run_id: &str,
+        lock_owner: &str,
+        lock_expires_at_ms: i64,
+    ) -> Result<bool> {
+        for (field_name, value) in [
+            ("lock_key", lock_key),
+            ("lock_kind", lock_kind),
+            ("run_id", run_id),
+            ("lock_owner", lock_owner),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if runtime_profile_id.is_some_and(|value| value.trim().is_empty()) {
+            bail!("runtime_profile_id must not be empty when present");
+        }
+        if driver_id.is_some_and(|value| value.trim().is_empty()) {
+            bail!("driver_id must not be empty when present");
+        }
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+INSERT INTO cli_runtime_locks (
+    lock_key,
+    lock_kind,
+    runtime_profile_id,
+    driver_id,
+    run_id,
+    lock_owner,
+    lock_expires_at_ms,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+ON CONFLICT(lock_key) DO UPDATE SET
+    lock_kind = excluded.lock_kind,
+    runtime_profile_id = excluded.runtime_profile_id,
+    driver_id = excluded.driver_id,
+    run_id = excluded.run_id,
+    lock_owner = excluded.lock_owner,
+    lock_expires_at_ms = excluded.lock_expires_at_ms,
+    updated_at_ms = excluded.updated_at_ms
+WHERE cli_runtime_locks.lock_expires_at_ms <= excluded.updated_at_ms
+   OR cli_runtime_locks.run_id = excluded.run_id
+"#,
+            rusqlite::params![
+                lock_key,
+                lock_kind,
+                runtime_profile_id,
+                driver_id,
+                run_id,
+                lock_owner,
+                lock_expires_at_ms,
+                now,
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn release_cli_runtime_profile_lock(
+        &self,
+        runtime_profile_id: &str,
+        run_id: &str,
+    ) -> Result<bool> {
+        let lock_key = cli_runtime_profile_lock_key(runtime_profile_id)?;
+        self.release_cli_runtime_lock(&lock_key, run_id)
+    }
+
+    pub fn release_cli_host_home_lock(&self, driver_id: &str, run_id: &str) -> Result<bool> {
+        let lock_key = cli_host_home_lock_key(driver_id)?;
+        self.release_cli_runtime_lock(&lock_key, run_id)
+    }
+
+    fn release_cli_runtime_lock(&self, lock_key: &str, run_id: &str) -> Result<bool> {
+        if lock_key.trim().is_empty() {
+            bail!("lock_key must not be empty");
+        }
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+DELETE FROM cli_runtime_locks
+WHERE lock_key = ?1
+  AND run_id = ?2
+"#,
+            rusqlite::params![lock_key, run_id],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn count_cli_runtime_locks(
+        &self,
+        lock_kind: Option<&str>,
+        runtime_profile_id: Option<&str>,
+        driver_id: Option<&str>,
+        include_expired: bool,
+    ) -> Result<usize> {
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let mut where_clause = "WHERE 1 = 1".to_string();
+        let mut params: Vec<String> = Vec::new();
+        if let Some(lock_kind) = lock_kind {
+            if lock_kind.trim().is_empty() {
+                bail!("lock_kind must not be empty when present");
+            }
+            where_clause.push_str(" AND lock_kind = ?");
+            params.push(lock_kind.trim().to_string());
+        }
+        if let Some(runtime_profile_id) = runtime_profile_id {
+            if runtime_profile_id.trim().is_empty() {
+                bail!("runtime_profile_id must not be empty when present");
+            }
+            where_clause.push_str(" AND runtime_profile_id = ?");
+            params.push(runtime_profile_id.trim().to_string());
+        }
+        if let Some(driver_id) = driver_id {
+            if driver_id.trim().is_empty() {
+                bail!("driver_id must not be empty when present");
+            }
+            where_clause.push_str(" AND driver_id = ?");
+            params.push(driver_id.trim().to_string());
+        }
+        if !include_expired {
+            where_clause.push_str(" AND lock_expires_at_ms > ?");
+            params.push(now.to_string());
+        }
+        let sql = format!("SELECT COUNT(*) FROM cli_runtime_locks {where_clause}");
+        let count: i64 = connection.query_row(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(String::as_str)),
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    pub fn load_cli_runtime_lock(&self, lock_key: &str) -> Result<Option<CliRuntimeLockRecord>> {
+        if lock_key.trim().is_empty() {
+            bail!("lock_key must not be empty");
+        }
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    lock_key,
+    lock_kind,
+    runtime_profile_id,
+    driver_id,
+    run_id,
+    lock_owner,
+    lock_expires_at_ms,
+    created_at_ms,
+    updated_at_ms
+FROM cli_runtime_locks
+WHERE lock_key = ?1
+"#,
+                [lock_key],
+                cli_runtime_lock_from_row,
+            )
+            .optional()
+            .context("load cli runtime lock")
+    }
+}
+
+pub fn cli_runtime_profile_lock_key(runtime_profile_id: &str) -> Result<String> {
+    if runtime_profile_id.trim().is_empty() {
+        bail!("runtime_profile_id must not be empty");
+    }
+    Ok(format!("profile:{}", runtime_profile_id.trim()))
+}
+
+pub fn cli_host_home_lock_key(driver_id: &str) -> Result<String> {
+    if driver_id.trim().is_empty() {
+        bail!("driver_id must not be empty");
+    }
+    Ok(format!("host-home:{}:default", driver_id.trim()))
 }
 
 fn cli_route_session_select_sql(where_clause: &str) -> String {

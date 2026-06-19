@@ -662,7 +662,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "capability_schema_version": 1,
                 "route_session_supported": true,
                 "native_resume_supported": true,
-                "profile_concurrency_cap_supported": false,
+                "profile_concurrency_cap_supported": true,
                 "supported_drivers": supported_generic_cli_drivers(),
                 "supported_workspace_modes": supported_generic_cli_workspace_modes(),
                 "supported_sandbox_modes": supported_generic_cli_sandbox_modes(),
@@ -674,6 +674,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "auth_status": "unknown",
                 "home_isolation": "unknown",
                 "host_home_shared_lock": false,
+                "runtime_locks": empty_generic_cli_runtime_lock_summary(),
                 "config_home": null,
                 "config_home_exists": false,
                 "default_workspace_mode": null,
@@ -703,7 +704,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "capability_schema_version": 1,
                 "route_session_supported": true,
                 "native_resume_supported": true,
-                "profile_concurrency_cap_supported": false,
+                "profile_concurrency_cap_supported": true,
                 "supported_drivers": supported_generic_cli_drivers(),
                 "supported_workspace_modes": supported_generic_cli_workspace_modes(),
                 "supported_sandbox_modes": supported_generic_cli_sandbox_modes(),
@@ -715,6 +716,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "auth_status": "unknown",
                 "home_isolation": "unknown",
                 "host_home_shared_lock": false,
+                "runtime_locks": empty_generic_cli_runtime_lock_summary(),
                 "config_home": null,
                 "config_home_exists": false,
                 "default_workspace_mode": null,
@@ -775,7 +777,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
             "capability_schema_version": 1,
             "route_session_supported": true,
             "native_resume_supported": true,
-            "profile_concurrency_cap_supported": false,
+            "profile_concurrency_cap_supported": true,
             "supported_drivers": supported_generic_cli_drivers(),
             "supported_workspace_modes": supported_generic_cli_workspace_modes(),
             "supported_sandbox_modes": supported_generic_cli_sandbox_modes(),
@@ -787,6 +789,12 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
             "auth_status": "unknown",
             "home_isolation": home_isolation,
             "host_home_shared_lock": host_home_shared_lock,
+            "runtime_locks": generic_cli_runtime_lock_summary(
+                state,
+                runtime_profile_id,
+                &profile.driver_id,
+                host_home_shared_lock,
+            ),
             "config_home": if profile.config_home.is_some() { "configured" } else { "missing" },
             "config_home_exists": config_home_exists,
             "default_workspace_mode": profile.default_workspace_mode.as_str(),
@@ -842,7 +850,7 @@ fn generic_cli_daemon_capability_summary() -> Value {
         "supported_runtime_create_args": supported_generic_cli_runtime_create_args(),
         "route_session_supported": true,
         "native_resume_supported": true,
-        "profile_concurrency_cap_supported": false,
+        "profile_concurrency_cap_supported": true,
         "max_parallel_runs_per_profile": 1,
         "runtime_target_required": true,
     })
@@ -855,6 +863,52 @@ fn empty_route_session_counts() -> Value {
         "running": 0,
         "failed": 0,
         "reset": 0,
+    })
+}
+
+fn empty_generic_cli_runtime_lock_summary() -> Value {
+    json!({
+        "profile_lock_supported": true,
+        "host_home_lock_supported": true,
+        "profile_lock_active": false,
+        "host_home_lock_active": false,
+        "profile_lock_count": 0,
+        "host_home_lock_count": 0,
+        "max_parallel_runs_per_profile": 1,
+        "host_home_shared_lock": false,
+    })
+}
+
+fn generic_cli_runtime_lock_summary(
+    state: &DaemonState,
+    runtime_profile_id: &str,
+    driver_id: &str,
+    host_home_shared_lock: bool,
+) -> Value {
+    let profile_lock_count = state
+        .count_cli_runtime_locks(
+            Some("profile"),
+            Some(runtime_profile_id),
+            Some(driver_id),
+            false,
+        )
+        .unwrap_or(0);
+    let host_home_lock_count = if host_home_shared_lock {
+        state
+            .count_cli_runtime_locks(Some("host-home"), None, Some(driver_id), false)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    json!({
+        "profile_lock_supported": true,
+        "host_home_lock_supported": true,
+        "profile_lock_active": profile_lock_count > 0,
+        "host_home_lock_active": host_home_lock_count > 0,
+        "profile_lock_count": profile_lock_count,
+        "host_home_lock_count": host_home_lock_count,
+        "max_parallel_runs_per_profile": 1,
+        "host_home_shared_lock": host_home_shared_lock,
     })
 }
 
@@ -1610,7 +1664,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics["config_summary"]["profile_concurrency_cap_supported"],
-            false
+            true
         );
         assert!(diagnostics["config_summary"]["supported_drivers"]
             .as_array()
@@ -1637,6 +1691,14 @@ mod tests {
         );
         assert_eq!(
             diagnostics["config_summary"]["host_home_shared_lock"],
+            false
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_locks"]["profile_lock_supported"],
+            true
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_locks"]["profile_lock_active"],
             false
         );
         assert_eq!(
@@ -1832,6 +1894,14 @@ mod tests {
             "host_default"
         );
         assert_eq!(diagnostics["config_summary"]["host_home_shared_lock"], true);
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_locks"]["host_home_shared_lock"],
+            true
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_locks"]["host_home_lock_active"],
+            false
+        );
         assert_eq!(
             diagnostics["config_summary"]["setup"]["local_setup_hint_id"],
             "claude-code-login-host-home-v1"
