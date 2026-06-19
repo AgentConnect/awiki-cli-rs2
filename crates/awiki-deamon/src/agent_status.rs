@@ -679,7 +679,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "config_home_exists": false,
                 "default_workspace_mode": null,
                 "default_sandbox": null,
-                "route_hash": generic_cli_route_hash_summary(),
+                "route_hash": generic_cli_route_hash_summary(state),
                 "route_session_counts": empty_route_session_counts(),
                 "max_parallel_runs_per_profile": 1,
                 "runtime_target_required": true,
@@ -721,7 +721,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "config_home_exists": false,
                 "default_workspace_mode": null,
                 "default_sandbox": null,
-                "route_hash": generic_cli_route_hash_summary(),
+                "route_hash": generic_cli_route_hash_summary(state),
                 "route_session_counts": empty_route_session_counts(),
                 "max_parallel_runs_per_profile": 1,
                 "runtime_target_required": true,
@@ -799,7 +799,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
             "config_home_exists": config_home_exists,
             "default_workspace_mode": profile.default_workspace_mode.as_str(),
             "default_sandbox": profile.default_sandbox,
-            "route_hash": generic_cli_route_hash_summary(),
+            "route_hash": generic_cli_route_hash_summary(state),
             "route_session_counts": route_session_counts,
             "max_parallel_runs_per_profile": 1,
             "runtime_target_required": true,
@@ -935,12 +935,13 @@ fn generic_cli_route_session_counts(
     })
 }
 
-fn generic_cli_route_hash_summary() -> Value {
+fn generic_cli_route_hash_summary(state: &DaemonState) -> Value {
     json!({
-        "algorithm": "sha256",
-        "version": "v1",
-        "keyed": false,
+        "algorithm": "hmac-sha256",
+        "version": "v2",
+        "keyed": true,
         "salt_disclosed": false,
+        "salt_present": state.generic_cli_route_hash_salt_present(),
         "path_component_prefix": "route_",
         "authorization": false,
     })
@@ -1711,12 +1712,17 @@ mod tests {
         );
         assert_eq!(
             diagnostics["config_summary"]["route_hash"]["algorithm"],
-            "sha256"
+            "hmac-sha256"
         );
-        assert_eq!(diagnostics["config_summary"]["route_hash"]["keyed"], false);
+        assert_eq!(diagnostics["config_summary"]["route_hash"]["version"], "v2");
+        assert_eq!(diagnostics["config_summary"]["route_hash"]["keyed"], true);
         assert_eq!(
             diagnostics["config_summary"]["route_hash"]["salt_disclosed"],
             false
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["route_hash"]["salt_present"],
+            true
         );
         assert_eq!(
             diagnostics["config_summary"]["route_hash"]["authorization"],

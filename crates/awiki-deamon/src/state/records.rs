@@ -224,13 +224,9 @@ impl CreateCliRouteSession {
         )
     }
 
-    pub fn route_key_hash(&self) -> Result<String> {
-        cli_route_key_hash(&self.route_key()?)
-    }
-
-    pub fn into_record(self) -> Result<CliRouteSessionRecord> {
+    pub fn into_record(self, route_key_hash: String) -> Result<CliRouteSessionRecord> {
         let route_key = self.route_key()?;
-        let route_key_hash = cli_route_key_hash(&route_key)?;
+        validate_cli_route_key_hash(&route_key_hash)?;
         let conversation_id = canonical_cli_conversation_id(&self.conversation_id)?;
         let now = current_time_millis()?;
         let record = CliRouteSessionRecord {
@@ -333,6 +329,73 @@ pub fn cli_route_key_hash(route_key: &str) -> Result<String> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok(format!("route_{short}"))
+}
+
+pub fn cli_route_key_hash_with_salt(route_key: &str, salt_hex: &str) -> Result<String> {
+    validate_cli_route_key(route_key)?;
+    let salt = decode_cli_route_hash_salt_hex(salt_hex)?;
+    let digest = hmac_sha256(&salt, b"awiki-cli-route-key-v2", route_key.as_bytes());
+    let short = digest
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("route_{short}"))
+}
+
+fn hmac_sha256(key: &[u8], domain: &[u8], message: &[u8]) -> [u8; 32] {
+    const SHA256_BLOCK_SIZE: usize = 64;
+    let mut block_key = [0u8; SHA256_BLOCK_SIZE];
+    if key.len() > SHA256_BLOCK_SIZE {
+        let digest = Sha256::digest(key);
+        block_key[..32].copy_from_slice(&digest);
+    } else {
+        block_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut ipad = [0x36u8; SHA256_BLOCK_SIZE];
+    let mut opad = [0x5cu8; SHA256_BLOCK_SIZE];
+    for index in 0..SHA256_BLOCK_SIZE {
+        ipad[index] ^= block_key[index];
+        opad[index] ^= block_key[index];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(domain);
+    inner.update([0u8]);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_digest);
+    let digest = outer.finalize();
+    let mut output = [0u8; 32];
+    output.copy_from_slice(&digest);
+    output
+}
+
+pub(crate) fn encode_cli_route_hash_salt_hex(salt: &[u8; 32]) -> String {
+    salt.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn decode_cli_route_hash_salt_hex(input: &str) -> Result<[u8; 32]> {
+    let value = input.trim();
+    if value.len() != 64
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch))
+    {
+        bail!("route hash salt must use 32-byte lowercase hex format");
+    }
+    let mut salt = [0u8; 32];
+    for index in 0..32 {
+        let start = index * 2;
+        salt[index] = u8::from_str_radix(&value[start..start + 2], 16)
+            .map_err(|error| anyhow::anyhow!("invalid route hash salt hex: {error}"))?;
+    }
+    Ok(salt)
 }
 
 impl CliRuntimeProfileRecord {
@@ -1139,7 +1202,7 @@ pub(crate) fn validate_cli_route_key_hash(route_key_hash: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_cli_route_session_fields(
+pub(crate) fn validate_cli_route_session_fields(
     agent_did: &str,
     runtime_profile_id: &str,
     driver_id: &str,

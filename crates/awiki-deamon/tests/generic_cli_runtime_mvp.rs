@@ -266,6 +266,14 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
         .load_cli_route_session(&second_run.route_key)
         .unwrap()
         .unwrap();
+    assert_eq!(
+        first_route.route_key_hash,
+        state.cli_route_key_hash(&first_route.route_key).unwrap()
+    );
+    assert_ne!(
+        first_route.route_key_hash,
+        awiki_deamon::state::cli_route_key_hash(&first_route.route_key).unwrap()
+    );
     assert_eq!(first_route.conversation_id, "direct:did:human:bob");
     assert_eq!(second_route.conversation_id, "direct:did:human:carol");
     assert!(first_route.workspace_path.exists());
@@ -281,6 +289,10 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
         .unwrap()
         .to_string_lossy()
         .starts_with("route_"));
+    assert_eq!(
+        first_route.workspace_path.file_name().unwrap(),
+        first_route.route_key_hash.as_str()
+    );
     assert_eq!(
         state
             .count_cli_route_sessions_for_runtime_profile(

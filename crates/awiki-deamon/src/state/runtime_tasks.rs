@@ -1,8 +1,74 @@
 use super::row_mappers::*;
 use super::*;
 use crate::runtime::RuntimeTaskTriggerKind;
+use rand::{rngs::OsRng, RngCore};
+
+const CLI_ROUTE_HASH_SALT_METADATA_KEY: &str = "generic_cli.route_hash_salt.v2";
 
 impl DaemonState {
+    pub fn ensure_cli_route_hash_salt(&self) -> Result<String> {
+        let connection = self.connection()?;
+        if let Some(existing) = connection
+            .query_row(
+                "SELECT value FROM daemon_state_metadata WHERE key = ?1",
+                [CLI_ROUTE_HASH_SALT_METADATA_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("load generic-cli route hash salt")?
+        {
+            decode_cli_route_hash_salt_hex(&existing)?;
+            return Ok(existing);
+        }
+
+        let mut salt = [0u8; 32];
+        OsRng.fill_bytes(&mut salt);
+        let salt = encode_cli_route_hash_salt_hex(&salt);
+        connection.execute(
+            r#"
+INSERT INTO daemon_state_metadata (key, value, updated_at_ms)
+VALUES (?1, ?2, ?3)
+ON CONFLICT(key) DO NOTHING
+"#,
+            rusqlite::params![
+                CLI_ROUTE_HASH_SALT_METADATA_KEY,
+                salt,
+                current_time_millis()?
+            ],
+        )?;
+        let persisted = connection.query_row(
+            "SELECT value FROM daemon_state_metadata WHERE key = ?1",
+            [CLI_ROUTE_HASH_SALT_METADATA_KEY],
+            |row| row.get::<_, String>(0),
+        )?;
+        decode_cli_route_hash_salt_hex(&persisted)?;
+        Ok(persisted)
+    }
+
+    pub fn generic_cli_route_hash_salt_present(&self) -> bool {
+        let Ok(connection) = self.connection() else {
+            return false;
+        };
+        let Ok(value) = connection
+            .query_row(
+                "SELECT value FROM daemon_state_metadata WHERE key = ?1",
+                [CLI_ROUTE_HASH_SALT_METADATA_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        else {
+            return false;
+        };
+        value
+            .as_deref()
+            .is_some_and(|value| decode_cli_route_hash_salt_hex(value).is_ok())
+    }
+
+    pub fn cli_route_key_hash(&self, route_key: &str) -> Result<String> {
+        let salt = self.ensure_cli_route_hash_salt()?;
+        cli_route_key_hash_with_salt(route_key, &salt)
+    }
+
     pub fn insert_runtime_task(&self, task: &RuntimeTask) -> Result<()> {
         task.validate()?;
         let connection = self.connection()?;
@@ -782,7 +848,62 @@ WHERE run_id = ?1
         &self,
         create: CreateCliRouteSession,
     ) -> Result<CliRouteSessionRecord> {
-        let record = create.into_record()?;
+        let route_key = create.route_key()?;
+        if let Some(existing) = self.load_cli_route_session(&route_key)? {
+            validate_cli_route_session_fields(
+                &create.agent_did,
+                &create.runtime_profile_id,
+                &create.driver_id,
+                &create.controller_user_id,
+                &create.controller_full_handle,
+                &create.controller_scope_key,
+                &create.controller_did,
+                &canonical_cli_conversation_id(&create.conversation_id)?,
+                &create.workspace_path,
+                &create.session_dir,
+                existing.status.as_str(),
+            )?;
+            if existing.runtime_profile_id != create.runtime_profile_id
+                || existing.agent_did != create.agent_did
+                || existing.driver_id != create.driver_id
+                || existing.controller_user_id != create.controller_user_id
+                || existing.controller_full_handle != create.controller_full_handle
+                || existing.controller_scope_key != create.controller_scope_key
+                || existing.conversation_id
+                    != canonical_cli_conversation_id(&create.conversation_id)?
+                || existing.workspace_path != create.workspace_path
+                || existing.session_dir != create.session_dir
+            {
+                bail!("cli route session binding conflict for route {route_key}");
+            }
+            if existing.status != "reset" {
+                return Ok(existing);
+            }
+            let connection = self.connection()?;
+            connection.execute(
+                r#"
+UPDATE cli_route_sessions
+SET status = 'active',
+    native_session_id = NULL,
+    native_session_source = NULL,
+    synthetic_session_id = ?1,
+    last_message_id = NULL,
+    last_error_code = NULL,
+    last_error_summary = NULL,
+    version = version + 1,
+    updated_at_ms = ?2
+WHERE route_key = ?3
+  AND status = 'reset'
+"#,
+                rusqlite::params![route_key, current_time_millis()?, route_key],
+            )?;
+            return self
+                .load_cli_route_session(&route_key)?
+                .with_context(|| format!("load cli route session {route_key}"));
+        }
+
+        let route_key_hash = self.cli_route_key_hash(&route_key)?;
+        let record = create.into_record(route_key_hash)?;
         let connection = self.connection()?;
         let inserted = connection.execute(
             r#"

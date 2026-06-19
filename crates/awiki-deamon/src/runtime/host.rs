@@ -894,7 +894,6 @@ fn prepare_generic_cli_route_session(
         &profile.controller_scope_key,
         &conversation_id,
     )?;
-    let route_key_hash = crate::state::cli_route_key_hash(&route_key)?;
     let session_root = workspace_root
         .parent()
         .map(|runtime_workspaces_root| {
@@ -905,7 +904,14 @@ fn prepare_generic_cli_route_session(
                 .join(&profile.runtime_profile_id)
         })
         .unwrap_or_else(|| workspace_root.join("sessions"));
-    let paths = route_workspace_paths(workspace_root, &session_root, &route_key_hash)?;
+    let (workspace_path, session_dir) =
+        if let Some(existing) = state.load_cli_route_session(&route_key)? {
+            (existing.workspace_path, existing.session_dir)
+        } else {
+            let route_key_hash = state.cli_route_key_hash(&route_key)?;
+            let paths = route_workspace_paths(workspace_root, &session_root, &route_key_hash)?;
+            (paths.workspace_path, paths.session_dir)
+        };
     let session = state.get_or_create_cli_route_session(CreateCliRouteSession {
         agent_did: profile.agent_did.clone(),
         runtime_profile_id: profile.runtime_profile_id.clone(),
@@ -915,8 +921,8 @@ fn prepare_generic_cli_route_session(
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: task.controller_did.clone(),
         conversation_id,
-        workspace_path: paths.workspace_path,
-        session_dir: paths.session_dir,
+        workspace_path,
+        session_dir,
     })?;
     if let Err(error) = std::fs::create_dir_all(&session.workspace_path).with_context(|| {
         format!(

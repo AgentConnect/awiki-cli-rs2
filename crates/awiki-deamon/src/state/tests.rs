@@ -12,6 +12,7 @@ fn initialize_creates_required_tables() {
     let connection = Connection::open(&config.daemon_db_path).unwrap();
     for table in [
         "schema_migrations",
+        "daemon_state_metadata",
         "agent_definition",
         "runtime_profile",
         "workspace_binding",
@@ -50,6 +51,17 @@ fn initialize_creates_required_tables() {
             .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+    assert!(DaemonState::open(&config)
+        .unwrap()
+        .generic_cli_route_hash_salt_present());
+    let salt_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM daemon_state_metadata WHERE key = 'generic_cli.route_hash_salt.v2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(salt_count, 1);
 }
 
 fn cli_route_create(workspace: PathBuf, conversation_id: &str) -> CreateCliRouteSession {
@@ -85,6 +97,10 @@ fn cli_route_session_canonicalizes_direct_ids_and_roundtrips() {
     assert!(direct.route_key_hash.starts_with("route_"));
     assert_eq!(direct.route_key_hash.len(), "route_".len() + 24);
     assert!(format!("{direct:?}").contains("route_"));
+    assert_ne!(
+        direct.route_key_hash,
+        cli_route_key_hash(&direct.route_key).unwrap()
+    );
 
     let same = state
         .get_or_create_cli_route_session(cli_route_create(
@@ -115,6 +131,119 @@ fn cli_route_session_canonicalizes_direct_ids_and_roundtrips() {
 }
 
 #[test]
+fn cli_route_hash_is_keyed_per_daemon_state_root() {
+    let first_root = tempfile::tempdir().unwrap();
+    let first_config = DaemonConfig::for_state_root(first_root.path()).unwrap();
+    let first_state = DaemonState::open(&first_config).unwrap();
+    first_state.initialize().unwrap();
+
+    let first = first_state
+        .get_or_create_cli_route_session(cli_route_create(
+            first_root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let same = first_state
+        .get_or_create_cli_route_session(cli_route_create(
+            first_root.path().to_path_buf(),
+            "dm:did:human:bob",
+        ))
+        .unwrap();
+    assert_eq!(same.route_key_hash, first.route_key_hash);
+    assert!(first_state.generic_cli_route_hash_salt_present());
+
+    let second_root = tempfile::tempdir().unwrap();
+    let second_config = DaemonConfig::for_state_root(second_root.path()).unwrap();
+    let second_state = DaemonState::open(&second_config).unwrap();
+    second_state.initialize().unwrap();
+    let second = second_state
+        .get_or_create_cli_route_session(cli_route_create(
+            second_root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+
+    assert_eq!(second.route_key, first.route_key);
+    assert_ne!(second.route_key_hash, first.route_key_hash);
+}
+
+#[test]
+fn cli_route_existing_plain_hash_record_keeps_legacy_path_binding() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let create = cli_route_create(root.path().to_path_buf(), "direct:did:human:bob");
+    let route_key = create.route_key().unwrap();
+    let legacy_hash = cli_route_key_hash(&route_key).unwrap();
+    let legacy_workspace = root
+        .path()
+        .join("runtime/workspaces/profile_codex_alice/conversations")
+        .join(&legacy_hash);
+    let legacy_session_dir = root
+        .path()
+        .join("runtime/sessions/profile_codex_alice")
+        .join(&legacy_hash);
+    Connection::open(&config.daemon_db_path)
+        .unwrap()
+        .execute(
+            r#"
+INSERT INTO cli_route_sessions (
+    route_key,
+    route_key_hash,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    workspace_path,
+    session_dir,
+    synthetic_session_id,
+    status,
+    version,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?1, 'active', 0, 1, 1)
+"#,
+            rusqlite::params![
+                route_key,
+                legacy_hash,
+                create.agent_did,
+                create.runtime_profile_id,
+                create.driver_id,
+                create.controller_user_id,
+                create.controller_full_handle,
+                create.controller_scope_key,
+                create.controller_did,
+                canonical_cli_conversation_id(&create.conversation_id).unwrap(),
+                legacy_workspace.display().to_string(),
+                legacy_session_dir.display().to_string(),
+            ],
+        )
+        .unwrap();
+
+    let loaded = state
+        .get_or_create_cli_route_session(CreateCliRouteSession {
+            workspace_path: legacy_workspace.clone(),
+            session_dir: legacy_session_dir.clone(),
+            ..cli_route_create(root.path().to_path_buf(), "dm:did:human:bob")
+        })
+        .unwrap();
+
+    assert_eq!(loaded.route_key_hash, legacy_hash);
+    assert_eq!(loaded.workspace_path, legacy_workspace);
+    assert_eq!(loaded.session_dir, legacy_session_dir);
+    assert_ne!(
+        loaded.route_key_hash,
+        state.cli_route_key_hash(&loaded.route_key).unwrap()
+    );
+}
+
+#[test]
 fn cli_route_session_rejects_no_conversation_and_lease_is_exclusive() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -122,7 +251,7 @@ fn cli_route_session_rejects_no_conversation_and_lease_is_exclusive() {
     state.initialize().unwrap();
 
     let error = cli_route_create(root.path().to_path_buf(), "no-conversation")
-        .into_record()
+        .route_key()
         .unwrap_err();
     assert!(error.to_string().contains("no-conversation"));
 
