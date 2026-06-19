@@ -14,6 +14,9 @@ use super::{GenericCliDriver, GenericCliExit, GenericCliInvocation};
 const DEFAULT_CODEX_BINARY: &str = "codex";
 const DEFAULT_SANDBOX: &str = "read-only";
 const DEFAULT_CLI_WRAPPER: &str = "library:awiki_deamon::cli_wrapper";
+const NATIVE_SESSION_SOURCE_JSON_EVENT: &str = "json_event";
+const NATIVE_SESSION_SOURCE_RESUME_ID: &str = "resume_id";
+const NATIVE_SESSION_SOURCE_RESUME_LAST: &str = "resume_last";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexDriverConfig {
@@ -41,6 +44,31 @@ pub struct CodexRunPaths {
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
     pub jsonl_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexResumeMode {
+    Fresh,
+    ResumeId(String),
+    ResumeLast,
+}
+
+impl CodexResumeMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::ResumeId(_) => "resume_id",
+            Self::ResumeLast => "resume_last",
+        }
+    }
+
+    fn native_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Fresh => None,
+            Self::ResumeId(id) => Some(id.as_str()),
+            Self::ResumeLast => None,
+        }
+    }
 }
 
 impl CodexDriver {
@@ -168,32 +196,27 @@ impl GenericCliDriver for CodexDriver {
         let paths = self.run_paths(&invocation)?;
         std::fs::create_dir_all(&paths.output_dir)
             .with_context(|| format!("create Codex output dir {}", paths.output_dir.display()))?;
+        if let Some(parent) = paths.final_output_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create Codex final output dir {}", parent.display()))?;
+        }
         let prompt = build_prompt_envelope(&invocation, &workspace_root, &self.config);
         ensure_prompt_does_not_contain_token(&prompt, &invocation.runtime_rpc_token)?;
 
-        let args = self.command_args(&workspace_root, &paths.final_output_path);
+        let resume_mode = codex_resume_mode(&invocation);
+        let args = self.command_args_for_mode(
+            &workspace_root,
+            &paths.final_output_path,
+            resume_mode.clone(),
+        );
         let mut command = Command::new(&self.config.binary_path);
         command
             .args(&args)
             .current_dir(&workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("AWIKI_DAEMON_RUN_ID", &invocation.run_id)
-            .env("AWIKI_DAEMON_TASK_ID", &invocation.task_id)
-            .env("AWIKI_DAEMON_AGENT_DID", &invocation.agent_did)
-            .env(
-                "AWIKI_DAEMON_RUNTIME_PROFILE_ID",
-                &invocation.runtime_profile_id,
-            )
-            .env("AWIKI_DAEMON_SOCKET", &socket_path)
-            .env("AWIKI_DAEMON_CLI_WRAPPER", &self.config.cli_wrapper)
-            .env("CODEX_HOME", &self.config.config_home)
-            .env(
-                "AWIKI_DAEMON_RUNTIME_RPC_TOKEN",
-                &invocation.runtime_rpc_token,
-            )
-            .env_remove("AWIKI_DAEMON_TASK_TEXT");
+            .stderr(Stdio::piped());
+        apply_codex_env(&mut command, &invocation, &socket_path, &self.config);
 
         let mut child = command.spawn().context("spawn codex exec")?;
         child
@@ -215,6 +238,19 @@ impl GenericCliDriver for CodexDriver {
         )
         .with_context(|| format!("write {}", paths.stderr_path.display()))?;
         redact_token_file(&paths.final_output_path, &invocation.runtime_rpc_token)?;
+        let parsed_native_session_id = codex_native_session_id_from_stdout_jsonl(&output.stdout);
+        let native_session_id = parsed_native_session_id
+            .clone()
+            .or_else(|| resume_mode.native_session_id().map(str::to_string));
+        let native_session_source = if parsed_native_session_id.is_some() {
+            Some(NATIVE_SESSION_SOURCE_JSON_EVENT)
+        } else if resume_mode.native_session_id().is_some() && output.status.success() {
+            Some(NATIVE_SESSION_SOURCE_RESUME_ID)
+        } else if resume_mode == CodexResumeMode::ResumeLast && output.status.success() {
+            Some(NATIVE_SESSION_SOURCE_RESUME_LAST)
+        } else {
+            None
+        };
         std::fs::write(
             &paths.jsonl_path,
             serde_json::json!({
@@ -223,6 +259,8 @@ impl GenericCliDriver for CodexDriver {
                 "stdout_path": paths.stdout_path,
                 "stderr_path": paths.stderr_path,
                 "final_output_path": paths.final_output_path,
+                "resume_mode": resume_mode.as_str(),
+                "native_session_id_present": native_session_id.is_some(),
             })
             .to_string(),
         )
@@ -239,6 +277,20 @@ impl GenericCliDriver for CodexDriver {
             metadata: serde_json::json!({
                 "driver_id": "codex",
                 "config_home": "configured",
+                "native_session_id": native_session_id,
+                "native_session_source": native_session_source,
+                "resume": {
+                    "mode": resume_mode.as_str(),
+                    "native_session_id_present": resume_mode.native_session_id().is_some(),
+                },
+                "route_session": invocation.route_session.as_ref().map(|session| serde_json::json!({
+                    "route_key_hash": session.route_key_hash,
+                    "status": session.status,
+                    "last_message_id_present": session.last_message_id.is_some(),
+                    "last_run_id_present": session.last_run_id.is_some(),
+                    "synthetic_session_id_present": session.synthetic_session_id.is_some(),
+                    "native_session_id_present": session.native_session_id.is_some(),
+                })),
                 "command": {
                     "program": self.config.binary_path,
                     "args": args,
@@ -272,13 +324,22 @@ impl CodexDriver {
         workspace_root: &std::path::Path,
         final_output_path: &std::path::Path,
     ) -> Vec<String> {
-        let mut args = vec![
-            "exec".to_string(),
+        self.command_args_for_mode(workspace_root, final_output_path, CodexResumeMode::Fresh)
+    }
+
+    pub fn command_args_for_mode(
+        &self,
+        workspace_root: &std::path::Path,
+        final_output_path: &std::path::Path,
+        resume_mode: CodexResumeMode,
+    ) -> Vec<String> {
+        let mut args = vec!["exec".to_string()];
+        args.extend([
             "--cd".to_string(),
             workspace_root.display().to_string(),
             "--sandbox".to_string(),
             self.config.sandbox.clone(),
-        ];
+        ]);
         if let Some(model) = self.config.model.as_ref() {
             args.push("--model".to_string());
             args.push(model.clone());
@@ -300,13 +361,31 @@ impl CodexDriver {
             "--json".to_string(),
             "--output-last-message".to_string(),
             final_output_path.display().to_string(),
-            "-".to_string(),
         ]);
+        match resume_mode {
+            CodexResumeMode::Fresh => args.push("-".to_string()),
+            CodexResumeMode::ResumeId(native_session_id) => {
+                args.push("resume".to_string());
+                args.push(native_session_id);
+                args.push("-".to_string());
+            }
+            CodexResumeMode::ResumeLast => {
+                args.push("resume".to_string());
+                args.push("--last".to_string());
+                args.push("-".to_string());
+            }
+        }
         args
     }
 
     pub fn run_paths(&self, invocation: &GenericCliInvocation) -> Result<CodexRunPaths> {
         let output_dir = self.config.output_dir.clone().unwrap_or_else(|| {
+            if let Some(route_session) = invocation.route_session.as_ref() {
+                return route_session
+                    .session_dir
+                    .join("runs")
+                    .join(sanitize_path_component(&invocation.run_id));
+            }
             invocation
                 .runtime_temp_dir
                 .clone()
@@ -316,14 +395,111 @@ impl CodexDriver {
                 .join("codex")
                 .join(sanitize_path_component(&invocation.run_id))
         });
+        let final_output_path = self.config.output_dir.as_ref().map_or_else(
+            || {
+                invocation
+                    .route_session
+                    .as_ref()
+                    .map(|route_session| route_session.session_dir.join("last-output.md"))
+                    .unwrap_or_else(|| output_dir.join("final-output.txt"))
+            },
+            |_| output_dir.join("final-output.txt"),
+        );
         Ok(CodexRunPaths {
-            final_output_path: output_dir.join("final-output.txt"),
+            final_output_path,
             stdout_path: output_dir.join("codex-stdout.jsonl"),
             stderr_path: output_dir.join("codex-stderr.log"),
             jsonl_path: output_dir.join("codex-observation.jsonl"),
             output_dir,
         })
     }
+}
+
+fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
+    let Some(session) = invocation.route_session.as_ref() else {
+        return CodexResumeMode::Fresh;
+    };
+    if let Some(id) = session
+        .native_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return CodexResumeMode::ResumeId(id.to_string());
+    }
+    if session.last_message_id.is_some() {
+        return CodexResumeMode::ResumeLast;
+    }
+    CodexResumeMode::Fresh
+}
+
+fn apply_codex_env(
+    command: &mut Command,
+    invocation: &GenericCliInvocation,
+    socket_path: &std::path::Path,
+    config: &CodexDriverConfig,
+) {
+    command.env_clear();
+    for key in ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TERM"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command
+        .env("AWIKI_DAEMON_RUN_ID", &invocation.run_id)
+        .env("AWIKI_DAEMON_TASK_ID", &invocation.task_id)
+        .env("AWIKI_DAEMON_AGENT_DID", &invocation.agent_did)
+        .env(
+            "AWIKI_DAEMON_RUNTIME_PROFILE_ID",
+            &invocation.runtime_profile_id,
+        )
+        .env("AWIKI_DAEMON_SOCKET", socket_path)
+        .env("AWIKI_DAEMON_CLI_WRAPPER", &config.cli_wrapper)
+        .env("CODEX_HOME", &config.config_home)
+        .env(
+            "AWIKI_DAEMON_RUNTIME_RPC_TOKEN",
+            &invocation.runtime_rpc_token,
+        );
+}
+
+pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if let Some(id) = native_session_id_from_json_value(&value) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn native_session_id_from_json_value(value: &Value) -> Option<String> {
+    for field in ["session_id", "thread_id"] {
+        if let Some(id) = string_field(value, field) {
+            return Some(id);
+        }
+    }
+    for field in ["session", "thread", "rollout"] {
+        if let Some(id) = value.get(field).and_then(|nested| {
+            string_field(nested, "id").or_else(|| string_field(nested, "session_id"))
+        }) {
+            return Some(id);
+        }
+    }
+    value
+        .get("msg")
+        .and_then(native_session_id_from_json_value)
+        .or_else(|| {
+            value
+                .get("event")
+                .and_then(native_session_id_from_json_value)
+        })
 }
 
 pub fn build_prompt_envelope(

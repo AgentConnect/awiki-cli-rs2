@@ -874,6 +874,7 @@ SET status = 'active',
     native_session_id = NULL,
     native_session_source = NULL,
     synthetic_session_id = ?1,
+    last_message_id = NULL,
     last_error_code = NULL,
     last_error_summary = NULL,
     version = version + 1,
@@ -1083,6 +1084,48 @@ WHERE route_key = ?5
         )?;
         if updated == 0 {
             bail!("cli route session does not exist: {route_key}");
+        }
+        Ok(())
+    }
+
+    pub fn update_cli_route_session_native_id_if_locked(
+        &self,
+        route_key: &str,
+        run_id: &str,
+        native_session_id: Option<&str>,
+        native_session_source: Option<&str>,
+        synthetic_session_id: Option<&str>,
+    ) -> Result<()> {
+        if route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET native_session_id = ?1,
+    native_session_source = ?2,
+    synthetic_session_id = ?3,
+    version = version + 1,
+    updated_at_ms = ?4
+WHERE route_key = ?5
+  AND lock_run_id = ?6
+  AND status = 'running'
+"#,
+            rusqlite::params![
+                native_session_id,
+                native_session_source,
+                synthetic_session_id,
+                current_time_millis()?,
+                route_key,
+                run_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route session lease is not held by run {run_id}");
         }
         Ok(())
     }

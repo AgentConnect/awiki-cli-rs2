@@ -2,7 +2,9 @@ use awiki_deamon::controller_scope::VerifiedControllerSender;
 use awiki_deamon::inbox::{route_controller_text_task_with_verified_sender, ControllerTextMessage};
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
 use awiki_deamon::plugins::generic_cli::{
-    codex::{CodexDriver, CodexDriverConfig},
+    codex::{
+        codex_native_session_id_from_stdout_jsonl, CodexDriver, CodexDriverConfig, CodexResumeMode,
+    },
     CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
     TestGenericCliDriver,
 };
@@ -1089,6 +1091,86 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
     assert_eq!(args.last().map(String::as_str), Some("-"));
     assert!(!args.contains(&"danger-full-access".to_string()));
     assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+    assert!(!args.contains(&"--all".to_string()));
+}
+
+#[test]
+fn codex_driver_command_builder_uses_explicit_resume_id_and_never_all() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let final_output = root.path().join("final.txt");
+    let driver = CodexDriver::new(codex_config(root.path().join("codex"))).unwrap();
+
+    let args = driver.command_args_for_mode(
+        &workspace,
+        &final_output,
+        CodexResumeMode::ResumeId("codex-session-123".to_string()),
+    );
+
+    assert_eq!(args[0], "exec");
+    let resume_index = args.iter().position(|arg| arg == "resume").unwrap();
+    let cd_index = args.iter().position(|arg| arg == "--cd").unwrap();
+    assert!(cd_index < resume_index);
+    assert_eq!(args[resume_index + 1], "codex-session-123");
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--cd", workspace.to_str().unwrap()]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--output-last-message", final_output.to_str().unwrap()]));
+    assert_eq!(args.last().map(String::as_str), Some("-"));
+    assert!(!args.contains(&"--last".to_string()));
+    assert!(!args.contains(&"--all".to_string()));
+}
+
+#[test]
+fn codex_driver_command_builder_supports_route_scoped_resume_last_without_all() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let final_output = root.path().join("final.txt");
+    let driver = CodexDriver::new(codex_config(root.path().join("codex"))).unwrap();
+
+    let args = driver.command_args_for_mode(&workspace, &final_output, CodexResumeMode::ResumeLast);
+
+    assert_eq!(args[0], "exec");
+    let resume_index = args.iter().position(|arg| arg == "resume").unwrap();
+    let cd_index = args.iter().position(|arg| arg == "--cd").unwrap();
+    assert!(cd_index < resume_index);
+    assert_eq!(args[resume_index + 1], "--last");
+    assert_eq!(args.last().map(String::as_str), Some("-"));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--cd", workspace.to_str().unwrap()]));
+    assert!(!args.contains(&"--all".to_string()));
+}
+
+#[test]
+fn codex_native_session_id_parser_handles_known_jsonl_shapes() {
+    let stdout = br#"
+not json
+{"type":"session.created","session_id":"codex-session-top"}
+{"thread":{"id":"thread-nested"}}
+{"msg":{"session":{"id":"session-msg"}}}
+"#;
+
+    assert_eq!(
+        codex_native_session_id_from_stdout_jsonl(stdout).as_deref(),
+        Some("codex-session-top")
+    );
+    assert_eq!(
+        codex_native_session_id_from_stdout_jsonl(br#"{"thread":{"id":"thread-nested"}}"#)
+            .as_deref(),
+        Some("thread-nested")
+    );
+    assert_eq!(
+        codex_native_session_id_from_stdout_jsonl(br#"{"msg":{"session":{"id":"session-msg"}}}"#)
+            .as_deref(),
+        Some("session-msg")
+    );
+    assert_eq!(
+        codex_native_session_id_from_stdout_jsonl(br#"{"conversation_id":"awiki-route"}"#),
+        None
+    );
 }
 
 #[test]
@@ -1234,6 +1316,11 @@ AGENT_DID=${{AWIKI_DAEMON_AGENT_DID-}}
 PROFILE_ID=${{AWIKI_DAEMON_RUNTIME_PROFILE_ID-}}
 WRAPPER=${{AWIKI_DAEMON_CLI_WRAPPER-}}
 CODEX_HOME=${{CODEX_HOME-}}
+OPENAI_API_KEY=${{OPENAI_API_KEY-}}
+ANTHROPIC_API_KEY=${{ANTHROPIC_API_KEY-}}
+AWS_SECRET_ACCESS_KEY=${{AWS_SECRET_ACCESS_KEY-}}
+GITHUB_TOKEN=${{GITHUB_TOKEN-}}
+NPM_TOKEN=${{NPM_TOKEN-}}
 EOF
 FINAL_OUTPUT=""
 PREV=""
@@ -1244,6 +1331,7 @@ for ARG in "$@"; do
   PREV="$ARG"
 done
 printf 'fake codex final %s\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" > "$FINAL_OUTPUT"
+printf '{{"session_id":"codex-session-shared-root"}}\n'
 printf '{{"type":"codex-event","message":"stdout jsonl %s"}}\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN"
 printf 'stderr diagnostic %s\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" >&2
 python3 - "$AWIKI_DAEMON_SOCKET" "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" "$AWIKI_DAEMON_TASK_ID" <<'PY'
@@ -1375,6 +1463,11 @@ PY
     assert!(env_dump.contains("PROFILE_ID=profile_generic_cli_1"));
     assert!(env_dump.contains("WRAPPER=library:awiki_deamon::cli_wrapper"));
     assert!(env_dump.contains(&format!("CODEX_HOME={}", codex_home.display())));
+    assert!(env_dump.contains("OPENAI_API_KEY=\n"));
+    assert!(env_dump.contains("ANTHROPIC_API_KEY=\n"));
+    assert!(env_dump.contains("AWS_SECRET_ACCESS_KEY=\n"));
+    assert!(env_dump.contains("GITHUB_TOKEN=\n"));
+    assert!(env_dump.contains("NPM_TOKEN=\n"));
 
     assert_eq!(
         std::fs::read_to_string(output_dir.join("final-output.txt")).unwrap(),
@@ -1424,9 +1517,350 @@ PY
     );
     assert_eq!(run_record.fallback_final_source, None);
     assert_eq!(
+        run_record.native_session_id.as_deref(),
+        Some("codex-session-shared-root")
+    );
+    assert_eq!(
         run_record.command_json["program"].as_str(),
         Some(binary_path.to_str().unwrap_or_default())
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_route_root_records_native_id_and_resumes_same_route() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+
+    let fake_codex = root.path().join("codex-route-resume");
+    let args_capture_dir = root.path().join("args");
+    std::fs::create_dir_all(&args_capture_dir).unwrap();
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+RUN="${{AWIKI_DAEMON_RUN_ID}}"
+printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
+cat >/dev/null
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+printf 'route final %s\n' "$RUN" > "$FINAL_OUTPUT"
+case "$RUN" in
+  run_task_msg_route_resume_1)
+    printf '{{"session_id":"codex-native-bob"}}\n'
+    ;;
+  run_task_msg_route_resume_2)
+    printf '{{"session_id":"codex-native-bob"}}\n'
+    ;;
+  run_task_msg_route_resume_3)
+    printf '{{"session_id":"codex-native-bob-after-reset"}}\n'
+    ;;
+  *)
+    printf '{{"session_id":"codex-native-other"}}\n'
+    ;;
+esac
+"#,
+            args_capture_dir = args_capture_dir.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    cli_profile.binary_path = Some(fake_codex);
+    cli_profile.config_home = Some(root.path().join("codex-home-route"));
+    std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    cli_profile.default_sandbox = Some("read-only".to_string());
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    let plugin = GenericCliDriverRegistry::new(cli_profile);
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_resume_1".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "first route message".to_string(),
+        },
+    )
+    .unwrap();
+    let first_run = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let route = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(route.native_session_id.as_deref(), Some("codex-native-bob"));
+    assert_eq!(route.native_session_source.as_deref(), Some("json_event"));
+    assert_eq!(
+        first_run.native_session_id.as_deref(),
+        Some("codex-native-bob")
+    );
+    assert_eq!(
+        first_run.final_output_path,
+        Some(route.session_dir.join("last-output.md"))
+    );
+    let first_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_resume_1.args")).unwrap();
+    assert!(first_args.starts_with("exec\n--cd\n"));
+    assert!(!first_args.contains("resume\n"));
+    assert!(!first_args.contains("--all"));
+
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_resume_2".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "second route message".to_string(),
+        },
+    )
+    .unwrap();
+    let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    assert_eq!(
+        second_run.native_session_id.as_deref(),
+        Some("codex-native-bob")
+    );
+    let second_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_resume_2.args")).unwrap();
+    let second_arg_lines = second_args.lines().collect::<Vec<_>>();
+    let second_resume_index = second_arg_lines
+        .iter()
+        .position(|arg| *arg == "resume")
+        .unwrap();
+    let second_cd_index = second_arg_lines
+        .iter()
+        .position(|arg| *arg == "--cd")
+        .unwrap();
+    assert!(second_cd_index < second_resume_index);
+    assert_eq!(
+        second_arg_lines.get(second_resume_index + 1).copied(),
+        Some("codex-native-bob")
+    );
+    assert!(!second_args.contains("--last"));
+    assert!(!second_args.contains("--all"));
+
+    state
+        .reset_cli_route_session_by_route(&first_run.route_key)
+        .unwrap();
+    let reset_route = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset_route.native_session_id, None);
+
+    let third = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_resume_3".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "after reset".to_string(),
+        },
+    )
+    .unwrap();
+    let third_run = state.load_cli_driver_run(&third.run.run_id).unwrap();
+    assert_eq!(
+        third_run.native_session_id.as_deref(),
+        Some("codex-native-bob-after-reset")
+    );
+    let third_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_resume_3.args")).unwrap();
+    assert!(third_args.starts_with("exec\n--cd\n"));
+    assert!(!third_args.contains("codex-native-bob\n"));
+    assert!(!third_args.contains("--all"));
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_route_root_existing_route_without_native_id_uses_route_scoped_resume_last() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+
+    let fake_codex = root.path().join("codex-route-last");
+    let args_capture_dir = root.path().join("args-last");
+    std::fs::create_dir_all(&args_capture_dir).unwrap();
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+RUN="${{AWIKI_DAEMON_RUN_ID}}"
+printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
+cat >/dev/null
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+printf 'route final %s\n' "$RUN" > "$FINAL_OUTPUT"
+if [ "$RUN" = "run_task_msg_route_last_1" ]; then
+  printf '{{"type":"missing-session-id"}}\n'
+else
+  printf '{{"session_id":"codex-native-from-last"}}\n'
+fi
+"#,
+            args_capture_dir = args_capture_dir.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    cli_profile.binary_path = Some(fake_codex);
+    cli_profile.config_home = Some(root.path().join("codex-home-route-last"));
+    std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    let plugin = GenericCliDriverRegistry::new(cli_profile);
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_last_1".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "first route message".to_string(),
+        },
+    )
+    .unwrap();
+    let first_run = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let route = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.last_message_id.as_deref(), Some("msg_route_last_1"));
+
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_last_2".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "second route message".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        second.launch_outcome.metadata["route_session"]["last_message_id_present"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        second.launch_outcome.metadata["resume"]["mode"].as_str(),
+        Some("resume_last")
+    );
+    let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    assert_eq!(
+        second_run.native_session_id.as_deref(),
+        Some("codex-native-from-last")
+    );
+    let second_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_last_2.args")).unwrap();
+    let second_arg_lines = second_args.lines().collect::<Vec<_>>();
+    let resume_index = second_arg_lines
+        .iter()
+        .position(|arg| *arg == "resume")
+        .unwrap();
+    let cd_index = second_arg_lines
+        .iter()
+        .position(|arg| *arg == "--cd")
+        .unwrap();
+    assert!(
+        cd_index < resume_index,
+        "unexpected second args:\n{second_args}"
+    );
+    assert_eq!(
+        second_arg_lines.get(resume_index + 1).copied(),
+        Some("--last")
+    );
+    assert!(!second_args.contains("--all"));
 }
 
 #[cfg(unix)]
@@ -1788,6 +2222,7 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
         runtime_profile_id: "profile_debug".to_string(),
         workspace_root: None,
         workspace_instance: None,
+        route_session: None,
         runtime_temp_dir: None,
         runtime_rpc_token: "rtok_debug_secret_value_123456789".to_string(),
         local_socket_path: None,

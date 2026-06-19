@@ -11,7 +11,7 @@ use crate::runtime::{
     RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
     RuntimeRunStatus,
 };
-use crate::state::CliRuntimeProfileRecord;
+use crate::state::{CliRouteSessionRecord, CliRuntimeProfileRecord};
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
@@ -31,6 +31,7 @@ pub struct GenericCliInvocation {
     pub runtime_profile_id: String,
     pub workspace_root: Option<std::path::PathBuf>,
     pub workspace_instance: Option<crate::workspace::WorkspaceInstance>,
+    pub route_session: Option<CliRouteSessionRecord>,
     pub runtime_temp_dir: Option<std::path::PathBuf>,
     pub runtime_rpc_token: String,
     pub local_socket_path: Option<std::path::PathBuf>,
@@ -49,6 +50,16 @@ impl std::fmt::Debug for GenericCliInvocation {
             .field("runtime_profile_id", &self.runtime_profile_id)
             .field("workspace_root", &self.workspace_root)
             .field("workspace_instance", &self.workspace_instance)
+            .field(
+                "route_session",
+                &self.route_session.as_ref().map(|session| {
+                    serde_json::json!({
+                        "route_key_hash": session.route_key_hash,
+                        "status": session.status,
+                        "native_session_id_present": session.native_session_id.is_some(),
+                    })
+                }),
+            )
             .field("runtime_temp_dir", &self.runtime_temp_dir)
             .field("runtime_rpc_token", &"<redacted>")
             .field("local_socket_path", &self.local_socket_path)
@@ -130,6 +141,7 @@ where
             task_text: context.task.text.clone(),
             workspace_root: context.workspace_root.clone(),
             workspace_instance: context.workspace_instance.clone(),
+            route_session: context.cli_route_session.clone(),
             runtime_temp_dir: context.runtime_temp_dir.clone(),
             agent_did: context.run.agent_did.clone(),
             runtime_profile_id: context.run.runtime_profile_id.clone(),

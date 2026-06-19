@@ -423,6 +423,7 @@ where
         task,
         workspace_root: profile.workspace_root.clone(),
         workspace_instance: workspace_instance.clone(),
+        cli_route_session: cli_route_session.clone(),
         runtime_temp_dir,
         runtime_rpc_token: issued.token.clone(),
         local_socket_path,
@@ -567,6 +568,33 @@ where
         )?;
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let native_session_id = launch_outcome
+                .metadata
+                .get("native_session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let final_status = state.load_runtime_run(&run.run_id)?.status;
+            if final_status == RuntimeRunStatus::Finished
+                && launch_outcome.status == RuntimeRunStatus::Finished
+                && native_session_id.is_some()
+            {
+                let native_session_source = launch_outcome
+                    .metadata
+                    .get("native_session_source")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                state.update_cli_route_session_native_id_if_locked(
+                    &route_session.route_key,
+                    &run.run_id,
+                    native_session_id,
+                    native_session_source,
+                    Some(&route_session.route_key),
+                )?;
+            }
+        }
         persist_cli_driver_run(
             state,
             profile,
@@ -1415,7 +1443,13 @@ fn persist_cli_driver_run(
             .get("final_output_path")
             .and_then(Value::as_str)
             .map(std::path::PathBuf::from),
-        native_session_id: None,
+        native_session_id: launch_outcome
+            .metadata
+            .get("native_session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         synthetic_session_id: Some(route_key),
         status: launch_outcome.status.as_str().to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
