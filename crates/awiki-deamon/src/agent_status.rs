@@ -24,6 +24,7 @@ use crate::{DaemonConfig, ImCoreAdapter};
 pub const IDLE_HEARTBEAT_MS: i64 = 5 * 60 * 1000;
 pub const ACTIVE_HEARTBEAT_MS: i64 = 30 * 1000;
 pub const APP_ATTENTION_WINDOW_MS: i64 = 2 * 60 * 1000;
+const GENERIC_CLI_SETUP_PROBE_TTL_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatScheduler {
@@ -669,7 +670,13 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "supported_runtime_create_args": supported_generic_cli_runtime_create_args(),
                 "binary_installed": false,
                 "binary_detail": "missing runtime_profile_id",
+                "driver_version": null,
                 "driver_status_code": "profile_missing",
+                "create_supported": false,
+                "setup_ready": false,
+                "setup_status": "profile_missing",
+                "probe_status": "failed",
+                "probe_ttl_ms": GENERIC_CLI_SETUP_PROBE_TTL_MS,
                 "next_action": "manual_review_required",
                 "auth_status": "unknown",
                 "home_isolation": "unknown",
@@ -688,6 +695,11 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                     "profile_missing",
                     "manual_review_required",
                     "unknown",
+                    "unknown",
+                    false,
+                    "profile_missing",
+                    "failed",
+                    None,
                 ),
                 "driver_args_schema_version": null,
                 "driver_capabilities": generic_cli_driver_capabilities(None),
@@ -711,7 +723,13 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "supported_runtime_create_args": supported_generic_cli_runtime_create_args(),
                 "binary_installed": false,
                 "binary_detail": "missing cli runtime profile",
+                "driver_version": null,
                 "driver_status_code": "profile_missing",
+                "create_supported": false,
+                "setup_ready": false,
+                "setup_status": "profile_missing",
+                "probe_status": "failed",
+                "probe_ttl_ms": GENERIC_CLI_SETUP_PROBE_TTL_MS,
                 "next_action": "manual_review_required",
                 "auth_status": "unknown",
                 "home_isolation": "unknown",
@@ -730,6 +748,11 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                     "profile_missing",
                     "manual_review_required",
                     "unknown",
+                    "unknown",
+                    false,
+                    "profile_missing",
+                    "failed",
+                    None,
                 ),
                 "driver_args_schema_version": null,
                 "driver_capabilities": generic_cli_driver_capabilities(None),
@@ -758,7 +781,18 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
         &install_status,
         install_probe_failed,
     );
-    let next_action = generic_cli_next_action(driver_status_code);
+    let create_supported = generic_cli_create_supported(&profile.driver_id);
+    let auth_status = generic_cli_auth_status(&profile.driver_id);
+    let setup_ready = generic_cli_setup_ready(driver_status_code, create_supported, auth_status);
+    let setup_status = generic_cli_setup_status(driver_status_code, setup_ready);
+    let probe_status = generic_cli_probe_status(driver_status_code, install_probe_failed);
+    let driver_version = if driver_status_code == "ok" {
+        generic_cli_driver_version(install_status.detail.as_deref())
+    } else {
+        None
+    };
+    let driver_version_for_setup = driver_version.clone();
+    let next_action = generic_cli_next_action(driver_status_code, auth_status);
     let home_isolation = generic_cli_home_isolation(&profile, config_home_exists);
     let host_home_shared_lock =
         profile.driver_id == "claude-code" && home_isolation == "host_default";
@@ -784,9 +818,15 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
             "supported_runtime_create_args": supported_generic_cli_runtime_create_args(),
             "binary_installed": install_status.installed,
             "binary_detail": install_status.detail.map(|detail| sanitize_public_error(&detail)),
+            "driver_version": driver_version,
             "driver_status_code": driver_status_code,
+            "create_supported": create_supported,
+            "setup_ready": setup_ready,
+            "setup_status": setup_status,
+            "probe_status": probe_status,
+            "probe_ttl_ms": GENERIC_CLI_SETUP_PROBE_TTL_MS,
             "next_action": next_action,
-            "auth_status": "unknown",
+            "auth_status": auth_status,
             "home_isolation": home_isolation,
             "host_home_shared_lock": host_home_shared_lock,
             "runtime_locks": generic_cli_runtime_lock_summary(
@@ -808,11 +848,59 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 driver_status_code,
                 next_action,
                 home_isolation,
+                auth_status,
+                setup_ready,
+                setup_status,
+                probe_status,
+                driver_version_for_setup.as_deref(),
             ),
             "driver_args_schema_version": generic_cli_driver_args_schema_version(&profile.driver_id),
             "driver_capabilities": generic_cli_driver_capabilities(Some(&profile.driver_id)),
         },
     })
+}
+
+fn generic_cli_create_supported(driver_id: &str) -> bool {
+    matches!(driver_id, "codex" | "claude-code" | "command")
+}
+
+fn generic_cli_auth_status(driver_id: &str) -> &'static str {
+    match driver_id {
+        "command" => "not_applicable",
+        _ => "unknown",
+    }
+}
+
+fn generic_cli_setup_ready(
+    driver_status_code: &str,
+    create_supported: bool,
+    auth_status: &str,
+) -> bool {
+    create_supported && driver_status_code == "ok" && matches!(auth_status, "ok" | "not_applicable")
+}
+
+fn generic_cli_setup_status(driver_status_code: &str, setup_ready: bool) -> &'static str {
+    if setup_ready {
+        "ready"
+    } else {
+        match driver_status_code {
+            "missing_binary" | "config_home_missing" | "profile_missing" => "needs_setup",
+            "probe_failed" => "probe_failed",
+            "not_implemented" | "unsupported_driver" => "unsupported",
+            _ => "unknown",
+        }
+    }
+}
+
+fn generic_cli_probe_status(driver_status_code: &str, install_probe_failed: bool) -> &'static str {
+    if install_probe_failed {
+        "failed"
+    } else {
+        match driver_status_code {
+            "not_implemented" | "unsupported_driver" | "profile_missing" => "unsupported",
+            _ => "fresh",
+        }
+    }
 }
 
 fn supported_generic_cli_drivers() -> Value {
@@ -987,14 +1075,15 @@ fn generic_cli_driver_status_code(
     "ok"
 }
 
-fn generic_cli_next_action(driver_status_code: &str) -> &'static str {
-    match driver_status_code {
-        "ok" => "none",
-        "missing_binary" => "install_driver",
-        "config_home_missing" => "manual_review_required",
-        "probe_failed" => "manual_review_required",
-        "not_implemented" | "unsupported_driver" => "upgrade_daemon",
-        "profile_missing" => "manual_review_required",
+fn generic_cli_next_action(driver_status_code: &str, auth_status: &str) -> &'static str {
+    match (driver_status_code, auth_status) {
+        ("ok", "unknown") => "manual_review_required",
+        ("ok", _) => "none",
+        ("missing_binary", _) => "install_driver",
+        ("config_home_missing", _) => "manual_review_required",
+        ("probe_failed", _) => "manual_review_required",
+        ("not_implemented" | "unsupported_driver", _) => "upgrade_daemon",
+        ("profile_missing", _) => "manual_review_required",
         _ => "manual_review_required",
     }
 }
@@ -1004,6 +1093,11 @@ fn generic_cli_setup_summary(
     driver_status_code: &str,
     next_action: &str,
     home_isolation: &str,
+    auth_status: &str,
+    setup_ready: bool,
+    setup_status: &str,
+    probe_status: &str,
+    driver_version: Option<&str>,
 ) -> Value {
     json!({
         "driver_id": driver_id,
@@ -1015,8 +1109,13 @@ fn generic_cli_setup_summary(
             "profile_missing" => "unknown",
             _ => "unknown",
         },
-        "auth_status": "unknown",
+        "auth_status": auth_status,
         "home_isolation": home_isolation,
+        "setup_ready": setup_ready,
+        "setup_status": setup_status,
+        "probe_status": probe_status,
+        "probe_ttl_ms": GENERIC_CLI_SETUP_PROBE_TTL_MS,
+        "driver_version": driver_version,
         "next_action": next_action,
         "local_setup_hint_id": driver_id.map(generic_cli_setup_hint_id),
         "checked_at_ms": current_time_millis().unwrap_or(0),
@@ -1075,6 +1174,20 @@ fn generic_cli_driver_capabilities(driver_id: Option<&str>) -> Value {
             "resume_last_scoped_by_cwd": false,
             "permission_mode_flag": false,
         }),
+    }
+}
+
+fn generic_cli_driver_version(detail: Option<&str>) -> Option<String> {
+    let detail = detail?;
+    let version = detail
+        .rsplit_once('(')
+        .and_then(|(_, tail)| tail.strip_suffix(')'))
+        .unwrap_or(detail)
+        .trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(sanitize_public_error(version))
     }
 }
 
@@ -1681,6 +1794,15 @@ mod tests {
             diagnostics["config_summary"]["driver_status_code"],
             "missing_binary"
         );
+        assert_eq!(diagnostics["config_summary"]["create_supported"], true);
+        assert_eq!(diagnostics["config_summary"]["setup_ready"], false);
+        assert_eq!(diagnostics["config_summary"]["setup_status"], "needs_setup");
+        assert_eq!(diagnostics["config_summary"]["probe_status"], "fresh");
+        assert_eq!(
+            diagnostics["config_summary"]["probe_ttl_ms"],
+            GENERIC_CLI_SETUP_PROBE_TTL_MS
+        );
+        assert!(diagnostics["config_summary"]["driver_version"].is_null());
         assert_eq!(
             diagnostics["config_summary"]["next_action"],
             "install_driver"
@@ -1752,6 +1874,20 @@ mod tests {
             diagnostics["config_summary"]["setup"]["next_action"],
             "install_driver"
         );
+        assert_eq!(diagnostics["config_summary"]["setup"]["setup_ready"], false);
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["setup_status"],
+            "needs_setup"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["probe_status"],
+            "fresh"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["probe_ttl_ms"],
+            GENERIC_CLI_SETUP_PROBE_TTL_MS
+        );
+        assert!(diagnostics["config_summary"]["setup"]["driver_version"].is_null());
         assert_eq!(
             diagnostics["config_summary"]["driver_args_schema_version"],
             "codex-exec-v1"
@@ -1764,6 +1900,97 @@ mod tests {
         assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
         assert!(!dump.contains("route_key"));
         assert!(!dump.contains("did:human:bob"));
+        assert!(!dump.contains("tok_"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generic_cli_runtime_status_reports_driver_version_and_setup_gate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let runtime = generic_cli_runtime();
+        state.upsert_agent_definition(&runtime).unwrap();
+
+        let fake_codex = root.path().join("fake-codex");
+        std::fs::write(
+            &fake_codex,
+            "#!/bin/sh\nif [ \"${1-}\" = \"--version\" ]; then echo 'codex-cli 9.9.9'; exit 0; fi\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+        let config_home = root
+            .path()
+            .join("runtime/profiles/profile_codex_alice/codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_codex_alice", "codex").unwrap();
+        cli_profile.binary_path = Some(fake_codex);
+        cli_profile.config_home = Some(config_home);
+        cli_profile.default_workspace_mode = WorkspaceMode::RouteRoot;
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+
+        assert!(!status.needs_config);
+        assert!(status.last_error_code.is_none());
+        assert_eq!(diagnostics["config_summary"]["binary_installed"], true);
+        assert_eq!(diagnostics["config_summary"]["driver_status_code"], "ok");
+        assert_eq!(
+            diagnostics["config_summary"]["driver_version"],
+            "codex-cli 9.9.9"
+        );
+        assert_eq!(diagnostics["config_summary"]["create_supported"], true);
+        assert_eq!(diagnostics["config_summary"]["auth_status"], "unknown");
+        assert_eq!(diagnostics["config_summary"]["setup_ready"], false);
+        assert_eq!(diagnostics["config_summary"]["setup_status"], "unknown");
+        assert_eq!(diagnostics["config_summary"]["probe_status"], "fresh");
+        assert_eq!(
+            diagnostics["config_summary"]["probe_ttl_ms"],
+            GENERIC_CLI_SETUP_PROBE_TTL_MS
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["next_action"],
+            "manual_review_required"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["driver_version"],
+            "codex-cli 9.9.9"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["auth_status"],
+            "unknown"
+        );
+        assert_eq!(diagnostics["config_summary"]["setup"]["setup_ready"], false);
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["setup_status"],
+            "unknown"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["probe_status"],
+            "fresh"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["setup"]["next_action"],
+            "manual_review_required"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["driver_args_schema_version"],
+            "codex-exec-v1"
+        );
+
+        let dump = diagnostics.to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("fake-codex"));
+        assert!(!dump.contains("route_key"));
         assert!(!dump.contains("tok_"));
     }
 
