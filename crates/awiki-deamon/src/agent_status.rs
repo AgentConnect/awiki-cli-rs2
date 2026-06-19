@@ -474,6 +474,7 @@ fn daemon_diagnostics_summary(service: &ServiceStatus, release: &DaemonReleaseSt
             "release_manifest_url": release.manifest_url.clone(),
             "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
             "release_error": release.error.clone(),
+            "generic_cli": generic_cli_daemon_capability_summary(),
         },
     })
 }
@@ -830,6 +831,21 @@ fn supported_generic_cli_runtime_create_args() -> Value {
         "recipient_policy",
         "client_request_id"
     ])
+}
+
+fn generic_cli_daemon_capability_summary() -> Value {
+    json!({
+        "capability_schema_version": 1,
+        "supported_drivers": supported_generic_cli_drivers(),
+        "supported_workspace_modes": supported_generic_cli_workspace_modes(),
+        "supported_sandbox_modes": supported_generic_cli_sandbox_modes(),
+        "supported_runtime_create_args": supported_generic_cli_runtime_create_args(),
+        "route_session_supported": true,
+        "native_resume_supported": true,
+        "profile_concurrency_cap_supported": false,
+        "max_parallel_runs_per_profile": 1,
+        "runtime_target_required": true,
+    })
 }
 
 fn empty_route_session_counts() -> Value {
@@ -1321,6 +1337,21 @@ mod tests {
             "not_running"
         );
         assert!(payload["daemon"]["diagnostics_summary"]["config_summary"].is_object());
+        let generic_cli =
+            &payload["daemon"]["diagnostics_summary"]["config_summary"]["generic_cli"];
+        assert_eq!(generic_cli["capability_schema_version"], 1);
+        assert!(generic_cli["supported_drivers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("claude-code")));
+        assert!(generic_cli["supported_workspace_modes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("route-root")));
+        assert!(generic_cli["supported_sandbox_modes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("workspace-write")));
         let dump = payload.to_string();
         assert!(!dump.contains("token"));
         assert!(!dump.contains("private"));
@@ -1350,6 +1381,11 @@ mod tests {
             payload["daemon"]["diagnostics_summary"]["config_summary"]["service_installed"]
                 .as_bool()
                 .is_some()
+        );
+        assert_eq!(
+            payload["daemon"]["diagnostics_summary"]["config_summary"]["generic_cli"]
+                ["runtime_target_required"],
+            true
         );
     }
 
@@ -1422,6 +1458,16 @@ mod tests {
                 .as_bool()
                 .is_some()
         );
+        let generic_cli = &daemon_item.diagnostics_summary["config_summary"]["generic_cli"];
+        assert_eq!(generic_cli["capability_schema_version"], 1);
+        assert!(generic_cli["supported_drivers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("codex")));
+        assert!(generic_cli["supported_drivers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("claude-code")));
 
         let runtime_item = items
             .iter()
