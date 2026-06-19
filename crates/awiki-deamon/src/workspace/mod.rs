@@ -24,6 +24,12 @@ pub struct WorkspaceInstance {
     pub branch_name: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteWorkspacePaths {
+    pub workspace_path: PathBuf,
+    pub session_dir: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceCleanupPolicy {
@@ -35,6 +41,7 @@ pub enum WorkspaceCleanupPolicy {
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceMode {
     SharedRoot,
+    RouteRoot,
     WorktreePerTask,
     Container,
     Sandbox,
@@ -56,6 +63,7 @@ impl WorkspaceMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SharedRoot => "shared-root",
+            Self::RouteRoot => "route-root",
             Self::WorktreePerTask => "worktree-per-task",
             Self::Container => "container",
             Self::Sandbox => "sandbox",
@@ -65,6 +73,7 @@ impl WorkspaceMode {
     pub fn parse(input: &str) -> Result<Self> {
         match input.trim() {
             "shared-root" => Ok(Self::SharedRoot),
+            "route-root" => Ok(Self::RouteRoot),
             "worktree-per-task" => Ok(Self::WorktreePerTask),
             "container" => Ok(Self::Container),
             "sandbox" => Ok(Self::Sandbox),
@@ -79,6 +88,7 @@ impl WorkspaceMode {
     pub fn isolation_note(self) -> &'static str {
         match self {
             Self::SharedRoot => "不是硬隔离，只适合个人低风险或读任务",
+            Self::RouteRoot => "按消息会话隔离上下文目录，不是安全边界",
             Self::WorktreePerTask => "只隔离代码变更，不防系统凭据读取",
             Self::Container => "可作为安全边界，依赖容器配置",
             Self::Sandbox => "可作为安全边界，依赖 sandbox profile",
@@ -97,6 +107,7 @@ pub fn prepare_workspace_instance(
     }
     match binding.workspace_mode {
         WorkspaceMode::SharedRoot => prepare_shared_root(binding),
+        WorkspaceMode::RouteRoot => prepare_route_root(binding, run_id),
         WorkspaceMode::WorktreePerTask => prepare_worktree(runtime_temp_dir, binding, run_id),
         WorkspaceMode::Container | WorkspaceMode::Sandbox => {
             bail!(
@@ -105,6 +116,63 @@ pub fn prepare_workspace_instance(
             )
         }
     }
+}
+
+pub fn route_workspace_paths(
+    workspace_root: &Path,
+    session_root: &Path,
+    route_key_hash: &str,
+) -> Result<RouteWorkspacePaths> {
+    validate_route_key_hash_component(route_key_hash)?;
+    Ok(RouteWorkspacePaths {
+        workspace_path: workspace_root.join("conversations").join(route_key_hash),
+        session_dir: session_root.join(route_key_hash),
+    })
+}
+
+fn prepare_route_root(
+    binding: &WorkspaceBindingConfig,
+    route_key_hash: &str,
+) -> Result<WorkspaceInstance> {
+    validate_route_key_hash_component(route_key_hash)?;
+    let conversations_root = binding.workspace_root.join("conversations");
+    std::fs::create_dir_all(&conversations_root).with_context(|| {
+        format!(
+            "create route workspace root {}",
+            conversations_root.display()
+        )
+    })?;
+    let workspace_root = binding.workspace_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize route workspace binding root {}",
+            binding.workspace_root.display()
+        )
+    })?;
+    let conversations_root = conversations_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize conversations root {}",
+            conversations_root.display()
+        )
+    })?;
+    ensure_path_under(&conversations_root, &workspace_root)?;
+    let route_path = conversations_root.join(route_key_hash);
+    std::fs::create_dir_all(&route_path)
+        .with_context(|| format!("create route workspace {}", route_path.display()))?;
+    let route_path = route_path
+        .canonicalize()
+        .with_context(|| format!("canonicalize route workspace {}", route_path.display()))?;
+    ensure_path_under(&route_path, &workspace_root)?;
+    Ok(WorkspaceInstance {
+        workspace_id: binding.workspace_id.clone(),
+        workspace_root,
+        workspace_instance_path: route_path,
+        workspace_mode: WorkspaceMode::RouteRoot,
+        is_security_boundary: WorkspaceMode::RouteRoot.is_security_boundary(),
+        isolation_note: WorkspaceMode::RouteRoot.isolation_note().to_string(),
+        cleanup_policy: WorkspaceCleanupPolicy::None,
+        base_ref: None,
+        branch_name: None,
+    })
 }
 
 fn prepare_shared_root(binding: &WorkspaceBindingConfig) -> Result<WorkspaceInstance> {
@@ -237,4 +305,18 @@ pub fn sanitize_path_component(input: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn validate_route_key_hash_component(input: &str) -> Result<()> {
+    let value = input.trim();
+    if !value.starts_with("route_") || value.len() != "route_".len() + 24 {
+        bail!("route_key_hash must use route_<24 hex> format");
+    }
+    if !value["route_".len()..]
+        .chars()
+        .all(|ch| ch.is_ascii_hexdigit())
+    {
+        bail!("route_key_hash contains unsupported characters");
+    }
+    Ok(())
 }

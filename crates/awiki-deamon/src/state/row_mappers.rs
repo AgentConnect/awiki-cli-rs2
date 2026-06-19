@@ -105,6 +105,39 @@ pub(super) fn cli_driver_run_from_row(
     })
 }
 
+pub(super) fn cli_route_session_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CliRouteSessionRecord> {
+    Ok(CliRouteSessionRecord {
+        route_key: row.get(0)?,
+        route_key_hash: row.get(1)?,
+        agent_did: row.get(2)?,
+        runtime_profile_id: row.get(3)?,
+        driver_id: row.get(4)?,
+        controller_user_id: row.get(5)?,
+        controller_full_handle: row.get(6)?,
+        controller_scope_key: row.get(7)?,
+        controller_did: row.get(8)?,
+        conversation_id: row.get(9)?,
+        workspace_path: PathBuf::from(row.get::<_, String>(10)?),
+        session_dir: PathBuf::from(row.get::<_, String>(11)?),
+        native_session_id: row.get(12)?,
+        native_session_source: row.get(13)?,
+        synthetic_session_id: row.get(14)?,
+        status: row.get(15)?,
+        last_run_id: row.get(16)?,
+        last_message_id: row.get(17)?,
+        lock_run_id: row.get(18)?,
+        lock_owner: row.get(19)?,
+        lock_expires_at_ms: row.get(20)?,
+        last_error_code: row.get(21)?,
+        last_error_summary: row.get(22)?,
+        version: row.get(23)?,
+        created_at_ms: row.get(24)?,
+        updated_at_ms: row.get(25)?,
+    })
+}
+
 pub(super) fn agent_definition_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AgentDefinition> {

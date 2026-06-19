@@ -23,9 +23,13 @@ use crate::security::runtime_token::{
     ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE, ANY_DIRECT_RECIPIENT_SCOPE, ANY_GROUP_RECIPIENT_SCOPE,
 };
 use crate::state::{
-    AuthorizedRuntimeContext, CliDriverRunRecord, DaemonState, RuntimeFinalOutboxRecord,
+    canonical_cli_conversation_id, cli_route_session_key, AuthorizedRuntimeContext,
+    CliDriverRunRecord, CreateCliRouteSession, DaemonState, RuntimeFinalOutboxRecord,
 };
-use crate::workspace::{prepare_workspace_instance, WorkspaceBindingConfig, WorkspaceInstance};
+use crate::workspace::{
+    prepare_workspace_instance, route_workspace_paths, WorkspaceBindingConfig, WorkspaceInstance,
+    WorkspaceMode,
+};
 use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,6 +300,11 @@ where
     let task_conversation_id = task.conversation_id.clone();
     let task_controller_did = task.controller_did.clone();
     let task_reply_recipient_did = task.reply_recipient_did.clone();
+    let task_source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .unwrap_or(&task.task_id)
+        .to_string();
     let recipient_policy = runtime_recipient_policy(state, profile, &task_reply_recipient_did)?;
     let mut scope = RuntimeTokenScope::new(
         profile.agent_did.clone(),
@@ -338,6 +347,25 @@ where
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
+    let cli_route_session = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        match prepare_generic_cli_route_session(state, profile, &task, &run) {
+            Ok(session) => session,
+            Err(error) => {
+                state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                emit_runtime_status(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime route session preparation failed"),
+                    Some("route_session_preparation_failed"),
+                    Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                )?;
+                return Err(error).context("prepare generic-cli route session");
+            }
+        }
+    } else {
+        None
+    };
     let workspace_instance = match (
         profile.workspace_id.as_ref(),
         profile.workspace_root.as_ref(),
@@ -345,8 +373,12 @@ where
         local_socket_path.is_some(),
         plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID,
     ) {
-        (Some(workspace_id), Some(workspace_root), Some(workspace_mode), true, true) => Some(
-            prepare_workspace_instance(
+        (Some(workspace_id), Some(workspace_root), Some(workspace_mode), true, true) => Some({
+            let run_or_route_id = cli_route_session
+                .as_ref()
+                .map(|session| session.route_key_hash.as_str())
+                .unwrap_or(run.run_id.as_str());
+            let prepared = prepare_workspace_instance(
                 runtime_temp_dir
                     .as_ref()
                     .context("runtime temp dir is unavailable without daemon config")?,
@@ -355,10 +387,34 @@ where
                     workspace_root: workspace_root.clone(),
                     workspace_mode,
                 },
-                &run.run_id,
-            )
-            .context("prepare runtime workspace instance")?,
-        ),
+                run_or_route_id,
+            );
+            match prepared {
+                Ok(instance) => instance,
+                Err(error) => {
+                    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                    if let Some(route_session) = cli_route_session.as_ref() {
+                        let _ = state.release_cli_route_session_lease(
+                            &route_session.route_key,
+                            &run.run_id,
+                            "failed",
+                            Some(&task_source_message_id),
+                            Some("workspace_preparation_failed"),
+                            Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                        );
+                    }
+                    emit_runtime_status(
+                        outbox,
+                        &run,
+                        "failed",
+                        Some("Runtime workspace preparation failed"),
+                        Some("workspace_preparation_failed"),
+                        Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                    )?;
+                    return Err(error).context("prepare runtime workspace instance");
+                }
+            }
+        }),
         _ => None,
     };
 
@@ -375,6 +431,16 @@ where
         Ok(outcome) => outcome,
         Err(error) => {
             state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+            if let Some(route_session) = cli_route_session.as_ref() {
+                let _ = state.release_cli_route_session_lease(
+                    &route_session.route_key,
+                    &run.run_id,
+                    "failed",
+                    Some(&task_source_message_id),
+                    Some("launch_failed"),
+                    Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                );
+            }
             if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
                 emit_hermes_failure_outputs(
@@ -509,6 +575,37 @@ where
             workspace_instance.as_ref(),
             fallback_final_source.as_deref(),
         )?;
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let final_status = state.load_runtime_run(&run.run_id)?.status;
+            let next_status = if final_status == RuntimeRunStatus::Failed
+                || launch_outcome.status == RuntimeRunStatus::Failed
+            {
+                "failed"
+            } else {
+                "active"
+            };
+            let failure_summary = if next_status == "failed" {
+                Some(runtime_launch_failure_summary(&launch_outcome))
+            } else {
+                None
+            };
+            state.release_cli_route_session_lease(
+                &route_session.route_key,
+                &run.run_id,
+                next_status,
+                Some(&task_source_message_id),
+                if next_status == "failed" {
+                    Some("runtime_failed")
+                } else {
+                    None
+                },
+                if next_status == "failed" {
+                    failure_summary.as_deref()
+                } else {
+                    None
+                },
+            )?;
+        }
     }
 
     Ok(RuntimeTaskRunResult {
@@ -551,6 +648,98 @@ fn existing_runtime_run(
         run: existing,
         token_id: String::new(),
     }))
+}
+
+fn prepare_generic_cli_route_session(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+) -> Result<Option<crate::state::CliRouteSessionRecord>> {
+    if profile.workspace_mode != Some(WorkspaceMode::RouteRoot) {
+        return Ok(None);
+    }
+    let conversation_id = task
+        .conversation_id
+        .as_deref()
+        .context("generic-cli RouteRoot requires conversation_id")?;
+    let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let workspace_root = profile
+        .workspace_root
+        .as_ref()
+        .context("generic-cli RouteRoot requires workspace_root")?;
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    let route_key_hash = crate::state::cli_route_key_hash(&route_key)?;
+    let session_root = workspace_root
+        .parent()
+        .map(|runtime_workspaces_root| {
+            runtime_workspaces_root
+                .parent()
+                .unwrap_or(runtime_workspaces_root)
+                .join("sessions")
+                .join(&profile.runtime_profile_id)
+        })
+        .unwrap_or_else(|| workspace_root.join("sessions"));
+    let paths = route_workspace_paths(workspace_root, &session_root, &route_key_hash)?;
+    let session = state.get_or_create_cli_route_session(CreateCliRouteSession {
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        driver_id: cli_profile.driver_id,
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: task.controller_did.clone(),
+        conversation_id,
+        workspace_path: paths.workspace_path,
+        session_dir: paths.session_dir,
+    })?;
+    if let Err(error) = std::fs::create_dir_all(&session.workspace_path).with_context(|| {
+        format!(
+            "create generic-cli route workspace {}",
+            session.workspace_path.display()
+        )
+    }) {
+        let summary = sanitize_user_visible_error_summary(&error.to_string());
+        let _ = state.mark_cli_route_session_failed(
+            &session.route_key,
+            Some(&run.run_id),
+            "route_workspace_create_failed",
+            &summary,
+        );
+        return Err(error);
+    }
+    if let Err(error) = std::fs::create_dir_all(&session.session_dir).with_context(|| {
+        format!(
+            "create generic-cli route session dir {}",
+            session.session_dir.display()
+        )
+    }) {
+        let summary = sanitize_user_visible_error_summary(&error.to_string());
+        let _ = state.mark_cli_route_session_failed(
+            &session.route_key,
+            Some(&run.run_id),
+            "route_session_dir_create_failed",
+            &summary,
+        );
+        return Err(error);
+    }
+    if !state.try_acquire_cli_route_session_lease(
+        &session.route_key,
+        &run.run_id,
+        "runtime.host",
+        current_time_millis()? + 10 * 60 * 1000,
+    )? {
+        anyhow::bail!(
+            "generic-cli route session is busy: {}",
+            session.route_key_hash
+        );
+    }
+    Ok(Some(session))
 }
 
 pub fn flush_runtime_final_outbox(
@@ -1177,6 +1366,24 @@ fn persist_cli_driver_run(
         .get("command")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+    let route_key = if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
+        let conversation_id = task
+            .conversation_id
+            .as_deref()
+            .context("generic-cli RouteRoot run record requires conversation_id")?;
+        let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+        cli_route_session_key(
+            &run.agent_did,
+            &profile.controller_scope_key,
+            &conversation_id,
+        )?
+    } else {
+        generic_cli_route_key(
+            &run.agent_did,
+            &profile.controller_scope_key,
+            task.conversation_id.as_deref(),
+        )
+    };
     state.upsert_cli_driver_run(&CliDriverRunRecord {
         run_id: run.run_id.clone(),
         agent_did: run.agent_did.clone(),
@@ -1187,11 +1394,7 @@ fn persist_cli_driver_run(
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: task.controller_did.clone(),
         conversation_id: task.conversation_id.clone(),
-        route_key: generic_cli_route_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            task.conversation_id.as_deref(),
-        ),
+        route_key: route_key.clone(),
         workspace_id: profile.workspace_id.clone(),
         workspace_root: workspace_instance
             .map(|instance| instance.workspace_root.clone())
@@ -1213,11 +1416,7 @@ fn persist_cli_driver_run(
             .and_then(Value::as_str)
             .map(std::path::PathBuf::from),
         native_session_id: None,
-        synthetic_session_id: Some(generic_cli_route_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            task.conversation_id.as_deref(),
-        )),
+        synthetic_session_id: Some(route_key),
         status: launch_outcome.status.as_str().to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
     })?;

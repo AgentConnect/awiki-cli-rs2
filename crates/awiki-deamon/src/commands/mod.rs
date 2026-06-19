@@ -78,6 +78,10 @@ pub struct RuntimeAgentCreateRequest {
     pub driver_config: Option<Value>,
     pub recipient_policy: Option<Value>,
     pub workspace: Option<String>,
+    pub workspace_mode: Option<String>,
+    pub workspace_strategy: Option<String>,
+    pub default_sandbox: Option<String>,
+    pub default_model: Option<String>,
     pub controller_did: String,
     pub registration_token: String,
     pub client_request_id: Option<String>,
@@ -100,6 +104,10 @@ impl std::fmt::Debug for RuntimeAgentCreateRequest {
             .field("driver_config", &self.driver_config)
             .field("recipient_policy", &self.recipient_policy)
             .field("workspace", &self.workspace)
+            .field("workspace_mode", &self.workspace_mode)
+            .field("workspace_strategy", &self.workspace_strategy)
+            .field("default_sandbox", &self.default_sandbox)
+            .field("default_model", &self.default_model)
             .field("controller_did", &self.controller_did)
             .field("registration_token", &"<redacted-registration-token>")
             .field("client_request_id", &self.client_request_id)
@@ -143,6 +151,14 @@ struct RuntimeAgentCreateArgs {
     recipient_policy: Option<Value>,
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    workspace_mode: Option<String>,
+    #[serde(default)]
+    workspace_strategy: Option<String>,
+    #[serde(default)]
+    default_sandbox: Option<String>,
+    #[serde(default)]
+    default_model: Option<String>,
     controller_did: String,
     registration_token: String,
     #[serde(default)]
@@ -472,6 +488,10 @@ where
                 driver_config: request.driver_config,
                 recipient_policy: request.recipient_policy,
                 workspace: request.workspace,
+                workspace_mode: request.workspace_mode,
+                workspace_strategy: request.workspace_strategy,
+                default_sandbox: request.default_sandbox,
+                default_model: request.default_model,
                 controller_did: request.controller_did,
                 registration_token: request.registration_token,
                 client_request_id: request.client_request_id,
@@ -522,10 +542,28 @@ where
     let resolution = validate_runtime_create_args_contract(&payload.args)?;
     let plugin_id = resolution.runtime_plugin_id.clone();
     let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
-    let workspace_root = workspace_path(payload.args.workspace.as_deref())?;
+    let is_generic_cli = plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID;
+    let workspace_mode = runtime_create_workspace_mode(&payload.args, is_generic_cli)?;
+    let workspace_root = if is_generic_cli {
+        Some(
+            workspace_path(payload.args.workspace.as_deref())?
+                .unwrap_or_else(|| generic_cli_workspace_root(config, &profile_id)),
+        )
+    } else {
+        workspace_path(payload.args.workspace.as_deref())?
+    };
     let workspace_id = workspace_root
         .as_ref()
-        .map(|_| workspace_id(&handle))
+        .map(|_| {
+            if is_generic_cli {
+                generic_cli_workspace_id(
+                    resolution.driver_id.as_deref().unwrap_or("generic-cli"),
+                    &handle,
+                )
+            } else {
+                workspace_id(&handle)
+            }
+        })
         .transpose()?;
     let display_name = payload
         .args
@@ -570,7 +608,7 @@ where
         display_name: Some(display_name.clone()),
         workspace_id: workspace_id.clone(),
         workspace_root,
-        workspace_mode: workspace_id.as_ref().map(|_| WorkspaceMode::SharedRoot),
+        workspace_mode: workspace_id.as_ref().map(|_| workspace_mode),
     };
     state.upsert_runtime_agent_profile_with_handle(&profile, &exchange.handle)?;
     state.upsert_runtime_daemon_binding(
@@ -596,6 +634,15 @@ where
         }
         if let Some(recipient_policy) = payload.args.recipient_policy.clone() {
             cli_profile.recipient_policy_json = recipient_policy;
+        }
+        cli_profile.default_workspace_mode = workspace_mode;
+        if let Some(default_sandbox) =
+            normalize_optional_arg(payload.args.default_sandbox.as_deref())
+        {
+            cli_profile.default_sandbox = Some(default_sandbox);
+        }
+        if let Some(default_model) = normalize_optional_arg(payload.args.default_model.as_deref()) {
+            cli_profile.default_model = Some(default_model);
         }
         if let Some(driver_config) = payload.args.driver_config.clone() {
             cli_profile.driver_config_json = driver_config;
@@ -713,7 +760,62 @@ fn validate_runtime_create_args_contract(
     let resolution = resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
     validate_optional_object(args.driver_config.as_ref(), "driver_config")?;
     validate_optional_object(args.recipient_policy.as_ref(), "recipient_policy")?;
+    if let Some(workspace_mode) = args.workspace_mode.as_deref() {
+        WorkspaceMode::parse(workspace_mode)?;
+    }
+    if let Some(workspace_strategy) = args.workspace_strategy.as_deref() {
+        WorkspaceMode::parse(workspace_strategy)?;
+    }
+    if let (Some(workspace_mode), Some(workspace_strategy)) = (
+        args.workspace_mode.as_deref(),
+        args.workspace_strategy.as_deref(),
+    ) {
+        let workspace_mode = WorkspaceMode::parse(workspace_mode)?;
+        let workspace_strategy = WorkspaceMode::parse(workspace_strategy)?;
+        if workspace_mode != workspace_strategy {
+            anyhow::bail!("workspace_mode and workspace_strategy must resolve to the same value");
+        }
+    }
     Ok(resolution)
+}
+
+fn runtime_create_workspace_mode(
+    args: &RuntimeAgentCreateArgs,
+    is_generic_cli: bool,
+) -> Result<WorkspaceMode> {
+    if let Some(workspace_mode) = args.workspace_mode.as_deref() {
+        return WorkspaceMode::parse(workspace_mode);
+    }
+    if let Some(workspace_strategy) = args.workspace_strategy.as_deref() {
+        return WorkspaceMode::parse(workspace_strategy);
+    }
+    if is_generic_cli {
+        Ok(WorkspaceMode::RouteRoot)
+    } else {
+        Ok(WorkspaceMode::SharedRoot)
+    }
+}
+
+fn generic_cli_workspace_root(
+    config: &DaemonConfig,
+    runtime_profile_id: &str,
+) -> std::path::PathBuf {
+    config
+        .state_root
+        .join("runtime")
+        .join("workspaces")
+        .join(runtime_profile_id)
+}
+
+fn generic_cli_workspace_id(driver_id: &str, handle: &str) -> Result<String> {
+    workspace_id(&format!("{driver_id}-{handle}"))
+}
+
+fn normalize_optional_arg(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn runtime_handle_from_args(args: &RuntimeAgentCreateArgs) -> Result<String> {
@@ -819,23 +921,40 @@ where
             }),
         );
     };
-    let reset_count = if let Some(conversation_id) = conversation_id.as_deref() {
-        let route = HermesSessionRoute::new(
-            runtime_agent.agent_did.clone(),
-            runtime_profile_id.to_string(),
-            daemon_agent.controller_scope_key.clone(),
-            daemon_agent.controller_did.clone(),
-            Some(conversation_id.to_string()),
-            "conversation",
-        );
-        state.reset_active_hermes_session_by_route(&route)?
-    } else {
-        state.reset_active_hermes_sessions_for_runtime_controller_scope(
-            &runtime_agent.agent_did,
-            runtime_profile_id,
-            &daemon_agent.controller_scope_key,
-        )?
-    };
+    let reset_count =
+        if runtime_agent.runtime_plugin_id.as_deref() == Some(GENERIC_CLI_RUNTIME_PLUGIN_ID) {
+            if let Some(conversation_id) = conversation_id.as_deref() {
+                let conversation_id = crate::state::canonical_cli_conversation_id(conversation_id)?;
+                let route_key = crate::state::cli_route_session_key(
+                    &runtime_agent.agent_did,
+                    &daemon_agent.controller_scope_key,
+                    &conversation_id,
+                )?;
+                state.reset_cli_route_session_by_route(&route_key)?
+            } else {
+                state.reset_cli_route_sessions_for_runtime_controller_scope(
+                    &runtime_agent.agent_did,
+                    runtime_profile_id,
+                    &daemon_agent.controller_scope_key,
+                )?
+            }
+        } else if let Some(conversation_id) = conversation_id.as_deref() {
+            let route = HermesSessionRoute::new(
+                runtime_agent.agent_did.clone(),
+                runtime_profile_id.to_string(),
+                daemon_agent.controller_scope_key.clone(),
+                daemon_agent.controller_did.clone(),
+                Some(conversation_id.to_string()),
+                "conversation",
+            );
+            state.reset_active_hermes_session_by_route(&route)?
+        } else {
+            state.reset_active_hermes_sessions_for_runtime_controller_scope(
+                &runtime_agent.agent_did,
+                runtime_profile_id,
+                &daemon_agent.controller_scope_key,
+            )?
+        };
     state.insert_audit_event_json(
         "runtime.session.reset",
         Some(&runtime_agent.agent_did),

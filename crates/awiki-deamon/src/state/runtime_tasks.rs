@@ -777,4 +777,460 @@ WHERE run_id = ?1
             )
             .context("load cli driver run")
     }
+
+    pub fn get_or_create_cli_route_session(
+        &self,
+        create: CreateCliRouteSession,
+    ) -> Result<CliRouteSessionRecord> {
+        let record = create.into_record()?;
+        let connection = self.connection()?;
+        let inserted = connection.execute(
+            r#"
+INSERT OR IGNORE INTO cli_route_sessions (
+    route_key,
+    route_key_hash,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    workspace_path,
+    session_dir,
+    native_session_id,
+    native_session_source,
+    synthetic_session_id,
+    status,
+    last_run_id,
+    last_message_id,
+    lock_run_id,
+    lock_owner,
+    lock_expires_at_ms,
+    last_error_code,
+    last_error_summary,
+    version,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, ?13, 'active', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?14, ?15)
+"#,
+            rusqlite::params![
+                record.route_key,
+                record.route_key_hash,
+                record.agent_did,
+                record.runtime_profile_id,
+                record.driver_id,
+                record.controller_user_id,
+                record.controller_full_handle,
+                record.controller_scope_key,
+                record.controller_did,
+                record.conversation_id,
+                record.workspace_path.display().to_string(),
+                record.session_dir.display().to_string(),
+                record.route_key,
+                record.created_at_ms,
+                record.updated_at_ms,
+            ],
+        )?;
+        if inserted == 0 {
+            if let Some(by_hash) = self.load_cli_route_session_by_profile_hash(
+                &record.runtime_profile_id,
+                &record.route_key_hash,
+            )? {
+                if by_hash.route_key != record.route_key {
+                    bail!(
+                        "cli route session hash conflict for profile {} hash {}",
+                        record.runtime_profile_id,
+                        record.route_key_hash
+                    );
+                }
+            }
+        }
+        let mut loaded = self
+            .load_cli_route_session(&record.route_key)?
+            .with_context(|| format!("load cli route session {}", record.route_key))?;
+        if loaded.runtime_profile_id != record.runtime_profile_id
+            || loaded.route_key_hash != record.route_key_hash
+            || loaded.agent_did != record.agent_did
+            || loaded.driver_id != record.driver_id
+            || loaded.controller_user_id != record.controller_user_id
+            || loaded.controller_full_handle != record.controller_full_handle
+            || loaded.controller_scope_key != record.controller_scope_key
+            || loaded.conversation_id != record.conversation_id
+            || loaded.workspace_path != record.workspace_path
+            || loaded.session_dir != record.session_dir
+        {
+            bail!(
+                "cli route session binding conflict for route {}",
+                record.route_key
+            );
+        }
+        if loaded.status == "reset" {
+            connection.execute(
+                r#"
+UPDATE cli_route_sessions
+SET status = 'active',
+    native_session_id = NULL,
+    native_session_source = NULL,
+    synthetic_session_id = ?1,
+    last_error_code = NULL,
+    last_error_summary = NULL,
+    version = version + 1,
+    updated_at_ms = ?2
+WHERE route_key = ?3
+  AND status = 'reset'
+"#,
+                rusqlite::params![record.route_key, current_time_millis()?, record.route_key],
+            )?;
+            loaded = self
+                .load_cli_route_session(&record.route_key)?
+                .with_context(|| format!("load cli route session {}", record.route_key))?;
+        }
+        Ok(loaded)
+    }
+
+    pub fn load_cli_route_session(&self, route_key: &str) -> Result<Option<CliRouteSessionRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                cli_route_session_select_sql("WHERE route_key = ?1").as_str(),
+                [route_key],
+                cli_route_session_from_row,
+            )
+            .optional()
+            .context("load cli route session")
+    }
+
+    pub fn load_cli_route_session_by_profile_hash(
+        &self,
+        runtime_profile_id: &str,
+        route_key_hash: &str,
+    ) -> Result<Option<CliRouteSessionRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                cli_route_session_select_sql(
+                    "WHERE runtime_profile_id = ?1 AND route_key_hash = ?2",
+                )
+                .as_str(),
+                rusqlite::params![runtime_profile_id, route_key_hash],
+                cli_route_session_from_row,
+            )
+            .optional()
+            .context("load cli route session by profile hash")
+    }
+
+    pub fn count_cli_route_sessions_for_runtime_profile(
+        &self,
+        runtime_profile_id: &str,
+        controller_scope_key: &str,
+        status: Option<&str>,
+    ) -> Result<usize> {
+        if runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        if controller_scope_key.trim().is_empty() {
+            bail!("controller_scope_key must not be empty");
+        }
+        let connection = self.connection()?;
+        let count: i64 = if let Some(status) = status {
+            connection.query_row(
+                r#"
+SELECT COUNT(*)
+FROM cli_route_sessions
+WHERE runtime_profile_id = ?1
+  AND controller_scope_key = ?2
+  AND status = ?3
+"#,
+                rusqlite::params![runtime_profile_id, controller_scope_key, status],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row(
+                r#"
+SELECT COUNT(*)
+FROM cli_route_sessions
+WHERE runtime_profile_id = ?1
+  AND controller_scope_key = ?2
+"#,
+                rusqlite::params![runtime_profile_id, controller_scope_key],
+                |row| row.get(0),
+            )?
+        };
+        Ok(count as usize)
+    }
+
+    pub fn try_acquire_cli_route_session_lease(
+        &self,
+        route_key: &str,
+        run_id: &str,
+        lock_owner: &str,
+        lock_expires_at_ms: i64,
+    ) -> Result<bool> {
+        for (field_name, value) in [
+            ("route_key", route_key),
+            ("run_id", run_id),
+            ("lock_owner", lock_owner),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let now = current_time_millis()?;
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = 'running',
+    lock_run_id = ?1,
+    lock_owner = ?2,
+    lock_expires_at_ms = ?3,
+    last_run_id = ?1,
+    version = version + 1,
+    updated_at_ms = ?4
+WHERE route_key = ?5
+  AND status IN ('active', 'failed')
+  AND (
+      lock_run_id IS NULL
+      OR lock_expires_at_ms IS NULL
+      OR lock_expires_at_ms <= ?4
+  )
+"#,
+            rusqlite::params![run_id, lock_owner, lock_expires_at_ms, now, route_key],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn release_cli_route_session_lease(
+        &self,
+        route_key: &str,
+        run_id: &str,
+        next_status: &str,
+        last_message_id: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) -> Result<()> {
+        if route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        if !matches!(next_status, "active" | "failed" | "reset" | "archived") {
+            bail!("unsupported cli route session status: {next_status}");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = ?1,
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    last_message_id = COALESCE(?2, last_message_id),
+    last_error_code = ?3,
+    last_error_summary = ?4,
+    version = version + 1,
+    updated_at_ms = ?5
+WHERE route_key = ?6
+  AND lock_run_id = ?7
+"#,
+            rusqlite::params![
+                next_status,
+                last_message_id,
+                last_error_code,
+                last_error_summary,
+                current_time_millis()?,
+                route_key,
+                run_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route session lease is not held by run {run_id}");
+        }
+        Ok(())
+    }
+
+    pub fn update_cli_route_session_native_id(
+        &self,
+        route_key: &str,
+        native_session_id: Option<&str>,
+        native_session_source: Option<&str>,
+        synthetic_session_id: Option<&str>,
+    ) -> Result<()> {
+        if route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET native_session_id = ?1,
+    native_session_source = ?2,
+    synthetic_session_id = ?3,
+    version = version + 1,
+    updated_at_ms = ?4
+WHERE route_key = ?5
+"#,
+            rusqlite::params![
+                native_session_id,
+                native_session_source,
+                synthetic_session_id,
+                current_time_millis()?,
+                route_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route session does not exist: {route_key}");
+        }
+        Ok(())
+    }
+
+    pub fn mark_cli_route_session_failed(
+        &self,
+        route_key: &str,
+        last_run_id: Option<&str>,
+        last_error_code: &str,
+        last_error_summary: &str,
+    ) -> Result<()> {
+        for (field_name, value) in [
+            ("route_key", route_key),
+            ("last_error_code", last_error_code),
+            ("last_error_summary", last_error_summary),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = 'failed',
+    last_run_id = COALESCE(?1, last_run_id),
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    last_error_code = ?2,
+    last_error_summary = ?3,
+    version = version + 1,
+    updated_at_ms = ?4
+WHERE route_key = ?5
+"#,
+            rusqlite::params![
+                last_run_id,
+                last_error_code,
+                last_error_summary,
+                current_time_millis()?,
+                route_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route session does not exist: {route_key}");
+        }
+        Ok(())
+    }
+
+    pub fn reset_cli_route_session_by_route(&self, route_key: &str) -> Result<usize> {
+        if route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = 'reset',
+    native_session_id = NULL,
+    native_session_source = NULL,
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    version = version + 1,
+    updated_at_ms = ?1
+WHERE route_key = ?2
+  AND status IN ('active', 'running', 'failed')
+"#,
+            rusqlite::params![current_time_millis()?, route_key],
+        )?;
+        Ok(updated)
+    }
+
+    pub fn reset_cli_route_sessions_for_runtime_controller_scope(
+        &self,
+        agent_did: &str,
+        runtime_profile_id: &str,
+        controller_scope_key: &str,
+    ) -> Result<usize> {
+        for (field_name, value) in [
+            ("agent_did", agent_did),
+            ("runtime_profile_id", runtime_profile_id),
+            ("controller_scope_key", controller_scope_key),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = 'reset',
+    native_session_id = NULL,
+    native_session_source = NULL,
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    version = version + 1,
+    updated_at_ms = ?1
+WHERE agent_did = ?2
+  AND runtime_profile_id = ?3
+  AND controller_scope_key = ?4
+  AND status IN ('active', 'running', 'failed')
+"#,
+            rusqlite::params![
+                current_time_millis()?,
+                agent_did,
+                runtime_profile_id,
+                controller_scope_key,
+            ],
+        )?;
+        Ok(updated)
+    }
+}
+
+fn cli_route_session_select_sql(where_clause: &str) -> String {
+    format!(
+        r#"
+SELECT
+    route_key,
+    route_key_hash,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    workspace_path,
+    session_dir,
+    native_session_id,
+    native_session_source,
+    synthetic_session_id,
+    status,
+    last_run_id,
+    last_message_id,
+    lock_run_id,
+    lock_owner,
+    lock_expires_at_ms,
+    last_error_code,
+    last_error_summary,
+    version,
+    created_at_ms,
+    updated_at_ms
+FROM cli_route_sessions
+{where_clause}
+"#
+    )
 }

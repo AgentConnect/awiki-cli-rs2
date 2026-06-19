@@ -139,6 +139,248 @@ fn failed_generic_cli_marks_run_failed_without_final_callback() {
     assert_eq!(records[0].state.as_deref(), Some("failed"));
 }
 
+#[test]
+fn route_root_creates_distinct_route_sessions_and_workspaces() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_bob".to_string(),
+            conversation_id: Some("dm:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "hello bob".to_string(),
+        },
+    )
+    .unwrap();
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_carol".to_string(),
+            conversation_id: Some("direct:did:human:carol".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "hello carol".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(first.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(second.run.status, RuntimeRunStatus::Finished);
+    let first_run = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    assert_eq!(first_run.workspace_mode, Some(WorkspaceMode::RouteRoot));
+    assert_eq!(second_run.workspace_mode, Some(WorkspaceMode::RouteRoot));
+    assert_ne!(first_run.route_key, second_run.route_key);
+    assert_ne!(
+        first_run.workspace_instance_path,
+        second_run.workspace_instance_path
+    );
+    let first_route = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    let second_route = state
+        .load_cli_route_session(&second_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_route.conversation_id, "direct:did:human:bob");
+    assert_eq!(second_route.conversation_id, "direct:did:human:carol");
+    assert!(first_route.workspace_path.exists());
+    assert!(first_route.session_dir.exists());
+    assert_eq!(first_route.status, "active");
+    assert_eq!(second_route.status, "active");
+    assert!(first_route
+        .workspace_path
+        .starts_with(profile.workspace_root.as_ref().unwrap()));
+    assert!(first_route
+        .workspace_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("route_"));
+    assert_eq!(
+        state
+            .count_cli_route_sessions_for_runtime_profile(
+                &profile.runtime_profile_id,
+                &profile.controller_scope_key,
+                Some("active"),
+            )
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn route_root_requires_conversation_id_and_does_not_create_long_term_session() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_missing_conversation".to_string(),
+            conversation_id: None,
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "missing conversation".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("requires conversation_id"));
+    let run = state
+        .load_runtime_run("run_task_msg_route_missing_conversation")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    assert_eq!(
+        state
+            .count_cli_route_sessions_for_runtime_profile(
+                &profile.runtime_profile_id,
+                &profile.controller_scope_key,
+                None,
+            )
+            .unwrap(),
+        0
+    );
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("route_session_preparation_failed")
+    );
+}
+
+#[test]
+fn route_root_session_dir_failure_marks_run_and_route_failed_before_launch() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    std::fs::create_dir_all(config.state_root.join("runtime")).unwrap();
+    std::fs::write(
+        config.state_root.join("runtime").join("sessions"),
+        "not a dir",
+    )
+    .unwrap();
+
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_bad_session_dir".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "bad session dir".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("create generic-cli route session dir"));
+    let run = state
+        .load_runtime_run("run_task_msg_route_bad_session_dir")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let run_record_missing = state
+        .load_cli_driver_run("run_task_msg_route_bad_session_dir")
+        .unwrap_err();
+    assert!(run_record_missing
+        .to_string()
+        .contains("load cli driver run"));
+    let route_key = awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        "direct:did:human:bob",
+    )
+    .unwrap();
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.last_run_id.as_deref(), Some(run.run_id.as_str()));
+    assert_eq!(
+        route.last_error_code.as_deref(),
+        Some("route_session_dir_create_failed")
+    );
+    assert_eq!(outbox.records().len(), 1);
+    assert_eq!(
+        outbox.records()[0].last_error_code.as_deref(),
+        Some("route_session_preparation_failed")
+    );
+}
+
 #[derive(Debug, Clone)]
 struct MsgSendCallbackPlugin;
 

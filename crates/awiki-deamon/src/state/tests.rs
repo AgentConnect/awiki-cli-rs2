@@ -23,6 +23,7 @@ fn initialize_creates_required_tables() {
         "agent_auth_state",
         "cli_runtime_profile",
         "cli_driver_run",
+        "cli_route_sessions",
         "hermes_profiles",
         "hermes_native_sessions",
         "runtime_daemon_binding",
@@ -48,6 +49,233 @@ fn initialize_creates_required_tables() {
             .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+}
+
+fn cli_route_create(workspace: PathBuf, conversation_id: &str) -> CreateCliRouteSession {
+    CreateCliRouteSession {
+        agent_did: "did:agent:codex-alice".to_string(),
+        runtime_profile_id: "profile_codex_alice".to_string(),
+        driver_id: "codex".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.awiki.info".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        conversation_id: conversation_id.to_string(),
+        workspace_path: workspace.join("workspaces").join("route"),
+        session_dir: workspace.join("sessions").join("route"),
+    }
+}
+
+#[test]
+fn cli_route_session_canonicalizes_direct_ids_and_roundtrips() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let direct = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "dm:did:human:bob",
+        ))
+        .unwrap();
+    assert_eq!(direct.conversation_id, "direct:did:human:bob");
+    assert!(direct.route_key.contains(":direct:did:human:bob:"));
+    assert!(direct.route_key_hash.starts_with("route_"));
+    assert_eq!(direct.route_key_hash.len(), "route_".len() + 24);
+    assert!(format!("{direct:?}").contains("route_"));
+
+    let same = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    assert_eq!(same.route_key, direct.route_key);
+    assert_eq!(same.route_key_hash, direct.route_key_hash);
+
+    let group = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "group:did:group:writers",
+        ))
+        .unwrap();
+    assert_ne!(group.route_key_hash, direct.route_key_hash);
+    assert_eq!(
+        state
+            .count_cli_route_sessions_for_runtime_profile(
+                "profile_codex_alice",
+                "controller-scope:v1:test-alice",
+                Some("active"),
+            )
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn cli_route_session_rejects_no_conversation_and_lease_is_exclusive() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let error = cli_route_create(root.path().to_path_buf(), "no-conversation")
+        .into_record()
+        .unwrap_err();
+    assert!(error.to_string().contains("no-conversation"));
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &session.route_key,
+            "run_1",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+    assert!(!state
+        .try_acquire_cli_route_session_lease(
+            &session.route_key,
+            "run_2",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+    state
+        .release_cli_route_session_lease(
+            &session.route_key,
+            "run_1",
+            "active",
+            Some("msg_1"),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &session.route_key,
+            "run_2",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+    assert_eq!(
+        state
+            .reset_cli_route_session_by_route(&session.route_key)
+            .unwrap(),
+        1
+    );
+    let reset = state
+        .load_cli_route_session(&session.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.status, "reset");
+    assert_eq!(reset.lock_run_id, None);
+}
+
+#[test]
+fn cli_route_session_reset_reactivates_same_route_without_native_pointer() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    state
+        .update_cli_route_session_native_id(
+            &session.route_key,
+            Some("native_old"),
+            Some("json_event"),
+            Some("synthetic_old"),
+        )
+        .unwrap();
+    assert_eq!(
+        state
+            .reset_cli_route_session_by_route(&session.route_key)
+            .unwrap(),
+        1
+    );
+
+    let reactivated = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "dm:did:human:bob",
+        ))
+        .unwrap();
+
+    assert_eq!(reactivated.route_key, session.route_key);
+    assert_eq!(reactivated.status, "active");
+    assert_eq!(reactivated.native_session_id, None);
+    assert_eq!(reactivated.native_session_source, None);
+    assert_eq!(
+        reactivated.synthetic_session_id.as_deref(),
+        Some(session.route_key.as_str())
+    );
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &reactivated.route_key,
+            "run_after_reset",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+}
+
+#[test]
+fn cli_route_session_rejects_existing_route_binding_drift() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let mut drifted = cli_route_create(root.path().to_path_buf(), "dm:did:human:bob");
+    drifted.workspace_path = root.path().join("workspaces").join("different-route");
+
+    let error = state.get_or_create_cli_route_session(drifted).unwrap_err();
+    assert!(error.to_string().contains("binding conflict"));
+    let unchanged = state
+        .load_cli_route_session(&session.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.workspace_path, session.workspace_path);
+}
+
+#[test]
+fn cli_route_session_allows_controller_did_rotation_for_same_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let mut rotated = cli_route_create(root.path().to_path_buf(), "dm:did:human:bob");
+    rotated.controller_did = "did:human:alice#rotated".to_string();
+
+    let loaded = state.get_or_create_cli_route_session(rotated).unwrap();
+    assert_eq!(loaded.route_key, session.route_key);
+    assert_eq!(loaded.controller_did, "did:human:alice");
 }
 
 fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplayRecord) {

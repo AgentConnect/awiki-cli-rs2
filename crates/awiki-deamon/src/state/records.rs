@@ -58,6 +58,50 @@ pub struct CliDriverRunRecord {
     pub fallback_final_source: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliRouteSessionRecord {
+    pub route_key: String,
+    pub route_key_hash: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub driver_id: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
+    pub controller_did: String,
+    pub conversation_id: String,
+    pub workspace_path: PathBuf,
+    pub session_dir: PathBuf,
+    pub native_session_id: Option<String>,
+    pub native_session_source: Option<String>,
+    pub synthetic_session_id: Option<String>,
+    pub status: String,
+    pub last_run_id: Option<String>,
+    pub last_message_id: Option<String>,
+    pub lock_run_id: Option<String>,
+    pub lock_owner: Option<String>,
+    pub lock_expires_at_ms: Option<i64>,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+    pub version: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateCliRouteSession {
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub driver_id: String,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
+    pub controller_scope_key: String,
+    pub controller_did: String,
+    pub conversation_id: String,
+    pub workspace_path: PathBuf,
+    pub session_dir: PathBuf,
+}
+
 impl CliDriverRunRecord {
     pub fn validate(&self) -> Result<()> {
         for (field_name, value) in [
@@ -87,6 +131,165 @@ impl CliDriverRunRecord {
         }
         Ok(())
     }
+}
+
+impl CliRouteSessionRecord {
+    pub fn validate(&self) -> Result<()> {
+        validate_cli_route_key(&self.route_key)?;
+        validate_cli_route_key_hash(&self.route_key_hash)?;
+        validate_cli_route_session_fields(
+            &self.agent_did,
+            &self.runtime_profile_id,
+            &self.driver_id,
+            &self.controller_user_id,
+            &self.controller_full_handle,
+            &self.controller_scope_key,
+            &self.controller_did,
+            &self.conversation_id,
+            &self.workspace_path,
+            &self.session_dir,
+            &self.status,
+        )?;
+        for (field_name, value) in [
+            ("native_session_id", self.native_session_id.as_deref()),
+            (
+                "native_session_source",
+                self.native_session_source.as_deref(),
+            ),
+            ("synthetic_session_id", self.synthetic_session_id.as_deref()),
+            ("last_run_id", self.last_run_id.as_deref()),
+            ("last_message_id", self.last_message_id.as_deref()),
+            ("lock_run_id", self.lock_run_id.as_deref()),
+            ("lock_owner", self.lock_owner.as_deref()),
+            ("last_error_code", self.last_error_code.as_deref()),
+            ("last_error_summary", self.last_error_summary.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                bail!("{field_name} must not be empty when present");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CreateCliRouteSession {
+    pub fn route_key(&self) -> Result<String> {
+        cli_route_session_key(
+            &self.agent_did,
+            &self.controller_scope_key,
+            &self.conversation_id,
+        )
+    }
+
+    pub fn route_key_hash(&self) -> Result<String> {
+        cli_route_key_hash(&self.route_key()?)
+    }
+
+    pub fn into_record(self) -> Result<CliRouteSessionRecord> {
+        let route_key = self.route_key()?;
+        let route_key_hash = cli_route_key_hash(&route_key)?;
+        let conversation_id = canonical_cli_conversation_id(&self.conversation_id)?;
+        let now = current_time_millis()?;
+        let record = CliRouteSessionRecord {
+            route_key,
+            route_key_hash,
+            agent_did: self.agent_did,
+            runtime_profile_id: self.runtime_profile_id,
+            driver_id: self.driver_id,
+            controller_user_id: self.controller_user_id,
+            controller_full_handle: self.controller_full_handle,
+            controller_scope_key: self.controller_scope_key,
+            controller_did: self.controller_did,
+            conversation_id,
+            workspace_path: self.workspace_path,
+            session_dir: self.session_dir,
+            native_session_id: None,
+            native_session_source: None,
+            synthetic_session_id: None,
+            status: "active".to_string(),
+            last_run_id: None,
+            last_message_id: None,
+            lock_run_id: None,
+            lock_owner: None,
+            lock_expires_at_ms: None,
+            last_error_code: None,
+            last_error_summary: None,
+            version: 0,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+}
+
+pub fn cli_route_session_key(
+    agent_did: &str,
+    controller_scope_key: &str,
+    conversation_id: &str,
+) -> Result<String> {
+    for (field_name, value) in [
+        ("agent_did", agent_did),
+        ("controller_scope_key", controller_scope_key),
+        ("conversation_id", conversation_id),
+    ] {
+        if value.trim().is_empty() {
+            bail!("{field_name} must not be empty");
+        }
+    }
+    let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+    Ok(format!(
+        "cli:{agent_did}:{controller_scope_key}:{conversation_id}:message-run"
+    ))
+}
+
+pub fn canonical_cli_conversation_id(input: &str) -> Result<String> {
+    let value = input.trim();
+    if value.is_empty() {
+        bail!("conversation_id must not be empty for a generic-cli route session");
+    }
+    if value == "no-conversation" {
+        bail!("no-conversation cannot be used for a generic-cli route session");
+    }
+    if let Some(peer) = value
+        .strip_prefix("direct:")
+        .or_else(|| value.strip_prefix("dm:"))
+    {
+        let peer = peer.trim();
+        if peer.is_empty() {
+            bail!("direct conversation peer must not be empty");
+        }
+        return Ok(format!("direct:{peer}"));
+    }
+    if let Some(group) = value.strip_prefix("group:") {
+        let group = group.trim();
+        if group.is_empty() {
+            bail!("group conversation id must not be empty");
+        }
+        return Ok(format!("group:{group}"));
+    }
+    if let Some(thread) = value.strip_prefix("thread:") {
+        let thread = thread.trim();
+        if thread.is_empty() {
+            bail!("thread conversation id must not be empty");
+        }
+        return Ok(format!("thread:{thread}"));
+    }
+    if value.contains(':') {
+        bail!("unsupported generic-cli conversation_id prefix");
+    }
+    Ok(format!("thread:{value}"))
+}
+
+pub fn cli_route_key_hash(route_key: &str) -> Result<String> {
+    validate_cli_route_key(route_key)?;
+    let digest = Sha256::digest(route_key.as_bytes());
+    let short = digest
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("route_{short}"))
 }
 
 impl CliRuntimeProfileRecord {
@@ -863,6 +1066,72 @@ fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> 
     let digest = Sha256::digest(route_key.as_bytes());
     let digest = Sha256::digest([digest.as_slice(), hermes_session_id.as_bytes()].concat());
     format!("hns_{:x}", digest)
+}
+
+fn validate_cli_route_key(route_key: &str) -> Result<()> {
+    let route_key = route_key.trim();
+    if route_key.is_empty() {
+        bail!("route_key must not be empty");
+    }
+    if route_key.contains(":no-conversation:") {
+        bail!("route_key must not use no-conversation");
+    }
+    if !route_key.starts_with("cli:") || !route_key.ends_with(":message-run") {
+        bail!("route_key must use generic-cli message-run format");
+    }
+    Ok(())
+}
+
+fn validate_cli_route_key_hash(route_key_hash: &str) -> Result<()> {
+    let value = route_key_hash.trim();
+    if !value.starts_with("route_") || value.len() != "route_".len() + 24 {
+        bail!("route_key_hash must use route_<24 hex> format");
+    }
+    if !value["route_".len()..]
+        .chars()
+        .all(|ch| ch.is_ascii_hexdigit())
+    {
+        bail!("route_key_hash contains unsupported characters");
+    }
+    Ok(())
+}
+
+fn validate_cli_route_session_fields(
+    agent_did: &str,
+    runtime_profile_id: &str,
+    driver_id: &str,
+    controller_user_id: &str,
+    controller_full_handle: &str,
+    controller_scope_key: &str,
+    controller_did: &str,
+    conversation_id: &str,
+    workspace_path: &std::path::Path,
+    session_dir: &std::path::Path,
+    status: &str,
+) -> Result<()> {
+    for (field_name, value) in [
+        ("agent_did", agent_did),
+        ("runtime_profile_id", runtime_profile_id),
+        ("driver_id", driver_id),
+        ("controller_user_id", controller_user_id),
+        ("controller_full_handle", controller_full_handle),
+        ("controller_scope_key", controller_scope_key),
+        ("controller_did", controller_did),
+        ("conversation_id", conversation_id),
+        ("status", status),
+    ] {
+        if value.trim().is_empty() {
+            bail!("{field_name} must not be empty");
+        }
+    }
+    canonical_cli_conversation_id(conversation_id)?;
+    if workspace_path.as_os_str().is_empty() {
+        bail!("workspace_path must not be empty");
+    }
+    if session_dir.as_os_str().is_empty() {
+        bail!("session_dir must not be empty");
+    }
+    Ok(())
 }
 
 pub fn controller_scope_key(

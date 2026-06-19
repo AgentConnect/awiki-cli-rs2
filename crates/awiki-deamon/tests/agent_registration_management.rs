@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use awiki_deamon::agent::AgentKind;
+use awiki_deamon::agent::{workspace_id, AgentKind};
 use awiki_deamon::commands::{
     handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
     IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
@@ -14,6 +14,7 @@ use awiki_deamon::registration::{
 };
 use awiki_deamon::runtime::{RuntimeRun, RuntimeRunStatus};
 use awiki_deamon::state::{HermesNativeSessionRecord, HermesSessionRoute};
+use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{
     daemon_cli::{setup_daemon_agent_from_token, SetupDaemonAgentOptions},
     im_core_adapter::sync_agent_identity_to_im_core,
@@ -393,7 +394,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     );
     assert_eq!(
         created.workspace_id.as_deref(),
-        Some("workspace_alice_awiki_coder")
+        Some("workspace_claude_code_alice_awiki_coder")
     );
     assert!(created
         .agent_did
@@ -406,6 +407,13 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert_eq!(
         runtime_agent.runtime_profile_id.as_deref(),
         Some("profile_claude_code_alice_awiki_coder")
+    );
+    let runtime_profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        runtime_profile.workspace_mode,
+        Some(WorkspaceMode::RouteRoot)
     );
 
     let statuses = outbox.agent_statuses();
@@ -1261,10 +1269,36 @@ fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() 
             runtime_agent.runtime_plugin_id.as_deref(),
             Some("generic-cli")
         );
+        let runtime_profile = state
+            .load_runtime_agent_profile(&created.agent_did)
+            .unwrap();
+        assert_eq!(
+            runtime_profile.workspace_mode,
+            Some(WorkspaceMode::RouteRoot)
+        );
+        assert_eq!(
+            runtime_profile.workspace_id.as_deref(),
+            Some(
+                workspace_id(&format!("{expected_driver_id}-alice-{runtime}"))
+                    .unwrap()
+                    .as_str()
+            )
+        );
+        assert_eq!(
+            runtime_profile.workspace_root,
+            Some(
+                config
+                    .state_root
+                    .join("runtime")
+                    .join("workspaces")
+                    .join(expected_profile_id)
+            )
+        );
         let cli_profile = state
             .load_cli_runtime_profile(&created.runtime_profile_id)
             .unwrap();
         assert_eq!(cli_profile.driver_id, expected_driver_id);
+        assert_eq!(cli_profile.default_workspace_mode, WorkspaceMode::RouteRoot);
         if expected_driver_id == "codex" {
             let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
             assert_eq!(cli_profile.config_home, Some(codex_home));
@@ -1339,6 +1373,119 @@ fn runtime_agent_create_defaults_generic_cli_driver_to_codex() {
     assert_eq!(cli_profile.driver_id, "codex");
     let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
     assert_eq!(cli_profile.config_home, Some(codex_home));
+}
+
+#[test]
+fn runtime_agent_create_accepts_workspace_strategy_alias_for_generic_cli() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_workspace_strategy_alias".to_string(),
+            conversation_id: Some("conv_create_workspace_strategy_alias".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_workspace_strategy_alias",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-strategy",
+                    "runtime": "codex",
+                    "driver_id": "codex",
+                    "workspace_strategy": "route-root",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Codex Strategy Alias"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let created = expect_created(outcome);
+    let runtime_profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        runtime_profile.workspace_mode,
+        Some(WorkspaceMode::RouteRoot)
+    );
+    let cli_profile = state
+        .load_cli_runtime_profile(&created.runtime_profile_id)
+        .unwrap();
+    assert_eq!(cli_profile.default_workspace_mode, WorkspaceMode::RouteRoot);
+}
+
+#[test]
+fn runtime_agent_create_rejects_conflicting_workspace_mode_and_strategy() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let error = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_workspace_strategy_conflict".to_string(),
+            conversation_id: Some("conv_create_workspace_strategy_conflict".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_workspace_strategy_conflict",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-conflict",
+                    "runtime": "codex",
+                    "driver_id": "codex",
+                    "workspace_mode": "route-root",
+                    "workspace_strategy": "shared-root",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Codex Strategy Conflict"
+                }
+            }),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("workspace_mode and workspace_strategy"));
+    assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
+    assert_eq!(outbox.agent_statuses().len(), 1);
+    assert_eq!(outbox.agent_statuses()[0].payload["state"], "failed");
 }
 
 #[test]
