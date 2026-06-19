@@ -269,6 +269,43 @@ WHERE retry_id = ?1
             .context("load runtime retry request")
     }
 
+    pub fn list_runtime_retry_requests_for_original_run(
+        &self,
+        original_run_id: &str,
+    ) -> Result<Vec<RuntimeRetryQueueRecord>> {
+        if original_run_id.trim().is_empty() {
+            bail!("original_run_id must not be empty");
+        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    retry_id,
+    original_run_id,
+    task_id,
+    agent_did,
+    runtime_profile_id,
+    runtime_plugin_id,
+    workspace_id,
+    status,
+    requested_by_command_id,
+    attempts,
+    next_attempt_at_ms,
+    created_at_ms,
+    updated_at_ms
+FROM runtime_retry_queue
+WHERE original_run_id = ?1
+ORDER BY created_at_ms ASC, retry_id ASC
+"#,
+        )?;
+        let rows = statement.query_map([original_run_id], runtime_retry_queue_record_from_row)?;
+        let mut retries = Vec::new();
+        for row in rows {
+            retries.push(row?);
+        }
+        Ok(retries)
+    }
+
     pub fn list_queued_runtime_retries_due(
         &self,
         now_ms: i64,
@@ -336,6 +373,34 @@ SET status = ?1,
 WHERE retry_id = ?3
 "#,
             rusqlite::params![status, current_time_millis()?, retry_id],
+        )?;
+        if updated == 0 {
+            bail!("runtime retry request does not exist: {retry_id}");
+        }
+        Ok(())
+    }
+
+    pub fn reschedule_runtime_retry_request(
+        &self,
+        retry_id: &str,
+        next_attempt_at_ms: i64,
+    ) -> Result<()> {
+        if retry_id.trim().is_empty() {
+            bail!("retry_id must not be empty");
+        }
+        if next_attempt_at_ms < 0 {
+            bail!("next_attempt_at_ms must not be negative");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = 'queued',
+    next_attempt_at_ms = ?1,
+    updated_at_ms = ?2
+WHERE retry_id = ?3
+"#,
+            rusqlite::params![next_attempt_at_ms, current_time_millis()?, retry_id],
         )?;
         if updated == 0 {
             bail!("runtime retry request does not exist: {retry_id}");
@@ -1213,7 +1278,7 @@ SET status = 'running',
     version = version + 1,
     updated_at_ms = ?4
 WHERE route_key = ?5
-  AND status IN ('active', 'failed')
+  AND status IN ('active', 'failed', 'queued')
   AND (
       lock_run_id IS NULL
       OR lock_expires_at_ms IS NULL
@@ -1240,7 +1305,10 @@ WHERE route_key = ?5
         if run_id.trim().is_empty() {
             bail!("run_id must not be empty");
         }
-        if !matches!(next_status, "active" | "failed" | "reset" | "archived") {
+        if !matches!(
+            next_status,
+            "active" | "failed" | "queued" | "reset" | "archived"
+        ) {
             bail!("unsupported cli route session status: {next_status}");
         }
         let connection = self.connection()?;
@@ -1271,6 +1339,48 @@ WHERE route_key = ?6
         )?;
         if updated == 0 {
             bail!("cli route session lease is not held by run {run_id}");
+        }
+        Ok(())
+    }
+
+    pub fn mark_cli_route_session_deferred(
+        &self,
+        route_key: &str,
+        run_id: Option<&str>,
+        last_error_code: &str,
+        last_error_summary: &str,
+    ) -> Result<()> {
+        if route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        if last_error_code.trim().is_empty() {
+            bail!("last_error_code must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = 'queued',
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    last_run_id = COALESCE(?1, last_run_id),
+    last_error_code = ?2,
+    last_error_summary = ?3,
+    version = version + 1,
+    updated_at_ms = ?4
+WHERE route_key = ?5
+"#,
+            rusqlite::params![
+                run_id,
+                last_error_code,
+                last_error_summary,
+                current_time_millis()?,
+                route_key,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("cli route session does not exist: {route_key}");
         }
         Ok(())
     }

@@ -716,25 +716,74 @@ fn drain_runtime_retry_queue_once(
                 )?;
             }
             Err(error) => {
-                state.mark_runtime_retry_status(&retry.retry_id, "failed")?;
-                state.insert_audit_event_json(
-                    "runtime.run.retry.failed",
-                    Some(&retry.agent_did),
-                    Some(&retry.runtime_profile_id),
-                    Some(&retry.original_run_id),
-                    None,
-                    json!({
-                        "retry_id": retry.retry_id,
-                        "original_run_id": retry.original_run_id,
-                        "task_id": retry.task_id,
-                        "error": sanitize_error_message(&error.to_string()),
-                    }),
-                )?;
+                let busy_reason = runtime_retry_busy_reason_from_error(&error);
+                let sanitized_error = sanitize_error_message(&error.to_string());
+                if let Some(busy_reason) = busy_reason {
+                    let next_attempt_at_ms =
+                        current_time_millis()? + runtime_retry_busy_delay_ms(retry.attempts + 1);
+                    state.reschedule_runtime_retry_request(&retry.retry_id, next_attempt_at_ms)?;
+                    state.insert_audit_event_json(
+                        "runtime.run.retry.deferred",
+                        Some(&retry.agent_did),
+                        Some(&retry.runtime_profile_id),
+                        Some(&retry.original_run_id),
+                        None,
+                        json!({
+                            "retry_id": retry.retry_id,
+                            "original_run_id": retry.original_run_id,
+                            "task_id": retry.task_id,
+                            "next_attempt_at_ms": next_attempt_at_ms,
+                            "busy_reason": busy_reason,
+                        }),
+                    )?;
+                } else {
+                    state.mark_runtime_retry_status(&retry.retry_id, "failed")?;
+                    state.insert_audit_event_json(
+                        "runtime.run.retry.failed",
+                        Some(&retry.agent_did),
+                        Some(&retry.runtime_profile_id),
+                        Some(&retry.original_run_id),
+                        None,
+                        json!({
+                            "retry_id": retry.retry_id,
+                            "original_run_id": retry.original_run_id,
+                            "task_id": retry.task_id,
+                            "error": sanitized_error,
+                        }),
+                    )?;
+                }
             }
         }
         processed += 1;
     }
     Ok(processed)
+}
+
+fn runtime_retry_busy_reason_from_error(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .chain()
+        .find_map(|cause| runtime_retry_busy_reason(&cause.to_string()))
+}
+
+fn runtime_retry_busy_reason(error: &str) -> Option<&'static str> {
+    if error.contains("route session is busy") || error.contains("route_busy") {
+        Some("route_busy")
+    } else if error.contains("runtime profile is busy") || error.contains("profile_busy") {
+        Some("profile_busy")
+    } else if error.contains("host home is busy") || error.contains("host_home_busy") {
+        Some("host_home_busy")
+    } else {
+        None
+    }
+}
+
+fn runtime_retry_busy_delay_ms(attempts: i64) -> i64 {
+    match attempts {
+        0 | 1 => 10_000,
+        2 => 30_000,
+        3 => 120_000,
+        _ => 300_000,
+    }
 }
 
 fn record_foreground_status_error(state: &DaemonState, message: &str) -> Result<()> {

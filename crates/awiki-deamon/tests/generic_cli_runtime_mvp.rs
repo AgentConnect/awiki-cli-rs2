@@ -49,7 +49,7 @@ fn assert_busy_retry_metadata(record: &awiki_deamon::outbox::OutboxRecord, reaso
         .as_ref()
         .expect("busy status should include metadata");
     assert_eq!(metadata["retryable"].as_bool(), Some(true));
-    assert_eq!(metadata["deferred"].as_bool(), Some(false));
+    assert_eq!(metadata["deferred"].as_bool(), Some(true));
     assert_eq!(metadata["next_action"].as_str(), Some("retry_later"));
     assert_eq!(metadata["retry_after_ms"].as_i64(), Some(10_000));
     assert_eq!(metadata["retry_after_seconds"].as_i64(), Some(10));
@@ -440,8 +440,9 @@ fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
     )
     .unwrap();
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
-    assert_eq!(route.status, "failed");
+    assert_eq!(route.status, "queued");
     assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.last_message_id, None);
     assert_eq!(route.last_error_code.as_deref(), Some("profile_busy"));
     assert!(state
         .load_cli_driver_run("run_task_msg_profile_busy")
@@ -462,9 +463,24 @@ fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
     let records = outbox.records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].state.as_deref(), Some("queued"));
     assert_eq!(records[0].last_error_code.as_deref(), Some("profile_busy"));
     assert_busy_retry_metadata(&records[0], "profile_busy");
+    let retries = state
+        .list_runtime_retry_requests_for_original_run("run_task_msg_profile_busy")
+        .unwrap();
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].original_run_id, "run_task_msg_profile_busy");
+    assert_eq!(retries[0].task_id, "task_msg_profile_busy");
+    assert_eq!(
+        retries[0].requested_by_command_id,
+        "runtime.busy.auto-deferred"
+    );
+    assert!(
+        retries[0].next_attempt_at_ms
+            > awiki_deamon::security::runtime_token::current_time_millis().unwrap()
+    );
+    assert!(!format!("{:?}", retries[0]).contains("profile busy"));
 }
 
 #[test]
@@ -562,9 +578,20 @@ fn route_root_route_busy_does_not_launch_driver_or_release_existing_lease() {
     let records = outbox.records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].state.as_deref(), Some("queued"));
     assert_eq!(records[0].last_error_code.as_deref(), Some("route_busy"));
     assert_busy_retry_metadata(&records[0], "route_busy");
+    let retries = state
+        .list_runtime_retry_requests_for_original_run("run_task_msg_route_busy")
+        .unwrap();
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].original_run_id, "run_task_msg_route_busy");
+    assert_eq!(retries[0].task_id, "task_msg_route_busy");
+    assert_eq!(
+        retries[0].requested_by_command_id,
+        "runtime.busy.auto-deferred"
+    );
+    assert!(!format!("{:?}", retries[0]).contains("route busy"));
 }
 
 #[test]
@@ -626,8 +653,9 @@ fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
     )
     .unwrap();
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
-    assert_eq!(route.status, "failed");
+    assert_eq!(route.status, "queued");
     assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.last_message_id, None);
     assert_eq!(route.last_error_code.as_deref(), Some("host_home_busy"));
     assert!(state
         .load_cli_driver_run("run_task_msg_host_home_busy")
@@ -654,12 +682,23 @@ fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
     let records = outbox.records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].state.as_deref(), Some("queued"));
     assert_eq!(
         records[0].last_error_code.as_deref(),
         Some("host_home_busy")
     );
     assert_busy_retry_metadata(&records[0], "host_home_busy");
+    let retries = state
+        .list_runtime_retry_requests_for_original_run("run_task_msg_host_home_busy")
+        .unwrap();
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0].original_run_id, "run_task_msg_host_home_busy");
+    assert_eq!(retries[0].task_id, "task_msg_host_home_busy");
+    assert_eq!(
+        retries[0].requested_by_command_id,
+        "runtime.busy.auto-deferred"
+    );
+    assert!(!format!("{:?}", retries[0]).contains("host home busy"));
 }
 
 #[test]

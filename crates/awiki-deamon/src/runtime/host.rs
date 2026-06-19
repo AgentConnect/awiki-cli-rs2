@@ -35,6 +35,7 @@ use crate::DaemonConfig;
 
 const GENERIC_CLI_BUSY_RETRY_AFTER_MS: i64 = 10_000;
 const GENERIC_CLI_BUSY_NEXT_ACTION: &str = "retry_later";
+const GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID: &str = "runtime.busy.auto-deferred";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipientPolicy {
@@ -356,11 +357,23 @@ where
             Ok(session) => session,
             Err(error) => {
                 state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                let deferred = maybe_enqueue_generic_cli_busy_retry(
+                    state,
+                    profile,
+                    &task,
+                    &run,
+                    error.code,
+                    &error.summary,
+                )?;
                 let metadata = error.status_metadata();
                 emit_runtime_status_with_metadata(
                     outbox,
                     &run,
-                    "failed",
+                    if deferred.is_some() {
+                        "queued"
+                    } else {
+                        "failed"
+                    },
                     Some(error.user_message()),
                     Some(error.code),
                     Some(&error.summary),
@@ -380,21 +393,38 @@ where
             }
             Err(error) => {
                 if let Some(route_session) = cli_route_session.as_ref() {
+                    let busy_error = matches!(error.code, "profile_busy" | "host_home_busy");
                     let _ = state.release_cli_route_session_lease(
                         &route_session.route_key,
                         &run.run_id,
                         "failed",
-                        Some(&task_source_message_id),
+                        if busy_error {
+                            None
+                        } else {
+                            Some(&task_source_message_id)
+                        },
                         Some(error.code),
                         Some(&error.summary),
                     );
                 }
                 state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                let deferred = maybe_enqueue_generic_cli_busy_retry(
+                    state,
+                    profile,
+                    &task,
+                    &run,
+                    error.code,
+                    &error.summary,
+                )?;
                 let metadata = error.status_metadata();
                 emit_runtime_status_with_metadata(
                     outbox,
                     &run,
-                    "failed",
+                    if deferred.is_some() {
+                        "queued"
+                    } else {
+                        "failed"
+                    },
                     Some(error.user_message()),
                     Some(error.code),
                     Some(&error.summary),
@@ -854,7 +884,7 @@ fn generic_cli_busy_status_metadata(code: &str) -> Option<Value> {
     match code {
         "route_busy" | "profile_busy" | "host_home_busy" => Some(json!({
             "retryable": true,
-            "deferred": false,
+            "deferred": true,
             "next_action": GENERIC_CLI_BUSY_NEXT_ACTION,
             "retry_after_ms": GENERIC_CLI_BUSY_RETRY_AFTER_MS,
             "retry_after_seconds": GENERIC_CLI_BUSY_RETRY_AFTER_MS / 1000,
@@ -907,6 +937,70 @@ fn acquire_generic_cli_runtime_locks(
         guard.mark_host_home(cli_profile.driver_id);
     }
     Ok(guard)
+}
+
+fn maybe_enqueue_generic_cli_busy_retry(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<Option<crate::state::RuntimeRetryQueueRecord>> {
+    if !matches!(error_code, "route_busy" | "profile_busy" | "host_home_busy") {
+        return Ok(None);
+    }
+    if run.run_id.starts_with("run_retry_") {
+        return Ok(None);
+    }
+    let failed_run = state.load_runtime_run(&run.run_id)?;
+    if failed_run.status != RuntimeRunStatus::Failed {
+        return Ok(None);
+    }
+    if task.agent_did != profile.agent_did
+        || failed_run.runtime_profile_id != profile.runtime_profile_id
+        || failed_run.runtime_plugin_id != crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+    {
+        return Ok(None);
+    }
+    let next_attempt_at_ms = current_time_millis()? + GENERIC_CLI_BUSY_RETRY_AFTER_MS;
+    let retry = state.insert_runtime_retry_request_due_at(
+        &failed_run,
+        GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID,
+        next_attempt_at_ms,
+    )?;
+    if error_code != "route_busy" {
+        if let Some(conversation_id) = task.conversation_id.as_deref() {
+            if let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) {
+                if let Ok(route_key) = cli_route_session_key(
+                    &profile.agent_did,
+                    &profile.controller_scope_key,
+                    &conversation_id,
+                ) {
+                    let _ = state.mark_cli_route_session_deferred(
+                        &route_key,
+                        Some(&run.run_id),
+                        error_code,
+                        error_summary,
+                    );
+                }
+            }
+        }
+    }
+    state.insert_audit_event_json(
+        "runtime.run.retry.auto_deferred",
+        Some(&failed_run.agent_did),
+        Some(&failed_run.runtime_profile_id),
+        Some(&failed_run.run_id),
+        None,
+        json!({
+            "retry_id": retry.retry_id.as_str(),
+            "task_id": failed_run.task_id.as_str(),
+            "busy_reason": error_code,
+            "next_attempt_at_ms": retry.next_attempt_at_ms,
+        }),
+    )?;
+    Ok(Some(retry))
 }
 
 fn existing_runtime_run(

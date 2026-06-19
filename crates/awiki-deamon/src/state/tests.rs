@@ -1104,6 +1104,43 @@ fn runtime_retry_manual_request_is_immediately_due() {
 }
 
 #[test]
+fn runtime_retry_queue_lists_retries_for_original_run_without_payload() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let first_run = failed_runtime_run("run_retry_origin", "task_retry_origin");
+    let other_run = failed_runtime_run("run_retry_other", "task_retry_other");
+    state.insert_runtime_run(&first_run).unwrap();
+    state.insert_runtime_run(&other_run).unwrap();
+
+    let first = state
+        .insert_runtime_retry_request_due_at(&first_run, "runtime.busy.auto-deferred", now + 10_000)
+        .unwrap();
+    let second = state
+        .insert_runtime_retry_request_due_at(&first_run, "cmd_retry_manual", now + 20_000)
+        .unwrap();
+    state
+        .insert_runtime_retry_request_due_at(&other_run, "cmd_retry_other", now)
+        .unwrap();
+
+    let retries = state
+        .list_runtime_retry_requests_for_original_run("run_retry_origin")
+        .unwrap();
+    assert_eq!(
+        retries
+            .iter()
+            .map(|retry| retry.retry_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.retry_id.as_str(), second.retry_id.as_str()]
+    );
+    let dump = format!("{retries:?}");
+    assert!(!dump.contains("secret prompt"));
+}
+
+#[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

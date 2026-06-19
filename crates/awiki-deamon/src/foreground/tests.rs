@@ -25,7 +25,7 @@ use crate::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     ControllerSenderScope, DidAuthMaterial, RegistrationToken,
 };
-use crate::runtime::RuntimeAgentProfile;
+use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus};
 use crate::state::HermesProfileRecord;
 use crate::workspace::WorkspaceMode;
 
@@ -1281,12 +1281,9 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
     profile.display_name = Some("Alice Generic CLI".to_string());
     state.upsert_runtime_agent_profile(&profile).unwrap();
     let mut cli_profile =
-        crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex")
+        crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "command")
             .unwrap();
-    cli_profile.binary_path = Some(root.path().join("missing-codex"));
-    let codex_home = root.path().join("codex-home");
-    std::fs::create_dir_all(&codex_home).unwrap();
-    cli_profile.config_home = Some(codex_home);
+    cli_profile.binary_path = Some(std::env::current_exe().unwrap());
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::default();
@@ -1313,6 +1310,125 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
     assert!(error.to_string().contains("not installed"));
     assert!(gateway.created_sessions().is_empty());
     assert!(outbox.records().is_empty());
+}
+
+#[test]
+fn foreground_retry_queue_defers_again_when_generic_cli_route_is_busy() {
+    let (root, config, state) = fixture();
+    let mut profile = profile(root.path());
+    profile.agent_did = "did:agent:generic-cli-retry".to_string();
+    profile.runtime_profile_id = "profile_generic_cli_retry".to_string();
+    profile.runtime_plugin_id = GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string();
+    profile.workspace_root = Some(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_retry"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    let mut cli_profile =
+        crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "command")
+            .unwrap();
+    cli_profile.binary_path = Some(std::env::current_exe().unwrap());
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let task = RuntimeTask {
+        task_id: "task_retry_route_busy".to_string(),
+        agent_did: profile.agent_did.clone(),
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: profile.controller_did.clone(),
+        sender_did: "did:human:alice".to_string(),
+        requester_did: "did:human:alice".to_string(),
+        requester_full_handle: None,
+        trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+        reply_recipient_did: "did:human:alice".to_string(),
+        conversation_id: Some("direct:did:human:bob".to_string()),
+        text: "retry prompt must not enter queue".to_string(),
+    };
+    state.insert_runtime_task(&task).unwrap();
+    let original_run = RuntimeRun {
+        run_id: "run_retry_route_busy_original".to_string(),
+        task_id: task.task_id.clone(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        runtime_plugin_id: profile.runtime_plugin_id.clone(),
+        workspace_id: profile.workspace_id.clone(),
+        status: RuntimeRunStatus::Failed,
+    };
+    state.insert_runtime_run(&original_run).unwrap();
+    let now = crate::security::runtime_token::current_time_millis().unwrap();
+    let retry = state
+        .insert_runtime_retry_request_due_at(&original_run, "runtime.busy.auto-deferred", now)
+        .unwrap();
+
+    let route_key = crate::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        "direct:did:human:bob",
+    )
+    .unwrap();
+    let route_hash = state.cli_route_key_hash(&route_key).unwrap();
+    let workspace_root = profile.workspace_root.as_ref().unwrap();
+    let session_root = workspace_root
+        .parent()
+        .and_then(|runtime_workspaces_root| runtime_workspaces_root.parent())
+        .unwrap()
+        .join("sessions")
+        .join(&profile.runtime_profile_id);
+    let paths = crate::workspace::route_workspace_paths(workspace_root, &session_root, &route_hash)
+        .unwrap();
+    let route = state
+        .get_or_create_cli_route_session(crate::state::CreateCliRouteSession {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: "command".to_string(),
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: profile.controller_did.clone(),
+            conversation_id: "direct:did:human:bob".to_string(),
+            workspace_path: paths.workspace_path,
+            session_dir: paths.session_dir,
+        })
+        .unwrap();
+    assert!(
+        state
+            .try_acquire_cli_route_session_lease(
+                &route.route_key,
+                "run_existing",
+                "test",
+                now + 60_000,
+            )
+            .unwrap()
+    );
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let processed = drain_runtime_retry_queue_once(&config, &state, &outbox).unwrap();
+
+    assert_eq!(processed, 1);
+    let refreshed = state.load_runtime_retry_request(&retry.retry_id).unwrap();
+    assert_eq!(refreshed.status, "queued");
+    assert_eq!(refreshed.attempts, 1);
+    assert!(refreshed.next_attempt_at_ms > now);
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "running");
+    assert_eq!(route.lock_run_id.as_deref(), Some("run_existing"));
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].last_error_code.as_deref(), Some("route_busy"));
+    let metadata = records[0].metadata.as_ref().expect("busy metadata");
+    assert_eq!(metadata["deferred"].as_bool(), Some(true));
+    assert_eq!(metadata["next_action"].as_str(), Some("retry_later"));
+    let dump = format!("{refreshed:?}");
+    assert!(!dump.contains("retry prompt"));
+    assert!(!dump.contains("direct:did:human:bob"));
 }
 
 #[test]
