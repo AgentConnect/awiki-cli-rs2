@@ -912,6 +912,7 @@ pub struct RuntimeRetryQueueRecord {
     pub status: String,
     pub requested_by_command_id: String,
     pub attempts: i64,
+    pub next_attempt_at_ms: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -985,6 +986,12 @@ impl RuntimeRetryQueueRecord {
             if value.trim().is_empty() {
                 bail!("{field_name} must not be empty");
             }
+        }
+        if self.attempts < 0 {
+            bail!("attempts must not be negative");
+        }
+        if self.next_attempt_at_ms < 0 {
+            bail!("next_attempt_at_ms must not be negative");
         }
         Ok(())
     }

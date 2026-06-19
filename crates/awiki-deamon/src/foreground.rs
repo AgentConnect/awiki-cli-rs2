@@ -57,6 +57,7 @@ use crate::runtime::{
     RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRunStatus, RuntimeTask,
 };
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
+use crate::security::runtime_token::current_time_millis;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 mod attachments;
@@ -690,7 +691,7 @@ fn drain_runtime_retry_queue_once(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
 ) -> Result<usize> {
-    let retries = state.list_queued_runtime_retries(10)?;
+    let retries = state.list_queued_runtime_retries_due(current_time_millis()?, 10)?;
     let mut processed = 0usize;
     for retry in retries {
         state.mark_runtime_retry_status(&retry.retry_id, "running")?;

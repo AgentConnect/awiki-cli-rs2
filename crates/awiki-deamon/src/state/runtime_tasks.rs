@@ -169,8 +169,20 @@ INSERT OR IGNORE INTO runtime_run (
         original_run: &RuntimeRun,
         command_id: &str,
     ) -> Result<RuntimeRetryQueueRecord> {
+        self.insert_runtime_retry_request_due_at(original_run, command_id, current_time_millis()?)
+    }
+
+    pub fn insert_runtime_retry_request_due_at(
+        &self,
+        original_run: &RuntimeRun,
+        command_id: &str,
+        next_attempt_at_ms: i64,
+    ) -> Result<RuntimeRetryQueueRecord> {
         if original_run.status != RuntimeRunStatus::Failed {
             bail!("only failed runs can be retried");
+        }
+        if next_attempt_at_ms < 0 {
+            bail!("next_attempt_at_ms must not be negative");
         }
         let command_id = command_id.trim();
         if command_id.is_empty() {
@@ -189,6 +201,7 @@ INSERT OR IGNORE INTO runtime_run (
             status: "queued".to_string(),
             requested_by_command_id: command_id.to_string(),
             attempts: 0,
+            next_attempt_at_ms,
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -207,9 +220,10 @@ INSERT INTO runtime_retry_queue (
     status,
     requested_by_command_id,
     attempts,
+    next_attempt_at_ms,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', ?8, 0, ?9, ?9)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', ?8, 0, ?9, ?10, ?10)
 "#,
             rusqlite::params![
                 record.retry_id,
@@ -220,6 +234,7 @@ INSERT INTO runtime_retry_queue (
                 record.runtime_plugin_id,
                 record.workspace_id,
                 record.requested_by_command_id,
+                record.next_attempt_at_ms,
                 now,
             ],
         )?;
@@ -242,6 +257,7 @@ SELECT
     status,
     requested_by_command_id,
     attempts,
+    next_attempt_at_ms,
     created_at_ms,
     updated_at_ms
 FROM runtime_retry_queue
@@ -253,10 +269,14 @@ WHERE retry_id = ?1
             .context("load runtime retry request")
     }
 
-    pub fn list_queued_runtime_retries(
+    pub fn list_queued_runtime_retries_due(
         &self,
+        now_ms: i64,
         limit: usize,
     ) -> Result<Vec<RuntimeRetryQueueRecord>> {
+        if now_ms < 0 {
+            bail!("now_ms must not be negative");
+        }
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             r#"
@@ -271,21 +291,32 @@ SELECT
     status,
     requested_by_command_id,
     attempts,
+    next_attempt_at_ms,
     created_at_ms,
     updated_at_ms
 FROM runtime_retry_queue
 WHERE status = 'queued'
-ORDER BY created_at_ms ASC, retry_id ASC
-LIMIT ?1
+  AND next_attempt_at_ms <= ?1
+ORDER BY next_attempt_at_ms ASC, created_at_ms ASC, retry_id ASC
+LIMIT ?2
 "#,
         )?;
-        let rows =
-            statement.query_map([limit.max(1) as i64], runtime_retry_queue_record_from_row)?;
+        let rows = statement.query_map(
+            rusqlite::params![now_ms, limit.max(1) as i64],
+            runtime_retry_queue_record_from_row,
+        )?;
         let mut retries = Vec::new();
         for row in rows {
             retries.push(row?);
         }
         Ok(retries)
+    }
+
+    pub fn list_queued_runtime_retries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RuntimeRetryQueueRecord>> {
+        self.list_queued_runtime_retries_due(current_time_millis()?, limit)
     }
 
     pub fn mark_runtime_retry_status(&self, retry_id: &str, status: &str) -> Result<()> {

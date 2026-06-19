@@ -2101,6 +2101,11 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
     assert_eq!(retry.original_run_id, "run_failed_retry");
     assert_eq!(retry.task_id, "task_failed_retry");
     assert_eq!(retry.requested_by_command_id, "cmd_retry_run");
+    assert_eq!(
+        status.payload["result"]["next_attempt_at_ms"],
+        retry.next_attempt_at_ms
+    );
+    assert!(status.payload["result"]["next_attempt_at"].is_string());
     let dump = status.payload.to_string();
     assert!(!dump.contains("super secret prompt"));
     assert!(!format!("{retry:?}").contains("super secret prompt"));

@@ -1400,6 +1400,8 @@ where
             "conversation_id": task.conversation_id,
             "retry_id": retry.retry_id,
             "retry_status": retry.status,
+            "next_attempt_at_ms": retry.next_attempt_at_ms,
+            "next_attempt_at": rfc3339_from_millis(retry.next_attempt_at_ms),
             "updated_at": rfc3339_from_millis(retry.updated_at_ms),
         }),
     )

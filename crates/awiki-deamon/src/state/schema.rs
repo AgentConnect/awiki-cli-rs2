@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 24;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 25;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -317,12 +317,16 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             requested_by_command_id TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
         ON runtime_retry_queue(status, created_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
+        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
 
         CREATE TABLE IF NOT EXISTS runtime_agent_create_request (
             daemon_agent_did TEXT NOT NULL,
@@ -536,6 +540,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_cli_route_sessions_v22(connection)?;
     migrate_cli_runtime_locks_v23(connection)?;
     migrate_daemon_state_metadata_v24(connection)?;
+    migrate_runtime_retry_queue_due_v25(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -856,6 +861,22 @@ fn migrate_runtime_requester_contract_v21(connection: &Connection) -> Result<()>
     Ok(())
 }
 
+fn migrate_runtime_retry_queue_due_v25(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "runtime_retry_queue",
+        "next_attempt_at_ms",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    connection.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
+        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
+        "#,
+    )?;
+    Ok(())
+}
+
 fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"
@@ -870,12 +891,16 @@ fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             requested_by_command_id TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
         ON runtime_retry_queue(status, created_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
+        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
         "#,
     )?;
     Ok(())

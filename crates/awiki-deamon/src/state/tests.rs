@@ -976,6 +976,133 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     assert_eq!(loaded.text, task.text);
 }
 
+fn failed_runtime_run(run_id: &str, task_id: &str) -> RuntimeRun {
+    RuntimeRun {
+        run_id: run_id.to_string(),
+        task_id: task_id.to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        runtime_plugin_id: "hermes".to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Failed,
+    }
+}
+
+#[test]
+fn runtime_retry_queue_records_due_time_and_filters_future_retries() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let due_run = failed_runtime_run("run_retry_due", "task_retry_due");
+    let future_run = failed_runtime_run("run_retry_future", "task_retry_future");
+    state.insert_runtime_run(&due_run).unwrap();
+    state.insert_runtime_run(&future_run).unwrap();
+
+    let due = state
+        .insert_runtime_retry_request_due_at(&due_run, "cmd_retry_due", now)
+        .unwrap();
+    let future = state
+        .insert_runtime_retry_request_due_at(&future_run, "cmd_retry_future", now + 60_000)
+        .unwrap();
+
+    assert_eq!(due.next_attempt_at_ms, now);
+    assert_eq!(future.next_attempt_at_ms, now + 60_000);
+    assert_eq!(
+        state
+            .load_runtime_retry_request(&future.retry_id)
+            .unwrap()
+            .next_attempt_at_ms,
+        now + 60_000
+    );
+
+    let queued = state.list_queued_runtime_retries_due(now, 10).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].retry_id, due.retry_id);
+
+    let queued = state
+        .list_queued_runtime_retries_due(now + 60_000, 10)
+        .unwrap();
+    assert_eq!(
+        queued
+            .iter()
+            .map(|retry| retry.retry_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![due.retry_id.as_str(), future.retry_id.as_str()]
+    );
+}
+
+#[test]
+fn runtime_retry_queue_lists_due_retries_by_due_time_then_fifo() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let late_run = failed_runtime_run("run_retry_late", "task_retry_late");
+    let first_run = failed_runtime_run("run_retry_first", "task_retry_first");
+    let second_run = failed_runtime_run("run_retry_second", "task_retry_second");
+    state.insert_runtime_run(&late_run).unwrap();
+    state.insert_runtime_run(&first_run).unwrap();
+    state.insert_runtime_run(&second_run).unwrap();
+
+    let late = state
+        .insert_runtime_retry_request_due_at(&late_run, "cmd_retry_late", now + 50)
+        .unwrap();
+    let first = state
+        .insert_runtime_retry_request_due_at(&first_run, "cmd_retry_first", now)
+        .unwrap();
+    let second = state
+        .insert_runtime_retry_request_due_at(&second_run, "cmd_retry_second", now)
+        .unwrap();
+
+    let queued = state.list_queued_runtime_retries_due(now + 50, 10).unwrap();
+    assert_eq!(
+        queued
+            .iter()
+            .map(|retry| retry.retry_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            first.retry_id.as_str(),
+            second.retry_id.as_str(),
+            late.retry_id.as_str()
+        ]
+    );
+
+    assert_eq!(
+        state
+            .list_queued_runtime_retries_due(now + 50, 2)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn runtime_retry_manual_request_is_immediately_due() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let before = current_time_millis().unwrap();
+    let run = failed_runtime_run("run_retry_manual", "task_retry_manual");
+    state.insert_runtime_run(&run).unwrap();
+    let retry = state
+        .insert_runtime_retry_request(&run, "cmd_retry_manual")
+        .unwrap();
+    let after = current_time_millis().unwrap();
+
+    assert!(retry.next_attempt_at_ms >= before);
+    assert!(retry.next_attempt_at_ms <= after);
+    let due = state.list_queued_runtime_retries_due(after, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].retry_id, retry.retry_id);
+}
+
 #[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();

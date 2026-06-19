@@ -222,8 +222,9 @@ pub(super) fn runtime_retry_queue_record_from_row(
         status: row.get(7)?,
         requested_by_command_id: row.get(8)?,
         attempts: row.get(9)?,
-        created_at_ms: row.get(10)?,
-        updated_at_ms: row.get(11)?,
+        next_attempt_at_ms: row.get(10)?,
+        created_at_ms: row.get(11)?,
+        updated_at_ms: row.get(12)?,
     })
 }
 
