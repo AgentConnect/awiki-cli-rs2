@@ -25,8 +25,13 @@ use crate::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     ControllerSenderScope, DidAuthMaterial, RegistrationToken,
 };
-use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus};
-use crate::state::HermesProfileRecord;
+use crate::runtime::{
+    RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
+};
+use crate::state::{
+    CliRuntimeProfileRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession,
+    HermesProfileRecord,
+};
 use crate::workspace::WorkspaceMode;
 
 #[derive(Debug, Clone, Default)]
@@ -801,6 +806,154 @@ fn hermes_record(root: &Path) -> HermesProfileRecord {
     }
 }
 
+fn generic_cli_profile(root: &Path) -> RuntimeAgentProfile {
+    RuntimeAgentProfile {
+        agent_did: "did:agent:codex".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        runtime_profile_id: "profile_codex_alice".to_string(),
+        runtime_plugin_id: GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string(),
+        display_name: Some("Alice Codex".to_string()),
+        workspace_id: Some("workspace_codex".to_string()),
+        workspace_root: Some(root.join("runtime/workspaces/profile_codex_alice")),
+        workspace_mode: Some(WorkspaceMode::RouteRoot),
+    }
+}
+
+#[cfg(unix)]
+fn install_fake_codex(root: &Path, state: &DaemonState, profile: &RuntimeAgentProfile) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fake_codex = root.join("codex");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+set -eu
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+cat >/dev/null
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+printf 'queue drain final\n' > "$FINAL_OUTPUT"
+printf '{"session_id":"codex-queue-drain-session"}\n'
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    cli_profile.binary_path = Some(fake_codex);
+    cli_profile.config_home = Some(root.join("codex-home"));
+    std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+}
+
+fn register_generic_cli_runtime(root: &Path, state: &DaemonState) -> RuntimeAgentProfile {
+    let profile = generic_cli_profile(root);
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+    profile
+}
+
+fn enqueue_generic_cli_route_message(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    message_id: &str,
+    text: &str,
+    next_attempt_at_ms: i64,
+) -> crate::state::CliRouteMessageQueueRecord {
+    let conversation_id = "direct:did:human:bob";
+    let route_key = crate::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        conversation_id,
+    )
+    .unwrap();
+    let route_hash = state.cli_route_key_hash(&route_key).unwrap();
+    let workspace_root = profile.workspace_root.as_ref().unwrap();
+    let session_root = workspace_root
+        .parent()
+        .and_then(|runtime_workspaces_root| runtime_workspaces_root.parent())
+        .unwrap()
+        .join("sessions")
+        .join(&profile.runtime_profile_id);
+    let paths = crate::workspace::route_workspace_paths(workspace_root, &session_root, &route_hash)
+        .unwrap();
+    state
+        .get_or_create_cli_route_session(CreateCliRouteSession {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: "codex".to_string(),
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: profile.controller_did.clone(),
+            conversation_id: conversation_id.to_string(),
+            workspace_path: paths.workspace_path,
+            session_dir: paths.session_dir,
+        })
+        .unwrap();
+
+    let task = RuntimeTask {
+        task_id: format!("task_{message_id}"),
+        agent_did: profile.agent_did.clone(),
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: profile.controller_did.clone(),
+        sender_did: profile.controller_did.clone(),
+        requester_did: profile.controller_did.clone(),
+        requester_full_handle: None,
+        trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+        reply_recipient_did: profile.controller_did.clone(),
+        conversation_id: Some(conversation_id.to_string()),
+        text: text.to_string(),
+    };
+    state.insert_runtime_task(&task).unwrap();
+    let failed_run = RuntimeRun {
+        run_id: format!("run_{}", task.task_id),
+        task_id: task.task_id.clone(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        runtime_plugin_id: GENERIC_CLI_RUNTIME_PLUGIN_ID.to_string(),
+        workspace_id: profile.workspace_id.clone(),
+        status: RuntimeRunStatus::Failed,
+    };
+    state.insert_runtime_run(&failed_run).unwrap();
+    state
+        .enqueue_cli_route_message_reference(CreateCliRouteMessageQueueReference {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: "codex".to_string(),
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: profile.controller_did.clone(),
+            conversation_id: conversation_id.to_string(),
+            source_message_id: message_id.to_string(),
+            task_id: Some(task.task_id),
+            run_id: Some(failed_run.run_id),
+            enqueue_reason: "profile_busy".to_string(),
+            next_attempt_at_ms,
+            last_error_code: Some("profile_busy".to_string()),
+            last_error_summary: Some("profile busy".to_string()),
+        })
+        .unwrap()
+}
+
 fn register_runtime_family(root: &Path, state: &DaemonState) {
     let profile = profile(root);
     state.upsert_runtime_agent_profile(&profile).unwrap();
@@ -835,6 +988,144 @@ fn register_runtime_family(root: &Path, state: &DaemonState) {
             &profile.controller_did,
         )
         .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn foreground_cli_route_message_queue_drains_due_item_and_supersedes_runtime_retry() {
+    let (root, config, state) = fixture();
+    let profile = register_generic_cli_runtime(root.path(), &state);
+    install_fake_codex(root.path(), &state, &profile);
+    let now = crate::security::runtime_token::current_time_millis().unwrap();
+    let item =
+        enqueue_generic_cli_route_message(&state, &profile, "msg_queue_due", "run queued", now);
+    let original_run = state
+        .load_runtime_run(item.run_id.as_deref().unwrap())
+        .unwrap();
+    let retry = state
+        .insert_runtime_retry_request_due_at(&original_run, "runtime.busy.auto-deferred", now)
+        .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let processed = drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
+    assert_eq!(processed, 1);
+    let processed_retry = drain_runtime_retry_queue_once(&config, &state, &outbox).unwrap();
+    assert_eq!(processed_retry, 1);
+
+    let queue = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.status, "succeeded");
+    let replay_run_id = queue.run_id.as_deref().unwrap();
+    assert_ne!(replay_run_id, original_run.run_id);
+    assert_eq!(
+        state.load_runtime_run(replay_run_id).unwrap().status,
+        RuntimeRunStatus::Finished
+    );
+    assert_eq!(
+        state
+            .load_runtime_retry_request(&retry.retry_id)
+            .unwrap()
+            .status,
+        "superseded"
+    );
+    let route = state
+        .load_cli_route_session(&item.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.last_message_id.as_deref(), Some("msg_queue_due"));
+    assert_eq!(
+        route.native_session_id.as_deref(),
+        Some("codex-queue-drain-session")
+    );
+    assert!(outbox
+        .records()
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+}
+
+#[cfg(unix)]
+#[test]
+fn foreground_cli_route_message_queue_skips_future_due_item() {
+    let (root, config, state) = fixture();
+    let profile = register_generic_cli_runtime(root.path(), &state);
+    install_fake_codex(root.path(), &state, &profile);
+    let future = crate::security::runtime_token::current_time_millis().unwrap() + 60_000;
+    let item = enqueue_generic_cli_route_message(
+        &state,
+        &profile,
+        "msg_queue_future",
+        "future queued",
+        future,
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let processed = drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
+
+    assert_eq!(processed, 0);
+    let queue = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.status, "queued");
+    assert_eq!(queue.run_id.as_deref(), Some("run_task_msg_queue_future"));
+    assert!(outbox.records().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn foreground_cli_route_message_queue_binding_mismatch_dead_letters_without_launch() {
+    let (root, config, state) = fixture();
+    let profile = register_generic_cli_runtime(root.path(), &state);
+    install_fake_codex(root.path(), &state, &profile);
+    let now = crate::security::runtime_token::current_time_millis().unwrap();
+    let item = enqueue_generic_cli_route_message(
+        &state,
+        &profile,
+        "msg_queue_mismatch",
+        "mismatch queued",
+        now,
+    );
+    state
+        .update_runtime_run_status(item.run_id.as_deref().unwrap(), RuntimeRunStatus::Finished)
+        .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    for attempt in 0..3 {
+        drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
+        if attempt < 2 {
+            state
+                .mark_cli_route_message_queue_failed_or_queued(
+                    &item.queue_id,
+                    "queued",
+                    Some(now),
+                    "queue_replay_failed",
+                    "retry now",
+                )
+                .unwrap();
+        }
+    }
+
+    let queue = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.status, "dead_letter");
+    assert_eq!(queue.attempts, 3);
+    assert_eq!(
+        queue.last_error_code.as_deref(),
+        Some("queue_replay_failed")
+    );
+    assert!(!queue
+        .last_error_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("mismatch queued"));
+    assert!(outbox.records().is_empty());
+    assert!(state
+        .load_runtime_run(&format!("run_replay_{}_1", item.queue_id))
+        .is_err());
 }
 
 fn recording_status_sender(

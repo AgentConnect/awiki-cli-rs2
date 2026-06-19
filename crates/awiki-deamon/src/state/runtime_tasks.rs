@@ -408,6 +408,27 @@ WHERE retry_id = ?3
         Ok(())
     }
 
+    pub fn mark_runtime_retry_superseded_by_cli_route_message_queue(
+        &self,
+        retry_id: &str,
+    ) -> Result<bool> {
+        if retry_id.trim().is_empty() {
+            bail!("retry_id must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = 'superseded',
+    updated_at_ms = ?1
+WHERE retry_id = ?2
+  AND status IN ('queued', 'running')
+"#,
+            rusqlite::params![current_time_millis()?, retry_id],
+        )?;
+        Ok(updated > 0)
+    }
+
     pub fn upsert_runtime_final_outbox_pending(
         &self,
         record: &RuntimeFinalOutboxRecord,
@@ -1233,6 +1254,63 @@ ORDER BY route_sequence ASC, created_at_ms ASC, queue_id ASC
         let mut records = Vec::new();
         for row in rows {
             records.push(row?);
+        }
+        Ok(records)
+    }
+
+    pub fn list_active_cli_route_message_queue_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<CliRouteMessageQueueRecord>> {
+        if task_id.trim().is_empty() {
+            bail!("task_id must not be empty");
+        }
+        self.list_cli_route_message_queue_for_task_where(
+            task_id,
+            "AND status IN ('queued', 'running', 'succeeded')",
+            "active cli route message queue task row",
+        )
+    }
+
+    pub fn list_cli_route_message_queue_for_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<CliRouteMessageQueueRecord>> {
+        if task_id.trim().is_empty() {
+            bail!("task_id must not be empty");
+        }
+        self.list_cli_route_message_queue_for_task_where(
+            task_id,
+            "",
+            "cli route message queue task row",
+        )
+    }
+
+    fn list_cli_route_message_queue_for_task_where(
+        &self,
+        task_id: &str,
+        status_clause: &str,
+        validation_context: &str,
+    ) -> Result<Vec<CliRouteMessageQueueRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            cli_route_message_queue_select_sql(&format!(
+                r#"
+WHERE task_id = ?1
+  {status_clause}
+ORDER BY created_at_ms ASC, queue_id ASC
+"#,
+            ))
+            .as_str(),
+        )?;
+        let rows = statement.query_map([task_id], cli_route_message_queue_record_from_row)?;
+        let mut records = Vec::new();
+        for row in rows {
+            let record = row?;
+            record
+                .validate()
+                .with_context(|| format!("validate {validation_context}"))?;
+            records.push(record);
         }
         Ok(records)
     }
