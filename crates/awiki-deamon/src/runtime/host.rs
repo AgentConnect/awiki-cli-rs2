@@ -537,6 +537,13 @@ where
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
     {
         if let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? {
+            let fallback_driver_id = launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("generic-cli");
             let response = execute_runtime_rpc_request_with_outbox(
                 state,
                 outbox,
@@ -549,7 +556,7 @@ where
             )
             .context("apply fallback final from CLI driver output")?;
             if response.ok {
-                fallback_final_source = Some("codex_output_last_message".to_string());
+                fallback_final_source = Some(format!("{fallback_driver_id}_output_last_message"));
             }
         }
     }
@@ -1209,6 +1216,15 @@ fn emit_runtime_status(
 }
 
 fn runtime_launch_failure_summary(launch_outcome: &RuntimeLaunchOutcome) -> String {
+    if let Some(summary) = launch_outcome
+        .metadata
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return sanitize_user_visible_error_summary(summary);
+    }
     launch_outcome
         .exit_code
         .map(|code| format!("Runtime exited with status {code}"))

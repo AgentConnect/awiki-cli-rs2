@@ -2,6 +2,10 @@ use awiki_deamon::controller_scope::VerifiedControllerSender;
 use awiki_deamon::inbox::{route_controller_text_task_with_verified_sender, ControllerTextMessage};
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
 use awiki_deamon::plugins::generic_cli::{
+    claude_code::{
+        claude_code_final_text_from_stream_json, claude_code_native_session_id_from_stream_json,
+        ClaudeCodeDriver, ClaudeCodeDriverConfig, ClaudeCodeSessionMode,
+    },
     codex::{
         codex_native_session_id_from_stdout_jsonl, CodexDriver, CodexDriverConfig, CodexResumeMode,
     },
@@ -41,6 +45,35 @@ fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
         workspace_id: Some("workspace_awiki".to_string()),
         workspace_root: Some(workspace_root),
         workspace_mode: Some(WorkspaceMode::SharedRoot),
+    }
+}
+
+struct EnvVarGuard {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl EnvVarGuard {
+    fn set(vars: &[(&'static str, &'static str)]) -> Self {
+        let saved = vars
+            .iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect::<Vec<_>>();
+        for (key, value) in vars {
+            std::env::set_var(key, value);
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.saved.iter().rev() {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
     }
 }
 
@@ -1240,6 +1273,237 @@ fn codex_driver_config_requires_profile_config_home() {
     assert!(error.to_string().contains("config_home"));
 }
 
+fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig {
+    ClaudeCodeDriverConfig {
+        binary_path,
+        model: Some("sonnet-test".to_string()),
+        sandbox: "read-only".to_string(),
+        permission_mode: "plan".to_string(),
+        setting_sources: Some("user".to_string()),
+        strict_mcp_config: true,
+        bare: false,
+        no_session_persistence: false,
+        output_dir: None,
+        cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+    }
+}
+
+#[test]
+fn claude_code_driver_command_builder_uses_safe_print_contract() {
+    let root = tempfile::tempdir().unwrap();
+    let driver = ClaudeCodeDriver::new(claude_code_config(root.path().join("claude"))).unwrap();
+
+    let args = driver.command_args_for_mode(ClaudeCodeSessionMode::New {
+        session_id: "11111111-2222-4333-8444-555555555555".to_string(),
+    });
+
+    assert_eq!(args[0], "-p");
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--output-format", "stream-json"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--permission-mode", "plan"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--model", "sonnet-test"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--setting-sources", "user"]));
+    assert!(args.contains(&"--strict-mcp-config".to_string()));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--session-id", "11111111-2222-4333-8444-555555555555"]));
+    assert!(!args.contains(&"--resume".to_string()));
+    assert!(!args.contains(&"--continue".to_string()));
+    assert!(!args.contains(&"--no-session-persistence".to_string()));
+    assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+}
+
+#[test]
+fn claude_code_driver_command_builder_uses_resume_without_continue() {
+    let root = tempfile::tempdir().unwrap();
+    let driver = ClaudeCodeDriver::new(claude_code_config(root.path().join("claude"))).unwrap();
+
+    let args = driver.command_args_for_mode(ClaudeCodeSessionMode::ResumeId(
+        "claude-session-123".to_string(),
+    ));
+
+    assert_eq!(args[0], "-p");
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--resume", "claude-session-123"]));
+    assert!(!args.contains(&"--session-id".to_string()));
+    assert!(!args.contains(&"--continue".to_string()));
+    assert!(!args.contains(&"--no-session-persistence".to_string()));
+}
+
+#[test]
+fn claude_code_stream_json_parser_handles_session_and_result_shapes() {
+    let stdout = br#"
+not json
+{"type":"system","session_id":"claude-session-top"}
+{"message":{"session":{"id":"claude-session-nested"}}}
+{"type":"result","result":"final from result"}
+"#;
+
+    assert_eq!(
+        claude_code_native_session_id_from_stream_json(stdout).as_deref(),
+        Some("claude-session-top")
+    );
+    assert_eq!(
+        claude_code_native_session_id_from_stream_json(
+            br#"{"message":{"session":{"id":"claude-session-nested"}}}"#
+        )
+        .as_deref(),
+        Some("claude-session-nested")
+    );
+    assert_eq!(
+        claude_code_native_session_id_from_stream_json(br#"{"conversation_id":"awiki-route"}"#),
+        None
+    );
+    assert_eq!(
+        claude_code_final_text_from_stream_json(stdout).as_deref(),
+        Some("final from result")
+    );
+    assert_eq!(
+        claude_code_final_text_from_stream_json(
+            br#"{"message":{"content":[{"type":"text","text":"hello "},{"type":"text","text":"world"}]}}"#
+        )
+        .as_deref(),
+        Some("hello world")
+    );
+}
+
+#[test]
+fn claude_code_driver_rejects_unsafe_permission_mode_for_read_only() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = claude_code_config(root.path().join("claude"));
+    config.permission_mode = "default".to_string();
+
+    let error = ClaudeCodeDriver::new(config).unwrap_err();
+
+    assert!(error.to_string().contains("permission_mode"));
+}
+
+#[test]
+fn claude_code_driver_config_defaults_to_host_home_diagnostic() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "claude-code").unwrap();
+    cli_profile.binary_path = Some(root.path().join("claude-from-profile"));
+    cli_profile.default_model = Some("model-from-profile".to_string());
+    cli_profile.default_sandbox = Some("read-only".to_string());
+    cli_profile.driver_config_json = json!({
+        "setting_sources": "user",
+        "strict_mcp_config": true
+    });
+
+    let config = ClaudeCodeDriverConfig::from_profile(&cli_profile).unwrap();
+
+    assert_eq!(config.binary_path, root.path().join("claude-from-profile"));
+    assert_eq!(config.model.as_deref(), Some("model-from-profile"));
+    assert_eq!(config.sandbox, "read-only");
+    assert_eq!(config.permission_mode, "plan");
+    assert_eq!(config.setting_sources.as_deref(), Some("user"));
+    assert!(config.strict_mcp_config);
+    assert!(!config.no_session_persistence);
+}
+
+#[test]
+fn claude_code_driver_config_ignores_driver_config_binary_path() {
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "claude-code").unwrap();
+    cli_profile.driver_config_json = json!({
+        "binary_path": "/tmp/not-trusted-claude",
+        "setting_sources": "user"
+    });
+
+    let config = ClaudeCodeDriverConfig::from_profile(&cli_profile).unwrap();
+
+    assert_eq!(config.binary_path, std::path::PathBuf::from("claude"));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_code_registry_runs_profile_instead_of_not_implemented() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_claude = root.path().join("claude-registry");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+cat >/dev/null
+printf '{"type":"system","session_id":"claude-registry-session"}\n'
+printf '{"type":"result","result":"registry claude finished"}\n'
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "claude-code").unwrap();
+    cli_profile.binary_path = Some(fake_claude);
+    cli_profile.driver_config_json = json!({"setting_sources": "user"});
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let plugin = GenericCliDriverRegistry::new(cli_profile);
+    let installed = plugin.check_install_status().unwrap();
+    assert!(installed.installed);
+    assert!(!installed
+        .detail
+        .unwrap_or_default()
+        .contains("not implemented"));
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_registry".to_string(),
+            conversation_id: Some("conv_claude_registry".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run registry claude".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(
+        result.launch_outcome.metadata["driver_id"].as_str(),
+        Some("claude-code")
+    );
+    assert_eq!(
+        result.launch_outcome.metadata["native_session_id"].as_str(),
+        Some("claude-registry-session")
+    );
+    let records = outbox.records();
+    assert!(records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final
+            && record.text.as_deref() == Some("registry claude finished")));
+}
+
 #[cfg(unix)]
 #[test]
 fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {
@@ -1861,6 +2125,414 @@ fi
         Some("--last")
     );
     assert!(!second_args.contains("--all"));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_code_route_root_records_generated_session_and_resumes_same_route() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+
+    let fake_claude = root.path().join("claude-route-resume");
+    let args_capture_dir = root.path().join("claude-args");
+    let prompt_capture_dir = root.path().join("claude-prompts");
+    let env_capture_dir = root.path().join("claude-env");
+    std::fs::create_dir_all(&args_capture_dir).unwrap();
+    std::fs::create_dir_all(&prompt_capture_dir).unwrap();
+    std::fs::create_dir_all(&env_capture_dir).unwrap();
+    std::fs::write(
+        &fake_claude,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--version" ]; then
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+RUN="${{AWIKI_DAEMON_RUN_ID}}"
+printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
+cat > "{prompt_capture_dir}/$RUN.prompt"
+cat > "{env_capture_dir}/$RUN.env" <<ENV
+SOCKET=${{AWIKI_DAEMON_SOCKET-}}
+RUN_ID=${{AWIKI_DAEMON_RUN_ID-}}
+TASK_ID=${{AWIKI_DAEMON_TASK_ID-}}
+AGENT_DID=${{AWIKI_DAEMON_AGENT_DID-}}
+PROFILE_ID=${{AWIKI_DAEMON_RUNTIME_PROFILE_ID-}}
+WRAPPER=${{AWIKI_DAEMON_CLI_WRAPPER-}}
+OPENAI_API_KEY=${{OPENAI_API_KEY-}}
+ANTHROPIC_API_KEY=${{ANTHROPIC_API_KEY-}}
+AWS_SECRET_ACCESS_KEY=${{AWS_SECRET_ACCESS_KEY-}}
+GITHUB_TOKEN=${{GITHUB_TOKEN-}}
+NPM_TOKEN=${{NPM_TOKEN-}}
+ENV
+SESSION=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--session-id" ] || [ "$PREV" = "--resume" ]; then
+    SESSION="$ARG"
+  fi
+  PREV="$ARG"
+done
+printf '{{"type":"system","session_id":"%s"}}\n' "$SESSION"
+printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
+"#,
+            args_capture_dir = args_capture_dir.display(),
+            prompt_capture_dir = prompt_capture_dir.display(),
+            env_capture_dir = env_capture_dir.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "claude-code").unwrap();
+    cli_profile.binary_path = Some(fake_claude);
+    cli_profile.default_sandbox = Some("read-only".to_string());
+    cli_profile.driver_config_json = json!({
+        "setting_sources": "user",
+        "strict_mcp_config": true
+    });
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    let plugin = GenericCliDriverRegistry::new(cli_profile);
+
+    let _secret_env = EnvVarGuard::set(&[
+        ("OPENAI_API_KEY", "openai-secret"),
+        ("ANTHROPIC_API_KEY", "anthropic-secret"),
+        ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+        ("GITHUB_TOKEN", "github-secret"),
+        ("NPM_TOKEN", "npm-secret"),
+    ]);
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_route_1".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "first claude route message".to_string(),
+        },
+    )
+    .unwrap();
+    let first_run = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let route = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(route.native_session_source.as_deref(), Some("stream_json"));
+    let first_native_id = route.native_session_id.clone().unwrap();
+    assert_eq!(
+        first_run.native_session_id.as_deref(),
+        Some(first_native_id.as_str())
+    );
+    assert_eq!(
+        first_run.fallback_final_source.as_deref(),
+        Some("claude-code_output_last_message")
+    );
+    assert_eq!(
+        first_run.final_output_path,
+        Some(route.session_dir.join("last-output.md"))
+    );
+    let first_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_1.args")).unwrap();
+    assert!(first_args.starts_with("-p\n"));
+    assert!(first_args.contains("--output-format\nstream-json\n"));
+    assert!(first_args.contains("--permission-mode\nplan\n"));
+    assert!(first_args.contains("--session-id\n"));
+    assert!(first_args.contains(&format!("{first_native_id}\n")));
+    assert!(!first_args.contains("--resume\n"));
+    assert!(!first_args.contains("--continue"));
+    assert!(!first_args.contains("--no-session-persistence"));
+    assert!(!first_args.contains("--dangerously-skip-permissions"));
+
+    let first_prompt =
+        std::fs::read_to_string(prompt_capture_dir.join("run_task_msg_claude_route_1.prompt"))
+            .unwrap();
+    assert!(first_prompt.contains("driver_id: claude-code"));
+    assert!(first_prompt.contains("message_id: msg_claude_route_1"));
+    assert!(first_prompt.contains("user_message:\nfirst claude route message"));
+    assert!(!first_prompt.contains("rtok_"));
+    assert!(!first_prompt.contains(config.local_socket_path.to_str().unwrap()));
+
+    let first_env =
+        std::fs::read_to_string(env_capture_dir.join("run_task_msg_claude_route_1.env")).unwrap();
+    assert!(first_env.contains("SOCKET="));
+    assert!(first_env.contains("RUN_ID=run_task_msg_claude_route_1"));
+    assert!(first_env.contains("TASK_ID=task_msg_claude_route_1"));
+    assert!(first_env.contains("AGENT_DID=did:agent:alice-coder"));
+    assert!(first_env.contains("PROFILE_ID=profile_generic_cli_1"));
+    assert!(first_env.contains("WRAPPER=library:awiki_deamon::cli_wrapper"));
+    assert!(first_env.contains("OPENAI_API_KEY=\n"));
+    assert!(first_env.contains("ANTHROPIC_API_KEY=\n"));
+    assert!(first_env.contains("AWS_SECRET_ACCESS_KEY=\n"));
+    assert!(first_env.contains("GITHUB_TOKEN=\n"));
+    assert!(first_env.contains("NPM_TOKEN=\n"));
+
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_route_2".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "second claude route message".to_string(),
+        },
+    )
+    .unwrap();
+    let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    assert_eq!(
+        second_run.native_session_id.as_deref(),
+        Some(first_native_id.as_str())
+    );
+    let second_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_2.args")).unwrap();
+    assert!(second_args.contains("--resume\n"));
+    assert!(second_args.contains(&format!("{first_native_id}\n")));
+    assert!(!second_args.contains("--session-id\n"));
+    assert!(!second_args.contains("--continue"));
+    assert!(!second_args.contains("--no-session-persistence"));
+
+    state
+        .reset_cli_route_session_by_route(&first_run.route_key)
+        .unwrap();
+    let third = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_route_3".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "after reset".to_string(),
+        },
+    )
+    .unwrap();
+    let third_run = state.load_cli_driver_run(&third.run.run_id).unwrap();
+    assert_ne!(
+        third_run.native_session_id.as_deref(),
+        Some(first_native_id.as_str())
+    );
+    let third_args =
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_3.args")).unwrap();
+    assert!(third_args.contains("--session-id\n"));
+    assert!(!third_args.contains(&format!("--resume\n{first_native_id}\n")));
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_code_driver_nonzero_exit_does_not_record_generated_session_or_final() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_claude = root.path().join("claude-fail");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+cat >/dev/null
+printf '{"type":"error","message":"auth missing"}\n'
+exit 9
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let plugin = GenericCliRuntimePlugin::new(
+        ClaudeCodeDriver::new(claude_code_config(fake_claude)).unwrap(),
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_fail".to_string(),
+            conversation_id: Some("conv_claude_fail".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run failing claude".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.exit_code, Some(9));
+    assert_eq!(
+        result.launch_outcome.metadata["native_session_id"],
+        serde_json::Value::Null
+    );
+    let records = outbox.records();
+    assert!(records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Status
+            && record.state.as_deref() == Some("failed")));
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.driver_id, "claude-code");
+    assert_eq!(run_record.native_session_id, None);
+    assert_eq!(run_record.fallback_final_source, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_code_route_session_rejects_no_session_persistence() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+
+    let fake_claude = root.path().join("claude-no-persist");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+echo "unexpected claude invocation" >&2
+exit 12
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "claude-code").unwrap();
+    cli_profile.binary_path = Some(fake_claude);
+    cli_profile.default_sandbox = Some("read-only".to_string());
+    cli_profile.driver_config_json = json!({
+        "setting_sources": "user",
+        "no_session_persistence": true
+    });
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    let plugin = GenericCliDriverRegistry::new(cli_profile);
+
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_no_persist".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "route session should not use no persistence".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.exit_code, Some(2));
+    assert_eq!(
+        result.launch_outcome.metadata["error_code"].as_str(),
+        Some("session_persistence_disabled")
+    );
+    assert!(result.launch_outcome.metadata["error_summary"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("no_session_persistence"));
+    let run = state
+        .load_runtime_run("run_task_msg_claude_no_persist")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let cli_run = state
+        .load_cli_driver_run("run_task_msg_claude_no_persist")
+        .unwrap();
+    assert_eq!(cli_run.driver_id, "claude-code");
+    assert_eq!(cli_run.native_session_id, None);
+    assert_eq!(cli_run.fallback_final_source, None);
+    let route = state
+        .load_cli_route_session(&cli_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.last_error_code.as_deref(), Some("runtime_failed"));
+    assert!(route
+        .last_error_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("no_session_persistence"));
+    let records = outbox.records();
+    assert!(records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Status
+            && record.state.as_deref() == Some("failed")));
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
 }
 
 #[cfg(unix)]

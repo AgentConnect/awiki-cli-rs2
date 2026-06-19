@@ -3,6 +3,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
+pub mod claude_code;
 pub mod codex;
 
 use crate::cli_wrapper::CliWrapperRequest;
@@ -182,8 +183,10 @@ impl RuntimePlugin for GenericCliDriverRegistry {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
         match self.cli_profile.driver_id.as_str() {
             "command" => command_driver_from_profile(&self.cli_profile)?.check_install_status(),
+            "claude-code" => claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?
+                .check_install_status(),
             "codex" => codex::CodexDriver::from_profile(&self.cli_profile)?.check_install_status(),
-            "claude-code" | "gemini" => Ok(RuntimeInstallStatus {
+            "gemini" => Ok(RuntimeInstallStatus {
                 installed: false,
                 detail: Some(format!(
                     "generic-cli driver {} is not implemented yet",
@@ -204,7 +207,11 @@ impl RuntimePlugin for GenericCliDriverRegistry {
                 GenericCliRuntimePlugin::new(codex::CodexDriver::from_profile(&self.cli_profile)?)
                     .launch_run(context)
             }
-            "claude-code" | "gemini" => {
+            "claude-code" => GenericCliRuntimePlugin::new(
+                claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?,
+            )
+            .launch_run(context),
+            "gemini" => {
                 bail!(
                     "generic-cli driver {} is not implemented yet",
                     self.cli_profile.driver_id
