@@ -688,6 +688,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "default_sandbox": null,
                 "route_hash": generic_cli_route_hash_summary(state),
                 "route_session_counts": empty_route_session_counts(),
+                "route_message_queue": unsupported_route_message_queue_summary("profile_missing"),
                 "max_parallel_runs_per_profile": 1,
                 "runtime_target_required": true,
                 "setup": generic_cli_setup_summary(
@@ -741,6 +742,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
                 "default_sandbox": null,
                 "route_hash": generic_cli_route_hash_summary(state),
                 "route_session_counts": empty_route_session_counts(),
+                "route_message_queue": unsupported_route_message_queue_summary("profile_missing"),
                 "max_parallel_runs_per_profile": 1,
                 "runtime_target_required": true,
                 "setup": generic_cli_setup_summary(
@@ -798,6 +800,13 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
         profile.driver_id == "claude-code" && home_isolation == "host_default";
     let route_session_counts =
         generic_cli_route_session_counts(state, runtime_profile_id, &runtime.controller_scope_key);
+    let route_message_queue = generic_cli_route_message_queue_summary(
+        state,
+        &runtime.agent_did,
+        runtime_profile_id,
+        &profile.driver_id,
+        &runtime.controller_scope_key,
+    );
     let active_session_count = route_session_counts
         .get("active")
         .and_then(Value::as_u64)
@@ -841,6 +850,7 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
             "default_sandbox": profile.default_sandbox,
             "route_hash": generic_cli_route_hash_summary(state),
             "route_session_counts": route_session_counts,
+            "route_message_queue": route_message_queue,
             "max_parallel_runs_per_profile": 1,
             "runtime_target_required": true,
             "setup": generic_cli_setup_summary(
@@ -954,6 +964,33 @@ fn empty_route_session_counts() -> Value {
     })
 }
 
+fn empty_route_message_queue_summary() -> Value {
+    json!({
+        "supported": true,
+        "dispatch_source": "cli_route_message_queue",
+        "runtime_retry_coordination": "auto_deferred_superseded",
+        "contains_user_content": false,
+        "last_message_id_watermark_policy": "final_only",
+        "queued_count": 0,
+        "running_count": 0,
+        "succeeded_count": 0,
+        "failed_count": 0,
+        "cancelled_count": 0,
+        "dead_letter_count": 0,
+        "due_queued_count": 0,
+        "due_route_count": 0,
+        "oldest_queued_age_ms": null,
+        "next_action": "none",
+    })
+}
+
+fn unsupported_route_message_queue_summary(reason: &str) -> Value {
+    let mut summary = empty_route_message_queue_summary();
+    summary["supported"] = json!(false);
+    summary["unsupported_reason"] = json!(reason);
+    summary
+}
+
 fn empty_generic_cli_runtime_lock_summary() -> Value {
     json!({
         "profile_lock_supported": true,
@@ -965,6 +1002,62 @@ fn empty_generic_cli_runtime_lock_summary() -> Value {
         "max_parallel_runs_per_profile": 1,
         "host_home_shared_lock": false,
     })
+}
+
+fn generic_cli_route_message_queue_summary(
+    state: &DaemonState,
+    agent_did: &str,
+    runtime_profile_id: &str,
+    driver_id: &str,
+    controller_scope_key: &str,
+) -> Value {
+    if !matches!(driver_id, "codex" | "claude-code") {
+        return unsupported_route_message_queue_summary("unsupported_driver");
+    }
+    let Ok(summary) = state.summarize_cli_route_message_queue_for_runtime(
+        agent_did,
+        runtime_profile_id,
+        driver_id,
+        controller_scope_key,
+        current_time_millis().unwrap_or(0),
+    ) else {
+        return unsupported_route_message_queue_summary("summary_unavailable");
+    };
+    json!({
+        "supported": true,
+        "dispatch_source": "cli_route_message_queue",
+        "runtime_retry_coordination": "auto_deferred_superseded",
+        "contains_user_content": false,
+        "last_message_id_watermark_policy": "final_only",
+        "queued_count": summary.queued_count,
+        "running_count": summary.running_count,
+        "succeeded_count": summary.succeeded_count,
+        "failed_count": summary.failed_count,
+        "cancelled_count": summary.cancelled_count,
+        "dead_letter_count": summary.dead_letter_count,
+        "due_queued_count": summary.due_queued_count,
+        "due_route_count": summary.due_route_count,
+        "oldest_queued_age_ms": summary.oldest_queued_age_ms,
+        "next_action": generic_cli_route_message_queue_next_action(
+            summary.dead_letter_count,
+            summary.queued_count,
+            summary.running_count,
+        ),
+    })
+}
+
+fn generic_cli_route_message_queue_next_action(
+    dead_letter_count: i64,
+    queued_count: i64,
+    running_count: i64,
+) -> &'static str {
+    if dead_letter_count > 0 {
+        "manual_review_required"
+    } else if queued_count > 0 || running_count > 0 {
+        "retry_later"
+    } else {
+        "none"
+    }
 }
 
 fn generic_cli_runtime_lock_summary(
@@ -1341,7 +1434,10 @@ mod tests {
     use crate::agent::AgentDefinition;
     use crate::plugins::generic_cli::GENERIC_CLI_RUNTIME_PLUGIN_ID;
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
-    use crate::state::{CliRuntimeProfileRecord, CreateCliRouteSession, HermesProfileRecord};
+    use crate::state::{
+        CliRuntimeProfileRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession,
+        HermesProfileRecord,
+    };
     use crate::workspace::WorkspaceMode;
     use std::collections::BTreeSet;
     use std::sync::{Mutex, MutexGuard};
@@ -1469,6 +1565,30 @@ mod tests {
             session_dir: root
                 .join("runtime/sessions/profile_codex_alice")
                 .join(route_segment),
+        }
+    }
+
+    fn create_test_queue_reference(
+        route: &crate::state::CliRouteSessionRecord,
+        source_message_id: &str,
+        next_attempt_at_ms: i64,
+    ) -> CreateCliRouteMessageQueueReference {
+        CreateCliRouteMessageQueueReference {
+            agent_did: route.agent_did.clone(),
+            runtime_profile_id: route.runtime_profile_id.clone(),
+            driver_id: route.driver_id.clone(),
+            controller_user_id: route.controller_user_id.clone(),
+            controller_full_handle: route.controller_full_handle.clone(),
+            controller_scope_key: route.controller_scope_key.clone(),
+            controller_did: route.controller_did.clone(),
+            conversation_id: route.conversation_id.clone(),
+            source_message_id: source_message_id.to_string(),
+            task_id: Some(format!("task_{source_message_id}")),
+            run_id: Some(format!("run_{source_message_id}")),
+            enqueue_reason: "profile_busy".to_string(),
+            next_attempt_at_ms,
+            last_error_code: Some("profile_busy".to_string()),
+            last_error_summary: Some("profile busy sanitized".to_string()),
         }
     }
 
@@ -2085,6 +2205,263 @@ mod tests {
         assert!(!dump.contains("thread-123"));
         assert!(!dump.contains("secret-token"));
         assert!(!dump.contains(&active.route_key));
+    }
+
+    #[test]
+    fn generic_cli_runtime_status_reports_empty_route_message_queue_summary() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let runtime = generic_cli_runtime();
+        state.upsert_agent_definition(&runtime).unwrap();
+        let config_home = root
+            .path()
+            .join("runtime/profiles/profile_codex_alice/codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_codex_alice", "codex").unwrap();
+        cli_profile.binary_path = Some(root.path().join("missing-codex"));
+        cli_profile.config_home = Some(config_home);
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+        let queue = &diagnostics["config_summary"]["route_message_queue"];
+
+        assert_eq!(queue["supported"], true);
+        assert_eq!(queue["dispatch_source"], "cli_route_message_queue");
+        assert_eq!(
+            queue["runtime_retry_coordination"],
+            "auto_deferred_superseded"
+        );
+        assert_eq!(queue["contains_user_content"], false);
+        assert_eq!(queue["last_message_id_watermark_policy"], "final_only");
+        assert_eq!(queue["queued_count"], 0);
+        assert_eq!(queue["running_count"], 0);
+        assert_eq!(queue["succeeded_count"], 0);
+        assert_eq!(queue["failed_count"], 0);
+        assert_eq!(queue["cancelled_count"], 0);
+        assert_eq!(queue["dead_letter_count"], 0);
+        assert_eq!(queue["due_queued_count"], 0);
+        assert_eq!(queue["due_route_count"], 0);
+        assert!(queue["oldest_queued_age_ms"].is_null());
+        assert_eq!(queue["next_action"], "none");
+    }
+
+    #[test]
+    fn generic_cli_runtime_status_reports_route_message_queue_summary_without_leakage() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let runtime = generic_cli_runtime();
+        state.upsert_agent_definition(&runtime).unwrap();
+        let config_home = root
+            .path()
+            .join("runtime/profiles/profile_codex_alice/codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_codex_alice", "codex").unwrap();
+        cli_profile.binary_path = Some(root.path().join("missing-codex"));
+        cli_profile.config_home = Some(config_home);
+        cli_profile.default_workspace_mode = WorkspaceMode::RouteRoot;
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let now = current_time_millis().unwrap();
+        let bob = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "direct:did:human:bob",
+            ))
+            .unwrap();
+        let charlie = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "direct:did:human:charlie",
+            ))
+            .unwrap();
+        let future = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "group:did:group:future",
+            ))
+            .unwrap();
+        let running_route = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "thread:thread-running",
+            ))
+            .unwrap();
+        let succeeded_route = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "thread:thread-succeeded",
+            ))
+            .unwrap();
+        let failed_route = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "thread:thread-failed",
+            ))
+            .unwrap();
+        let cancelled_route = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "thread:thread-cancelled",
+            ))
+            .unwrap();
+        let dead_route = state
+            .get_or_create_cli_route_session(create_test_route_session(
+                root.path(),
+                "thread:thread-dead",
+            ))
+            .unwrap();
+
+        let bob_due_1 = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &bob,
+                "msg_due_bob_1",
+                now.saturating_sub(60_000),
+            ))
+            .unwrap();
+        let bob_due_2 = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &bob,
+                "msg_due_bob_2",
+                now.saturating_sub(30_000),
+            ))
+            .unwrap();
+        let charlie_due = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &charlie,
+                "msg_due_charlie_1",
+                now.saturating_sub(10_000),
+            ))
+            .unwrap();
+        state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &future,
+                "msg_future_1",
+                now + 600_000,
+            ))
+            .unwrap();
+        let running = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &running_route,
+                "msg_running_1",
+                now.saturating_sub(5_000),
+            ))
+            .unwrap();
+        state
+            .mark_cli_route_message_queue_running(&running.queue_id, "native-run-running")
+            .unwrap();
+        let succeeded = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &succeeded_route,
+                "msg_succeeded_1",
+                now.saturating_sub(5_000),
+            ))
+            .unwrap();
+        state
+            .mark_cli_route_message_queue_succeeded(&succeeded.queue_id, "native-run-succeeded")
+            .unwrap();
+        let failed = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &failed_route,
+                "msg_failed_1",
+                now.saturating_sub(5_000),
+            ))
+            .unwrap();
+        state
+            .mark_cli_route_message_queue_failed_or_queued(
+                &failed.queue_id,
+                "failed",
+                None,
+                "missing_binary",
+                "codex missing at /tmp/secret-token",
+            )
+            .unwrap();
+        state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &cancelled_route,
+                "msg_cancelled_1",
+                now.saturating_sub(5_000),
+            ))
+            .unwrap();
+        state
+            .cancel_cli_route_message_queue_for_route(
+                &cancelled_route.runtime_profile_id,
+                &cancelled_route.route_key,
+                "route_reset",
+            )
+            .unwrap();
+        let dead = state
+            .enqueue_cli_route_message_reference(create_test_queue_reference(
+                &dead_route,
+                "msg_dead_1",
+                now.saturating_sub(5_000),
+            ))
+            .unwrap();
+        state
+            .claim_cli_route_message_queue_item(&dead.queue_id, "native-run-dead")
+            .unwrap();
+        state
+            .retry_or_dead_letter_cli_route_message_queue_item(
+                &dead.queue_id,
+                1,
+                now + 60_000,
+                "provider_unavailable",
+                "provider unavailable near /tmp/secret-token",
+            )
+            .unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+        let queue = &diagnostics["config_summary"]["route_message_queue"];
+
+        assert_eq!(queue["supported"], true);
+        assert_eq!(queue["queued_count"], 4);
+        assert_eq!(queue["running_count"], 1);
+        assert_eq!(queue["succeeded_count"], 1);
+        assert_eq!(queue["failed_count"], 1);
+        assert_eq!(queue["cancelled_count"], 1);
+        assert_eq!(queue["dead_letter_count"], 1);
+        assert_eq!(queue["due_queued_count"], 3);
+        assert_eq!(queue["due_route_count"], 2);
+        assert!(queue["oldest_queued_age_ms"].as_i64().unwrap() >= 0);
+        assert_eq!(queue["next_action"], "manual_review_required");
+        assert_eq!(queue["last_message_id_watermark_policy"], "final_only");
+
+        let dump = diagnostics.to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("did:human:bob"));
+        assert!(!dump.contains("did:human:charlie"));
+        assert!(!dump.contains("did:group:future"));
+        assert!(!dump.contains("thread-running"));
+        assert!(!dump.contains("thread-succeeded"));
+        assert!(!dump.contains("thread-failed"));
+        assert!(!dump.contains("thread-cancelled"));
+        assert!(!dump.contains("thread-dead"));
+        assert!(!dump.contains("msg_due_bob_1"));
+        assert!(!dump.contains("msg_due_bob_2"));
+        assert!(!dump.contains("msg_due_charlie_1"));
+        assert!(!dump.contains("msg_future_1"));
+        assert!(!dump.contains("msg_running_1"));
+        assert!(!dump.contains("msg_succeeded_1"));
+        assert!(!dump.contains("msg_failed_1"));
+        assert!(!dump.contains("msg_cancelled_1"));
+        assert!(!dump.contains("msg_dead_1"));
+        assert!(!dump.contains(&bob.route_key));
+        assert!(!dump.contains(&bob_due_1.queue_id));
+        assert!(!dump.contains(&bob_due_2.queue_id));
+        assert!(!dump.contains(&charlie_due.queue_id));
+        assert!(!dump.contains("native-run-running"));
+        assert!(!dump.contains("native-run-succeeded"));
+        assert!(!dump.contains("native-run-dead"));
+        assert!(!dump.contains("secret-token"));
     }
 
     #[test]

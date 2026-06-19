@@ -1258,6 +1258,121 @@ ORDER BY route_sequence ASC, created_at_ms ASC, queue_id ASC
         Ok(records)
     }
 
+    pub fn summarize_cli_route_message_queue_for_runtime(
+        &self,
+        agent_did: &str,
+        runtime_profile_id: &str,
+        driver_id: &str,
+        controller_scope_key: &str,
+        now_ms: i64,
+    ) -> Result<CliRouteMessageQueueSummary> {
+        for (field_name, value) in [
+            ("agent_did", agent_did),
+            ("runtime_profile_id", runtime_profile_id),
+            ("driver_id", driver_id),
+            ("controller_scope_key", controller_scope_key),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if !matches!(driver_id, "codex" | "claude-code") {
+            bail!("unsupported cli route message queue driver: {driver_id}");
+        }
+        if now_ms < 0 {
+            bail!("now_ms must not be negative");
+        }
+        let connection = self.connection()?;
+        let (
+            queued_count,
+            running_count,
+            succeeded_count,
+            failed_count,
+            cancelled_count,
+            dead_letter_count,
+            due_queued_count,
+            oldest_queued_created_at_ms,
+        ): (i64, i64, i64, i64, i64, i64, i64, Option<i64>) = connection
+            .query_row(
+                r#"
+SELECT
+    SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+    SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+    SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_count,
+    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+    SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter_count,
+    SUM(CASE WHEN status = 'queued' AND next_attempt_at_ms <= ?5 THEN 1 ELSE 0 END)
+        AS due_queued_count,
+    MIN(CASE WHEN status = 'queued' THEN created_at_ms ELSE NULL END)
+        AS oldest_queued_created_at_ms
+FROM cli_route_message_queue
+WHERE agent_did = ?1
+  AND runtime_profile_id = ?2
+  AND driver_id = ?3
+  AND controller_scope_key = ?4
+"#,
+                rusqlite::params![
+                    agent_did,
+                    runtime_profile_id,
+                    driver_id,
+                    controller_scope_key,
+                    now_ms,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(7)?,
+                    ))
+                },
+            )
+            .context("summarize cli route message queue counts")?;
+        let due_route_count = connection
+            .query_row(
+                r#"
+SELECT COUNT(*)
+FROM (
+    SELECT route_key
+    FROM cli_route_message_queue
+    WHERE agent_did = ?1
+      AND runtime_profile_id = ?2
+      AND driver_id = ?3
+      AND controller_scope_key = ?4
+      AND status = 'queued'
+      AND next_attempt_at_ms <= ?5
+    GROUP BY route_key
+)
+"#,
+                rusqlite::params![
+                    agent_did,
+                    runtime_profile_id,
+                    driver_id,
+                    controller_scope_key,
+                    now_ms,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("summarize due cli route message queue routes")?;
+        Ok(CliRouteMessageQueueSummary {
+            queued_count,
+            running_count,
+            succeeded_count,
+            failed_count,
+            cancelled_count,
+            dead_letter_count,
+            due_queued_count,
+            due_route_count,
+            oldest_queued_age_ms: oldest_queued_created_at_ms
+                .map(|created_at_ms| now_ms.saturating_sub(created_at_ms)),
+        })
+    }
+
     pub fn list_active_cli_route_message_queue_for_task(
         &self,
         task_id: &str,

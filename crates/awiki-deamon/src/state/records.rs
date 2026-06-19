@@ -129,6 +129,19 @@ pub struct CliRouteMessageQueueRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliRouteMessageQueueSummary {
+    pub queued_count: i64,
+    pub running_count: i64,
+    pub succeeded_count: i64,
+    pub failed_count: i64,
+    pub cancelled_count: i64,
+    pub dead_letter_count: i64,
+    pub due_queued_count: i64,
+    pub due_route_count: i64,
+    pub oldest_queued_age_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateCliRouteMessageQueueReference {
     pub agent_did: String,
     pub runtime_profile_id: String,
