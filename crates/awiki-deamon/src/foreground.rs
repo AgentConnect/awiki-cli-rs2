@@ -64,6 +64,7 @@ mod attachments;
 mod lifecycle_support;
 mod outbox;
 mod runtime_support;
+mod state_root_owner;
 
 use attachments::attachment_runtime_prompt_text;
 #[cfg(test)]
@@ -82,6 +83,7 @@ use outbox::{
 #[cfg(test)]
 use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
 use runtime_support::UdsTestRuntimePlugin;
+use state_root_owner::StateRootOwnerGuard;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
@@ -123,6 +125,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let config = DaemonConfig::for_state_root(options.state_root.clone())?;
     config.validate()?;
     config.ensure_state_layout()?;
+    let _state_root_owner = StateRootOwnerGuard::acquire(&config)?;
     let state = DaemonState::open(&config)?;
     let state_summary = state.initialize()?;
     let im_core = ImCoreAdapter::open(&config)?;

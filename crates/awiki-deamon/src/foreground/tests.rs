@@ -284,6 +284,35 @@ fn create_hermes_runtime(
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn foreground_fails_closed_when_state_root_owner_is_busy() {
+    let (root, config, _state) = fixture();
+    let _owner = super::state_root_owner::StateRootOwnerGuard::acquire(&config).unwrap();
+    let ready_file = root.path().join("ready.json");
+
+    let error = run_foreground(ForegroundOptions {
+        state_root: config.state_root.clone(),
+        poll_interval_ms: 1,
+        max_runtime_ms: Some(1),
+        max_processed_messages: Some(1),
+        ready_file: Some(ready_file.clone()),
+        agent_jwt_token: None,
+        mock_status_outbox: true,
+    })
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("daemon_state_root_busy"));
+    assert!(!error
+        .to_string()
+        .contains(&config.state_root.display().to_string()));
+    assert!(
+        !ready_file.exists(),
+        "busy owner must fail before foreground reports ready"
+    );
+}
+
 fn bootstrap_key_material() -> (String, String) {
     let mut key_bytes = [0_u8; 32];
     key_bytes[0] = 17;
@@ -444,8 +473,21 @@ fn hermes_runtime_welcome_failure_is_sanitized_and_non_fatal() {
     let connection = rusqlite::Connection::open(&config.daemon_db_path).unwrap();
     let detail_json: String = connection
         .query_row(
-            "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime.welcome.failed' ORDER BY created_at_ms DESC LIMIT 1",
-            [],
+            r#"
+SELECT COALESCE(detail_json, '')
+FROM audit_log
+WHERE event_type = 'runtime.welcome.failed'
+  AND agent_did = ?1
+  AND runtime_profile_id = ?2
+  AND COALESCE(detail_json, '') LIKE ?3
+ORDER BY audit_id DESC
+LIMIT 1
+"#,
+            rusqlite::params![
+                created.agent_did,
+                created.runtime_profile_id,
+                format!("%{idempotency_key}%")
+            ],
             |row| row.get(0),
         )
         .unwrap();
