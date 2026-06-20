@@ -10,8 +10,8 @@ use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    process::ManagedChild, validate_native_session_id, GenericCliDriver, GenericCliExit,
-    GenericCliInvocation,
+    process::ManagedChild, sanitize_cli_output_text, validate_native_session_id,
+    write_sanitized_cli_output, GenericCliDriver, GenericCliExit, GenericCliInvocation,
 };
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
@@ -282,16 +282,16 @@ impl GenericCliDriver for ClaudeCodeDriver {
         )?;
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
-        std::fs::write(
+        let stdout_sanitizer = write_sanitized_cli_output(
             &paths.stdout_path,
-            redact_token_bytes(&output.stdout, &invocation.runtime_rpc_token),
-        )
-        .with_context(|| format!("write {}", paths.stdout_path.display()))?;
-        std::fs::write(
+            &output.stdout,
+            &invocation.runtime_rpc_token,
+        )?;
+        let stderr_sanitizer = write_sanitized_cli_output(
             &paths.stderr_path,
-            redact_token_bytes(&output.stderr, &invocation.runtime_rpc_token),
-        )
-        .with_context(|| format!("write {}", paths.stderr_path.display()))?;
+            &output.stderr,
+            &invocation.runtime_rpc_token,
+        )?;
         let parsed_native_session_id =
             claude_code_native_session_id_from_stream_json(&output.stdout);
         let exit_code = output.status.code().unwrap_or(1);
@@ -318,12 +318,14 @@ impl GenericCliDriver for ClaudeCodeDriver {
             None
         };
         let final_text = claude_code_final_text_from_stream_json(&output.stdout);
+        let final_output_sanitizer = sanitize_cli_output_text(
+            final_text.as_deref().unwrap_or_default(),
+            &invocation.runtime_rpc_token,
+            super::DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+        );
         std::fs::write(
             &paths.final_output_path,
-            final_text.as_deref().unwrap_or_default().replace(
-                &invocation.runtime_rpc_token,
-                "<redacted-runtime-rpc-token>",
-            ),
+            final_output_sanitizer.text.as_bytes(),
         )
         .with_context(|| format!("write {}", paths.final_output_path.display()))?;
         std::fs::write(
@@ -387,6 +389,11 @@ impl GenericCliDriver for ClaudeCodeDriver {
                     "stderr_path": paths.stderr_path,
                     "jsonl_path": paths.jsonl_path,
                     "final_output_path": paths.final_output_path.clone(),
+                    "sanitizer": {
+                        "stdout": stdout_sanitizer.metadata_json(),
+                        "stderr": stderr_sanitizer.metadata_json(),
+                        "final_output": final_output_sanitizer.metadata_json(),
+                    },
                 },
                 "final_output_path": paths.final_output_path,
             }),
@@ -692,12 +699,6 @@ fn ensure_prompt_does_not_contain_token(prompt: &str, token: &str) -> Result<()>
         bail!("Claude Code prompt envelope must not contain runtime RPC token");
     }
     Ok(())
-}
-
-fn redact_token_bytes(bytes: &[u8], token: &str) -> Vec<u8> {
-    let text = String::from_utf8_lossy(bytes);
-    text.replace(token, "<redacted-runtime-rpc-token>")
-        .into_bytes()
 }
 
 fn string_field(value: &Value, field: &str) -> Option<String> {

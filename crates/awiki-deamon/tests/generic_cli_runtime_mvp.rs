@@ -9,8 +9,9 @@ use awiki_deamon::plugins::generic_cli::{
     codex::{
         codex_native_session_id_from_stdout_jsonl, CodexDriver, CodexDriverConfig, CodexResumeMode,
     },
-    validate_native_session_id, validate_native_session_source, CommandGenericCliDriver,
-    GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin, TestGenericCliDriver,
+    sanitize_cli_output_bytes, validate_native_session_id, validate_native_session_source,
+    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
+    TestGenericCliDriver,
 };
 use awiki_deamon::runtime::host::{run_controller_text_task, run_controller_text_task_with_config};
 use awiki_deamon::runtime::{
@@ -55,6 +56,30 @@ fn assert_busy_retry_metadata(record: &awiki_deamon::outbox::OutboxRecord, reaso
     assert_eq!(metadata["retry_after_ms"].as_i64(), Some(10_000));
     assert_eq!(metadata["retry_after_seconds"].as_i64(), Some(10));
     assert_eq!(metadata["busy_reason"].as_str(), Some(reason));
+}
+
+#[test]
+fn generic_cli_output_sanitizer_redacts_controls_non_utf8_and_truncates() {
+    let dirty_output = b"alpha rtok_secret \x1b[31mred\x1b[0m \xff beta";
+    let sanitized = sanitize_cli_output_bytes(dirty_output, "rtok_secret", 24);
+
+    assert_eq!(sanitized.text, "alpha <redacted-runtime-");
+    assert_eq!(sanitized.raw_bytes, dirty_output.len());
+    assert_eq!(sanitized.text_bytes, 24);
+    assert!(sanitized.output_sanitized);
+    assert!(sanitized.output_truncated);
+    assert!(sanitized.non_utf8_replaced);
+    assert!(sanitized.token_redacted);
+    assert_eq!(
+        sanitized.metadata_json()["sanitizer_version"].as_str(),
+        Some("generic-cli-output-sanitizer-v1")
+    );
+
+    let split_token =
+        sanitize_cli_output_bytes(b"token rtok_\x1b[31msecret done", "rtok_secret", 256);
+    assert_eq!(split_token.text, "token <redacted-runtime-rpc-token> done");
+    assert!(split_token.output_sanitized);
+    assert!(split_token.token_redacted);
 }
 
 fn assert_busy_route_message_queue_item(
@@ -1376,6 +1401,114 @@ impl awiki_deamon::plugins::generic_cli::GenericCliDriver for SendMessageDriver 
     }
 }
 
+#[derive(Debug, Clone)]
+struct DirtyFallbackFinalDriver {
+    final_output_path: std::path::PathBuf,
+}
+
+impl awiki_deamon::plugins::generic_cli::GenericCliDriver for DirtyFallbackFinalDriver {
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("dirty fallback final test driver".to_string()),
+        })
+    }
+
+    fn run(
+        &self,
+        invocation: awiki_deamon::plugins::generic_cli::GenericCliInvocation,
+    ) -> anyhow::Result<awiki_deamon::plugins::generic_cli::GenericCliExit> {
+        std::fs::write(
+            &self.final_output_path,
+            format!(
+                "\u{1b}[35mhost fallback dirty {}\u{1b}[0m\u{7}\n",
+                invocation.runtime_rpc_token
+            ),
+        )?;
+        Ok(awiki_deamon::plugins::generic_cli::GenericCliExit {
+            exit_code: 0,
+            status: RuntimeRunStatus::Finished,
+            callbacks: Vec::new(),
+            metadata: json!({
+                "driver_id": "codex",
+                "final_output_path": self.final_output_path,
+                "output": {
+                    "final_output_path": self.final_output_path,
+                },
+            }),
+        })
+    }
+}
+
+#[test]
+fn generic_cli_host_sanitizes_untrusted_fallback_final_text() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let final_output_path = root.path().join("dirty-fallback-final.txt");
+    let plugin = GenericCliRuntimePlugin::new(DirtyFallbackFinalDriver {
+        final_output_path: final_output_path.clone(),
+    });
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_dirty_fallback".to_string(),
+            conversation_id: Some("conv_dirty_fallback".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run dirty fallback".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(
+        records[1].text.as_deref(),
+        Some("host fallback dirty <redacted-runtime-rpc-token>")
+    );
+    assert!(!records[1]
+        .text
+        .as_deref()
+        .unwrap_or_default()
+        .contains("\u{1b}"));
+    assert!(!records[1]
+        .text
+        .as_deref()
+        .unwrap_or_default()
+        .contains("\u{7}"));
+    let persisted_final = std::fs::read_to_string(&final_output_path).unwrap();
+    assert_eq!(
+        persisted_final.trim(),
+        "host fallback dirty <redacted-runtime-rpc-token>"
+    );
+    assert!(!persisted_final.contains("rtok_"));
+    assert!(!persisted_final.contains("\u{1b}"));
+    assert!(!persisted_final.contains("\u{7}"));
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(
+        run_record.fallback_final_source.as_deref(),
+        Some("codex_output_last_message")
+    );
+    assert_eq!(run_record.final_output_path, Some(final_output_path));
+    assert_eq!(
+        run_record.output_json["fallback_final_sanitizer"]["output_sanitized"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        run_record.output_json["fallback_final_sanitizer"]["token_redacted"].as_bool(),
+        Some(true)
+    );
+}
+
 #[test]
 fn generic_cli_runtime_profile_policy_persists_allowed_recipients_in_token_scope() {
     let (root, state) = fixture();
@@ -2494,7 +2627,9 @@ done
 printf 'fake codex final %s\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" > "$FINAL_OUTPUT"
 printf '{{"session_id":"codex-session-shared-root"}}\n'
 printf '{{"type":"codex-event","message":"stdout jsonl %s"}}\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN"
+printf '\033[31mstdout ansi %s\033[0m\007\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN"
 printf 'stderr diagnostic %s\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" >&2
+printf '\033]8;;https://example.invalid\007stderr osc %s\033]8;;\007\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" >&2
 python3 - "$AWIKI_DAEMON_SOCKET" "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" "$AWIKI_DAEMON_TASK_ID" <<'PY'
 import json
 import socket
@@ -2636,10 +2771,16 @@ PY
     );
     let stdout_dump = std::fs::read_to_string(output_dir.join("codex-stdout.jsonl")).unwrap();
     assert!(stdout_dump.contains("stdout jsonl"));
+    assert!(stdout_dump.contains("stdout ansi"));
     assert!(!stdout_dump.contains("rtok_"));
+    assert!(!stdout_dump.contains("\u{1b}"));
+    assert!(!stdout_dump.contains("\u{7}"));
     let stderr_dump = std::fs::read_to_string(output_dir.join("codex-stderr.log")).unwrap();
     assert!(stderr_dump.contains("stderr diagnostic"));
+    assert!(stderr_dump.contains("stderr osc"));
     assert!(!stderr_dump.contains("rtok_"));
+    assert!(!stderr_dump.contains("\u{1b}"));
+    assert!(!stderr_dump.contains("\u{7}"));
     assert!(
         std::fs::read_to_string(output_dir.join("codex-observation.jsonl"))
             .unwrap()
@@ -2684,6 +2825,22 @@ PY
     assert_eq!(
         run_record.command_json["program"].as_str(),
         Some(binary_path.to_str().unwrap_or_default())
+    );
+    assert_eq!(
+        run_record.output_json["sanitizer"]["stdout"]["output_sanitized"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        run_record.output_json["sanitizer"]["stdout"]["token_redacted"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        run_record.output_json["sanitizer"]["stderr"]["output_sanitized"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        run_record.output_json["sanitizer"]["final_output"]["token_redacted"].as_bool(),
+        Some(true)
     );
 }
 
@@ -3465,7 +3622,7 @@ for ARG in "$@"; do
   PREV="$ARG"
 done
 cat >/dev/null
-printf 'fallback final from codex\n' > "$FINAL_OUTPUT"
+printf '\033[32mfallback final from codex %s\033[0m\007\n' "$AWIKI_DAEMON_RUNTIME_RPC_TOKEN" > "$FINAL_OUTPUT"
 exit 0
 "#,
     )
@@ -3506,8 +3663,18 @@ exit 0
     assert_eq!(records[1].kind, OutboxRecordKind::Final);
     assert_eq!(
         records[1].text.as_deref(),
-        Some("fallback final from codex")
+        Some("fallback final from codex <redacted-runtime-rpc-token>")
     );
+    assert!(!records[1]
+        .text
+        .as_deref()
+        .unwrap_or_default()
+        .contains("\u{1b}"));
+    assert!(!records[1]
+        .text
+        .as_deref()
+        .unwrap_or_default()
+        .contains("\u{7}"));
     let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
     assert_eq!(
         run_record.fallback_final_source.as_deref(),
@@ -3516,6 +3683,22 @@ exit 0
     assert_eq!(
         run_record.final_output_path,
         Some(output_dir.join("final-output.txt"))
+    );
+    assert_eq!(
+        run_record.output_json["sanitizer"]["final_output"]["output_sanitized"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        run_record.output_json["sanitizer"]["final_output"]["token_redacted"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        run_record.output_json["fallback_final_sanitizer"]["output_sanitized"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        run_record.output_json["fallback_final_sanitizer"]["token_redacted"].as_bool(),
+        Some(false)
     );
 }
 

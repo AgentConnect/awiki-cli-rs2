@@ -9,8 +9,8 @@ use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    process::ManagedChild, validate_native_session_id, GenericCliDriver, GenericCliExit,
-    GenericCliInvocation,
+    process::ManagedChild, sanitize_cli_output_file, validate_native_session_id,
+    write_sanitized_cli_output, GenericCliDriver, GenericCliExit, GenericCliInvocation,
 };
 
 const DEFAULT_CODEX_BINARY: &str = "codex";
@@ -228,17 +228,18 @@ impl GenericCliDriver for CodexDriver {
         )?;
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
-        std::fs::write(
+        let stdout_sanitizer = write_sanitized_cli_output(
             &paths.stdout_path,
-            redact_token_bytes(&output.stdout, &invocation.runtime_rpc_token),
-        )
-        .with_context(|| format!("write {}", paths.stdout_path.display()))?;
-        std::fs::write(
+            &output.stdout,
+            &invocation.runtime_rpc_token,
+        )?;
+        let stderr_sanitizer = write_sanitized_cli_output(
             &paths.stderr_path,
-            redact_token_bytes(&output.stderr, &invocation.runtime_rpc_token),
-        )
-        .with_context(|| format!("write {}", paths.stderr_path.display()))?;
-        redact_token_file(&paths.final_output_path, &invocation.runtime_rpc_token)?;
+            &output.stderr,
+            &invocation.runtime_rpc_token,
+        )?;
+        let final_output_sanitizer =
+            sanitize_cli_output_file(&paths.final_output_path, &invocation.runtime_rpc_token)?;
         let parsed_native_session_id = codex_native_session_id_from_stdout_jsonl(&output.stdout);
         let native_session_id = parsed_native_session_id
             .clone()
@@ -313,6 +314,11 @@ impl GenericCliDriver for CodexDriver {
                     "stderr_path": paths.stderr_path,
                     "jsonl_path": paths.jsonl_path,
                     "final_output_path": paths.final_output_path.clone(),
+                    "sanitizer": {
+                        "stdout": stdout_sanitizer.metadata_json(),
+                        "stderr": stderr_sanitizer.metadata_json(),
+                        "final_output": final_output_sanitizer.as_ref().map(|sanitizer| sanitizer.metadata_json()),
+                    },
                 },
                 "final_output_path": paths.final_output_path,
             }),
@@ -567,25 +573,6 @@ user_message:
 fn ensure_prompt_does_not_contain_token(prompt: &str, token: &str) -> Result<()> {
     if prompt.contains(token) {
         bail!("Codex prompt envelope must not contain runtime RPC token");
-    }
-    Ok(())
-}
-
-fn redact_token_bytes(bytes: &[u8], token: &str) -> Vec<u8> {
-    let text = String::from_utf8_lossy(bytes);
-    text.replace(token, "<redacted-runtime-rpc-token>")
-        .into_bytes()
-}
-
-fn redact_token_file(path: &std::path::Path, token: &str) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    if content.contains(token) {
-        std::fs::write(path, content.replace(token, "<redacted-runtime-rpc-token>"))
-            .with_context(|| format!("redact {}", path.display()))?;
     }
     Ok(())
 }

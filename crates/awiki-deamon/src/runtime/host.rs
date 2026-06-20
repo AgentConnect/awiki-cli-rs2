@@ -15,7 +15,10 @@ use crate::local_rpc::execute_runtime_rpc_request_with_outbox;
 use crate::outbox::{
     RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
 };
-use crate::plugins::generic_cli::{validate_native_session_id, validate_native_session_source};
+use crate::plugins::generic_cli::{
+    sanitize_cli_output_bytes, validate_native_session_id, validate_native_session_source,
+    DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+};
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
     runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeLaunchContext,
@@ -606,11 +609,14 @@ where
     }
 
     let mut fallback_final_source = None;
+    let mut fallback_final_sanitizer = None;
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
         && launch_outcome.status == RuntimeRunStatus::Finished
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
     {
-        if let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? {
+        if let Some(fallback_final) =
+            fallback_final_text(&launch_outcome.metadata, issued.token.as_str())?
+        {
             let fallback_driver_id = launch_outcome
                 .metadata
                 .get("driver_id")
@@ -624,13 +630,14 @@ where
                 CliWrapperRequest::task_finish(
                     issued.token.as_str().to_string(),
                     run.task_id.clone(),
-                    final_text,
+                    fallback_final.text,
                 )
                 .into_rpc_request(),
             )
             .context("apply fallback final from CLI driver output")?;
             if response.ok {
                 fallback_final_source = Some(format!("{fallback_driver_id}_output_last_message"));
+                fallback_final_sanitizer = Some(fallback_final.sanitizer_metadata);
             }
         }
     }
@@ -682,6 +689,7 @@ where
             &launch_outcome,
             workspace_instance.as_ref(),
             fallback_final_source.as_deref(),
+            fallback_final_sanitizer.as_ref(),
         )?;
         if let Some(route_session) = cli_route_session.as_ref() {
             let final_status = state.load_runtime_run(&run.run_id)?.status;
@@ -1850,6 +1858,7 @@ fn persist_cli_driver_run(
     launch_outcome: &RuntimeLaunchOutcome,
     workspace_instance: Option<&WorkspaceInstance>,
     fallback_final_source: Option<&str>,
+    fallback_final_sanitizer: Option<&Value>,
 ) -> Result<()> {
     let task = state.load_runtime_task(&run.task_id)?;
     let Some(driver_id) = state
@@ -1867,11 +1876,19 @@ fn persist_cli_driver_run(
     else {
         return Ok(());
     };
-    let output_json = launch_outcome
+    let mut output_json = launch_outcome
         .metadata
         .get("output")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(fallback_final_sanitizer) = fallback_final_sanitizer {
+        if let Some(object) = output_json.as_object_mut() {
+            object.insert(
+                "fallback_final_sanitizer".to_string(),
+                fallback_final_sanitizer.clone(),
+            );
+        }
+    }
     let command_json = launch_outcome
         .metadata
         .get("command")
@@ -1966,7 +1983,15 @@ fn generic_cli_route_key(
     )
 }
 
-fn fallback_final_text(metadata: &Value) -> Result<Option<String>> {
+struct FallbackFinalText {
+    text: String,
+    sanitizer_metadata: Value,
+}
+
+fn fallback_final_text(
+    metadata: &Value,
+    runtime_rpc_token: &str,
+) -> Result<Option<FallbackFinalText>> {
     let Some(path) = metadata
         .get("final_output_path")
         .and_then(Value::as_str)
@@ -1977,13 +2002,23 @@ fn fallback_final_text(metadata: &Value) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(&path)
+    let bytes = std::fs::read(&path)
         .with_context(|| format!("read fallback final output {}", path.display()))?;
-    let text = text.trim();
+    let sanitized = sanitize_cli_output_bytes(
+        &bytes,
+        runtime_rpc_token,
+        DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+    );
+    std::fs::write(&path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized fallback final output {}", path.display()))?;
+    let text = sanitized.text.trim();
     if text.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(text.to_string()))
+        Ok(Some(FallbackFinalText {
+            text: text.to_string(),
+            sanitizer_metadata: sanitized.metadata_json(),
+        }))
     }
 }
 

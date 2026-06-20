@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub mod claude_code;
 pub mod codex;
@@ -19,6 +20,202 @@ use self::process::ManagedChild;
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 const MAX_NATIVE_SESSION_ID_LEN: usize = 128;
+pub const OUTPUT_SANITIZER_VERSION: &str = "generic-cli-output-sanitizer-v1";
+pub const DEFAULT_SANITIZED_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedCliOutput {
+    pub text: String,
+    pub raw_bytes: usize,
+    pub text_bytes: usize,
+    pub output_sanitized: bool,
+    pub output_truncated: bool,
+    pub non_utf8_replaced: bool,
+    pub token_redacted: bool,
+    pub max_text_bytes: usize,
+}
+
+impl SanitizedCliOutput {
+    pub fn metadata_json(&self) -> Value {
+        json!({
+            "sanitizer_version": OUTPUT_SANITIZER_VERSION,
+            "raw_bytes": self.raw_bytes,
+            "text_bytes": self.text_bytes,
+            "output_sanitized": self.output_sanitized,
+            "output_truncated": self.output_truncated,
+            "non_utf8_replaced": self.non_utf8_replaced,
+            "token_redacted": self.token_redacted,
+            "max_text_bytes": self.max_text_bytes,
+        })
+    }
+}
+
+pub fn sanitize_cli_output_text(
+    text: &str,
+    runtime_rpc_token: &str,
+    max_text_bytes: usize,
+) -> SanitizedCliOutput {
+    sanitize_cli_output_bytes(text.as_bytes(), runtime_rpc_token, max_text_bytes)
+}
+
+pub fn sanitize_cli_output_bytes(
+    bytes: &[u8],
+    runtime_rpc_token: &str,
+    max_text_bytes: usize,
+) -> SanitizedCliOutput {
+    let raw_bytes = bytes.len();
+    let decoded = String::from_utf8_lossy(bytes);
+    let non_utf8_replaced = matches!(&decoded, Cow::Owned(_));
+    let (mut text, removed_controls) = strip_ansi_and_controls(&decoded);
+    let mut token_redacted = false;
+    if !runtime_rpc_token.is_empty() && text.contains(runtime_rpc_token) {
+        text = text.replace(runtime_rpc_token, "<redacted-runtime-rpc-token>");
+        token_redacted = true;
+    }
+    let (text, output_truncated) = truncate_utf8_to_bytes(text, max_text_bytes);
+    let text_bytes = text.len();
+    SanitizedCliOutput {
+        text,
+        raw_bytes,
+        text_bytes,
+        output_sanitized: token_redacted || non_utf8_replaced || removed_controls,
+        output_truncated,
+        non_utf8_replaced,
+        token_redacted,
+        max_text_bytes,
+    }
+}
+
+pub fn write_sanitized_cli_output(
+    path: &std::path::Path,
+    bytes: &[u8],
+    runtime_rpc_token: &str,
+) -> Result<SanitizedCliOutput> {
+    let sanitized =
+        sanitize_cli_output_bytes(bytes, runtime_rpc_token, DEFAULT_SANITIZED_OUTPUT_MAX_BYTES);
+    std::fs::write(path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized CLI output {}", path.display()))?;
+    Ok(sanitized)
+}
+
+pub fn sanitize_cli_output_file(
+    path: &std::path::Path,
+    runtime_rpc_token: &str,
+) -> Result<Option<SanitizedCliOutput>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read CLI output file {}", path.display()))?;
+    let sanitized = sanitize_cli_output_bytes(
+        &bytes,
+        runtime_rpc_token,
+        DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+    );
+    std::fs::write(path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized CLI output {}", path.display()))?;
+    Ok(Some(sanitized))
+}
+
+fn truncate_utf8_to_bytes(text: String, max_text_bytes: usize) -> (String, bool) {
+    if text.len() <= max_text_bytes {
+        return (text, false);
+    }
+    let mut end = max_text_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
+fn strip_ansi_and_controls(input: &str) -> (String, bool) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+        StringControl,
+        StringControlEscape,
+    }
+
+    let mut output = String::with_capacity(input.len());
+    let mut state = State::Normal;
+    let mut sanitized = false;
+    for ch in input.chars() {
+        match state {
+            State::Normal => match ch {
+                '\u{1b}' => {
+                    sanitized = true;
+                    state = State::Escape;
+                }
+                '\n' | '\t' => output.push(ch),
+                '\r' => {
+                    sanitized = true;
+                    output.push('\n');
+                }
+                ch if ch.is_control() => {
+                    sanitized = true;
+                }
+                _ => output.push(ch),
+            },
+            State::Escape => {
+                sanitized = true;
+                state = match ch {
+                    '[' => State::Csi,
+                    ']' => State::Osc,
+                    'P' | '_' | '^' | 'X' => State::StringControl,
+                    _ => State::Normal,
+                };
+            }
+            State::Csi => {
+                sanitized = true;
+                let code = ch as u32;
+                if (0x40..=0x7e).contains(&code) {
+                    state = State::Normal;
+                }
+            }
+            State::Osc => {
+                sanitized = true;
+                match ch {
+                    '\u{7}' => state = State::Normal,
+                    '\u{1b}' => state = State::OscEscape,
+                    _ => {}
+                }
+            }
+            State::OscEscape => {
+                sanitized = true;
+                state = if ch == '\\' {
+                    State::Normal
+                } else if ch == '\u{1b}' {
+                    State::OscEscape
+                } else {
+                    State::Osc
+                };
+            }
+            State::StringControl => {
+                sanitized = true;
+                match ch {
+                    '\u{7}' => state = State::Normal,
+                    '\u{1b}' => state = State::StringControlEscape,
+                    _ => {}
+                }
+            }
+            State::StringControlEscape => {
+                sanitized = true;
+                state = if ch == '\\' {
+                    State::Normal
+                } else if ch == '\u{1b}' {
+                    State::StringControlEscape
+                } else {
+                    State::StringControl
+                };
+            }
+        }
+    }
+    (output, sanitized)
+}
 
 pub trait GenericCliDriver {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus>;
