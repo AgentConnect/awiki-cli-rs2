@@ -332,6 +332,48 @@ fn msg_send_records_direct_message_side_effect_with_security_mode() {
 }
 
 #[test]
+fn message_agent_runtime_msg_send_is_rejected_even_with_legacy_send_scope() {
+    let (root, state) = fixture();
+    insert_app_message_agent_binding(&state);
+    let issued = issue(
+        &state,
+        vec![RpcMethod::MsgSend],
+        Some(vec!["did:human:alice".to_string()]),
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let error = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({
+                "to": "did:human:alice",
+                "text": "legacy send scope should not send",
+                "security": "default_plain"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("message agent outbound send is not enabled"));
+    assert!(outbox.records().is_empty());
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let audit_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.msg_send.sent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit_count, 0);
+}
+
+#[test]
 fn msg_send_records_direct_attachment_in_single_outbound_message() {
     let (root, state) = fixture();
     let workspace_root = root.path().join("workspace");
@@ -695,6 +737,58 @@ fn attachment_send_requires_scope_task_context_and_records_attachment_side_effec
     assert!(audit_dump.contains(&expected_sha));
     assert!(!audit_dump.contains(file_path.to_string_lossy().as_ref()));
     assert!(!audit_dump.contains(issued.token.as_str()));
+}
+
+#[test]
+fn message_agent_runtime_attachment_send_is_rejected_even_with_legacy_send_scope() {
+    let (root, state) = fixture();
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", Some(&workspace_root));
+    insert_app_message_agent_binding(&state);
+    let issued = issue(&state, vec![RpcMethod::SendAttachment], None);
+    let outbox = MemoryRuntimeOutbox::default();
+    let file_path = workspace_root.join("report.txt");
+    std::fs::write(&file_path, "small report").unwrap();
+
+    let error = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "attachment.send".to_string(),
+            params: json!({
+                "target": "current_conversation",
+                "file_path": file_path,
+                "display_filename": "report.txt",
+                "caption": "report"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("message agent outbound send is not enabled"));
+    assert!(outbox.records().is_empty());
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let sent_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.attachment_send.sent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sent_count, 0);
+    let rejected_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.message_agent_outbound_send.rejected'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rejected_count, 1);
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {

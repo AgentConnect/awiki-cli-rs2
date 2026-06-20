@@ -8,8 +8,9 @@ use crate::app_bridge::action::{
     parse_app_capabilities_payload,
 };
 use crate::app_bridge::bootstrap::{
-    is_daemon_bootstrap_payload, parse_bootstrap_payload, process_bootstrap_envelope,
-    BootstrapProcessOutcome, DefaultBootstrapDidDocumentResolver,
+    is_daemon_bootstrap_payload, is_daemon_secure_bootstrap_payload,
+    parse_secure_bootstrap_payload, process_secure_bootstrap_envelope, BootstrapProcessOutcome,
+    DefaultBootstrapDidDocumentResolver,
 };
 use crate::app_bridge::message_agent::{ensure_app_message_agent, EnsureAppMessageAgentOutcome};
 use crate::registration::AgentRegistrationClient;
@@ -43,7 +44,8 @@ pub enum AppControlOutcome {
 }
 
 pub fn is_app_control_payload(payload: &Value) -> bool {
-    is_daemon_bootstrap_payload(payload)
+    is_daemon_secure_bootstrap_payload(payload)
+        || is_daemon_bootstrap_payload(payload)
         || is_app_capabilities_payload(payload)
         || is_app_action_result_payload(payload)
 }
@@ -67,15 +69,10 @@ where
     if message.sender_did != daemon_agent.controller_did {
         bail!("message sender is not the configured controller_did");
     }
-    if is_daemon_bootstrap_payload(&message.payload) {
-        let envelope = parse_bootstrap_payload(message.payload)?;
-        if envelope.controller_did != daemon_agent.controller_did {
-            bail!("bootstrap controller_did does not match daemon controller_did");
-        }
-        let desired_message_agent = envelope.desired_message_agent.clone();
-        let capability_policy = envelope.capability_policy.clone();
+    if is_daemon_secure_bootstrap_payload(&message.payload) {
+        let envelope = parse_secure_bootstrap_payload(message.payload)?;
         let did_resolver = DefaultBootstrapDidDocumentResolver::new(config);
-        let outcome = process_bootstrap_envelope(
+        let secure_outcome = process_secure_bootstrap_envelope(
             state,
             &daemon_agent.agent_did,
             &message.sender_did,
@@ -83,7 +80,7 @@ where
             envelope,
         )?;
         let identity = state
-            .load_user_delegated_identity(&outcome.verification_method)?
+            .load_user_delegated_identity(&secure_outcome.bootstrap.verification_method)?
             .context("load user delegated identity after bootstrap")?;
         let message_agent = ensure_app_message_agent(
             config,
@@ -91,13 +88,16 @@ where
             registration_client,
             &daemon_agent,
             &identity,
-            &desired_message_agent,
-            &capability_policy,
+            &secure_outcome.desired_message_agent,
+            &secure_outcome.capability_policy,
         )?;
         return Ok(AppControlOutcome::BootstrapReceived {
-            bootstrap: outcome,
+            bootstrap: secure_outcome.bootstrap,
             message_agent,
         });
+    }
+    if is_daemon_bootstrap_payload(&message.payload) {
+        bail!("plain daemon bootstrap payload is not accepted in production; use awiki.daemon.bootstrap.secure.v1");
     }
     if is_app_capabilities_payload(&message.payload) {
         let envelope = parse_app_capabilities_payload(message.payload)?;

@@ -543,6 +543,10 @@ async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_ide
     assert_eq!(body["params"].get("is_agent"), None);
     let did_document = &body["params"]["did_document"];
     assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
+    assert_ne!(
+        did_document["proof"]["challenge"].as_str(),
+        identity.did_document["proof"]["challenge"].as_str()
+    );
     assert!(did_document["authentication"]
         .as_array()
         .unwrap()
@@ -583,6 +587,104 @@ async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_ide
     )
     .unwrap();
     assert!(saved.contains("daemon-key-1"));
+}
+
+#[tokio::test]
+async fn revoke_daemon_subkey_authorization_updates_signed_did_document() {
+    let fixture = Fixture::new();
+    let identity = fixture.write_generated_identity_with_daemon_key("revokee", true, true);
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "did": identity.did,
+        "user_id": "user-revokee",
+        "message": "DID document updated",
+        "access_token": "jwt-revokee-updated"
+    }))]);
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
+
+    let result = core
+        .identities()
+        .revoke_daemon_subkey_authorization_async(IdentitySelector::LocalAlias(
+            "revokee".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    assert!(result.updated);
+    assert_eq!(result.user_did.as_str(), identity.did);
+    assert_eq!(
+        result.verification_method,
+        format!("{}#daemon-key-1", identity.did)
+    );
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "update_document");
+    let did_document = &body["params"]["did_document"];
+    assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
+    assert_ne!(
+        did_document["proof"]["challenge"].as_str(),
+        identity.did_document["proof"]["challenge"].as_str()
+    );
+    assert!(!did_document_references(
+        &result.verification_method,
+        did_document
+    ));
+    let proof_method = did_document["proof"]["verificationMethod"]
+        .as_str()
+        .expect("proof method");
+    let proof_public_key = did_document["verificationMethod"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(proof_method))
+        .and_then(|item| extract_public_key(item).ok())
+        .expect("proof public key");
+    assert!(verify_w3c_proof(
+        did_document,
+        &proof_public_key,
+        ProofVerificationOptions::default()
+    ));
+
+    let saved = fs::read_to_string(
+        fixture
+            .root
+            .join("identities")
+            .join("revokee-id")
+            .join("did_document.json"),
+    )
+    .unwrap();
+    let saved_document: Value = serde_json::from_str(&saved).unwrap();
+    assert!(!did_document_references(
+        &result.verification_method,
+        &saved_document
+    ));
+}
+
+#[tokio::test]
+async fn revoke_daemon_subkey_authorization_is_idempotent_when_key_is_absent() {
+    let fixture = Fixture::new();
+    let identity = fixture.write_generated_identity_without_daemon_key("already", true);
+    let server = TestServer::spawn(Vec::new());
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
+
+    let result = core
+        .identities()
+        .revoke_daemon_subkey_authorization_async(IdentitySelector::LocalAlias(
+            "already".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    assert!(!result.updated);
+    assert_eq!(result.user_did.as_str(), identity.did);
+    assert_eq!(
+        result.verification_method,
+        format!("{}#daemon-key-1", identity.did)
+    );
+    assert!(server.join().is_empty());
 }
 
 #[test]
@@ -882,14 +984,23 @@ impl Fixture {
         &self,
         alias: &str,
     ) -> GeneratedTestIdentity {
+        self.write_generated_identity_with_daemon_key(alias, false, false)
+    }
+
+    fn write_generated_identity_with_daemon_key(
+        &self,
+        alias: &str,
+        make_default: bool,
+        include_daemon_package: bool,
+    ) -> GeneratedTestIdentity {
         let generated = generated_test_identity(alias);
         write_generated_identity(
             &self.root.join("identities"),
             alias,
             &generated,
-            false,
+            make_default,
             true,
-            false,
+            include_daemon_package,
         );
         generated
     }
@@ -924,6 +1035,12 @@ impl Fixture {
             },
         }
     }
+}
+
+fn did_document_references(verification_method: &str, did_document: &Value) -> bool {
+    serde_json::to_string(did_document)
+        .unwrap()
+        .contains(verification_method)
 }
 
 fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str, expires_at: &str) {

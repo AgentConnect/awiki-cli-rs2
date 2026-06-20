@@ -2,6 +2,7 @@ use anp::proof::{
     generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_EDDSA_JCS_2022,
     PROOF_TYPE_DATA_INTEGRITY,
 };
+use rand::RngCore;
 use serde_json::{json, Value};
 
 pub(crate) const DAEMON_SUBKEY_FRAGMENT: &str = "daemon-key-1";
@@ -159,6 +160,61 @@ pub(crate) fn apply_package_to_did_document(
     apply_to_did_document(did_document, &package.user_did, &subkey)
 }
 
+pub(crate) fn remove_from_did_document(
+    did_document: &mut Value,
+    did: &crate::ids::Did,
+) -> crate::ImResult<bool> {
+    let expected = expected_verification_method(did);
+    let Some(object) = did_document.as_object_mut() else {
+        return Err(crate::ImError::Serialization {
+            detail: "DID Document must be a JSON object".to_owned(),
+        });
+    };
+
+    let mut removed = false;
+    if let Some(methods) = object.get_mut("verificationMethod") {
+        let methods = methods
+            .as_array_mut()
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "DID Document verificationMethod must be an array".to_owned(),
+            })?;
+        let before = methods.len();
+        methods.retain(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| id != expected)
+        });
+        removed |= methods.len() != before;
+    }
+
+    for relationship in [
+        "authentication",
+        "assertionMethod",
+        "capabilityDelegation",
+        "capabilityInvocation",
+    ] {
+        if let Some(items) = object.get_mut(relationship) {
+            let items = items
+                .as_array_mut()
+                .ok_or_else(|| crate::ImError::Serialization {
+                    detail: format!("DID Document {relationship} must be an array"),
+                })?;
+            let before = items.len();
+            items.retain(|item| match item {
+                Value::String(value) => value != &expected,
+                Value::Object(object) => object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|id| id != expected),
+                _ => true,
+            });
+            removed |= items.len() != before;
+        }
+    }
+
+    Ok(removed)
+}
+
 pub(crate) fn resign_did_document_with_key1(
     did_document: &mut Value,
     did: &crate::ids::Did,
@@ -169,7 +225,7 @@ pub(crate) fn resign_did_document_with_key1(
             detail: format!("load DID Document signing key: {err}"),
         }
     })?;
-    let options = proof_generation_options_from_document(did_document);
+    let options = proof_generation_options_for_update(did_document);
     let signed = generate_w3c_proof(
         did_document,
         &private_key,
@@ -382,7 +438,7 @@ fn ed25519_public_key_to_multibase(key: &ed25519_dalek::VerifyingKey) -> String 
     format!("z{}", bs58::encode(bytes).into_string())
 }
 
-fn proof_generation_options_from_document(did_document: &Value) -> ProofGenerationOptions {
+fn proof_generation_options_for_update(did_document: &Value) -> ProofGenerationOptions {
     let proof = did_document.get("proof");
     ProofGenerationOptions {
         proof_purpose: proof
@@ -400,19 +456,19 @@ fn proof_generation_options_from_document(did_document: &Value) -> ProofGenerati
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
             .or_else(|| Some(CRYPTOSUITE_EDDSA_JCS_2022.to_owned())),
-        created: proof
-            .and_then(|value| value.get("created"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        created: None,
         domain: proof
             .and_then(|value| value.get("domain"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        challenge: proof
-            .and_then(|value| value.get("challenge"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        challenge: Some(fresh_proof_challenge()),
     }
+}
+
+fn fresh_proof_challenge() -> String {
+    let mut buffer = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut buffer);
+    buffer.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -449,6 +505,71 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with('z'));
+    }
+
+    #[test]
+    fn remove_from_did_document_removes_exact_daemon_key_only() {
+        let did = crate::ids::Did::parse("did:example:alice").unwrap();
+        let daemon_method = expected_verification_method(&did);
+        let mut document = json!({
+            "id": did.as_str(),
+            "verificationMethod": [
+                {
+                    "id": "did:example:alice#key-1",
+                    "type": "Multikey",
+                    "controller": did.as_str(),
+                    "publicKeyMultibase": "zmain"
+                },
+                {
+                    "id": daemon_method,
+                    "type": "Multikey",
+                    "controller": did.as_str(),
+                    "publicKeyMultibase": "zdaemon"
+                },
+                {
+                    "id": "did:example:alice#daemon-key-10",
+                    "type": "Multikey",
+                    "controller": did.as_str(),
+                    "publicKeyMultibase": "zother"
+                }
+            ],
+            "authentication": [
+                "did:example:alice#key-1",
+                daemon_method,
+                "did:example:alice#daemon-key-10",
+                {"id": daemon_method, "type": "Multikey"}
+            ],
+            "assertionMethod": [daemon_method, "did:example:alice#key-1"],
+            "capabilityDelegation": [{"id": daemon_method}],
+            "capabilityInvocation": ["did:example:alice#key-1"],
+            "service": [{"id": "did:example:alice#messages"}]
+        });
+
+        assert!(remove_from_did_document(&mut document, &did).unwrap());
+
+        let serialized = serde_json::to_string(&document).unwrap();
+        assert!(!serialized.contains("did:example:alice#daemon-key-1\""));
+        assert!(serialized.contains("did:example:alice#daemon-key-10"));
+        assert!(serialized.contains("did:example:alice#key-1"));
+        assert_eq!(document["service"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_from_did_document_is_idempotent_when_daemon_key_absent() {
+        let did = crate::ids::Did::parse("did:example:alice").unwrap();
+        let mut document = json!({
+            "id": did.as_str(),
+            "verificationMethod": [{
+                "id": "did:example:alice#key-1",
+                "type": "Multikey",
+                "controller": did.as_str(),
+                "publicKeyMultibase": "zmain"
+            }],
+            "authentication": ["did:example:alice#key-1"]
+        });
+
+        assert!(!remove_from_did_document(&mut document, &did).unwrap());
+        assert_eq!(document["verificationMethod"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -504,13 +625,17 @@ mod tests {
             &signing_key.public_key(),
             ProofVerificationOptions::default()
         ));
+        document["proof"]["created"] = Value::String("2000-01-01T00:00:00Z".to_owned());
+        document["proof"]["challenge"] = Value::String("already-used-nonce".to_owned());
+        let stale_proof = document["proof"].clone();
 
         resign_did_document_with_key1(&mut document, &generated.did, &generated.key1_private_pem)
             .unwrap();
 
-        assert_eq!(document["proof"]["created"], original_proof["created"]);
         assert_eq!(document["proof"]["domain"], original_proof["domain"]);
-        assert_eq!(document["proof"]["challenge"], original_proof["challenge"]);
+        assert_ne!(document["proof"]["created"], stale_proof["created"]);
+        assert_ne!(document["proof"]["challenge"], stale_proof["challenge"]);
+        assert_eq!(document["proof"]["challenge"].as_str().unwrap().len(), 32);
         assert!(verify_w3c_proof(
             &document,
             &signing_key.public_key(),

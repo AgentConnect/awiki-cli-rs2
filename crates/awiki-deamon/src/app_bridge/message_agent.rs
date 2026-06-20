@@ -14,6 +14,8 @@ use crate::state::{AppMessageAgentBindingRecord, DaemonState, UserDelegatedIdent
 use crate::DaemonConfig;
 
 pub const APP_MESSAGE_HANDLER_ROLE: &str = "app_message_handler";
+pub const APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES: &str = "hermes";
+pub const APP_MESSAGE_AGENT_RUNTIME_PROFILE: &str = "message_agent";
 pub const APP_MESSAGE_AGENT_STATUS_READY: &str = "message_agent_ready";
 pub const APP_MESSAGE_AGENT_STATUS_ACTIVE: &str = "message_agent_active";
 pub const APP_MESSAGE_AGENT_STATUS_ENSURING: &str = "message_agent_ensuring";
@@ -30,6 +32,10 @@ pub struct DesiredMessageAgent {
     pub role: Option<String>,
     #[serde(default)]
     pub runtime: Option<String>,
+    #[serde(default)]
+    pub runtime_provider: Option<String>,
+    #[serde(default)]
+    pub runtime_profile: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
@@ -49,6 +55,8 @@ impl std::fmt::Debug for DesiredMessageAgent {
         f.debug_struct("DesiredMessageAgent")
             .field("role", &self.role)
             .field("runtime", &self.runtime)
+            .field("runtime_provider", &self.runtime_provider)
+            .field("runtime_profile", &self.runtime_profile)
             .field("display_name", &self.display_name)
             .field("ensure_once_key", &self.ensure_once_key)
             .field(
@@ -84,9 +92,30 @@ where
     if role != APP_MESSAGE_HANDLER_ROLE {
         bail!("desired_message_agent.role must be app_message_handler");
     }
-    let runtime = desired.runtime.as_deref().unwrap_or("hermes").trim();
-    if runtime != "hermes" {
+    let runtime_provider = desired
+        .runtime_provider
+        .as_deref()
+        .or(desired.runtime.as_deref())
+        .unwrap_or(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
+        .trim();
+    if runtime_provider != APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES {
+        bail!("MVP app message agent runtime_provider must be hermes");
+    }
+    let runtime = desired
+        .runtime
+        .as_deref()
+        .unwrap_or(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
+        .trim();
+    if runtime != APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES {
         bail!("MVP app message agent runtime must be hermes");
+    }
+    let runtime_profile = desired
+        .runtime_profile
+        .as_deref()
+        .unwrap_or(APP_MESSAGE_AGENT_RUNTIME_PROFILE)
+        .trim();
+    if runtime_profile != APP_MESSAGE_AGENT_RUNTIME_PROFILE {
+        bail!("MVP app message agent runtime_profile must be message_agent");
     }
     let binding_id = desired
         .ensure_once_key
@@ -135,7 +164,7 @@ where
                 &identity.user_did,
                 &identity.app_instance_id,
             )),
-            runtime: "hermes".to_string(),
+            runtime: APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES.to_string(),
             display_name: Some(
                 desired
                     .display_name
@@ -235,7 +264,9 @@ fn parse_desired_message_agent(value: &Value) -> Result<DesiredMessageAgent> {
     if value.is_null() {
         return Ok(DesiredMessageAgent {
             role: Some(APP_MESSAGE_HANDLER_ROLE.to_string()),
-            runtime: Some("hermes".to_string()),
+            runtime: Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES.to_string()),
+            runtime_provider: Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES.to_string()),
+            runtime_profile: Some(APP_MESSAGE_AGENT_RUNTIME_PROFILE.to_string()),
             display_name: Some("Hermes Message Agent".to_string()),
             ensure_once_key: None,
             runtime_registration_token: None,
@@ -361,12 +392,30 @@ mod tests {
         let desired = parse_desired_message_agent(&json!({
             "role": "app_message_handler",
             "runtime": "hermes",
+            "runtime_provider": "hermes",
+            "runtime_profile": "message_agent",
             "runtime_registration_token": "tok_runtime_secret"
         }))
         .unwrap();
         let debug = format!("{desired:?}");
         assert!(!debug.contains("tok_runtime_secret"));
         assert!(debug.contains("<redacted-registration-token>"));
+        assert!(debug.contains("runtime_provider"));
+        assert!(debug.contains("runtime_profile"));
+    }
+
+    #[test]
+    fn desired_message_agent_defaults_runtime_provider_contract() {
+        let desired = parse_desired_message_agent(&Value::Null).unwrap();
+
+        assert_eq!(
+            desired.runtime_provider.as_deref(),
+            Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
+        );
+        assert_eq!(
+            desired.runtime_profile.as_deref(),
+            Some(APP_MESSAGE_AGENT_RUNTIME_PROFILE)
+        );
     }
 
     #[test]

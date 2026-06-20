@@ -1,4 +1,5 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 
@@ -158,7 +159,14 @@ pub fn daemon_snapshot_payload(
     Ok(json!({
         "command": "agent.status.query",
         "daemon_agent_did": daemon.agent_did,
-        "daemon": daemon_status_payload(config, daemon, &service, &now, &release),
+        "daemon": daemon_status_payload(
+            config,
+            daemon,
+            &service,
+            &now,
+            &release,
+            daemon_bootstrap_key_summary(state, daemon).as_ref(),
+        ),
         "runtimes": runtimes,
         "runs": [],
     }))
@@ -187,7 +195,7 @@ fn daemon_lightweight_payload_with_release(
         "command_id": null,
         "state": "ready",
         "message": "daemon heartbeat",
-        "daemon": daemon_status_payload(config, daemon, service, now, release),
+        "daemon": daemon_status_payload(config, daemon, service, now, release, None),
         "runtimes": [],
         "runs": [],
         "details": {
@@ -239,7 +247,11 @@ fn latest_status_items_with_release(
         needs_config: false,
         last_error_code: None,
         last_error_summary: None,
-        diagnostics_summary: daemon_diagnostics_summary(&service, release),
+        diagnostics_summary: daemon_diagnostics_summary(
+            &service,
+            release,
+            daemon_bootstrap_key_summary(state, daemon).as_ref(),
+        ),
     }];
     for runtime in state.list_runtime_agent_definitions_for_daemon(&daemon.agent_did)? {
         let runtime_status = runtime_status_summary(config, state, &runtime);
@@ -266,6 +278,20 @@ fn latest_status_items_with_release(
         });
     }
     Ok(items)
+}
+
+pub fn daemon_latest_diagnostics_summary(
+    _config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+    service: &ServiceStatus,
+    release: &DaemonReleaseStatus,
+) -> Value {
+    daemon_diagnostics_summary(
+        service,
+        release,
+        daemon_bootstrap_key_summary(state, daemon).as_ref(),
+    )
 }
 
 pub fn update_user_service_latest(
@@ -448,6 +474,7 @@ fn daemon_status_payload(
     service: &ServiceStatus,
     now: &str,
     release: &DaemonReleaseStatus,
+    bootstrap_key: Option<&DaemonBootstrapKeySummary>,
 ) -> Value {
     json!({
         "agent_did": daemon.agent_did,
@@ -461,20 +488,54 @@ fn daemon_status_payload(
         "needs_upgrade": release.needs_upgrade,
         "last_error_code": null,
         "last_error_summary": null,
-        "diagnostics_summary": daemon_diagnostics_summary(service, release),
+        "diagnostics_summary": daemon_diagnostics_summary(service, release, bootstrap_key),
     })
 }
 
-fn daemon_diagnostics_summary(service: &ServiceStatus, release: &DaemonReleaseStatus) -> Value {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonBootstrapKeySummary {
+    key_id: String,
+    public_key_multibase: String,
+    public_key_b64u: String,
+    key_algorithm: String,
+}
+
+fn daemon_diagnostics_summary(
+    service: &ServiceStatus,
+    release: &DaemonReleaseStatus,
+    bootstrap_key: Option<&DaemonBootstrapKeySummary>,
+) -> Value {
+    let mut config_summary = json!({
+        "service_installed": service.installed,
+        "release_manifest_url": release.manifest_url.clone(),
+        "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+        "release_error": release.error.clone(),
+        "bootstrap_key_status": if bootstrap_key.is_some() { "ready" } else { "missing" },
+    });
+    if let Some(bootstrap_key) = bootstrap_key {
+        if let Some(object) = config_summary.as_object_mut() {
+            object.insert(
+                "bootstrap_key_id".to_string(),
+                Value::String(bootstrap_key.key_id.clone()),
+            );
+            object.insert(
+                "bootstrap_public_key_multibase".to_string(),
+                Value::String(bootstrap_key.public_key_multibase.clone()),
+            );
+            object.insert(
+                "bootstrap_public_key_b64u".to_string(),
+                Value::String(bootstrap_key.public_key_b64u.clone()),
+            );
+            object.insert(
+                "bootstrap_key_algorithm".to_string(),
+                Value::String(bootstrap_key.key_algorithm.clone()),
+            );
+        }
+    }
     json!({
         "installation_status": if service.installed { "installed" } else { "not_installed" },
         "runner_status": if service.running { "running" } else { "not_running" },
-        "config_summary": {
-            "service_installed": service.installed,
-            "release_manifest_url": release.manifest_url.clone(),
-            "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
-            "release_error": release.error.clone(),
-        },
+        "config_summary": config_summary,
     })
 }
 
@@ -493,6 +554,70 @@ fn reconcile_daemon_upgrade_state(
         release.latest_version.as_deref(),
         release.needs_upgrade,
     )
+}
+
+fn daemon_bootstrap_key_summary(
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+) -> Option<DaemonBootstrapKeySummary> {
+    let identity = state.load_agent_identity(&daemon.agent_did).ok()?;
+    daemon_bootstrap_key_summary_from_did_document(&identity.did_document, &daemon.agent_did)
+        .ok()
+        .flatten()
+}
+
+fn daemon_bootstrap_key_summary_from_did_document(
+    did_document: &Value,
+    daemon_agent_did: &str,
+) -> Result<Option<DaemonBootstrapKeySummary>> {
+    let expected_key_id = format!(
+        "{}#{}",
+        daemon_agent_did.trim(),
+        anp::authentication::VM_KEY_E2EE_AGREEMENT
+    );
+    let Some(methods) = did_document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let Some(method) = methods.iter().find(|method| {
+        method.get("id").and_then(Value::as_str).map(str::trim) == Some(expected_key_id.as_str())
+    }) else {
+        return Ok(None);
+    };
+    let public_key_multibase = method
+        .get("publicKeyMultibase")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("daemon bootstrap key is missing publicKeyMultibase")?
+        .to_string();
+    let bytes = x25519_public_key_bytes_from_multibase(&public_key_multibase)
+        .context("extract daemon bootstrap public key")?;
+    Ok(Some(DaemonBootstrapKeySummary {
+        key_id: expected_key_id,
+        public_key_multibase,
+        public_key_b64u: URL_SAFE_NO_PAD.encode(bytes),
+        key_algorithm: "x25519".to_string(),
+    }))
+}
+
+fn x25519_public_key_bytes_from_multibase(value: &str) -> Result<[u8; 32]> {
+    let encoded = value
+        .trim()
+        .strip_prefix('z')
+        .context("daemon bootstrap key must use base58btc multibase")?;
+    let mut bytes = bs58::decode(encoded)
+        .into_vec()
+        .context("decode daemon bootstrap public key multibase")?;
+    if bytes.len() == 34 && bytes.starts_with(&[0xec, 0x01]) {
+        bytes = bytes[2..].to_vec();
+    }
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("daemon bootstrap public key must be 32 bytes"))?;
+    Ok(bytes)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -769,7 +894,7 @@ fn sanitize_public_error(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentDefinition;
+    use crate::agent::{generate_agent_identity, AgentDefinition};
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
     use crate::state::HermesProfileRecord;
     use std::collections::BTreeSet;
@@ -916,6 +1041,95 @@ mod tests {
                 .as_bool()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn daemon_status_exposes_public_bootstrap_key_from_daemon_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
+            .unwrap()
+            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let mut daemon = daemon();
+        daemon.agent_did = identity.agent_did.clone();
+        state.store_agent_identity(&identity).unwrap();
+        state.upsert_agent_definition(&daemon).unwrap();
+
+        let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
+        let diagnostics = &payload["daemon"]["diagnostics_summary"];
+
+        let config_summary = &diagnostics["config_summary"];
+        assert_eq!(
+            config_summary["bootstrap_key_id"],
+            format!(
+                "{}#{}",
+                daemon.agent_did,
+                anp::authentication::VM_KEY_E2EE_AGREEMENT
+            )
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["bootstrap_key_status"],
+            "ready"
+        );
+        assert_eq!(config_summary["bootstrap_key_algorithm"], "x25519");
+        assert!(config_summary["bootstrap_public_key_multibase"]
+            .as_str()
+            .unwrap()
+            .starts_with('z'));
+        let public_key = URL_SAFE_NO_PAD
+            .decode(config_summary["bootstrap_public_key_b64u"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(public_key.len(), 32);
+
+        let dump = payload.to_string();
+        assert!(!dump.contains("PRIVATE KEY"));
+        assert!(!dump.contains("token"));
+        assert!(!dump.contains("private"));
+    }
+
+    #[test]
+    fn latest_status_items_include_bootstrap_public_key_without_private_material() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
+            .unwrap()
+            .into_record("alice-mac-daemon".to_string(), AgentKind::Daemon);
+        let mut daemon = daemon();
+        daemon.agent_did = identity.agent_did.clone();
+        state.store_agent_identity(&identity).unwrap();
+        state.upsert_agent_definition(&daemon).unwrap();
+
+        let items = latest_status_items(&config, &state, &daemon, 1_700_000_000_000).unwrap();
+        let daemon_item = items
+            .iter()
+            .find(|item| item.agent_kind == AgentKind::Daemon)
+            .unwrap();
+
+        assert_eq!(
+            daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_id"],
+            format!(
+                "{}#{}",
+                daemon.agent_did,
+                anp::authentication::VM_KEY_E2EE_AGREEMENT
+            )
+        );
+        assert_eq!(
+            daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_status"],
+            "ready"
+        );
+        assert!(daemon_item.diagnostics_summary["config_summary"]["bootstrap_public_key_b64u"]
+            .as_str()
+            .is_some());
+        let dump = serde_json::to_string(&items).unwrap();
+        assert!(!dump.contains("PRIVATE KEY"));
+        assert!(!dump.contains("token"));
+        assert!(!dump.contains("private"));
     }
 
     #[test]

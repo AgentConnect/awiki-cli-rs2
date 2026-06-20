@@ -8,6 +8,31 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'identity.freezed.dart';
 
+class DartDaemonSubkeyAuthorizationRevokeResult {
+  final String userDid;
+  final String verificationMethod;
+  final bool updated;
+
+  const DartDaemonSubkeyAuthorizationRevokeResult({
+    required this.userDid,
+    required this.verificationMethod,
+    required this.updated,
+  });
+
+  @override
+  int get hashCode =>
+      userDid.hashCode ^ verificationMethod.hashCode ^ updated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDaemonSubkeyAuthorizationRevokeResult &&
+          runtimeType == other.runtimeType &&
+          userDid == other.userDid &&
+          verificationMethod == other.verificationMethod &&
+          updated == other.updated;
+}
+
 class DartDaemonSubkeyPrivatePackage {
   final String schema;
   final String userDid;

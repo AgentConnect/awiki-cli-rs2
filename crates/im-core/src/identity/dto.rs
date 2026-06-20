@@ -69,6 +69,13 @@ pub struct DaemonSubkeyPrivatePackage {
     pub private_key_multibase: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonSubkeyAuthorizationRevokeResult {
+    pub user_did: crate::ids::Did,
+    pub verification_method: String,
+    pub updated: bool,
+}
+
 impl DaemonSubkeyPrivatePackage {
     pub fn new_v2_pem(
         user_did: crate::ids::Did,

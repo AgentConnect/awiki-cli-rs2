@@ -214,6 +214,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bs58",
+ "chacha20poly1305",
  "im-core",
  "libc",
  "rand 0.8.6",
@@ -221,10 +222,12 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "tempfile",
  "time",
  "tokio",
+ "x25519-dalek",
 ]
 
 [[package]]

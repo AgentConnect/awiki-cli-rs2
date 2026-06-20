@@ -1,6 +1,14 @@
 
 # Agent Delegated Identity and ANP Message Proof 方案
 
+> 历史文档说明：本文件记录的是早期 Agent delegated identity 讨论稿。
+> 其中“第一阶段 / MVP”里关于明文 bootstrap、`message.send.plain`
+> 默认能力和 Agent 代发的描述已经被当前 Message Agent MVP 收口取代。
+> 当前权威方案以
+> `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
+> 以及本仓库代码中的 secure bootstrap / no-send 实现为准；长期
+> Agent DID + human authorization double-proof 仍是后续技术债。
+
 > 文件名：`agent_delegated_identity_message_proof_plan.md`  
 > 版本：v0.1  
 > 状态：方案确认稿  

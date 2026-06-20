@@ -301,6 +301,121 @@ impl<'a> IdentityRegistry<'a> {
         }
     }
 
+    pub fn revoke_daemon_subkey_authorization(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DaemonSubkeyAuthorizationRevokeResult> {
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        let prepared = self.prepare_daemon_subkey_revoke(entry)?;
+        match prepared {
+            RevokeDaemonSubkeyPrepared::AlreadyRevoked {
+                did,
+                verification_method,
+            } => Ok(super::DaemonSubkeyAuthorizationRevokeResult {
+                user_did: did,
+                verification_method,
+                updated: false,
+            }),
+            RevokeDaemonSubkeyPrepared::UpdateRequired {
+                dir_name,
+                did,
+                verification_method,
+                did_document,
+                selector,
+            } => {
+                let client = self.core.client(selector)?;
+                let call =
+                    crate::internal::identity_wire::update_document::build_update_document_rpc_call(
+                        crate::internal::identity_wire::UpdateDocumentRpcParams {
+                            did_document: did_document.clone(),
+                            is_public: None,
+                            is_agent: None,
+                            role: None,
+                            endpoint_url: None,
+                        },
+                    );
+                use crate::internal::transport::AuthenticatedRpcTransport;
+                let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+                transport.authenticated_rpc(call.endpoint, call.method, call.params)?;
+                crate::internal::identity_store::IdentityStore::new(
+                    &self.core.inner().sdk_paths().identities,
+                )
+                .save_did_document(&dir_name, &did_document)?;
+                Ok(super::DaemonSubkeyAuthorizationRevokeResult {
+                    user_did: did,
+                    verification_method,
+                    updated: true,
+                })
+            }
+        }
+    }
+
+    pub async fn revoke_daemon_subkey_authorization_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DaemonSubkeyAuthorizationRevokeResult> {
+        let registry = self.load_registry_async().await?;
+        let entry = registry.find_entry(selector)?;
+        let core = (*self.core).clone();
+        let entry = entry.clone();
+        let prepared = crate::internal::runtime::worker::run_blocking(move || {
+            IdentityRegistry::new(&core).prepare_daemon_subkey_revoke(&entry)
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })??;
+        match prepared {
+            RevokeDaemonSubkeyPrepared::AlreadyRevoked {
+                did,
+                verification_method,
+            } => Ok(super::DaemonSubkeyAuthorizationRevokeResult {
+                user_did: did,
+                verification_method,
+                updated: false,
+            }),
+            RevokeDaemonSubkeyPrepared::UpdateRequired {
+                dir_name,
+                did,
+                verification_method,
+                did_document,
+                selector,
+            } => {
+                let client = self.core.client_async(selector).await?;
+                let call =
+                    crate::internal::identity_wire::update_document::build_update_document_rpc_call(
+                        crate::internal::identity_wire::UpdateDocumentRpcParams {
+                            did_document: did_document.clone(),
+                            is_public: None,
+                            is_agent: None,
+                            role: None,
+                            endpoint_url: None,
+                        },
+                    );
+                use crate::internal::transport::AsyncAuthenticatedRpcTransport;
+                let mut transport = crate::internal::transport::CoreHttpTransport::new(&client);
+                transport
+                    .authenticated_rpc(call.endpoint, call.method, call.params)
+                    .await?;
+                let paths = self.core.inner().sdk_paths().identities.clone();
+                crate::internal::runtime::worker::run_blocking(move || {
+                    crate::internal::identity_store::IdentityStore::new(&paths)
+                        .save_did_document(&dir_name, &did_document)
+                })
+                .await
+                .map_err(|err| crate::ImError::Internal {
+                    message: err.to_string(),
+                })??;
+                Ok(super::DaemonSubkeyAuthorizationRevokeResult {
+                    user_did: did,
+                    verification_method,
+                    updated: true,
+                })
+            }
+        }
+    }
+
     fn prepare_daemon_subkey_ensure(
         &self,
         entry: &RegistryEntry,
@@ -382,6 +497,67 @@ impl<'a> IdentityRegistry<'a> {
             dir_name,
             did_document,
             package,
+            selector: super::IdentitySelector::Did(did),
+        })
+    }
+
+    fn prepare_daemon_subkey_revoke(
+        &self,
+        entry: &RegistryEntry,
+    ) -> crate::ImResult<RevokeDaemonSubkeyPrepared> {
+        let dir_name =
+            entry
+                .identity_dir_name()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_string(),
+                })?;
+        let store = crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        );
+        let did = entry.summary.did.clone();
+        let verification_method =
+            crate::internal::identity_daemon_subkey::expected_verification_method(&did);
+        let mut did_document = store.load_did_document(&dir_name)?;
+        let document_id = did_document
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if document_id != did.as_str() {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: did.as_str().to_string(),
+                missing: vec!["did_document_identity_mismatch".to_string()],
+            });
+        }
+        if !crate::internal::identity_daemon_subkey::remove_from_did_document(
+            &mut did_document,
+            &did,
+        )? {
+            return Ok(RevokeDaemonSubkeyPrepared::AlreadyRevoked {
+                did,
+                verification_method,
+            });
+        }
+        let key1_private_pem = store
+            .load_key1_private_pem(&dir_name)
+            .map_err(|err| match err {
+                crate::ImError::CredentialFileUnreadable { .. } => {
+                    crate::ImError::IdentityNotReady {
+                        identity: did.as_str().to_string(),
+                        missing: vec!["key1_private".to_string()],
+                    }
+                }
+                other => other,
+            })?;
+        crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
+            &mut did_document,
+            &did,
+            &key1_private_pem,
+        )?;
+        Ok(RevokeDaemonSubkeyPrepared::UpdateRequired {
+            dir_name,
+            did: did.clone(),
+            verification_method,
+            did_document,
             selector: super::IdentitySelector::Did(did),
         })
     }
@@ -999,6 +1175,21 @@ enum EnsureDaemonSubkeyPrepared {
         dir_name: String,
         did_document: Value,
         package: super::DaemonSubkeyPrivatePackage,
+        selector: super::IdentitySelector,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum RevokeDaemonSubkeyPrepared {
+    AlreadyRevoked {
+        did: crate::ids::Did,
+        verification_method: String,
+    },
+    UpdateRequired {
+        dir_name: String,
+        did: crate::ids::Did,
+        verification_method: String,
+        did_document: Value,
         selector: super::IdentitySelector,
     },
 }

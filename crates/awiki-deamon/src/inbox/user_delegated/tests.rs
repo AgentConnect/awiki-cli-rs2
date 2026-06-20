@@ -127,7 +127,7 @@ fn delegated_inbox_dispatches_plain_message_as_untrusted_envelope() {
     assert_eq!(task.controller_did, binding.user_did);
     assert_eq!(task.sender_did, "did:human:bob");
     assert_eq!(task.requester_did, "did:human:bob");
-    assert_eq!(task.reply_recipient_did, "did:human:bob");
+    assert_eq!(task.reply_recipient_did, binding.user_did);
     assert_eq!(envelope.content_role, "user_message_untrusted");
     assert_eq!(envelope.source_sender_did, "did:human:bob");
     assert_eq!(envelope.content_text, "hello agent");
@@ -365,7 +365,105 @@ fn delegated_inbox_does_not_dispatch_system_payload_as_user_text() {
         process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
 
     assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.skipped_unsupported_messages, 1);
+    assert_eq!(outcome.skipped_processed_messages, 0);
     assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+}
+
+#[test]
+fn delegated_inbox_syncs_unsupported_system_payload_without_dispatch() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![system_payload_message("msg_control", "did:human:bob")],
+            next_cursor: None,
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    let event = state
+        .load_message_event(&event_id(&binding.user_did, "msg_control"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.processing_status, "skipped_unsupported");
+    assert_eq!(event.retention_class, RETENTION_CLASS_OPAQUE_ONLY);
+    assert!(event.plain_text_ref_or_excerpt.is_none());
+    let sync = state
+        .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_control"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(sync.payload_json["schema"], MESSAGE_SYNC_SCHEMA);
+    assert_eq!(
+        sync.payload_json["processing_status"],
+        "skipped_unsupported"
+    );
+    assert_eq!(
+        sync.payload_json["unsupported_reason"],
+        "system_control_payload"
+    );
+    assert_eq!(
+        sync.payload_json["retention_class"],
+        RETENTION_CLASS_OPAQUE_ONLY
+    );
+}
+
+#[test]
+fn delegated_inbox_skips_app_recovery_control_payload_without_resyncing() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![direct_payload_message(
+                "msg_control_recovery",
+                &binding.daemon_agent_did,
+                json!({
+                    "schema": MESSAGE_SYNC_SCHEMA,
+                    "sync_type": "runtime_final",
+                    "source_message_id": "msg_1",
+                    "runtime_agent_did": binding.runtime_agent_did,
+                }),
+            )],
+            next_cursor: None,
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.skipped_app_control_messages, 1);
+    assert_eq!(outcome.skipped_unsupported_messages, 0);
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    let processed = state
+        .load_processed_message(&binding.user_did, "msg_control_recovery")
+        .unwrap()
+        .unwrap();
+    assert_eq!(processed.schema, MESSAGE_SYNC_SCHEMA);
+    assert_eq!(processed.status, PROCESSED_STATUS_SKIPPED_APP_CONTROL);
+    assert!(state
+        .load_message_event(&event_id(&binding.user_did, "msg_control_recovery"))
+        .unwrap()
+        .is_none());
+    assert!(state
+        .load_message_sync_outbox(&message_sync_idempotency_key(
+            binding,
+            "msg_control_recovery"
+        ))
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -500,8 +598,26 @@ fn delegated_inbox_does_not_dispatch_group_plain_text_humans_or_invalid_mentions
         process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
 
     assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.skipped_unsupported_messages, 3);
+    assert_eq!(outcome.skipped_processed_messages, 0);
     assert_eq!(outcome.next_cursor.as_deref(), Some("cursor_after_skips"));
     assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+
+    for (message_id, reason) in [
+        ("msg_plain_at", "group_message"),
+        ("msg_humans", "group_message"),
+        ("msg_invalid", "group_message"),
+    ] {
+        let sync = state
+            .load_message_sync_outbox(&message_sync_idempotency_key(binding, message_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            sync.payload_json["processing_status"],
+            "skipped_unsupported"
+        );
+        assert_eq!(sync.payload_json["unsupported_reason"], reason);
+    }
 }
 
 #[test]
@@ -553,7 +669,7 @@ fn delegated_runtime_status_and_final_are_queued_without_plaintext_final() {
         requester_did: "did:human:bob".to_string(),
         requester_full_handle: Some("bob.example.com".to_string()),
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
-        reply_recipient_did: "did:human:bob".to_string(),
+        reply_recipient_did: binding.user_did.clone(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::to_string(&json!({
             "schema": "awiki.runtime.user_message_task.v1",
@@ -647,7 +763,7 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
         requester_did: "did:human:bob".to_string(),
         requester_full_handle: Some("bob.example.com".to_string()),
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
-        reply_recipient_did: "did:human:bob".to_string(),
+        reply_recipient_did: binding.user_did.clone(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::to_string(&json!({
             "schema": "awiki.runtime.user_message_task.v1",
@@ -824,6 +940,24 @@ fn plain_message(id: &str, sender: &str, text: &str) -> Message {
         received_at: Some("2026-06-09T00:00:01Z".to_string()),
         metadata: MessageMetadata {
             content_type: Some("text/plain".to_string()),
+            ..MessageMetadata::default()
+        },
+    }
+}
+
+fn direct_payload_message(id: &str, sender: &str, payload: Value) -> Message {
+    Message {
+        id: MessageId::parse(id).unwrap(),
+        thread: ThreadRef::Direct(PeerRef::parse(sender, "").unwrap()),
+        direction: MessageDirection::Incoming,
+        sender: PeerRef::parse(sender, "").unwrap(),
+        receiver: Some(PeerRef::parse("did:human:alice", "").unwrap()),
+        group: None,
+        body: MessageBodyView::Payload { payload },
+        sent_at: Some("2026-06-09T00:00:00Z".to_string()),
+        received_at: Some("2026-06-09T00:00:01Z".to_string()),
+        metadata: MessageMetadata {
+            content_type: Some("application/json".to_string()),
             ..MessageMetadata::default()
         },
     }

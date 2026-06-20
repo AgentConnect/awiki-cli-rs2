@@ -216,6 +216,23 @@ pub struct BootstrapReplayRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecureBootstrapReplayRecord {
+    pub operation_id: String,
+    pub nonce: String,
+    pub envelope_hash: String,
+    pub recipient_daemon_did: String,
+    pub recipient_key_id: String,
+    pub sender_human_did: String,
+    pub bootstrap_id: String,
+    pub idempotency_key: String,
+    pub payload_sha256: Option<String>,
+    pub expires_at: String,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapStoreOutcome {
     Inserted,
@@ -467,6 +484,38 @@ impl BootstrapReplayRecord {
         ] {
             if value.trim().is_empty() {
                 bail!("{field_name} must not be empty");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SecureBootstrapReplayRecord {
+    pub fn validate(&self) -> Result<()> {
+        for (field_name, value) in [
+            ("operation_id", self.operation_id.as_str()),
+            ("nonce", self.nonce.as_str()),
+            ("envelope_hash", self.envelope_hash.as_str()),
+            ("recipient_daemon_did", self.recipient_daemon_did.as_str()),
+            ("recipient_key_id", self.recipient_key_id.as_str()),
+            ("sender_human_did", self.sender_human_did.as_str()),
+            ("bootstrap_id", self.bootstrap_id.as_str()),
+            ("idempotency_key", self.idempotency_key.as_str()),
+            ("expires_at", self.expires_at.as_str()),
+            ("status", self.status.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if self.envelope_hash.len() != 64
+            || !self.envelope_hash.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            bail!("secure bootstrap envelope_hash must be a 64-character hex digest");
+        }
+        if let Some(payload_sha256) = self.payload_sha256.as_deref() {
+            if payload_sha256.trim().is_empty() {
+                bail!("payload_sha256 must not be empty when present");
             }
         }
         Ok(())

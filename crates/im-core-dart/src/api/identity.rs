@@ -3,9 +3,9 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     identity::{
-        DartDaemonSubkeyPrivatePackage, DartDeleteLocalIdentityResult,
-        DartHandleRegistrationResult, DartIdentitySelector, DartIdentitySummary,
-        DartInitialProfile, DartRecoverHandleResult,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentitySelector,
+        DartIdentitySummary, DartInitialProfile, DartRecoverHandleResult,
     },
 };
 
@@ -80,6 +80,19 @@ pub async fn ensure_daemon_subkey_package(
     inner
         .identities()
         .ensure_daemon_subkey_package_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn revoke_daemon_subkey_authorization(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartDaemonSubkeyAuthorizationRevokeResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .revoke_daemon_subkey_authorization_async(selector.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

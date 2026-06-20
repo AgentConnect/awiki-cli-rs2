@@ -1142,7 +1142,7 @@ fn hermes_delegated_direct_prompt_is_separate_from_external_controller_and_group
         requester_did: "did:human:bob".to_string(),
         requester_full_handle: None,
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
-        reply_recipient_did: "did:human:bob".to_string(),
+        reply_recipient_did: "did:human:alice".to_string(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::json!({
             "schema": "awiki.runtime.user_message_task.v1",
@@ -1163,8 +1163,10 @@ fn hermes_delegated_direct_prompt_is_separate_from_external_controller_and_group
     assert!(prompt.contains("delegated_direct_safety:"));
     assert!(prompt.contains("delegated direct-message inbox route"));
     assert!(prompt.contains("delegated_direct_context:"));
-    assert!(prompt.contains("do not assume controller or group context"));
-    assert!(prompt.contains("reply-in-current-direct-via-final"));
+    assert!(prompt.contains("returns the result to the controller app"));
+    assert!(prompt.contains("do not send directly to the original requester"));
+    assert!(prompt.contains("recover-to-controller-app-via-final"));
+    assert!(!prompt.contains("reply-in-current-direct-via-final"));
     assert!(!prompt.contains("external_direct_safety:"));
     assert!(!prompt.contains("group_message_safety:"));
     assert!(!prompt.contains("controller_direct_authority:"));

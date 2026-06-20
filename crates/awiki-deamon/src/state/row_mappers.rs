@@ -342,6 +342,26 @@ pub(super) fn bootstrap_replay_from_row(
     })
 }
 
+pub(super) fn secure_bootstrap_replay_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<SecureBootstrapReplayRecord> {
+    Ok(SecureBootstrapReplayRecord {
+        operation_id: row.get(0)?,
+        nonce: row.get(1)?,
+        envelope_hash: row.get(2)?,
+        recipient_daemon_did: row.get(3)?,
+        recipient_key_id: row.get(4)?,
+        sender_human_did: row.get(5)?,
+        bootstrap_id: row.get(6)?,
+        idempotency_key: row.get(7)?,
+        payload_sha256: row.get(8)?,
+        expires_at: row.get(9)?,
+        status: row.get(10)?,
+        created_at_ms: row.get(11)?,
+        updated_at_ms: row.get(12)?,
+    })
+}
+
 pub(super) fn app_message_agent_binding_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AppMessageAgentBindingRecord> {
@@ -482,4 +502,38 @@ LIMIT 1
         )
         .optional()
         .context("load bootstrap replay by id or idempotency key")
+}
+
+pub(super) fn load_secure_bootstrap_replay_by_operation_or_nonce(
+    connection: &Connection,
+    operation_id: &str,
+    nonce: &str,
+) -> Result<Option<SecureBootstrapReplayRecord>> {
+    connection
+        .query_row(
+            r#"
+SELECT
+    operation_id,
+    nonce,
+    envelope_hash,
+    recipient_daemon_did,
+    recipient_key_id,
+    sender_human_did,
+    bootstrap_id,
+    idempotency_key,
+    payload_sha256,
+    expires_at,
+    status,
+    created_at_ms,
+    updated_at_ms
+FROM secure_bootstrap_replay
+WHERE operation_id = ?1 OR nonce = ?2
+ORDER BY created_at_ms ASC
+LIMIT 1
+"#,
+            rusqlite::params![operation_id, nonce],
+            secure_bootstrap_replay_from_row,
+        )
+        .optional()
+        .context("load secure bootstrap replay by operation id or nonce")
 }
