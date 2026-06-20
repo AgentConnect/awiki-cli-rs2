@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use rand::RngCore;
@@ -10,8 +11,12 @@ use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    process::ManagedChild, sanitize_cli_output_text, validate_native_session_id,
-    write_sanitized_cli_output, GenericCliDriver, GenericCliExit, GenericCliInvocation,
+    process::{
+        ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
+        DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
+    },
+    sanitize_cli_output_text, validate_native_session_id, write_sanitized_cli_output,
+    GenericCliDriver, GenericCliExit, GenericCliInvocation,
 };
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
@@ -33,6 +38,7 @@ pub struct ClaudeCodeDriverConfig {
     pub no_session_persistence: bool,
     pub output_dir: Option<PathBuf>,
     pub cli_wrapper: String,
+    pub run_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +123,11 @@ impl ClaudeCodeDriverConfig {
             output_dir,
             cli_wrapper: string_field(config, "cli_wrapper")
                 .unwrap_or_else(|| DEFAULT_CLI_WRAPPER.to_string()),
+            run_timeout: duration_ms_field(
+                config,
+                "run_timeout_ms",
+                DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
+            ),
         };
         record.validate()?;
         Ok(record)
@@ -151,11 +162,23 @@ impl ClaudeCodeDriverConfig {
 impl GenericCliDriver for ClaudeCodeDriver {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
         let mut command = Command::new(&self.config.binary_path);
-        command.arg("--version");
+        command
+            .arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         apply_claude_code_probe_env(&mut command);
-        match command.output() {
-            Ok(output) if output.status.success() => {
-                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let output =
+            ManagedChild::spawn(&mut command, "spawn claude-code --version").and_then(|managed| {
+                managed.wait_timeout(
+                    "wait for claude-code --version",
+                    DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
+                )
+            });
+        match output {
+            Ok(output) if output.output.status.success() => {
+                let version = String::from_utf8_lossy(&output.output.stdout)
+                    .trim()
+                    .to_string();
                 let detail = if version.is_empty() {
                     self.config.binary_path.display().to_string()
                 } else {
@@ -171,7 +194,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
                 detail: Some(format!(
                     "{} --version exited with {}",
                     self.config.binary_path.display(),
-                    output.status.code().unwrap_or(1)
+                    output.output.status.code().unwrap_or(1)
                 )),
             }),
             Err(error) => Ok(RuntimeInstallStatus {
@@ -276,11 +299,36 @@ impl GenericCliDriver for ClaudeCodeDriver {
         apply_claude_code_env(&mut command, &invocation, &socket_path, &self.config);
 
         let managed = ManagedChild::spawn(&mut command, "spawn claude-code print")?;
-        let managed_output = managed.write_stdin_and_wait(
+        let managed_output = match managed.write_stdin_and_wait_timeout(
             prompt.as_bytes(),
             "write Claude Code prompt envelope to stdin",
             "wait for claude-code",
-        )?;
+            self.config.run_timeout,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
+                    return Ok(GenericCliExit {
+                        exit_code: 124,
+                        status: RuntimeRunStatus::Failed,
+                        callbacks: Vec::new(),
+                        metadata: serde_json::json!({
+                            "driver_id": "claude-code",
+                            "home_isolation": home_isolation(),
+                            "error_code": "claude_code_cli_timeout",
+                            "error_summary": timeout.to_string(),
+                            "next_action": "manual_review_required",
+                            "process": {
+                                "timed_out": true,
+                                "timeout_ms": timeout.timeout_ms(),
+                                "management": timeout.metadata_json(),
+                            },
+                        }),
+                    });
+                }
+                return Err(error);
+            }
+        };
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
         let stdout_sanitizer = write_sanitized_cli_output(
@@ -716,6 +764,15 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
 
 fn bool_field(value: &Value, field: &str, default: bool) -> bool {
     value.get(field).and_then(Value::as_bool).unwrap_or(default)
+}
+
+fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(default)
 }
 
 fn permission_mode_for_sandbox(sandbox: &str) -> &'static str {

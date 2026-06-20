@@ -1,8 +1,15 @@
-use std::io::Write;
+use std::fmt;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Output};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+
+pub const DEFAULT_GENERIC_CLI_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub const DEFAULT_GENERIC_CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGED_CHILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug)]
 pub struct ManagedChild {
@@ -23,6 +30,36 @@ struct ProcessManagementMetadata {
     process_tree_cleanup_strategy: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ManagedChildTimeoutError {
+    context: &'static str,
+    timeout: Duration,
+    metadata: ProcessManagementMetadata,
+}
+
+impl ManagedChildTimeoutError {
+    pub fn timeout_ms(&self) -> u128 {
+        self.timeout.as_millis()
+    }
+
+    pub fn metadata_json(&self) -> Value {
+        process_metadata_json(self.metadata)
+    }
+}
+
+impl fmt::Display for ManagedChildTimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} timed out after {} ms",
+            self.context,
+            self.timeout.as_millis()
+        )
+    }
+}
+
+impl std::error::Error for ManagedChildTimeoutError {}
+
 impl ManagedChild {
     pub fn spawn(command: &mut Command, context: &'static str) -> Result<Self> {
         let metadata = configure_managed_command(command);
@@ -33,11 +70,12 @@ impl ManagedChild {
         })
     }
 
-    pub fn write_stdin_and_wait(
+    pub fn write_stdin_and_wait_timeout(
         mut self,
         input: &[u8],
         stdin_context: &'static str,
         wait_context: &'static str,
+        timeout: Duration,
     ) -> Result<ManagedChildOutput> {
         if let Some(child) = self.child.as_mut() {
             let write_result = child
@@ -51,24 +89,56 @@ impl ManagedChild {
             }
             drop(child.stdin.take());
         }
-        self.wait(wait_context)
+        self.wait_timeout(wait_context, timeout)
     }
 
-    pub fn wait(mut self, wait_context: &'static str) -> Result<ManagedChildOutput> {
-        let child = self
-            .child
-            .take()
-            .expect("managed child is always present before wait");
-        let child_id = child.id();
-        match child.wait_with_output().context(wait_context) {
-            Ok(output) => Ok(ManagedChildOutput {
-                output,
-                metadata: self.metadata,
-            }),
-            Err(error) => {
-                kill_process_tree_by_id_best_effort(child_id, self.metadata);
-                Err(error)
+    pub fn wait_timeout(
+        mut self,
+        wait_context: &'static str,
+        timeout: Duration,
+    ) -> Result<ManagedChildOutput> {
+        let stdout_reader = self.child.as_mut().and_then(|child| child.stdout.take());
+        let stderr_reader = self.child.as_mut().and_then(|child| child.stderr.take());
+        let stdout_handle = stdout_reader.map(spawn_pipe_reader);
+        let stderr_handle = stderr_reader.map(spawn_pipe_reader);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let status = self
+                .child
+                .as_mut()
+                .expect("managed child is always present before timeout wait")
+                .try_wait()
+                .context(wait_context)?;
+            if let Some(status) = status {
+                let stdout = join_pipe_reader(stdout_handle, "join managed child stdout reader")?;
+                let stderr = join_pipe_reader(stderr_handle, "join managed child stderr reader")?;
+                self.child.take();
+                return Ok(ManagedChildOutput {
+                    output: Output {
+                        status,
+                        stdout,
+                        stderr,
+                    },
+                    metadata: self.metadata,
+                });
             }
+            if Instant::now() >= deadline {
+                self.kill_process_tree_best_effort();
+                let stdout =
+                    join_pipe_reader(stdout_handle, "join timed out managed child stdout reader")?;
+                let stderr =
+                    join_pipe_reader(stderr_handle, "join timed out managed child stderr reader")?;
+                drop(stdout);
+                drop(stderr);
+                self.child.take();
+                return Err(ManagedChildTimeoutError {
+                    context: wait_context,
+                    timeout,
+                    metadata: self.metadata,
+                }
+                .into());
+            }
+            std::thread::sleep(MANAGED_CHILD_POLL_INTERVAL);
         }
     }
 
@@ -91,11 +161,40 @@ impl ManagedChildOutput {
     }
 
     pub fn metadata_json(&self) -> Value {
-        serde_json::json!({
-            "process_group_isolated": self.metadata.process_group_isolated,
-            "process_tree_cleanup_supported": self.metadata.process_tree_cleanup_supported,
-            "process_tree_cleanup_strategy": self.metadata.process_tree_cleanup_strategy,
-        })
+        process_metadata_json(self.metadata)
+    }
+}
+
+fn process_metadata_json(metadata: ProcessManagementMetadata) -> Value {
+    serde_json::json!({
+        "process_group_isolated": metadata.process_group_isolated,
+        "process_tree_cleanup_supported": metadata.process_tree_cleanup_supported,
+        "process_tree_cleanup_strategy": metadata.process_tree_cleanup_strategy,
+    })
+}
+
+fn spawn_pipe_reader<R>(mut reader: R) -> JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    })
+}
+
+fn join_pipe_reader(
+    handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
+    context: &'static str,
+) -> Result<Vec<u8>> {
+    let Some(handle) = handle else {
+        return Ok(Vec::new());
+    };
+    match handle.join() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(error).context(context),
+        Err(_) => anyhow::bail!("{context}: reader thread panicked"),
     }
 }
 
@@ -141,15 +240,6 @@ fn kill_child_process_tree_best_effort(child: &mut Child, metadata: ProcessManag
             let _ = child.kill();
         }
         let _ = child.wait();
-    }
-}
-
-#[cfg(unix)]
-fn kill_process_tree_by_id_best_effort(child_id: u32, metadata: ProcessManagementMetadata) {
-    if metadata.process_tree_cleanup_supported {
-        kill_process_group_by_id(child_id, libc::SIGTERM);
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        kill_process_group_by_id(child_id, libc::SIGKILL);
     }
 }
 

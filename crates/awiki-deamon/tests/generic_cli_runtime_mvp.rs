@@ -2022,6 +2022,114 @@ PY
     assert_eq!(records[0].text.as_deref(), Some("registry finished"));
 }
 
+#[cfg(unix)]
+#[test]
+fn command_driver_timeout_marks_failed_and_releases_route_without_final() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "command");
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let script_path = root.path().join("hanging-command-driver.sh");
+    std::fs::write(
+        &script_path,
+        r#"#!/bin/sh
+set -eu
+sleep 10
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&script_path, permissions).unwrap();
+
+    let plugin = GenericCliRuntimePlugin::new(
+        CommandGenericCliDriver::new(&script_path, vec![])
+            .with_run_timeout(Duration::from_millis(50)),
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_command_timeout".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "hang command driver".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.exit_code, Some(124));
+    assert_eq!(
+        result.launch_outcome.metadata["error_code"].as_str(),
+        Some("generic_cli_timeout")
+    );
+    assert_eq!(
+        result.launch_outcome.metadata["process"]["timed_out"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        result.launch_outcome.metadata["process"]["management"]["process_tree_cleanup_supported"]
+            .as_bool(),
+        Some(true)
+    );
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("generic_cli_timeout")
+    );
+    assert_eq!(
+        records[1].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.status, "failed");
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.last_message_id, None);
+    assert_eq!(
+        route.last_error_code.as_deref(),
+        Some("generic_cli_timeout")
+    );
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(None, Some(&profile.runtime_profile_id), None, false)
+            .unwrap(),
+        0
+    );
+}
+
 fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
     let config_home = binary_path
         .parent()
@@ -2039,6 +2147,7 @@ fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
         ephemeral: false,
         output_dir: None,
         cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+        run_timeout: std::time::Duration::from_secs(10 * 60),
     }
 }
 
@@ -2367,6 +2476,7 @@ fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig
         no_session_persistence: false,
         output_dir: None,
         cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+        run_timeout: std::time::Duration::from_secs(10 * 60),
     }
 }
 
@@ -3833,6 +3943,106 @@ exit 12
 
 #[cfg(unix)]
 #[test]
+fn claude_code_driver_timeout_marks_failed_and_releases_route_without_final() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "claude-code");
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_claude = root.path().join("claude-timeout");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "1.2.3 (Claude Code)"
+  exit 0
+fi
+cat >/dev/null
+sleep 10
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+    let mut driver_config = claude_code_config(fake_claude);
+    driver_config.output_dir = Some(root.path().join("claude-timeout-output"));
+    driver_config.run_timeout = Duration::from_millis(50);
+    let plugin = GenericCliRuntimePlugin::new(ClaudeCodeDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_claude_timeout".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "run hanging claude driver".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    assert_eq!(
+        result.launch_outcome.metadata["error_code"].as_str(),
+        Some("claude_code_cli_timeout")
+    );
+    assert_eq!(
+        result.launch_outcome.metadata["process"]["timed_out"].as_bool(),
+        Some(true)
+    );
+    let records = outbox.records();
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("claude_code_cli_timeout")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.native_session_id, None);
+    assert_eq!(run_record.status, "failed");
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.last_message_id, None);
+    assert_eq!(
+        route.last_error_code.as_deref(),
+        Some("claude_code_cli_timeout")
+    );
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(None, Some(&profile.runtime_profile_id), None, false)
+            .unwrap(),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn codex_driver_success_without_finish_uses_fallback_final_once() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -4164,6 +4374,103 @@ exit 42
     assert_eq!(route.status, "failed");
     assert_eq!(route.last_error_code.as_deref(), Some("codex_cli_failed"));
     assert_eq!(route.last_message_id, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_driver_timeout_marks_failed_and_releases_route_without_final() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-timeout");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+cat >/dev/null
+sleep 10
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    driver_config.output_dir = Some(root.path().join("codex-timeout-output"));
+    driver_config.run_timeout = Duration::from_millis(50);
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_timeout".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "run hanging codex driver".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    assert_eq!(
+        result.launch_outcome.metadata["error_code"].as_str(),
+        Some("codex_cli_timeout")
+    );
+    assert_eq!(
+        result.launch_outcome.metadata["process"]["timed_out"].as_bool(),
+        Some(true)
+    );
+    let records = outbox.records();
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("codex_cli_timeout")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.native_session_id, None);
+    assert_eq!(run_record.status, "failed");
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.last_message_id, None);
+    assert_eq!(route.last_error_code.as_deref(), Some("codex_cli_timeout"));
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(None, Some(&profile.runtime_profile_id), None, false)
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

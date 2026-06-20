@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -16,7 +17,7 @@ use crate::runtime::{
 };
 use crate::state::{CliRouteSessionRecord, CliRuntimeProfileRecord};
 
-use self::process::ManagedChild;
+use self::process::{ManagedChild, DEFAULT_GENERIC_CLI_RUN_TIMEOUT};
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 const MAX_NATIVE_SESSION_ID_LEN: usize = 128;
@@ -464,6 +465,7 @@ pub struct CommandGenericCliDriver {
     program: std::path::PathBuf,
     args: Vec<String>,
     cli_wrapper: String,
+    run_timeout: Duration,
 }
 
 impl CommandGenericCliDriver {
@@ -472,11 +474,17 @@ impl CommandGenericCliDriver {
             program: program.into(),
             args,
             cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+            run_timeout: DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
         }
     }
 
     pub fn with_cli_wrapper(mut self, cli_wrapper: impl Into<String>) -> Self {
         self.cli_wrapper = cli_wrapper.into();
+        self
+    }
+
+    pub fn with_run_timeout(mut self, run_timeout: Duration) -> Self {
+        self.run_timeout = run_timeout;
         self
     }
 }
@@ -517,7 +525,30 @@ impl GenericCliDriver for CommandGenericCliDriver {
             )
             .env_remove("AWIKI_DAEMON_TASK_TEXT");
         let managed = ManagedChild::spawn(&mut command, "spawn generic CLI runtime")?;
-        let output = managed.wait("wait for generic CLI runtime")?;
+        let output = match managed.wait_timeout("wait for generic CLI runtime", self.run_timeout) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(timeout) = error.downcast_ref::<process::ManagedChildTimeoutError>() {
+                    return Ok(GenericCliExit {
+                        exit_code: 124,
+                        status: RuntimeRunStatus::Failed,
+                        callbacks: Vec::new(),
+                        metadata: serde_json::json!({
+                            "driver_id": "generic-cli",
+                            "error_code": "generic_cli_timeout",
+                            "error_summary": timeout.to_string(),
+                            "next_action": "manual_review_required",
+                            "process": {
+                                "timed_out": true,
+                                "timeout_ms": timeout.timeout_ms(),
+                                "management": timeout.metadata_json(),
+                            },
+                        }),
+                    });
+                }
+                return Err(error);
+            }
+        };
         let mut exit = GenericCliExit::from_exit_code(output.output.status.code().unwrap_or(1));
         exit.metadata = serde_json::json!({
             "process": output.metadata_json(),
@@ -583,7 +614,14 @@ fn command_driver_from_profile(
         .get("cli_wrapper")
         .and_then(Value::as_str)
         .unwrap_or("library:awiki_deamon::cli_wrapper");
-    Ok(CommandGenericCliDriver::new(program, args).with_cli_wrapper(cli_wrapper))
+    let run_timeout = duration_ms_field(
+        &profile.driver_config_json,
+        "run_timeout_ms",
+        DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
+    );
+    Ok(CommandGenericCliDriver::new(program, args)
+        .with_cli_wrapper(cli_wrapper)
+        .with_run_timeout(run_timeout))
 }
 
 fn string_array(value: Option<&Value>) -> Result<Vec<String>> {
@@ -601,4 +639,13 @@ fn string_array(value: Option<&Value>) -> Result<Vec<String>> {
                 .context("generic-cli command args must be strings")
         })
         .collect()
+}
+
+fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(default)
 }
