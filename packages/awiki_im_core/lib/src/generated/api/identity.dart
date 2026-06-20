@@ -50,6 +50,15 @@ Future<DartDaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage({
   selector: selector,
 );
 
+Future<DartDaemonSubkeyAuthorizationRevokeResult>
+revokeDaemonSubkeyAuthorization({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityRevokeDaemonSubkeyAuthorization(
+  core: core,
+  selector: selector,
+);
+
 Future<DartHandleRegistrationResult> registerHandleWithPhone({
   required ArcDartImCore core,
   String? localAlias,

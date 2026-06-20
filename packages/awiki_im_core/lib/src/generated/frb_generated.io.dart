@@ -261,6 +261,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw);
 
   @protected
+  DartDaemonSubkeyAuthorizationRevokeResult
+  dco_decode_dart_daemon_subkey_authorization_revoke_result(dynamic raw);
+
+  @protected
   DartDaemonSubkeyPrivatePackage dco_decode_dart_daemon_subkey_private_package(
     dynamic raw,
   );
@@ -918,6 +922,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartCreateGroupRequest sse_decode_dart_create_group_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDaemonSubkeyAuthorizationRevokeResult
+  sse_decode_dart_daemon_subkey_authorization_revoke_result(
     SseDeserializer deserializer,
   );
 
@@ -1753,6 +1763,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_create_group_request(
     DartCreateGroupRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_daemon_subkey_authorization_revoke_result(
+    DartDaemonSubkeyAuthorizationRevokeResult self,
     SseSerializer serializer,
   );
 

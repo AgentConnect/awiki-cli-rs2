@@ -159,6 +159,18 @@ class AwikiImCore {
     return package._toModel();
   }
 
+  Future<DaemonSubkeyAuthorizationRevokeResult>
+  revokeDaemonSubkeyAuthorization(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.revokeDaemonSubkeyAuthorization(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
     String? localAlias,
     required String requestedHandle,
@@ -1195,6 +1207,15 @@ extension on gen_identity.DartDaemonSubkeyPrivatePackage {
     privateKeyPem: privateKeyPem,
     privateKeyMultibase: privateKeyMultibase,
   );
+}
+
+extension on gen_identity.DartDaemonSubkeyAuthorizationRevokeResult {
+  DaemonSubkeyAuthorizationRevokeResult _toModel() =>
+      DaemonSubkeyAuthorizationRevokeResult(
+        userDid: userDid,
+        verificationMethod: verificationMethod,
+        updated: updated,
+      );
 }
 
 extension on gen_identity.DartHandleRegistrationResult {

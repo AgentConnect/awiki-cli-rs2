@@ -41,6 +41,13 @@ pub struct DartDaemonSubkeyPrivatePackage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDaemonSubkeyAuthorizationRevokeResult {
+    pub user_did: String,
+    pub verification_method: String,
+    pub updated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDefaultIdentityChange {
     pub previous: Option<DartIdentitySummary>,
     pub next: DartIdentitySummary,

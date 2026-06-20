@@ -159,6 +159,61 @@ pub(crate) fn apply_package_to_did_document(
     apply_to_did_document(did_document, &package.user_did, &subkey)
 }
 
+pub(crate) fn remove_from_did_document(
+    did_document: &mut Value,
+    did: &crate::ids::Did,
+) -> crate::ImResult<bool> {
+    let expected = expected_verification_method(did);
+    let Some(object) = did_document.as_object_mut() else {
+        return Err(crate::ImError::Serialization {
+            detail: "DID Document must be a JSON object".to_owned(),
+        });
+    };
+
+    let mut removed = false;
+    if let Some(methods) = object.get_mut("verificationMethod") {
+        let methods = methods
+            .as_array_mut()
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "DID Document verificationMethod must be an array".to_owned(),
+            })?;
+        let before = methods.len();
+        methods.retain(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| id != expected)
+        });
+        removed |= methods.len() != before;
+    }
+
+    for relationship in [
+        "authentication",
+        "assertionMethod",
+        "capabilityDelegation",
+        "capabilityInvocation",
+    ] {
+        if let Some(items) = object.get_mut(relationship) {
+            let items = items
+                .as_array_mut()
+                .ok_or_else(|| crate::ImError::Serialization {
+                    detail: format!("DID Document {relationship} must be an array"),
+                })?;
+            let before = items.len();
+            items.retain(|item| match item {
+                Value::String(value) => value != &expected,
+                Value::Object(object) => object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|id| id != expected),
+                _ => true,
+            });
+            removed |= items.len() != before;
+        }
+    }
+
+    Ok(removed)
+}
+
 pub(crate) fn resign_did_document_with_key1(
     did_document: &mut Value,
     did: &crate::ids::Did,
@@ -449,6 +504,71 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with('z'));
+    }
+
+    #[test]
+    fn remove_from_did_document_removes_exact_daemon_key_only() {
+        let did = crate::ids::Did::parse("did:example:alice").unwrap();
+        let daemon_method = expected_verification_method(&did);
+        let mut document = json!({
+            "id": did.as_str(),
+            "verificationMethod": [
+                {
+                    "id": "did:example:alice#key-1",
+                    "type": "Multikey",
+                    "controller": did.as_str(),
+                    "publicKeyMultibase": "zmain"
+                },
+                {
+                    "id": daemon_method,
+                    "type": "Multikey",
+                    "controller": did.as_str(),
+                    "publicKeyMultibase": "zdaemon"
+                },
+                {
+                    "id": "did:example:alice#daemon-key-10",
+                    "type": "Multikey",
+                    "controller": did.as_str(),
+                    "publicKeyMultibase": "zother"
+                }
+            ],
+            "authentication": [
+                "did:example:alice#key-1",
+                daemon_method,
+                "did:example:alice#daemon-key-10",
+                {"id": daemon_method, "type": "Multikey"}
+            ],
+            "assertionMethod": [daemon_method, "did:example:alice#key-1"],
+            "capabilityDelegation": [{"id": daemon_method}],
+            "capabilityInvocation": ["did:example:alice#key-1"],
+            "service": [{"id": "did:example:alice#messages"}]
+        });
+
+        assert!(remove_from_did_document(&mut document, &did).unwrap());
+
+        let serialized = serde_json::to_string(&document).unwrap();
+        assert!(!serialized.contains("did:example:alice#daemon-key-1\""));
+        assert!(serialized.contains("did:example:alice#daemon-key-10"));
+        assert!(serialized.contains("did:example:alice#key-1"));
+        assert_eq!(document["service"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_from_did_document_is_idempotent_when_daemon_key_absent() {
+        let did = crate::ids::Did::parse("did:example:alice").unwrap();
+        let mut document = json!({
+            "id": did.as_str(),
+            "verificationMethod": [{
+                "id": "did:example:alice#key-1",
+                "type": "Multikey",
+                "controller": did.as_str(),
+                "publicKeyMultibase": "zmain"
+            }],
+            "authentication": ["did:example:alice#key-1"]
+        });
+
+        assert!(!remove_from_did_document(&mut document, &did).unwrap());
+        assert_eq!(document["verificationMethod"].as_array().unwrap().len(), 1);
     }
 
     #[test]

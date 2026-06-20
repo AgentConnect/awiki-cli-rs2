@@ -13,8 +13,9 @@ use crate::dto::{
     },
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
     identity::{
-        DartDaemonSubkeyPrivatePackage, DartDefaultIdentityChange, DartDeleteLocalIdentityResult,
-        DartHandleRegistrationResult, DartIdentitySummary, DartRecoverHandleResult,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
+        DartIdentitySummary, DartRecoverHandleResult,
     },
     message::{
         DartConversation, DartConversationPage, DartMarkReadResult, DartMessage,
@@ -232,6 +233,18 @@ impl From<im_core::identity::DaemonSubkeyPrivatePackage> for DartDaemonSubkeyPri
             private_key_encoding: value.private_key_encoding,
             private_key_pem: value.private_key_pem,
             private_key_multibase: value.private_key_multibase,
+        }
+    }
+}
+
+impl From<im_core::identity::DaemonSubkeyAuthorizationRevokeResult>
+    for DartDaemonSubkeyAuthorizationRevokeResult
+{
+    fn from(value: im_core::identity::DaemonSubkeyAuthorizationRevokeResult) -> Self {
+        Self {
+            user_did: value.user_did.as_str().to_string(),
+            verification_method: value.verification_method,
+            updated: value.updated,
         }
     }
 }

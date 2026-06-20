@@ -43,7 +43,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1261067770;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1222404678;
 
 // Section: executor
 
@@ -3485,6 +3485,67 @@ fn wire__crate__api__messages__retry_message_impl(
         },
     )
 }
+fn wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "revoke_daemon_subkey_authorization",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_core = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
+            >>::sse_decode(&mut deserializer);
+            let api_selector =
+                <crate::dto::identity::DartIdentitySelector>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_core_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_core, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_core_guard =
+                                        Some(api_core.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_core_guard = api_core_guard.unwrap();
+                        let output_ok = crate::api::identity::revoke_daemon_subkey_authorization(
+                            &*api_core_guard,
+                            api_selector,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__secure__secure_direct_prepare_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -4795,6 +4856,20 @@ impl SseDecode for crate::dto::group::DartCreateGroupRequest {
             max_members: var_maxMembers,
             member_max_messages: var_memberMaxMessages,
             member_max_total_chars: var_memberMaxTotalChars,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_userDid = <String>::sse_decode(deserializer);
+        let mut var_verificationMethod = <String>::sse_decode(deserializer);
+        let mut var_updated = <bool>::sse_decode(deserializer);
+        return crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult {
+            user_did: var_userDid,
+            verification_method: var_verificationMethod,
+            updated: var_updated,
         };
     }
 }
@@ -6933,38 +7008,44 @@ fn pde_ffi_dispatcher_primary_impl(
         55 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
         56 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
         57 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        58 => {
-            wire__crate__api__secure__secure_direct_prepare_impl(port, ptr, rust_vec_len, data_len)
-        }
-        59 => {
-            wire__crate__api__secure__secure_direct_repair_impl(port, ptr, rust_vec_len, data_len)
-        }
-        60 => {
-            wire__crate__api__secure__secure_direct_status_impl(port, ptr, rust_vec_len, data_len)
-        }
-        61 => {
-            wire__crate__api__secure__secure_group_prepare_impl(port, ptr, rust_vec_len, data_len)
-        }
-        62 => wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__api__secure__secure_outbox_list_failed_impl(
+        58 => wire__crate__api__identity__revoke_daemon_subkey_authorization_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len),
-        67 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
-        68 => {
+        59 => {
+            wire__crate__api__secure__secure_direct_prepare_impl(port, ptr, rust_vec_len, data_len)
+        }
+        60 => {
+            wire__crate__api__secure__secure_direct_repair_impl(port, ptr, rust_vec_len, data_len)
+        }
+        61 => {
+            wire__crate__api__secure__secure_direct_status_impl(port, ptr, rust_vec_len, data_len)
+        }
+        62 => {
+            wire__crate__api__secure__secure_group_prepare_impl(port, ptr, rust_vec_len, data_len)
+        }
+        63 => wire__crate__api__secure__secure_group_repair_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__api__secure__secure_group_status_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__api__secure__secure_outbox_drop_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__api__secure__secure_outbox_list_failed_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        67 => wire__crate__api__secure__secure_outbox_retry_impl(port, ptr, rust_vec_len, data_len),
+        68 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
+        69 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        69 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        71 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        72 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        73 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        73 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -7277,6 +7358,32 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartCreateGroupRequest
     for crate::dto::group::DartCreateGroupRequest
 {
     fn into_into_dart(self) -> crate::dto::group::DartCreateGroupRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.user_did.into_into_dart().into_dart(),
+            self.verification_method.into_into_dart().into_dart(),
+            self.updated.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult,
+    > for crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult {
         self
     }
 }
@@ -9485,6 +9592,15 @@ impl SseEncode for crate::dto::group::DartCreateGroupRequest {
         <Option<String>>::sse_encode(self.max_members, serializer);
         <Option<i64>>::sse_encode(self.member_max_messages, serializer);
         <Option<i64>>::sse_encode(self.member_max_total_chars, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartDaemonSubkeyAuthorizationRevokeResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.user_did, serializer);
+        <String>::sse_encode(self.verification_method, serializer);
+        <bool>::sse_encode(self.updated, serializer);
     }
 }
 
