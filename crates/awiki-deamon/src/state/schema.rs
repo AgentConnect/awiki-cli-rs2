@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 26;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 27;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -387,6 +387,8 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             recipient_did TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             final_text TEXT NOT NULL,
+            final_source TEXT NOT NULL DEFAULT 'unknown_legacy',
+            final_body_hash TEXT NOT NULL DEFAULT '',
             security TEXT NOT NULL DEFAULT 'default_plain',
             status TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -575,6 +577,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_daemon_state_metadata_v24(connection)?;
     migrate_runtime_retry_queue_due_v25(connection)?;
     migrate_cli_route_message_queue_v26(connection)?;
+    migrate_runtime_final_outbox_provenance_v27(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -1013,6 +1016,8 @@ fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             final_text TEXT NOT NULL,
+            final_source TEXT NOT NULL DEFAULT 'unknown_legacy',
+            final_body_hash TEXT NOT NULL DEFAULT '',
             security TEXT NOT NULL DEFAULT 'default_plain',
             status TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -1028,6 +1033,22 @@ fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
         ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
         "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_final_outbox_provenance_v27(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "runtime_final_outbox",
+        "final_source",
+        "TEXT NOT NULL DEFAULT 'unknown_legacy'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "runtime_final_outbox",
+        "final_body_hash",
+        "TEXT NOT NULL DEFAULT ''",
     )?;
     Ok(())
 }

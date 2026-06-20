@@ -1574,7 +1574,7 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
     let mut cli_profile =
         crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "command")
             .unwrap();
-    cli_profile.binary_path = Some(std::env::current_exe().unwrap());
+    cli_profile.binary_path = Some(root.path().join("missing-command-driver"));
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::default();
@@ -1623,7 +1623,9 @@ fn foreground_retry_queue_defers_again_when_generic_cli_route_is_busy() {
     let mut cli_profile =
         crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "command")
             .unwrap();
-    cli_profile.binary_path = Some(std::env::current_exe().unwrap());
+    let command_driver = root.path().join("command-driver");
+    std::fs::write(&command_driver, b"not executed").unwrap();
+    cli_profile.binary_path = Some(command_driver);
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 
     let task = RuntimeTask {

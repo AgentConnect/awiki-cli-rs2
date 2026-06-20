@@ -23,6 +23,7 @@ use awiki_deamon::state::{HermesProfileRecord, HermesSessionRoute};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 struct FlakyFinalOutbox {
@@ -400,6 +401,11 @@ fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent(
         pending.last_error_code.as_deref(),
         Some("final_delivery_retry")
     );
+    assert_eq!(pending.final_source, "hermes_final_text");
+    assert_eq!(
+        pending.final_body_hash,
+        test_final_body_hash("fake complete")
+    );
     assert!(pending
         .idempotency_key
         .contains("runtime-final:did:agent:hermes"));
@@ -427,6 +433,11 @@ fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent(
         .unwrap();
     assert_eq!(stored.status, "sent");
     assert_eq!(stored.attempt_count, 2);
+    assert_eq!(stored.final_source, "hermes_final_text");
+    assert_eq!(
+        stored.final_body_hash,
+        test_final_body_hash("fake complete")
+    );
     assert!(stored.sent_at_ms.is_some());
     assert_eq!(
         state
@@ -459,6 +470,30 @@ fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent(
             && record.state.as_deref() == Some("succeeded")
             && record.text.as_deref() == Some("Hermes response sent")
     }));
+
+    let audit_detail: String = Connection::open(root.path().join("daemon.db"))
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime.final_outbox.sent' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audit_detail.contains("\"final_source\":\"hermes_final_text\""));
+    assert!(audit_detail.contains(test_final_body_hash("fake complete").as_str()));
+    assert!(audit_detail.contains("\"final_text_bytes\":13"));
+    assert!(!audit_detail.contains("fake complete"));
+}
+
+fn test_final_body_hash(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 #[test]

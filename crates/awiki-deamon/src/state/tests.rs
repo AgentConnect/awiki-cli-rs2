@@ -1,6 +1,7 @@
 use super::schema::DAEMON_SCHEMA_VERSION;
 use super::*;
 use crate::runtime::RuntimeTaskTriggerKind;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn initialize_creates_required_tables() {
@@ -1603,6 +1604,8 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         recipient_did: "did:human:alice".to_string(),
         conversation_id: Some("direct:did:human:alice".to_string()),
         final_text: "final text".to_string(),
+        final_source: "hermes_final_text".to_string(),
+        final_body_hash: test_final_body_hash("final text"),
         security: "default_plain".to_string(),
         status: "pending".to_string(),
         attempt_count: 0,
@@ -1619,6 +1622,8 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let due = state.list_due_runtime_final_outbox(now, 10).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].final_text, "final text");
+    assert_eq!(due[0].final_source, "hermes_final_text");
+    assert_eq!(due[0].final_body_hash, test_final_body_hash("final text"));
     assert!(state
         .mark_runtime_final_outbox_sending(&record.idempotency_key)
         .unwrap());
@@ -1671,10 +1676,91 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     assert_eq!(stored.attempt_count, 3);
     assert_eq!(stored.message_id.as_deref(), Some("msg_final_1"));
     assert!(stored.sent_at_ms.is_some());
+
+    let mut duplicate = record.clone();
+    duplicate.final_text = "different final".to_string();
+    duplicate.final_source = "stdout_fallback".to_string();
+    duplicate.final_body_hash = test_final_body_hash("different final");
+    state
+        .upsert_runtime_final_outbox_pending(&duplicate)
+        .unwrap();
+    let stored = state
+        .load_runtime_final_outbox_by_run("run_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "sent");
+    assert_eq!(stored.final_text, "final text");
+    assert_eq!(stored.final_source, "hermes_final_text");
+    assert_eq!(stored.final_body_hash, test_final_body_hash("final text"));
+
     assert!(state
         .list_due_runtime_final_outbox(now + 60_000, 10)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn runtime_final_outbox_requires_lowercase_hash_for_new_pending_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let record = RuntimeFinalOutboxRecord {
+        idempotency_key: "runtime-final:did:agent:hermes:run_hash:controller-scope:v1:test-alice"
+            .to_string(),
+        run_id: "run_hash".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        recipient_did: "did:human:alice".to_string(),
+        conversation_id: Some("direct:did:human:alice".to_string()),
+        final_text: "final text".to_string(),
+        final_source: "hermes_final_text".to_string(),
+        final_body_hash: test_final_body_hash("final text"),
+        security: "default_plain".to_string(),
+        status: "pending".to_string(),
+        attempt_count: 0,
+        next_attempt_at_ms: now,
+        last_error_code: None,
+        last_error_summary: None,
+        message_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        sent_at_ms: None,
+    };
+
+    record.validate().unwrap();
+
+    let mut legacy_empty_hash = record.clone();
+    legacy_empty_hash.final_body_hash.clear();
+    legacy_empty_hash.validate().unwrap();
+    assert!(state
+        .upsert_runtime_final_outbox_pending(&legacy_empty_hash)
+        .unwrap_err()
+        .to_string()
+        .contains("requires final_body_hash"));
+
+    let mut uppercase_hash = record.clone();
+    uppercase_hash.final_body_hash = record.final_body_hash.to_ascii_uppercase();
+    assert!(uppercase_hash
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("sha256:<64 lowercase hex>"));
+}
+
+fn test_final_body_hash(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 #[test]

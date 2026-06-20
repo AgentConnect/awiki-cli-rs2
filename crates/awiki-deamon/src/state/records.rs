@@ -1071,6 +1071,8 @@ pub struct RuntimeFinalOutboxRecord {
     pub recipient_did: String,
     pub conversation_id: Option<String>,
     pub final_text: String,
+    pub final_source: String,
+    pub final_body_hash: String,
     pub security: String,
     pub status: String,
     pub attempt_count: i64,
@@ -1151,12 +1153,24 @@ impl RuntimeFinalOutboxRecord {
             ("controller_did", self.controller_did.as_str()),
             ("recipient_did", self.recipient_did.as_str()),
             ("final_text", self.final_text.as_str()),
+            ("final_source", self.final_source.as_str()),
             ("security", self.security.as_str()),
             ("status", self.status.as_str()),
         ] {
             if value.trim().is_empty() {
                 bail!("{field_name} must not be empty");
             }
+        }
+        if let Some(hash) = self.final_body_hash.strip_prefix("sha256:") {
+            if hash.len() != 64
+                || !hash
+                    .chars()
+                    .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+            {
+                bail!("final_body_hash must use sha256:<64 lowercase hex> format");
+            }
+        } else if !self.final_body_hash.is_empty() {
+            bail!("final_body_hash must use sha256:<64 lowercase hex> format");
         }
         if !matches!(
             self.status.as_str(),

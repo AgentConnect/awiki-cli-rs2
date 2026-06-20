@@ -22,6 +22,7 @@ use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 fn fixture() -> (tempfile::TempDir, DaemonState) {
     let root = tempfile::tempdir().unwrap();
@@ -1061,6 +1062,27 @@ fn duplicate_task_finish_callback_is_idempotent() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Final);
     assert_eq!(records[0].text.as_deref(), Some("first done"));
+    let metadata = records[0]
+        .metadata
+        .as_ref()
+        .expect("final callback metadata");
+    assert_eq!(metadata["final_source"], "task_finish_callback");
+    assert_eq!(
+        metadata["final_body_hash"],
+        test_final_body_hash("first done")
+    );
+    assert_eq!(metadata["final_text_bytes"], 10);
+}
+
+fn test_final_body_hash(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 #[test]

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID};
 use crate::cli_wrapper::CliWrapperRequest;
@@ -570,6 +571,7 @@ where
                     &run,
                     task_conversation_id.as_deref(),
                     final_text,
+                    "hermes_final_text",
                 )?;
                 state.upsert_runtime_final_outbox_pending(&final_record)?;
                 flush_runtime_final_outbox(state, outbox, 8)
@@ -1256,6 +1258,9 @@ pub fn flush_runtime_final_outbox(
                         "idempotency_key": record.idempotency_key,
                         "message_id": result.message_id,
                         "attempt_count": record.attempt_count + 1,
+                        "final_source": record.final_source,
+                        "final_body_hash": record.final_body_hash,
+                        "final_text_bytes": record.final_text.len(),
                     }),
                 )?;
                 sent_count += 1;
@@ -1490,6 +1495,7 @@ fn runtime_final_outbox_record(
     run: &RuntimeRun,
     conversation_id: Option<&str>,
     final_text: &str,
+    final_source: &str,
 ) -> Result<RuntimeFinalOutboxRecord> {
     let final_text = final_text.trim();
     if final_text.is_empty() {
@@ -1510,6 +1516,8 @@ fn runtime_final_outbox_record(
         recipient_did: recipient_did.to_string(),
         conversation_id: conversation_id.map(str::to_string),
         final_text: final_text.to_string(),
+        final_source: final_source.to_string(),
+        final_body_hash: final_body_hash(final_text),
         security: "default_plain".to_string(),
         status: "pending".to_string(),
         attempt_count: 0,
@@ -1521,6 +1529,15 @@ fn runtime_final_outbox_record(
         updated_at_ms: now,
         sent_at_ms: None,
     })
+}
+
+fn final_body_hash(final_text: &str) -> String {
+    let digest = Sha256::digest(final_text.as_bytes());
+    format!("sha256:{}", hex_lower(&digest))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn runtime_final_idempotency_key(

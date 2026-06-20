@@ -11,6 +11,7 @@ use im_core::messages::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::state::AuthorizedRuntimeContext;
 
@@ -442,6 +443,18 @@ fn block_on_runtime_message_send(
 
 fn management_payload_security_mode() -> MessageSecurityMode {
     MessageSecurityMode::DefaultPlain
+}
+
+fn final_body_hash(text: Option<&str>) -> Option<String> {
+    let text = text?;
+    let digest = Sha256::digest(text.as_bytes());
+    Some(format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
 }
 
 async fn ensure_messaging_session(client: &im_core::ImClient) -> Result<()> {
@@ -1093,6 +1106,11 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
     }
 
     fn send_final(&self, context: &AuthorizedRuntimeContext, text: Option<&str>) -> Result<()> {
+        let metadata = serde_json::json!({
+            "final_source": "task_finish_callback",
+            "final_body_hash": final_body_hash(text),
+            "final_text_bytes": text.map(str::len).unwrap_or(0),
+        });
         self.push(OutboxRecord {
             run_id: context.run_id.clone(),
             agent_did: context.agent_did.clone(),
@@ -1100,7 +1118,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some("finished".to_string()),
             last_error_code: None,
             last_error_summary: None,
-            metadata: None,
+            metadata: Some(metadata),
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1250,6 +1268,25 @@ mod tests {
         assert_eq!(
             management_payload_security_mode(),
             MessageSecurityMode::DefaultPlain
+        );
+    }
+
+    #[test]
+    fn final_body_hash_records_empty_body_but_not_missing_body() {
+        assert_eq!(final_body_hash(None), None);
+        assert_eq!(
+            final_body_hash(Some("")),
+            Some(
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            final_body_hash(Some("abc")),
+            Some(
+                "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                    .to_string()
+            )
         );
     }
 

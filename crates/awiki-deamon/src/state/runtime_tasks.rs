@@ -437,6 +437,9 @@ WHERE retry_id = ?2
         if record.status != "pending" {
             bail!("runtime final outbox upsert requires pending status");
         }
+        if record.final_body_hash.is_empty() {
+            bail!("runtime final outbox upsert requires final_body_hash");
+        }
         let now = current_time_millis()?;
         let connection = self.connection()?;
         connection.execute(
@@ -451,6 +454,8 @@ INSERT INTO runtime_final_outbox (
     recipient_did,
     conversation_id,
     final_text,
+    final_source,
+    final_body_hash,
     security,
     status,
     attempt_count,
@@ -461,9 +466,11 @@ INSERT INTO runtime_final_outbox (
     created_at_ms,
     updated_at_ms,
     sent_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', 0, ?11, NULL, NULL, NULL, ?12, ?12, NULL)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', 0, ?13, NULL, NULL, NULL, ?14, ?14, NULL)
 ON CONFLICT(idempotency_key) DO UPDATE SET
     final_text = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
+    final_source = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_source ELSE excluded.final_source END,
+    final_body_hash = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_body_hash ELSE excluded.final_body_hash END,
     security = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.security ELSE excluded.security END,
     recipient_did = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.recipient_did ELSE excluded.recipient_did END,
     conversation_id = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.conversation_id ELSE excluded.conversation_id END,
@@ -483,6 +490,8 @@ ON CONFLICT(idempotency_key) DO UPDATE SET
                 record.recipient_did,
                 record.conversation_id,
                 record.final_text,
+                record.final_source,
+                record.final_body_hash,
                 record.security,
                 record.next_attempt_at_ms,
                 now,
@@ -509,6 +518,8 @@ SELECT
     recipient_did,
     conversation_id,
     final_text,
+    final_source,
+    final_body_hash,
     security,
     status,
     attempt_count,
@@ -547,6 +558,8 @@ SELECT
     recipient_did,
     conversation_id,
     final_text,
+    final_source,
+    final_body_hash,
     security,
     status,
     attempt_count,
