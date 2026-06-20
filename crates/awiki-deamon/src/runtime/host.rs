@@ -564,11 +564,45 @@ where
             return Err(error).context("launch runtime run");
         }
     };
+    let mut generic_cli_late_callback_rejected = false;
     for callback in launch_outcome.callbacks.iter().cloned() {
-        execute_runtime_rpc_request_with_outbox(state, outbox, callback)
-            .context("apply runtime callback")?;
+        match execute_runtime_rpc_request_with_outbox(state, outbox, callback) {
+            Ok(_) => {}
+            Err(error)
+                if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+                    && error.to_string().contains("late_callback_rejected") =>
+            {
+                generic_cli_late_callback_rejected = true;
+                if state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed {
+                    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                    let metadata = generic_cli_late_callback_rejected_status_metadata();
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        "failed",
+                        Some("Runtime callback arrived after route reset"),
+                        Some("late_callback_rejected"),
+                        Some("Route session no longer belongs to this run"),
+                        Some(&metadata),
+                    )?;
+                }
+                break;
+            }
+            Err(error) => return Err(error).context("apply runtime callback"),
+        }
     }
-    if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending {
+    let generic_cli_route_still_locked = if plugin.plugin_id()
+        == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && cli_route_session.is_some()
+    {
+        state.generic_cli_route_session_locked_for_run(&run.run_id)?
+    } else {
+        true
+    };
+
+    if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending
+        && generic_cli_route_still_locked
+    {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
         emit_runtime_status(outbox, &run, "running", Some("Runtime started"), None, None)?;
     }
@@ -644,6 +678,7 @@ where
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
         && launch_outcome.status == RuntimeRunStatus::Finished
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
+        && generic_cli_route_still_locked
     {
         if let Some(fallback_final) =
             fallback_final_text(&launch_outcome.metadata, issued.token.as_str())?
@@ -670,6 +705,49 @@ where
                 fallback_final_source = Some(format!("{fallback_driver_id}_output_last_message"));
                 fallback_final_sanitizer = Some(fallback_final.sanitizer_metadata);
             }
+        }
+    }
+
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && launch_outcome.status == RuntimeRunStatus::Finished
+        && cli_route_session.is_some()
+        && !generic_cli_route_still_locked
+        && !generic_cli_late_callback_rejected
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+    {
+        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+        let metadata = generic_cli_late_callback_rejected_status_metadata();
+        emit_runtime_status_with_metadata(
+            outbox,
+            &run,
+            "failed",
+            Some("Runtime callback arrived after route reset"),
+            Some("late_callback_rejected"),
+            Some("Route session no longer belongs to this run"),
+            Some(&metadata),
+        )?;
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let current = state.load_cli_route_session(&route_session.route_key)?;
+            state.insert_audit_event_json(
+                "runtime.run.late_callback_rejected",
+                Some(&run.agent_did),
+                Some(&run.runtime_profile_id),
+                Some(&run.run_id),
+                None,
+                json!({
+                    "route_key_hash": route_session.route_key_hash.as_str(),
+                    "route_status": current.as_ref().map(|session| session.status.as_str()),
+                    "route_version": current.as_ref().map(|session| session.version),
+                    "route_lock_present": current
+                        .as_ref()
+                        .and_then(|session| session.lock_run_id.as_ref())
+                        .is_some(),
+                    "route_lock_matches_run": current
+                        .as_ref()
+                        .and_then(|session| session.lock_run_id.as_deref())
+                        == Some(run.run_id.as_str()),
+                }),
+            )?;
         }
     }
 
@@ -715,6 +793,7 @@ where
             if final_status == RuntimeRunStatus::Finished
                 && launch_outcome.status == RuntimeRunStatus::Finished
                 && native_session.is_some()
+                && state.generic_cli_route_session_locked_for_run(&run.run_id)?
             {
                 let (native_session_id, native_session_source) = native_session
                     .as_ref()
@@ -736,45 +815,52 @@ where
             workspace_instance.as_ref(),
             fallback_final_source.as_deref(),
             fallback_final_sanitizer.as_ref(),
+            if generic_cli_late_callback_rejected || !generic_cli_route_still_locked {
+                Some("failed")
+            } else {
+                None
+            },
         )?;
         if let Some(route_session) = cli_route_session.as_ref() {
             let final_status = state.load_runtime_run(&run.run_id)?.status;
-            let next_status = if final_status == RuntimeRunStatus::Failed
-                || launch_outcome.status == RuntimeRunStatus::Failed
-            {
-                "failed"
-            } else {
-                "active"
-            };
-            let failure_summary = if next_status == "failed" {
-                Some(generic_cli_failure_detail(&launch_outcome))
-            } else {
-                None
-            };
-            state.release_cli_route_session_lease(
-                &route_session.route_key,
-                &run.run_id,
-                next_status,
-                if next_status == "active" {
-                    Some(&task_source_message_id)
+            if state.generic_cli_route_session_locked_for_run(&run.run_id)? {
+                let next_status = if final_status == RuntimeRunStatus::Failed
+                    || launch_outcome.status == RuntimeRunStatus::Failed
+                {
+                    "failed"
+                } else {
+                    "active"
+                };
+                let failure_summary = if next_status == "failed" {
+                    Some(generic_cli_failure_detail(&launch_outcome))
                 } else {
                     None
-                },
-                if next_status == "failed" {
-                    failure_summary
-                        .as_ref()
-                        .map(|failure| failure.error_code.as_str())
-                } else {
-                    None
-                },
-                if next_status == "failed" {
-                    failure_summary
-                        .as_ref()
-                        .map(|failure| failure.error_summary.as_str())
-                } else {
-                    None
-                },
-            )?;
+                };
+                state.release_cli_route_session_lease(
+                    &route_session.route_key,
+                    &run.run_id,
+                    next_status,
+                    if next_status == "active" {
+                        Some(&task_source_message_id)
+                    } else {
+                        None
+                    },
+                    if next_status == "failed" {
+                        failure_summary
+                            .as_ref()
+                            .map(|failure| failure.error_code.as_str())
+                    } else {
+                        None
+                    },
+                    if next_status == "failed" {
+                        failure_summary
+                            .as_ref()
+                            .map(|failure| failure.error_summary.as_str())
+                    } else {
+                        None
+                    },
+                )?;
+            }
         }
         cli_runtime_locks.release_all();
     }
@@ -973,6 +1059,17 @@ fn generic_cli_failed_status_metadata(error_code: &str, next_action: &str) -> Va
         "deferred": false,
         "failed_message_recovery": "unsupported",
     })
+}
+
+fn generic_cli_late_callback_rejected_status_metadata() -> Value {
+    let mut metadata =
+        generic_cli_failed_status_metadata("late_callback_rejected", "manual_review_required");
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("source".to_string(), json!("route_lease_guard"));
+        object.insert("retryable".to_string(), json!(false));
+        object.insert("deferred".to_string(), json!(false));
+    }
+    metadata
 }
 
 fn acquire_generic_cli_runtime_locks(
@@ -1997,6 +2094,7 @@ fn persist_cli_driver_run(
     workspace_instance: Option<&WorkspaceInstance>,
     fallback_final_source: Option<&str>,
     fallback_final_sanitizer: Option<&Value>,
+    status_override: Option<&str>,
 ) -> Result<()> {
     let task = state.load_runtime_task(&run.task_id)?;
     let Some(driver_id) = state
@@ -2050,8 +2148,18 @@ fn persist_cli_driver_run(
             task.conversation_id.as_deref(),
         )
     };
-    let native_session_id = trusted_native_session_metadata(&driver_id, &launch_outcome.metadata)
-        .map(|metadata| metadata.0);
+    let route_can_accept_native_session =
+        if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
+            state.generic_cli_route_session_locked_for_run(&run.run_id)?
+        } else {
+            true
+        };
+    let native_session_id = if route_can_accept_native_session {
+        trusted_native_session_metadata(&driver_id, &launch_outcome.metadata)
+            .map(|metadata| metadata.0)
+    } else {
+        None
+    };
     state.upsert_cli_driver_run(&CliDriverRunRecord {
         run_id: run.run_id.clone(),
         agent_did: run.agent_did.clone(),
@@ -2085,7 +2193,9 @@ fn persist_cli_driver_run(
             .map(std::path::PathBuf::from),
         native_session_id,
         synthetic_session_id: Some(route_key),
-        status: launch_outcome.status.as_str().to_string(),
+        status: status_override
+            .unwrap_or_else(|| launch_outcome.status.as_str())
+            .to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
     })?;
     Ok(())

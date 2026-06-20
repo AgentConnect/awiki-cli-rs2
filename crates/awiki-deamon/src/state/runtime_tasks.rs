@@ -846,6 +846,44 @@ WHERE task_id = ?1
         self.load_runtime_task(&run.task_id)
     }
 
+    pub fn load_cli_route_session_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<CliRouteSessionRecord>> {
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        let run = match self.load_runtime_run(run_id) {
+            Ok(run) => run,
+            Err(_) => return Ok(None),
+        };
+        if run.runtime_plugin_id != crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            return Ok(None);
+        }
+        let profile = self.load_runtime_agent_profile(&run.agent_did)?;
+        if profile.runtime_profile_id != run.runtime_profile_id
+            || profile.workspace_mode != Some(WorkspaceMode::RouteRoot)
+        {
+            return Ok(None);
+        }
+        let task = self.load_runtime_task(&run.task_id)?;
+        let Some(conversation_id) = task.conversation_id.as_deref() else {
+            return Ok(None);
+        };
+        let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+        let route_key =
+            cli_route_session_key(&run.agent_did, &task.controller_scope_key, &conversation_id)?;
+        self.load_cli_route_session(&route_key)
+    }
+
+    pub fn generic_cli_route_session_locked_for_run(&self, run_id: &str) -> Result<bool> {
+        let Some(route_session) = self.load_cli_route_session_for_run(run_id)? else {
+            return Ok(false);
+        };
+        Ok(route_session.status == "running"
+            && route_session.lock_run_id.as_deref() == Some(run_id))
+    }
+
     pub fn upsert_cli_driver_run(&self, record: &CliDriverRunRecord) -> Result<()> {
         record.validate()?;
         let connection = self.connection()?;

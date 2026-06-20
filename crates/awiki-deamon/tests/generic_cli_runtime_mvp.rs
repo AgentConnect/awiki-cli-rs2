@@ -18,7 +18,7 @@ use awiki_deamon::runtime::{
     RuntimeAgentProfile, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
     RuntimePlugin, RuntimeRunStatus,
 };
-use awiki_deamon::state::CliRuntimeProfileRecord;
+use awiki_deamon::state::{CliRuntimeProfileRecord, CreateCliRouteSession};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
@@ -1212,6 +1212,120 @@ impl RuntimePlugin for DuplicateFinishCallbackPlugin {
 }
 
 #[derive(Debug, Clone)]
+struct ResetBeforeFinishCallbackPlugin {
+    state: DaemonState,
+}
+
+impl RuntimePlugin for ResetBeforeFinishCallbackPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("reset before finish callback test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        let route_session = context.cli_route_session.as_ref().expect("route session");
+        let route_key = route_session.route_key.clone();
+        self.state
+            .reset_cli_route_session_by_route(&route_key)
+            .unwrap();
+        let reactivated = self
+            .state
+            .get_or_create_cli_route_session(CreateCliRouteSession {
+                agent_did: route_session.agent_did.clone(),
+                runtime_profile_id: route_session.runtime_profile_id.clone(),
+                driver_id: route_session.driver_id.clone(),
+                controller_user_id: route_session.controller_user_id.clone(),
+                controller_full_handle: route_session.controller_full_handle.clone(),
+                controller_scope_key: route_session.controller_scope_key.clone(),
+                controller_did: route_session.controller_did.clone(),
+                conversation_id: route_session.conversation_id.clone(),
+                workspace_path: route_session.workspace_path.clone(),
+                session_dir: route_session.session_dir.clone(),
+            })
+            .unwrap();
+        assert!(self
+            .state
+            .try_acquire_cli_route_session_lease(
+                &reactivated.route_key,
+                "run_after_reset",
+                "test-new-run",
+                awiki_deamon::security::runtime_token::current_time_millis().unwrap() + 60_000,
+            )
+            .unwrap());
+        let token = context.runtime_rpc_token.as_str().to_string();
+        Ok(RuntimeLaunchOutcome {
+            run_id: context.run.run_id,
+            status: RuntimeRunStatus::Running,
+            exit_code: Some(0),
+            callbacks: vec![awiki_deamon::cli_wrapper::CliWrapperRequest::task_finish(
+                token,
+                context.task.task_id,
+                "late final after reset",
+            )
+            .into_rpc_request()],
+            metadata: json!({"driver_id": "codex"}),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResetBeforeFallbackFinalPlugin {
+    state: DaemonState,
+}
+
+impl RuntimePlugin for ResetBeforeFallbackFinalPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("reset before fallback final test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        let route_key = context
+            .cli_route_session
+            .as_ref()
+            .expect("route session")
+            .route_key
+            .clone();
+        let session_dir = context
+            .cli_route_session
+            .as_ref()
+            .expect("route session")
+            .session_dir
+            .clone();
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let final_output_path = session_dir.join("late-output.md");
+        std::fs::write(&final_output_path, "late fallback final after reset").unwrap();
+        self.state
+            .reset_cli_route_session_by_route(&route_key)
+            .unwrap();
+        Ok(RuntimeLaunchOutcome {
+            run_id: context.run.run_id,
+            status: RuntimeRunStatus::Finished,
+            exit_code: Some(0),
+            callbacks: Vec::new(),
+            metadata: json!({
+                "driver_id": "codex",
+                "native_session_id": "codex-native-late-after-reset",
+                "native_session_source": "json_event",
+                "final_output_path": final_output_path,
+            }),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct NativeSessionMetadataPlugin {
     driver_id: &'static str,
     native_session_id: &'static str,
@@ -1321,6 +1435,173 @@ fn duplicate_task_finish_callback_is_idempotent() {
         test_final_body_hash("first done")
     );
     assert_eq!(metadata["final_text_bytes"], 10);
+}
+
+#[test]
+fn reset_rejects_late_task_finish_callback_without_polluting_new_route_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    let plugin = ResetBeforeFinishCallbackPlugin {
+        state: state.clone(),
+    };
+
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_late_finish_after_reset".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "reset before callback".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    let run = state
+        .load_runtime_run("run_task_msg_late_finish_after_reset")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let route_key = awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        "direct:did:human:bob",
+    )
+    .unwrap();
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "running");
+    assert_eq!(route.lock_run_id.as_deref(), Some("run_after_reset"));
+    assert_eq!(route.last_message_id, None);
+    assert_eq!(route.native_session_id, None);
+    let cli_run = state
+        .load_cli_driver_run("run_task_msg_late_finish_after_reset")
+        .unwrap();
+    assert_eq!(cli_run.status, "failed");
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("late_callback_rejected")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["source"].as_str(),
+        Some("route_lease_guard")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+    let connection = Connection::open(config.daemon_db_path).unwrap();
+    let rejected_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime_rpc.side_effect_rejected'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rejected_count, 1);
+}
+
+#[test]
+fn reset_rejects_late_fallback_final_and_native_id_writeback() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+    let plugin = ResetBeforeFallbackFinalPlugin {
+        state: state.clone(),
+    };
+
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_late_fallback_after_reset".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "reset before fallback".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
+    let run = state
+        .load_runtime_run("run_task_msg_late_fallback_after_reset")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let cli_run = state
+        .load_cli_driver_run("run_task_msg_late_fallback_after_reset")
+        .unwrap();
+    assert_eq!(cli_run.status, "failed");
+    assert_eq!(cli_run.native_session_id, None);
+    assert_eq!(cli_run.fallback_final_source, None);
+    let route = state
+        .load_cli_route_session(&cli_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "reset");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.native_session_id, None);
+    assert_eq!(route.native_session_source, None);
+    assert_eq!(route.last_message_id, None);
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("late_callback_rejected")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run("run_task_msg_late_fallback_after_reset")
+        .unwrap();
+    assert!(final_outbox.is_none());
 }
 
 fn test_final_body_hash(text: &str) -> String {
