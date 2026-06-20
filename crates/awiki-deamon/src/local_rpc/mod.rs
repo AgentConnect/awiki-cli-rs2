@@ -261,10 +261,6 @@ fn ensure_runtime_route_allows_side_effects(
     state: &DaemonState,
     context: &AuthorizedRuntimeContext,
 ) -> Result<()> {
-    let run = state.load_runtime_run(&context.run_id)?;
-    if run.runtime_plugin_id != crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
-        return Ok(());
-    }
     let Some(route_session) = state.load_cli_route_session_for_run(&context.run_id)? else {
         return Ok(());
     };
