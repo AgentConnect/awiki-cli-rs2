@@ -543,6 +543,10 @@ async fn ensure_daemon_subkey_package_updates_signed_did_document_for_legacy_ide
     assert_eq!(body["params"].get("is_agent"), None);
     let did_document = &body["params"]["did_document"];
     assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
+    assert_ne!(
+        did_document["proof"]["challenge"].as_str(),
+        identity.did_document["proof"]["challenge"].as_str()
+    );
     assert!(did_document["authentication"]
         .as_array()
         .unwrap()
@@ -619,6 +623,10 @@ async fn revoke_daemon_subkey_authorization_updates_signed_did_document() {
     assert_eq!(body["method"], "update_document");
     let did_document = &body["params"]["did_document"];
     assert_eq!(did_document["id"].as_str(), Some(identity.did.as_str()));
+    assert_ne!(
+        did_document["proof"]["challenge"].as_str(),
+        identity.did_document["proof"]["challenge"].as_str()
+    );
     assert!(!did_document_references(
         &result.verification_method,
         did_document

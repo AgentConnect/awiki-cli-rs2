@@ -1,4 +1,3 @@
-use anp::PublicKeyMaterial;
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
@@ -279,6 +278,20 @@ fn latest_status_items_with_release(
     Ok(items)
 }
 
+pub fn daemon_latest_diagnostics_summary(
+    _config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+    service: &ServiceStatus,
+    release: &DaemonReleaseStatus,
+) -> Value {
+    daemon_diagnostics_summary(
+        service,
+        release,
+        daemon_bootstrap_key_summary(state, daemon).as_ref(),
+    )
+}
+
 pub fn update_user_service_latest(
     config: &DaemonConfig,
     state: &DaemonState,
@@ -490,19 +503,15 @@ fn daemon_diagnostics_summary(
     release: &DaemonReleaseStatus,
     bootstrap_key: Option<&DaemonBootstrapKeySummary>,
 ) -> Value {
-    let mut value = json!({
-        "installation_status": if service.installed { "installed" } else { "not_installed" },
-        "runner_status": if service.running { "running" } else { "not_running" },
+    let mut config_summary = json!({
+        "service_installed": service.installed,
+        "release_manifest_url": release.manifest_url.clone(),
+        "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
+        "release_error": release.error.clone(),
         "bootstrap_key_status": if bootstrap_key.is_some() { "ready" } else { "missing" },
-        "config_summary": {
-            "service_installed": service.installed,
-            "release_manifest_url": release.manifest_url.clone(),
-            "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
-            "release_error": release.error.clone(),
-        },
     });
     if let Some(bootstrap_key) = bootstrap_key {
-        if let Some(object) = value.as_object_mut() {
+        if let Some(object) = config_summary.as_object_mut() {
             object.insert(
                 "bootstrap_key_id".to_string(),
                 Value::String(bootstrap_key.key_id.clone()),
@@ -521,7 +530,11 @@ fn daemon_diagnostics_summary(
             );
         }
     }
-    value
+    json!({
+        "installation_status": if service.installed { "installed" } else { "not_installed" },
+        "runner_status": if service.running { "running" } else { "not_running" },
+        "config_summary": config_summary,
+    })
 }
 
 fn daemon_bootstrap_key_summary(
@@ -561,18 +574,31 @@ fn daemon_bootstrap_key_summary_from_did_document(
         .filter(|value| !value.is_empty())
         .context("daemon bootstrap key is missing publicKeyMultibase")?
         .to_string();
-    let public_key = anp::authentication::extract_public_key(method)
+    let bytes = x25519_public_key_bytes_from_multibase(&public_key_multibase)
         .context("extract daemon bootstrap public key")?;
-    let bytes = match public_key {
-        PublicKeyMaterial::X25519(bytes) => bytes,
-        _ => bail!("daemon bootstrap key must be X25519"),
-    };
     Ok(Some(DaemonBootstrapKeySummary {
         key_id: expected_key_id,
         public_key_multibase,
         public_key_b64u: URL_SAFE_NO_PAD.encode(bytes),
         key_algorithm: "x25519".to_string(),
     }))
+}
+
+fn x25519_public_key_bytes_from_multibase(value: &str) -> Result<[u8; 32]> {
+    let encoded = value
+        .trim()
+        .strip_prefix('z')
+        .context("daemon bootstrap key must use base58btc multibase")?;
+    let mut bytes = bs58::decode(encoded)
+        .into_vec()
+        .context("decode daemon bootstrap public key multibase")?;
+    if bytes.len() == 34 && bytes.starts_with(&[0xec, 0x01]) {
+        bytes = bytes[2..].to_vec();
+    }
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("daemon bootstrap public key must be 32 bytes"))?;
+    Ok(bytes)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -939,11 +965,6 @@ mod tests {
             "installation_status",
             "profile_status",
             "runner_status",
-            "bootstrap_key_status",
-            "bootstrap_key_id",
-            "bootstrap_public_key_multibase",
-            "bootstrap_public_key_b64u",
-            "bootstrap_key_algorithm",
             "active_session_count",
             "runtime_version",
             "config_summary",
@@ -1021,22 +1042,26 @@ mod tests {
         let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
         let diagnostics = &payload["daemon"]["diagnostics_summary"];
 
+        let config_summary = &diagnostics["config_summary"];
         assert_eq!(
-            diagnostics["bootstrap_key_id"],
+            config_summary["bootstrap_key_id"],
             format!(
                 "{}#{}",
                 daemon.agent_did,
                 anp::authentication::VM_KEY_E2EE_AGREEMENT
             )
         );
-        assert_eq!(diagnostics["bootstrap_key_status"], "ready");
-        assert_eq!(diagnostics["bootstrap_key_algorithm"], "x25519");
-        assert!(diagnostics["bootstrap_public_key_multibase"]
+        assert_eq!(
+            diagnostics["config_summary"]["bootstrap_key_status"],
+            "ready"
+        );
+        assert_eq!(config_summary["bootstrap_key_algorithm"], "x25519");
+        assert!(config_summary["bootstrap_public_key_multibase"]
             .as_str()
             .unwrap()
             .starts_with('z'));
         let public_key = URL_SAFE_NO_PAD
-            .decode(diagnostics["bootstrap_public_key_b64u"].as_str().unwrap())
+            .decode(config_summary["bootstrap_public_key_b64u"].as_str().unwrap())
             .unwrap();
         assert_eq!(public_key.len(), 32);
 
@@ -1068,7 +1093,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            daemon_item.diagnostics_summary["bootstrap_key_id"],
+            daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_id"],
             format!(
                 "{}#{}",
                 daemon.agent_did,
@@ -1076,10 +1101,10 @@ mod tests {
             )
         );
         assert_eq!(
-            daemon_item.diagnostics_summary["bootstrap_key_status"],
+            daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_status"],
             "ready"
         );
-        assert!(daemon_item.diagnostics_summary["bootstrap_public_key_b64u"]
+        assert!(daemon_item.diagnostics_summary["config_summary"]["bootstrap_public_key_b64u"]
             .as_str()
             .is_some());
         let dump = serde_json::to_string(&items).unwrap();

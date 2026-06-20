@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
 
 use std::path::PathBuf;
 
@@ -791,6 +793,14 @@ mod tests {
             items[0].diagnostics_summary["config_summary"]["service_installed"],
             false
         );
+        assert!(
+            items[0].diagnostics_summary["bootstrap_public_key_b64u"].is_null()
+        );
+        assert!(
+            items[0].diagnostics_summary["config_summary"]["bootstrap_public_key_b64u"]
+                .as_str()
+                .is_some()
+        );
         assert!(items[0].diagnostics_summary["service_installed"].is_null());
         assert!(!items[0].diagnostics_summary.to_string().contains("token"));
     }
@@ -839,16 +849,9 @@ fn update_daemon_latest_status(
             needs_config: false,
             last_error_code: None,
             last_error_summary: None,
-            diagnostics_summary: json!({
-                "installation_status": if service.installed { "installed" } else { "not_installed" },
-                "runner_status": if service.running { "running" } else { "not_running" },
-                "config_summary": {
-                    "service_installed": service.installed,
-                    "release_manifest_url": release.manifest_url,
-                    "release_status": if release.error.is_some() { "unavailable" } else { "ok" },
-                    "release_error": release.error,
-                },
-            }),
+            diagnostics_summary: crate::agent_status::daemon_latest_diagnostics_summary(
+                config, state, agent, service, &release,
+            ),
         }],
         &auth,
     )?;

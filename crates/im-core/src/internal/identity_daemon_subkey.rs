@@ -2,6 +2,7 @@ use anp::proof::{
     generate_w3c_proof, ProofGenerationOptions, CRYPTOSUITE_EDDSA_JCS_2022,
     PROOF_TYPE_DATA_INTEGRITY,
 };
+use rand::RngCore;
 use serde_json::{json, Value};
 
 pub(crate) const DAEMON_SUBKEY_FRAGMENT: &str = "daemon-key-1";
@@ -224,7 +225,7 @@ pub(crate) fn resign_did_document_with_key1(
             detail: format!("load DID Document signing key: {err}"),
         }
     })?;
-    let options = proof_generation_options_from_document(did_document);
+    let options = proof_generation_options_for_update(did_document);
     let signed = generate_w3c_proof(
         did_document,
         &private_key,
@@ -437,7 +438,7 @@ fn ed25519_public_key_to_multibase(key: &ed25519_dalek::VerifyingKey) -> String 
     format!("z{}", bs58::encode(bytes).into_string())
 }
 
-fn proof_generation_options_from_document(did_document: &Value) -> ProofGenerationOptions {
+fn proof_generation_options_for_update(did_document: &Value) -> ProofGenerationOptions {
     let proof = did_document.get("proof");
     ProofGenerationOptions {
         proof_purpose: proof
@@ -455,19 +456,19 @@ fn proof_generation_options_from_document(did_document: &Value) -> ProofGenerati
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
             .or_else(|| Some(CRYPTOSUITE_EDDSA_JCS_2022.to_owned())),
-        created: proof
-            .and_then(|value| value.get("created"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        created: None,
         domain: proof
             .and_then(|value| value.get("domain"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        challenge: proof
-            .and_then(|value| value.get("challenge"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        challenge: Some(fresh_proof_challenge()),
     }
+}
+
+fn fresh_proof_challenge() -> String {
+    let mut buffer = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut buffer);
+    buffer.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -624,13 +625,17 @@ mod tests {
             &signing_key.public_key(),
             ProofVerificationOptions::default()
         ));
+        document["proof"]["created"] = Value::String("2000-01-01T00:00:00Z".to_owned());
+        document["proof"]["challenge"] = Value::String("already-used-nonce".to_owned());
+        let stale_proof = document["proof"].clone();
 
         resign_did_document_with_key1(&mut document, &generated.did, &generated.key1_private_pem)
             .unwrap();
 
-        assert_eq!(document["proof"]["created"], original_proof["created"]);
         assert_eq!(document["proof"]["domain"], original_proof["domain"]);
-        assert_eq!(document["proof"]["challenge"], original_proof["challenge"]);
+        assert_ne!(document["proof"]["created"], stale_proof["created"]);
+        assert_ne!(document["proof"]["challenge"], stale_proof["challenge"]);
+        assert_eq!(document["proof"]["challenge"].as_str().unwrap().len(), 32);
         assert!(verify_w3c_proof(
             &document,
             &signing_key.public_key(),
