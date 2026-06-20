@@ -89,13 +89,17 @@ fn route_text_task_for_profile(
             }
             controller_did.clone()
         }
-        RuntimeTaskTriggerKind::ExternalDirect | RuntimeTaskTriggerKind::DelegatedDirect => {
-            if requester_did == controller_did
-                && message.trigger_kind == RuntimeTaskTriggerKind::ExternalDirect
-            {
+        RuntimeTaskTriggerKind::ExternalDirect => {
+            if requester_did == controller_did {
                 bail!("external_direct runtime task requires non-controller requester");
             }
             requester_did.clone()
+        }
+        RuntimeTaskTriggerKind::DelegatedDirect => {
+            if requester_did == controller_did {
+                bail!("delegated_direct runtime task requires non-controller requester");
+            }
+            controller_did.clone()
         }
         RuntimeTaskTriggerKind::GroupMention => requester_did.clone(),
     };
@@ -222,6 +226,34 @@ mod tests {
         );
         assert_eq!(task.reply_recipient_did, "did:human:bob");
         assert_eq!(task.trigger_kind, RuntimeTaskTriggerKind::ExternalDirect);
+        assert!(runtime_task_matches_profile_controller_scope(
+            &task, &profile
+        ));
+    }
+
+    #[test]
+    fn delegated_direct_text_task_recovers_to_controller() {
+        let profile = profile();
+
+        let task = route_controller_text_task(
+            &profile,
+            ControllerTextMessage {
+                message_id: "msg_delegated".to_string(),
+                conversation_id: Some("direct:did:human:bob".to_string()),
+                sender_did: "did:human:bob".to_string(),
+                requester_full_handle: Some("bob.example.com".to_string()),
+                trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+                target_agent_did: profile.agent_did.clone(),
+                text: "hello delegated agent".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(task.controller_did, "did:human:alice");
+        assert_eq!(task.sender_did, "did:human:bob");
+        assert_eq!(task.requester_did, "did:human:bob");
+        assert_eq!(task.reply_recipient_did, "did:human:alice");
+        assert_eq!(task.trigger_kind, RuntimeTaskTriggerKind::DelegatedDirect);
         assert!(runtime_task_matches_profile_controller_scope(
             &task, &profile
         ));

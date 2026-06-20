@@ -227,7 +227,10 @@ pub fn runtime_task_matches_profile_controller_scope(
                 && task.reply_recipient_did == task.requester_did
         }
         RuntimeTaskTriggerKind::DelegatedDirect => {
-            task.requester_did == task.sender_did && task.reply_recipient_did == task.requester_did
+            !is_group_conversation_id(task.conversation_id.as_deref())
+                && task.requester_did == task.sender_did
+                && task.requester_did != profile.controller_did
+                && task.reply_recipient_did == profile.controller_did
         }
     }
 }

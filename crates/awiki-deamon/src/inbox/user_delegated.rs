@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::app_bridge::action::MVP_ALLOWED_ACTIONS;
+use crate::app_bridge::action::{APP_ACTION_RESULT_SCHEMA, APP_ACTION_SCHEMA, MVP_ALLOWED_ACTIONS};
 use crate::app_bridge::bootstrap::{
     validate_user_delegated_identity_against_did_document, BootstrapDidDocumentResolver,
     DefaultBootstrapDidDocumentResolver,
@@ -43,6 +43,7 @@ const MESSAGE_EVENT_STATUS_DISPATCHED: &str = "agent_dispatched";
 const MESSAGE_EVENT_STATUS_SKIPPED_UNSUPPORTED: &str = "skipped_unsupported";
 const PROCESSED_STATUS_DISPATCHED: &str = "dispatched";
 const PROCESSED_STATUS_IGNORED_E2EE: &str = "ignored_e2ee_opaque";
+const PROCESSED_STATUS_SKIPPED_APP_CONTROL: &str = "skipped_app_control";
 const PROCESSED_STATUS_SKIPPED_UNSUPPORTED: &str = "skipped_unsupported";
 const PROCESSED_STATUS_PROCESSING: &str = "processing";
 const PROCESSED_STATUS_FAILED_RETRYABLE: &str = "failed_retryable";
@@ -59,6 +60,7 @@ pub struct ProcessUserDelegatedInboxOutcome {
     pub fetched_messages: usize,
     pub dispatched_messages: usize,
     pub ignored_e2ee_messages: usize,
+    pub skipped_app_control_messages: usize,
     pub skipped_unsupported_messages: usize,
     pub skipped_processed_messages: usize,
     pub next_cursor: Option<String>,
@@ -96,6 +98,7 @@ struct AgentDispatchContent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DelegatedMessageProcessOutcome {
     Dispatched,
+    SkippedAppControl,
     SkippedUnsupported,
     IgnoredE2ee,
     SkippedProcessed,
@@ -829,6 +832,7 @@ where
             Ok(outcome) => {
                 processed += outcome.dispatched_messages
                     + outcome.ignored_e2ee_messages
+                    + outcome.skipped_app_control_messages
                     + outcome.skipped_unsupported_messages;
             }
             Err(error) => {
@@ -884,6 +888,7 @@ where
         client.fetch_user_delegated_inbox(&identity, binding, cursor.as_deref(), DEFAULT_LIMIT)?;
     let mut dispatched = 0usize;
     let mut ignored_e2ee = 0usize;
+    let mut skipped_app_control = 0usize;
     let mut skipped_unsupported = 0usize;
     let mut skipped_processed = 0usize;
     let fetched = page.messages.len();
@@ -894,6 +899,7 @@ where
         match process_user_delegated_message_for_binding(state, dispatcher, binding, &message)? {
             DelegatedMessageProcessOutcome::Dispatched => dispatched += 1,
             DelegatedMessageProcessOutcome::IgnoredE2ee => ignored_e2ee += 1,
+            DelegatedMessageProcessOutcome::SkippedAppControl => skipped_app_control += 1,
             DelegatedMessageProcessOutcome::SkippedProcessed => skipped_processed += 1,
             DelegatedMessageProcessOutcome::SkippedUnsupported => skipped_unsupported += 1,
         }
@@ -909,6 +915,7 @@ where
         fetched_messages: fetched,
         dispatched_messages: dispatched,
         ignored_e2ee_messages: ignored_e2ee,
+        skipped_app_control_messages: skipped_app_control,
         skipped_unsupported_messages: skipped_unsupported,
         skipped_processed_messages: skipped_processed,
         next_cursor: page.next_cursor,
@@ -927,6 +934,7 @@ fn processed_message_is_terminal(
                 record.status.as_str(),
                 PROCESSED_STATUS_DISPATCHED
                     | PROCESSED_STATUS_IGNORED_E2EE
+                    | PROCESSED_STATUS_SKIPPED_APP_CONTROL
                     | PROCESSED_STATUS_SKIPPED_UNSUPPORTED
             )
         }))
@@ -942,6 +950,9 @@ where
     D: UserDelegatedMessageDispatcher,
 {
     let source_message_id = message.id.as_str().to_string();
+    if is_app_recovery_control_message(message) {
+        return process_app_recovery_control_message(state, binding, message);
+    }
     if is_e2ee_opaque_message(message) {
         let inserted = state.try_insert_processed_message(&ProcessedMessageRecord {
             owner_did: binding.user_did.clone(),
@@ -999,6 +1010,34 @@ where
     )?;
     state.upsert_message_sync_outbox(&message_sync_outbox_record(binding, &envelope)?)?;
     Ok(DelegatedMessageProcessOutcome::Dispatched)
+}
+
+fn process_app_recovery_control_message(
+    state: &DaemonState,
+    binding: &AppMessageAgentBindingRecord,
+    message: &Message,
+) -> Result<DelegatedMessageProcessOutcome> {
+    let source_message_id = message.id.as_str().to_string();
+    if processed_message_is_terminal(state, &binding.user_did, &source_message_id)? {
+        return Ok(DelegatedMessageProcessOutcome::SkippedProcessed);
+    }
+    let inserted = state.try_insert_processed_message(&ProcessedMessageRecord {
+        owner_did: binding.user_did.clone(),
+        message_id: source_message_id.clone(),
+        schema: app_recovery_control_schema(message)
+            .unwrap_or("awiki.app_control.unknown.v1")
+            .to_string(),
+        processed_at_ms: 0,
+        status: PROCESSED_STATUS_SKIPPED_APP_CONTROL.to_string(),
+    })?;
+    if !inserted {
+        state.mark_processed_message_status(
+            &binding.user_did,
+            &source_message_id,
+            PROCESSED_STATUS_SKIPPED_APP_CONTROL,
+        )?;
+    }
+    Ok(DelegatedMessageProcessOutcome::SkippedAppControl)
 }
 
 fn process_unsupported_message_for_binding(
@@ -1106,7 +1145,7 @@ fn runtime_task_from_envelope(
         requester_did: requester_did.clone(),
         requester_full_handle: envelope.source_sender_full_handle.clone(),
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
-        reply_recipient_did: requester_did,
+        reply_recipient_did: binding.user_did.clone(),
         conversation_id: envelope.source_conversation_id.clone(),
         text,
     };
@@ -1318,6 +1357,27 @@ fn is_system_control_payload(payload: &Value) -> bool {
         .get("schema")
         .and_then(Value::as_str)
         .is_some_and(|schema| schema.starts_with("awiki."))
+}
+
+fn is_app_recovery_control_message(message: &Message) -> bool {
+    match &message.body {
+        MessageBodyView::Payload { payload } => is_app_recovery_control_payload(payload),
+        _ => false,
+    }
+}
+
+fn is_app_recovery_control_payload(payload: &Value) -> bool {
+    matches!(
+        payload.get("schema").and_then(Value::as_str),
+        Some(MESSAGE_SYNC_SCHEMA | APP_ACTION_SCHEMA | APP_ACTION_RESULT_SCHEMA)
+    )
+}
+
+fn app_recovery_control_schema(message: &Message) -> Option<&str> {
+    match &message.body {
+        MessageBodyView::Payload { payload } => payload.get("schema").and_then(Value::as_str),
+        _ => None,
+    }
 }
 
 fn unsupported_reason(message: &Message) -> &'static str {
