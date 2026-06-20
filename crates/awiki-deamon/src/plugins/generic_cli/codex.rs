@@ -279,6 +279,9 @@ impl GenericCliDriver for CodexDriver {
             metadata: serde_json::json!({
                 "driver_id": "codex",
                 "config_home": "configured",
+                "error_code": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String("codex_cli_failed".to_string()) },
+                "error_summary": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String(format!("Codex CLI exited with status {exit_code}")) },
+                "next_action": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String("manual_review_required".to_string()) },
                 "process": process_metadata,
                 "native_session_id": native_session_id,
                 "native_session_source": native_session_source,

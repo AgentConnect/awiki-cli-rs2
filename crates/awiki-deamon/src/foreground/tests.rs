@@ -1600,7 +1600,22 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
     assert!(error.to_string().contains("generic-cli"));
     assert!(error.to_string().contains("not installed"));
     assert!(gateway.created_sessions().is_empty());
-    assert!(outbox.records().is_empty());
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("runtime_not_installed")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("setup_required")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
+    );
 }
 
 #[test]

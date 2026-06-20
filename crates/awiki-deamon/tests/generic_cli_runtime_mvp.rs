@@ -253,9 +253,32 @@ fn failed_generic_cli_marks_run_failed_without_final_callback() {
     assert_eq!(result.launch_outcome.exit_code, Some(7));
 
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records.len(), 2);
+    let failed_status = records
+        .iter()
+        .find(|record| {
+            record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some("failed")
+        })
+        .expect("failed status record");
+    assert_eq!(
+        failed_status.last_error_code.as_deref(),
+        Some("generic_cli_failed")
+    );
+    assert_eq!(
+        failed_status.last_error_summary.as_deref(),
+        Some("generic CLI test driver exited with status 7")
+    );
+    assert_eq!(
+        failed_status.metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert_eq!(
+        failed_status.metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
+    );
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.status, "failed");
+    assert_eq!(run_record.output_json, json!({}));
 }
 
 #[test]
@@ -433,6 +456,14 @@ fn route_root_requires_conversation_id_and_does_not_create_long_term_session() {
     assert_eq!(
         records[0].last_error_code.as_deref(),
         Some("route_session_preparation_failed")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
     );
 }
 
@@ -856,6 +887,199 @@ fn route_root_session_dir_failure_marks_run_and_route_failed_before_launch() {
         outbox.records()[0].last_error_code.as_deref(),
         Some("route_session_preparation_failed")
     );
+    assert_eq!(
+        outbox.records()[0].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert_eq!(
+        outbox.records()[0].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
+    );
+}
+
+#[derive(Debug, Clone)]
+struct InstallMissingPlugin;
+
+impl RuntimePlugin for InstallMissingPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: false,
+            detail: Some("codex binary missing at /tmp/secret/path".to_string()),
+        })
+    }
+
+    fn launch_run(&self, _context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        unreachable!("install missing plugin should not launch")
+    }
+}
+
+#[test]
+fn generic_cli_missing_install_emits_failed_setup_required_without_route_session() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = InstallMissingPlugin;
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_install_missing".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "install missing".to_string(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("not installed"));
+
+    let run = state
+        .load_runtime_run("run_task_msg_install_missing")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    assert_eq!(
+        state
+            .count_cli_route_sessions_for_runtime_profile(
+                &profile.runtime_profile_id,
+                &profile.controller_scope_key,
+                None,
+            )
+            .unwrap(),
+        0
+    );
+    assert!(state
+        .load_cli_driver_run("run_task_msg_install_missing")
+        .unwrap_err()
+        .to_string()
+        .contains("load cli driver run"));
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("runtime_not_installed")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("setup_required")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
+}
+
+#[derive(Debug, Clone)]
+struct LaunchErrorPlugin;
+
+impl RuntimePlugin for LaunchErrorPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("launch error test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, _context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        anyhow::bail!("synthetic launch failure")
+    }
+}
+
+#[test]
+fn generic_cli_launch_error_emits_failed_status_and_does_not_advance_message_waterline() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = LaunchErrorPlugin;
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_launch_error".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            target_agent_did: profile.agent_did.clone(),
+            text: "launch error".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_text = format!("{error:#}");
+    assert!(error_text.contains("synthetic launch failure"));
+
+    let run = state.load_runtime_run("run_task_msg_launch_error").unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let route_key = awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        "direct:did:human:bob",
+    )
+    .unwrap();
+    let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(route.last_message_id, None);
+    assert_eq!(route.last_error_code.as_deref(), Some("launch_failed"));
+    assert!(state
+        .load_cli_driver_run("run_task_msg_launch_error")
+        .unwrap_err()
+        .to_string()
+        .contains("load cli driver run"));
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].last_error_code.as_deref(), Some("launch_failed"));
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert_eq!(
+        records[0].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
+    );
+    assert!(!records
+        .iter()
+        .any(|record| record.kind == OutboxRecordKind::Final));
 }
 
 #[derive(Debug, Clone)]
@@ -3574,17 +3798,34 @@ exit 12
         .unwrap();
     assert_eq!(route.status, "failed");
     assert_eq!(route.native_session_id, None);
-    assert_eq!(route.last_error_code.as_deref(), Some("runtime_failed"));
+    assert_eq!(
+        route.last_error_code.as_deref(),
+        Some("session_persistence_disabled")
+    );
     assert!(route
         .last_error_summary
         .as_deref()
         .unwrap_or_default()
         .contains("no_session_persistence"));
     let records = outbox.records();
-    assert!(records
+    let failed_status = records
         .iter()
-        .any(|record| record.kind == OutboxRecordKind::Status
-            && record.state.as_deref() == Some("failed")));
+        .find(|record| {
+            record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some("failed")
+        })
+        .expect("failed status record");
+    assert_eq!(
+        failed_status.last_error_code.as_deref(),
+        Some("session_persistence_disabled")
+    );
+    assert_eq!(
+        failed_status.metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert_eq!(
+        failed_status.metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
+    );
     assert!(!records
         .iter()
         .any(|record| record.kind == OutboxRecordKind::Final));
@@ -3840,7 +4081,8 @@ fn codex_driver_nonzero_exit_does_not_forge_success_final() {
     config.ensure_state_layout().unwrap();
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
-    let profile = profile(root.path().join("workspace"));
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
     upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
     std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
 
@@ -3896,12 +4138,32 @@ exit 42
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
     assert_eq!(records[1].state.as_deref(), Some("failed"));
     assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("codex_cli_failed")
+    );
+    assert_eq!(
         records[1].last_error_summary.as_deref(),
-        Some("Runtime exited with status 42")
+        Some("Codex CLI exited with status 42")
+    );
+    assert_eq!(
+        records[1].metadata.as_ref().unwrap()["next_action"].as_str(),
+        Some("manual_review_required")
+    );
+    assert_eq!(
+        records[1].metadata.as_ref().unwrap()["failed_message_recovery"].as_str(),
+        Some("unsupported")
     );
     assert!(std::fs::read_to_string(output_dir.join("codex-stderr.log"))
         .unwrap()
         .contains("codex failed"));
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "failed");
+    assert_eq!(route.last_error_code.as_deref(), Some("codex_cli_failed"));
+    assert_eq!(route.last_message_id, None);
 }
 
 #[test]

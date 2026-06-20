@@ -551,14 +551,13 @@ impl GenericCliDriver for TestGenericCliDriver {
             Ok(GenericCliExit {
                 exit_code: self.exit_code,
                 status: RuntimeRunStatus::Failed,
-                callbacks: vec![CliWrapperRequest::task_status(
-                    invocation.runtime_rpc_token,
-                    invocation.task_id,
-                    "failed",
-                    "runtime failed",
-                )
-                .into_rpc_request()],
-                metadata: serde_json::json!({}),
+                callbacks: Vec::new(),
+                metadata: serde_json::json!({
+                    "driver_id": "generic-cli",
+                    "error_code": "generic_cli_failed",
+                    "error_summary": format!("generic CLI test driver exited with status {}", self.exit_code),
+                    "next_action": "manual_review_required",
+                }),
             })
         }
     }

@@ -355,6 +355,23 @@ where
                 error_code,
                 error_summary.as_str(),
             )?;
+        } else if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let error_summary = install_status
+                .detail
+                .as_deref()
+                .map(sanitize_user_visible_error_summary)
+                .unwrap_or_else(|| "generic-cli driver is not installed".to_string());
+            let metadata =
+                generic_cli_failed_status_metadata("runtime_not_installed", "setup_required");
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime setup is required"),
+                Some("runtime_not_installed"),
+                Some(&error_summary),
+                Some(&metadata),
+            )?;
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
@@ -399,16 +416,11 @@ where
             }
             Err(error) => {
                 if let Some(route_session) = cli_route_session.as_ref() {
-                    let busy_error = matches!(error.code, "profile_busy" | "host_home_busy");
                     let _ = state.release_cli_route_session_lease(
                         &route_session.route_key,
                         &run.run_id,
                         "failed",
-                        if busy_error {
-                            None
-                        } else {
-                            Some(&task_source_message_id)
-                        },
+                        None,
                         Some(error.code),
                         Some(&error.summary),
                     );
@@ -472,19 +484,25 @@ where
                             &route_session.route_key,
                             &run.run_id,
                             "failed",
-                            Some(&task_source_message_id),
+                            None,
                             Some("workspace_preparation_failed"),
                             Some(&sanitize_user_visible_error_summary(&error.to_string())),
                         );
                     }
                     cli_runtime_locks.release_all();
-                    emit_runtime_status(
+                    let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                    let metadata = generic_cli_failed_status_metadata(
+                        "workspace_preparation_failed",
+                        "manual_review_required",
+                    );
+                    emit_runtime_status_with_metadata(
                         outbox,
                         &run,
                         "failed",
                         Some("Runtime workspace preparation failed"),
                         Some("workspace_preparation_failed"),
-                        Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                        Some(&error_summary),
+                        Some(&metadata),
                     )?;
                     return Err(error).context("prepare runtime workspace instance");
                 }
@@ -512,13 +530,26 @@ where
                     &route_session.route_key,
                     &run.run_id,
                     "failed",
-                    Some(&task_source_message_id),
+                    None,
                     Some("launch_failed"),
                     Some(&sanitize_user_visible_error_summary(&error.to_string())),
                 );
             }
             cli_runtime_locks.release_all();
-            if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+                let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                let metadata =
+                    generic_cli_failed_status_metadata("launch_failed", "manual_review_required");
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime launch failed"),
+                    Some("launch_failed"),
+                    Some(&error_summary),
+                    Some(&metadata),
+                )?;
+            } else if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
                 emit_hermes_failure_outputs(
                     state,
@@ -646,14 +677,29 @@ where
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
     {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-        emit_runtime_status(
-            outbox,
-            &run,
-            "failed",
-            Some("Runtime failed"),
-            Some("runtime_failed"),
-            Some(&runtime_launch_failure_summary(&launch_outcome)),
-        )?;
+        if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let failure = generic_cli_failure_detail(&launch_outcome);
+            let metadata = failure.metadata_json();
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some(failure.error_code.as_str()),
+                Some(failure.error_summary.as_str()),
+                Some(&metadata),
+            )?;
+        } else {
+            let failure_summary = runtime_launch_failure_summary(&launch_outcome);
+            emit_runtime_status(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some("runtime_failed"),
+                Some(&failure_summary),
+            )?;
+        }
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
         if let Some(route_session) = cli_route_session.as_ref() {
@@ -701,7 +747,7 @@ where
                 "active"
             };
             let failure_summary = if next_status == "failed" {
-                Some(runtime_launch_failure_summary(&launch_outcome))
+                Some(generic_cli_failure_detail(&launch_outcome))
             } else {
                 None
             };
@@ -709,14 +755,22 @@ where
                 &route_session.route_key,
                 &run.run_id,
                 next_status,
-                Some(&task_source_message_id),
-                if next_status == "failed" {
-                    Some("runtime_failed")
+                if next_status == "active" {
+                    Some(&task_source_message_id)
                 } else {
                     None
                 },
                 if next_status == "failed" {
-                    failure_summary.as_deref()
+                    failure_summary
+                        .as_ref()
+                        .map(|failure| failure.error_code.as_str())
+                } else {
+                    None
+                },
+                if next_status == "failed" {
+                    failure_summary
+                        .as_ref()
+                        .map(|failure| failure.error_summary.as_str())
                 } else {
                     None
                 },
@@ -830,7 +884,7 @@ impl GenericCliRuntimeLockError {
     }
 
     fn status_metadata(&self) -> Option<Value> {
-        generic_cli_busy_status_metadata(self.code)
+        generic_cli_status_metadata(self.code)
     }
 }
 
@@ -875,7 +929,7 @@ impl GenericCliRouteSessionPreparationError {
     }
 
     fn status_metadata(&self) -> Option<Value> {
-        generic_cli_busy_status_metadata(self.code)
+        generic_cli_status_metadata(self.code)
     }
 
     fn into_error(self) -> anyhow::Error {
@@ -892,7 +946,7 @@ impl From<anyhow::Error> for GenericCliRouteSessionPreparationError {
     }
 }
 
-fn generic_cli_busy_status_metadata(code: &str) -> Option<Value> {
+fn generic_cli_status_metadata(code: &str) -> Option<Value> {
     match code {
         "route_busy" | "profile_busy" | "host_home_busy" => Some(json!({
             "retryable": true,
@@ -902,8 +956,23 @@ fn generic_cli_busy_status_metadata(code: &str) -> Option<Value> {
             "retry_after_seconds": GENERIC_CLI_BUSY_RETRY_AFTER_MS / 1000,
             "busy_reason": code,
         })),
-        _ => None,
+        _ => Some(generic_cli_failed_status_metadata(
+            code,
+            "manual_review_required",
+        )),
     }
+}
+
+fn generic_cli_failed_status_metadata(error_code: &str, next_action: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "runtime_family": "generic-cli",
+        "error_code": error_code,
+        "next_action": next_action,
+        "retryable": false,
+        "deferred": false,
+        "failed_message_recovery": "unsupported",
+    })
 }
 
 fn acquire_generic_cli_runtime_locks(
@@ -1704,6 +1773,75 @@ fn runtime_launch_failure_summary(launch_outcome: &RuntimeLaunchOutcome) -> Stri
         .exit_code
         .map(|code| format!("Runtime exited with status {code}"))
         .unwrap_or_else(|| "Runtime failed".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GenericCliFailureDetail {
+    error_code: String,
+    error_summary: String,
+    next_action: String,
+}
+
+impl GenericCliFailureDetail {
+    fn metadata_json(&self) -> Value {
+        json!({
+            "schema_version": 1,
+            "runtime_family": "generic-cli",
+            "error_code": self.error_code,
+            "next_action": self.next_action,
+            "retryable": false,
+            "deferred": false,
+            "failed_message_recovery": "unsupported",
+            "source": "driver_exit",
+        })
+    }
+}
+
+fn generic_cli_failure_detail(launch_outcome: &RuntimeLaunchOutcome) -> GenericCliFailureDetail {
+    let error_code = launch_outcome
+        .metadata
+        .get("error_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| generic_cli_failure_code_is_safe(value))
+        .unwrap_or("generic_cli_failed")
+        .to_string();
+    let fallback_summary = runtime_launch_failure_summary(launch_outcome);
+    let error_summary = launch_outcome
+        .metadata
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .map(sanitize_user_visible_error_summary)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_summary);
+    let next_action = launch_outcome
+        .metadata
+        .get("next_action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| generic_cli_next_action_is_safe(value))
+        .unwrap_or("manual_review_required")
+        .to_string();
+    GenericCliFailureDetail {
+        error_code,
+        error_summary,
+        next_action,
+    }
+}
+
+fn generic_cli_failure_code_is_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn generic_cli_next_action_is_safe(value: &str) -> bool {
+    matches!(
+        value,
+        "manual_review_required" | "setup_required" | "retry_later" | "contact_admin" | "none"
+    )
 }
 
 fn runtime_output_context(

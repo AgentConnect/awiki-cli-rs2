@@ -224,6 +224,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
                     "driver_id": "claude-code",
                     "error_code": "session_persistence_disabled",
                     "error_summary": "claude-code no_session_persistence cannot be used with route sessions",
+                    "next_action": "manual_review_required",
                     "home_isolation": home_isolation(),
                     "native_session_id": null,
                     "native_session_source": null,
@@ -354,6 +355,9 @@ impl GenericCliDriver for ClaudeCodeDriver {
             metadata: serde_json::json!({
                 "driver_id": "claude-code",
                 "home_isolation": home_isolation(),
+                "error_code": if success { serde_json::Value::Null } else { serde_json::Value::String("claude_code_cli_failed".to_string()) },
+                "error_summary": if success { serde_json::Value::Null } else { serde_json::Value::String(format!("Claude Code CLI exited with status {exit_code}")) },
+                "next_action": if success { serde_json::Value::Null } else { serde_json::Value::String("manual_review_required".to_string()) },
                 "process": process_metadata,
                 "native_session_id": native_session_id,
                 "native_session_source": native_session_source,
