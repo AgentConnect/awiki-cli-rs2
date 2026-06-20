@@ -11,6 +11,7 @@ use im_core::messages::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::state::AuthorizedRuntimeContext;
 
@@ -44,6 +45,18 @@ pub trait RuntimeOutbox {
         _last_error_summary: Option<&str>,
     ) -> Result<()> {
         self.send_status(context, state, text)
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        _metadata: Option<&Value>,
+    ) -> Result<()> {
+        self.send_status_with_detail(context, state, text, last_error_code, last_error_summary)
     }
 
     fn send_final(&self, context: &AuthorizedRuntimeContext, text: Option<&str>) -> Result<()>;
@@ -432,6 +445,18 @@ fn management_payload_security_mode() -> MessageSecurityMode {
     MessageSecurityMode::DefaultPlain
 }
 
+fn final_body_hash(text: Option<&str>) -> Option<String> {
+    let text = text?;
+    let digest = Sha256::digest(text.as_bytes());
+    Some(format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+}
+
 async fn ensure_messaging_session(client: &im_core::ImClient) -> Result<()> {
     match client
         .auth()
@@ -458,6 +483,7 @@ pub struct OutboxRecord {
     pub state: Option<String>,
     pub last_error_code: Option<String>,
     pub last_error_summary: Option<String>,
+    pub metadata: Option<Value>,
     pub recipient: Option<String>,
     pub raw_recipient: Option<String>,
     pub resolved_did: Option<String>,
@@ -1003,6 +1029,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some(state.to_string()),
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1032,6 +1059,38 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some(state.to_string()),
             last_error_code: last_error_code.map(str::to_string),
             last_error_summary: last_error_summary.map(str::to_string),
+            metadata: None,
+            recipient: None,
+            raw_recipient: None,
+            resolved_did: None,
+            message_id: None,
+            text: text.map(str::to_string),
+            security: None,
+            file_path: None,
+            display_filename: None,
+            mime_type: None,
+            idempotency_key: None,
+        });
+        Ok(())
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
+        self.push(OutboxRecord {
+            run_id: context.run_id.clone(),
+            agent_did: context.agent_did.clone(),
+            kind: OutboxRecordKind::Status,
+            state: Some(state.to_string()),
+            last_error_code: last_error_code.map(str::to_string),
+            last_error_summary: last_error_summary.map(str::to_string),
+            metadata: metadata.cloned(),
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1047,6 +1106,11 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
     }
 
     fn send_final(&self, context: &AuthorizedRuntimeContext, text: Option<&str>) -> Result<()> {
+        let metadata = serde_json::json!({
+            "final_source": "task_finish_callback",
+            "final_body_hash": final_body_hash(text),
+            "final_text_bytes": text.map(str::len).unwrap_or(0),
+        });
         self.push(OutboxRecord {
             run_id: context.run_id.clone(),
             agent_did: context.agent_did.clone(),
@@ -1054,6 +1118,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: Some("finished".to_string()),
             last_error_code: None,
             last_error_summary: None,
+            metadata: Some(metadata),
             recipient: None,
             raw_recipient: None,
             resolved_did: None,
@@ -1084,6 +1149,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: None,
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: Some(message.resolved_recipient().to_string()),
             raw_recipient: Some(message.raw_recipient().to_string()),
             resolved_did: message.resolved_did().map(str::to_string),
@@ -1120,6 +1186,7 @@ impl RuntimeOutbox for MemoryRuntimeOutbox {
             state: None,
             last_error_code: None,
             last_error_summary: None,
+            metadata: None,
             recipient: attachment.target_did.clone(),
             raw_recipient: Some(attachment.target.clone()),
             resolved_did: attachment.target_did.clone(),
@@ -1201,6 +1268,25 @@ mod tests {
         assert_eq!(
             management_payload_security_mode(),
             MessageSecurityMode::DefaultPlain
+        );
+    }
+
+    #[test]
+    fn final_body_hash_records_empty_body_but_not_missing_body() {
+        assert_eq!(final_body_hash(None), None);
+        assert_eq!(
+            final_body_hash(Some("")),
+            Some(
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            final_body_hash(Some("abc")),
+            Some(
+                "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                    .to_string()
+            )
         );
     }
 

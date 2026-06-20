@@ -1,6 +1,7 @@
 use super::schema::DAEMON_SCHEMA_VERSION;
 use super::*;
 use crate::runtime::RuntimeTaskTriggerKind;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn initialize_creates_required_tables() {
@@ -12,6 +13,7 @@ fn initialize_creates_required_tables() {
     let connection = Connection::open(&config.daemon_db_path).unwrap();
     for table in [
         "schema_migrations",
+        "daemon_state_metadata",
         "agent_definition",
         "runtime_profile",
         "workspace_binding",
@@ -23,6 +25,9 @@ fn initialize_creates_required_tables() {
         "agent_auth_state",
         "cli_runtime_profile",
         "cli_driver_run",
+        "cli_route_sessions",
+        "cli_runtime_locks",
+        "cli_route_message_queue",
         "hermes_profiles",
         "hermes_native_sessions",
         "runtime_daemon_binding",
@@ -49,6 +54,910 @@ fn initialize_creates_required_tables() {
             .unwrap();
         assert_eq!(count, 1, "missing table {table}");
     }
+    assert!(DaemonState::open(&config)
+        .unwrap()
+        .generic_cli_route_hash_salt_present());
+    let salt_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM daemon_state_metadata WHERE key = 'generic_cli.route_hash_salt.v2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(salt_count, 1);
+}
+
+fn cli_route_create(workspace: PathBuf, conversation_id: &str) -> CreateCliRouteSession {
+    CreateCliRouteSession {
+        agent_did: "did:agent:codex-alice".to_string(),
+        runtime_profile_id: "profile_codex_alice".to_string(),
+        driver_id: "codex".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.awiki.info".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        conversation_id: conversation_id.to_string(),
+        workspace_path: workspace.join("workspaces").join("route"),
+        session_dir: workspace.join("sessions").join("route"),
+    }
+}
+
+fn cli_route_queue_reference(
+    route: &CliRouteSessionRecord,
+    source_message_id: &str,
+    task_id: Option<&str>,
+    run_id: Option<&str>,
+    next_attempt_at_ms: i64,
+) -> CreateCliRouteMessageQueueReference {
+    CreateCliRouteMessageQueueReference {
+        agent_did: route.agent_did.clone(),
+        runtime_profile_id: route.runtime_profile_id.clone(),
+        driver_id: route.driver_id.clone(),
+        controller_user_id: route.controller_user_id.clone(),
+        controller_full_handle: route.controller_full_handle.clone(),
+        controller_scope_key: route.controller_scope_key.clone(),
+        controller_did: route.controller_did.clone(),
+        conversation_id: route.conversation_id.clone(),
+        source_message_id: source_message_id.to_string(),
+        task_id: task_id.map(str::to_string),
+        run_id: run_id.map(str::to_string),
+        enqueue_reason: "profile_busy".to_string(),
+        next_attempt_at_ms,
+        last_error_code: Some("profile_busy".to_string()),
+        last_error_summary: Some("profile busy sanitized".to_string()),
+    }
+}
+
+#[test]
+fn cli_route_message_queue_enqueues_minimal_reference_and_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_1",
+            Some("task_msg_queue_1"),
+            Some("run_task_msg_queue_1"),
+            now,
+        ))
+        .unwrap();
+    let duplicate = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_1",
+            Some("task_msg_queue_1_changed"),
+            Some("run_task_msg_queue_1_changed"),
+            now + 60_000,
+        ))
+        .unwrap();
+
+    assert_eq!(first.queue_id, duplicate.queue_id);
+    assert_eq!(first.route_sequence, 1);
+    assert_eq!(duplicate.route_sequence, 1);
+    assert_eq!(first.source_message_id, "msg_queue_1");
+    assert_eq!(first.task_id.as_deref(), Some("task_msg_queue_1"));
+    assert_eq!(first.run_id.as_deref(), Some("run_task_msg_queue_1"));
+    assert_eq!(first.route_key, route.route_key);
+    assert_eq!(first.route_key_hash, route.route_key_hash);
+    assert_eq!(
+        state
+            .list_cli_route_message_queue_for_route(&route.runtime_profile_id, &route.route_key)
+            .unwrap()
+            .len(),
+        1
+    );
+    let dump = format!("{first:?}");
+    assert!(!dump.contains("secret prompt"));
+    assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+}
+
+#[test]
+fn cli_route_message_queue_orders_due_items_by_route_sequence() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_first",
+            Some("task_msg_queue_first"),
+            Some("run_task_msg_queue_first"),
+            now,
+        ))
+        .unwrap();
+    let second = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_second",
+            Some("task_msg_queue_second"),
+            Some("run_task_msg_queue_second"),
+            now,
+        ))
+        .unwrap();
+
+    assert_eq!(first.route_sequence, 1);
+    assert_eq!(second.route_sequence, 2);
+    let due = state.list_due_cli_route_message_queue(now, 10).unwrap();
+    assert_eq!(
+        due.iter()
+            .map(|record| record.source_message_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["msg_queue_first", "msg_queue_second"]
+    );
+    state
+        .mark_cli_route_message_queue_running(&first.queue_id, "run_replay_first")
+        .unwrap();
+    let running = state
+        .load_cli_route_message_queue_item(&first.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(running.status, "running");
+    assert_eq!(running.attempts, 1);
+    assert_eq!(running.run_id.as_deref(), Some("run_replay_first"));
+    state
+        .mark_cli_route_message_queue_succeeded(&first.queue_id, "run_replay_first")
+        .unwrap();
+    let succeeded = state
+        .load_cli_route_message_queue_item(&first.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(succeeded.status, "succeeded");
+}
+
+#[test]
+fn cli_route_message_queue_fair_due_returns_route_heads_only() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let bob = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let charlie = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:charlie",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let bob_first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &bob,
+            "msg_bob_first",
+            Some("task_msg_bob_first"),
+            Some("run_task_msg_bob_first"),
+            now,
+        ))
+        .unwrap();
+    let bob_second = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &bob,
+            "msg_bob_second",
+            Some("task_msg_bob_second"),
+            Some("run_task_msg_bob_second"),
+            now,
+        ))
+        .unwrap();
+    let charlie_first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &charlie,
+            "msg_charlie_first",
+            Some("task_msg_charlie_first"),
+            Some("run_task_msg_charlie_first"),
+            now,
+        ))
+        .unwrap();
+
+    let plain_due = state.list_due_cli_route_message_queue(now, 10).unwrap();
+    assert_eq!(
+        plain_due
+            .iter()
+            .map(|record| record.source_message_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["msg_bob_first", "msg_bob_second", "msg_charlie_first"]
+    );
+
+    let fair_due = state
+        .list_due_cli_route_message_queue_fair(now, 10)
+        .unwrap();
+    let fair_ids = fair_due
+        .iter()
+        .map(|record| record.source_message_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(fair_ids.contains(&"msg_bob_first"));
+    assert!(fair_ids.contains(&"msg_charlie_first"));
+    assert!(!fair_ids.contains(&"msg_bob_second"));
+    assert_eq!(fair_due.len(), 2);
+
+    assert_eq!(bob_first.route_sequence, 1);
+    assert_eq!(bob_second.route_sequence, 2);
+    assert_eq!(charlie_first.route_sequence, 1);
+
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute(
+            r#"
+UPDATE cli_route_message_queue
+SET route_sequence = ?1,
+    created_at_ms = ?2
+WHERE queue_id = ?3
+"#,
+            rusqlite::params![
+                bob_first.route_sequence,
+                bob_first.created_at_ms,
+                bob_second.queue_id
+            ],
+        )
+        .unwrap();
+    let fair_due_with_duplicate_sequence = state
+        .list_due_cli_route_message_queue_fair(now, 10)
+        .unwrap();
+    let bob_due_count = fair_due_with_duplicate_sequence
+        .iter()
+        .filter(|record| record.route_key == bob.route_key)
+        .count();
+    assert_eq!(bob_due_count, 1);
+}
+
+#[test]
+fn cli_route_message_queue_claim_retry_and_dead_letter_are_state_only() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let item = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_claim_retry",
+            Some("task_msg_claim_retry"),
+            Some("run_task_msg_claim_retry"),
+            now,
+        ))
+        .unwrap();
+
+    let claimed = state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_claim_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.status, "running");
+    assert_eq!(claimed.run_id.as_deref(), Some("run_replay_claim_1"));
+    assert_eq!(claimed.attempts, 1);
+    assert!(state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_claim_2")
+        .unwrap()
+        .is_none());
+
+    let retry = state
+        .retry_or_dead_letter_cli_route_message_queue_item(
+            &item.queue_id,
+            2,
+            now + 30_000,
+            "provider_unavailable",
+            "token: abc /tmp/secret-path should be redacted",
+        )
+        .unwrap();
+    assert_eq!(retry.status, "queued");
+    assert_eq!(retry.attempts, 1);
+    assert_eq!(retry.next_attempt_at_ms, now + 30_000);
+    let retry_summary = retry.last_error_summary.unwrap();
+    assert!(retry_summary.contains("<redacted>"));
+    assert!(retry_summary.contains("<path>"));
+    assert!(!retry_summary.contains("abc"));
+    assert!(!retry_summary.contains("/tmp/secret-path"));
+
+    let claimed_again = state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_claim_2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed_again.attempts, 2);
+    let dead_letter = state
+        .retry_or_dead_letter_cli_route_message_queue_item(
+            &item.queue_id,
+            2,
+            now + 60_000,
+            "provider_unavailable",
+            "final retry failed without user payload",
+        )
+        .unwrap();
+    assert_eq!(dead_letter.status, "dead_letter");
+    assert_eq!(dead_letter.attempts, 2);
+    assert_eq!(dead_letter.next_attempt_at_ms, now + 30_000);
+
+    let route_after = state
+        .load_cli_route_session(&route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route_after.last_message_id, None);
+}
+
+#[test]
+fn cli_route_message_queue_cancel_helpers_cancel_pending_items() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let first = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_cancel_route",
+            Some("task_msg_queue_cancel_route"),
+            Some("run_task_msg_queue_cancel_route"),
+            now,
+        ))
+        .unwrap();
+    assert_eq!(
+        state
+            .cancel_cli_route_message_queue_for_route(
+                &route.runtime_profile_id,
+                &route.route_key,
+                "route_reset",
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        state
+            .load_cli_route_message_queue_item(&first.queue_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+
+    let second = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_queue_cancel_scope",
+            Some("task_msg_queue_cancel_scope"),
+            Some("run_task_msg_queue_cancel_scope"),
+            now,
+        ))
+        .unwrap();
+    assert_eq!(
+        state
+            .cancel_cli_route_message_queue_for_runtime_controller_scope(
+                &route.agent_did,
+                &route.runtime_profile_id,
+                &route.controller_scope_key,
+                "runtime_scope_reset",
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        state
+            .load_cli_route_message_queue_item(&second.queue_id)
+            .unwrap()
+            .unwrap()
+            .last_error_code
+            .as_deref(),
+        Some("runtime_scope_reset")
+    );
+}
+
+#[test]
+fn cli_route_message_queue_route_session_reset_cancels_queued_items() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    state
+        .mark_cli_route_session_deferred(
+            &route.route_key,
+            Some("run_task_msg_deferred"),
+            "profile_busy",
+            "profile busy sanitized",
+        )
+        .unwrap();
+    let item = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_deferred",
+            Some("task_msg_deferred"),
+            Some("run_task_msg_deferred"),
+            current_time_millis().unwrap(),
+        ))
+        .unwrap();
+
+    assert_eq!(
+        state
+            .reset_cli_route_session_by_route(&route.route_key)
+            .unwrap(),
+        1
+    );
+    let reset = state
+        .load_cli_route_session(&route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.status, "reset");
+    assert_eq!(reset.last_message_id, None);
+    let cancelled = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.last_error_code.as_deref(), Some("route_reset"));
+}
+
+#[test]
+fn cli_route_session_canonicalizes_direct_ids_and_roundtrips() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let direct = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "dm:did:human:bob",
+        ))
+        .unwrap();
+    assert_eq!(direct.conversation_id, "direct:did:human:bob");
+    assert!(direct.route_key.contains(":direct:did:human:bob:"));
+    assert!(direct.route_key_hash.starts_with("route_"));
+    assert_eq!(direct.route_key_hash.len(), "route_".len() + 24);
+    assert!(format!("{direct:?}").contains("route_"));
+    assert_ne!(
+        direct.route_key_hash,
+        cli_route_key_hash(&direct.route_key).unwrap()
+    );
+
+    let same = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    assert_eq!(same.route_key, direct.route_key);
+    assert_eq!(same.route_key_hash, direct.route_key_hash);
+
+    let group = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "group:did:group:writers",
+        ))
+        .unwrap();
+    assert_ne!(group.route_key_hash, direct.route_key_hash);
+    assert_eq!(
+        state
+            .count_cli_route_sessions_for_runtime_profile(
+                "profile_codex_alice",
+                "controller-scope:v1:test-alice",
+                Some("active"),
+            )
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn cli_route_hash_is_keyed_per_daemon_state_root() {
+    let first_root = tempfile::tempdir().unwrap();
+    let first_config = DaemonConfig::for_state_root(first_root.path()).unwrap();
+    let first_state = DaemonState::open(&first_config).unwrap();
+    first_state.initialize().unwrap();
+
+    let first = first_state
+        .get_or_create_cli_route_session(cli_route_create(
+            first_root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let same = first_state
+        .get_or_create_cli_route_session(cli_route_create(
+            first_root.path().to_path_buf(),
+            "dm:did:human:bob",
+        ))
+        .unwrap();
+    assert_eq!(same.route_key_hash, first.route_key_hash);
+    assert!(first_state.generic_cli_route_hash_salt_present());
+
+    let second_root = tempfile::tempdir().unwrap();
+    let second_config = DaemonConfig::for_state_root(second_root.path()).unwrap();
+    let second_state = DaemonState::open(&second_config).unwrap();
+    second_state.initialize().unwrap();
+    let second = second_state
+        .get_or_create_cli_route_session(cli_route_create(
+            second_root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+
+    assert_eq!(second.route_key, first.route_key);
+    assert_ne!(second.route_key_hash, first.route_key_hash);
+}
+
+#[test]
+fn cli_route_existing_plain_hash_record_keeps_legacy_path_binding() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let create = cli_route_create(root.path().to_path_buf(), "direct:did:human:bob");
+    let route_key = create.route_key().unwrap();
+    let legacy_hash = cli_route_key_hash(&route_key).unwrap();
+    let legacy_workspace = root
+        .path()
+        .join("runtime/workspaces/profile_codex_alice/conversations")
+        .join(&legacy_hash);
+    let legacy_session_dir = root
+        .path()
+        .join("runtime/sessions/profile_codex_alice")
+        .join(&legacy_hash);
+    Connection::open(&config.daemon_db_path)
+        .unwrap()
+        .execute(
+            r#"
+INSERT INTO cli_route_sessions (
+    route_key,
+    route_key_hash,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    workspace_path,
+    session_dir,
+    synthetic_session_id,
+    status,
+    version,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?1, 'active', 0, 1, 1)
+"#,
+            rusqlite::params![
+                route_key,
+                legacy_hash,
+                create.agent_did,
+                create.runtime_profile_id,
+                create.driver_id,
+                create.controller_user_id,
+                create.controller_full_handle,
+                create.controller_scope_key,
+                create.controller_did,
+                canonical_cli_conversation_id(&create.conversation_id).unwrap(),
+                legacy_workspace.display().to_string(),
+                legacy_session_dir.display().to_string(),
+            ],
+        )
+        .unwrap();
+
+    let loaded = state
+        .get_or_create_cli_route_session(CreateCliRouteSession {
+            workspace_path: legacy_workspace.clone(),
+            session_dir: legacy_session_dir.clone(),
+            ..cli_route_create(root.path().to_path_buf(), "dm:did:human:bob")
+        })
+        .unwrap();
+
+    assert_eq!(loaded.route_key_hash, legacy_hash);
+    assert_eq!(loaded.workspace_path, legacy_workspace);
+    assert_eq!(loaded.session_dir, legacy_session_dir);
+    assert_ne!(
+        loaded.route_key_hash,
+        state.cli_route_key_hash(&loaded.route_key).unwrap()
+    );
+}
+
+#[test]
+fn cli_route_session_rejects_no_conversation_and_lease_is_exclusive() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let error = cli_route_create(root.path().to_path_buf(), "no-conversation")
+        .route_key()
+        .unwrap_err();
+    assert!(error.to_string().contains("no-conversation"));
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &session.route_key,
+            "run_1",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+    assert!(!state
+        .try_acquire_cli_route_session_lease(
+            &session.route_key,
+            "run_2",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+    state
+        .release_cli_route_session_lease(
+            &session.route_key,
+            "run_1",
+            "active",
+            Some("msg_1"),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &session.route_key,
+            "run_2",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+    assert_eq!(
+        state
+            .reset_cli_route_session_by_route(&session.route_key)
+            .unwrap(),
+        1
+    );
+    let reset = state
+        .load_cli_route_session(&session.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.status, "reset");
+    assert_eq!(reset.lock_run_id, None);
+}
+
+#[test]
+fn cli_route_session_reset_reactivates_same_route_without_native_pointer() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    state
+        .update_cli_route_session_native_id(
+            &session.route_key,
+            Some("native_old"),
+            Some("json_event"),
+            Some("synthetic_old"),
+        )
+        .unwrap();
+    assert_eq!(
+        state
+            .reset_cli_route_session_by_route(&session.route_key)
+            .unwrap(),
+        1
+    );
+
+    let reactivated = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "dm:did:human:bob",
+        ))
+        .unwrap();
+
+    assert_eq!(reactivated.route_key, session.route_key);
+    assert_eq!(reactivated.status, "active");
+    assert_eq!(reactivated.native_session_id, None);
+    assert_eq!(reactivated.native_session_source, None);
+    assert_eq!(
+        reactivated.synthetic_session_id.as_deref(),
+        Some(session.route_key.as_str())
+    );
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &reactivated.route_key,
+            "run_after_reset",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+}
+
+#[test]
+fn cli_runtime_profile_lock_is_exclusive_and_stale_recoverable() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_1",
+            "test",
+            now + 60_000,
+        )
+        .unwrap());
+    assert!(!state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_2",
+            "test",
+            now + 60_000,
+        )
+        .unwrap());
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(
+                Some("profile"),
+                Some("profile_codex_alice"),
+                Some("codex"),
+                false,
+            )
+            .unwrap(),
+        1
+    );
+    assert!(state
+        .release_cli_runtime_profile_lock("profile_codex_alice", "run_1")
+        .unwrap());
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_expired",
+            "test",
+            now - 1,
+        )
+        .unwrap());
+    assert!(state
+        .try_acquire_cli_runtime_profile_lock(
+            "profile_codex_alice",
+            "codex",
+            "run_2",
+            "test",
+            now + 60_000,
+        )
+        .unwrap());
+    assert!(!state
+        .release_cli_runtime_profile_lock("profile_codex_alice", "run_expired")
+        .unwrap());
+    assert!(state
+        .release_cli_runtime_profile_lock("profile_codex_alice", "run_2")
+        .unwrap());
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(
+                Some("profile"),
+                Some("profile_codex_alice"),
+                Some("codex"),
+                true,
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn cli_host_home_lock_is_driver_scoped() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    assert!(state
+        .try_acquire_cli_host_home_lock("claude-code", "run_1", "test", now + 60_000)
+        .unwrap());
+    assert!(!state
+        .try_acquire_cli_host_home_lock("claude-code", "run_2", "test", now + 60_000)
+        .unwrap());
+    assert!(state
+        .try_acquire_cli_host_home_lock("codex", "run_3", "test", now + 60_000)
+        .unwrap());
+    assert_eq!(
+        state
+            .count_cli_runtime_locks(Some("host-home"), None, Some("claude-code"), false)
+            .unwrap(),
+        1
+    );
+    assert!(state
+        .release_cli_host_home_lock("claude-code", "run_1")
+        .unwrap());
+    assert!(state.release_cli_host_home_lock("codex", "run_3").unwrap());
+}
+
+#[test]
+fn cli_route_session_rejects_existing_route_binding_drift() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let mut drifted = cli_route_create(root.path().to_path_buf(), "dm:did:human:bob");
+    drifted.workspace_path = root.path().join("workspaces").join("different-route");
+
+    let error = state.get_or_create_cli_route_session(drifted).unwrap_err();
+    assert!(error.to_string().contains("binding conflict"));
+    let unchanged = state
+        .load_cli_route_session(&session.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.workspace_path, session.workspace_path);
+}
+
+#[test]
+fn cli_route_session_allows_controller_did_rotation_for_same_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let session = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let mut rotated = cli_route_create(root.path().to_path_buf(), "dm:did:human:bob");
+    rotated.controller_did = "did:human:alice#rotated".to_string();
+
+    let loaded = state.get_or_create_cli_route_session(rotated).unwrap();
+    assert_eq!(loaded.route_key, session.route_key);
+    assert_eq!(loaded.controller_did, "did:human:alice");
 }
 
 fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplayRecord) {
@@ -798,6 +1707,170 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     assert_eq!(loaded.text, task.text);
 }
 
+fn failed_runtime_run(run_id: &str, task_id: &str) -> RuntimeRun {
+    RuntimeRun {
+        run_id: run_id.to_string(),
+        task_id: task_id.to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        runtime_plugin_id: "hermes".to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Failed,
+    }
+}
+
+#[test]
+fn runtime_retry_queue_records_due_time_and_filters_future_retries() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let due_run = failed_runtime_run("run_retry_due", "task_retry_due");
+    let future_run = failed_runtime_run("run_retry_future", "task_retry_future");
+    state.insert_runtime_run(&due_run).unwrap();
+    state.insert_runtime_run(&future_run).unwrap();
+
+    let due = state
+        .insert_runtime_retry_request_due_at(&due_run, "cmd_retry_due", now)
+        .unwrap();
+    let future = state
+        .insert_runtime_retry_request_due_at(&future_run, "cmd_retry_future", now + 60_000)
+        .unwrap();
+
+    assert_eq!(due.next_attempt_at_ms, now);
+    assert_eq!(future.next_attempt_at_ms, now + 60_000);
+    assert_eq!(
+        state
+            .load_runtime_retry_request(&future.retry_id)
+            .unwrap()
+            .next_attempt_at_ms,
+        now + 60_000
+    );
+
+    let queued = state.list_queued_runtime_retries_due(now, 10).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].retry_id, due.retry_id);
+
+    let queued = state
+        .list_queued_runtime_retries_due(now + 60_000, 10)
+        .unwrap();
+    assert_eq!(
+        queued
+            .iter()
+            .map(|retry| retry.retry_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![due.retry_id.as_str(), future.retry_id.as_str()]
+    );
+}
+
+#[test]
+fn runtime_retry_queue_lists_due_retries_by_due_time_then_fifo() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let late_run = failed_runtime_run("run_retry_late", "task_retry_late");
+    let first_run = failed_runtime_run("run_retry_first", "task_retry_first");
+    let second_run = failed_runtime_run("run_retry_second", "task_retry_second");
+    state.insert_runtime_run(&late_run).unwrap();
+    state.insert_runtime_run(&first_run).unwrap();
+    state.insert_runtime_run(&second_run).unwrap();
+
+    let late = state
+        .insert_runtime_retry_request_due_at(&late_run, "cmd_retry_late", now + 50)
+        .unwrap();
+    let first = state
+        .insert_runtime_retry_request_due_at(&first_run, "cmd_retry_first", now)
+        .unwrap();
+    let second = state
+        .insert_runtime_retry_request_due_at(&second_run, "cmd_retry_second", now)
+        .unwrap();
+
+    let queued = state.list_queued_runtime_retries_due(now + 50, 10).unwrap();
+    assert_eq!(
+        queued
+            .iter()
+            .map(|retry| retry.retry_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            first.retry_id.as_str(),
+            second.retry_id.as_str(),
+            late.retry_id.as_str()
+        ]
+    );
+
+    assert_eq!(
+        state
+            .list_queued_runtime_retries_due(now + 50, 2)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn runtime_retry_manual_request_is_immediately_due() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let before = current_time_millis().unwrap();
+    let run = failed_runtime_run("run_retry_manual", "task_retry_manual");
+    state.insert_runtime_run(&run).unwrap();
+    let retry = state
+        .insert_runtime_retry_request(&run, "cmd_retry_manual")
+        .unwrap();
+    let after = current_time_millis().unwrap();
+
+    assert!(retry.next_attempt_at_ms >= before);
+    assert!(retry.next_attempt_at_ms <= after);
+    let due = state.list_queued_runtime_retries_due(after, 10).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].retry_id, retry.retry_id);
+}
+
+#[test]
+fn runtime_retry_queue_lists_retries_for_original_run_without_payload() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let first_run = failed_runtime_run("run_retry_origin", "task_retry_origin");
+    let other_run = failed_runtime_run("run_retry_other", "task_retry_other");
+    state.insert_runtime_run(&first_run).unwrap();
+    state.insert_runtime_run(&other_run).unwrap();
+
+    let first = state
+        .insert_runtime_retry_request_due_at(&first_run, "runtime.busy.auto-deferred", now + 10_000)
+        .unwrap();
+    let second = state
+        .insert_runtime_retry_request_due_at(&first_run, "cmd_retry_manual", now + 20_000)
+        .unwrap();
+    state
+        .insert_runtime_retry_request_due_at(&other_run, "cmd_retry_other", now)
+        .unwrap();
+
+    let retries = state
+        .list_runtime_retry_requests_for_original_run("run_retry_origin")
+        .unwrap();
+    assert_eq!(
+        retries
+            .iter()
+            .map(|retry| retry.retry_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first.retry_id.as_str(), second.retry_id.as_str()]
+    );
+    let dump = format!("{retries:?}");
+    assert!(!dump.contains("secret prompt"));
+}
+
 #[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();
@@ -817,6 +1890,8 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         recipient_did: "did:human:alice".to_string(),
         conversation_id: Some("direct:did:human:alice".to_string()),
         final_text: "final text".to_string(),
+        final_source: "hermes_final_text".to_string(),
+        final_body_hash: test_final_body_hash("final text"),
         security: "default_plain".to_string(),
         status: "pending".to_string(),
         attempt_count: 0,
@@ -833,6 +1908,8 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let due = state.list_due_runtime_final_outbox(now, 10).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].final_text, "final text");
+    assert_eq!(due[0].final_source, "hermes_final_text");
+    assert_eq!(due[0].final_body_hash, test_final_body_hash("final text"));
     assert!(state
         .mark_runtime_final_outbox_sending(&record.idempotency_key)
         .unwrap());
@@ -885,10 +1962,91 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     assert_eq!(stored.attempt_count, 3);
     assert_eq!(stored.message_id.as_deref(), Some("msg_final_1"));
     assert!(stored.sent_at_ms.is_some());
+
+    let mut duplicate = record.clone();
+    duplicate.final_text = "different final".to_string();
+    duplicate.final_source = "stdout_fallback".to_string();
+    duplicate.final_body_hash = test_final_body_hash("different final");
+    state
+        .upsert_runtime_final_outbox_pending(&duplicate)
+        .unwrap();
+    let stored = state
+        .load_runtime_final_outbox_by_run("run_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "sent");
+    assert_eq!(stored.final_text, "final text");
+    assert_eq!(stored.final_source, "hermes_final_text");
+    assert_eq!(stored.final_body_hash, test_final_body_hash("final text"));
+
     assert!(state
         .list_due_runtime_final_outbox(now + 60_000, 10)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn runtime_final_outbox_requires_lowercase_hash_for_new_pending_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let record = RuntimeFinalOutboxRecord {
+        idempotency_key: "runtime-final:did:agent:hermes:run_hash:controller-scope:v1:test-alice"
+            .to_string(),
+        run_id: "run_hash".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        recipient_did: "did:human:alice".to_string(),
+        conversation_id: Some("direct:did:human:alice".to_string()),
+        final_text: "final text".to_string(),
+        final_source: "hermes_final_text".to_string(),
+        final_body_hash: test_final_body_hash("final text"),
+        security: "default_plain".to_string(),
+        status: "pending".to_string(),
+        attempt_count: 0,
+        next_attempt_at_ms: now,
+        last_error_code: None,
+        last_error_summary: None,
+        message_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        sent_at_ms: None,
+    };
+
+    record.validate().unwrap();
+
+    let mut legacy_empty_hash = record.clone();
+    legacy_empty_hash.final_body_hash.clear();
+    legacy_empty_hash.validate().unwrap();
+    assert!(state
+        .upsert_runtime_final_outbox_pending(&legacy_empty_hash)
+        .unwrap_err()
+        .to_string()
+        .contains("requires final_body_hash"));
+
+    let mut uppercase_hash = record.clone();
+    uppercase_hash.final_body_hash = record.final_body_hash.to_ascii_uppercase();
+    assert!(uppercase_hash
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("sha256:<64 lowercase hex>"));
+}
+
+fn test_final_body_hash(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 #[test]

@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
+use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID};
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::controller_scope::VerifiedControllerSender;
 use crate::inbox::{
@@ -12,6 +14,10 @@ use crate::inbox::{
 use crate::local_rpc::execute_runtime_rpc_request_with_outbox;
 use crate::outbox::{
     RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
+};
+use crate::plugins::generic_cli::{
+    sanitize_cli_output_bytes, validate_native_session_id, validate_native_session_source,
+    DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
@@ -23,10 +29,19 @@ use crate::security::runtime_token::{
     ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE, ANY_DIRECT_RECIPIENT_SCOPE, ANY_GROUP_RECIPIENT_SCOPE,
 };
 use crate::state::{
-    AuthorizedRuntimeContext, CliDriverRunRecord, DaemonState, RuntimeFinalOutboxRecord,
+    canonical_cli_conversation_id, cli_route_session_key, AuthorizedRuntimeContext,
+    CliDriverRunRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession, DaemonState,
+    RuntimeFinalOutboxRecord,
 };
-use crate::workspace::{prepare_workspace_instance, WorkspaceBindingConfig, WorkspaceInstance};
+use crate::workspace::{
+    prepare_workspace_instance, route_workspace_paths, WorkspaceBindingConfig, WorkspaceInstance,
+    WorkspaceMode,
+};
 use crate::DaemonConfig;
+
+const GENERIC_CLI_BUSY_RETRY_AFTER_MS: i64 = 10_000;
+const GENERIC_CLI_BUSY_NEXT_ACTION: &str = "retry_later";
+const GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID: &str = "runtime.busy.auto-deferred";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecipientPolicy {
@@ -296,6 +311,11 @@ where
     let task_conversation_id = task.conversation_id.clone();
     let task_controller_did = task.controller_did.clone();
     let task_reply_recipient_did = task.reply_recipient_did.clone();
+    let task_source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .unwrap_or(&task.task_id)
+        .to_string();
     let recipient_policy = runtime_recipient_policy(state, profile, &task_reply_recipient_did)?;
     let mut scope = RuntimeTokenScope::new(
         profile.agent_did.clone(),
@@ -335,8 +355,102 @@ where
                 error_code,
                 error_summary.as_str(),
             )?;
+        } else if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let error_summary = install_status
+                .detail
+                .as_deref()
+                .map(sanitize_user_visible_error_summary)
+                .unwrap_or_else(|| "generic-cli driver is not installed".to_string());
+            let metadata =
+                generic_cli_failed_status_metadata("runtime_not_installed", "setup_required");
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime setup is required"),
+                Some("runtime_not_installed"),
+                Some(&error_summary),
+                Some(&metadata),
+            )?;
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
+    }
+    let cli_route_session = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        match prepare_generic_cli_route_session(state, profile, &task, &run) {
+            Ok(session) => session,
+            Err(error) => {
+                state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                let deferred = maybe_enqueue_generic_cli_busy_retry(
+                    state,
+                    profile,
+                    &task,
+                    &run,
+                    error.code,
+                    &error.summary,
+                )?;
+                let metadata = error.status_metadata();
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    if deferred.is_some() {
+                        "queued"
+                    } else {
+                        "failed"
+                    },
+                    Some(error.user_message()),
+                    Some(error.code),
+                    Some(&error.summary),
+                    metadata.as_ref(),
+                )?;
+                return Err(error.into_error()).context("prepare generic-cli route session");
+            }
+        }
+    } else {
+        None
+    };
+    let mut cli_runtime_locks = CliRuntimeLeaseGuard::default();
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        match acquire_generic_cli_runtime_locks(state, profile, &run) {
+            Ok(locks) => {
+                cli_runtime_locks = locks;
+            }
+            Err(error) => {
+                if let Some(route_session) = cli_route_session.as_ref() {
+                    let _ = state.release_cli_route_session_lease(
+                        &route_session.route_key,
+                        &run.run_id,
+                        "failed",
+                        None,
+                        Some(error.code),
+                        Some(&error.summary),
+                    );
+                }
+                state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                let deferred = maybe_enqueue_generic_cli_busy_retry(
+                    state,
+                    profile,
+                    &task,
+                    &run,
+                    error.code,
+                    &error.summary,
+                )?;
+                let metadata = error.status_metadata();
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    if deferred.is_some() {
+                        "queued"
+                    } else {
+                        "failed"
+                    },
+                    Some(error.user_message()),
+                    Some(error.code),
+                    Some(&error.summary),
+                    metadata.as_ref(),
+                )?;
+                return Err(error.into_error()).context("acquire generic-cli runtime lock");
+            }
+        }
     }
     let workspace_instance = match (
         profile.workspace_id.as_ref(),
@@ -345,8 +459,12 @@ where
         local_socket_path.is_some(),
         plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID,
     ) {
-        (Some(workspace_id), Some(workspace_root), Some(workspace_mode), true, true) => Some(
-            prepare_workspace_instance(
+        (Some(workspace_id), Some(workspace_root), Some(workspace_mode), true, true) => Some({
+            let run_or_route_id = cli_route_session
+                .as_ref()
+                .map(|session| session.route_key_hash.as_str())
+                .unwrap_or(run.run_id.as_str());
+            let prepared = prepare_workspace_instance(
                 runtime_temp_dir
                     .as_ref()
                     .context("runtime temp dir is unavailable without daemon config")?,
@@ -355,10 +473,41 @@ where
                     workspace_root: workspace_root.clone(),
                     workspace_mode,
                 },
-                &run.run_id,
-            )
-            .context("prepare runtime workspace instance")?,
-        ),
+                run_or_route_id,
+            );
+            match prepared {
+                Ok(instance) => instance,
+                Err(error) => {
+                    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                    if let Some(route_session) = cli_route_session.as_ref() {
+                        let _ = state.release_cli_route_session_lease(
+                            &route_session.route_key,
+                            &run.run_id,
+                            "failed",
+                            None,
+                            Some("workspace_preparation_failed"),
+                            Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                        );
+                    }
+                    cli_runtime_locks.release_all();
+                    let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                    let metadata = generic_cli_failed_status_metadata(
+                        "workspace_preparation_failed",
+                        "manual_review_required",
+                    );
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        "failed",
+                        Some("Runtime workspace preparation failed"),
+                        Some("workspace_preparation_failed"),
+                        Some(&error_summary),
+                        Some(&metadata),
+                    )?;
+                    return Err(error).context("prepare runtime workspace instance");
+                }
+            }
+        }),
         _ => None,
     };
 
@@ -367,6 +516,7 @@ where
         task,
         workspace_root: profile.workspace_root.clone(),
         workspace_instance: workspace_instance.clone(),
+        cli_route_session: cli_route_session.clone(),
         runtime_temp_dir,
         runtime_rpc_token: issued.token.clone(),
         local_socket_path,
@@ -375,7 +525,31 @@ where
         Ok(outcome) => outcome,
         Err(error) => {
             state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-            if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+            if let Some(route_session) = cli_route_session.as_ref() {
+                let _ = state.release_cli_route_session_lease(
+                    &route_session.route_key,
+                    &run.run_id,
+                    "failed",
+                    None,
+                    Some("launch_failed"),
+                    Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                );
+            }
+            cli_runtime_locks.release_all();
+            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+                let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                let metadata =
+                    generic_cli_failed_status_metadata("launch_failed", "manual_review_required");
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime launch failed"),
+                    Some("launch_failed"),
+                    Some(&error_summary),
+                    Some(&metadata),
+                )?;
+            } else if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
                 emit_hermes_failure_outputs(
                     state,
@@ -390,11 +564,45 @@ where
             return Err(error).context("launch runtime run");
         }
     };
+    let mut generic_cli_late_callback_rejected = false;
     for callback in launch_outcome.callbacks.iter().cloned() {
-        execute_runtime_rpc_request_with_outbox(state, outbox, callback)
-            .context("apply runtime callback")?;
+        match execute_runtime_rpc_request_with_outbox(state, outbox, callback) {
+            Ok(_) => {}
+            Err(error)
+                if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+                    && error.to_string().contains("late_callback_rejected") =>
+            {
+                generic_cli_late_callback_rejected = true;
+                if state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed {
+                    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                    let metadata = generic_cli_late_callback_rejected_status_metadata();
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        "failed",
+                        Some("Runtime callback arrived after route reset"),
+                        Some("late_callback_rejected"),
+                        Some("Route session no longer belongs to this run"),
+                        Some(&metadata),
+                    )?;
+                }
+                break;
+            }
+            Err(error) => return Err(error).context("apply runtime callback"),
+        }
     }
-    if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending {
+    let generic_cli_route_still_locked = if plugin.plugin_id()
+        == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && cli_route_session.is_some()
+    {
+        state.generic_cli_route_session_locked_for_run(&run.run_id)?
+    } else {
+        true
+    };
+
+    if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending
+        && generic_cli_route_still_locked
+    {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
         emit_runtime_status(outbox, &run, "running", Some("Runtime started"), None, None)?;
     }
@@ -431,6 +639,7 @@ where
                     &run,
                     task_conversation_id.as_deref(),
                     final_text,
+                    "hermes_final_text",
                 )?;
                 state.upsert_runtime_final_outbox_pending(&final_record)?;
                 flush_runtime_final_outbox(state, outbox, 8)
@@ -465,25 +674,80 @@ where
     }
 
     let mut fallback_final_source = None;
+    let mut fallback_final_sanitizer = None;
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
         && launch_outcome.status == RuntimeRunStatus::Finished
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
+        && generic_cli_route_still_locked
     {
-        if let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? {
+        if let Some(fallback_final) =
+            fallback_final_text(&launch_outcome.metadata, issued.token.as_str())?
+        {
+            let fallback_driver_id = launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("generic-cli");
             let response = execute_runtime_rpc_request_with_outbox(
                 state,
                 outbox,
                 CliWrapperRequest::task_finish(
                     issued.token.as_str().to_string(),
                     run.task_id.clone(),
-                    final_text,
+                    fallback_final.text,
                 )
                 .into_rpc_request(),
             )
             .context("apply fallback final from CLI driver output")?;
             if response.ok {
-                fallback_final_source = Some("codex_output_last_message".to_string());
+                fallback_final_source = Some(format!("{fallback_driver_id}_output_last_message"));
+                fallback_final_sanitizer = Some(fallback_final.sanitizer_metadata);
             }
+        }
+    }
+
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && launch_outcome.status == RuntimeRunStatus::Finished
+        && cli_route_session.is_some()
+        && !generic_cli_route_still_locked
+        && !generic_cli_late_callback_rejected
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+    {
+        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+        let metadata = generic_cli_late_callback_rejected_status_metadata();
+        emit_runtime_status_with_metadata(
+            outbox,
+            &run,
+            "failed",
+            Some("Runtime callback arrived after route reset"),
+            Some("late_callback_rejected"),
+            Some("Route session no longer belongs to this run"),
+            Some(&metadata),
+        )?;
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let current = state.load_cli_route_session(&route_session.route_key)?;
+            state.insert_audit_event_json(
+                "runtime.run.late_callback_rejected",
+                Some(&run.agent_did),
+                Some(&run.runtime_profile_id),
+                Some(&run.run_id),
+                None,
+                json!({
+                    "route_key_hash": route_session.route_key_hash.as_str(),
+                    "route_status": current.as_ref().map(|session| session.status.as_str()),
+                    "route_version": current.as_ref().map(|session| session.version),
+                    "route_lock_present": current
+                        .as_ref()
+                        .and_then(|session| session.lock_run_id.as_ref())
+                        .is_some(),
+                    "route_lock_matches_run": current
+                        .as_ref()
+                        .and_then(|session| session.lock_run_id.as_deref())
+                        == Some(run.run_id.as_str()),
+                }),
+            )?;
         }
     }
 
@@ -491,16 +755,58 @@ where
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
     {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-        emit_runtime_status(
-            outbox,
-            &run,
-            "failed",
-            Some("Runtime failed"),
-            Some("runtime_failed"),
-            Some(&runtime_launch_failure_summary(&launch_outcome)),
-        )?;
+        if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let failure = generic_cli_failure_detail(&launch_outcome);
+            let metadata = failure.metadata_json();
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some(failure.error_code.as_str()),
+                Some(failure.error_summary.as_str()),
+                Some(&metadata),
+            )?;
+        } else {
+            let failure_summary = runtime_launch_failure_summary(&launch_outcome);
+            emit_runtime_status(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime failed"),
+                Some("runtime_failed"),
+                Some(&failure_summary),
+            )?;
+        }
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let driver_id = launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("generic-cli");
+            let native_session =
+                trusted_native_session_metadata(driver_id, &launch_outcome.metadata);
+            let final_status = state.load_runtime_run(&run.run_id)?.status;
+            if final_status == RuntimeRunStatus::Finished
+                && launch_outcome.status == RuntimeRunStatus::Finished
+                && native_session.is_some()
+                && state.generic_cli_route_session_locked_for_run(&run.run_id)?
+            {
+                let (native_session_id, native_session_source) = native_session
+                    .as_ref()
+                    .expect("native_session checked above");
+                state.update_cli_route_session_native_id_if_locked(
+                    &route_session.route_key,
+                    &run.run_id,
+                    Some(native_session_id.as_str()),
+                    Some(native_session_source.as_str()),
+                    Some(&route_session.route_key),
+                )?;
+            }
+        }
         persist_cli_driver_run(
             state,
             profile,
@@ -508,7 +814,55 @@ where
             &launch_outcome,
             workspace_instance.as_ref(),
             fallback_final_source.as_deref(),
+            fallback_final_sanitizer.as_ref(),
+            if generic_cli_late_callback_rejected || !generic_cli_route_still_locked {
+                Some("failed")
+            } else {
+                None
+            },
         )?;
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let final_status = state.load_runtime_run(&run.run_id)?.status;
+            if state.generic_cli_route_session_locked_for_run(&run.run_id)? {
+                let next_status = if final_status == RuntimeRunStatus::Failed
+                    || launch_outcome.status == RuntimeRunStatus::Failed
+                {
+                    "failed"
+                } else {
+                    "active"
+                };
+                let failure_summary = if next_status == "failed" {
+                    Some(generic_cli_failure_detail(&launch_outcome))
+                } else {
+                    None
+                };
+                state.release_cli_route_session_lease(
+                    &route_session.route_key,
+                    &run.run_id,
+                    next_status,
+                    if next_status == "active" {
+                        Some(&task_source_message_id)
+                    } else {
+                        None
+                    },
+                    if next_status == "failed" {
+                        failure_summary
+                            .as_ref()
+                            .map(|failure| failure.error_code.as_str())
+                    } else {
+                        None
+                    },
+                    if next_status == "failed" {
+                        failure_summary
+                            .as_ref()
+                            .map(|failure| failure.error_summary.as_str())
+                    } else {
+                        None
+                    },
+                )?;
+            }
+        }
+        cli_runtime_locks.release_all();
     }
 
     Ok(RuntimeTaskRunResult {
@@ -516,6 +870,381 @@ where
         launch_outcome,
         token_id: issued.token_id,
     })
+}
+
+#[derive(Default)]
+struct CliRuntimeLeaseGuard {
+    state: Option<DaemonState>,
+    runtime_profile_id: Option<String>,
+    host_home_driver_id: Option<String>,
+    run_id: Option<String>,
+}
+
+impl CliRuntimeLeaseGuard {
+    fn profile(state: DaemonState, runtime_profile_id: String, run_id: String) -> Self {
+        Self {
+            state: Some(state),
+            runtime_profile_id: Some(runtime_profile_id),
+            host_home_driver_id: None,
+            run_id: Some(run_id),
+        }
+    }
+
+    fn mark_host_home(&mut self, driver_id: String) {
+        self.host_home_driver_id = Some(driver_id);
+    }
+
+    fn release_profile(&mut self) {
+        if let (Some(state), Some(runtime_profile_id), Some(run_id)) = (
+            self.state.as_ref(),
+            self.runtime_profile_id.take(),
+            self.run_id.as_deref(),
+        ) {
+            let _ = state.release_cli_runtime_profile_lock(&runtime_profile_id, run_id);
+        }
+    }
+
+    fn release_host_home(&mut self) {
+        if let (Some(state), Some(driver_id), Some(run_id)) = (
+            self.state.as_ref(),
+            self.host_home_driver_id.take(),
+            self.run_id.as_deref(),
+        ) {
+            let _ = state.release_cli_host_home_lock(&driver_id, run_id);
+        }
+    }
+
+    fn release_all(&mut self) {
+        self.release_host_home();
+        self.release_profile();
+    }
+}
+
+impl Drop for CliRuntimeLeaseGuard {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GenericCliRuntimeLockError {
+    code: &'static str,
+    message: String,
+    summary: String,
+}
+
+impl GenericCliRuntimeLockError {
+    fn profile_busy(runtime_profile_id: &str) -> Self {
+        Self::new(
+            "profile_busy",
+            format!("generic-cli runtime profile is busy: {runtime_profile_id}"),
+        )
+    }
+
+    fn host_home_busy(driver_id: &str) -> Self {
+        Self::new(
+            "host_home_busy",
+            format!("generic-cli host home is busy: {driver_id}"),
+        )
+    }
+
+    fn new(code: &'static str, message: String) -> Self {
+        let summary = sanitize_user_visible_error_summary(&message);
+        Self {
+            code,
+            message,
+            summary,
+        }
+    }
+
+    fn user_message(&self) -> &'static str {
+        match self.code {
+            "host_home_busy" => "Runtime host home concurrency limit is busy",
+            "runtime_lock_unavailable" => "Runtime concurrency lock is unavailable",
+            _ => "Runtime profile concurrency limit is busy",
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::anyhow!(self.message)
+    }
+
+    fn status_metadata(&self) -> Option<Value> {
+        generic_cli_status_metadata(self.code)
+    }
+}
+
+impl From<anyhow::Error> for GenericCliRuntimeLockError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(
+            "runtime_lock_unavailable",
+            format!("generic-cli runtime lock unavailable: {error}"),
+        )
+    }
+}
+
+#[derive(Debug)]
+struct GenericCliRouteSessionPreparationError {
+    code: &'static str,
+    message: String,
+    summary: String,
+}
+
+impl GenericCliRouteSessionPreparationError {
+    fn route_busy(route_key_hash: &str) -> Self {
+        Self::new(
+            "route_busy",
+            format!("generic-cli route session is busy: {route_key_hash}"),
+        )
+    }
+
+    fn new(code: &'static str, message: String) -> Self {
+        let summary = sanitize_user_visible_error_summary(&message);
+        Self {
+            code,
+            message,
+            summary,
+        }
+    }
+
+    fn user_message(&self) -> &'static str {
+        match self.code {
+            "route_busy" => "Runtime route session is busy",
+            _ => "Runtime route session preparation failed",
+        }
+    }
+
+    fn status_metadata(&self) -> Option<Value> {
+        generic_cli_status_metadata(self.code)
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::anyhow!(self.message)
+    }
+}
+
+impl From<anyhow::Error> for GenericCliRouteSessionPreparationError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(
+            "route_session_preparation_failed",
+            format!("generic-cli route session preparation failed: {error}"),
+        )
+    }
+}
+
+fn generic_cli_status_metadata(code: &str) -> Option<Value> {
+    match code {
+        "route_busy" | "profile_busy" | "host_home_busy" => Some(json!({
+            "retryable": true,
+            "deferred": true,
+            "next_action": GENERIC_CLI_BUSY_NEXT_ACTION,
+            "retry_after_ms": GENERIC_CLI_BUSY_RETRY_AFTER_MS,
+            "retry_after_seconds": GENERIC_CLI_BUSY_RETRY_AFTER_MS / 1000,
+            "busy_reason": code,
+        })),
+        _ => Some(generic_cli_failed_status_metadata(
+            code,
+            "manual_review_required",
+        )),
+    }
+}
+
+fn generic_cli_failed_status_metadata(error_code: &str, next_action: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "runtime_family": "generic-cli",
+        "error_code": error_code,
+        "next_action": next_action,
+        "retryable": false,
+        "deferred": false,
+        "failed_message_recovery": "unsupported",
+    })
+}
+
+fn generic_cli_late_callback_rejected_status_metadata() -> Value {
+    let mut metadata =
+        generic_cli_failed_status_metadata("late_callback_rejected", "manual_review_required");
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("source".to_string(), json!("route_lease_guard"));
+        object.insert("retryable".to_string(), json!(false));
+        object.insert("deferred".to_string(), json!(false));
+    }
+    metadata
+}
+
+fn acquire_generic_cli_runtime_locks(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+) -> std::result::Result<CliRuntimeLeaseGuard, GenericCliRuntimeLockError> {
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let expires_at_ms = current_time_millis()? + 10 * 60 * 1000;
+    let acquired_profile = state.try_acquire_cli_runtime_profile_lock(
+        &profile.runtime_profile_id,
+        &cli_profile.driver_id,
+        &run.run_id,
+        "runtime.host",
+        expires_at_ms,
+    )?;
+    if !acquired_profile {
+        return Err(GenericCliRuntimeLockError::profile_busy(
+            &profile.runtime_profile_id,
+        ));
+    }
+
+    let mut guard = CliRuntimeLeaseGuard::profile(
+        state.clone(),
+        profile.runtime_profile_id.clone(),
+        run.run_id.clone(),
+    );
+    let needs_host_home_lock =
+        cli_profile.driver_id == "claude-code" && cli_profile.config_home.is_none();
+    if needs_host_home_lock {
+        let acquired_host_home = state.try_acquire_cli_host_home_lock(
+            &cli_profile.driver_id,
+            &run.run_id,
+            "runtime.host",
+            expires_at_ms,
+        )?;
+        if !acquired_host_home {
+            guard.release_profile();
+            return Err(GenericCliRuntimeLockError::host_home_busy(
+                &cli_profile.driver_id,
+            ));
+        }
+        guard.mark_host_home(cli_profile.driver_id);
+    }
+    Ok(guard)
+}
+
+fn maybe_enqueue_generic_cli_busy_retry(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<Option<crate::state::RuntimeRetryQueueRecord>> {
+    if !matches!(error_code, "route_busy" | "profile_busy" | "host_home_busy") {
+        return Ok(None);
+    }
+    if run.run_id.starts_with("run_retry_") {
+        return Ok(None);
+    }
+    let failed_run = state.load_runtime_run(&run.run_id)?;
+    if failed_run.status != RuntimeRunStatus::Failed {
+        return Ok(None);
+    }
+    if task.agent_did != profile.agent_did
+        || failed_run.runtime_profile_id != profile.runtime_profile_id
+        || failed_run.runtime_plugin_id != crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+    {
+        return Ok(None);
+    }
+    let next_attempt_at_ms = current_time_millis()? + GENERIC_CLI_BUSY_RETRY_AFTER_MS;
+    let retry = state.insert_runtime_retry_request_due_at(
+        &failed_run,
+        GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID,
+        next_attempt_at_ms,
+    )?;
+    let queued_message = maybe_enqueue_cli_route_message_reference(
+        state,
+        profile,
+        task,
+        run,
+        error_code,
+        error_summary,
+        next_attempt_at_ms,
+    )?;
+    if error_code != "route_busy" {
+        if let Some(conversation_id) = task.conversation_id.as_deref() {
+            if let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) {
+                if let Ok(route_key) = cli_route_session_key(
+                    &profile.agent_did,
+                    &profile.controller_scope_key,
+                    &conversation_id,
+                ) {
+                    let _ = state.mark_cli_route_session_deferred(
+                        &route_key,
+                        Some(&run.run_id),
+                        error_code,
+                        error_summary,
+                    );
+                }
+            }
+        }
+    }
+    state.insert_audit_event_json(
+        "runtime.run.retry.auto_deferred",
+        Some(&failed_run.agent_did),
+        Some(&failed_run.runtime_profile_id),
+        Some(&failed_run.run_id),
+        None,
+        json!({
+            "retry_id": retry.retry_id.as_str(),
+            "queue_id": queued_message.as_ref().map(|record| record.queue_id.as_str()),
+            "task_id": failed_run.task_id.as_str(),
+            "busy_reason": error_code,
+            "next_attempt_at_ms": retry.next_attempt_at_ms,
+        }),
+    )?;
+    Ok(Some(retry))
+}
+
+fn maybe_enqueue_cli_route_message_reference(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+    next_attempt_at_ms: i64,
+) -> Result<Option<crate::state::CliRouteMessageQueueRecord>> {
+    let Some(conversation_id) = task.conversation_id.as_deref() else {
+        return Ok(None);
+    };
+    let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) else {
+        return Ok(None);
+    };
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    if state.load_cli_route_session(&route_key)?.is_none() {
+        return Ok(None);
+    }
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    if !matches!(
+        cli_profile.driver_id.as_str(),
+        CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID
+    ) {
+        return Ok(None);
+    }
+    let source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .unwrap_or(&task.task_id)
+        .to_string();
+    let record =
+        state.enqueue_cli_route_message_reference(CreateCliRouteMessageQueueReference {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: cli_profile.driver_id,
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: task.controller_did.clone(),
+            conversation_id,
+            source_message_id,
+            task_id: Some(task.task_id.clone()),
+            run_id: Some(run.run_id.clone()),
+            enqueue_reason: error_code.to_string(),
+            next_attempt_at_ms,
+            last_error_code: Some(error_code.to_string()),
+            last_error_summary: Some(error_summary.to_string()),
+        })?;
+    Ok(Some(record))
 }
 
 fn existing_runtime_run(
@@ -551,6 +1280,106 @@ fn existing_runtime_run(
         run: existing,
         token_id: String::new(),
     }))
+}
+
+fn prepare_generic_cli_route_session(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+) -> std::result::Result<
+    Option<crate::state::CliRouteSessionRecord>,
+    GenericCliRouteSessionPreparationError,
+> {
+    if profile.workspace_mode != Some(WorkspaceMode::RouteRoot) {
+        return Ok(None);
+    }
+    let conversation_id = task
+        .conversation_id
+        .as_deref()
+        .context("generic-cli RouteRoot requires conversation_id")?;
+    let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let workspace_root = profile
+        .workspace_root
+        .as_ref()
+        .context("generic-cli RouteRoot requires workspace_root")?;
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    let session_root = workspace_root
+        .parent()
+        .map(|runtime_workspaces_root| {
+            runtime_workspaces_root
+                .parent()
+                .unwrap_or(runtime_workspaces_root)
+                .join("sessions")
+                .join(&profile.runtime_profile_id)
+        })
+        .unwrap_or_else(|| workspace_root.join("sessions"));
+    let (workspace_path, session_dir) =
+        if let Some(existing) = state.load_cli_route_session(&route_key)? {
+            (existing.workspace_path, existing.session_dir)
+        } else {
+            let route_key_hash = state.cli_route_key_hash(&route_key)?;
+            let paths = route_workspace_paths(workspace_root, &session_root, &route_key_hash)?;
+            (paths.workspace_path, paths.session_dir)
+        };
+    let session = state.get_or_create_cli_route_session(CreateCliRouteSession {
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        driver_id: cli_profile.driver_id,
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: task.controller_did.clone(),
+        conversation_id,
+        workspace_path,
+        session_dir,
+    })?;
+    if let Err(error) = std::fs::create_dir_all(&session.workspace_path).with_context(|| {
+        format!(
+            "create generic-cli route workspace {}",
+            session.workspace_path.display()
+        )
+    }) {
+        let summary = sanitize_user_visible_error_summary(&error.to_string());
+        let _ = state.mark_cli_route_session_failed(
+            &session.route_key,
+            Some(&run.run_id),
+            "route_workspace_create_failed",
+            &summary,
+        );
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::create_dir_all(&session.session_dir).with_context(|| {
+        format!(
+            "create generic-cli route session dir {}",
+            session.session_dir.display()
+        )
+    }) {
+        let summary = sanitize_user_visible_error_summary(&error.to_string());
+        let _ = state.mark_cli_route_session_failed(
+            &session.route_key,
+            Some(&run.run_id),
+            "route_session_dir_create_failed",
+            &summary,
+        );
+        return Err(error.into());
+    }
+    if !state.try_acquire_cli_route_session_lease(
+        &session.route_key,
+        &run.run_id,
+        "runtime.host",
+        current_time_millis()? + 10 * 60 * 1000,
+    )? {
+        return Err(GenericCliRouteSessionPreparationError::route_busy(
+            &session.route_key_hash,
+        ));
+    }
+    Ok(Some(session))
 }
 
 pub fn flush_runtime_final_outbox(
@@ -603,6 +1432,9 @@ pub fn flush_runtime_final_outbox(
                         "idempotency_key": record.idempotency_key,
                         "message_id": result.message_id,
                         "attempt_count": record.attempt_count + 1,
+                        "final_source": record.final_source,
+                        "final_body_hash": record.final_body_hash,
+                        "final_text_bytes": record.final_text.len(),
                     }),
                 )?;
                 sent_count += 1;
@@ -837,6 +1669,7 @@ fn runtime_final_outbox_record(
     run: &RuntimeRun,
     conversation_id: Option<&str>,
     final_text: &str,
+    final_source: &str,
 ) -> Result<RuntimeFinalOutboxRecord> {
     let final_text = final_text.trim();
     if final_text.is_empty() {
@@ -857,6 +1690,8 @@ fn runtime_final_outbox_record(
         recipient_did: recipient_did.to_string(),
         conversation_id: conversation_id.map(str::to_string),
         final_text: final_text.to_string(),
+        final_source: final_source.to_string(),
+        final_body_hash: final_body_hash(final_text),
         security: "default_plain".to_string(),
         status: "pending".to_string(),
         attempt_count: 0,
@@ -868,6 +1703,15 @@ fn runtime_final_outbox_record(
         updated_at_ms: now,
         sent_at_ms: None,
     })
+}
+
+fn final_body_hash(final_text: &str) -> String {
+    let digest = Sha256::digest(final_text.as_bytes());
+    format!("sha256:{}", hex_lower(&digest))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn runtime_final_idempotency_key(
@@ -974,6 +1818,26 @@ fn emit_runtime_status(
     last_error_code: Option<&str>,
     last_error_summary: Option<&str>,
 ) -> Result<()> {
+    emit_runtime_status_with_metadata(
+        outbox,
+        run,
+        status,
+        message,
+        last_error_code,
+        last_error_summary,
+        None,
+    )
+}
+
+fn emit_runtime_status_with_metadata(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    status: &str,
+    message: Option<&str>,
+    last_error_code: Option<&str>,
+    last_error_summary: Option<&str>,
+    metadata: Option<&Value>,
+) -> Result<()> {
     let context = crate::state::AuthorizedRuntimeContext {
         token_id: "host-run-status".to_string(),
         agent_did: run.agent_did.clone(),
@@ -981,21 +1845,100 @@ fn emit_runtime_status(
         run_id: run.run_id.clone(),
         method: RpcMethod::TaskStatus,
     };
-    outbox.send_status_with_detail(
+    outbox.send_status_with_metadata(
         &context,
         status,
         message,
         last_error_code,
         last_error_summary,
+        metadata,
     )?;
     Ok(())
 }
 
 fn runtime_launch_failure_summary(launch_outcome: &RuntimeLaunchOutcome) -> String {
+    if let Some(summary) = launch_outcome
+        .metadata
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return sanitize_user_visible_error_summary(summary);
+    }
     launch_outcome
         .exit_code
         .map(|code| format!("Runtime exited with status {code}"))
         .unwrap_or_else(|| "Runtime failed".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GenericCliFailureDetail {
+    error_code: String,
+    error_summary: String,
+    next_action: String,
+}
+
+impl GenericCliFailureDetail {
+    fn metadata_json(&self) -> Value {
+        json!({
+            "schema_version": 1,
+            "runtime_family": "generic-cli",
+            "error_code": self.error_code,
+            "next_action": self.next_action,
+            "retryable": false,
+            "deferred": false,
+            "failed_message_recovery": "unsupported",
+            "source": "driver_exit",
+        })
+    }
+}
+
+fn generic_cli_failure_detail(launch_outcome: &RuntimeLaunchOutcome) -> GenericCliFailureDetail {
+    let error_code = launch_outcome
+        .metadata
+        .get("error_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| generic_cli_failure_code_is_safe(value))
+        .unwrap_or("generic_cli_failed")
+        .to_string();
+    let fallback_summary = runtime_launch_failure_summary(launch_outcome);
+    let error_summary = launch_outcome
+        .metadata
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .map(sanitize_user_visible_error_summary)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_summary);
+    let next_action = launch_outcome
+        .metadata
+        .get("next_action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| generic_cli_next_action_is_safe(value))
+        .unwrap_or("manual_review_required")
+        .to_string();
+    GenericCliFailureDetail {
+        error_code,
+        error_summary,
+        next_action,
+    }
+}
+
+fn generic_cli_failure_code_is_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn generic_cli_next_action_is_safe(value: &str) -> bool {
+    matches!(
+        value,
+        "manual_review_required" | "setup_required" | "retry_later" | "contact_admin" | "none"
+    )
 }
 
 fn runtime_output_context(
@@ -1150,6 +2093,8 @@ fn persist_cli_driver_run(
     launch_outcome: &RuntimeLaunchOutcome,
     workspace_instance: Option<&WorkspaceInstance>,
     fallback_final_source: Option<&str>,
+    fallback_final_sanitizer: Option<&Value>,
+    status_override: Option<&str>,
 ) -> Result<()> {
     let task = state.load_runtime_task(&run.task_id)?;
     let Some(driver_id) = state
@@ -1167,16 +2112,54 @@ fn persist_cli_driver_run(
     else {
         return Ok(());
     };
-    let output_json = launch_outcome
+    let mut output_json = launch_outcome
         .metadata
         .get("output")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(fallback_final_sanitizer) = fallback_final_sanitizer {
+        if let Some(object) = output_json.as_object_mut() {
+            object.insert(
+                "fallback_final_sanitizer".to_string(),
+                fallback_final_sanitizer.clone(),
+            );
+        }
+    }
     let command_json = launch_outcome
         .metadata
         .get("command")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+    let route_key = if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
+        let conversation_id = task
+            .conversation_id
+            .as_deref()
+            .context("generic-cli RouteRoot run record requires conversation_id")?;
+        let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+        cli_route_session_key(
+            &run.agent_did,
+            &profile.controller_scope_key,
+            &conversation_id,
+        )?
+    } else {
+        generic_cli_route_key(
+            &run.agent_did,
+            &profile.controller_scope_key,
+            task.conversation_id.as_deref(),
+        )
+    };
+    let route_can_accept_native_session =
+        if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
+            state.generic_cli_route_session_locked_for_run(&run.run_id)?
+        } else {
+            true
+        };
+    let native_session_id = if route_can_accept_native_session {
+        trusted_native_session_metadata(&driver_id, &launch_outcome.metadata)
+            .map(|metadata| metadata.0)
+    } else {
+        None
+    };
     state.upsert_cli_driver_run(&CliDriverRunRecord {
         run_id: run.run_id.clone(),
         agent_did: run.agent_did.clone(),
@@ -1187,11 +2170,7 @@ fn persist_cli_driver_run(
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: task.controller_did.clone(),
         conversation_id: task.conversation_id.clone(),
-        route_key: generic_cli_route_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            task.conversation_id.as_deref(),
-        ),
+        route_key: route_key.clone(),
         workspace_id: profile.workspace_id.clone(),
         workspace_root: workspace_instance
             .map(|instance| instance.workspace_root.clone())
@@ -1212,13 +2191,11 @@ fn persist_cli_driver_run(
             .get("final_output_path")
             .and_then(Value::as_str)
             .map(std::path::PathBuf::from),
-        native_session_id: None,
-        synthetic_session_id: Some(generic_cli_route_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            task.conversation_id.as_deref(),
-        )),
-        status: launch_outcome.status.as_str().to_string(),
+        native_session_id,
+        synthetic_session_id: Some(route_key),
+        status: status_override
+            .unwrap_or_else(|| launch_outcome.status.as_str())
+            .to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
     })?;
     Ok(())
@@ -1226,6 +2203,21 @@ fn persist_cli_driver_run(
 
 fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
     path.map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+}
+
+fn trusted_native_session_metadata(driver_id: &str, metadata: &Value) -> Option<(String, String)> {
+    let native_session_id = metadata
+        .get("native_session_id")
+        .and_then(Value::as_str)
+        .filter(|value| validate_native_session_id(driver_id, value))?;
+    let native_session_source = metadata
+        .get("native_session_source")
+        .and_then(Value::as_str)
+        .filter(|value| validate_native_session_source(driver_id, value))?;
+    Some((
+        native_session_id.to_string(),
+        native_session_source.to_string(),
+    ))
 }
 
 fn generic_cli_route_key(
@@ -1239,7 +2231,15 @@ fn generic_cli_route_key(
     )
 }
 
-fn fallback_final_text(metadata: &Value) -> Result<Option<String>> {
+struct FallbackFinalText {
+    text: String,
+    sanitizer_metadata: Value,
+}
+
+fn fallback_final_text(
+    metadata: &Value,
+    runtime_rpc_token: &str,
+) -> Result<Option<FallbackFinalText>> {
     let Some(path) = metadata
         .get("final_output_path")
         .and_then(Value::as_str)
@@ -1250,13 +2250,23 @@ fn fallback_final_text(metadata: &Value) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(&path)
+    let bytes = std::fs::read(&path)
         .with_context(|| format!("read fallback final output {}", path.display()))?;
-    let text = text.trim();
+    let sanitized = sanitize_cli_output_bytes(
+        &bytes,
+        runtime_rpc_token,
+        DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+    );
+    std::fs::write(&path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized fallback final output {}", path.display()))?;
+    let text = sanitized.text.trim();
     if text.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(text.to_string()))
+        Ok(Some(FallbackFinalText {
+            text: text.to_string(),
+            sanitizer_metadata: sanitized.metadata_json(),
+        }))
     }
 }
 

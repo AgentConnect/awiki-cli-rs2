@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use awiki_deamon::agent::AgentKind;
+use awiki_deamon::agent::{workspace_id, AgentKind};
 use awiki_deamon::commands::{
     handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
     IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
@@ -14,8 +14,10 @@ use awiki_deamon::registration::{
 };
 use awiki_deamon::runtime::{RuntimeRun, RuntimeRunStatus};
 use awiki_deamon::state::{
-    AppMessageAgentBindingRecord, HermesNativeSessionRecord, HermesSessionRoute,
+    AppMessageAgentBindingRecord, CreateCliRouteSession, HermesNativeSessionRecord,
+    HermesSessionRoute,
 };
+use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{
     daemon_cli::{setup_daemon_agent_from_token, SetupDaemonAgentOptions},
     im_core_adapter::sync_agent_identity_to_im_core,
@@ -161,6 +163,79 @@ fn expect_created(outcome: AgentCommandOutcome) -> RuntimeAgentCreateOutcome {
         AgentCommandOutcome::RuntimeAgentCreated(created) => created,
         other => panic!("expected runtime agent create outcome, got {other:?}"),
     }
+}
+
+fn assert_codex_profile_home(
+    config: &DaemonConfig,
+    runtime_profile_id: &str,
+) -> std::path::PathBuf {
+    let expected = config
+        .state_root
+        .join("runtime")
+        .join("profiles")
+        .join(runtime_profile_id)
+        .join("codex-home");
+    assert!(expected.is_dir(), "missing {}", expected.display());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let profile_dir = expected.parent().unwrap();
+        let profile_mode = std::fs::metadata(profile_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(profile_mode, 0o700);
+        let mode = std::fs::metadata(&expected).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+    expected
+}
+
+fn create_cli_route_session(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    created: &RuntimeAgentCreateOutcome,
+    daemon: &awiki_deamon::agent::AgentDefinition,
+    conversation_id: &str,
+    native_session_id: &str,
+) -> awiki_deamon::state::CliRouteSessionRecord {
+    let route = state
+        .get_or_create_cli_route_session(CreateCliRouteSession {
+            agent_did: created.agent_did.clone(),
+            runtime_profile_id: created.runtime_profile_id.clone(),
+            driver_id: created
+                .driver_id
+                .clone()
+                .unwrap_or_else(|| "codex".to_string()),
+            controller_user_id: daemon.controller_user_id.clone(),
+            controller_full_handle: daemon.controller_full_handle.clone(),
+            controller_scope_key: daemon.controller_scope_key.clone(),
+            controller_did: daemon.controller_did.clone(),
+            conversation_id: conversation_id.to_string(),
+            workspace_path: config
+                .state_root
+                .join("runtime")
+                .join("workspaces")
+                .join(&created.runtime_profile_id)
+                .join("conversations")
+                .join(conversation_id.replace(':', "_")),
+            session_dir: config
+                .state_root
+                .join("runtime")
+                .join("sessions")
+                .join(&created.runtime_profile_id)
+                .join(conversation_id.replace(':', "_")),
+        })
+        .unwrap();
+    state
+        .update_cli_route_session_native_id(
+            &route.route_key,
+            Some(native_session_id),
+            Some("json_event"),
+            Some(&route.route_key),
+        )
+        .unwrap();
+    state
+        .load_cli_route_session(&route.route_key)
+        .unwrap()
+        .unwrap()
 }
 
 fn seed_runtime_inbox_projection(config: &DaemonConfig, runtime_agent_did: &str) {
@@ -372,7 +447,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     );
     assert_eq!(
         created.workspace_id.as_deref(),
-        Some("workspace_alice_awiki_coder")
+        Some("workspace_claude_code_alice_awiki_coder")
     );
     assert!(created
         .agent_did
@@ -385,6 +460,13 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert_eq!(
         runtime_agent.runtime_profile_id.as_deref(),
         Some("profile_claude_code_alice_awiki_coder")
+    );
+    let runtime_profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        runtime_profile.workspace_mode,
+        Some(WorkspaceMode::RouteRoot)
     );
 
     let statuses = outbox.agent_statuses();
@@ -785,6 +867,1033 @@ fn runtime_session_reset_archives_active_hermes_route() {
 }
 
 #[test]
+fn runtime_session_reset_resets_single_generic_cli_route_without_path_leakage() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_codex_for_route_reset".to_string(),
+            conversation_id: Some("conv_create_codex_for_route_reset".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_codex_for_route_reset",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-route-reset",
+                    "runtime": "codex",
+                    "driver_id": "codex",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Codex Route Reset"
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let created = expect_created(outcome);
+    let bob_route = create_cli_route_session(
+        &config,
+        &state,
+        &created,
+        &daemon,
+        "direct:did:human:bob",
+        "codex-native-bob",
+    );
+    let charlie_route = create_cli_route_session(
+        &config,
+        &state,
+        &created,
+        &daemon,
+        "direct:did:human:charlie",
+        "codex-native-charlie",
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_generic_cli_route_reset".to_string(),
+            conversation_id: Some("conv_generic_cli_route_reset".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_generic_cli_route_reset",
+                "command": "runtime.session.reset",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": created.agent_did,
+                    "conversation_id": "dm:did:human:bob"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let bob_after = state
+        .load_cli_route_session(&bob_route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bob_after.status, "reset");
+    assert_eq!(bob_after.native_session_id, None);
+    assert_eq!(bob_after.native_session_source, None);
+    let charlie_after = state
+        .load_cli_route_session(&charlie_route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(charlie_after.status, "active");
+    assert_eq!(
+        charlie_after.native_session_id.as_deref(),
+        Some("codex-native-charlie")
+    );
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["result"]["command"], "runtime.session.reset");
+    assert_eq!(status.payload["result"]["runtime_plugin_id"], "generic-cli");
+    assert_eq!(status.payload["result"]["driver_id"], "codex");
+    assert_eq!(status.payload["result"]["reset_scope"], "route");
+    assert_eq!(status.payload["result"]["conversation_id_present"], true);
+    assert_eq!(status.payload["result"]["reset_count"], 1);
+    let public_payload = status.payload.to_string();
+    assert!(!public_payload.contains(&bob_route.route_key));
+    assert!(!public_payload.contains(bob_route.workspace_path.to_string_lossy().as_ref()));
+    assert!(!public_payload.contains("codex-native-bob"));
+
+    let connection = state.connection().unwrap();
+    let audit_dump: String = connection
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime.session.reset' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audit_dump.contains("\"runtime_plugin_id\":\"generic-cli\""));
+    assert!(audit_dump.contains("\"driver_id\":\"codex\""));
+    assert!(audit_dump.contains("\"reset_scope\":\"route\""));
+    assert!(!audit_dump.contains(&bob_route.route_key));
+    assert!(!audit_dump.contains(bob_route.workspace_path.to_string_lossy().as_ref()));
+    assert!(!audit_dump.contains("codex-native-bob"));
+}
+
+#[test]
+fn runtime_session_reset_scope_resets_only_selected_generic_cli_runtime() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let codex = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_codex_scope_reset".to_string(),
+                conversation_id: Some("conv_create_codex_scope_reset".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_codex_scope_reset",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-codex-scope-reset",
+                        "runtime": "codex",
+                        "driver_id": "codex",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Codex Scope Reset"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let claude = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_claude_scope_reset".to_string(),
+                conversation_id: Some("conv_create_claude_scope_reset".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_claude_scope_reset",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-claude-scope-reset",
+                        "runtime": "claude-code",
+                        "driver_id": "claude-code",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Claude Scope Reset"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let codex_bob = create_cli_route_session(
+        &config,
+        &state,
+        &codex,
+        &daemon,
+        "direct:did:human:bob",
+        "codex-native-bob",
+    );
+    let codex_charlie = create_cli_route_session(
+        &config,
+        &state,
+        &codex,
+        &daemon,
+        "direct:did:human:charlie",
+        "codex-native-charlie",
+    );
+    let claude_bob = create_cli_route_session(
+        &config,
+        &state,
+        &claude,
+        &daemon,
+        "direct:did:human:bob",
+        "claude-native-bob",
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_generic_cli_scope_reset".to_string(),
+            conversation_id: Some("conv_generic_cli_scope_reset".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_generic_cli_scope_reset",
+                "command": "runtime.session.reset",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    for route in [&codex_bob, &codex_charlie] {
+        let after = state
+            .load_cli_route_session(&route.route_key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.status, "reset");
+        assert_eq!(after.native_session_id, None);
+        assert_eq!(after.native_session_source, None);
+    }
+    let claude_after = state
+        .load_cli_route_session(&claude_bob.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claude_after.status, "active");
+    assert_eq!(
+        claude_after.native_session_id.as_deref(),
+        Some("claude-native-bob")
+    );
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["result"]["command"], "runtime.session.reset");
+    assert_eq!(status.payload["result"]["runtime_plugin_id"], "generic-cli");
+    assert_eq!(status.payload["result"]["driver_id"], "codex");
+    assert_eq!(status.payload["result"]["reset_scope"], "controller_scope");
+    assert_eq!(status.payload["result"]["conversation_id_present"], false);
+    assert_eq!(status.payload["result"]["reset_count"], 2);
+    let public_payload = status.payload.to_string();
+    assert!(!public_payload.contains(&codex_bob.route_key));
+    assert!(!public_payload.contains(&codex_charlie.route_key));
+    assert!(!public_payload.contains(&claude_bob.route_key));
+    assert!(!public_payload.contains("codex-native-bob"));
+    assert!(!public_payload.contains("claude-native-bob"));
+}
+
+#[test]
+fn runtime_session_reset_fails_closed_when_generic_cli_profile_is_missing() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let created = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_codex_missing_profile_reset".to_string(),
+                conversation_id: Some("conv_create_codex_missing_profile_reset".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_codex_missing_profile_reset",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-codex-missing-profile-reset",
+                        "runtime": "codex",
+                        "driver_id": "codex",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Codex Missing Profile Reset"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    state
+        .connection()
+        .unwrap()
+        .execute(
+            "DELETE FROM cli_runtime_profile WHERE runtime_profile_id = ?1",
+            [&created.runtime_profile_id],
+        )
+        .unwrap();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_generic_cli_missing_profile_reset".to_string(),
+            conversation_id: Some("conv_generic_cli_missing_profile_reset".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_generic_cli_missing_profile_reset",
+                "command": "runtime.session.reset",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": created.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(status.payload["result"]["command"], "runtime.session.reset");
+    assert_eq!(status.payload["result"]["runtime_plugin_id"], "generic-cli");
+    assert_eq!(
+        status.payload["result"]["error_code"],
+        "runtime_profile_unavailable"
+    );
+    assert_eq!(status.payload["result"].get("driver_id"), None);
+    assert_eq!(status.payload["result"].get("reset_count"), None);
+
+    let audit_count: i64 = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.session.reset'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit_count, 0);
+}
+
+#[test]
+fn runtime_session_list_returns_redacted_generic_cli_routes_for_selected_profile() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let codex = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_codex_for_session_list".to_string(),
+                conversation_id: Some("conv_create_codex_for_session_list".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_codex_for_session_list",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-codex-session-list",
+                        "runtime": "codex",
+                        "driver_id": "codex",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Codex Session List"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let claude = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_claude_for_session_list".to_string(),
+                conversation_id: Some("conv_create_claude_for_session_list".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_claude_for_session_list",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-claude-session-list",
+                        "runtime": "claude-code",
+                        "driver_id": "claude-code",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Claude Session List"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let bob_route = create_cli_route_session(
+        &config,
+        &state,
+        &codex,
+        &daemon,
+        "direct:did:human:bob",
+        "codex-native-bob",
+    );
+    let charlie_route = create_cli_route_session(
+        &config,
+        &state,
+        &codex,
+        &daemon,
+        "direct:did:human:charlie",
+        "codex-native-charlie",
+    );
+    let claude_bob_route = create_cli_route_session(
+        &config,
+        &state,
+        &claude,
+        &daemon,
+        "direct:did:human:bob",
+        "claude-native-bob",
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_generic_cli_session_list".to_string(),
+            conversation_id: Some("conv_generic_cli_session_list".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_generic_cli_session_list",
+                "command": "runtime.session.list",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did,
+                    "limit": 10
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "ready");
+    assert_eq!(status.payload["result"]["command"], "runtime.session.list");
+    assert_eq!(status.payload["result"]["runtime_plugin_id"], "generic-cli");
+    assert_eq!(status.payload["result"]["driver_id"], "codex");
+    assert_eq!(status.payload["result"]["runtime_profile_id_present"], true);
+    assert_eq!(
+        status.payload["result"]["controller_scope_key_present"],
+        true
+    );
+    assert_eq!(status.payload["result"]["page"]["limit"], 10);
+    let items = status.payload["result"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let route_hashes = items
+        .iter()
+        .map(|item| item["route_key_hash"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(route_hashes.contains(&bob_route.route_key_hash.as_str()));
+    assert!(route_hashes.contains(&charlie_route.route_key_hash.as_str()));
+    assert!(items
+        .iter()
+        .all(|item| item["conversation_kind"] == "direct"));
+    assert!(items
+        .iter()
+        .all(|item| item["native_session_present"] == true));
+
+    let public_payload = status.payload.to_string();
+    assert!(!public_payload.contains(&bob_route.route_key));
+    assert!(!public_payload.contains(&charlie_route.route_key));
+    assert!(!public_payload.contains(&claude_bob_route.route_key));
+    assert!(!public_payload.contains("direct:did:human:bob"));
+    assert!(!public_payload.contains("did:human:charlie"));
+    assert!(!public_payload.contains(bob_route.workspace_path.to_string_lossy().as_ref()));
+    assert!(!public_payload.contains(bob_route.session_dir.to_string_lossy().as_ref()));
+    assert!(!public_payload.contains("codex-native-bob"));
+    assert!(!public_payload.contains("claude-native-bob"));
+
+    let audit_dump: String = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(detail_json, '') FROM audit_log WHERE event_type = 'runtime.session.list' ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audit_dump.contains("\"runtime_plugin_id\":\"generic-cli\""));
+    assert!(audit_dump.contains("\"driver_id\":\"codex\""));
+    assert!(audit_dump.contains("\"returned_count\":2"));
+    assert!(!audit_dump.contains(&bob_route.route_key));
+    assert!(!audit_dump.contains(bob_route.workspace_path.to_string_lossy().as_ref()));
+    assert!(!audit_dump.contains("codex-native-bob"));
+}
+
+#[test]
+fn runtime_session_status_filters_generic_cli_route_by_hash_without_cross_profile_leakage() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let codex = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_codex_for_session_status".to_string(),
+                conversation_id: Some("conv_create_codex_for_session_status".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_codex_for_session_status",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-codex-session-status",
+                        "runtime": "codex",
+                        "driver_id": "codex",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Codex Session Status"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let claude = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_claude_for_session_status".to_string(),
+                conversation_id: Some("conv_create_claude_for_session_status".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_claude_for_session_status",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-claude-session-status",
+                        "runtime": "claude-code",
+                        "driver_id": "claude-code",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Claude Session Status"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    let bob_route = create_cli_route_session(
+        &config,
+        &state,
+        &codex,
+        &daemon,
+        "direct:did:human:bob",
+        "codex-native-bob",
+    );
+    let charlie_route = create_cli_route_session(
+        &config,
+        &state,
+        &codex,
+        &daemon,
+        "direct:did:human:charlie",
+        "codex-native-charlie",
+    );
+    let claude_bob_route = create_cli_route_session(
+        &config,
+        &state,
+        &claude,
+        &daemon,
+        "direct:did:human:bob",
+        "claude-native-bob",
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_generic_cli_session_status".to_string(),
+            conversation_id: Some("conv_generic_cli_session_status".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_generic_cli_session_status",
+                "command": "runtime.session.status",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did.clone(),
+                    "route_key_hash": bob_route.route_key_hash.clone()
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "ready");
+    assert_eq!(
+        status.payload["result"]["command"],
+        "runtime.session.status"
+    );
+    let items = status.payload["result"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["route_key_hash"], bob_route.route_key_hash);
+    assert_eq!(items[0]["native_session_present"], true);
+
+    let public_payload = status.payload.to_string();
+    assert!(!public_payload.contains(&charlie_route.route_key_hash));
+    assert!(!public_payload.contains(&claude_bob_route.route_key_hash));
+    assert!(!public_payload.contains(&bob_route.route_key));
+    assert!(!public_payload.contains("direct:did:human:bob"));
+    assert!(!public_payload.contains("codex-native-bob"));
+    assert!(!public_payload.contains("claude-native-bob"));
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_missing_generic_cli_session_status".to_string(),
+            conversation_id: Some("conv_missing_generic_cli_session_status".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_missing_generic_cli_session_status",
+                "command": "runtime.session.status",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did,
+                    "route_key_hash": "route_000000000000000000000000"
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(
+        status.payload["result"]["error_code"],
+        "route_session_not_found"
+    );
+    assert_eq!(status.payload["result"].get("items"), None);
+}
+
+#[test]
+fn runtime_session_list_rejects_hermes_and_missing_generic_cli_profile() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let hermes = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_hermes_for_session_list".to_string(),
+                conversation_id: Some("conv_create_hermes_for_session_list".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_hermes_for_session_list",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-hermes-session-list",
+                        "runtime": "hermes",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Hermes Session List"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_hermes_session_list".to_string(),
+            conversation_id: Some("conv_hermes_session_list".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_hermes_session_list",
+                "command": "runtime.session.list",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": hermes.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(
+        status.payload["result"]["error_code"],
+        "unsupported_for_runtime"
+    );
+    assert_eq!(status.payload["result"].get("items"), None);
+
+    let codex = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_codex_missing_profile_session_list".to_string(),
+                conversation_id: Some("conv_create_codex_missing_profile_session_list".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_codex_missing_profile_session_list",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-codex-missing-profile-session-list",
+                        "runtime": "codex",
+                        "driver_id": "codex",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Codex Missing Profile Session List"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+    state
+        .connection()
+        .unwrap()
+        .execute(
+            "DELETE FROM cli_runtime_profile WHERE runtime_profile_id = ?1",
+            [&codex.runtime_profile_id],
+        )
+        .unwrap();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_missing_profile_session_list".to_string(),
+            conversation_id: Some("conv_missing_profile_session_list".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_missing_profile_session_list",
+                "command": "runtime.session.list",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(
+        status.payload["result"]["error_code"],
+        "runtime_profile_unavailable"
+    );
+    assert_eq!(status.payload["result"].get("items"), None);
+}
+
+#[test]
+fn runtime_session_list_rejects_invalid_filters_and_unowned_runtime() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon_one = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon-one",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value_one").unwrap(),
+    )
+    .unwrap();
+    let daemon_two = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon-two",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value_two").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let codex = expect_created(
+        handle_agent_payload_message(
+            &config,
+            &state,
+            &registration,
+            &outbox,
+            IncomingAgentPayloadMessage {
+                message_id: "msg_create_codex_for_invalid_session_list".to_string(),
+                conversation_id: Some("conv_create_codex_for_invalid_session_list".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: daemon_one.agent_did.clone(),
+                content_type: "application/json".to_string(),
+                payload: json!({
+                    "schema": "awiki.agent.command.v1",
+                    "command_id": "cmd_create_codex_for_invalid_session_list",
+                    "command": "runtime.agent.create",
+                    "target_agent_kind": "runtime",
+                    "args": {
+                        "handle": "@alice-codex-invalid-session-list",
+                        "runtime": "codex",
+                        "driver_id": "codex",
+                        "controller_did": "did:human:alice",
+                        "registration_token": "tok_runtime_secret_value",
+                        "display_name": "Codex Invalid Session List"
+                    }
+                }),
+            },
+        )
+        .unwrap(),
+    );
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_invalid_session_list_limit".to_string(),
+            conversation_id: Some("conv_invalid_session_list_limit".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon_one.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_invalid_session_list_limit",
+                "command": "runtime.session.list",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did.clone(),
+                    "limit": 101
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(status.payload["result"]["error_code"], "invalid_filter");
+    assert_eq!(status.payload["result"]["filter"], "limit");
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_malformed_session_list_limit".to_string(),
+            conversation_id: Some("conv_malformed_session_list_limit".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon_one.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_malformed_session_list_limit",
+                "command": "runtime.session.list",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did.clone(),
+                    "limit": "not-a-number"
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(status.payload["result"]["error_code"], "invalid_filter");
+    assert_eq!(status.payload["result"]["filter"], "limit");
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_unowned_session_list".to_string(),
+            conversation_id: Some("conv_unowned_session_list".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon_two.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_unowned_session_list",
+                "command": "runtime.session.list",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "runtime_agent_did": codex.agent_did
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(status.payload["result"]["command"], "runtime.session.list");
+    assert_eq!(status.payload["result"]["error_code"], "runtime_not_owned");
+}
+
+#[test]
 fn runtime_session_reset_rejects_runtime_owned_by_another_daemon() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();
@@ -995,6 +2104,11 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
     assert_eq!(retry.original_run_id, "run_failed_retry");
     assert_eq!(retry.task_id, "task_failed_retry");
     assert_eq!(retry.requested_by_command_id, "cmd_retry_run");
+    assert_eq!(
+        status.payload["result"]["next_attempt_at_ms"],
+        retry.next_attempt_at_ms
+    );
+    assert!(status.payload["result"]["next_attempt_at"].is_string());
     let dump = status.payload.to_string();
     assert!(!dump.contains("super secret prompt"));
     assert!(!format!("{retry:?}").contains("super secret prompt"));
@@ -1165,6 +2279,8 @@ fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
         .load_cli_runtime_profile(&created.runtime_profile_id)
         .unwrap();
     assert_eq!(cli_profile.driver_id, "codex");
+    let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
+    assert_eq!(cli_profile.config_home, Some(codex_home));
     assert_eq!(
         cli_profile.driver_config_json,
         json!({ "profile": "awiki" })
@@ -1238,10 +2354,42 @@ fn runtime_agent_create_maps_codex_and_gemini_aliases_to_generic_cli_profiles() 
             runtime_agent.runtime_plugin_id.as_deref(),
             Some("generic-cli")
         );
+        let runtime_profile = state
+            .load_runtime_agent_profile(&created.agent_did)
+            .unwrap();
+        assert_eq!(
+            runtime_profile.workspace_mode,
+            Some(WorkspaceMode::RouteRoot)
+        );
+        assert_eq!(
+            runtime_profile.workspace_id.as_deref(),
+            Some(
+                workspace_id(&format!("{expected_driver_id}-alice-{runtime}"))
+                    .unwrap()
+                    .as_str()
+            )
+        );
+        assert_eq!(
+            runtime_profile.workspace_root,
+            Some(
+                config
+                    .state_root
+                    .join("runtime")
+                    .join("workspaces")
+                    .join(expected_profile_id)
+            )
+        );
         let cli_profile = state
             .load_cli_runtime_profile(&created.runtime_profile_id)
             .unwrap();
         assert_eq!(cli_profile.driver_id, expected_driver_id);
+        assert_eq!(cli_profile.default_workspace_mode, WorkspaceMode::RouteRoot);
+        if expected_driver_id == "codex" {
+            let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
+            assert_eq!(cli_profile.config_home, Some(codex_home));
+        } else {
+            assert_eq!(cli_profile.config_home, None);
+        }
         assert_eq!(
             cli_profile.recipient_policy_json,
             json!({ "mode": "controller-only" })
@@ -1308,6 +2456,121 @@ fn runtime_agent_create_defaults_generic_cli_driver_to_codex() {
         .load_cli_runtime_profile(&created.runtime_profile_id)
         .unwrap();
     assert_eq!(cli_profile.driver_id, "codex");
+    let codex_home = assert_codex_profile_home(&config, &created.runtime_profile_id);
+    assert_eq!(cli_profile.config_home, Some(codex_home));
+}
+
+#[test]
+fn runtime_agent_create_accepts_workspace_strategy_alias_for_generic_cli() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_workspace_strategy_alias".to_string(),
+            conversation_id: Some("conv_create_workspace_strategy_alias".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_workspace_strategy_alias",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-strategy",
+                    "runtime": "codex",
+                    "driver_id": "codex",
+                    "workspace_strategy": "route-root",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Codex Strategy Alias"
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let created = expect_created(outcome);
+    let runtime_profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        runtime_profile.workspace_mode,
+        Some(WorkspaceMode::RouteRoot)
+    );
+    let cli_profile = state
+        .load_cli_runtime_profile(&created.runtime_profile_id)
+        .unwrap();
+    assert_eq!(cli_profile.default_workspace_mode, WorkspaceMode::RouteRoot);
+}
+
+#[test]
+fn runtime_agent_create_rejects_conflicting_workspace_mode_and_strategy() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let error = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_workspace_strategy_conflict".to_string(),
+            conversation_id: Some("conv_create_workspace_strategy_conflict".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_workspace_strategy_conflict",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-conflict",
+                    "runtime": "codex",
+                    "driver_id": "codex",
+                    "workspace_mode": "route-root",
+                    "workspace_strategy": "shared-root",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Codex Strategy Conflict"
+                }
+            }),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("workspace_mode and workspace_strategy"));
+    assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
+    assert_eq!(outbox.agent_statuses().len(), 1);
+    assert_eq!(outbox.agent_statuses()[0].payload["state"], "failed");
 }
 
 #[test]

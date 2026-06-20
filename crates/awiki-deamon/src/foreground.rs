@@ -57,12 +57,14 @@ use crate::runtime::{
     RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRunStatus, RuntimeTask,
 };
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
+use crate::security::runtime_token::current_time_millis;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 mod attachments;
 mod lifecycle_support;
 mod outbox;
 mod runtime_support;
+mod state_root_owner;
 
 use attachments::attachment_runtime_prompt_text;
 #[cfg(test)]
@@ -81,6 +83,7 @@ use outbox::{
 #[cfg(test)]
 use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
 use runtime_support::UdsTestRuntimePlugin;
+use state_root_owner::StateRootOwnerGuard;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
@@ -122,6 +125,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let config = DaemonConfig::for_state_root(options.state_root.clone())?;
     config.validate()?;
     config.ensure_state_layout()?;
+    let _state_root_owner = StateRootOwnerGuard::acquire(&config)?;
     let state = DaemonState::open(&config)?;
     let state_summary = state.initialize()?;
     let im_core = ImCoreAdapter::open(&config)?;
@@ -206,6 +210,12 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 }),
             )?;
         }
+        let queue_processed = {
+            let outbox = rpc_outbox
+                .lock()
+                .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
+            drain_cli_route_message_queue_once(&config, &state, &*outbox)?
+        };
         let retry_processed = {
             let outbox = rpc_outbox
                 .lock()
@@ -252,7 +262,8 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 Ok(_) => {}
             }
         };
-        let newly_processed = newly_processed + delegated_processed + retry_processed;
+        let newly_processed =
+            newly_processed + delegated_processed + queue_processed + retry_processed;
         processed_messages += newly_processed;
         if let Some(limit) = options.max_processed_messages {
             if processed_messages >= limit {
@@ -690,9 +701,30 @@ fn drain_runtime_retry_queue_once(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
 ) -> Result<usize> {
-    let retries = state.list_queued_runtime_retries(10)?;
+    let retries = state.list_queued_runtime_retries_due(current_time_millis()?, 10)?;
     let mut processed = 0usize;
     for retry in retries {
+        if retry.requested_by_command_id == "runtime.busy.auto-deferred"
+            && !state
+                .list_cli_route_message_queue_for_task(&retry.task_id)?
+                .is_empty()
+        {
+            state.mark_runtime_retry_superseded_by_cli_route_message_queue(&retry.retry_id)?;
+            state.insert_audit_event_json(
+                "runtime.run.retry.superseded_by_route_message_queue",
+                Some(&retry.agent_did),
+                Some(&retry.runtime_profile_id),
+                Some(&retry.original_run_id),
+                None,
+                json!({
+                    "retry_id": retry.retry_id.as_str(),
+                    "original_run_id": retry.original_run_id.as_str(),
+                    "task_id": retry.task_id.as_str(),
+                }),
+            )?;
+            processed += 1;
+            continue;
+        }
         state.mark_runtime_retry_status(&retry.retry_id, "running")?;
         let result = run_runtime_retry(config, state, outbox, &retry);
         match result {
@@ -712,18 +744,123 @@ fn drain_runtime_retry_queue_once(
                 )?;
             }
             Err(error) => {
-                state.mark_runtime_retry_status(&retry.retry_id, "failed")?;
+                let busy_reason = runtime_retry_busy_reason_from_error(&error);
+                let sanitized_error = sanitize_error_message(&error.to_string());
+                if let Some(busy_reason) = busy_reason {
+                    let next_attempt_at_ms =
+                        current_time_millis()? + runtime_retry_busy_delay_ms(retry.attempts + 1);
+                    state.reschedule_runtime_retry_request(&retry.retry_id, next_attempt_at_ms)?;
+                    state.insert_audit_event_json(
+                        "runtime.run.retry.deferred",
+                        Some(&retry.agent_did),
+                        Some(&retry.runtime_profile_id),
+                        Some(&retry.original_run_id),
+                        None,
+                        json!({
+                            "retry_id": retry.retry_id,
+                            "original_run_id": retry.original_run_id,
+                            "task_id": retry.task_id,
+                            "next_attempt_at_ms": next_attempt_at_ms,
+                            "busy_reason": busy_reason,
+                        }),
+                    )?;
+                } else {
+                    state.mark_runtime_retry_status(&retry.retry_id, "failed")?;
+                    state.insert_audit_event_json(
+                        "runtime.run.retry.failed",
+                        Some(&retry.agent_did),
+                        Some(&retry.runtime_profile_id),
+                        Some(&retry.original_run_id),
+                        None,
+                        json!({
+                            "retry_id": retry.retry_id,
+                            "original_run_id": retry.original_run_id,
+                            "task_id": retry.task_id,
+                            "error": sanitized_error,
+                        }),
+                    )?;
+                }
+            }
+        }
+        processed += 1;
+    }
+    Ok(processed)
+}
+
+fn drain_cli_route_message_queue_once(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+) -> Result<usize> {
+    let items = state.list_due_cli_route_message_queue_fair(current_time_millis()?, 10)?;
+    let mut processed = 0usize;
+    for item in items {
+        let replay_run_id = format!("run_replay_{}_{}", item.queue_id, item.attempts + 1);
+        let Some(claimed) =
+            state.claim_cli_route_message_queue_item(&item.queue_id, &replay_run_id)?
+        else {
+            continue;
+        };
+        let result = run_cli_route_message_queue_item(
+            config,
+            state,
+            outbox,
+            &item,
+            &claimed,
+            &replay_run_id,
+        );
+        match result {
+            Ok(run_id) => {
+                state.mark_cli_route_message_queue_succeeded(&item.queue_id, &run_id)?;
                 state.insert_audit_event_json(
-                    "runtime.run.retry.failed",
-                    Some(&retry.agent_did),
-                    Some(&retry.runtime_profile_id),
-                    Some(&retry.original_run_id),
+                    "cli_route_message_queue.replay.succeeded",
+                    Some(&item.agent_did),
+                    Some(&item.runtime_profile_id),
+                    Some(&run_id),
                     None,
                     json!({
-                        "retry_id": retry.retry_id,
-                        "original_run_id": retry.original_run_id,
-                        "task_id": retry.task_id,
-                        "error": sanitize_error_message(&error.to_string()),
+                        "queue_id": item.queue_id.as_str(),
+                        "task_id": item.task_id.as_deref(),
+                        "source_message_id": item.source_message_id.as_str(),
+                        "route_key_hash": item.route_key_hash.as_str(),
+                        "driver_id": item.driver_id.as_str(),
+                    }),
+                )?;
+            }
+            Err(error) => {
+                let busy_reason = runtime_retry_busy_reason_from_error(&error);
+                let next_attempt_at_ms =
+                    current_time_millis()? + runtime_retry_busy_delay_ms(claimed.attempts);
+                let error_code = busy_reason.unwrap_or("queue_replay_failed");
+                let sanitized_error = sanitize_error_message(&error.to_string());
+                let updated = state.retry_or_dead_letter_cli_route_message_queue_item(
+                    &item.queue_id,
+                    3,
+                    next_attempt_at_ms,
+                    error_code,
+                    &sanitized_error,
+                )?;
+                state.insert_audit_event_json(
+                    if updated.status == "dead_letter" {
+                        "cli_route_message_queue.replay.dead_letter"
+                    } else {
+                        "cli_route_message_queue.replay.deferred"
+                    },
+                    Some(&item.agent_did),
+                    Some(&item.runtime_profile_id),
+                    Some(&replay_run_id),
+                    None,
+                    json!({
+                        "queue_id": item.queue_id.as_str(),
+                        "task_id": item.task_id.as_deref(),
+                        "source_message_id": item.source_message_id.as_str(),
+                        "route_key_hash": item.route_key_hash.as_str(),
+                        "driver_id": item.driver_id.as_str(),
+                        "status": updated.status.as_str(),
+                        "attempts": updated.attempts,
+                        "next_attempt_at_ms": updated.next_attempt_at_ms,
+                        "error_code": error_code,
+                        "error": sanitized_error,
                     }),
                 )?;
             }
@@ -731,6 +868,33 @@ fn drain_runtime_retry_queue_once(
         processed += 1;
     }
     Ok(processed)
+}
+
+fn runtime_retry_busy_reason_from_error(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .chain()
+        .find_map(|cause| runtime_retry_busy_reason(&cause.to_string()))
+}
+
+fn runtime_retry_busy_reason(error: &str) -> Option<&'static str> {
+    if error.contains("route session is busy") || error.contains("route_busy") {
+        Some("route_busy")
+    } else if error.contains("runtime profile is busy") || error.contains("profile_busy") {
+        Some("profile_busy")
+    } else if error.contains("host home is busy") || error.contains("host_home_busy") {
+        Some("host_home_busy")
+    } else {
+        None
+    }
+}
+
+fn runtime_retry_busy_delay_ms(attempts: i64) -> i64 {
+    match attempts {
+        0 | 1 => 10_000,
+        2 => 30_000,
+        3 => 120_000,
+        _ => 300_000,
+    }
 }
 
 fn record_foreground_status_error(state: &DaemonState, message: &str) -> Result<()> {
@@ -819,6 +983,147 @@ fn run_runtime_retry(
         }
     }
     Ok(run_id)
+}
+
+fn run_cli_route_message_queue_item(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    original_item: &crate::state::CliRouteMessageQueueRecord,
+    claimed_item: &crate::state::CliRouteMessageQueueRecord,
+    replay_run_id: &str,
+) -> Result<String> {
+    validate_claimed_cli_route_message_queue_item(original_item, claimed_item, replay_run_id)?;
+    let task_id = original_item
+        .task_id
+        .as_deref()
+        .context("cli route message queue item is missing task_id")?;
+    let original_run_id = original_item
+        .run_id
+        .as_deref()
+        .context("cli route message queue item is missing original run_id")?;
+    let original_run = state.load_runtime_run(original_run_id)?;
+    if original_run.status != RuntimeRunStatus::Failed {
+        bail!("cli route message queue original run is no longer failed");
+    }
+    if original_run.task_id != task_id
+        || original_run.agent_did != original_item.agent_did
+        || original_run.runtime_profile_id != original_item.runtime_profile_id
+        || original_run.runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID
+    {
+        bail!("cli route message queue record does not match original run");
+    }
+
+    let task = state.load_runtime_task(task_id)?;
+    let profile = state.load_runtime_agent_profile(&original_item.agent_did)?;
+    let cli_profile = state.load_cli_runtime_profile(&original_item.runtime_profile_id)?;
+    let route = state
+        .load_cli_route_session(&original_item.route_key)?
+        .context("cli route message queue route session missing")?;
+    validate_cli_route_message_queue_binding(
+        original_item,
+        &task,
+        &original_run,
+        &profile,
+        &cli_profile,
+        &route,
+    )?;
+
+    let plugin = GenericCliDriverRegistry::new(cli_profile);
+    run_existing_runtime_task_with_config(
+        config,
+        state,
+        &profile,
+        &plugin,
+        outbox,
+        task,
+        replay_run_id.to_string(),
+    )?;
+    Ok(replay_run_id.to_string())
+}
+
+fn validate_claimed_cli_route_message_queue_item(
+    original: &crate::state::CliRouteMessageQueueRecord,
+    claimed: &crate::state::CliRouteMessageQueueRecord,
+    replay_run_id: &str,
+) -> Result<()> {
+    if claimed.queue_id != original.queue_id
+        || claimed.agent_did != original.agent_did
+        || claimed.runtime_profile_id != original.runtime_profile_id
+        || claimed.driver_id != original.driver_id
+        || claimed.controller_scope_key != original.controller_scope_key
+        || claimed.conversation_id != original.conversation_id
+        || claimed.route_key != original.route_key
+        || claimed.route_key_hash != original.route_key_hash
+        || claimed.source_message_id != original.source_message_id
+        || claimed.task_id != original.task_id
+    {
+        bail!("claimed cli route message queue item changed binding");
+    }
+    if claimed.status != "running" {
+        bail!("claimed cli route message queue item is not running");
+    }
+    if claimed.run_id.as_deref() != Some(replay_run_id) {
+        bail!("claimed cli route message queue item has unexpected replay run id");
+    }
+    Ok(())
+}
+
+fn validate_cli_route_message_queue_binding(
+    item: &crate::state::CliRouteMessageQueueRecord,
+    task: &RuntimeTask,
+    original_run: &crate::runtime::RuntimeRun,
+    profile: &crate::runtime::RuntimeAgentProfile,
+    cli_profile: &crate::state::CliRuntimeProfileRecord,
+    route: &crate::state::CliRouteSessionRecord,
+) -> Result<()> {
+    if profile.runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        bail!("cli route message queue runtime profile is not generic-cli");
+    }
+    if !runtime_task_matches_profile_controller_scope(task, profile) {
+        bail!("cli route message queue task does not match profile controller scope");
+    }
+    if task.agent_did != item.agent_did
+        || task.controller_user_id != item.controller_user_id
+        || task.controller_full_handle != item.controller_full_handle
+        || task.controller_scope_key != item.controller_scope_key
+        || task.controller_did != item.controller_did
+        || task.conversation_id.as_deref() != Some(item.conversation_id.as_str())
+    {
+        bail!("cli route message queue task binding mismatch");
+    }
+    if task.task_id.strip_prefix("task_").unwrap_or(&task.task_id) != item.source_message_id {
+        bail!("cli route message queue source message mismatch");
+    }
+    if original_run.task_id != task.task_id
+        || original_run.agent_did != item.agent_did
+        || original_run.runtime_profile_id != item.runtime_profile_id
+        || original_run.runtime_plugin_id != GENERIC_CLI_RUNTIME_PLUGIN_ID
+    {
+        bail!("cli route message queue original run binding mismatch");
+    }
+    if cli_profile.runtime_profile_id != item.runtime_profile_id
+        || cli_profile.driver_id != item.driver_id
+    {
+        bail!("cli route message queue CLI profile binding mismatch");
+    }
+    if route.route_key != item.route_key
+        || route.route_key_hash != item.route_key_hash
+        || route.agent_did != item.agent_did
+        || route.runtime_profile_id != item.runtime_profile_id
+        || route.driver_id != item.driver_id
+        || route.controller_user_id != item.controller_user_id
+        || route.controller_full_handle != item.controller_full_handle
+        || route.controller_scope_key != item.controller_scope_key
+        || route.controller_did != item.controller_did
+        || route.conversation_id != item.conversation_id
+    {
+        bail!("cli route message queue route binding mismatch");
+    }
+    if !matches!(item.driver_id.as_str(), "codex" | "claude-code") {
+        bail!("cli route message queue driver is not replayable");
+    }
+    Ok(())
 }
 
 fn validate_retry_task_binding(

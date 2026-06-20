@@ -105,6 +105,85 @@ pub(super) fn cli_driver_run_from_row(
     })
 }
 
+pub(super) fn cli_route_session_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CliRouteSessionRecord> {
+    Ok(CliRouteSessionRecord {
+        route_key: row.get(0)?,
+        route_key_hash: row.get(1)?,
+        agent_did: row.get(2)?,
+        runtime_profile_id: row.get(3)?,
+        driver_id: row.get(4)?,
+        controller_user_id: row.get(5)?,
+        controller_full_handle: row.get(6)?,
+        controller_scope_key: row.get(7)?,
+        controller_did: row.get(8)?,
+        conversation_id: row.get(9)?,
+        workspace_path: PathBuf::from(row.get::<_, String>(10)?),
+        session_dir: PathBuf::from(row.get::<_, String>(11)?),
+        native_session_id: row.get(12)?,
+        native_session_source: row.get(13)?,
+        synthetic_session_id: row.get(14)?,
+        status: row.get(15)?,
+        last_run_id: row.get(16)?,
+        last_message_id: row.get(17)?,
+        lock_run_id: row.get(18)?,
+        lock_owner: row.get(19)?,
+        lock_expires_at_ms: row.get(20)?,
+        last_error_code: row.get(21)?,
+        last_error_summary: row.get(22)?,
+        version: row.get(23)?,
+        created_at_ms: row.get(24)?,
+        updated_at_ms: row.get(25)?,
+    })
+}
+
+pub(super) fn cli_runtime_lock_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CliRuntimeLockRecord> {
+    Ok(CliRuntimeLockRecord {
+        lock_key: row.get(0)?,
+        lock_kind: row.get(1)?,
+        runtime_profile_id: row.get(2)?,
+        driver_id: row.get(3)?,
+        run_id: row.get(4)?,
+        lock_owner: row.get(5)?,
+        lock_expires_at_ms: row.get(6)?,
+        created_at_ms: row.get(7)?,
+        updated_at_ms: row.get(8)?,
+    })
+}
+
+pub(super) fn cli_route_message_queue_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CliRouteMessageQueueRecord> {
+    Ok(CliRouteMessageQueueRecord {
+        queue_id: row.get(0)?,
+        agent_did: row.get(1)?,
+        runtime_profile_id: row.get(2)?,
+        driver_id: row.get(3)?,
+        controller_user_id: row.get(4)?,
+        controller_full_handle: row.get(5)?,
+        controller_scope_key: row.get(6)?,
+        controller_did: row.get(7)?,
+        conversation_id: row.get(8)?,
+        route_key: row.get(9)?,
+        route_key_hash: row.get(10)?,
+        source_message_id: row.get(11)?,
+        task_id: row.get(12)?,
+        run_id: row.get(13)?,
+        status: row.get(14)?,
+        enqueue_reason: row.get(15)?,
+        attempts: row.get(16)?,
+        next_attempt_at_ms: row.get(17)?,
+        route_sequence: row.get(18)?,
+        last_error_code: row.get(19)?,
+        last_error_summary: row.get(20)?,
+        created_at_ms: row.get(21)?,
+        updated_at_ms: row.get(22)?,
+    })
+}
+
 pub(super) fn agent_definition_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AgentDefinition> {
@@ -173,8 +252,9 @@ pub(super) fn runtime_retry_queue_record_from_row(
         status: row.get(7)?,
         requested_by_command_id: row.get(8)?,
         attempts: row.get(9)?,
-        created_at_ms: row.get(10)?,
-        updated_at_ms: row.get(11)?,
+        next_attempt_at_ms: row.get(10)?,
+        created_at_ms: row.get(11)?,
+        updated_at_ms: row.get(12)?,
     })
 }
 
@@ -191,16 +271,18 @@ pub(super) fn runtime_final_outbox_record_from_row(
         recipient_did: row.get(6)?,
         conversation_id: row.get(7)?,
         final_text: row.get(8)?,
-        security: row.get(9)?,
-        status: row.get(10)?,
-        attempt_count: row.get(11)?,
-        next_attempt_at_ms: row.get(12)?,
-        last_error_code: row.get(13)?,
-        last_error_summary: row.get(14)?,
-        message_id: row.get(15)?,
-        created_at_ms: row.get(16)?,
-        updated_at_ms: row.get(17)?,
-        sent_at_ms: row.get(18)?,
+        final_source: row.get(9)?,
+        final_body_hash: row.get(10)?,
+        security: row.get(11)?,
+        status: row.get(12)?,
+        attempt_count: row.get(13)?,
+        next_attempt_at_ms: row.get(14)?,
+        last_error_code: row.get(15)?,
+        last_error_summary: row.get(16)?,
+        message_id: row.get(17)?,
+        created_at_ms: row.get(18)?,
+        updated_at_ms: row.get(19)?,
+        sent_at_ms: row.get(20)?,
     })
 }
 

@@ -440,6 +440,25 @@ impl RuntimeOutbox for UserDelegatedRuntimeOutbox<'_> {
         last_error_code: Option<&str>,
         last_error_summary: Option<&str>,
     ) -> Result<()> {
+        self.send_status_with_metadata(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+            None,
+        )
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
         queue_runtime_status_sync(
             self.state,
             context,
@@ -447,6 +466,7 @@ impl RuntimeOutbox for UserDelegatedRuntimeOutbox<'_> {
             text,
             last_error_code,
             last_error_summary,
+            metadata,
         )?;
         self.state.insert_audit_event_json(
             "user_delegated_inbox.runtime_status",
@@ -459,6 +479,7 @@ impl RuntimeOutbox for UserDelegatedRuntimeOutbox<'_> {
                 "has_text": text.is_some_and(|value| !value.trim().is_empty()),
                 "last_error_code": last_error_code,
                 "last_error_summary": last_error_summary.map(sanitize_error_message),
+                "metadata": metadata,
             }),
         )?;
         Ok(())
@@ -529,6 +550,7 @@ fn queue_runtime_status_sync(
     text: Option<&str>,
     last_error_code: Option<&str>,
     last_error_summary: Option<&str>,
+    metadata: Option<&Value>,
 ) -> Result<()> {
     let binding = state
         .load_active_app_message_agent_binding_by_runtime(&context.agent_did)?
@@ -568,6 +590,7 @@ fn queue_runtime_status_sync(
             "text_hash": text_hash,
             "last_error_code": last_error_code,
             "last_error_summary": last_error_summary.map(sanitize_error_message),
+            "status_metadata": metadata,
         }),
         status: "pending".to_string(),
         attempt_count: 0,

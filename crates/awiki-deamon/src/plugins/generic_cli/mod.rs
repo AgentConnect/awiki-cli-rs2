@@ -1,9 +1,13 @@
+use std::borrow::Cow;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
+pub mod claude_code;
 pub mod codex;
+mod process;
 
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::local_rpc::RuntimeRpcRequest;
@@ -11,13 +15,248 @@ use crate::runtime::{
     RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
     RuntimeRunStatus,
 };
-use crate::state::CliRuntimeProfileRecord;
+use crate::state::{CliRouteSessionRecord, CliRuntimeProfileRecord};
+
+use self::process::{ManagedChild, DEFAULT_GENERIC_CLI_RUN_TIMEOUT};
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
+const MAX_NATIVE_SESSION_ID_LEN: usize = 128;
+pub const OUTPUT_SANITIZER_VERSION: &str = "generic-cli-output-sanitizer-v1";
+pub const DEFAULT_SANITIZED_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedCliOutput {
+    pub text: String,
+    pub raw_bytes: usize,
+    pub text_bytes: usize,
+    pub output_sanitized: bool,
+    pub output_truncated: bool,
+    pub non_utf8_replaced: bool,
+    pub token_redacted: bool,
+    pub max_text_bytes: usize,
+}
+
+impl SanitizedCliOutput {
+    pub fn metadata_json(&self) -> Value {
+        json!({
+            "sanitizer_version": OUTPUT_SANITIZER_VERSION,
+            "raw_bytes": self.raw_bytes,
+            "text_bytes": self.text_bytes,
+            "output_sanitized": self.output_sanitized,
+            "output_truncated": self.output_truncated,
+            "non_utf8_replaced": self.non_utf8_replaced,
+            "token_redacted": self.token_redacted,
+            "max_text_bytes": self.max_text_bytes,
+        })
+    }
+}
+
+pub fn sanitize_cli_output_text(
+    text: &str,
+    runtime_rpc_token: &str,
+    max_text_bytes: usize,
+) -> SanitizedCliOutput {
+    sanitize_cli_output_bytes(text.as_bytes(), runtime_rpc_token, max_text_bytes)
+}
+
+pub fn sanitize_cli_output_bytes(
+    bytes: &[u8],
+    runtime_rpc_token: &str,
+    max_text_bytes: usize,
+) -> SanitizedCliOutput {
+    let raw_bytes = bytes.len();
+    let decoded = String::from_utf8_lossy(bytes);
+    let non_utf8_replaced = matches!(&decoded, Cow::Owned(_));
+    let (mut text, removed_controls) = strip_ansi_and_controls(&decoded);
+    let mut token_redacted = false;
+    if !runtime_rpc_token.is_empty() && text.contains(runtime_rpc_token) {
+        text = text.replace(runtime_rpc_token, "<redacted-runtime-rpc-token>");
+        token_redacted = true;
+    }
+    let (text, output_truncated) = truncate_utf8_to_bytes(text, max_text_bytes);
+    let text_bytes = text.len();
+    SanitizedCliOutput {
+        text,
+        raw_bytes,
+        text_bytes,
+        output_sanitized: token_redacted || non_utf8_replaced || removed_controls,
+        output_truncated,
+        non_utf8_replaced,
+        token_redacted,
+        max_text_bytes,
+    }
+}
+
+pub fn write_sanitized_cli_output(
+    path: &std::path::Path,
+    bytes: &[u8],
+    runtime_rpc_token: &str,
+) -> Result<SanitizedCliOutput> {
+    let sanitized =
+        sanitize_cli_output_bytes(bytes, runtime_rpc_token, DEFAULT_SANITIZED_OUTPUT_MAX_BYTES);
+    std::fs::write(path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized CLI output {}", path.display()))?;
+    Ok(sanitized)
+}
+
+pub fn sanitize_cli_output_file(
+    path: &std::path::Path,
+    runtime_rpc_token: &str,
+) -> Result<Option<SanitizedCliOutput>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read CLI output file {}", path.display()))?;
+    let sanitized = sanitize_cli_output_bytes(
+        &bytes,
+        runtime_rpc_token,
+        DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+    );
+    std::fs::write(path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized CLI output {}", path.display()))?;
+    Ok(Some(sanitized))
+}
+
+fn truncate_utf8_to_bytes(text: String, max_text_bytes: usize) -> (String, bool) {
+    if text.len() <= max_text_bytes {
+        return (text, false);
+    }
+    let mut end = max_text_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
+fn strip_ansi_and_controls(input: &str) -> (String, bool) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+        StringControl,
+        StringControlEscape,
+    }
+
+    let mut output = String::with_capacity(input.len());
+    let mut state = State::Normal;
+    let mut sanitized = false;
+    for ch in input.chars() {
+        match state {
+            State::Normal => match ch {
+                '\u{1b}' => {
+                    sanitized = true;
+                    state = State::Escape;
+                }
+                '\n' | '\t' => output.push(ch),
+                '\r' => {
+                    sanitized = true;
+                    output.push('\n');
+                }
+                ch if ch.is_control() => {
+                    sanitized = true;
+                }
+                _ => output.push(ch),
+            },
+            State::Escape => {
+                sanitized = true;
+                state = match ch {
+                    '[' => State::Csi,
+                    ']' => State::Osc,
+                    'P' | '_' | '^' | 'X' => State::StringControl,
+                    _ => State::Normal,
+                };
+            }
+            State::Csi => {
+                sanitized = true;
+                let code = ch as u32;
+                if (0x40..=0x7e).contains(&code) {
+                    state = State::Normal;
+                }
+            }
+            State::Osc => {
+                sanitized = true;
+                match ch {
+                    '\u{7}' => state = State::Normal,
+                    '\u{1b}' => state = State::OscEscape,
+                    _ => {}
+                }
+            }
+            State::OscEscape => {
+                sanitized = true;
+                state = if ch == '\\' {
+                    State::Normal
+                } else if ch == '\u{1b}' {
+                    State::OscEscape
+                } else {
+                    State::Osc
+                };
+            }
+            State::StringControl => {
+                sanitized = true;
+                match ch {
+                    '\u{7}' => state = State::Normal,
+                    '\u{1b}' => state = State::StringControlEscape,
+                    _ => {}
+                }
+            }
+            State::StringControlEscape => {
+                sanitized = true;
+                state = if ch == '\\' {
+                    State::Normal
+                } else if ch == '\u{1b}' {
+                    State::StringControlEscape
+                } else {
+                    State::StringControl
+                };
+            }
+        }
+    }
+    (output, sanitized)
+}
 
 pub trait GenericCliDriver {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus>;
     fn run(&self, invocation: GenericCliInvocation) -> Result<GenericCliExit>;
+}
+
+pub fn validate_native_session_id(driver_id: &str, native_session_id: &str) -> bool {
+    let id = native_session_id.trim();
+    if id.is_empty() || id.len() > MAX_NATIVE_SESSION_ID_LEN || id != native_session_id {
+        return false;
+    }
+    if matches!(id, "." | "..") || id.contains("..") {
+        return false;
+    }
+    if id
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return false;
+    }
+    let allowed: fn(u8) -> bool = match driver_id {
+        "codex" => |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'),
+        "claude-code" => {
+            |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+        }
+        _ => return false,
+    };
+    id.bytes().all(allowed)
+}
+
+pub fn validate_native_session_source(driver_id: &str, native_session_source: &str) -> bool {
+    matches!(
+        (driver_id, native_session_source),
+        ("codex", "json_event")
+            | ("codex", "resume_id")
+            | ("codex", "resume_last")
+            | ("claude-code", "stream_json")
+            | ("claude-code", "generated_session_id")
+            | ("claude-code", "resume_id")
+    )
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -31,6 +270,7 @@ pub struct GenericCliInvocation {
     pub runtime_profile_id: String,
     pub workspace_root: Option<std::path::PathBuf>,
     pub workspace_instance: Option<crate::workspace::WorkspaceInstance>,
+    pub route_session: Option<CliRouteSessionRecord>,
     pub runtime_temp_dir: Option<std::path::PathBuf>,
     pub runtime_rpc_token: String,
     pub local_socket_path: Option<std::path::PathBuf>,
@@ -49,6 +289,16 @@ impl std::fmt::Debug for GenericCliInvocation {
             .field("runtime_profile_id", &self.runtime_profile_id)
             .field("workspace_root", &self.workspace_root)
             .field("workspace_instance", &self.workspace_instance)
+            .field(
+                "route_session",
+                &self.route_session.as_ref().map(|session| {
+                    serde_json::json!({
+                        "route_key_hash": session.route_key_hash,
+                        "status": session.status,
+                        "native_session_id_present": session.native_session_id.is_some(),
+                    })
+                }),
+            )
             .field("runtime_temp_dir", &self.runtime_temp_dir)
             .field("runtime_rpc_token", &"<redacted>")
             .field("local_socket_path", &self.local_socket_path)
@@ -130,6 +380,7 @@ where
             task_text: context.task.text.clone(),
             workspace_root: context.workspace_root.clone(),
             workspace_instance: context.workspace_instance.clone(),
+            route_session: context.cli_route_session.clone(),
             runtime_temp_dir: context.runtime_temp_dir.clone(),
             agent_did: context.run.agent_did.clone(),
             runtime_profile_id: context.run.runtime_profile_id.clone(),
@@ -170,8 +421,10 @@ impl RuntimePlugin for GenericCliDriverRegistry {
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
         match self.cli_profile.driver_id.as_str() {
             "command" => command_driver_from_profile(&self.cli_profile)?.check_install_status(),
+            "claude-code" => claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?
+                .check_install_status(),
             "codex" => codex::CodexDriver::from_profile(&self.cli_profile)?.check_install_status(),
-            "claude-code" | "gemini" => Ok(RuntimeInstallStatus {
+            "gemini" => Ok(RuntimeInstallStatus {
                 installed: false,
                 detail: Some(format!(
                     "generic-cli driver {} is not implemented yet",
@@ -192,7 +445,11 @@ impl RuntimePlugin for GenericCliDriverRegistry {
                 GenericCliRuntimePlugin::new(codex::CodexDriver::from_profile(&self.cli_profile)?)
                     .launch_run(context)
             }
-            "claude-code" | "gemini" => {
+            "claude-code" => GenericCliRuntimePlugin::new(
+                claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?,
+            )
+            .launch_run(context),
+            "gemini" => {
                 bail!(
                     "generic-cli driver {} is not implemented yet",
                     self.cli_profile.driver_id
@@ -208,6 +465,7 @@ pub struct CommandGenericCliDriver {
     program: std::path::PathBuf,
     args: Vec<String>,
     cli_wrapper: String,
+    run_timeout: Duration,
 }
 
 impl CommandGenericCliDriver {
@@ -216,11 +474,17 @@ impl CommandGenericCliDriver {
             program: program.into(),
             args,
             cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+            run_timeout: DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
         }
     }
 
     pub fn with_cli_wrapper(mut self, cli_wrapper: impl Into<String>) -> Self {
         self.cli_wrapper = cli_wrapper.into();
+        self
+    }
+
+    pub fn with_run_timeout(mut self, run_timeout: Duration) -> Self {
+        self.run_timeout = run_timeout;
         self
     }
 }
@@ -260,8 +524,36 @@ impl GenericCliDriver for CommandGenericCliDriver {
                 &invocation.runtime_rpc_token,
             )
             .env_remove("AWIKI_DAEMON_TASK_TEXT");
-        let status = command.status().context("run generic CLI runtime")?;
-        Ok(GenericCliExit::from_exit_code(status.code().unwrap_or(1)))
+        let managed = ManagedChild::spawn(&mut command, "spawn generic CLI runtime")?;
+        let output = match managed.wait_timeout("wait for generic CLI runtime", self.run_timeout) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(timeout) = error.downcast_ref::<process::ManagedChildTimeoutError>() {
+                    return Ok(GenericCliExit {
+                        exit_code: 124,
+                        status: RuntimeRunStatus::Failed,
+                        callbacks: Vec::new(),
+                        metadata: serde_json::json!({
+                            "driver_id": "generic-cli",
+                            "error_code": "generic_cli_timeout",
+                            "error_summary": timeout.to_string(),
+                            "next_action": "manual_review_required",
+                            "process": {
+                                "timed_out": true,
+                                "timeout_ms": timeout.timeout_ms(),
+                                "management": timeout.metadata_json(),
+                            },
+                        }),
+                    });
+                }
+                return Err(error);
+            }
+        };
+        let mut exit = GenericCliExit::from_exit_code(output.output.status.code().unwrap_or(1));
+        exit.metadata = serde_json::json!({
+            "process": output.metadata_json(),
+        });
+        Ok(exit)
     }
 }
 
@@ -290,14 +582,13 @@ impl GenericCliDriver for TestGenericCliDriver {
             Ok(GenericCliExit {
                 exit_code: self.exit_code,
                 status: RuntimeRunStatus::Failed,
-                callbacks: vec![CliWrapperRequest::task_status(
-                    invocation.runtime_rpc_token,
-                    invocation.task_id,
-                    "failed",
-                    "runtime failed",
-                )
-                .into_rpc_request()],
-                metadata: serde_json::json!({}),
+                callbacks: Vec::new(),
+                metadata: serde_json::json!({
+                    "driver_id": "generic-cli",
+                    "error_code": "generic_cli_failed",
+                    "error_summary": format!("generic CLI test driver exited with status {}", self.exit_code),
+                    "next_action": "manual_review_required",
+                }),
             })
         }
     }
@@ -323,7 +614,14 @@ fn command_driver_from_profile(
         .get("cli_wrapper")
         .and_then(Value::as_str)
         .unwrap_or("library:awiki_deamon::cli_wrapper");
-    Ok(CommandGenericCliDriver::new(program, args).with_cli_wrapper(cli_wrapper))
+    let run_timeout = duration_ms_field(
+        &profile.driver_config_json,
+        "run_timeout_ms",
+        DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
+    );
+    Ok(CommandGenericCliDriver::new(program, args)
+        .with_cli_wrapper(cli_wrapper)
+        .with_run_timeout(run_timeout))
 }
 
 fn string_array(value: Option<&Value>) -> Result<Vec<String>> {
@@ -341,4 +639,13 @@ fn string_array(value: Option<&Value>) -> Result<Vec<String>> {
                 .context("generic-cli command args must be strings")
         })
         .collect()
+}
+
+fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(default)
 }

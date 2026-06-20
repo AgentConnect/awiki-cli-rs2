@@ -150,6 +150,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
                 &preliminary_context,
                 RpcMethod::MsgSend.as_str(),
             )?;
+            ensure_runtime_route_allows_side_effects(state, &preliminary_context)?;
             if let Some(file_path) = message.file_path.as_ref() {
                 ensure_attachment_under_allowed_roots(
                     state,
@@ -176,6 +177,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
                 &preliminary_context,
                 RpcMethod::SendAttachment.as_str(),
             )?;
+            ensure_runtime_route_allows_side_effects(state, &preliminary_context)?;
             let task = state
                 .load_runtime_task_for_run(&preliminary_context.run_id)
                 .context("attachment.send requires a runtime task context")?;
@@ -196,6 +198,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
         _ => {
             let recipient = rpc_recipient(&method, &request.params);
             let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
+            ensure_runtime_route_allows_side_effects(state, &context)?;
             apply_runtime_rpc_side_effects(state, outbox, &context, &method, &request.params)?;
             context
         }
@@ -262,6 +265,37 @@ fn rpc_recipient<'a>(method: &RpcMethod, params: &'a Value) -> Option<&'a str> {
         .get("to")
         .or_else(|| params.get("recipient"))
         .and_then(Value::as_str)
+}
+
+fn ensure_runtime_route_allows_side_effects(
+    state: &DaemonState,
+    context: &AuthorizedRuntimeContext,
+) -> Result<()> {
+    let Some(route_session) = state.load_cli_route_session_for_run(&context.run_id)? else {
+        return Ok(());
+    };
+    let lock_matches = route_session.lock_run_id.as_deref() == Some(context.run_id.as_str());
+    if route_session.status == "running" && lock_matches {
+        return Ok(());
+    }
+
+    state.insert_audit_event_json(
+        "runtime_rpc.side_effect_rejected",
+        Some(&context.agent_did),
+        Some(&context.runtime_profile_id),
+        Some(&context.run_id),
+        Some(&context.token_id),
+        serde_json::json!({
+            "method": context.method.as_str(),
+            "reason": "late_callback_rejected",
+            "route_key_hash": route_session.route_key_hash.as_str(),
+            "route_status": route_session.status.as_str(),
+            "route_version": route_session.version,
+            "route_lock_present": route_session.lock_run_id.is_some(),
+            "route_lock_matches_run": lock_matches,
+        }),
+    )?;
+    bail!("late_callback_rejected");
 }
 
 fn apply_runtime_rpc_side_effects(

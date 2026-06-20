@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::local_rpc::RuntimeRpcRequest;
 use crate::security::runtime_token::RuntimeRpcToken;
+use crate::state::CliRouteSessionRecord;
 use crate::workspace::{WorkspaceInstance, WorkspaceMode};
 
 pub mod host;
@@ -77,6 +78,7 @@ pub struct RuntimeLaunchContext {
     pub task: RuntimeTask,
     pub workspace_root: Option<PathBuf>,
     pub workspace_instance: Option<WorkspaceInstance>,
+    pub cli_route_session: Option<CliRouteSessionRecord>,
     pub runtime_temp_dir: Option<PathBuf>,
     pub runtime_rpc_token: RuntimeRpcToken,
     pub local_socket_path: Option<PathBuf>,

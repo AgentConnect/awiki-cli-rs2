@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 22;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 28;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -24,6 +24,12 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS daemon_state_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS agent_definition (
@@ -101,6 +107,60 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS cli_route_sessions (
+            route_key TEXT PRIMARY KEY,
+            route_key_hash TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            driver_id TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            workspace_path TEXT NOT NULL,
+            session_dir TEXT NOT NULL,
+            native_session_id TEXT,
+            native_session_source TEXT,
+            synthetic_session_id TEXT,
+            status TEXT NOT NULL,
+            last_run_id TEXT,
+            last_message_id TEXT,
+            lock_run_id TEXT,
+            lock_owner TEXT,
+            lock_expires_at_ms INTEGER,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            version INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(runtime_profile_id, route_key_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_sessions_profile_status
+        ON cli_route_sessions(runtime_profile_id, controller_scope_key, status);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_sessions_lock
+        ON cli_route_sessions(status, lock_expires_at_ms);
+
+        CREATE TABLE IF NOT EXISTS cli_runtime_locks (
+            lock_key TEXT PRIMARY KEY,
+            lock_kind TEXT NOT NULL,
+            runtime_profile_id TEXT,
+            driver_id TEXT,
+            run_id TEXT NOT NULL,
+            lock_owner TEXT NOT NULL,
+            lock_expires_at_ms INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_kind
+        ON cli_runtime_locks(lock_kind, runtime_profile_id, driver_id);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_expiry
+        ON cli_runtime_locks(lock_expires_at_ms);
 
         CREATE TABLE IF NOT EXISTS runtime_run (
             run_id TEXT PRIMARY KEY,
@@ -257,12 +317,49 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             requested_by_command_id TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
         ON runtime_retry_queue(status, created_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
+        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
+
+        CREATE TABLE IF NOT EXISTS cli_route_message_queue (
+            queue_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            driver_id TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            route_key_hash TEXT NOT NULL,
+            source_message_id TEXT NOT NULL,
+            task_id TEXT,
+            run_id TEXT,
+            status TEXT NOT NULL,
+            enqueue_reason TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+            route_sequence INTEGER NOT NULL,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(runtime_profile_id, route_key, source_message_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_message_queue_due
+        ON cli_route_message_queue(status, next_attempt_at_ms, created_at_ms, queue_id);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_message_queue_route_order
+        ON cli_route_message_queue(runtime_profile_id, route_key, route_sequence);
 
         CREATE TABLE IF NOT EXISTS runtime_agent_create_request (
             daemon_agent_did TEXT NOT NULL,
@@ -290,6 +387,8 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             recipient_did TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             final_text TEXT NOT NULL,
+            final_source TEXT NOT NULL DEFAULT 'unknown_legacy',
+            final_body_hash TEXT NOT NULL DEFAULT '',
             security TEXT NOT NULL DEFAULT 'default_plain',
             status TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -493,6 +592,12 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_control_command_state_v20(connection)?;
     migrate_runtime_requester_contract_v21(connection)?;
     migrate_secure_bootstrap_replay_v22(connection)?;
+    migrate_cli_route_sessions_v23(connection)?;
+    migrate_cli_runtime_locks_v24(connection)?;
+    migrate_daemon_state_metadata_v25(connection)?;
+    migrate_runtime_retry_queue_due_v26(connection)?;
+    migrate_cli_route_message_queue_v27(connection)?;
+    migrate_runtime_final_outbox_provenance_v28(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -500,6 +605,87 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_daemon_state_metadata_v25(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS daemon_state_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_cli_runtime_locks_v24(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS cli_runtime_locks (
+            lock_key TEXT PRIMARY KEY,
+            lock_kind TEXT NOT NULL,
+            runtime_profile_id TEXT,
+            driver_id TEXT,
+            run_id TEXT NOT NULL,
+            lock_owner TEXT NOT NULL,
+            lock_expires_at_ms INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_kind
+        ON cli_runtime_locks(lock_kind, runtime_profile_id, driver_id);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_runtime_locks_expiry
+        ON cli_runtime_locks(lock_expires_at_ms);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_cli_route_sessions_v23(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS cli_route_sessions (
+            route_key TEXT PRIMARY KEY,
+            route_key_hash TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            driver_id TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            workspace_path TEXT NOT NULL,
+            session_dir TEXT NOT NULL,
+            native_session_id TEXT,
+            native_session_source TEXT,
+            synthetic_session_id TEXT,
+            status TEXT NOT NULL,
+            last_run_id TEXT,
+            last_message_id TEXT,
+            lock_run_id TEXT,
+            lock_owner TEXT,
+            lock_expires_at_ms INTEGER,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            version INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(runtime_profile_id, route_key_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_sessions_profile_status
+        ON cli_route_sessions(runtime_profile_id, controller_scope_key, status);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_sessions_lock
+        ON cli_route_sessions(status, lock_expires_at_ms);
+        "#,
     )?;
     Ok(())
 }
@@ -758,6 +944,62 @@ fn migrate_runtime_requester_contract_v21(connection: &Connection) -> Result<()>
     Ok(())
 }
 
+fn migrate_runtime_retry_queue_due_v26(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "runtime_retry_queue",
+        "next_attempt_at_ms",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    connection.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
+        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_cli_route_message_queue_v27(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS cli_route_message_queue (
+            queue_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            driver_id TEXT NOT NULL,
+            controller_user_id TEXT NOT NULL DEFAULT '',
+            controller_full_handle TEXT NOT NULL DEFAULT '',
+            controller_scope_key TEXT NOT NULL DEFAULT '',
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            route_key_hash TEXT NOT NULL,
+            source_message_id TEXT NOT NULL,
+            task_id TEXT,
+            run_id TEXT,
+            status TEXT NOT NULL,
+            enqueue_reason TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+            route_sequence INTEGER NOT NULL,
+            last_error_code TEXT,
+            last_error_summary TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            UNIQUE(runtime_profile_id, route_key, source_message_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_message_queue_due
+        ON cli_route_message_queue(status, next_attempt_at_ms, created_at_ms, queue_id);
+
+        CREATE INDEX IF NOT EXISTS idx_cli_route_message_queue_route_order
+        ON cli_route_message_queue(runtime_profile_id, route_key, route_sequence);
+        "#,
+    )?;
+    Ok(())
+}
+
 fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"
@@ -772,12 +1014,16 @@ fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             requested_by_command_id TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
         ON runtime_retry_queue(status, created_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
+        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
         "#,
     )?;
     Ok(())
@@ -816,6 +1062,8 @@ fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
             controller_did TEXT NOT NULL,
             conversation_id TEXT,
             final_text TEXT NOT NULL,
+            final_source TEXT NOT NULL DEFAULT 'unknown_legacy',
+            final_body_hash TEXT NOT NULL DEFAULT '',
             security TEXT NOT NULL DEFAULT 'default_plain',
             status TEXT NOT NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -831,6 +1079,22 @@ fn migrate_runtime_final_outbox_v14(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_runtime_final_outbox_due
         ON runtime_final_outbox(status, next_attempt_at_ms, created_at_ms);
         "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_final_outbox_provenance_v28(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "runtime_final_outbox",
+        "final_source",
+        "TEXT NOT NULL DEFAULT 'unknown_legacy'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "runtime_final_outbox",
+        "final_body_hash",
+        "TEXT NOT NULL DEFAULT ''",
     )?;
     Ok(())
 }

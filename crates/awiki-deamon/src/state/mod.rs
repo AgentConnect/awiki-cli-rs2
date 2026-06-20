@@ -50,6 +50,9 @@ impl DaemonState {
         let connection = Connection::open(&self.database_path)
             .with_context(|| format!("open daemon database {}", self.database_path.display()))?;
         initialize_schema(&connection)?;
+        drop(connection);
+        self.ensure_cli_route_hash_salt()?;
+        let connection = self.connection()?;
 
         Ok(StateSummary {
             database_path: self.database_path.clone(),
