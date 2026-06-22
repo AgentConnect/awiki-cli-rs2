@@ -2407,7 +2407,7 @@ mod tests {
             Some("generic_cli_driver_missing")
         );
         assert_eq!(diagnostics["profile_status"], "active");
-        assert_eq!(diagnostics["driver_id"], "codex");
+        assert!(diagnostics.get("driver_id").is_none());
         assert_eq!(diagnostics["active_session_count"], 0);
         assert_eq!(diagnostics["config_summary"]["driver_id"], "codex");
         assert_eq!(
@@ -3300,7 +3300,8 @@ mod tests {
             status.last_error_code.as_deref(),
             Some("generic_cli_driver_missing")
         );
-        assert_eq!(diagnostics["driver_id"], "claude-code");
+        assert!(diagnostics.get("driver_id").is_none());
+        assert_eq!(diagnostics["config_summary"]["driver_id"], "claude-code");
         assert_eq!(
             diagnostics["config_summary"]["driver_status_code"],
             "missing_binary"
