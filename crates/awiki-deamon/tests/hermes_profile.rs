@@ -216,7 +216,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 21);
+    assert_eq!(summary.schema_version, 22);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
@@ -448,6 +448,7 @@ fn hermes_profile_repair_rewrites_stale_outbound_skill_without_changing_identity
 
     let profile = awiki_deamon::runtime::RuntimeAgentProfile {
         agent_did: "did:agent:stale-hermes".to_string(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),

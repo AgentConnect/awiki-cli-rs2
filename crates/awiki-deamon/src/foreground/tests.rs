@@ -25,7 +25,7 @@ use crate::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     ControllerSenderScope, DidAuthMaterial, RegistrationToken,
 };
-use crate::runtime::RuntimeAgentProfile;
+use crate::runtime::{RuntimeAgentProfile, RuntimeConversationScope, RuntimeInvocationAuthority};
 use crate::state::HermesProfileRecord;
 use crate::workspace::WorkspaceMode;
 
@@ -106,12 +106,22 @@ impl AgentInventoryClient for MockRegistrationClient {
         _source_message_id: Option<&str>,
         _auth: &DidAuthMaterial,
     ) -> Result<AgentInvocationAuthorization> {
+        let sender_is_alice = sender_did.contains("alice");
         Ok(AgentInvocationAuthorization {
             allowed: true,
             reason: "test_allow".to_string(),
             agent_did: agent_did.to_string(),
             sender_did: sender_did.to_string(),
-            sender_full_handle: Some("bob.anpclaw.com".to_string()),
+            sender_user_id: Some(if sender_is_alice {
+                "user-alice".to_string()
+            } else {
+                "user-bob".to_string()
+            }),
+            sender_full_handle: Some(if sender_is_alice {
+                "alice.anpclaw.com".to_string()
+            } else {
+                "bob.anpclaw.com".to_string()
+            }),
             active_mode: "whitelist".to_string(),
         })
     }
@@ -734,6 +744,7 @@ fn controller_runtime_outbox_does_not_duplicate_owner_activity_for_controller_ru
 fn profile(root: &Path) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:hermes".to_string(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
@@ -888,8 +899,10 @@ fn hermes_foreground_runtime_route_uses_hermes_plugin_and_persists_session() {
             message_id: "msg_foreground_hermes".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
             target_agent_did: "did:agent:hermes".to_string(),
             text: "foreground route to Hermes".to_string(),
         },
@@ -956,14 +969,18 @@ fn runtime_task_status_correlation_prefers_group_mention_source_metadata() {
     let task = RuntimeTask {
         task_id: "task_group_mention_generated".to_string(),
         agent_did: "did:agent:hermes".to_string(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         sender_did: "did:human:bob".to_string(),
         requester_did: "did:human:bob".to_string(),
+        requester_user_id: Some("user-bob".to_string()),
         requester_full_handle: Some("bob.example.com".to_string()),
         trigger_kind: crate::runtime::RuntimeTaskTriggerKind::GroupMention,
+        conversation_scope: RuntimeConversationScope::group_visible("did:group:team"),
+        invocation_authority: RuntimeInvocationAuthority::Requester,
         reply_recipient_did: "did:human:bob".to_string(),
         conversation_id: Some("group:did:group:team".to_string()),
         text: task_payload.to_string(),
@@ -980,14 +997,20 @@ fn runtime_task_status_correlation_falls_back_to_task_message_id() {
     let task = RuntimeTask {
         task_id: "task_msg_direct_1".to_string(),
         agent_did: "did:agent:hermes".to_string(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
         controller_did: "did:human:alice".to_string(),
         sender_did: "did:human:alice".to_string(),
         requester_did: "did:human:alice".to_string(),
+        requester_user_id: Some("user-alice".to_string()),
         requester_full_handle: Some("alice.anpclaw.com".to_string()),
         trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+        conversation_scope: RuntimeConversationScope::controller_private(
+            "controller-scope:v1:test-alice-anpclaw-com",
+        ),
+        invocation_authority: RuntimeInvocationAuthority::Controller,
         reply_recipient_did: "did:human:alice".to_string(),
         conversation_id: Some("direct:did:human:alice".to_string()),
         text: "direct prompt".to_string(),
@@ -1179,8 +1202,10 @@ fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
             message_id: "msg_foreground_rotated_controller".to_string(),
             conversation_id: Some("direct:did:human:alice-new".to_string()),
             sender_did: "did:human:alice-new".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
             target_agent_did: "did:agent:hermes".to_string(),
             text: "rotated controller foreground route".to_string(),
         },
@@ -1254,8 +1279,10 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
             message_id: "msg_foreground_generic_cli".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
             target_agent_did: "did:agent:generic-cli".to_string(),
             text: "foreground route to generic cli".to_string(),
         },
@@ -1842,8 +1869,10 @@ fn app_message_agent_runtime_token_scope_is_limited_to_bound_user() {
             message_id: "msg_scope".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
             target_agent_did: message_agent.binding.runtime_agent_did.clone(),
             text: "message handler task".to_string(),
         },

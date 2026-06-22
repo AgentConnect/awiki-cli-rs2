@@ -15,8 +15,9 @@ use crate::outbox::{
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
-    runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeLaunchContext,
-    RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus, RuntimeTask,
+    runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeInvocationAuthority,
+    RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus,
+    RuntimeTask,
 };
 use crate::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
@@ -296,20 +297,18 @@ where
     let task_conversation_id = task.conversation_id.clone();
     let task_controller_did = task.controller_did.clone();
     let task_reply_recipient_did = task.reply_recipient_did.clone();
-    let recipient_policy = runtime_recipient_policy(state, profile, &task_reply_recipient_did)?;
+    let recipient_policy = runtime_recipient_policy(
+        state,
+        profile,
+        &task_reply_recipient_did,
+        task.invocation_authority,
+    )?;
+    let allowed_methods = runtime_allowed_methods(task.invocation_authority);
     let mut scope = RuntimeTokenScope::new(
         profile.agent_did.clone(),
         profile.runtime_profile_id.clone(),
         run.run_id.clone(),
-        vec![
-            RpcMethod::RpcPing,
-            RpcMethod::TaskStatus,
-            RpcMethod::TaskFinish,
-            RpcMethod::MsgSend,
-            RpcMethod::SendAttachment,
-            RpcMethod::ArtifactCreated,
-            RpcMethod::AppActionRequest,
-        ],
+        allowed_methods,
         Some(recipient_policy.allowed_recipients),
         Duration::from_secs(5 * 60),
     )?;
@@ -1264,6 +1263,7 @@ fn runtime_recipient_policy(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
     controller_did: &str,
+    authority: RuntimeInvocationAuthority,
 ) -> Result<RecipientPolicy> {
     if let Some(binding) =
         state.load_active_app_message_agent_binding_by_runtime(&profile.agent_did)?
@@ -1271,7 +1271,14 @@ fn runtime_recipient_policy(
         return Ok(RecipientPolicy::app_message_handler(&binding.user_did));
     }
     if profile.runtime_plugin_id == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
-        return Ok(RecipientPolicy::hermes_default(controller_did));
+        return match authority {
+            RuntimeInvocationAuthority::Controller => {
+                Ok(RecipientPolicy::hermes_default(controller_did))
+            }
+            RuntimeInvocationAuthority::Requester => {
+                Ok(RecipientPolicy::controller_only(controller_did))
+            }
+        };
     }
     match state.load_cli_runtime_profile(&profile.runtime_profile_id) {
         Ok(cli_profile) => {
@@ -1279,6 +1286,21 @@ fn runtime_recipient_policy(
         }
         Err(_) => Ok(RecipientPolicy::controller_only(controller_did)),
     }
+}
+
+fn runtime_allowed_methods(authority: RuntimeInvocationAuthority) -> Vec<RpcMethod> {
+    let mut methods = vec![
+        RpcMethod::RpcPing,
+        RpcMethod::TaskStatus,
+        RpcMethod::TaskFinish,
+        RpcMethod::ArtifactCreated,
+        RpcMethod::AppActionRequest,
+    ];
+    if authority.can_send_outbound() {
+        methods.push(RpcMethod::MsgSend);
+        methods.push(RpcMethod::SendAttachment);
+    }
+    methods
 }
 
 fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Result<()> {
@@ -1325,5 +1347,24 @@ mod tests {
             mention_surface_for_sender(&payload, "did:wba:awiki.info:user:alice:e1_sender"),
             "@alice"
         );
+    }
+
+    #[test]
+    fn runtime_requester_authority_cannot_call_outbound_send_methods() {
+        let methods = runtime_allowed_methods(RuntimeInvocationAuthority::Requester);
+
+        assert!(methods.contains(&RpcMethod::RpcPing));
+        assert!(methods.contains(&RpcMethod::TaskStatus));
+        assert!(methods.contains(&RpcMethod::TaskFinish));
+        assert!(!methods.contains(&RpcMethod::MsgSend));
+        assert!(!methods.contains(&RpcMethod::SendAttachment));
+    }
+
+    #[test]
+    fn runtime_controller_authority_can_call_outbound_send_methods() {
+        let methods = runtime_allowed_methods(RuntimeInvocationAuthority::Controller);
+
+        assert!(methods.contains(&RpcMethod::MsgSend));
+        assert!(methods.contains(&RpcMethod::SendAttachment));
     }
 }

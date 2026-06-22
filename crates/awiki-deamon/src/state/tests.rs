@@ -1,6 +1,7 @@
 use super::schema::DAEMON_SCHEMA_VERSION;
 use super::*;
 use crate::runtime::RuntimeTaskTriggerKind;
+use crate::runtime::{RuntimeConversationScope, RuntimeInvocationAuthority};
 
 #[test]
 fn initialize_creates_required_tables() {
@@ -636,14 +637,19 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     let task = RuntimeTask {
         task_id: "task_state_roundtrip".to_string(),
         agent_did: "did:agent:hermes".to_string(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice".to_string(),
         controller_did: "did:human:alice".to_string(),
         sender_did: "did:human:bob".to_string(),
         requester_did: "did:human:bob".to_string(),
+        requester_user_id: Some("user-bob".to_string()),
         requester_full_handle: Some("bob.example.com".to_string()),
         trigger_kind: RuntimeTaskTriggerKind::ExternalDirect,
+        conversation_scope: RuntimeConversationScope::direct("user-bob", "bob.example.com")
+            .unwrap(),
+        invocation_authority: RuntimeInvocationAuthority::Requester,
         reply_recipient_did: "did:human:bob".to_string(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::json!({
@@ -1115,12 +1121,19 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
     state.initialize().unwrap();
     let route = HermesSessionRoute::new(
         "did:agent:hermes",
+        "alice-hermes",
         "profile_hermes_alice",
         "controller-scope:v1:test-alice",
-        "did:human:alice",
+        "controller_private",
+        "controller:controller-scope:v1:test-alice",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );
+    assert_eq!(
+        route.route_key(),
+        "hermes:alice-hermes:controller-scope:v1:test-alice:controller_private:controller:controller-scope:v1:test-alice:conversation"
+    );
+    assert!(!route.route_key().contains("did:human:alice"));
     let session = HermesNativeSessionRecord::active(
         &route,
         "did:human:alice",
@@ -1184,4 +1197,35 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
             .hermes_session_id,
         "hermes-session-2"
     );
+}
+
+#[test]
+fn hermes_route_key_uses_stable_scope_not_requester_did() {
+    let route_before_rotation = HermesSessionRoute::new(
+        "did:agent:hermes:e1_old",
+        "alice-hermes",
+        "profile_hermes_alice",
+        "controller-scope:v1:test-alice",
+        "direct",
+        "user:user-bob:handle:bob.example.com",
+        Some("direct:did:human:bob-old".to_string()),
+        "conversation",
+    );
+    let route_after_rotation = HermesSessionRoute::new(
+        "did:agent:hermes:e1_new",
+        "alice-hermes",
+        "profile_hermes_alice",
+        "controller-scope:v1:test-alice",
+        "direct",
+        "user:user-bob:handle:bob.example.com",
+        Some("direct:did:human:bob-new".to_string()),
+        "conversation",
+    );
+
+    assert_eq!(
+        route_before_rotation.route_key(),
+        route_after_rotation.route_key()
+    );
+    assert!(!route_before_rotation.route_key().contains("bob-old"));
+    assert!(!route_after_rotation.route_key().contains("bob-new"));
 }

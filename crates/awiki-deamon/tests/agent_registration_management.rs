@@ -729,9 +729,11 @@ fn runtime_session_reset_archives_active_hermes_route() {
     let created = expect_created(outcome);
     let route = HermesSessionRoute::new(
         created.agent_did.clone(),
+        created.handle.clone(),
         created.runtime_profile_id.clone(),
         daemon.controller_scope_key.clone(),
-        "did:human:alice",
+        "controller_private",
+        format!("controller:{}", daemon.controller_scope_key),
         Some("dm:alice:hermes".to_string()),
         "conversation",
     );
@@ -912,14 +914,20 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
         .insert_runtime_task(&awiki_deamon::runtime::RuntimeTask {
             task_id: "task_failed_retry".to_string(),
             agent_did: created.agent_did.clone(),
+            agent_handle: created.handle.clone(),
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             sender_did: "did:human:alice".to_string(),
             requester_did: "did:human:alice".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: Some("alice.anpclaw.com".to_string()),
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            conversation_scope: awiki_deamon::runtime::RuntimeConversationScope::controller_private(
+                "controller-scope:v1:test-alice-anpclaw-com",
+            ),
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             reply_recipient_did: "did:human:alice".to_string(),
             conversation_id: Some("dm:alice:retry".to_string()),
             text: "super secret prompt".to_string(),
@@ -2313,9 +2321,11 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
     assert_eq!(created.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
     let route = awiki_deamon::state::HermesSessionRoute::new(
         created.agent_did.clone(),
+        created.handle.clone(),
         created.runtime_profile_id.clone(),
         "controller-scope:v1:test-alice-anpclaw-com",
-        "did:human:alice",
+        "controller_private",
+        "controller:controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );

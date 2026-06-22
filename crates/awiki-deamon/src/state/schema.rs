@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 21;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 22;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -121,14 +121,19 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS runtime_task (
             task_id TEXT PRIMARY KEY,
             agent_did TEXT NOT NULL,
+            agent_handle TEXT NOT NULL DEFAULT '',
             controller_user_id TEXT NOT NULL DEFAULT '',
             controller_full_handle TEXT NOT NULL DEFAULT '',
             controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             sender_did TEXT NOT NULL,
             requester_did TEXT NOT NULL DEFAULT '',
+            requester_user_id TEXT,
             requester_full_handle TEXT,
             trigger_kind TEXT NOT NULL DEFAULT 'controller_direct',
+            conversation_scope_kind TEXT NOT NULL DEFAULT 'controller_private',
+            conversation_scope_key TEXT NOT NULL DEFAULT '',
+            invocation_authority TEXT NOT NULL DEFAULT 'controller',
             reply_recipient_did TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             task_text TEXT NOT NULL,
@@ -206,10 +211,13 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             id TEXT PRIMARY KEY,
             runtime_session_id TEXT NOT NULL,
             agent_did TEXT NOT NULL,
+            agent_handle TEXT NOT NULL DEFAULT '',
             runtime_profile_id TEXT NOT NULL,
             controller_scope_key TEXT NOT NULL DEFAULT '',
             controller_did TEXT NOT NULL,
             session_actor_did TEXT NOT NULL DEFAULT '',
+            scope_kind TEXT NOT NULL DEFAULT 'controller_private',
+            scope_key TEXT NOT NULL DEFAULT '',
             conversation_id TEXT,
             route_key TEXT NOT NULL,
             hermes_profile TEXT NOT NULL,
@@ -473,6 +481,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_controller_scope_v19(connection)?;
     migrate_control_command_state_v20(connection)?;
     migrate_runtime_requester_contract_v21(connection)?;
+    migrate_runtime_scope_authority_v22(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -707,6 +716,103 @@ fn migrate_runtime_requester_contract_v21(connection: &Connection) -> Result<()>
         SET session_actor_did = controller_did
         WHERE session_actor_did = ''
           AND controller_did <> '';
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_scope_authority_v22(connection: &Connection) -> Result<()> {
+    for (table, column, definition) in [
+        ("runtime_task", "agent_handle", "TEXT NOT NULL DEFAULT ''"),
+        ("runtime_task", "requester_user_id", "TEXT"),
+        (
+            "runtime_task",
+            "conversation_scope_kind",
+            "TEXT NOT NULL DEFAULT 'controller_private'",
+        ),
+        (
+            "runtime_task",
+            "conversation_scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "runtime_task",
+            "invocation_authority",
+            "TEXT NOT NULL DEFAULT 'controller'",
+        ),
+        (
+            "hermes_native_sessions",
+            "agent_handle",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "hermes_native_sessions",
+            "scope_kind",
+            "TEXT NOT NULL DEFAULT 'controller_private'",
+        ),
+        (
+            "hermes_native_sessions",
+            "scope_key",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        add_column_if_missing(connection, table, column, definition)?;
+    }
+
+    connection.execute_batch(
+        r#"
+        UPDATE runtime_task
+        SET agent_handle = COALESCE(
+            (SELECT handle FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did),
+            agent_did
+        )
+        WHERE agent_handle = '';
+
+        UPDATE runtime_task
+        SET requester_user_id = controller_user_id,
+            requester_full_handle = CASE
+                WHEN requester_full_handle IS NULL OR requester_full_handle = '' THEN controller_full_handle
+                ELSE requester_full_handle
+            END
+        WHERE trigger_kind = 'controller_direct'
+          AND (requester_user_id IS NULL OR requester_user_id = '');
+
+        UPDATE runtime_task
+        SET conversation_scope_kind = CASE
+                WHEN trigger_kind = 'group_mention' THEN 'group_visible'
+                WHEN trigger_kind = 'controller_direct' THEN 'controller_private'
+                ELSE 'direct'
+            END,
+            conversation_scope_key = CASE
+                WHEN trigger_kind = 'group_mention'
+                    THEN 'group:' || COALESCE(NULLIF(substr(conversation_id, length('group:') + 1), ''), conversation_id, 'unknown')
+                WHEN trigger_kind = 'controller_direct'
+                    THEN 'controller:' || controller_scope_key
+                ELSE 'user:' || COALESCE(NULLIF(requester_user_id, ''), 'unknown') || ':handle:' || COALESCE(NULLIF(requester_full_handle, ''), 'unknown')
+            END,
+            invocation_authority = CASE
+                WHEN trigger_kind = 'controller_direct' THEN 'controller'
+                ELSE 'requester'
+            END
+        WHERE conversation_scope_key = '';
+
+        UPDATE hermes_native_sessions
+        SET agent_handle = COALESCE(
+            (SELECT handle FROM agent_definition WHERE agent_definition.agent_did = hermes_native_sessions.agent_did),
+            agent_did
+        )
+        WHERE agent_handle = '';
+
+        UPDATE hermes_native_sessions
+        SET scope_kind = CASE
+                WHEN conversation_id LIKE 'group:%' THEN 'group_visible'
+                ELSE 'controller_private'
+            END,
+            scope_key = CASE
+                WHEN conversation_id LIKE 'group:%' THEN 'group:' || substr(conversation_id, length('group:') + 1)
+                ELSE 'controller:' || controller_scope_key
+            END
+        WHERE scope_key = '';
         "#,
     )?;
     Ok(())

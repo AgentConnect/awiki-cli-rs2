@@ -507,7 +507,10 @@ fn package_url(base: &str, package_path: &str) -> Result<String> {
     let base = base.trim();
     let package_path = sanitize_manifest_path(package_path)?;
     if base.ends_with(".json") {
-        let parent = base.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let parent = base
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
         if parent.is_empty() {
             bail!("download_base_url cannot join package path from manifest file URL");
         }

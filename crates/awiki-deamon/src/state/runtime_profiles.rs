@@ -3,7 +3,7 @@ use super::*;
 
 impl DaemonState {
     pub fn upsert_runtime_agent_profile(&self, profile: &RuntimeAgentProfile) -> Result<()> {
-        self.upsert_runtime_agent_profile_with_handle(profile, &profile.agent_did)
+        self.upsert_runtime_agent_profile_with_handle(profile, &profile.agent_handle)
     }
 
     pub fn upsert_runtime_agent_profile_with_handle(
@@ -530,10 +530,13 @@ INSERT INTO hermes_native_sessions (
     id,
     runtime_session_id,
     agent_did,
+    agent_handle,
     runtime_profile_id,
     controller_scope_key,
     controller_did,
     session_actor_did,
+    scope_kind,
+    scope_key,
     conversation_id,
     route_key,
     hermes_profile,
@@ -542,14 +545,17 @@ INSERT INTO hermes_native_sessions (
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
 ON CONFLICT(id) DO UPDATE SET
     runtime_session_id = excluded.runtime_session_id,
     agent_did = excluded.agent_did,
+    agent_handle = excluded.agent_handle,
     runtime_profile_id = excluded.runtime_profile_id,
     controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     session_actor_did = excluded.session_actor_did,
+    scope_kind = excluded.scope_kind,
+    scope_key = excluded.scope_key,
     conversation_id = excluded.conversation_id,
     route_key = excluded.route_key,
     hermes_profile = excluded.hermes_profile,
@@ -562,10 +568,13 @@ ON CONFLICT(id) DO UPDATE SET
                     session.id,
                     session.runtime_session_id,
                     session.agent_did,
+                    session.agent_handle,
                     session.runtime_profile_id,
                     session.controller_scope_key,
                     session.controller_did,
                     session.session_actor_did,
+                    session.scope_kind,
+                    session.scope_key,
                     session.conversation_id,
                     session.route_key,
                     session.hermes_profile,
@@ -593,10 +602,13 @@ SELECT
     id,
     runtime_session_id,
     agent_did,
+    agent_handle,
     runtime_profile_id,
     controller_scope_key,
     controller_did,
     session_actor_did,
+    scope_kind,
+    scope_key,
     conversation_id,
     route_key,
     hermes_profile,
@@ -1332,6 +1344,7 @@ WHERE runtime_profile_id = ?1
                     Ok(RuntimeAgentProfile {
                         runtime_profile_id: row.get(0)?,
                         agent_did: row.get(1)?,
+                        agent_handle: definition.handle.clone(),
                         runtime_plugin_id: row.get(2)?,
                         display_name: row.get(3)?,
                         controller_user_id: definition.controller_user_id.clone(),

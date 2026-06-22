@@ -561,6 +561,7 @@ where
 
     let profile = RuntimeAgentProfile {
         agent_did: exchange.did.clone(),
+        agent_handle: exchange.handle.clone(),
         controller_user_id: verified_sender.controller_user_id.clone(),
         controller_full_handle: verified_sender.controller_full_handle.clone(),
         controller_scope_key: verified_sender.controller_scope_key.clone(),
@@ -795,9 +796,19 @@ where
     let reset_count = if let Some(conversation_id) = conversation_id.as_deref() {
         let route = HermesSessionRoute::new(
             runtime_agent.agent_did.clone(),
+            runtime_agent.handle.clone(),
             runtime_profile_id.to_string(),
             daemon_agent.controller_scope_key.clone(),
-            daemon_agent.controller_did.clone(),
+            if conversation_id.starts_with("group:") {
+                "group_visible"
+            } else {
+                "controller_private"
+            },
+            if let Some(group_key) = conversation_id.strip_prefix("group:") {
+                format!("group:{group_key}")
+            } else {
+                format!("controller:{}", daemon_agent.controller_scope_key)
+            },
             Some(conversation_id.to_string()),
             "conversation",
         );

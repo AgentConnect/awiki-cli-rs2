@@ -54,7 +54,8 @@ use crate::runtime::host::{
 };
 use crate::runtime::{
     is_group_conversation_id, runtime_task_matches_profile_controller_scope, RuntimeInstallStatus,
-    RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRunStatus, RuntimeTask,
+    RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
+    RuntimeRunStatus, RuntimeTask,
 };
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
@@ -1126,8 +1127,14 @@ where
             message_id: task_message_id,
             conversation_id: conversation_id.clone(),
             sender_did: message.sender.as_str().to_string(),
+            requester_user_id: authorization.sender_user_id.clone(),
             requester_full_handle: authorization.sender_full_handle.clone(),
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::GroupMention,
+            invocation_authority: group_mention_invocation_authority(
+                &binding,
+                authorization.sender_user_id.as_deref(),
+                authorization.sender_full_handle.as_deref(),
+            ),
             target_agent_did: target_agent_did.to_string(),
             text: task_payload.to_string(),
         },
@@ -1364,6 +1371,20 @@ fn group_agent_mention_task_message_id(
     )
 }
 
+fn group_mention_invocation_authority(
+    binding: &crate::state::RuntimeDaemonBindingRecord,
+    sender_user_id: Option<&str>,
+    sender_full_handle: Option<&str>,
+) -> RuntimeInvocationAuthority {
+    if sender_user_id == Some(binding.controller_user_id.as_str())
+        && sender_full_handle == Some(binding.controller_full_handle.as_str())
+    {
+        RuntimeInvocationAuthority::Controller
+    } else {
+        RuntimeInvocationAuthority::Requester
+    }
+}
+
 fn external_direct_agent_task_payload(
     message_id: &str,
     conversation_id: Option<&str>,
@@ -1480,8 +1501,12 @@ fn route_runtime_controller_text(
             message_id: message_id.to_string(),
             conversation_id,
             sender_did: sender_did.clone(),
+            requester_user_id: verified_sender
+                .as_ref()
+                .map(|sender| sender.controller_user_id.clone()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
             target_agent_did: target_agent_did.to_string(),
             text,
         },
@@ -1632,8 +1657,10 @@ where
             message_id: task_message_id,
             conversation_id,
             sender_did,
+            requester_user_id: authorization.sender_user_id,
             requester_full_handle: authorization.sender_full_handle,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ExternalDirect,
+            invocation_authority: RuntimeInvocationAuthority::Requester,
             target_agent_did: target_agent_did.to_string(),
             text: task_payload.to_string(),
         },
@@ -2118,8 +2145,10 @@ fn run_runtime_task_command(
         message_id,
         conversation_id: message.conversation_id,
         sender_did: verified_sender.sender_did,
+        requester_user_id: Some(verified_sender.controller_user_id),
         requester_full_handle: Some(verified_sender.controller_full_handle),
         trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+        invocation_authority: RuntimeInvocationAuthority::Controller,
         target_agent_did,
         text: payload.text,
     };

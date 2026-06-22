@@ -500,9 +500,11 @@ impl HermesProfileRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HermesSessionRoute {
     pub agent_did: String,
+    pub agent_handle: String,
     pub runtime_profile_id: String,
     pub controller_scope_key: String,
-    pub session_actor_did: String,
+    pub scope_kind: String,
+    pub scope_key: String,
     pub conversation_id: Option<String>,
     pub session_kind: String,
 }
@@ -510,17 +512,21 @@ pub struct HermesSessionRoute {
 impl HermesSessionRoute {
     pub fn new(
         agent_did: impl Into<String>,
+        agent_handle: impl Into<String>,
         runtime_profile_id: impl Into<String>,
         controller_scope_key: impl Into<String>,
-        session_actor_did: impl Into<String>,
+        scope_kind: impl Into<String>,
+        scope_key: impl Into<String>,
         conversation_id: Option<String>,
         session_kind: impl Into<String>,
     ) -> Self {
         Self {
             agent_did: agent_did.into(),
+            agent_handle: agent_handle.into(),
             runtime_profile_id: runtime_profile_id.into(),
             controller_scope_key: controller_scope_key.into(),
-            session_actor_did: session_actor_did.into(),
+            scope_kind: scope_kind.into(),
+            scope_key: scope_key.into(),
             conversation_id,
             session_kind: session_kind.into(),
         }
@@ -530,14 +536,20 @@ impl HermesSessionRoute {
         if self.agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
         }
+        if self.agent_handle.trim().is_empty() {
+            bail!("agent_handle must not be empty");
+        }
         if self.runtime_profile_id.trim().is_empty() {
             bail!("runtime_profile_id must not be empty");
         }
         if self.controller_scope_key.trim().is_empty() {
             bail!("controller_scope_key must not be empty");
         }
-        if self.session_actor_did.trim().is_empty() {
-            bail!("session_actor_did must not be empty");
+        if self.scope_kind.trim().is_empty() {
+            bail!("scope_kind must not be empty");
+        }
+        if self.scope_key.trim().is_empty() {
+            bail!("scope_key must not be empty");
         }
         if self.session_kind.trim().is_empty() {
             bail!("session_kind must not be empty");
@@ -548,13 +560,10 @@ impl HermesSessionRoute {
     pub fn route_key(&self) -> String {
         format!(
             "hermes:{}:{}:{}:{}:{}",
-            self.agent_did,
+            self.agent_handle,
             self.controller_scope_key,
-            self.session_actor_did,
-            self.conversation_id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(""),
+            self.scope_kind,
+            self.scope_key,
             self.session_kind
         )
     }
@@ -565,10 +574,13 @@ pub struct HermesNativeSessionRecord {
     pub id: String,
     pub runtime_session_id: String,
     pub agent_did: String,
+    pub agent_handle: String,
     pub runtime_profile_id: String,
     pub controller_scope_key: String,
     pub controller_did: String,
     pub session_actor_did: String,
+    pub scope_kind: String,
+    pub scope_key: String,
     pub conversation_id: Option<String>,
     pub route_key: String,
     pub hermes_profile: String,
@@ -803,11 +815,14 @@ impl HermesNativeSessionRecord {
             runtime_session_id: format!("rs_{id}"),
             id,
             agent_did: route.agent_did.clone(),
+            agent_handle: route.agent_handle.clone(),
             runtime_profile_id: route.runtime_profile_id.clone(),
             controller_scope_key: route.controller_scope_key.clone(),
             controller_did,
-            session_actor_did: route.session_actor_did.clone(),
+            session_actor_did: route.scope_key.clone(),
             conversation_id: route.conversation_id.clone(),
+            scope_kind: route.scope_kind.clone(),
+            scope_key: route.scope_key.clone(),
             route_key,
             hermes_profile: hermes_profile.into(),
             hermes_session_id,
