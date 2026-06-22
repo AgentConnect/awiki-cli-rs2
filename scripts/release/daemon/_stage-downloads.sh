@@ -10,7 +10,7 @@ usage() {
 Stage daemon installer files into the official download-service layout.
 
 Usage:
-  scripts/release/daemon/_stage-downloads.sh --version VERSION (--base-url URL | --download-base-url URL) [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
+  scripts/release/daemon/_stage-downloads.sh --version VERSION (--base-url URL | --download-base-url URL) [--download-mirror-url URL ...] [--min-supported VERSION] [--source-dir DIR] [--output-dir DIR] [--allow-partial]
 
 Options:
   --version VERSION   Daemon release version, with or without a leading v.
@@ -21,6 +21,11 @@ Options:
                       https://example.com/daemon. When --base-url is omitted, URL
                       must end with /daemon so the backend service base can be
                       inferred safely.
+  --download-mirror-url URL
+                      Additional daemon static download root embedded in
+                      install.sh. May be repeated. Mirrors must expose the same
+                      /install.sh, /releases/manifest.json, and release package
+                      layout as --download-base-url.
   --min-supported VERSION
                       Minimum supported daemon version written to manifest. Defaults to --version.
   --source-dir DIR    Directory containing awiki-deamon-*.tar.gz packages. Defaults to dist.
@@ -114,6 +119,7 @@ SOURCE_DIR="${ROOT_DIR}/dist"
 OUTPUT_DIR="${ROOT_DIR}/dist/daemon"
 BASE_URL=""
 DOWNLOAD_BASE_URL=""
+DOWNLOAD_MIRROR_URLS=()
 ALLOW_PARTIAL=0
 
 while [[ $# -gt 0 ]]; do
@@ -141,6 +147,12 @@ while [[ $# -gt 0 ]]; do
     --download-base-url)
       DOWNLOAD_BASE_URL="${2:-}"
       [[ -n "${DOWNLOAD_BASE_URL}" ]] || die "--download-base-url requires a value"
+      shift 2
+      ;;
+    --download-mirror-url)
+      mirror_url="${2:-}"
+      [[ -n "${mirror_url}" ]] || die "--download-mirror-url requires a value"
+      DOWNLOAD_MIRROR_URLS+=("${mirror_url}")
       shift 2
       ;;
     --min-supported)
@@ -184,6 +196,28 @@ if [[ -z "${DOWNLOAD_BASE_URL}" ]]; then
 fi
 validate_base_url "${BASE_URL}"
 validate_download_base_url "${DOWNLOAD_BASE_URL}"
+normalized_mirror_urls=()
+seen_download_urls=$'\n'
+seen_download_urls+="${DOWNLOAD_BASE_URL}"$'\n'
+if ((${#DOWNLOAD_MIRROR_URLS[@]})); then
+  for mirror_url in "${DOWNLOAD_MIRROR_URLS[@]}"; do
+    mirror_url="$(trim_trailing_slash "${mirror_url}")"
+    validate_download_base_url "${mirror_url}"
+    case "${seen_download_urls}" in
+      *$'\n'"${mirror_url}"$'\n'*) ;;
+      *)
+        normalized_mirror_urls+=("${mirror_url}")
+        seen_download_urls+="${mirror_url}"$'\n'
+        ;;
+    esac
+  done
+fi
+DOWNLOAD_MIRROR_URLS=()
+if ((${#normalized_mirror_urls[@]})); then
+  for mirror_url in "${normalized_mirror_urls[@]}"; do
+    DOWNLOAD_MIRROR_URLS+=("${mirror_url}")
+  done
+fi
 SOURCE_DIR="$(resolve_path_arg "${SOURCE_DIR}")"
 OUTPUT_DIR="$(resolve_path_arg "${OUTPUT_DIR}")"
 [[ -d "${SOURCE_DIR}" ]] || die "source directory does not exist: ${SOURCE_DIR}"
@@ -205,16 +239,28 @@ for package in "${packages[@]}"; do
 done
 
 (cd "${version_dir}" && checksum_packages)
-python3 - "${ROOT_DIR}/scripts/release/daemon/_install.sh.template" "${OUTPUT_DIR}/install.sh" "${BASE_URL}" "${DOWNLOAD_BASE_URL}" <<'PY'
+download_base_urls_file="${OUTPUT_DIR}/.download-base-urls.tmp"
+{
+  printf '%s\n' "${DOWNLOAD_BASE_URL}"
+  if ((${#DOWNLOAD_MIRROR_URLS[@]})); then
+    for mirror_url in "${DOWNLOAD_MIRROR_URLS[@]}"; do
+      printf '%s\n' "${mirror_url}"
+    done
+  fi
+} > "${download_base_urls_file}"
+
+python3 - "${ROOT_DIR}/scripts/release/daemon/_install.sh.template" "${OUTPUT_DIR}/install.sh" "${BASE_URL}" "${download_base_urls_file}" <<'PY'
 import pathlib
 import sys
 
-template_path, output_path, base_url, download_base_url = sys.argv[1:5]
+template_path, output_path, base_url, download_base_urls_path = sys.argv[1:5]
 text = pathlib.Path(template_path).read_text(encoding="utf-8")
+download_base_urls = pathlib.Path(download_base_urls_path).read_text(encoding="utf-8").strip()
 text = text.replace("__AWIKI_DAEMON_BASE_URL__", base_url)
-text = text.replace("__AWIKI_DAEMON_DOWNLOAD_BASE_URL__", download_base_url)
+text = text.replace("__AWIKI_DAEMON_DOWNLOAD_BASE_URLS__", download_base_urls)
 pathlib.Path(output_path).write_text(text, encoding="utf-8")
 PY
+rm -f "${download_base_urls_file}"
 chmod 0755 "${OUTPUT_DIR}/install.sh"
 
 manifest_args=(
@@ -222,7 +268,6 @@ manifest_args=(
   --version "${VERSION}"
   --dist "${version_dir}"
   --output "${release_dir}/manifest.json"
-  --base-url "${DOWNLOAD_BASE_URL}/releases"
 )
 if [[ -n "${MIN_SUPPORTED}" ]]; then
   manifest_args+=(--min-supported "${MIN_SUPPORTED}")

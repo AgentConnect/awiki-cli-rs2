@@ -53,7 +53,7 @@ struct DaemonReleasePackage {
     version: String,
     os: String,
     arch: String,
-    url: String,
+    path: String,
     sha256: String,
 }
 
@@ -201,9 +201,10 @@ async fn upgrade_daemon_async(
             service,
         });
     }
-    let archive_bytes = read_url_bytes(&package.url)
+    let package_url = package_url(&request.download_base_url, &package.path)?;
+    let archive_bytes = read_url_bytes(&package_url)
         .await
-        .with_context(|| format!("download daemon package {}", public_url(&package.url)))?;
+        .with_context(|| format!("download daemon package {}", public_url(&package_url)))?;
     let actual_sha = sha256_hex(&archive_bytes);
     if !actual_sha.eq_ignore_ascii_case(package.sha256.trim()) {
         bail!("daemon package sha256 mismatch");
@@ -500,6 +501,44 @@ fn manifest_url(base: &str) -> String {
     } else {
         format!("{}/releases/manifest.json", base.trim_end_matches('/'))
     }
+}
+
+fn package_url(base: &str, package_path: &str) -> Result<String> {
+    let base = base.trim();
+    let package_path = sanitize_manifest_path(package_path)?;
+    if base.ends_with(".json") {
+        let parent = base.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        if parent.is_empty() {
+            bail!("download_base_url cannot join package path from manifest file URL");
+        }
+        return Ok(format!(
+            "{}/{}",
+            parent.trim_end_matches('/'),
+            package_path.trim_start_matches('/')
+        ));
+    }
+    Ok(format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        package_path.trim_start_matches('/')
+    ))
+}
+
+fn sanitize_manifest_path(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("daemon package path must not be empty");
+    }
+    if value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.contains("/../")
+        || value.ends_with("/..")
+        || value.contains('\\')
+    {
+        bail!("daemon package path is unsafe");
+    }
+    Ok(value.to_string())
 }
 
 fn read_release_manifest(url: &str) -> Result<DaemonReleaseManifest> {
@@ -823,7 +862,14 @@ mod tests {
     }
 
     fn write_manifest(root: &Path, version: &str, archive: &Path, sha: &str) -> PathBuf {
-        let manifest = root.join("manifest.json");
+        let releases = root.join("releases");
+        std::fs::create_dir_all(&releases).unwrap();
+        let manifest = releases.join("manifest.json");
+        let package_path = archive
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         std::fs::write(
             &manifest,
             serde_json::to_vec_pretty(&serde_json::json!({
@@ -833,7 +879,7 @@ mod tests {
                     "version": version,
                     "os": release_os().unwrap(),
                     "arch": release_arch().unwrap(),
-                    "url": format!("file://{}", archive.display()),
+                    "path": package_path,
                     "sha256": sha,
                 }]
             }))
@@ -911,13 +957,13 @@ mod tests {
         )
         .unwrap();
         let (archive, sha) = create_package(root.path(), CURRENT_DAEMON_VERSION);
-        let manifest = write_manifest(root.path(), CURRENT_DAEMON_VERSION, &archive, &sha);
+        write_manifest(root.path(), CURRENT_DAEMON_VERSION, &archive, &sha);
 
         let report = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
                 target_version: "latest".to_string(),
-                download_base_url: format!("file://{}", manifest.display()),
+                download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
             },
@@ -967,13 +1013,13 @@ mod tests {
         )
         .unwrap();
         let (archive, sha) = create_package(root.path(), "0.2.0");
-        let manifest = write_manifest(root.path(), "0.2.0", &archive, &sha);
+        write_manifest(root.path(), "0.2.0", &archive, &sha);
 
         let report = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
                 target_version: "latest".to_string(),
-                download_base_url: format!("file://{}", manifest.display()),
+                download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
             },
@@ -1024,13 +1070,13 @@ mod tests {
         std::os::unix::fs::symlink("../0.1.0/awiki-deamon", current_dir.join("awiki-deamon"))
             .unwrap();
         let (archive, _sha) = create_package(root.path(), "0.2.0");
-        let manifest = write_manifest(root.path(), "0.2.0", &archive, "deadbeef");
+        write_manifest(root.path(), "0.2.0", &archive, "deadbeef");
 
         let error = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
                 target_version: "latest".to_string(),
-                download_base_url: format!("file://{}", manifest.display()),
+                download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
             },
@@ -1077,13 +1123,13 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         let sha = sha256_hex(&std::fs::read(&bad_archive).unwrap());
-        let manifest = write_manifest(root.path(), "0.2.0", &bad_archive, &sha);
+        write_manifest(root.path(), "0.2.0", &bad_archive, &sha);
 
         let error = upgrade_daemon(
             &config,
             DaemonUpgradeRequest {
                 target_version: "latest".to_string(),
-                download_base_url: format!("file://{}", manifest.display()),
+                download_base_url: format!("file://{}", root.path().display()),
                 bin_root: bin_root.clone(),
                 restart_service: false,
             },

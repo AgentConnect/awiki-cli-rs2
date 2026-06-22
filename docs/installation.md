@@ -72,7 +72,11 @@ Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。GitHub Acti
 构建 Linux amd64、macOS arm64 和 macOS amd64 三个平台包；目标服务器下载 artifacts
 后发布到本机 `/var/www/awiki-web/daemon`。
 发布配置文件不配置当前版本号或最低可用版本号；第一版流程中，manifest 的
-`min_supported` 自动等于当前 Daemon 版本。
+`min_supported` 自动等于当前 Daemon 版本。`base_url` 是后端服务/API 根地址；
+`download_base_url` 是当前发布机器提供的 daemon 静态下载根地址，省略时默认使用
+`base_url/daemon`；`download_mirror_urls` 是可选镜像源列表，只写入安装脚本。
+镜像节点通过 `scripts/release/daemon/sync-download-mirror.sh` 从主源 HTTP(S) 拉取同步，
+同步脚本不接受命令行参数，只读取同目录 `sync-download-mirror.toml`。
 
 Flutter SDK 变更还需要：
 
