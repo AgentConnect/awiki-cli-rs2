@@ -16,7 +16,10 @@ fn init_state_creates_daemon_and_im_core_databases() {
     assert!(root.path().join("identity").is_dir());
     assert!(root.path().join("runtime").join("cache").is_dir());
     assert!(root.path().join("runtime").join("tmp").is_dir());
-    assert!(root.path().join("rpc").is_dir());
+    assert!(status
+        .local_socket_path
+        .parent()
+        .is_some_and(|parent| parent.is_dir()));
     assert!(root.path().join("audit").is_dir());
     assert_eq!(status.daemon_schema_version, EXPECTED_DAEMON_SCHEMA_VERSION);
     assert!(status.im_core_schema_version.is_some());

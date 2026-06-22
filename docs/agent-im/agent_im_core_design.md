@@ -196,6 +196,8 @@ Agent 可以很强，但必须可控。所有自动化能力都要可配置、�
 
 当前 Hermes profile / SOUL 对 Hermes 的边界限制很清楚：Hermes 通过 daemon wrapper/local RPC 获得能力，不直接连接 message-service，不持有 DID 私钥，不持久化 run capability token。这是正确的分层。后续 APP 反向操纵、E2EE 转发、代发消息都应继续保留这个边界。
 
+Daemon 启动 Hermes TUI gateway 时还必须把工具面收窄到 AWiki 消息 Agent 所需的最小集合。默认注入 `HERMES_TUI_TOOLSETS=terminal,skills`，避免继承 Hermes 默认 `hermes-cli` 全量工具集后在冷启动阶段安装 browser / Chromium 依赖，导致首条消息返回 `agent initialization timed out`。如果运维确实需要扩展 Hermes 工具面，应通过 `AWIKI_HERMES_TUI_TOOLSETS` 显式覆盖并承担冷启动依赖成本。
+
 ## 2.2 需要调整的点
 
 ### 2.2.1 MVP 明确使用用户 DID 子私钥，不导入用户主私钥

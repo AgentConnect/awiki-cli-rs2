@@ -21,7 +21,10 @@ const HERMES_GATEWAY_CMD_ENV: &str = "AWIKI_HERMES_GATEWAY_CMD";
 const HERMES_BIN_ENV: &str = "AWIKI_HERMES_BIN";
 const AWIKI_DAEMON_RPC_SOCKET_ENV: &str = "AWIKI_DAEMON_RPC_SOCKET";
 const AWIKI_RUNTIME_RPC_TOKEN_ENV: &str = "AWIKI_RUNTIME_RPC_TOKEN";
+const AWIKI_HERMES_TUI_TOOLSETS_ENV: &str = "AWIKI_HERMES_TUI_TOOLSETS";
+const HERMES_TUI_TOOLSETS_ENV: &str = "HERMES_TUI_TOOLSETS";
 const HERMES_GATEWAY_DETECTION_READY_TIMEOUT: Duration = Duration::from_secs(4);
+const DEFAULT_AWIKI_HERMES_TUI_TOOLSETS: &str = "terminal,skills";
 
 pub trait HermesGateway {
     fn check_installation(&self) -> Result<RuntimeInstallStatus>;
@@ -873,6 +876,7 @@ fn spawn_gateway_process(
         .env("AWIKI_HERMES_PROFILE", &profile.hermes_profile)
         .env("AWIKI_HERMES_HOME", &profile.hermes_home)
         .env("HERMES_YOLO_MODE", "1")
+        .env(HERMES_TUI_TOOLSETS_ENV, awiki_hermes_tui_toolsets())
         .envs(extra_env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -915,6 +919,14 @@ fn spawn_gateway_process(
         process_context_key,
         next_id: 1,
     })
+}
+
+fn awiki_hermes_tui_toolsets() -> String {
+    std::env::var(AWIKI_HERMES_TUI_TOOLSETS_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_AWIKI_HERMES_TUI_TOOLSETS.to_string())
 }
 
 fn ensure_runtime_wrapper_launcher(hermes_home: &Path) -> Result<PathBuf> {
@@ -1658,6 +1670,38 @@ fn fake_callbacks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn clear(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn default_session_create_timeout_allows_cold_agent_initialization() {
@@ -1666,5 +1710,21 @@ mod tests {
         assert_eq!(timeouts.gateway_ready, Duration::from_secs(10));
         assert!(timeouts.session_create >= Duration::from_secs(120));
         assert_eq!(timeouts.prompt_first_event, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn default_awiki_hermes_tui_toolsets_avoid_browser_bootstrap() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::clear(AWIKI_HERMES_TUI_TOOLSETS_ENV);
+
+        assert_eq!(awiki_hermes_tui_toolsets(), "terminal,skills");
+    }
+
+    #[test]
+    fn awiki_hermes_tui_toolsets_can_be_overridden() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(AWIKI_HERMES_TUI_TOOLSETS_ENV, "terminal,file");
+
+        assert_eq!(awiki_hermes_tui_toolsets(), "terminal,file");
     }
 }
