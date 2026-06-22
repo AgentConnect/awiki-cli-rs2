@@ -1720,6 +1720,80 @@ fn failed_runtime_run(run_id: &str, task_id: &str) -> RuntimeRun {
 }
 
 #[test]
+fn runtime_retry_queue_v26_migrates_legacy_table_without_due_column() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("daemon.db");
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations (version, applied_at)
+            VALUES (25, 'legacy-fixture');
+
+            CREATE TABLE runtime_retry_queue (
+                retry_id TEXT PRIMARY KEY,
+                original_run_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                agent_did TEXT NOT NULL,
+                runtime_profile_id TEXT NOT NULL,
+                runtime_plugin_id TEXT NOT NULL,
+                workspace_id TEXT,
+                status TEXT NOT NULL,
+                requested_by_command_id TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            INSERT INTO runtime_retry_queue (
+                retry_id,
+                original_run_id,
+                task_id,
+                agent_did,
+                runtime_profile_id,
+                runtime_plugin_id,
+                workspace_id,
+                status,
+                requested_by_command_id,
+                attempts,
+                created_at_ms,
+                updated_at_ms
+            ) VALUES (
+                'retry_legacy',
+                'run_legacy',
+                'task_legacy',
+                'did:agent:legacy',
+                'profile_legacy',
+                'runtime.hermes',
+                NULL,
+                'queued',
+                'cmd_legacy',
+                0,
+                100,
+                100
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let migrated = state
+        .list_queued_runtime_retries_due(0, 10)
+        .unwrap()
+        .into_iter()
+        .map(|retry| retry.retry_id)
+        .collect::<Vec<_>>();
+    assert_eq!(migrated, vec!["retry_legacy"]);
+}
+
+#[test]
 fn runtime_retry_queue_records_due_time_and_filters_future_retries() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

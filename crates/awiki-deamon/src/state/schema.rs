@@ -325,8 +325,6 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
         ON runtime_retry_queue(status, created_at_ms);
 
-        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
-        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
 
         CREATE TABLE IF NOT EXISTS cli_route_message_queue (
             queue_id TEXT PRIMARY KEY,
@@ -1022,8 +1020,6 @@ fn migrate_runtime_retry_queue_v12(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_status
         ON runtime_retry_queue(status, created_at_ms);
 
-        CREATE INDEX IF NOT EXISTS idx_runtime_retry_queue_due
-        ON runtime_retry_queue(status, next_attempt_at_ms, created_at_ms, retry_id);
         "#,
     )?;
     Ok(())
