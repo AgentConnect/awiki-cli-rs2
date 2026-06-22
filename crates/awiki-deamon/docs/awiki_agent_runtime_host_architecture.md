@@ -1098,7 +1098,21 @@ daemon 执行：
 10. 向 App 回发创建结果
 ```
 
-### 6.3 Token 方案整体设计
+### 6.3 删除 daemon 与本地服务收敛
+
+App 发送 `daemon.delete` 后，daemon 必须按以下顺序收敛本地和远端状态：
+
+1. 校验消息来自 daemon agent 的 controller。
+2. 将 daemon 与其 runtime agent 标记为 archived，并调用 user-service archive 接口。
+3. 向 App 回发 `daemon archive started` 与 `daemon archived` 状态。
+4. 写入本地 finalizer marker，让 foreground loop 在状态回传后立即进入自删除收敛。
+5. foreground 启动和每轮 inbox 处理后都会先检查 finalizer marker；即使 marker 写入后进程被重启，也不能先因为“没有 active agent identity”而失败。
+6. foreground 自删除收敛时先移除 systemd user / LaunchAgent 注册，避免服务因为 `Restart=on-failure` 或 `KeepAlive` 在身份已归档后继续重启。
+7. 移动 state root 到 daemon archive 目录并以成功退出结束 foreground。
+
+不能依赖“进程内延迟线程”完成最后清理：daemon 身份归档后，下一次启动会因为没有 configured agent identity 失败；如果服务注册还在，就会形成无身份重启循环。
+
+### 6.4 Token 方案整体设计
 
 当前注册 DID 的手法都使用 Token 机制。Token 方案不是单个 Handle Token，而是一组短期、带 scope、可验证、可过期、可撤销的授权凭证。
 

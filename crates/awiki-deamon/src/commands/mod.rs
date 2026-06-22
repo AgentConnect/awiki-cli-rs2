@@ -2135,11 +2135,7 @@ where
                     "runtime_agent_count": runtimes.len(),
                 }),
             )?;
-            crate::archive::schedule_daemon_archive_finalizer(
-                config.clone(),
-                report.archive_id.clone(),
-                std::time::Duration::from_millis(1500),
-            )?;
+            crate::archive::write_pending_daemon_archive_finalizer(config, &report.archive_id)?;
             report.finalizer_scheduled = true;
             Ok(())
         }

@@ -34,6 +34,11 @@ pub struct DaemonArchiveFinalizeReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PendingDaemonArchiveFinalizer {
+    archive_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchivedPath {
     pub kind: String,
     pub from: PathBuf,
@@ -179,19 +184,80 @@ pub fn schedule_daemon_archive_finalizer(
         .name("awiki-daemon-archive-finalizer".to_string())
         .spawn(move || {
             std::thread::sleep(delay);
-            let _ = finalize_daemon_archive(&config, &archive_id);
+            let _ = finalize_daemon_archive_for_foreground_shutdown(&config, &archive_id);
         })
         .context("spawn daemon archive finalizer")?;
     Ok(())
+}
+
+pub fn write_pending_daemon_archive_finalizer(
+    config: &DaemonConfig,
+    archive_id: &str,
+) -> Result<()> {
+    let pending = PendingDaemonArchiveFinalizer {
+        archive_id: archive_id.to_string(),
+    };
+    let path = pending_daemon_archive_finalizer_path(config);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create daemon archive finalizer marker parent {}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&pending)?)
+        .with_context(|| format!("write daemon archive finalizer marker {}", path.display()))
+}
+
+pub fn pending_daemon_archive_finalizer(config: &DaemonConfig) -> Result<Option<String>> {
+    let path = pending_daemon_archive_finalizer_path(config);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let pending: PendingDaemonArchiveFinalizer = serde_json::from_slice(
+        &std::fs::read(&path)
+            .with_context(|| format!("read daemon archive finalizer marker {}", path.display()))?,
+    )
+    .with_context(|| format!("parse daemon archive finalizer marker {}", path.display()))?;
+    if pending.archive_id.trim().is_empty() {
+        bail!("daemon archive finalizer marker archive_id must not be empty");
+    }
+    Ok(Some(pending.archive_id))
 }
 
 pub fn finalize_daemon_archive(
     config: &DaemonConfig,
     archive_id: &str,
 ) -> Result<DaemonArchiveFinalizeReport> {
+    finalize_daemon_archive_with_service_action(config, archive_id, ServiceAction::Uninstall)
+}
+
+pub fn finalize_daemon_archive_for_foreground_shutdown(
+    config: &DaemonConfig,
+    archive_id: &str,
+) -> Result<DaemonArchiveFinalizeReport> {
+    finalize_daemon_archive_with_service_action(
+        config,
+        archive_id,
+        ServiceAction::RemoveRegistration,
+    )
+}
+
+fn finalize_daemon_archive_with_service_action(
+    config: &DaemonConfig,
+    archive_id: &str,
+    service_action: ServiceAction,
+) -> Result<DaemonArchiveFinalizeReport> {
     let archive_dir = daemon_archive_dir(config, archive_id);
     std::fs::create_dir_all(&archive_dir)
         .with_context(|| format!("create daemon archive {}", archive_dir.display()))?;
+    let service_uninstalled = if should_uninstall_product_service(config)? {
+        let executable = crate::service::default_executable_path()?;
+        manage_service(config, &executable, service_action).is_ok()
+    } else {
+        false
+    };
     let archived_state_root = archive_dir.join("state");
     let mut state_root_moved = false;
     if config.state_root.exists() && !archived_state_root.exists() {
@@ -208,12 +274,6 @@ pub fn finalize_daemon_archive(
         })?;
         state_root_moved = true;
     }
-    let service_uninstalled = if should_uninstall_product_service(config)? {
-        let executable = crate::service::default_executable_path()?;
-        manage_service(config, &executable, ServiceAction::Uninstall).is_ok()
-    } else {
-        false
-    };
     write_manifest(
         &archive_dir,
         json!({
@@ -230,6 +290,13 @@ pub fn finalize_daemon_archive(
         service_uninstalled,
         state_root_moved,
     })
+}
+
+fn pending_daemon_archive_finalizer_path(config: &DaemonConfig) -> PathBuf {
+    config
+        .state_root
+        .join("run")
+        .join("daemon-archive-finalizer.json")
 }
 
 fn should_uninstall_product_service(config: &DaemonConfig) -> Result<bool> {
@@ -460,6 +527,46 @@ mod tests {
                 .join(archive_id)
                 .join("state")
         );
+        assert!(report.state_root_moved);
+        assert!(!report.service_uninstalled);
+        assert!(report.archived_state_root.join("daemon.db").is_file());
+    }
+
+    #[test]
+    fn pending_daemon_archive_finalizer_round_trips_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+
+        assert!(pending_daemon_archive_finalizer(&config).unwrap().is_none());
+
+        write_pending_daemon_archive_finalizer(&config, "archive-daemon-1").unwrap();
+
+        assert_eq!(
+            pending_daemon_archive_finalizer(&config)
+                .unwrap()
+                .as_deref(),
+            Some("archive-daemon-1")
+        );
+    }
+
+    #[test]
+    fn foreground_shutdown_finalizer_moves_dev_state_root() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        std::fs::write(config.state_root.join("daemon.db"), b"state").unwrap();
+        let archive_id = format!(
+            "foreground-shutdown-daemon-{}",
+            root.path()
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("temp")
+        );
+
+        let report = finalize_daemon_archive_for_foreground_shutdown(&config, &archive_id).unwrap();
+
+        assert_eq!(report.archive_id, archive_id);
         assert!(report.state_root_moved);
         assert!(!report.service_uninstalled);
         assert!(report.archived_state_root.join("daemon.db").is_file());

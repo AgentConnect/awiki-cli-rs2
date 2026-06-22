@@ -22,6 +22,7 @@ pub enum ServiceAction {
     Stop,
     Restart,
     Uninstall,
+    RemoveRegistration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +322,17 @@ pub(crate) mod macos {
                         .with_context(|| format!("remove LaunchAgent {}", path.display()))?;
                 }
             }
+            ServiceAction::RemoveRegistration => {
+                let _ = run_status(
+                    std::process::Command::new("launchctl")
+                        .arg("disable")
+                        .arg(format!("{domain}/{LABEL}")),
+                )?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove LaunchAgent {}", path.display()))?;
+                }
+            }
             ServiceAction::Status => {}
         }
         let running = run_status(
@@ -513,6 +525,23 @@ WantedBy=default.target
                 let _ = run_status(
                     std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
                 )?;
+            }
+            ServiceAction::RemoveRegistration => {
+                let _ = run_status(
+                    std::process::Command::new("systemctl").args(["--user", "disable", UNIT_NAME]),
+                )?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove systemd unit {}", path.display()))?;
+                }
+                let _ = run_status(
+                    std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
+                )?;
+                let _ = run_status(std::process::Command::new("systemctl").args([
+                    "--user",
+                    "reset-failed",
+                    UNIT_NAME,
+                ]))?;
             }
             ServiceAction::Status => {}
         }
