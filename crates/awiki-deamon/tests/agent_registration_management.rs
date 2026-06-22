@@ -3520,7 +3520,10 @@ fn message_agent_binding_disable_command_stops_active_binding() {
         disabled.payload["result"]["command"],
         "message_agent.binding.disable"
     );
-    assert_eq!(disabled.payload["result"]["runtime_agent_did"], created.agent_did);
+    assert_eq!(
+        disabled.payload["result"]["runtime_agent_did"],
+        created.agent_did
+    );
 }
 
 #[test]

@@ -793,9 +793,7 @@ mod tests {
             items[0].diagnostics_summary["config_summary"]["service_installed"],
             false
         );
-        assert!(
-            items[0].diagnostics_summary["bootstrap_public_key_b64u"].is_null()
-        );
+        assert!(items[0].diagnostics_summary["bootstrap_public_key_b64u"].is_null());
         assert!(
             items[0].diagnostics_summary["config_summary"]["bootstrap_public_key_b64u"]
                 .as_str()

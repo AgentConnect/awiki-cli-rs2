@@ -3017,17 +3017,20 @@ fn claude_code_driver_config_defaults_to_host_home_diagnostic() {
 }
 
 #[test]
-fn claude_code_driver_config_ignores_driver_config_binary_path() {
+fn claude_code_driver_config_reads_driver_config_binary_path_when_profile_path_missing() {
     let mut cli_profile =
         CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "claude-code").unwrap();
     cli_profile.driver_config_json = json!({
-        "binary_path": "/tmp/not-trusted-claude",
+        "binary_path": "/tmp/configured-claude",
         "setting_sources": "user"
     });
 
     let config = ClaudeCodeDriverConfig::from_profile(&cli_profile).unwrap();
 
-    assert_eq!(config.binary_path, std::path::PathBuf::from("claude"));
+    assert_eq!(
+        config.binary_path,
+        std::path::PathBuf::from("/tmp/configured-claude")
+    );
 }
 
 #[cfg(unix)]

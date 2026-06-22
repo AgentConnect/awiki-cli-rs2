@@ -2123,7 +2123,11 @@ mod tests {
             .unwrap()
             .starts_with('z'));
         let public_key = URL_SAFE_NO_PAD
-            .decode(config_summary["bootstrap_public_key_b64u"].as_str().unwrap())
+            .decode(
+                config_summary["bootstrap_public_key_b64u"]
+                    .as_str()
+                    .unwrap(),
+            )
             .unwrap();
         assert_eq!(public_key.len(), 32);
 
@@ -2166,9 +2170,11 @@ mod tests {
             daemon_item.diagnostics_summary["config_summary"]["bootstrap_key_status"],
             "ready"
         );
-        assert!(daemon_item.diagnostics_summary["config_summary"]["bootstrap_public_key_b64u"]
-            .as_str()
-            .is_some());
+        assert!(
+            daemon_item.diagnostics_summary["config_summary"]["bootstrap_public_key_b64u"]
+                .as_str()
+                .is_some()
+        );
         let dump = serde_json::to_string(&items).unwrap();
         assert!(!dump.contains("PRIVATE KEY"));
         assert!(!dump.contains("token"));

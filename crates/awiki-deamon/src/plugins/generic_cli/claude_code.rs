@@ -94,6 +94,7 @@ impl ClaudeCodeDriverConfig {
         let binary_path = profile
             .binary_path
             .clone()
+            .or_else(|| string_field(config, "binary_path").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY));
         let sandbox = string_field(config, "sandbox")
             .or_else(|| profile.default_sandbox.clone())
