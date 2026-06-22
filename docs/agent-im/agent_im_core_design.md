@@ -7,6 +7,12 @@
 > Message Agent MVP 契约。当前权威方案以
 > `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
 > 以及本仓库代码中的 secure bootstrap / no-send 实现为准。
+>
+> 2026-06-22 实现备注：daemon 的 Message Agent delegated inbox 会忽略
+> 已绑定 daemon/runtime 自己发给 App 的状态、sync、action 控制消息，不再把它们
+> 当作用户消息二次同步；轮询页大小提升到 100，用于降低控制消息积压时真实
+> 用户消息被挤出首屏的风险。macOS 本地 RPC socket 默认使用 `run/d.sock`，
+> 避免深层 E2E state root 下触发 Unix domain socket 路径长度限制。
 
 > 目标分支：`feature/release-0526/agent-im-hutong`  
 > 相关仓库：`awiki-cli-rs2`、`awiki-me`、`user-service`、`message-service`、ANP SDK / `im-core` 兼容扩展；长期再涉及 `AgentNetworkProtocol` delegated proof  

@@ -35,7 +35,7 @@ use crate::state::{
 use crate::DaemonConfig;
 
 const DEFAULT_SCOPE: &str = "default_plain";
-const DEFAULT_LIMIT: u32 = 20;
+const DEFAULT_LIMIT: u32 = 100;
 const EVENT_SCHEMA_USER_MESSAGE: &str = "awiki.user_message.default_plain.v1";
 const EVENT_SCHEMA_E2EE_OPAQUE: &str = "awiki.user_message.e2ee_opaque.v1";
 const MESSAGE_SYNC_SCHEMA: &str = "awiki.message.sync.v1";
@@ -973,7 +973,8 @@ where
     D: UserDelegatedMessageDispatcher,
 {
     let source_message_id = message.id.as_str().to_string();
-    if is_app_recovery_control_message(message) {
+    if is_bound_agent_control_message(binding, message) || is_app_recovery_control_message(message)
+    {
         return process_app_recovery_control_message(state, binding, message);
     }
     if is_e2ee_opaque_message(message) {
@@ -1380,6 +1381,14 @@ fn is_system_control_payload(payload: &Value) -> bool {
         .get("schema")
         .and_then(Value::as_str)
         .is_some_and(|schema| schema.starts_with("awiki."))
+}
+
+fn is_bound_agent_control_message(
+    binding: &AppMessageAgentBindingRecord,
+    message: &Message,
+) -> bool {
+    let sender = message.sender.as_str();
+    sender == binding.daemon_agent_did || sender == binding.runtime_agent_did
 }
 
 fn is_app_recovery_control_message(message: &Message) -> bool {
