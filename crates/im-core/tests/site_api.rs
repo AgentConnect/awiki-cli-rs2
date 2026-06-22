@@ -10,6 +10,7 @@ use im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]
+#[cfg(not(feature = "blocking"))]
 fn site_public_sync_api_fails_closed_by_default() {
     let fixture = Fixture::new();
     let core = fixture.core("https://example.test".to_owned());
@@ -25,6 +26,34 @@ fn site_public_sync_api_fails_closed_by_default() {
         err,
         ImError::UnsupportedCapability { capability } if capability == "sync-http"
     ));
+}
+
+#[test]
+#[cfg(feature = "blocking")]
+fn site_public_sync_api_dispatches_when_blocking_feature_is_enabled() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![json!({
+        "domain": "tenant.example",
+        "body": "# Home"
+    })]);
+    let core = fixture.core(server.base_url());
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .unwrap();
+
+    let root = client
+        .site()
+        .get_root(SiteDomain::parse("tenant.example").unwrap())
+        .unwrap();
+    assert_eq!(root.domain.as_str(), "tenant.example");
+    assert_eq!(root.body.as_deref(), Some("# Home"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/site/rpc");
+    assert_eq!(requests[0].rpc_method, "get_root");
+    assert_eq!(requests[0].params, json!({ "domain": "tenant.example" }));
 }
 
 #[tokio::test]

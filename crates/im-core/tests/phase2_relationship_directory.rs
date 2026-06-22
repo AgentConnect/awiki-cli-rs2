@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use im_core::prelude::*;
 use serde_json::{json, Value};
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn directory_relationship_sync_methods_fail_closed_by_default() {
     let fixture = Fixture::new();

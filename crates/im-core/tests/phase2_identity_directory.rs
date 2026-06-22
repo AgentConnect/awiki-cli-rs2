@@ -901,6 +901,7 @@ async fn directory_bridge_resolves_handle_without_sync_projection() {
     assert_eq!(result.public_profile.as_ref().unwrap()["nick_name"], "Bob");
     assert_eq!(result.resolve.as_ref().unwrap()["did"], "did:example:bob");
 
+    #[cfg(not(feature = "blocking"))]
     assert!(matches!(
         client.directory().contacts(ContactListQuery {
             limit: Some(PageLimit(10)),
