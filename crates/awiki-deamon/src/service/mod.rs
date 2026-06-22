@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -220,6 +221,14 @@ fn shell_escape_systemd(value: &Path) -> String {
         .replace(' ', "\\x20")
 }
 
+fn systemd_environment_escape(value: &OsStr) -> String {
+    value
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+}
+
 pub(crate) mod macos {
     use super::*;
 
@@ -371,11 +380,29 @@ pub(crate) mod linux {
     }
 
     pub fn unit_content(config: &DaemonConfig, executable: &Path) -> String {
+        unit_content_with_path(config, executable, std::env::var_os("PATH").as_deref())
+    }
+
+    pub(super) fn unit_content_with_path(
+        config: &DaemonConfig,
+        executable: &Path,
+        path: Option<&OsStr>,
+    ) -> String {
+        let environment = path
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                format!(
+                    "Environment=\"PATH={}\"\n",
+                    systemd_environment_escape(value)
+                )
+            })
+            .unwrap_or_default();
         format!(
             r#"[Unit]
 Description=Awiki Daemon Agent Runtime Host
 
 [Service]
+{}
 ExecStart={} foreground --state-root {} --ready-file {}
 Restart=on-failure
 RestartSec=5
@@ -383,6 +410,7 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 "#,
+            environment,
             shell_escape_systemd(executable),
             shell_escape_systemd(&config.state_root),
             shell_escape_systemd(&ready_file(config)),
@@ -603,6 +631,13 @@ mod tests {
         assert!(unit.contains("foreground --state-root"));
         assert!(unit.contains("--ready-file"));
         assert!(unit.contains("Restart=on-failure"));
+
+        let unit = linux::unit_content_with_path(
+            &config,
+            &executable,
+            Some(OsStr::new(r#"/home/alice/.nvm/bin:/tmp/a"b:%p"#)),
+        );
+        assert!(unit.contains(r#"Environment="PATH=/home/alice/.nvm/bin:/tmp/a\"b:%%p""#));
     }
 
     #[test]

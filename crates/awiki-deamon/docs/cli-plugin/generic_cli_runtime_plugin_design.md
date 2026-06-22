@@ -131,8 +131,8 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | Gemini driver | 未实现 | create alias 可解析，但 registry 对 `gemini` fail closed。 |
 | route list/status/reset | 已实现 | 只返回脱敏 route 摘要；Hermes 对 generic-cli list/status 返回 unsupported。 |
 | profile/host-home lock | 已实现 | 获取顺序是 route lease -> profile lock -> host-home lock；Claude host default HOME 需要 host-home driver lock。 |
-| install/status probe env allowlist | 已实现 | probe 使用 `env_clear()`，只恢复最小运行环境；Codex probe 可带 profile `CODEX_HOME`，Claude probe 保留 `HOME` 仅表达 host-default setup 诊断。 |
-| setup/status/version gate | foundation | create capability 与 setup readiness 分离；`auth_status=unknown` 不视为可运行。 |
+| install/status probe env allowlist | 已实现 | probe 使用 `env_clear()`，只恢复最小运行环境；Codex probe 可带 profile `CODEX_HOME`，并会补充常见用户 CLI bin 路径（如 `~/.nvm/versions/node/*/bin`）以覆盖 systemd user service 的最小 PATH；Claude probe 保留 `HOME` 仅表达 host-default setup 诊断。 |
+| setup/status/version gate | foundation | create capability 与 setup readiness 分离；Codex `CODEX_HOME/auth.json` 缺失会显示 `auth_status=missing`，`auth_status=unknown` / `missing` 都不视为可运行。 |
 | queue/deferred | foundation only | 有 `runtime_retry_queue` 和 `cli_route_message_queue` foundation、replay/drain/status summary；不承诺完整 durable FIFO、完整 rehydrate 或 manual replay。 |
 | runtime card/App visual mapping | foundation | daemon 暴露低敏 `runtime_card`；App 消费 schema v1。它不是完整 remediation action UI。 |
 | final provenance/output sanitizer | foundation | final source/hash、fallback source、sanitizer metadata 已有基础能力；不是完整 provider send ledger 或 support bundle。 |
@@ -194,6 +194,10 @@ Codex 使用 profile 级 `CODEX_HOME`：
 ```text
 CODEX_HOME=<profile>/codex-home
 ```
+
+daemon 在启动 Codex 子进程前会清空环境并恢复 allowlist；由于 Linux `systemd --user` service 默认 PATH 通常不包含 nvm/node 安装路径，Codex driver 会在子进程 PATH 前置常见用户 CLI 目录（`~/.local/bin`、`~/.npm-global/bin`、`~/.nvm/current/bin`、`~/.nvm/versions/node/*/bin`、`/opt/homebrew/bin`、`/usr/local/bin`）。这只影响 Codex 子进程查找 CLI / Node，不向 App 或远端状态暴露本机路径。
+
+Linux service install 还会把安装时的 PATH 写入 `awiki-deamon.service` 的 `Environment=PATH=...`。这用于保留用户通过 nvm / Homebrew / local bin 安装的 CLI 可见性；敏感凭据仍必须通过 CLI 自身的 profile home 或 host home 机制管理，不能写入 service unit。
 
 首轮新 route 或无可恢复 native id：
 
