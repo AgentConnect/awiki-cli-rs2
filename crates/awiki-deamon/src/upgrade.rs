@@ -9,7 +9,11 @@ use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStat
 use crate::DaemonConfig;
 
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASE_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+const RELEASE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const RELEASE_MANIFEST_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const RELEASE_PACKAGE_HTTP_TIMEOUT: Duration = Duration::from_secs(300);
+const RELEASE_HTTP_MAX_ATTEMPTS: usize = 3;
+const RELEASE_HTTP_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 const DAEMON_VERSION_RETENTION_EXTRA: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +206,7 @@ async fn upgrade_daemon_async(
         });
     }
     let package_url = package_url(&request.download_base_url, &package.path)?;
-    let archive_bytes = read_url_bytes(&package_url)
+    let archive_bytes = read_url_bytes_with_timeout(&package_url, RELEASE_PACKAGE_HTTP_TIMEOUT)
         .await
         .with_context(|| format!("download daemon package {}", public_url(&package_url)))?;
     let actual_sha = sha256_hex(&archive_bytes);
@@ -569,28 +573,55 @@ fn read_release_manifest(url: &str) -> Result<DaemonReleaseManifest> {
 }
 
 async fn read_release_manifest_async(url: &str) -> Result<DaemonReleaseManifest> {
-    let manifest_bytes = read_url_bytes(url).await?;
+    let manifest_bytes = read_url_bytes_with_timeout(url, RELEASE_MANIFEST_HTTP_TIMEOUT).await?;
     serde_json::from_slice(&manifest_bytes).context("parse daemon release manifest")
 }
 
-async fn read_url_bytes(url: &str) -> Result<Vec<u8>> {
+async fn read_url_bytes_with_timeout(url: &str, timeout: Duration) -> Result<Vec<u8>> {
     if let Some(path) = file_url_path(url) {
         return std::fs::read(&path).with_context(|| format!("read {}", path.display()));
     }
     if url.starts_with('/') || url.starts_with("./") || url.starts_with("../") {
         return std::fs::read(url).with_context(|| format!("read {url}"));
     }
-    let response = reqwest::Client::builder()
-        .timeout(RELEASE_HTTP_TIMEOUT)
+    let client = reqwest::Client::builder()
+        .connect_timeout(RELEASE_HTTP_CONNECT_TIMEOUT)
+        .timeout(timeout)
         .build()
-        .context("create HTTP client")?
-        .get(url)
-        .send()
-        .await
-        .context("send HTTP request")?
-        .error_for_status()
-        .context("HTTP error")?;
+        .context("create HTTP client")?;
+    read_http_url_bytes_with_retries(&client, url).await
+}
+
+async fn read_http_url_bytes_with_retries(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    for attempt in 1..=RELEASE_HTTP_MAX_ATTEMPTS {
+        let error = match read_http_url_bytes_once(client, url).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => error,
+        };
+        if attempt >= RELEASE_HTTP_MAX_ATTEMPTS || !release_http_error_is_retryable(&error) {
+            return Err(error);
+        }
+        tokio::time::sleep(RELEASE_HTTP_RETRY_BASE_DELAY * attempt as u32).await;
+    }
+    unreachable!("release HTTP retry loop must return")
+}
+
+async fn read_http_url_bytes_once(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    let response = client.get(url).send().await.context("send HTTP request")?;
+    let response = response.error_for_status().context("HTTP error")?;
     Ok(response.bytes().await.context("read HTTP body")?.to_vec())
+}
+
+fn release_http_error_is_retryable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let Some(error) = cause.downcast_ref::<reqwest::Error>() else {
+            return false;
+        };
+        if let Some(status) = error.status() {
+            return status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+        }
+        error.is_timeout() || error.is_connect() || error.is_body() || error.is_request()
+    })
 }
 
 fn file_url_path(url: &str) -> Option<PathBuf> {
@@ -824,6 +855,10 @@ fn sanitize_error(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     fn fixture() -> (tempfile::TempDir, DaemonConfig) {
         let root = tempfile::tempdir().unwrap();
@@ -908,6 +943,120 @@ mod tests {
         manifest
     }
 
+    struct TestHttpResponse {
+        status: u16,
+        body: Vec<u8>,
+    }
+
+    impl TestHttpResponse {
+        fn ok(body: &[u8]) -> Self {
+            Self {
+                status: 200,
+                body: body.to_vec(),
+            }
+        }
+
+        fn status(status: u16, body: &str) -> Self {
+            Self {
+                status,
+                body: body.as_bytes().to_vec(),
+            }
+        }
+    }
+
+    struct TestHttpServer {
+        address: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl TestHttpServer {
+        fn new(responses: Vec<TestHttpResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind test HTTP server");
+            let address = format!("http://{}", listener.local_addr().expect("local addr"));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let server_requests = Arc::clone(&requests);
+            let handle = thread::spawn(move || {
+                for response in responses {
+                    let Ok((stream, _)) = listener.accept() else {
+                        break;
+                    };
+                    handle_http_request(stream, &server_requests, response);
+                }
+            });
+            Self {
+                address,
+                requests,
+                handle: Some(handle),
+            }
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("{}{}", self.address, path)
+        }
+
+        fn request_paths(&self) -> Vec<String> {
+            self.requests.lock().expect("request paths mutex").clone()
+        }
+    }
+
+    impl Drop for TestHttpServer {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                if let Some(address) = self.address.strip_prefix("http://") {
+                    if let Ok(mut stream) = TcpStream::connect(address) {
+                        let _ = stream.write_all(
+                            b"GET /__shutdown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                }
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn handle_http_request(
+        mut stream: TcpStream,
+        requests: &Arc<Mutex<Vec<String>>>,
+        response: TestHttpResponse,
+    ) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone test stream"));
+        let mut request_line = String::new();
+        let _ = reader.read_line(&mut request_line);
+        if let Some(path) = request_line.split_whitespace().nth(1) {
+            requests
+                .lock()
+                .expect("request paths mutex")
+                .push(path.to_string());
+        }
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line == "\r\n" || line == "\n" => break,
+                Ok(_) => {}
+            }
+        }
+        let reason = if response.status == 200 {
+            "OK"
+        } else {
+            "ERROR"
+        };
+        let raw_headers = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            response.status,
+            reason,
+            response.body.len()
+        );
+        stream
+            .write_all(raw_headers.as_bytes())
+            .expect("write response headers");
+        stream
+            .write_all(&response.body)
+            .expect("write response body");
+        let _ = stream.flush();
+    }
+
     #[test]
     fn version_comparison_uses_numeric_segments() {
         assert!(version_is_newer("0.10.0", "0.2.0"));
@@ -942,6 +1091,31 @@ mod tests {
         assert!(status.latest_version.is_none());
         assert!(!status.needs_upgrade);
         assert!(status.error.is_some());
+    }
+
+    #[test]
+    fn release_download_retries_transient_server_error() {
+        let server = TestHttpServer::new(vec![
+            TestHttpResponse::status(500, "temporary"),
+            TestHttpResponse::ok(b"package"),
+        ]);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let bytes = runtime
+            .block_on(read_url_bytes_with_timeout(
+                &server.url("/package.tar.gz"),
+                Duration::from_secs(5),
+            ))
+            .unwrap();
+
+        assert_eq!(bytes, b"package");
+        assert_eq!(
+            server.request_paths(),
+            vec!["/package.tar.gz".to_string(), "/package.tar.gz".to_string()]
+        );
     }
 
     #[cfg(unix)]

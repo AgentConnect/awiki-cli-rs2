@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Chain, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -1290,7 +1290,7 @@ where
     let request = match DaemonUpgradeRequest::from_env(config, target_version.clone()) {
         Ok(request) => request,
         Err(error) => {
-            let summary = sanitize_public_error(&error.to_string());
+            let summary = sanitize_public_error_chain(error.chain());
             let result = json!({
                 "command": DAEMON_UPGRADE,
                 "daemon_agent_did": daemon_agent.agent_did,
@@ -1367,7 +1367,7 @@ where
             )
         }
         Err(error) => {
-            let summary = sanitize_public_error(&error.to_string());
+            let summary = sanitize_public_error_chain(error.chain());
             let result = json!({
                 "command": DAEMON_UPGRADE,
                 "daemon_agent_did": daemon_agent.agent_did,
@@ -1707,6 +1707,26 @@ fn sanitize_public_error(message: &str) -> String {
     sanitized
 }
 
+fn sanitize_public_error_chain(chain: Chain<'_>) -> String {
+    let parts = chain
+        .take(4)
+        .map(|error| sanitize_public_error(&error.to_string()))
+        .filter(|message| !message.trim().is_empty())
+        .collect::<Vec<_>>();
+    let mut deduped = Vec::new();
+    for part in parts {
+        if deduped.last() == Some(&part) {
+            continue;
+        }
+        deduped.push(part);
+    }
+    let mut summary = deduped.join(": ");
+    if summary.chars().count() > 360 {
+        summary = summary.chars().take(360).collect();
+    }
+    summary
+}
+
 fn validate_application_json_payload(message: &IncomingAgentPayloadMessage) -> Result<()> {
     if message.content_type != "application/json" {
         bail!("agent payload command must use application/json");
@@ -1975,4 +1995,20 @@ fn rfc3339_from_millis(ms: i64) -> String {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_error_chain_keeps_upgrade_download_root_cause() {
+        let error = anyhow::anyhow!("request timed out")
+            .context("download daemon package https://anpclaw.com/daemon/releases/0.1.39/awiki-deamon-darwin-arm64.tar.gz");
+
+        let summary = sanitize_public_error_chain(error.chain());
+
+        assert!(summary.contains("download daemon package"));
+        assert!(summary.contains("request timed out"));
+    }
 }
