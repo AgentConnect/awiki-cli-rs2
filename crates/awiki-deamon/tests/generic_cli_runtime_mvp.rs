@@ -2453,6 +2453,7 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
     assert!(args.contains(&"--ignore-user-config".to_string()));
     assert!(args.contains(&"--ignore-rules".to_string()));
     assert!(!args.contains(&"--ephemeral".to_string()));
+    assert!(args.contains(&"--skip-git-repo-check".to_string()));
     assert!(args.contains(&"--json".to_string()));
     assert!(args
         .windows(2)

@@ -399,6 +399,7 @@ impl CodexDriver {
             workspace_root.display().to_string(),
             "--sandbox".to_string(),
             self.config.sandbox.clone(),
+            "--skip-git-repo-check".to_string(),
         ]);
         if let Some(model) = self.config.model.as_ref() {
             args.push("--model".to_string());

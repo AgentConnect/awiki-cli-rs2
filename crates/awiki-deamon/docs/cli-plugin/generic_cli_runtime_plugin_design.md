@@ -197,6 +197,8 @@ CODEX_HOME=<profile>/codex-home
 
 daemon 在启动 Codex 子进程前会清空环境并恢复 allowlist；由于 Linux `systemd --user` service 默认 PATH 通常不包含 nvm/node 安装路径，Codex driver 会在子进程 PATH 前置常见用户 CLI 目录（`~/.local/bin`、`~/.npm-global/bin`、`~/.nvm/current/bin`、`~/.nvm/versions/node/*/bin`、`/opt/homebrew/bin`、`/usr/local/bin`）。这只影响 Codex 子进程查找 CLI / Node，不向 App 或远端状态暴露本机路径。
 
+Codex route workspace 可能是 daemon 为会话创建的空目录，不一定是 Git 仓库；driver 默认附加 `--skip-git-repo-check`，避免 Codex CLI 在会话目录缺少 `.git` 时直接退出。沙箱模式仍由 runtime profile 的 `read-only` / `workspace-write` 控制。
+
 Linux service install 还会把安装时的 PATH 写入 `awiki-deamon.service` 的 `Environment=PATH=...`。这用于保留用户通过 nvm / Homebrew / local bin 安装的 CLI 可见性；敏感凭据仍必须通过 CLI 自身的 profile home 或 host home 机制管理，不能写入 service unit。
 
 首轮新 route 或无可恢复 native id：

@@ -982,7 +982,6 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
         .unwrap_or(0);
     json!({
         "profile_status": profile.status,
-        "driver_id": profile.driver_id,
         "active_session_count": active_session_count,
         "config_summary": {
             "driver_id": profile.driver_id,
@@ -2032,7 +2031,6 @@ mod tests {
             "runner_status",
             "active_session_count",
             "runtime_version",
-            "driver_id",
             "config_summary",
             "release_manifest_url",
             "release_status",
