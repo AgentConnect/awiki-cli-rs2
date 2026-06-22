@@ -384,7 +384,13 @@ where
             })
         }
         MESSAGE_AGENT_BINDING_DISABLE => {
-            handle_message_agent_binding_disable(outbox, state, &daemon_agent, &message, &envelope)?;
+            handle_message_agent_binding_disable(
+                outbox,
+                state,
+                &daemon_agent,
+                &message,
+                &envelope,
+            )?;
             Ok(AgentCommandOutcome::StatusReported {
                 command_id: envelope.command_id,
             })
@@ -430,7 +436,8 @@ where
     } else {
         "message_agent_disabled"
     };
-    let active_binding = state.load_active_app_message_agent_binding_by_runtime(&runtime_agent_did)?;
+    let active_binding =
+        state.load_active_app_message_agent_binding_by_runtime(&runtime_agent_did)?;
     let active_binding = match active_binding {
         Some(binding) if binding.daemon_agent_did == daemon_agent.agent_did => binding,
         Some(binding) => {

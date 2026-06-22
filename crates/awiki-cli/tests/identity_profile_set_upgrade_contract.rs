@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -182,12 +183,14 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-profile-set-upgrade-{}-{unique}",
+            "awiki-cli-profile-set-upgrade-{}-{unique}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

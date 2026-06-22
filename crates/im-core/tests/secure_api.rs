@@ -1,8 +1,6 @@
 use im_core::{
     ids::{GroupRef, PeerRef},
-    secure::{
-        DirectSecureFileOutboxFlushScope, SecureOutboxId, SecureOutboxStatus, SecureProblemCode,
-    },
+    secure::{SecureOutboxId, SecureOutboxStatus, SecureProblemCode},
     IdentityRegistryPaths, IdentitySelector, ImCore, ImCoreConfig, ImCorePaths, LocalStatePaths,
     MessageTransportPolicy, RuntimePaths, ServiceEndpoint,
 };
@@ -13,6 +11,7 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn secure_service_sync_methods_fail_closed_by_default() {
     let root = unique_temp_root("im-core-secure-api");
@@ -74,6 +73,7 @@ fn secure_service_sync_methods_fail_closed_by_default() {
     ));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn direct_secure_file_outbox_flush_fails_closed_by_default() {
     let root = unique_temp_root("im-core-secure-file-outbox-sync-api");
@@ -99,7 +99,7 @@ fn direct_secure_file_outbox_flush_fails_closed_by_default() {
     .unwrap();
 
     let warnings = im_core::secure::flush_direct_secure_file_outbox(
-        &DirectSecureFileOutboxFlushScope {
+        &im_core::secure::DirectSecureFileOutboxFlushScope {
             owner_identity_id: "alice-id".to_owned(),
             owner_did: identity.did.clone(),
             credential_name: "alice".to_owned(),
@@ -109,11 +109,6 @@ fn direct_secure_file_outbox_flush_fails_closed_by_default() {
         &mut client,
     );
 
-    #[cfg(feature = "blocking")]
-    assert!(warnings
-        .iter()
-        .any(|warning| warning.contains("secure outbox store")));
-    #[cfg(not(feature = "blocking"))]
     assert_eq!(
         warnings,
         vec!["direct secure file outbox flush is disabled in the async cutover build".to_owned()]

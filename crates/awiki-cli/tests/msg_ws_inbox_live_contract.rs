@@ -84,20 +84,28 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-ws-inbox-http-1",
-            "type": "text",
-            "sender_did": alice_did,
-            "receiver_did": bob_did,
-            "content_type": "text/plain",
-            "content": "hello from HTTP inbox",
-            "sent_at": "2026-05-16T02:03:04Z",
-            "is_read": false
-        }],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [{
+                "id": "msg-ws-inbox-http-1",
+                "type": "text",
+                "sender_did": alice_did,
+                "receiver_did": bob_did,
+                "peer_user_id": "user-alice",
+                "peer_full_handle": "alice.awiki.ai",
+                "content_type": "text/plain",
+                "content": "hello from HTTP inbox",
+                "sent_at": "2026-05-16T02:03:04Z",
+                "is_read": false
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "groups": [],
+            "source": "remote_http"
+        }))),
+    ]);
     write_msg_ws_config(
         workspace.path(),
         &server.base_url(),
@@ -127,9 +135,11 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert_no_legacy_websocket_fallback_warning(&envelope);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-bob\r\n");
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-bob\r\n");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "inbox.get");
     assert_eq!(body["params"]["body"]["user_did"], bob_did);
@@ -139,6 +149,10 @@ fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scop
     assert!(body["params"]["body"].get("unread").is_none());
     assert!(body["params"]["body"].get("unread_only").is_none());
     assert!(body["params"]["body"].get("mark_read").is_none());
+    let group_list: Value =
+        serde_json::from_str(request_body(&requests[1])).expect("group list body");
+    assert_eq!(group_list["method"], "group.list");
+    assert_eq!(group_list["params"]["body"]["limit"], 7);
 }
 
 #[test]

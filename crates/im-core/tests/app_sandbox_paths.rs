@@ -48,6 +48,7 @@ mod app_sandbox_paths {
             .all(|identity| identity.readiness.ready_for_auth));
     }
 
+    #[cfg(not(feature = "blocking"))]
     #[test]
     fn sync_local_state_bootstrap_fails_closed_by_default() {
         let fixture = AppSandboxFixture::new();
@@ -58,6 +59,25 @@ mod app_sandbox_paths {
             result,
             Err(ImError::UnsupportedCapability { capability }) if capability == "sync-bootstrap-local-state"
         ));
+    }
+
+    #[cfg(feature = "blocking")]
+    #[test]
+    fn sync_local_state_bootstrap_initializes_when_blocking_feature_is_enabled() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let status = core.bootstrap().initialize_local_state().unwrap();
+        assert_eq!(
+            status.sqlite_path,
+            fixture.sqlite_path().display().to_string()
+        );
+        assert!(status.initialized);
+        assert_eq!(
+            status.schema_version,
+            Some(im_core::compat::local_state::SCHEMA_VERSION as u32)
+        );
+        assert!(fixture.sqlite_path().exists());
     }
 
     #[test]

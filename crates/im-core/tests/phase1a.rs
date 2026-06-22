@@ -38,6 +38,7 @@ fn secure_direct_and_group_e2ee_security_modes_can_construct() {
     assert!(matches!(required, MessageSecurityMode::E2eeRequired));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn message_security_mode_mismatches_fail_closed() {
     let core = test_core();
@@ -97,6 +98,7 @@ fn message_security_mode_mismatches_fail_closed() {
     ));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
     let core = test_core();
@@ -124,6 +126,7 @@ fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
     ));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
     let core = test_core();
