@@ -282,6 +282,12 @@ pub(crate) mod macos {
                 write_if_changed(&path, &plist_content(config, executable))?;
                 let _ = run_status(
                     std::process::Command::new("launchctl")
+                        .arg("bootout")
+                        .arg(&domain)
+                        .arg(&path),
+                )?;
+                let _ = run_status(
+                    std::process::Command::new("launchctl")
                         .arg("bootstrap")
                         .arg(&domain)
                         .arg(&path),
@@ -568,7 +574,9 @@ mod tests {
         assert!(plist.contains("<string>foreground</string>"));
         assert!(plist.contains("<string>--ready-file</string>"));
         assert!(plist.contains("daemon.stdout.log"));
-        assert!(plist.contains("daemon.stderr.log"));
+        assert!(plist.contains("/logs/daemon.stdout.log"));
+        assert!(plist.contains("/logs/daemon.stderr.log"));
+        assert!(!plist.contains("logsaemon.stderr.log"));
 
         let unit = linux::unit_content(&config, &executable);
         assert!(unit.contains("foreground --state-root"));
