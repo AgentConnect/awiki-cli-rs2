@@ -26,6 +26,7 @@ pub struct HermesRuntimePlugin<G> {
 pub struct HermesRunner<G> {
     gateway: G,
     runner: HermesRunnerRef,
+    launch_context: Option<HermesGatewayLaunchContext>,
 }
 
 impl<G> HermesRuntimePlugin<G> {
@@ -52,7 +53,11 @@ where
 {
     pub fn start(gateway: G, profile: &HermesProfileRecord) -> Result<Self> {
         let runner = gateway.start(profile)?;
-        Ok(Self { gateway, runner })
+        Ok(Self {
+            gateway,
+            runner,
+            launch_context: None,
+        })
     }
 
     pub fn start_for_launch(
@@ -61,7 +66,11 @@ where
         context: &HermesGatewayLaunchContext,
     ) -> Result<Self> {
         let runner = gateway.start_for_launch(profile, context)?;
-        Ok(Self { gateway, runner })
+        Ok(Self {
+            gateway,
+            runner,
+            launch_context: Some(context.clone()),
+        })
     }
 
     pub fn runner_ref(&self) -> &HermesRunnerRef {
@@ -77,7 +86,8 @@ where
         session: &HermesSessionRef,
         request: HermesPromptSubmitRequest,
     ) -> Result<HermesPromptOutcome> {
-        self.gateway.submit_prompt(session, request)
+        self.gateway
+            .submit_prompt(&self.runner, session, self.launch_context.as_ref(), request)
     }
 }
 

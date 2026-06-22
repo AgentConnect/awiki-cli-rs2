@@ -183,6 +183,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     if let Some(path) = options.ready_file.as_ref() {
         write_ready_file(path, &status)?;
     }
+    let hermes_gateway = StdioHermesGateway::from_config(&config);
     println!(
         "awiki-deamon foreground ready state_root={} socket={}",
         status.state_root.display(),
@@ -193,8 +194,10 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
-        let newly_processed = process_inbox_once(&config, &state, &im_core, &mut processed).await?;
-        let delegated_processed = process_user_delegated_inbox_once(&config, &state, &im_core)?;
+        let newly_processed =
+            process_inbox_once(&config, &state, &im_core, &hermes_gateway, &mut processed).await?;
+        let delegated_processed =
+            process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
         if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
             state.insert_audit_event_json(
                 "message_sync_outbox.flush.failed",
@@ -211,7 +214,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             let outbox = rpc_outbox
                 .lock()
                 .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-            drain_runtime_retry_queue_once(&config, &state, &*outbox)?
+            drain_runtime_retry_queue_once(&config, &state, &*outbox, &hermes_gateway)?
         };
         {
             let outbox = rpc_outbox
@@ -289,6 +292,7 @@ async fn process_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     processed: &mut HashSet<String>,
 ) -> Result<usize> {
     let agents = state.list_agent_definitions()?;
@@ -348,6 +352,7 @@ async fn process_inbox_once(
                         config,
                         state,
                         im_core,
+                        hermes_gateway,
                         &registration,
                         &client,
                         &agent.agent_did,
@@ -369,6 +374,7 @@ async fn process_inbox_once(
                         config,
                         state,
                         im_core,
+                        hermes_gateway,
                         &registration,
                         &client,
                         &agent.agent_did,
@@ -395,6 +401,7 @@ async fn process_agent_direct_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -422,6 +429,7 @@ async fn process_agent_direct_inbox_once(
             config,
             state,
             im_core,
+            hermes_gateway,
             registration,
             client,
             agent_did,
@@ -441,6 +449,7 @@ async fn process_agent_group_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -481,6 +490,7 @@ async fn process_agent_group_inbox_once(
                 config,
                 state,
                 im_core,
+                hermes_gateway,
                 registration,
                 client,
                 agent_did,
@@ -501,6 +511,7 @@ async fn process_runtime_inbox_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -522,6 +533,7 @@ async fn process_runtime_inbox_message(
         config,
         state,
         im_core,
+        hermes_gateway,
         registration,
         client,
         agent_did,
@@ -690,12 +702,13 @@ fn drain_runtime_retry_queue_once(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
+    hermes_gateway: &StdioHermesGateway,
 ) -> Result<usize> {
     let retries = state.list_queued_runtime_retries(10)?;
     let mut processed = 0usize;
     for retry in retries {
         state.mark_runtime_retry_status(&retry.retry_id, "running")?;
-        let result = run_runtime_retry(config, state, outbox, &retry);
+        let result = run_runtime_retry(config, state, outbox, hermes_gateway, &retry);
         match result {
             Ok(run_id) => {
                 state.mark_runtime_retry_status(&retry.retry_id, "succeeded")?;
@@ -758,6 +771,7 @@ fn run_runtime_retry(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
+    hermes_gateway: &StdioHermesGateway,
     retry: &crate::state::RuntimeRetryQueueRecord,
 ) -> Result<String> {
     let original_run = state.load_runtime_run(&retry.original_run_id)?;
@@ -779,7 +793,7 @@ fn run_runtime_retry(
         HERMES_RUNTIME_PLUGIN_ID => {
             let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
             let plugin = HermesRuntimePlugin::with_state(
-                StdioHermesGateway::from_config(config),
+                hermes_gateway.clone(),
                 hermes_profile,
                 state.clone(),
             );
@@ -861,6 +875,7 @@ async fn route_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -877,6 +892,7 @@ async fn route_message(
             config,
             state,
             im_core,
+            hermes_gateway,
             registration,
             target_client,
             target_agent_did,
@@ -938,6 +954,7 @@ async fn route_message(
                     config,
                     state,
                     im_core,
+                    hermes_gateway,
                     target_client,
                     target_agent_did,
                     message.id.as_str(),
@@ -959,7 +976,14 @@ async fn route_message(
                 return Ok(false);
             }
             if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
-                run_runtime_task_command(config, state, im_core, registration, payload_message)?;
+                run_runtime_task_command(
+                    config,
+                    state,
+                    im_core,
+                    hermes_gateway,
+                    registration,
+                    payload_message,
+                )?;
             } else {
                 let outbox = ImCoreAgentOutbox::new(target_client.clone());
                 let outcome = handle_agent_payload_message(
@@ -981,6 +1005,7 @@ async fn route_message(
                 config,
                 state,
                 im_core,
+                hermes_gateway,
                 registration,
                 target_client,
                 target_agent_did,
@@ -1034,6 +1059,7 @@ fn try_route_group_agent_mention<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -1139,7 +1165,7 @@ where
             text: task_payload.to_string(),
         },
         None,
-        || StdioHermesGateway::from_config(config),
+        hermes_gateway.clone(),
     )?;
     state.insert_audit_event_json(
         "daemon.group_mention.dispatched",
@@ -1440,6 +1466,7 @@ fn route_runtime_controller_text(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message_id: &str,
@@ -1511,7 +1538,7 @@ fn route_runtime_controller_text(
             text,
         },
         verified_sender,
-        || StdioHermesGateway::from_config(config),
+        hermes_gateway.clone(),
     )?;
     Ok(())
 }
@@ -1520,6 +1547,7 @@ fn route_runtime_direct_text<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -1542,6 +1570,7 @@ where
             config,
             state,
             im_core,
+            hermes_gateway,
             target_client,
             target_agent_did,
             message_id,
@@ -1554,6 +1583,7 @@ where
             config,
             state,
             im_core,
+            hermes_gateway,
             registration,
             target_client,
             target_agent_did,
@@ -1570,6 +1600,7 @@ fn route_runtime_external_direct_text<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -1665,7 +1696,7 @@ where
             text: task_payload.to_string(),
         },
         None,
-        || StdioHermesGateway::from_config(config),
+        hermes_gateway.clone(),
     )
     .with_context(|| {
         format!(
@@ -1998,28 +2029,24 @@ impl RuntimeWelcomeSender for ImCoreWelcomeSender<'_> {
     }
 }
 
-fn run_runtime_text_message_with_gateway<G, F>(
+fn run_runtime_text_message_with_gateway<G>(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     message: ControllerTextMessage,
     verified_sender: Option<VerifiedControllerSender>,
-    hermes_gateway_factory: F,
+    hermes_gateway: G,
 ) -> Result<crate::runtime::host::RuntimeTaskRunResult>
 where
     G: HermesGateway + Clone,
-    F: Fn() -> G,
 {
     let current_profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
     match current_profile.runtime_plugin_id.as_str() {
         HERMES_RUNTIME_PLUGIN_ID => {
             let hermes_profile =
                 current_hermes_profile_for_runtime(config, state, &current_profile)?;
-            let plugin = HermesRuntimePlugin::with_state(
-                hermes_gateway_factory(),
-                hermes_profile,
-                state.clone(),
-            );
+            let plugin =
+                HermesRuntimePlugin::with_state(hermes_gateway, hermes_profile, state.clone());
             if let Some(verified) = verified_sender.as_ref() {
                 run_controller_text_task_with_verified_sender_config(
                     config,
@@ -2110,6 +2137,7 @@ fn run_runtime_task_command(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     message: IncomingAgentPayloadMessage,
 ) -> Result<()> {
@@ -2153,6 +2181,22 @@ fn run_runtime_task_command(
         text: payload.text,
     };
     match profile.runtime_plugin_id.as_str() {
+        HERMES_RUNTIME_PLUGIN_ID => {
+            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
+            let plugin = HermesRuntimePlugin::with_state(
+                hermes_gateway.clone(),
+                hermes_profile,
+                state.clone(),
+            );
+            run_controller_text_task_with_config(
+                config,
+                state,
+                &profile,
+                &plugin,
+                &runtime_outbox,
+                task_message,
+            )?;
+        }
         GENERIC_CLI_RUNTIME_PLUGIN_ID => {
             let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
             let plugin = GenericCliDriverRegistry::new(cli_profile);

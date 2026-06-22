@@ -183,11 +183,20 @@ impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
 pub struct RuntimeHostMessageDispatcher<'a> {
     config: &'a DaemonConfig,
     state: &'a DaemonState,
+    hermes_gateway: StdioHermesGateway,
 }
 
 impl<'a> RuntimeHostMessageDispatcher<'a> {
-    pub fn new(config: &'a DaemonConfig, state: &'a DaemonState) -> Self {
-        Self { config, state }
+    pub fn new(
+        config: &'a DaemonConfig,
+        state: &'a DaemonState,
+        hermes_gateway: StdioHermesGateway,
+    ) -> Self {
+        Self {
+            config,
+            state,
+            hermes_gateway,
+        }
     }
 }
 
@@ -205,7 +214,7 @@ impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
             HERMES_RUNTIME_PLUGIN_ID => {
                 let hermes_profile = self.state.load_hermes_profile(&profile.agent_did)?;
                 let plugin = HermesRuntimePlugin::with_state(
-                    StdioHermesGateway::from_config(self.config),
+                    self.hermes_gateway.clone(),
                     hermes_profile,
                     self.state.clone(),
                 );
@@ -806,9 +815,10 @@ pub fn process_user_delegated_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: StdioHermesGateway,
 ) -> Result<usize> {
     let client = ImCoreDelegatedInboxClient::new(config, state, im_core);
-    let dispatcher = RuntimeHostMessageDispatcher::new(config, state);
+    let dispatcher = RuntimeHostMessageDispatcher::new(config, state, hermes_gateway);
     process_user_delegated_inbox_once_with_client(state, &client, &dispatcher)
 }
 

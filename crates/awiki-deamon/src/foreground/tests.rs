@@ -907,7 +907,7 @@ fn hermes_foreground_runtime_route_uses_hermes_plugin_and_persists_session() {
             text: "foreground route to Hermes".to_string(),
         },
         None,
-        || gateway.clone(),
+        gateway.clone(),
     )
     .unwrap();
 
@@ -928,6 +928,50 @@ fn hermes_foreground_runtime_route_uses_hermes_plugin_and_persists_session() {
     assert_eq!(records[1].text.as_deref(), Some("fake complete"));
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+}
+
+#[test]
+fn hermes_foreground_runtime_route_reuses_persisted_native_session_across_messages() {
+    let (root, config, state) = fixture();
+    let profile = profile(root.path());
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    state
+        .upsert_hermes_profile(&hermes_record(root.path()))
+        .unwrap();
+    let gateway = FakeHermesGateway::default();
+
+    for index in 1..=2 {
+        let outbox = MemoryRuntimeOutbox::default();
+        let result = run_runtime_text_message_with_gateway(
+            &config,
+            &state,
+            &outbox,
+            ControllerTextMessage {
+                message_id: format!("msg_foreground_hermes_{index}"),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                requester_user_id: Some("user-alice".to_string()),
+                requester_full_handle: None,
+                trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+                invocation_authority: RuntimeInvocationAuthority::Controller,
+                target_agent_did: "did:agent:hermes".to_string(),
+                text: format!("foreground route to Hermes turn {index}"),
+            },
+            None,
+            gateway.clone(),
+        )
+        .unwrap();
+        assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
+    }
+
+    assert_eq!(gateway.created_sessions().len(), 1);
+    assert_eq!(gateway.submitted_prompts().len(), 2);
+    assert_eq!(
+        state
+            .count_active_hermes_sessions_for_agent("did:agent:hermes")
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -1210,7 +1254,7 @@ fn hermes_foreground_runtime_route_accepts_verified_rotated_controller_did() {
             text: "rotated controller foreground route".to_string(),
         },
         Some(verified_sender),
-        || gateway.clone(),
+        gateway.clone(),
     )
     .unwrap();
 
@@ -1287,7 +1331,7 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
             text: "foreground route to generic cli".to_string(),
         },
         None,
-        || gateway.clone(),
+        gateway.clone(),
     )
     .unwrap_err();
 
@@ -1877,7 +1921,7 @@ fn app_message_agent_runtime_token_scope_is_limited_to_bound_user() {
             text: "message handler task".to_string(),
         },
         None,
-        || gateway.clone(),
+        gateway.clone(),
     )
     .unwrap();
 
