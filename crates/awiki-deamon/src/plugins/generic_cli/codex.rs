@@ -219,6 +219,26 @@ impl GenericCliDriver for CodexDriver {
         if !self.config.config_home.is_dir() {
             bail!("Codex CODEX_HOME is not configured or does not exist");
         }
+        if !codex_profile_auth_ready(&self.config.config_home) {
+            return Ok(GenericCliExit {
+                exit_code: 78,
+                status: RuntimeRunStatus::Failed,
+                callbacks: Vec::new(),
+                metadata: serde_json::json!({
+                    "driver_id": "codex",
+                    "config_home": "configured",
+                    "auth_status": "missing",
+                    "setup_ready": false,
+                    "error_code": "generic_cli_auth_missing",
+                    "error_summary": "Codex profile CODEX_HOME is missing auth.json; seed it from an authenticated Codex setup before sending messages.",
+                    "next_action": "manual_review_required",
+                    "process": {
+                        "spawned": false,
+                        "reason": "auth_missing"
+                    },
+                }),
+            });
+        }
         let paths = self.run_paths(&invocation)?;
         std::fs::create_dir_all(&paths.output_dir)
             .with_context(|| format!("create Codex output dir {}", paths.output_dir.display()))?;
@@ -491,6 +511,14 @@ fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
         return CodexResumeMode::ResumeLast;
     }
     CodexResumeMode::Fresh
+}
+
+fn codex_profile_auth_ready(config_home: &Path) -> bool {
+    let auth_path = config_home.join("auth.json");
+    auth_path
+        .metadata()
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false)
 }
 
 fn apply_codex_env(

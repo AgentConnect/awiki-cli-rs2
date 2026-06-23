@@ -2431,6 +2431,7 @@ fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("codex-home");
     std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(config_home.join("auth.json"), "{}").unwrap();
     CodexDriverConfig {
         binary_path,
         config_home,
@@ -2690,6 +2691,57 @@ fn codex_driver_config_requires_profile_config_home() {
     let error = CodexDriverConfig::from_profile(&cli_profile).unwrap_err();
 
     assert!(error.to_string().contains("config_home"));
+}
+
+#[test]
+fn codex_driver_fails_fast_when_profile_auth_is_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let fake_codex = root.path().join("codex");
+    let marker = root.path().join("codex-executed.marker");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+printf 'executed' > "{marker}"
+exit 0
+"#,
+            marker = marker.display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_codex, permissions).unwrap();
+    }
+    let mut config = codex_config(fake_codex);
+    std::fs::remove_file(config.config_home.join("auth.json")).unwrap();
+    config.output_dir = Some(root.path().join("codex-output"));
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    let driver = CodexDriver::new(config).unwrap();
+
+    let exit = driver
+        .run(generic_cli_invocation_for_process_test(
+            root.path(),
+            &workspace_root,
+        ))
+        .unwrap();
+
+    assert_eq!(exit.status, RuntimeRunStatus::Failed);
+    assert_eq!(exit.exit_code, 78);
+    assert_eq!(
+        exit.metadata["error_code"].as_str(),
+        Some("generic_cli_auth_missing")
+    );
+    assert_eq!(exit.metadata["auth_status"].as_str(), Some("missing"));
+    assert_eq!(exit.metadata["process"]["spawned"].as_bool(), Some(false));
+    assert!(
+        !marker.exists(),
+        "Codex binary should not be spawned when auth.json is missing"
+    );
 }
 
 #[cfg(unix)]
@@ -3557,6 +3609,11 @@ esac
     cli_profile.binary_path = Some(fake_codex);
     cli_profile.config_home = Some(root.path().join("codex-home-route"));
     std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    std::fs::write(
+        cli_profile.config_home.as_ref().unwrap().join("auth.json"),
+        "{}",
+    )
+    .unwrap();
     cli_profile.default_sandbox = Some("read-only".to_string());
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let plugin = GenericCliDriverRegistry::new(cli_profile);
@@ -3742,6 +3799,11 @@ fi
     cli_profile.binary_path = Some(fake_codex);
     cli_profile.config_home = Some(root.path().join("codex-home-route-last"));
     std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    std::fs::write(
+        cli_profile.config_home.as_ref().unwrap().join("auth.json"),
+        "{}",
+    )
+    .unwrap();
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let plugin = GenericCliDriverRegistry::new(cli_profile);
 

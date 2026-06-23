@@ -126,7 +126,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | `WorkspaceMode::RouteRoot` | 已实现 | 默认按消息 route 创建 cwd；它是上下文目录隔离，不是安全边界。 |
 | `cli_route_sessions` | 已实现 | 长期 route session 表，保存 route hash、workspace/session path、active native session id、lock、last message/run、错误摘要。 |
 | keyed route hash/salt | 已实现 | 新 route 使用 daemon-local keyed hash，降低路径可枚举风险；hash 不是授权凭据。 |
-| Codex driver | 已实现 | `codex exec` fresh/resume/resume-last gated fallback，`CODEX_HOME` profile home，stdout/stderr/final output sanitizer，native id parser。 |
+| Codex driver | 已实现 | `codex exec` fresh/resume/resume-last gated fallback，`CODEX_HOME` profile home，create 时种子复制 `config.toml` / `auth.json`，auth 缺失 fail fast，stdout/stderr/final output sanitizer，native id parser。 |
 | Claude Code driver | 已实现 | `claude -p --output-format stream-json --session-id/--resume`，cwd 固定 route workspace，native id parser，settings/MCP 来源默认收紧。 |
 | Gemini driver | 未实现 | create alias 可解析，但 registry 对 `gemini` fail closed。 |
 | route list/status/reset | 已实现 | 只返回脱敏 route 摘要；Hermes 对 generic-cli list/status 返回 unsupported。 |
@@ -195,6 +195,8 @@ Codex 使用 profile 级 `CODEX_HOME`：
 CODEX_HOME=<profile>/codex-home
 ```
 
+创建 Codex Runtime Agent 时，daemon 会为该 profile 创建独立 `codex-home`，并在宿主 `CODEX_HOME` 或 `~/.codex` 已存在时只种子复制 `config.toml` 与 `auth.json` 两个 setup 文件；已有 profile 文件不覆盖，history、sessions、logs、sqlite 状态和其他用户内容不复制。这样新建 agent 默认继承本机已登录的 Codex provider 配置，但仍保持每个 Runtime Agent 的 profile home 隔离。
+
 daemon 在启动 Codex 子进程前会清空环境并恢复 allowlist；由于 Linux `systemd --user` service 默认 PATH 通常不包含 nvm/node 安装路径，Codex driver 会在子进程 PATH 前置常见用户 CLI 目录（`~/.local/bin`、`~/.npm-global/bin`、`~/.nvm/current/bin`、`~/.nvm/versions/node/*/bin`、`/opt/homebrew/bin`、`/usr/local/bin`）。这只影响 Codex 子进程查找 CLI / Node，不向 App 或远端状态暴露本机路径。
 
 Codex route workspace 可能是 daemon 为会话创建的空目录，不一定是 Git 仓库；driver 默认附加 `--skip-git-repo-check`，避免 Codex CLI 在会话目录缺少 `.git` 时直接退出。沙箱模式仍由 runtime profile 的 `read-only` / `workspace-write` 控制。
@@ -243,6 +245,8 @@ codex exec \
 - fallback 成功但仍没有可信 native id 时，不能把 synthetic id 写入 `native_session_id`。
 - Codex stdout/final 不能修改 reply target、route、recipient、workspace、policy 或 native id 写回逻辑。
 - Codex fallback final 不能只作为 daemon status payload 上报；必须写入 `runtime_final_outbox`，由 daemon 以 Runtime Agent DID 发送普通消息，确保 App 聊天 UI 能看到回复。
+
+启动前 readiness：`codex-home/auth.json` 缺失或为空时，Codex driver fail fast，返回 `generic_cli_auth_missing`、`setup_ready=false`，不 spawn `codex exec`、不创建 provider 会话、不发送 final。这避免空 profile home 触发 Codex CLI 交互式登录或长时间等待，造成首条消息 600s timeout。
 
 当前默认 `ephemeral=false`，以便 native session 能恢复。`--ephemeral` 只适合 debug/临时模式，不能作为长期 route session 默认。
 

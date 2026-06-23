@@ -758,6 +758,7 @@ where
             create_private_dir_all(&profile_dir)?;
             let config_home = profile_dir.join("codex-home");
             create_private_dir_all(&config_home)?;
+            seed_codex_profile_home_from_host(&config_home)?;
             cli_profile.config_home = Some(config_home);
         }
         if let Some(recipient_policy) = payload.args.recipient_policy.clone() {
@@ -878,6 +879,103 @@ fn create_private_dir_all(path: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("set private permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+const CODEX_PROFILE_SEED_FILES: &[&str] = &["config.toml", "auth.json"];
+
+fn seed_codex_profile_home_from_host(config_home: &std::path::Path) -> Result<()> {
+    let Some(source_home) = host_codex_home_for_profile_seed(config_home) else {
+        return Ok(());
+    };
+    seed_codex_profile_home_from_source(config_home, &source_home)
+}
+
+fn host_codex_home_for_profile_seed(config_home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidates = [
+        std::env::var_os("CODEX_HOME").map(std::path::PathBuf::from),
+        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".codex")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.is_dir() && !same_path(candidate, config_home))
+}
+
+fn seed_codex_profile_home_from_source(
+    config_home: &std::path::Path,
+    source_home: &std::path::Path,
+) -> Result<()> {
+    create_private_dir_all(config_home)?;
+    for file_name in CODEX_PROFILE_SEED_FILES {
+        copy_codex_seed_file_if_missing(source_home, config_home, file_name)?;
+    }
+    Ok(())
+}
+
+fn copy_codex_seed_file_if_missing(
+    source_home: &std::path::Path,
+    config_home: &std::path::Path,
+    file_name: &str,
+) -> Result<()> {
+    let source = source_home.join(file_name);
+    let target = config_home.join(file_name);
+    let source_metadata = match std::fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.file_type().is_file() => metadata,
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect Codex seed source {}", source.display()))
+        }
+    };
+    if source_metadata.len() == 0 {
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            set_private_file_permissions(&target)?;
+            return Ok(());
+        }
+        Ok(_) => {
+            bail!(
+                "refusing to overwrite non-file Codex profile seed target {}",
+                target.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect Codex seed target {}", target.display()))
+        }
+    }
+    if same_path(&source, &target) {
+        return Ok(());
+    }
+    std::fs::copy(&source, &target)
+        .with_context(|| format!("seed Codex profile file {}", target.display()))?;
+    set_private_file_permissions(&target)?;
+    Ok(())
+}
+
+fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn set_private_file_permissions(path: &std::path::Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("set private permissions on {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
     Ok(())
 }
@@ -2575,4 +2673,62 @@ fn rfc3339_from_millis(ms: i64) -> String {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_profile_seed_copies_only_setup_files_with_private_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("host-codex");
+        let target = root.path().join("profile-codex-home");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("config.toml"), "model = \"gpt-test\"\n").unwrap();
+        std::fs::write(source.join("auth.json"), "{\"token\":\"redacted\"}").unwrap();
+        std::fs::write(source.join("history.jsonl"), "should-not-copy").unwrap();
+
+        seed_codex_profile_home_from_source(&target, &source).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("config.toml")).unwrap(),
+            "model = \"gpt-test\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("auth.json")).unwrap(),
+            "{\"token\":\"redacted\"}"
+        );
+        assert!(!target.join("history.jsonl").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+            let auth_mode = std::fs::metadata(target.join("auth.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700);
+            assert_eq!(auth_mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn codex_profile_seed_preserves_existing_profile_files() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("host-codex");
+        let target = root.path().join("profile-codex-home");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(source.join("auth.json"), "{\"token\":\"source\"}").unwrap();
+        std::fs::write(target.join("auth.json"), "{\"token\":\"target\"}").unwrap();
+
+        seed_codex_profile_home_from_source(&target, &source).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("auth.json")).unwrap(),
+            "{\"token\":\"target\"}"
+        );
+    }
 }

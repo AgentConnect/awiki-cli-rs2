@@ -984,6 +984,11 @@ printf '{"session_id":"codex-queue-drain-session"}\n'
     cli_profile.binary_path = Some(fake_codex);
     cli_profile.config_home = Some(root.join("codex-home"));
     std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    std::fs::write(
+        cli_profile.config_home.as_ref().unwrap().join("auth.json"),
+        "{}",
+    )
+    .unwrap();
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 }
 
