@@ -443,11 +443,22 @@ fn ensure_existing_daemon_matches_token_scope(
         return Ok(());
     }
     bail!(
-        "daemon_controller_scope_mismatch: this machine already has a Daemon installed for @{} (account {}); the provided install token is for @{} (account {}). Uninstall or reset the existing Daemon before installing a different handle.",
+        "daemon_controller_scope_mismatch\n\
+         这台电脑已经安装了属于 @{} 的 Daemon。\n\
+         当前安装命令属于 @{}，因此不能继续安装。\n\n\
+         你可以这样处理：\n\
+         1. 如果你想继续使用 @{}，请切换到对应账号后重新复制安装命令。\n\
+         2. 如果你确实要改用 @{}，请先卸载或重置本机 Daemon 后再安装。\n\n\
+         本机账号范围: {} / {}\n\
+         安装命令范围: {} / {}",
         existing.controller_full_handle,
-        existing.controller_user_id,
         token_controller_full_handle,
-        token_controller_user_id
+        existing.controller_full_handle,
+        token_controller_full_handle,
+        existing.controller_user_id,
+        existing.controller_full_handle,
+        token_controller_user_id,
+        token_controller_full_handle,
     )
 }
 
@@ -863,6 +874,9 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("daemon_controller_scope_mismatch"));
+        assert!(message.contains("这台电脑已经安装了属于 @alice.anpclaw.com 的 Daemon"));
+        assert!(message.contains("当前安装命令属于 @alice-alt.anpclaw.com"));
+        assert!(message.contains("请先卸载或重置本机 Daemon 后再安装"));
         assert!(message.contains("@alice.anpclaw.com"));
         assert!(message.contains("@alice-alt.anpclaw.com"));
         assert_eq!(client.exchange_count(), 0);
@@ -892,6 +906,8 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("daemon_controller_scope_mismatch"));
+        assert!(message.contains("这台电脑已经安装了属于 @alice.anpclaw.com 的 Daemon"));
+        assert!(message.contains("当前安装命令属于 @bob.anpclaw.com"));
         assert!(message.contains("@alice.anpclaw.com"));
         assert!(message.contains("@bob.anpclaw.com"));
         assert_eq!(client.exchange_count(), 0);
