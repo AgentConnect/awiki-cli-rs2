@@ -899,17 +899,6 @@ pub fn controller_scope_key(
     ))
 }
 
-pub fn legacy_controller_scope_key_for_did(controller_did: &str) -> Result<String> {
-    let controller_did = controller_did.trim();
-    if controller_did.is_empty() {
-        bail!("controller_did must not be empty");
-    }
-    Ok(format!(
-        "controller-scope:legacy-did:{:x}",
-        Sha256::digest(controller_did.as_bytes())
-    ))
-}
-
 pub(super) fn stable_id_suffix(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
     digest

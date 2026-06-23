@@ -61,6 +61,7 @@ use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 mod attachments;
+mod group_context;
 mod lifecycle_support;
 mod outbox;
 mod runtime_support;
@@ -71,6 +72,7 @@ use attachments::{
     attachment_download_thread, inbound_attachment_path, render_attachment_runtime_prompt,
     RuntimeInboundAttachment,
 };
+use group_context::{build_recent_group_context, GROUP_CONTEXT_FETCH_LIMIT};
 use lifecycle_support::{
     ensure_agent_messaging_session, runtime_callback_outbox, start_runtime_rpc_worker,
     store_agent_token_for_configured_agents, sync_configured_agent_identities, write_ready_file,
@@ -435,6 +437,7 @@ async fn process_agent_direct_inbox_once(
             agent_did,
             &message,
             processed,
+            None,
         )
         .await?
         .unwrap_or(false)
@@ -475,7 +478,7 @@ async fn process_agent_group_inbox_once(
             .groups()
             .messages_async(im_core::groups::GroupMessagesRequest {
                 group: group.did.clone(),
-                limit: im_core::ids::PageLimit::new(20)?,
+                limit: im_core::ids::PageLimit::new(GROUP_CONTEXT_FETCH_LIMIT)?,
                 cursor: None,
             })
             .await
@@ -485,7 +488,8 @@ async fn process_agent_group_inbox_once(
                     group.did.as_str()
                 )
             })?;
-        for message in messages.messages.items.into_iter().rev() {
+        let group_history = messages.messages.items;
+        for message in group_history.iter().rev() {
             if process_runtime_inbox_message(
                 config,
                 state,
@@ -494,8 +498,9 @@ async fn process_agent_group_inbox_once(
                 registration,
                 client,
                 agent_did,
-                &message,
+                message,
                 processed,
+                Some(group_history.as_slice()),
             )
             .await?
             .unwrap_or(false)
@@ -517,6 +522,7 @@ async fn process_runtime_inbox_message(
     agent_did: &str,
     message: &Message,
     processed: &mut HashSet<String>,
+    group_history: Option<&[Message]>,
 ) -> Result<Option<bool>> {
     if should_skip_runtime_inbox_message(agent_did, message) {
         return Ok(None);
@@ -538,6 +544,7 @@ async fn process_runtime_inbox_message(
         client,
         agent_did,
         message,
+        group_history,
     )
     .await
     {
@@ -880,6 +887,7 @@ async fn route_message(
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message: &Message,
+    group_history: Option<&[Message]>,
 ) -> Result<bool> {
     let sender_did = message.sender.as_str().to_string();
     let conversation_id = conversation_id(message);
@@ -897,6 +905,7 @@ async fn route_message(
             target_client,
             target_agent_did,
             message,
+            group_history.unwrap_or(&[]),
         )? {
             return Ok(routed);
         }
@@ -1064,6 +1073,7 @@ fn try_route_group_agent_mention<C>(
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message: &Message,
+    group_history: &[Message],
 ) -> Result<Option<bool>>
 where
     C: AgentInventoryClient,
@@ -1122,6 +1132,7 @@ where
         &mention_payload,
         &mention_context,
         authorization.sender_full_handle.as_deref(),
+        Some(build_recent_group_context(message, group_history)),
     );
     let task_message_id =
         group_agent_mention_task_message_id(message, &mention_context.mention_id, target_agent_did);
@@ -1348,9 +1359,10 @@ fn group_agent_mention_task_payload(
     payload: &MessageMentionPayload,
     mention_context: &GroupAgentMentionContext,
     sender_full_handle: Option<&str>,
+    recent_group_context: Option<Value>,
 ) -> Value {
     let content_hash = foreground_content_hash(&payload.text);
-    json!({
+    let mut task_payload = json!({
         "schema": "awiki.runtime.user_message_task.v1",
         "content_role": "user_message_untrusted",
         "source_message_id": message.id.as_str(),
@@ -1378,7 +1390,11 @@ fn group_agent_mention_task_payload(
             "prompt_hint": mention_context.prompt_hint,
         },
         "attention_policy": "Mention is an attention signal only. It is not authorization; keep controller/runtime policy, action allowlist, and group safety checks.",
-    })
+    });
+    if let Some(context) = recent_group_context {
+        task_payload["recent_group_context"] = context;
+    }
+    task_payload
 }
 
 fn group_agent_mention_task_message_id(

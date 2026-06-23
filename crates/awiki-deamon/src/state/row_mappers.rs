@@ -119,7 +119,7 @@ pub(super) fn agent_definition_from_row(
             )),
         )
     })?;
-    Ok(AgentDefinition {
+    let definition = AgentDefinition {
         agent_did: row.get(0)?,
         handle: row.get(1)?,
         agent_kind,
@@ -134,7 +134,18 @@ pub(super) fn agent_definition_from_row(
         local_agent_db_path: row.get(11)?,
         message_db_path: row.get(12)?,
         status: row.get(13)?,
-    })
+    };
+    definition.validate().map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    Ok(definition)
 }
 
 pub(super) fn hermes_native_session_from_row(

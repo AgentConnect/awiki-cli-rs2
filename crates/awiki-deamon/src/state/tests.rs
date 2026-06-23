@@ -994,16 +994,291 @@ fn cli_runtime_profile_v8_migrates_legacy_cli_plugin_types() {
         ]
     );
 
-    let migrated_agent = state.load_agent_definition("did:agent:codex").unwrap();
+    let agent_plugins: Vec<(String, String)> = {
+        let mut statement = connection
+            .prepare(
+                r#"
+SELECT agent_did, runtime_plugin_id
+FROM agent_definition
+ORDER BY agent_did
+"#,
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
     assert_eq!(
-        migrated_agent.runtime_plugin_id.as_deref(),
-        Some("generic-cli")
+        agent_plugins,
+        vec![
+            ("did:agent:codex".to_string(), "generic-cli".to_string()),
+            ("did:agent:hermes".to_string(), "runtime.hermes".to_string()),
+        ]
     );
-    let hermes_agent = state.load_agent_definition("did:agent:hermes").unwrap();
+}
+
+#[test]
+fn controller_scope_v19_does_not_fabricate_legacy_controller_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("daemon.db");
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations (version, applied_at)
+            VALUES (18, 'legacy-fixture');
+
+            CREATE TABLE agent_definition (
+                agent_did TEXT PRIMARY KEY,
+                handle TEXT NOT NULL,
+                agent_kind TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                runtime_plugin_id TEXT,
+                runtime_profile_id TEXT,
+                workspace_id TEXT,
+                policy_id TEXT NOT NULL DEFAULT 'default',
+                local_agent_db_path TEXT NOT NULL,
+                message_db_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO agent_definition (
+                agent_did,
+                handle,
+                agent_kind,
+                controller_did,
+                policy_id,
+                local_agent_db_path,
+                message_db_path,
+                status,
+                created_at,
+                updated_at
+            ) VALUES (
+                'did:agent:daemon',
+                'alice-daemon',
+                'daemon',
+                'did:human:alice',
+                'default',
+                'agents/daemon/agent.db',
+                'agents/daemon/messages.db',
+                'active',
+                '0',
+                '0'
+            );
+
+            CREATE TABLE runtime_task (
+                task_id TEXT PRIMARY KEY,
+                agent_did TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                sender_did TEXT NOT NULL,
+                conversation_id TEXT,
+                task_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            INSERT INTO runtime_task (
+                task_id,
+                agent_did,
+                controller_did,
+                sender_did,
+                conversation_id,
+                task_text,
+                status,
+                created_at_ms,
+                updated_at_ms
+            ) VALUES (
+                'task_1',
+                'did:agent:daemon',
+                'did:human:alice',
+                'did:human:alice',
+                NULL,
+                'hello',
+                'pending',
+                0,
+                0
+            );
+
+            CREATE TABLE runtime_daemon_binding (
+                runtime_agent_did TEXT PRIMARY KEY,
+                daemon_agent_did TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            INSERT INTO runtime_daemon_binding (
+                runtime_agent_did,
+                daemon_agent_did,
+                controller_did,
+                status,
+                created_at_ms,
+                updated_at_ms
+            ) VALUES (
+                'did:agent:runtime',
+                'did:agent:daemon',
+                'did:human:alice',
+                'active',
+                0,
+                0
+            );
+
+            CREATE TABLE hermes_native_sessions (
+                id TEXT PRIMARY KEY,
+                runtime_session_id TEXT NOT NULL,
+                agent_did TEXT NOT NULL,
+                agent_handle TEXT NOT NULL,
+                runtime_profile_id TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                session_actor_did TEXT NOT NULL,
+                conversation_id TEXT,
+                scope_kind TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                route_key TEXT NOT NULL,
+                hermes_profile TEXT NOT NULL,
+                hermes_session_id TEXT NOT NULL,
+                session_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+
+            CREATE TABLE runtime_final_outbox (
+                idempotency_key TEXT PRIMARY KEY,
+                agent_did TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                security TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL,
+                next_attempt_at_ms INTEGER NOT NULL,
+                last_error_code TEXT,
+                last_error_summary TEXT,
+                message_id TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                sent_at_ms INTEGER
+            );
+
+            CREATE TABLE cli_driver_run (
+                run_id TEXT PRIMARY KEY,
+                agent_did TEXT NOT NULL,
+                runtime_profile_id TEXT NOT NULL,
+                driver_id TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                conversation_id TEXT,
+                route_key TEXT NOT NULL,
+                workspace_id TEXT,
+                workspace_root TEXT,
+                workspace_instance_path TEXT,
+                workspace_mode TEXT,
+                is_security_boundary INTEGER NOT NULL DEFAULT 0,
+                command_json TEXT NOT NULL DEFAULT '{}',
+                output_json TEXT NOT NULL DEFAULT '{}',
+                final_output_path TEXT,
+                native_session_id TEXT,
+                synthetic_session_id TEXT,
+                status TEXT NOT NULL,
+                fallback_final_source TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+
+            CREATE TABLE runtime_agent_create_request (
+                daemon_agent_did TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                client_request_id TEXT NOT NULL,
+                runtime_agent_did TEXT NOT NULL,
+                command_id TEXT NOT NULL,
+                outcome_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (daemon_agent_did, client_request_id)
+            );
+            INSERT INTO runtime_agent_create_request (
+                daemon_agent_did,
+                controller_did,
+                client_request_id,
+                runtime_agent_did,
+                command_id,
+                outcome_json,
+                created_at_ms,
+                updated_at_ms
+            ) VALUES (
+                'did:agent:daemon',
+                'did:human:alice',
+                'request_1',
+                'did:agent:runtime',
+                'command_1',
+                '{}',
+                0,
+                0
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let connection = Connection::open(db_path).unwrap();
+    let controller_identity: (String, String, String) = connection
+        .query_row(
+            r#"
+SELECT controller_user_id, controller_full_handle, controller_scope_key
+FROM agent_definition
+WHERE agent_did = 'did:agent:daemon'
+"#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(
-        hermes_agent.runtime_plugin_id.as_deref(),
-        Some("runtime.hermes")
+        controller_identity,
+        ("".to_string(), "".to_string(), "".to_string())
     );
+    let task_scope: (String, String, String) = connection
+        .query_row(
+            r#"
+SELECT controller_user_id, controller_full_handle, controller_scope_key
+FROM runtime_task
+WHERE task_id = 'task_1'
+"#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(task_scope, ("".to_string(), "".to_string(), "".to_string()));
+    let create_request_scope: String = connection
+        .query_row(
+            r#"
+SELECT controller_scope_key
+FROM runtime_agent_create_request
+WHERE daemon_agent_did = 'did:agent:daemon'
+  AND client_request_id = 'request_1'
+"#,
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(create_request_scope, "");
+    let error = state.load_agent_definition("did:agent:daemon").unwrap_err();
+    let chain = error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(chain.contains("controller_user_id must not be empty"));
 }
 
 #[test]

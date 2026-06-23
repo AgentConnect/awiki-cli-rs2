@@ -320,21 +320,13 @@ where
     C: AgentInventoryClient + crate::registration::AgentRegistrationClient,
 {
     let existing = existing_daemon_agent(state)?;
-    let metadata = match client.verify_token(&token) {
-        Ok(metadata) => Some(metadata),
-        Err(error) => {
-            if let Some(existing) = existing {
-                if is_token_already_consumed_error(&error) {
-                    return Ok(existing);
-                }
-            }
-            return Err(error).context("verify daemon registration token");
-        }
-    };
-    let metadata = metadata.context("verify daemon registration token")?;
+    let metadata = client
+        .verify_token(&token)
+        .context("verify daemon registration token")?;
     daemon_token_metadata_is_valid(&metadata)?;
 
     if let Some(existing) = existing {
+        ensure_existing_daemon_matches_token_scope(&existing, &metadata)?;
         return recover_existing_daemon_agent(state, client, existing, metadata, token);
     }
 
@@ -409,10 +401,18 @@ where
 }
 
 fn existing_daemon_agent(state: &DaemonState) -> Result<Option<AgentDefinition>> {
-    Ok(state
+    let daemons = state
         .list_agent_definitions()?
         .into_iter()
-        .find(|agent| agent.agent_kind == AgentKind::Daemon))
+        .filter(|agent| agent.agent_kind == AgentKind::Daemon)
+        .collect::<Vec<_>>();
+    match daemons.len() {
+        0 => Ok(None),
+        1 => Ok(daemons.into_iter().next()),
+        count => bail!(
+            "daemon_local_state_conflict: this machine has {count} Daemon records. Reset the local Daemon state before installing."
+        ),
+    }
 }
 
 fn daemon_token_metadata_is_valid(metadata: &RegistrationTokenMetadata) -> Result<()> {
@@ -422,12 +422,33 @@ fn daemon_token_metadata_is_valid(metadata: &RegistrationTokenMetadata) -> Resul
     if metadata.controller_did.trim().is_empty() {
         bail!("registration token is missing controller_did");
     }
+    if metadata.controller_user_id.trim().is_empty() {
+        bail!("registration token is missing controller_user_id");
+    }
+    if metadata.controller_full_handle.trim().is_empty() {
+        bail!("registration token is missing controller_full_handle");
+    }
     Ok(())
 }
 
-fn is_token_already_consumed_error(error: &anyhow::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("used") || message.contains("already")
+fn ensure_existing_daemon_matches_token_scope(
+    existing: &AgentDefinition,
+    metadata: &RegistrationTokenMetadata,
+) -> Result<()> {
+    let token_controller_user_id = metadata.controller_user_id.trim();
+    let token_controller_full_handle = metadata.controller_full_handle.trim();
+    if existing.controller_user_id == token_controller_user_id
+        && existing.controller_full_handle == token_controller_full_handle
+    {
+        return Ok(());
+    }
+    bail!(
+        "daemon_controller_scope_mismatch: this machine already has a Daemon installed for @{} (account {}); the provided install token is for @{} (account {}). Uninstall or reset the existing Daemon before installing a different handle.",
+        existing.controller_full_handle,
+        existing.controller_user_id,
+        token_controller_full_handle,
+        token_controller_user_id
+    )
 }
 
 #[cfg(test)]
@@ -470,6 +491,7 @@ mod tests {
         verify_result: Arc<Mutex<Result<RegistrationTokenMetadata, String>>>,
         exchange_requests: Arc<Mutex<Vec<AgentRegistrationExchangeRequest>>>,
         latest_items: Arc<Mutex<Vec<AgentLatestStatusUpdateItem>>>,
+        exchange_scope: Arc<Mutex<(String, String)>>,
     }
 
     impl MockInstallClient {
@@ -479,14 +501,18 @@ mod tests {
                     token_id: "agtok_daemon".to_string(),
                     agent_kind: AgentKind::Daemon,
                     handle: Some("alice-mac-daemon".to_string()),
-                    controller_user_id: Some("user-alice".to_string()),
-                    controller_full_handle: Some("alice.anpclaw.com".to_string()),
+                    controller_user_id: "user-alice".to_string(),
+                    controller_full_handle: "alice.anpclaw.com".to_string(),
                     controller_did: "did:human:alice".to_string(),
                     status: "active".to_string(),
                     scope: json!({}),
                 }))),
                 exchange_requests: Arc::new(Mutex::new(Vec::new())),
                 latest_items: Arc::new(Mutex::new(Vec::new())),
+                exchange_scope: Arc::new(Mutex::new((
+                    "user-alice".to_string(),
+                    "alice.anpclaw.com".to_string(),
+                ))),
             }
         }
 
@@ -498,6 +524,30 @@ mod tests {
             };
             metadata.handle = None;
             *client.verify_result.lock().unwrap() = Ok(metadata);
+            client
+        }
+
+        fn active_daemon_token_for_scope(
+            controller_user_id: &str,
+            controller_full_handle: &str,
+            controller_did: &str,
+            handle: &str,
+        ) -> Self {
+            let client = Self::active_daemon_token();
+            *client.verify_result.lock().unwrap() = Ok(RegistrationTokenMetadata {
+                token_id: "agtok_daemon".to_string(),
+                agent_kind: AgentKind::Daemon,
+                handle: Some(handle.to_string()),
+                controller_user_id: controller_user_id.to_string(),
+                controller_full_handle: controller_full_handle.to_string(),
+                controller_did: controller_did.to_string(),
+                status: "active".to_string(),
+                scope: json!({}),
+            });
+            *client.exchange_scope.lock().unwrap() = (
+                controller_user_id.to_string(),
+                controller_full_handle.to_string(),
+            );
             client
         }
 
@@ -528,13 +578,15 @@ mod tests {
                 .and_then(Value::as_str)
                 .unwrap()
                 .to_string();
+            let (controller_user_id, controller_full_handle) =
+                self.exchange_scope.lock().unwrap().clone();
             Ok(AgentRegistrationExchangeResult {
                 token_id: "agtok_daemon".to_string(),
                 did,
                 user_id: Some("agent-user-1".to_string()),
                 agent_kind: request.agent_kind,
-                controller_user_id: "user-alice".to_string(),
-                controller_full_handle: "alice.anpclaw.com".to_string(),
+                controller_user_id,
+                controller_full_handle,
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
@@ -656,6 +708,42 @@ mod tests {
         definition
     }
 
+    fn store_existing_daemon_for_scope(
+        config: &DaemonConfig,
+        state: &DaemonState,
+        handle: &str,
+        controller_user_id: &str,
+        controller_full_handle: &str,
+        controller_did: &str,
+    ) -> AgentDefinition {
+        let identity = generate_agent_identity(config, AgentKind::Daemon, handle)
+            .unwrap()
+            .into_record(handle.to_string(), AgentKind::Daemon);
+        let agent_did = identity.agent_did.clone();
+        state.store_agent_identity(&identity).unwrap();
+        let (local_agent_db_path, message_db_path) = agent_data_paths(&agent_did).unwrap();
+        let controller_scope_key =
+            crate::state::controller_scope_key(controller_user_id, controller_full_handle).unwrap();
+        let definition = AgentDefinition {
+            agent_did,
+            handle: handle.to_string(),
+            agent_kind: AgentKind::Daemon,
+            controller_user_id: controller_user_id.to_string(),
+            controller_full_handle: controller_full_handle.to_string(),
+            controller_scope_key,
+            controller_did: controller_did.to_string(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path,
+            message_db_path,
+            status: "active".to_string(),
+        };
+        state.upsert_agent_definition(&definition).unwrap();
+        definition
+    }
+
     #[test]
     fn product_install_exchanges_active_daemon_token() {
         let (_root, config, state) = fixture();
@@ -731,10 +819,15 @@ mod tests {
     }
 
     #[test]
-    fn product_install_recovers_existing_daemon_when_token_already_used() {
+    fn product_install_recovers_existing_daemon_when_controller_did_rotates() {
         let (_root, config, state) = fixture();
         let existing = store_existing_daemon(&config, &state);
-        let client = MockInstallClient::used_token();
+        let client = MockInstallClient::active_daemon_token_for_scope(
+            "user-alice",
+            "alice.anpclaw.com",
+            "did:human:alice-new",
+            "alice-mac-daemon",
+        );
 
         let agent = install_or_recover_product_daemon_agent_for_test(
             &config,
@@ -745,6 +838,117 @@ mod tests {
         .unwrap();
 
         assert_eq!(agent.agent_did, existing.agent_did);
+        assert_eq!(agent.controller_did, "did:human:alice-new");
+        assert_eq!(client.exchange_count(), 1);
+    }
+
+    #[test]
+    fn product_install_rejects_existing_daemon_with_different_controller_handle() {
+        let (_root, config, state) = fixture();
+        let existing = store_existing_daemon(&config, &state);
+        let client = MockInstallClient::active_daemon_token_for_scope(
+            "user-alice",
+            "alice-alt.anpclaw.com",
+            "did:human:alice-alt",
+            "alice-alt-mac-daemon",
+        );
+
+        let error = install_or_recover_product_daemon_agent_for_test(
+            &config,
+            &state,
+            &client,
+            RegistrationToken::new("raw-token-long-enough").unwrap(),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("daemon_controller_scope_mismatch"));
+        assert!(message.contains("@alice.anpclaw.com"));
+        assert!(message.contains("@alice-alt.anpclaw.com"));
+        assert_eq!(client.exchange_count(), 0);
+        let unchanged = state.load_agent_definition(&existing.agent_did).unwrap();
+        assert_eq!(unchanged.controller_user_id, "user-alice");
+        assert_eq!(unchanged.controller_full_handle, "alice.anpclaw.com");
+    }
+
+    #[test]
+    fn product_install_rejects_existing_daemon_with_different_controller_user() {
+        let (_root, config, state) = fixture();
+        store_existing_daemon(&config, &state);
+        let client = MockInstallClient::active_daemon_token_for_scope(
+            "user-bob",
+            "bob.anpclaw.com",
+            "did:human:bob",
+            "bob-mac-daemon",
+        );
+
+        let error = install_or_recover_product_daemon_agent_for_test(
+            &config,
+            &state,
+            &client,
+            RegistrationToken::new("raw-token-long-enough").unwrap(),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("daemon_controller_scope_mismatch"));
+        assert!(message.contains("@alice.anpclaw.com"));
+        assert!(message.contains("@bob.anpclaw.com"));
+        assert_eq!(client.exchange_count(), 0);
+    }
+
+    #[test]
+    fn product_install_rejects_existing_daemon_when_token_already_used() {
+        let (_root, config, state) = fixture();
+        store_existing_daemon(&config, &state);
+        let client = MockInstallClient::used_token();
+
+        let error = install_or_recover_product_daemon_agent_for_test(
+            &config,
+            &state,
+            &client,
+            RegistrationToken::new("raw-token-long-enough").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("verify daemon registration token"));
+        assert_eq!(client.exchange_count(), 0);
+    }
+
+    #[test]
+    fn product_install_rejects_local_state_with_multiple_daemons() {
+        let (_root, config, state) = fixture();
+        store_existing_daemon_for_scope(
+            &config,
+            &state,
+            "alice-mac-daemon",
+            "user-alice",
+            "alice.anpclaw.com",
+            "did:human:alice",
+        );
+        store_existing_daemon_for_scope(
+            &config,
+            &state,
+            "bob-mac-daemon",
+            "user-bob",
+            "bob.anpclaw.com",
+            "did:human:bob",
+        );
+        let client = MockInstallClient::active_daemon_token();
+
+        let error = install_or_recover_product_daemon_agent_for_test(
+            &config,
+            &state,
+            &client,
+            RegistrationToken::new("raw-token-long-enough").unwrap(),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("daemon_local_state_conflict"));
+        assert!(message.contains("2 Daemon records"));
         assert_eq!(client.exchange_count(), 0);
     }
 

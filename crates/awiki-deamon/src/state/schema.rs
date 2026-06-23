@@ -243,9 +243,6 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_runtime_daemon_binding_daemon
-        ON runtime_daemon_binding(daemon_agent_did, controller_scope_key);
-
         CREATE TABLE IF NOT EXISTS agent_status_query_throttle (
             daemon_agent_did TEXT NOT NULL,
             controller_scope_key TEXT NOT NULL DEFAULT '',
@@ -991,46 +988,37 @@ fn migrate_controller_scope_v19(connection: &Connection) -> Result<()> {
 
     connection.execute_batch(
         r#"
-        UPDATE agent_definition
-        SET
-            controller_user_id = CASE WHEN controller_user_id = '' THEN 'legacy-user:' || hex(controller_did) ELSE controller_user_id END,
-            controller_full_handle = CASE WHEN controller_full_handle = '' THEN 'legacy-handle:' || hex(controller_did) ELSE controller_full_handle END,
-            controller_scope_key = CASE WHEN controller_scope_key = '' THEN 'controller-scope:legacy-did:' || hex(controller_did) ELSE controller_scope_key END
-        WHERE controller_did <> '';
-
         UPDATE runtime_task
         SET
-            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), 'legacy-user:' || hex(controller_did)) ELSE controller_user_id END,
-            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), 'legacy-handle:' || hex(controller_did)) ELSE controller_full_handle END,
-            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), 'controller-scope:legacy-did:' || hex(controller_did)) ELSE controller_scope_key END
-        WHERE controller_did <> '';
+            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), '') ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), '') ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_task.agent_did), '') ELSE controller_scope_key END;
 
         UPDATE runtime_daemon_binding
         SET
-            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), 'legacy-user:' || hex(controller_did)) ELSE controller_user_id END,
-            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), 'legacy-handle:' || hex(controller_did)) ELSE controller_full_handle END,
-            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), 'controller-scope:legacy-did:' || hex(controller_did)) ELSE controller_scope_key END
-        WHERE controller_did <> '';
+            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), '') ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), '') ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_daemon_binding.daemon_agent_did), '') ELSE controller_scope_key END;
 
         UPDATE hermes_native_sessions
-        SET controller_scope_key = 'controller-scope:legacy-did:' || hex(controller_did)
-        WHERE controller_scope_key = ''
-          AND controller_did <> '';
+        SET controller_scope_key = COALESCE(
+            (SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = hermes_native_sessions.agent_did),
+            ''
+        )
+        WHERE controller_scope_key = '';
 
         UPDATE runtime_final_outbox
         SET controller_scope_key = COALESCE(
             (SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_final_outbox.agent_did),
-            'controller-scope:legacy-did:' || hex(controller_did)
+            ''
         )
-        WHERE controller_scope_key = ''
-          AND controller_did <> '';
+        WHERE controller_scope_key = '';
 
         UPDATE cli_driver_run
         SET
-            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), 'legacy-user:' || hex(controller_did)) ELSE controller_user_id END,
-            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), 'legacy-handle:' || hex(controller_did)) ELSE controller_full_handle END,
-            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), 'controller-scope:legacy-did:' || hex(controller_did)) ELSE controller_scope_key END
-        WHERE controller_did <> '';
+            controller_user_id = CASE WHEN controller_user_id = '' THEN COALESCE((SELECT controller_user_id FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), '') ELSE controller_user_id END,
+            controller_full_handle = CASE WHEN controller_full_handle = '' THEN COALESCE((SELECT controller_full_handle FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), '') ELSE controller_full_handle END,
+            controller_scope_key = CASE WHEN controller_scope_key = '' THEN COALESCE((SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = cli_driver_run.agent_did), '') ELSE controller_scope_key END;
         "#,
     )?;
 
@@ -1075,7 +1063,7 @@ fn rebuild_runtime_agent_create_request_for_scope(connection: &Connection) -> Re
             daemon_agent_did,
             COALESCE(
                 (SELECT controller_scope_key FROM agent_definition WHERE agent_definition.agent_did = runtime_agent_create_request.daemon_agent_did),
-                'controller-scope:legacy-did:' || hex(controller_did)
+                ''
             ),
             controller_did,
             client_request_id,
