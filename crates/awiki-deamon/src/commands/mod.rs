@@ -375,7 +375,14 @@ where
             })
         }
         DAEMON_UPGRADE_CANCEL => {
-            handle_daemon_upgrade_cancel(state, outbox, &daemon_agent, &message, &envelope)?;
+            handle_daemon_upgrade_cancel(
+                config,
+                state,
+                outbox,
+                &daemon_agent,
+                &message,
+                &envelope,
+            )?;
             Ok(AgentCommandOutcome::StatusReported {
                 command_id: envelope.command_id,
             })
@@ -1314,6 +1321,11 @@ where
     }
     let target_version = optional_arg_string(&payload.args, "target_version")
         .unwrap_or_else(|| "latest".to_string());
+    crate::agent_status::reconcile_daemon_upgrade_state_from_release_status(
+        config,
+        state,
+        daemon_agent,
+    )?;
     if let Some(existing) = state.load_latest_control_command_state(
         &daemon_agent.agent_did,
         &daemon_agent.controller_scope_key,
@@ -1561,6 +1573,7 @@ fn finish_daemon_upgrade_task<O>(
 }
 
 fn handle_daemon_upgrade_cancel<O>(
+    config: &DaemonConfig,
     state: &DaemonState,
     outbox: &O,
     daemon_agent: &AgentDefinition,
@@ -1594,6 +1607,11 @@ where
     let upgrade_command_id = optional_arg_string(&payload.args, "upgrade_command_id")
         .or_else(|| optional_arg_string(&payload.args, "daemon_upgrade_command_id"))
         .or_else(|| optional_arg_string(&payload.args, "target_command_id"));
+    crate::agent_status::reconcile_daemon_upgrade_state_from_release_status(
+        config,
+        state,
+        daemon_agent,
+    )?;
     let upgrade = if let Some(command_id) = upgrade_command_id.as_deref() {
         match state.load_control_command_state(
             &daemon_agent.agent_did,

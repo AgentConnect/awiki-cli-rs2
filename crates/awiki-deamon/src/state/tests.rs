@@ -691,6 +691,16 @@ WHERE command_id = ?1
     assert_eq!(stored.result_json["error_code"], "upgrade_not_applied");
     assert_eq!(stored.result_json["version"], "0.1.31");
     assert!(stored.error_summary.is_some());
+
+    let latest_pending = state
+        .load_latest_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "daemon.upgrade",
+            &["in_progress", "restart_scheduled"],
+        )
+        .unwrap();
+    assert!(latest_pending.is_none());
 }
 
 #[test]

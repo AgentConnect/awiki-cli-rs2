@@ -208,6 +208,7 @@ pub fn latest_status_items(
     now_ms: i64,
 ) -> Result<Vec<AgentLatestStatusUpdateItem>> {
     let release = check_release_status(config);
+    reconcile_daemon_upgrade_state(state, daemon, &release)?;
     latest_status_items_with_release(config, state, daemon, now_ms, &release)
 }
 
@@ -474,7 +475,7 @@ fn daemon_diagnostics_summary(service: &ServiceStatus, release: &DaemonReleaseSt
     })
 }
 
-fn reconcile_daemon_upgrade_state(
+pub fn reconcile_daemon_upgrade_state(
     state: &DaemonState,
     daemon: &AgentDefinition,
     release: &DaemonReleaseStatus,
@@ -489,6 +490,15 @@ fn reconcile_daemon_upgrade_state(
         release.latest_version.as_deref(),
         release.needs_upgrade,
     )
+}
+
+pub fn reconcile_daemon_upgrade_state_from_release_status(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+) -> Result<()> {
+    let release = check_release_status(config);
+    reconcile_daemon_upgrade_state(state, daemon, &release)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
