@@ -764,7 +764,7 @@ impl ControlCommandStateRecord {
 pub(super) fn validate_control_command_status(status: &str) -> Result<()> {
     if !matches!(
         status,
-        "in_progress" | "restart_scheduled" | "succeeded" | "failed"
+        "in_progress" | "restart_scheduled" | "succeeded" | "failed" | "cancelled"
     ) {
         bail!("control command status is unsupported");
     }

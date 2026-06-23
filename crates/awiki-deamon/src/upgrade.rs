@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -12,9 +15,10 @@ use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStat
 use crate::DaemonConfig;
 
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const DAEMON_UPGRADE_CANCELLED_ERROR: &str = "daemon upgrade cancelled";
 const RELEASE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RELEASE_MANIFEST_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
-const RELEASE_PACKAGE_HTTP_TIMEOUT: Duration = Duration::from_secs(900);
+const RELEASE_PACKAGE_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const RELEASE_PACKAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const RELEASE_PACKAGE_PROBE_BYTES: u64 = 256 * 1024;
 const RELEASE_HTTP_MAX_ATTEMPTS: usize = 3;
@@ -29,6 +33,28 @@ pub struct DaemonUpgradeRequest {
     pub download_base_url: String,
     pub bin_root: PathBuf,
     pub restart_service: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DaemonUpgradeCancelToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl DaemonUpgradeCancelToken {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn check(&self) -> Result<()> {
+        if self.is_cancelled() {
+            bail!(DAEMON_UPGRADE_CANCELLED_ERROR);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +150,12 @@ struct ReleaseDownloadCandidate {
     score_bytes_per_sec: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReleaseHttpTimeoutPolicy {
+    total_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
+}
+
 impl DaemonUpgradeRequest {
     pub fn from_env(config: &DaemonConfig, target_version: impl Into<String>) -> Result<Self> {
         Ok(Self {
@@ -194,6 +226,23 @@ pub fn upgrade_daemon(
 pub fn upgrade_daemon_with_progress<F>(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
+    progress: F,
+) -> Result<DaemonUpgradeReport>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    upgrade_daemon_with_progress_and_cancel(
+        config,
+        request,
+        DaemonUpgradeCancelToken::default(),
+        progress,
+    )
+}
+
+pub fn upgrade_daemon_with_progress_and_cancel<F>(
+    config: &DaemonConfig,
+    request: DaemonUpgradeRequest,
+    cancel_token: DaemonUpgradeCancelToken,
     mut progress: F,
 ) -> Result<DaemonUpgradeReport>
 where
@@ -205,13 +254,15 @@ where
             Done(Result<DaemonUpgradeReport>),
         }
         let config = config.clone();
+        let cancel_token = cancel_token.clone();
         let (tx, rx) = mpsc::channel::<UpgradeThreadEvent>();
         let join = std::thread::Builder::new()
             .name("awiki-daemon-upgrade".to_string())
             .spawn(move || {
-                let result = upgrade_daemon_in_new_runtime(&config, request, |event| {
-                    let _ = tx.send(UpgradeThreadEvent::Progress(event));
-                });
+                let result =
+                    upgrade_daemon_in_new_runtime(&config, request, cancel_token, |event| {
+                        let _ = tx.send(UpgradeThreadEvent::Progress(event));
+                    });
                 let _ = tx.send(UpgradeThreadEvent::Done(result));
             })
             .context("spawn daemon upgrade runtime thread")?;
@@ -230,12 +281,13 @@ where
         return result
             .unwrap_or_else(|| bail!("daemon upgrade runtime thread ended without result"));
     }
-    upgrade_daemon_in_new_runtime(config, request, progress)
+    upgrade_daemon_in_new_runtime(config, request, cancel_token, progress)
 }
 
 fn upgrade_daemon_in_new_runtime<F>(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
+    cancel_token: DaemonUpgradeCancelToken,
     progress: F,
 ) -> Result<DaemonUpgradeReport>
 where
@@ -245,17 +297,24 @@ where
         .enable_all()
         .build()
         .context("create daemon upgrade runtime")?;
-    runtime.block_on(upgrade_daemon_async(config, request, progress))
+    runtime.block_on(upgrade_daemon_async(
+        config,
+        request,
+        cancel_token,
+        progress,
+    ))
 }
 
 async fn upgrade_daemon_async<F>(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
+    cancel_token: DaemonUpgradeCancelToken,
     mut progress: F,
 ) -> Result<DaemonUpgradeReport>
 where
     F: FnMut(DaemonUpgradeProgress),
 {
+    cancel_token.check()?;
     if release_os().is_none() || release_arch().is_none() {
         bail!("current platform is not supported for awiki daemon upgrade");
     }
@@ -272,6 +331,7 @@ where
     let manifest_selection = read_release_manifest_from_sources(&initial_sources, &mut progress)
         .await
         .context("download daemon manifest")?;
+    cancel_token.check()?;
     let manifest = manifest_selection.manifest;
     if manifest.latest.trim().is_empty() {
         bail!("daemon release manifest latest version is empty");
@@ -357,11 +417,13 @@ where
     );
     let candidates =
         rank_package_download_candidates(&download_sources, &package.path, &mut progress).await?;
+    cancel_token.check()?;
     let selected_download = download_package_with_candidates(
         &candidates,
         &archive_path,
         &package.sha256,
         &package.version,
+        &cancel_token,
         &mut progress,
     )
     .await
@@ -384,6 +446,7 @@ where
         Some(package.version.clone()),
         Some((&selected_download.1, selected_download.2.as_deref())),
     );
+    cancel_token.check()?;
     let stage_dir = temp_root.join("stage");
     std::fs::create_dir_all(&stage_dir)
         .with_context(|| format!("create daemon archive stage {}", stage_dir.display()))?;
@@ -394,8 +457,10 @@ where
         Some(package.version.clone()),
         Some((&selected_download.1, selected_download.2.as_deref())),
     );
+    cancel_token.check()?;
     extract_archive(&archive_path, &stage_dir)?;
     validate_extracted_package(&stage_dir)?;
+    cancel_token.check()?;
 
     emit_upgrade_progress(
         &mut progress,
@@ -946,6 +1011,7 @@ async fn download_package_with_candidates<F>(
     archive_path: &Path,
     expected_sha256: &str,
     target_version: &str,
+    cancel_token: &DaemonUpgradeCancelToken,
     progress: &mut F,
 ) -> Result<(String, String, Option<String>)>
 where
@@ -956,8 +1022,10 @@ where
     }
     let mut errors = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
+        cancel_token.check()?;
         let route_label = candidate.route.as_ref().map(|route| route.label.as_str());
         for attempt in 1..=RELEASE_HTTP_MAX_ATTEMPTS {
+            cancel_token.check()?;
             emit_upgrade_progress_detailed(
                 progress,
                 DaemonUpgradeProgress {
@@ -981,6 +1049,7 @@ where
                 expected_sha256,
                 target_version,
                 attempt,
+                cancel_token,
                 progress,
             )
             .await;
@@ -1002,6 +1071,9 @@ where
                         summary
                     ));
                     let _ = std::fs::remove_file(archive_path);
+                    if summary == DAEMON_UPGRADE_CANCELLED_ERROR {
+                        return Err(error);
+                    }
                     if attempt < RELEASE_HTTP_MAX_ATTEMPTS
                         && release_http_error_is_retryable(&error)
                     {
@@ -1042,11 +1114,13 @@ async fn download_package_once<F>(
     expected_sha256: &str,
     target_version: &str,
     attempt: usize,
+    cancel_token: &DaemonUpgradeCancelToken,
     progress: &mut F,
 ) -> Result<String>
 where
     F: FnMut(DaemonUpgradeProgress),
 {
+    cancel_token.check()?;
     if let Some(path) = file_url_path(&candidate.package_url) {
         return copy_local_package(
             &path,
@@ -1056,6 +1130,7 @@ where
             &candidate.base_url,
             candidate.route.as_ref().map(|route| route.label.as_str()),
             attempt,
+            cancel_token,
             progress,
         )
         .await;
@@ -1072,11 +1147,12 @@ where
             &candidate.base_url,
             candidate.route.as_ref().map(|route| route.label.as_str()),
             attempt,
+            cancel_token,
             progress,
         )
         .await;
     }
-    let client = release_http_client(candidate.route.as_ref(), RELEASE_PACKAGE_HTTP_TIMEOUT, true)?;
+    let client = release_package_http_client(candidate.route.as_ref())?;
     let route_label = candidate.route.as_ref().map(|route| route.label.as_str());
     let response = client
         .get(&candidate.package_url)
@@ -1095,6 +1171,7 @@ where
     let mut last_progress_at = Instant::now() - RELEASE_PROGRESS_MIN_INTERVAL;
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
+        cancel_token.check()?;
         let chunk = chunk.context("read HTTP body")?;
         file.write_all(&chunk)
             .await
@@ -1135,13 +1212,16 @@ async fn copy_local_package<F>(
     source_url: &str,
     route: Option<&str>,
     attempt: usize,
+    cancel_token: &DaemonUpgradeCancelToken,
     progress: &mut F,
 ) -> Result<String>
 where
     F: FnMut(DaemonUpgradeProgress),
 {
+    cancel_token.check()?;
     let bytes =
         std::fs::read(source_path).with_context(|| format!("read {}", source_path.display()))?;
+    cancel_token.check()?;
     std::fs::write(archive_path, &bytes)
         .with_context(|| format!("write daemon package {}", archive_path.display()))?;
     let actual_sha = sha256_hex(&bytes);
@@ -1173,9 +1253,39 @@ fn release_http_client(
     timeout: Duration,
     no_proxy_by_default: bool,
 ) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(RELEASE_HTTP_CONNECT_TIMEOUT)
-        .timeout(timeout);
+    release_http_client_with_policy(
+        route,
+        no_proxy_by_default,
+        ReleaseHttpTimeoutPolicy {
+            total_timeout: Some(timeout),
+            read_timeout: None,
+        },
+    )
+}
+
+fn release_package_http_client(route: Option<&ReleaseHttpRoute>) -> Result<reqwest::Client> {
+    release_http_client_with_policy(route, true, release_package_timeout_policy())
+}
+
+fn release_package_timeout_policy() -> ReleaseHttpTimeoutPolicy {
+    ReleaseHttpTimeoutPolicy {
+        total_timeout: None,
+        read_timeout: Some(RELEASE_PACKAGE_READ_TIMEOUT),
+    }
+}
+
+fn release_http_client_with_policy(
+    route: Option<&ReleaseHttpRoute>,
+    no_proxy_by_default: bool,
+    timeout_policy: ReleaseHttpTimeoutPolicy,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().connect_timeout(RELEASE_HTTP_CONNECT_TIMEOUT);
+    if let Some(timeout) = timeout_policy.total_timeout {
+        builder = builder.timeout(timeout);
+    }
+    if let Some(timeout) = timeout_policy.read_timeout {
+        builder = builder.read_timeout(timeout);
+    }
     match route {
         Some(route) => {
             builder = builder.no_proxy();
@@ -1937,6 +2047,26 @@ mod tests {
             server.request_paths(),
             vec!["/package.tar.gz".to_string(), "/package.tar.gz".to_string()]
         );
+    }
+
+    #[test]
+    fn release_package_download_uses_stall_timeout_not_total_deadline() {
+        let package_policy = release_package_timeout_policy();
+        assert_eq!(package_policy.total_timeout, None);
+        assert_eq!(
+            package_policy.read_timeout,
+            Some(RELEASE_PACKAGE_READ_TIMEOUT)
+        );
+
+        let manifest_policy = ReleaseHttpTimeoutPolicy {
+            total_timeout: Some(RELEASE_MANIFEST_HTTP_TIMEOUT),
+            read_timeout: None,
+        };
+        assert_eq!(
+            manifest_policy.total_timeout,
+            Some(RELEASE_MANIFEST_HTTP_TIMEOUT)
+        );
+        assert_eq!(manifest_policy.read_timeout, None);
     }
 
     #[cfg(unix)]

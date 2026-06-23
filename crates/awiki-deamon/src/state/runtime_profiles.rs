@@ -986,6 +986,69 @@ WHERE daemon_agent_did = ?1
             .context("load control command state")
     }
 
+    pub fn load_latest_control_command_state(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command: &str,
+        statuses: &[&str],
+    ) -> Result<Option<ControlCommandStateRecord>> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command", command),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let connection = self.connection()?;
+        let mut sql = r#"
+SELECT
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+FROM control_command_state
+WHERE daemon_agent_did = ?1
+  AND controller_scope_key = ?2
+  AND command = ?3
+"#
+        .to_string();
+        if !statuses.is_empty() {
+            sql.push_str("  AND status IN (");
+            sql.push_str(
+                &std::iter::repeat("?")
+                    .take(statuses.len())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            sql.push_str(")\n");
+        }
+        sql.push_str("ORDER BY updated_at_ms DESC, created_at_ms DESC LIMIT 1");
+
+        let mut values: Vec<&dyn rusqlite::ToSql> =
+            vec![&daemon_agent_did, &controller_scope_key, &command];
+        for status in statuses {
+            values.push(status);
+        }
+        connection
+            .query_row(
+                &sql,
+                values.as_slice(),
+                control_command_state_record_from_row,
+            )
+            .optional()
+            .context("load latest control command state")
+    }
+
     pub fn mark_control_command_state(
         &self,
         daemon_agent_did: &str,

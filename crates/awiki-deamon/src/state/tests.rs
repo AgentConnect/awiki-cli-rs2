@@ -461,6 +461,72 @@ fn control_command_state_roundtrips_and_deduplicates() {
 }
 
 #[test]
+fn control_command_state_supports_cancelled_and_latest_lookup() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_cancelled",
+            "daemon.upgrade",
+            "msg_upgrade_cancelled",
+            Some("latest"),
+        )
+        .unwrap();
+    state
+        .mark_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_cancelled",
+            "cancelled",
+            serde_json::json!({
+                "command": "daemon.upgrade",
+                "status": "cancelled",
+                "error_code": "upgrade_cancelled",
+            }),
+            None,
+        )
+        .unwrap();
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_running",
+            "daemon.upgrade",
+            "msg_upgrade_running",
+            Some("0.2.0"),
+        )
+        .unwrap();
+
+    let cancelled = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_cancelled",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(cancelled.error_summary.is_none());
+
+    let latest = state
+        .load_latest_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "daemon.upgrade",
+            &["in_progress", "restart_scheduled"],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.command_id, "cmd_upgrade_running");
+    assert_eq!(latest.status, "in_progress");
+}
+
+#[test]
 fn daemon_upgrade_command_reconciliation_finishes_pending_state() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

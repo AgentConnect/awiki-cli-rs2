@@ -1099,6 +1099,122 @@ fn daemon_upgrade_rejects_other_daemon_target_without_running_download() {
 }
 
 #[test]
+fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_upgrade_cancel_idle".to_string(),
+            conversation_id: Some("conv_upgrade_cancel_idle".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_upgrade_cancel_idle",
+                "command": "daemon.upgrade.cancel",
+                "target_agent_kind": "daemon",
+                "args": {}
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "ready");
+    assert_eq!(status.payload["result"]["command"], "daemon.upgrade.cancel");
+    assert_eq!(status.payload["result"]["status"], "not_running");
+}
+
+#[test]
+fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    state
+        .try_begin_control_command(
+            &daemon.agent_did,
+            &daemon.controller_scope_key,
+            "cmd_upgrade_restarting",
+            "daemon.upgrade",
+            "msg_upgrade_restarting",
+            Some("latest"),
+        )
+        .unwrap();
+    state
+        .mark_control_command_state(
+            &daemon.agent_did,
+            &daemon.controller_scope_key,
+            "cmd_upgrade_restarting",
+            "restart_scheduled",
+            json!({
+                "command": "daemon.upgrade",
+                "daemon_agent_did": daemon.agent_did,
+                "status": "restart_scheduled",
+            }),
+            None,
+        )
+        .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_upgrade_cancel_restarting".to_string(),
+            conversation_id: Some("conv_upgrade_cancel_restarting".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_upgrade_cancel_restarting",
+                "command": "daemon.upgrade.cancel",
+                "target_agent_kind": "daemon",
+                "args": {}
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(
+        status.payload["result"]["error_code"],
+        "upgrade_not_cancellable"
+    );
+    assert_eq!(
+        status.payload["result"]["upgrade_command_id"],
+        "cmd_upgrade_restarting"
+    );
+}
+
+#[test]
 fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient::default();

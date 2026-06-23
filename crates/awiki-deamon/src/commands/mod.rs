@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use anyhow::{bail, Chain, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,7 +28,10 @@ use crate::state::{
     controller_scope_key, CliRuntimeProfileRecord, DaemonState, HermesSessionRoute,
     RuntimeAgentCreateRequestRecord,
 };
-use crate::upgrade::{upgrade_daemon_with_progress, DaemonUpgradeProgress, DaemonUpgradeRequest};
+use crate::upgrade::{
+    upgrade_daemon_with_progress_and_cancel, DaemonUpgradeCancelToken, DaemonUpgradeProgress,
+    DaemonUpgradeRequest, DAEMON_UPGRADE_CANCELLED_ERROR,
+};
 use crate::workspace::WorkspaceMode;
 use crate::DaemonConfig;
 
@@ -36,6 +42,7 @@ const AGENT_STATUS_QUERY: &str = "agent.status.query";
 const RUNTIME_SESSION_RESET: &str = "runtime.session.reset";
 const RUNTIME_RUN_RETRY: &str = "runtime.run.retry";
 const DAEMON_UPGRADE: &str = "daemon.upgrade";
+const DAEMON_UPGRADE_CANCEL: &str = "daemon.upgrade.cancel";
 const RUNTIME_AGENT_REBUILD: &str = "runtime.agent.rebuild";
 const DAEMON_DELETE: &str = "daemon.delete";
 const RUNTIME_AGENT_DELETE: &str = "runtime.agent.delete";
@@ -120,6 +127,60 @@ struct AgentCommandEnvelope {
     reply_policy: Option<ReplyPolicy>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DaemonUpgradeTaskKey {
+    daemon_agent_did: String,
+    controller_scope_key: String,
+    command_id: String,
+}
+
+impl DaemonUpgradeTaskKey {
+    fn new(daemon_agent_did: &str, controller_scope_key: &str, command_id: &str) -> Self {
+        Self {
+            daemon_agent_did: daemon_agent_did.to_string(),
+            controller_scope_key: controller_scope_key.to_string(),
+            command_id: command_id.to_string(),
+        }
+    }
+}
+
+static DAEMON_UPGRADE_CANCEL_TOKENS: OnceLock<
+    Mutex<HashMap<DaemonUpgradeTaskKey, DaemonUpgradeCancelToken>>,
+> = OnceLock::new();
+
+fn daemon_upgrade_cancel_tokens(
+) -> &'static Mutex<HashMap<DaemonUpgradeTaskKey, DaemonUpgradeCancelToken>> {
+    DAEMON_UPGRADE_CANCEL_TOKENS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_daemon_upgrade_task(key: DaemonUpgradeTaskKey, token: DaemonUpgradeCancelToken) {
+    daemon_upgrade_cancel_tokens()
+        .lock()
+        .expect("daemon upgrade cancel registry poisoned")
+        .insert(key, token);
+}
+
+fn unregister_daemon_upgrade_task(key: &DaemonUpgradeTaskKey) {
+    daemon_upgrade_cancel_tokens()
+        .lock()
+        .expect("daemon upgrade cancel registry poisoned")
+        .remove(key);
+}
+
+fn cancel_daemon_upgrade_task(key: &DaemonUpgradeTaskKey) -> bool {
+    let token = daemon_upgrade_cancel_tokens()
+        .lock()
+        .expect("daemon upgrade cancel registry poisoned")
+        .get(key)
+        .cloned();
+    if let Some(token) = token {
+        token.cancel();
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Deserialize)]
 struct RuntimeAgentCreatePayload {
     command_id: String,
@@ -166,7 +227,7 @@ pub fn handle_agent_payload_message<C, O>(
 ) -> Result<AgentCommandOutcome>
 where
     C: AgentRegistrationClient + AgentInventoryClient,
-    O: AgentManagementOutbox,
+    O: AgentManagementOutbox + Clone + Send + 'static,
 {
     validate_application_json_payload(&message)?;
     let daemon_agent = state
@@ -309,6 +370,12 @@ where
         }
         DAEMON_UPGRADE => {
             handle_daemon_upgrade(config, outbox, state, &daemon_agent, &message, &envelope)?;
+            Ok(AgentCommandOutcome::StatusReported {
+                command_id: envelope.command_id,
+            })
+        }
+        DAEMON_UPGRADE_CANCEL => {
+            handle_daemon_upgrade_cancel(state, outbox, &daemon_agent, &message, &envelope)?;
             Ok(AgentCommandOutcome::StatusReported {
                 command_id: envelope.command_id,
             })
@@ -713,7 +780,7 @@ fn send_snapshot_status<O>(
     command_id: &str,
 ) -> Result<()>
 where
-    O: AgentManagementOutbox,
+    O: AgentManagementOutbox + Clone + Send + 'static,
 {
     if !state.should_emit_agent_status_query_snapshot(
         &daemon_agent.agent_did,
@@ -756,7 +823,7 @@ fn handle_runtime_session_reset<O>(
     payload: &AgentCommandEnvelope,
 ) -> Result<()>
 where
-    O: AgentManagementOutbox,
+    O: AgentManagementOutbox + Clone + Send + 'static,
 {
     let runtime_agent_did = required_arg_string(&payload.args, "runtime_agent_did")?;
     let conversation_id = optional_arg_string(&payload.args, "conversation_id");
@@ -856,7 +923,7 @@ fn handle_runtime_run_retry<O>(
     payload: &AgentCommandEnvelope,
 ) -> Result<()>
 where
-    O: AgentManagementOutbox,
+    O: AgentManagementOutbox + Clone + Send + 'static,
 {
     let runtime_agent_did = required_arg_string(&payload.args, "runtime_agent_did")?;
     let run_id = required_arg_string(&payload.args, "run_id")?;
@@ -1223,7 +1290,7 @@ fn handle_daemon_upgrade<O>(
     payload: &AgentCommandEnvelope,
 ) -> Result<()>
 where
-    O: AgentManagementOutbox,
+    O: AgentManagementOutbox + Clone + Send + 'static,
 {
     let target_daemon = optional_arg_string(&payload.args, "daemon_agent_did")
         .or_else(|| optional_arg_string(&payload.args, "target_daemon_agent_did"));
@@ -1247,6 +1314,31 @@ where
     }
     let target_version = optional_arg_string(&payload.args, "target_version")
         .unwrap_or_else(|| "latest".to_string());
+    if let Some(existing) = state.load_latest_control_command_state(
+        &daemon_agent.agent_did,
+        &daemon_agent.controller_scope_key,
+        DAEMON_UPGRADE,
+        &["in_progress", "restart_scheduled"],
+    )? {
+        if existing.command_id != payload.command_id {
+            return send_command_status(
+                outbox,
+                daemon_agent,
+                message,
+                &payload.command_id,
+                duplicate_upgrade_public_state(&existing.status),
+                Some(duplicate_upgrade_status_message(&existing.status)),
+                json!({
+                    "command": DAEMON_UPGRADE,
+                    "daemon_agent_did": daemon_agent.agent_did,
+                    "target_version": existing.target_version.unwrap_or(target_version),
+                    "status": existing.status,
+                    "duplicate": true,
+                    "original_command_id": existing.command_id,
+                }),
+            );
+        }
+    }
     if let Some(existing) = state.try_begin_control_command(
         &daemon_agent.agent_did,
         &daemon_agent.controller_scope_key,
@@ -1317,31 +1409,82 @@ where
             );
         }
     };
-    if request.restart_service {
-        state.mark_control_command_state(
-            &daemon_agent.agent_did,
-            &daemon_agent.controller_scope_key,
-            &payload.command_id,
-            "restart_scheduled",
-            json!({
-                "command": DAEMON_UPGRADE,
-                "daemon_agent_did": daemon_agent.agent_did,
-                "target_version": target_version,
-                "status": "restart_scheduled",
-            }),
-            None,
-        )?;
-    }
-    let result = upgrade_daemon_with_progress(config, request, |progress| {
-        let _ = send_daemon_upgrade_progress(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            &target_version,
-            &progress,
-        );
-    });
+    let task_config = config.clone();
+    let task_state = state.clone();
+    let task_outbox = (*outbox).clone();
+    let task_daemon_agent = daemon_agent.clone();
+    let task_message = message.clone();
+    let task_command_id = payload.command_id.clone();
+    let task_target_version = target_version.clone();
+    let cancel_token = DaemonUpgradeCancelToken::default();
+    let task_key = DaemonUpgradeTaskKey::new(
+        &task_daemon_agent.agent_did,
+        &task_daemon_agent.controller_scope_key,
+        &task_command_id,
+    );
+    register_daemon_upgrade_task(task_key.clone(), cancel_token.clone());
+    std::thread::Builder::new()
+        .name("awiki-daemon-upgrade-control".to_string())
+        .spawn(move || {
+            let mut restart_scheduled = false;
+            let result = upgrade_daemon_with_progress_and_cancel(
+                &task_config,
+                request,
+                cancel_token,
+                |progress| {
+                    if progress.stage == "restarting" && !restart_scheduled {
+                        restart_scheduled = true;
+                        let restart_target_version = task_target_version.clone();
+                        let _ = task_state.mark_control_command_state(
+                            &task_daemon_agent.agent_did,
+                            &task_daemon_agent.controller_scope_key,
+                            &task_command_id,
+                            "restart_scheduled",
+                            json!({
+                                "command": DAEMON_UPGRADE,
+                                "daemon_agent_did": task_daemon_agent.agent_did,
+                                "target_version": restart_target_version,
+                                "status": "restart_scheduled",
+                            }),
+                            None,
+                        );
+                    }
+                    let _ = send_daemon_upgrade_progress(
+                        &task_outbox,
+                        &task_daemon_agent,
+                        &task_message,
+                        &task_command_id,
+                        &task_target_version,
+                        &progress,
+                    );
+                },
+            );
+            unregister_daemon_upgrade_task(&task_key);
+            finish_daemon_upgrade_task(
+                &task_state,
+                &task_outbox,
+                &task_daemon_agent,
+                &task_message,
+                &task_command_id,
+                &task_target_version,
+                result,
+            );
+        })
+        .context("spawn daemon upgrade control task")?;
+    Ok(())
+}
+
+fn finish_daemon_upgrade_task<O>(
+    state: &DaemonState,
+    outbox: &O,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    command_id: &str,
+    target_version: &str,
+    result: Result<crate::upgrade::DaemonUpgradeReport>,
+) where
+    O: AgentManagementOutbox,
+{
     match result {
         Ok(report) => {
             let result = json!({
@@ -1359,52 +1502,186 @@ where
                 "service_running": report.service.running,
                 "restarted": report.restarted,
             });
-            state.mark_control_command_state(
-                &daemon_agent.agent_did,
-                &daemon_agent.controller_scope_key,
-                &payload.command_id,
-                "succeeded",
-                result.clone(),
-                None,
-            )?;
-            send_command_status(
+            state
+                .mark_control_command_state(
+                    &daemon_agent.agent_did,
+                    &daemon_agent.controller_scope_key,
+                    command_id,
+                    "succeeded",
+                    result.clone(),
+                    None,
+                )
+                .ok();
+            let _ = send_command_status(
                 outbox,
                 daemon_agent,
                 message,
-                &payload.command_id,
+                command_id,
                 "ready",
                 Some("daemon upgrade completed".to_string()),
                 result,
-            )
+            );
         }
         Err(error) => {
             let summary = sanitize_public_error_chain(error.chain());
+            let was_cancelled = summary.contains(DAEMON_UPGRADE_CANCELLED_ERROR);
             let result = json!({
                 "command": DAEMON_UPGRADE,
                 "daemon_agent_did": daemon_agent.agent_did,
                 "target_version": target_version,
-                "error_code": "upgrade_failed",
+                "status": if was_cancelled { "cancelled" } else { "failed" },
+                "error_code": if was_cancelled { "upgrade_cancelled" } else { "upgrade_failed" },
                 "last_error_summary": summary,
             });
-            state.mark_control_command_state(
-                &daemon_agent.agent_did,
-                &daemon_agent.controller_scope_key,
-                &payload.command_id,
-                "failed",
-                result.clone(),
-                Some(&summary),
-            )?;
-            send_command_status(
+            state
+                .mark_control_command_state(
+                    &daemon_agent.agent_did,
+                    &daemon_agent.controller_scope_key,
+                    command_id,
+                    if was_cancelled { "cancelled" } else { "failed" },
+                    result.clone(),
+                    if was_cancelled { None } else { Some(&summary) },
+                )
+                .ok();
+            let _ = send_command_status(
                 outbox,
                 daemon_agent,
                 message,
-                &payload.command_id,
-                "failed",
-                Some("daemon upgrade failed".to_string()),
+                command_id,
+                if was_cancelled { "cancelled" } else { "failed" },
+                Some(if was_cancelled {
+                    "daemon upgrade cancelled".to_string()
+                } else {
+                    "daemon upgrade failed".to_string()
+                }),
                 result,
-            )
+            );
         }
     }
+}
+
+fn handle_daemon_upgrade_cancel<O>(
+    state: &DaemonState,
+    outbox: &O,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    payload: &AgentCommandEnvelope,
+) -> Result<()>
+where
+    O: AgentManagementOutbox,
+{
+    let target_daemon = optional_arg_string(&payload.args, "daemon_agent_did")
+        .or_else(|| optional_arg_string(&payload.args, "target_daemon_agent_did"));
+    if target_daemon
+        .as_deref()
+        .is_some_and(|target| target != daemon_agent.agent_did)
+    {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("daemon.upgrade.cancel can only target this daemon".to_string()),
+            json!({
+                "command": DAEMON_UPGRADE_CANCEL,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "error_code": "daemon_target_mismatch",
+            }),
+        );
+    }
+
+    let upgrade_command_id = optional_arg_string(&payload.args, "upgrade_command_id")
+        .or_else(|| optional_arg_string(&payload.args, "daemon_upgrade_command_id"))
+        .or_else(|| optional_arg_string(&payload.args, "target_command_id"));
+    let upgrade = if let Some(command_id) = upgrade_command_id.as_deref() {
+        match state.load_control_command_state(
+            &daemon_agent.agent_did,
+            &daemon_agent.controller_scope_key,
+            command_id,
+        )? {
+            Some(record) if record.command == DAEMON_UPGRADE => Some(record),
+            _ => None,
+        }
+    } else {
+        state.load_latest_control_command_state(
+            &daemon_agent.agent_did,
+            &daemon_agent.controller_scope_key,
+            DAEMON_UPGRADE,
+            &["in_progress", "restart_scheduled"],
+        )?
+    };
+    let Some(upgrade) = upgrade else {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "ready",
+            Some("no daemon upgrade is running".to_string()),
+            json!({
+                "command": DAEMON_UPGRADE_CANCEL,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "status": "not_running",
+                "upgrade_command_id": upgrade_command_id,
+            }),
+        );
+    };
+    if upgrade.status == "restart_scheduled" {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("daemon upgrade is already restarting and cannot be cancelled".to_string()),
+            json!({
+                "command": DAEMON_UPGRADE_CANCEL,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "status": "not_cancellable",
+                "error_code": "upgrade_not_cancellable",
+                "upgrade_command_id": upgrade.command_id,
+            }),
+        );
+    }
+
+    let task_key = DaemonUpgradeTaskKey::new(
+        &daemon_agent.agent_did,
+        &daemon_agent.controller_scope_key,
+        &upgrade.command_id,
+    );
+    if !cancel_daemon_upgrade_task(&task_key) {
+        return send_command_status(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            "failed",
+            Some("daemon upgrade is not cancellable in this process".to_string()),
+            json!({
+                "command": DAEMON_UPGRADE_CANCEL,
+                "daemon_agent_did": daemon_agent.agent_did,
+                "status": "not_cancellable",
+                "error_code": "upgrade_cancel_unavailable",
+                "upgrade_command_id": upgrade.command_id,
+            }),
+        );
+    }
+
+    send_command_status(
+        outbox,
+        daemon_agent,
+        message,
+        &payload.command_id,
+        "cancel_requested",
+        Some("daemon upgrade cancellation requested".to_string()),
+        json!({
+            "command": DAEMON_UPGRADE_CANCEL,
+            "daemon_agent_did": daemon_agent.agent_did,
+            "status": "cancel_requested",
+            "upgrade_command_id": upgrade.command_id,
+        }),
+    )
 }
 
 fn send_daemon_upgrade_progress<O>(
