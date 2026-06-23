@@ -25,7 +25,7 @@ use crate::state::{
     controller_scope_key, CliRuntimeProfileRecord, DaemonState, HermesSessionRoute,
     RuntimeAgentCreateRequestRecord,
 };
-use crate::upgrade::{upgrade_daemon, DaemonUpgradeRequest};
+use crate::upgrade::{upgrade_daemon_with_progress, DaemonUpgradeProgress, DaemonUpgradeRequest};
 use crate::workspace::WorkspaceMode;
 use crate::DaemonConfig;
 
@@ -1332,7 +1332,16 @@ where
             None,
         )?;
     }
-    let result = upgrade_daemon(config, request);
+    let result = upgrade_daemon_with_progress(config, request, |progress| {
+        let _ = send_daemon_upgrade_progress(
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            &target_version,
+            &progress,
+        );
+    });
     match result {
         Ok(report) => {
             let result = json!({
@@ -1344,6 +1353,8 @@ where
                 "min_supported_version": report.min_supported_version,
                 "package_sha256": report.package_sha256,
                 "manifest_url": report.manifest_url,
+                "download_base_url": report.download_base_url,
+                "download_route": report.download_route,
                 "service": service_label(report.service.platform),
                 "service_running": report.service.running,
                 "restarted": report.restarted,
@@ -1394,6 +1405,34 @@ where
             )
         }
     }
+}
+
+fn send_daemon_upgrade_progress<O>(
+    outbox: &O,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    command_id: &str,
+    target_version: &str,
+    progress: &DaemonUpgradeProgress,
+) -> Result<()>
+where
+    O: AgentManagementOutbox,
+{
+    send_command_status(
+        outbox,
+        daemon_agent,
+        message,
+        command_id,
+        "upgrading",
+        Some(progress.message.clone()),
+        json!({
+            "command": DAEMON_UPGRADE,
+            "daemon_agent_did": daemon_agent.agent_did,
+            "target_version": progress.target_version.as_deref().unwrap_or(target_version),
+            "status": "in_progress",
+            "progress": progress,
+        }),
+    )
 }
 
 fn duplicate_upgrade_status_message(status: &str) -> String {

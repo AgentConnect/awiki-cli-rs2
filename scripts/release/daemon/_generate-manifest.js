@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 function usage() {
   console.error(`Usage:
-  node scripts/release/daemon/_generate-manifest.js --version VERSION [--min-supported VERSION] [--dist DIR] [--output FILE] [--allow-partial]`);
+  node scripts/release/daemon/_generate-manifest.js --version VERSION [--min-supported VERSION] [--dist DIR] [--output FILE] [--download-base-urls FILE] [--download-base-url URL] [--allow-partial]`);
 }
 
 function die(message) {
@@ -24,6 +24,20 @@ let minSupported = '';
 let distDir = path.join(process.cwd(), 'dist', 'daemon');
 let output = '';
 let allowPartial = false;
+const downloadBaseUrls = [];
+
+function addDownloadBaseUrls(raw) {
+  if (!raw) {
+    return;
+  }
+  for (const part of raw.replace(/,/g, '\n').split(/\r?\n/)) {
+    const value = part.trim().replace(/\/+$/, '');
+    if (!value || downloadBaseUrls.includes(value)) {
+      continue;
+    }
+    downloadBaseUrls.push(value);
+  }
+}
 
 for (let i = 2; i < process.argv.length; i += 1) {
   const arg = process.argv[i];
@@ -46,6 +60,12 @@ for (let i = 2; i < process.argv.length; i += 1) {
       break;
     case '--output':
       output = next();
+      break;
+    case '--download-base-url':
+      addDownloadBaseUrls(next());
+      break;
+    case '--download-base-urls':
+      addDownloadBaseUrls(fs.readFileSync(next(), 'utf8'));
       break;
     case '--allow-partial':
       allowPartial = true;
@@ -131,6 +151,7 @@ const packages = selectedTargets.map(([os, arch]) => {
 const manifest = {
   latest: version,
   min_supported: minSupported,
+  download_base_urls: downloadBaseUrls,
   packages,
 };
 

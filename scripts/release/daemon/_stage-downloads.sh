@@ -260,7 +260,6 @@ text = text.replace("__AWIKI_DAEMON_BASE_URL__", base_url)
 text = text.replace("__AWIKI_DAEMON_DOWNLOAD_BASE_URLS__", download_base_urls)
 pathlib.Path(output_path).write_text(text, encoding="utf-8")
 PY
-rm -f "${download_base_urls_file}"
 chmod 0755 "${OUTPUT_DIR}/install.sh"
 
 manifest_args=(
@@ -268,6 +267,7 @@ manifest_args=(
   --version "${VERSION}"
   --dist "${version_dir}"
   --output "${release_dir}/manifest.json"
+  --download-base-urls "${download_base_urls_file}"
 )
 if [[ -n "${MIN_SUPPORTED}" ]]; then
   manifest_args+=(--min-supported "${MIN_SUPPORTED}")
@@ -276,5 +276,6 @@ if [[ "${ALLOW_PARTIAL}" == "1" ]]; then
   manifest_args+=(--allow-partial)
 fi
 "${manifest_args[@]}"
+rm -f "${download_base_urls_file}"
 
 echo "daemon download layout staged: ${OUTPUT_DIR}"

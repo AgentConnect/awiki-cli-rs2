@@ -1,9 +1,12 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
 use crate::DaemonConfig;
@@ -11,10 +14,14 @@ use crate::DaemonConfig;
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RELEASE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RELEASE_MANIFEST_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
-const RELEASE_PACKAGE_HTTP_TIMEOUT: Duration = Duration::from_secs(300);
+const RELEASE_PACKAGE_HTTP_TIMEOUT: Duration = Duration::from_secs(900);
+const RELEASE_PACKAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const RELEASE_PACKAGE_PROBE_BYTES: u64 = 256 * 1024;
 const RELEASE_HTTP_MAX_ATTEMPTS: usize = 3;
 const RELEASE_HTTP_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+const RELEASE_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(800);
 const DAEMON_VERSION_RETENTION_EXTRA: usize = 1;
+const COMMON_LOCAL_HTTP_PROXY_PORTS: &[u16] = &[7897, 7890, 7891, 7892, 1080, 8080];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonUpgradeRequest {
@@ -31,8 +38,36 @@ pub struct DaemonUpgradeReport {
     pub min_supported_version: Option<String>,
     pub package_sha256: String,
     pub manifest_url: String,
+    pub download_base_url: String,
+    pub download_route: Option<String>,
     pub restarted: bool,
     pub service: ServiceStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonUpgradeProgress {
+    pub stage: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_bytes_per_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,11 +79,13 @@ pub struct DaemonReleaseStatus {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DaemonReleaseManifest {
     latest: String,
     #[serde(default)]
     min_supported: Option<String>,
+    #[serde(default)]
+    download_base_urls: Vec<String>,
     packages: Vec<DaemonReleasePackage>,
 }
 
@@ -64,6 +101,27 @@ struct DaemonReleasePackage {
 struct CurrentLinks {
     daemon: Option<PathBuf>,
     runtime: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseManifestSelection {
+    manifest: DaemonReleaseManifest,
+    manifest_url: String,
+    download_base_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReleaseHttpRoute {
+    label: String,
+    proxy_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseDownloadCandidate {
+    base_url: String,
+    package_url: String,
+    route: Option<ReleaseHttpRoute>,
+    score_bytes_per_sec: Option<u64>,
 }
 
 impl DaemonUpgradeRequest {
@@ -89,9 +147,16 @@ impl DaemonUpgradeRequest {
 
 pub fn check_release_status(config: &DaemonConfig) -> DaemonReleaseStatus {
     let current_version = CURRENT_DAEMON_VERSION.to_string();
-    let manifest_url = manifest_url(&config.download_base_url);
-    match read_release_manifest(&manifest_url) {
-        Ok(manifest) => {
+    let request_sources = DaemonUpgradeRequest {
+        target_version: "latest".to_string(),
+        download_base_url: config.download_base_url.clone(),
+        bin_root: default_bin_root(),
+        restart_service: false,
+    };
+    let sources = configured_download_base_urls(config, &request_sources);
+    match read_release_manifest_status_from_sources(&sources) {
+        Ok(selection) => {
+            let manifest = selection.manifest;
             let latest = manifest.latest.trim().to_string();
             let latest_version = (!latest.is_empty()).then_some(latest);
             let needs_upgrade = latest_version
@@ -102,7 +167,7 @@ pub fn check_release_status(config: &DaemonConfig) -> DaemonReleaseStatus {
                 current_version,
                 latest_version,
                 needs_upgrade,
-                manifest_url: diagnostic_url(&manifest_url),
+                manifest_url: diagnostic_url(&selection.manifest_url),
                 error: None,
             }
         }
@@ -110,7 +175,10 @@ pub fn check_release_status(config: &DaemonConfig) -> DaemonReleaseStatus {
             current_version,
             latest_version: None,
             needs_upgrade: false,
-            manifest_url: diagnostic_url(&manifest_url),
+            manifest_url: sources
+                .first()
+                .map(|source| diagnostic_url(&manifest_url(source)))
+                .unwrap_or_default(),
             error: Some(sanitize_error(&error.to_string())),
         },
     }
@@ -120,43 +188,91 @@ pub fn upgrade_daemon(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
 ) -> Result<DaemonUpgradeReport> {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let config = config.clone();
-        let join = std::thread::Builder::new()
-            .name("awiki-daemon-upgrade".to_string())
-            .spawn(move || upgrade_daemon_in_new_runtime(&config, request))
-            .context("spawn daemon upgrade runtime thread")?;
-        return join
-            .join()
-            .map_err(|_| anyhow::anyhow!("daemon upgrade runtime thread panicked"))?;
-    }
-    upgrade_daemon_in_new_runtime(config, request)
+    upgrade_daemon_with_progress(config, request, |_| {})
 }
 
-fn upgrade_daemon_in_new_runtime(
+pub fn upgrade_daemon_with_progress<F>(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
-) -> Result<DaemonUpgradeReport> {
+    mut progress: F,
+) -> Result<DaemonUpgradeReport>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        enum UpgradeThreadEvent {
+            Progress(DaemonUpgradeProgress),
+            Done(Result<DaemonUpgradeReport>),
+        }
+        let config = config.clone();
+        let (tx, rx) = mpsc::channel::<UpgradeThreadEvent>();
+        let join = std::thread::Builder::new()
+            .name("awiki-daemon-upgrade".to_string())
+            .spawn(move || {
+                let result = upgrade_daemon_in_new_runtime(&config, request, |event| {
+                    let _ = tx.send(UpgradeThreadEvent::Progress(event));
+                });
+                let _ = tx.send(UpgradeThreadEvent::Done(result));
+            })
+            .context("spawn daemon upgrade runtime thread")?;
+        let mut result = None;
+        while let Ok(event) = rx.recv() {
+            match event {
+                UpgradeThreadEvent::Progress(event) => progress(event),
+                UpgradeThreadEvent::Done(done) => {
+                    result = Some(done);
+                    break;
+                }
+            }
+        }
+        join.join()
+            .map_err(|_| anyhow::anyhow!("daemon upgrade runtime thread panicked"))?;
+        return result
+            .unwrap_or_else(|| bail!("daemon upgrade runtime thread ended without result"));
+    }
+    upgrade_daemon_in_new_runtime(config, request, progress)
+}
+
+fn upgrade_daemon_in_new_runtime<F>(
+    config: &DaemonConfig,
+    request: DaemonUpgradeRequest,
+    progress: F,
+) -> Result<DaemonUpgradeReport>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("create daemon upgrade runtime")?;
-    runtime.block_on(upgrade_daemon_async(config, request))
+    runtime.block_on(upgrade_daemon_async(config, request, progress))
 }
 
-async fn upgrade_daemon_async(
+async fn upgrade_daemon_async<F>(
     config: &DaemonConfig,
     request: DaemonUpgradeRequest,
-) -> Result<DaemonUpgradeReport> {
+    mut progress: F,
+) -> Result<DaemonUpgradeReport>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
     if release_os().is_none() || release_arch().is_none() {
         bail!("current platform is not supported for awiki daemon upgrade");
     }
     cleanup_daemon_bin_root(&request.bin_root, &[CURRENT_DAEMON_VERSION.to_string()])?;
     let target_version = normalize_target_version(&request.target_version)?;
-    let manifest_url = manifest_url(&request.download_base_url);
-    let manifest = read_release_manifest_async(&manifest_url)
+    emit_upgrade_progress(
+        &mut progress,
+        "manifest",
+        "正在获取版本信息",
+        Some(target_version.clone()),
+        None,
+    );
+    let initial_sources = configured_download_base_urls(config, &request);
+    let manifest_selection = read_release_manifest_from_sources(&initial_sources, &mut progress)
         .await
-        .with_context(|| format!("download daemon manifest {}", public_url(&manifest_url)))?;
+        .context("download daemon manifest")?;
+    let manifest = manifest_selection.manifest;
     if manifest.latest.trim().is_empty() {
         bail!("daemon release manifest latest version is empty");
     }
@@ -200,18 +316,12 @@ async fn upgrade_daemon_async(
             target_version: package.version,
             min_supported_version: manifest.min_supported,
             package_sha256: package.sha256,
-            manifest_url: public_url(&manifest_url),
+            manifest_url: public_url(&manifest_selection.manifest_url),
+            download_base_url: public_url(&manifest_selection.download_base_url),
+            download_route: None,
             restarted: false,
             service,
         });
-    }
-    let package_url = package_url(&request.download_base_url, &package.path)?;
-    let archive_bytes = read_url_bytes_with_timeout(&package_url, RELEASE_PACKAGE_HTTP_TIMEOUT)
-        .await
-        .with_context(|| format!("download daemon package {}", public_url(&package_url)))?;
-    let actual_sha = sha256_hex(&archive_bytes);
-    if !actual_sha.eq_ignore_ascii_case(package.sha256.trim()) {
-        bail!("daemon package sha256 mismatch");
     }
 
     std::fs::create_dir_all(&request.bin_root)
@@ -233,14 +343,67 @@ async fn upgrade_daemon_async(
         .with_context(|| format!("create daemon upgrade staging {}", temp_root.display()))?;
     let temp_guard = UpgradeTempRootGuard::new(temp_root.clone());
     let archive_path = temp_root.join("package.tar.gz");
-    std::fs::write(&archive_path, &archive_bytes)
-        .with_context(|| format!("write daemon package {}", archive_path.display()))?;
+    let download_sources = package_download_base_urls(
+        &initial_sources,
+        &manifest.download_base_urls,
+        &manifest_selection.download_base_url,
+    );
+    emit_upgrade_progress(
+        &mut progress,
+        "selecting_source",
+        "正在选择下载线路",
+        Some(package.version.clone()),
+        None,
+    );
+    let candidates =
+        rank_package_download_candidates(&download_sources, &package.path, &mut progress).await?;
+    let selected_download = download_package_with_candidates(
+        &candidates,
+        &archive_path,
+        &package.sha256,
+        &package.version,
+        &mut progress,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "download daemon package {}",
+            public_url(
+                &candidates
+                    .first()
+                    .map(|candidate| candidate.package_url.clone())
+                    .unwrap_or_else(|| package.path.clone())
+            )
+        )
+    })?;
+    let actual_sha = selected_download.0;
+    emit_upgrade_progress(
+        &mut progress,
+        "verifying",
+        "正在校验安装包",
+        Some(package.version.clone()),
+        Some((&selected_download.1, selected_download.2.as_deref())),
+    );
     let stage_dir = temp_root.join("stage");
     std::fs::create_dir_all(&stage_dir)
         .with_context(|| format!("create daemon archive stage {}", stage_dir.display()))?;
+    emit_upgrade_progress(
+        &mut progress,
+        "extracting",
+        "正在解压安装包",
+        Some(package.version.clone()),
+        Some((&selected_download.1, selected_download.2.as_deref())),
+    );
     extract_archive(&archive_path, &stage_dir)?;
     validate_extracted_package(&stage_dir)?;
 
+    emit_upgrade_progress(
+        &mut progress,
+        "installing",
+        "正在安装新版本",
+        Some(package.version.clone()),
+        Some((&selected_download.1, selected_download.2.as_deref())),
+    );
     let install_dir = request
         .bin_root
         .join(sanitize_version_segment(&package.version)?);
@@ -277,6 +440,13 @@ async fn upgrade_daemon_async(
 
     swap_current_links(&current_dir, &package.version, &install_dir)?;
     let service = if request.restart_service {
+        emit_upgrade_progress(
+            &mut progress,
+            "restarting",
+            "正在重启代理服务",
+            Some(package.version.clone()),
+            Some((&selected_download.1, selected_download.2.as_deref())),
+        );
         match manage_service(
             config,
             &current_dir.join("awiki-deamon"),
@@ -311,7 +481,9 @@ async fn upgrade_daemon_async(
         target_version: package.version,
         min_supported_version: manifest.min_supported,
         package_sha256: actual_sha,
-        manifest_url: public_url(&manifest_url),
+        manifest_url: public_url(&manifest_selection.manifest_url),
+        download_base_url: public_url(&selected_download.1),
+        download_route: selected_download.2,
         restarted: request.restart_service,
         service,
     })
@@ -498,6 +670,60 @@ fn default_bin_root() -> PathBuf {
         .join("bin")
 }
 
+fn configured_download_base_urls(
+    config: &DaemonConfig,
+    request: &DaemonUpgradeRequest,
+) -> Vec<String> {
+    let mut sources = Vec::new();
+    push_download_base_values(&mut sources, &request.download_base_url);
+    if let Ok(value) = std::env::var("AWIKI_DAEMON_DOWNLOAD_BASE_URLS") {
+        push_download_base_values(&mut sources, &value);
+    }
+    if let Ok(value) = std::env::var("AWIKI_DAEMON_DOWNLOAD_BASE_URL") {
+        push_download_base_values(&mut sources, &value);
+    }
+    push_download_base_values(&mut sources, &config.download_base_url);
+    dedupe_download_sources(sources)
+}
+
+fn package_download_base_urls(
+    configured: &[String],
+    manifest_sources: &[String],
+    manifest_source: &str,
+) -> Vec<String> {
+    let mut sources = Vec::new();
+    push_download_base_values(&mut sources, manifest_source);
+    for value in manifest_sources {
+        push_download_base_values(&mut sources, value);
+    }
+    for value in configured {
+        push_download_base_values(&mut sources, value);
+    }
+    dedupe_download_sources(sources)
+}
+
+fn push_download_base_values(values: &mut Vec<String>, raw: &str) {
+    for part in raw.replace(',', "\n").lines() {
+        let value = normalize_download_base_url(part);
+        if !value.is_empty() {
+            values.push(value);
+        }
+    }
+}
+
+fn normalize_download_base_url(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+fn dedupe_download_sources(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
 fn manifest_url(base: &str) -> String {
     let base = base.trim();
     if base.ends_with(".json") {
@@ -548,9 +774,550 @@ fn sanitize_manifest_path(value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
-fn read_release_manifest(url: &str) -> Result<DaemonReleaseManifest> {
+async fn read_release_manifest_from_sources<F>(
+    sources: &[String],
+    progress: &mut F,
+) -> Result<ReleaseManifestSelection>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    if sources.is_empty() {
+        bail!("daemon download base URL is not configured");
+    }
+    let routes = release_http_routes();
+    let mut errors = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let url = manifest_url(source);
+        emit_upgrade_progress_detailed(
+            progress,
+            DaemonUpgradeProgress {
+                stage: "manifest".to_string(),
+                message: "正在获取版本信息".to_string(),
+                target_version: None,
+                source_url: Some(diagnostic_url(&url)),
+                route: None,
+                attempt: None,
+                source_index: Some(index + 1),
+                source_count: Some(sources.len()),
+                downloaded_bytes: None,
+                total_bytes: None,
+                percent: None,
+                speed_bytes_per_sec: None,
+            },
+        );
+        if is_local_release_url(&url) {
+            match read_release_manifest_async(&url).await {
+                Ok(manifest) => {
+                    return Ok(ReleaseManifestSelection {
+                        manifest,
+                        manifest_url: url,
+                        download_base_url: source.clone(),
+                    });
+                }
+                Err(error) => errors.push(format!(
+                    "{}: {}",
+                    diagnostic_url(&url),
+                    sanitize_public_error_chain(error.chain())
+                )),
+            }
+            continue;
+        }
+        for route in &routes {
+            let client =
+                match release_http_client(Some(route), RELEASE_MANIFEST_HTTP_TIMEOUT, false) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        errors.push(format!(
+                            "{}: {}",
+                            route.label,
+                            sanitize_error(&error.to_string())
+                        ));
+                        continue;
+                    }
+                };
+            match read_http_url_bytes_with_retries(&client, &url).await {
+                Ok(bytes) => {
+                    let manifest =
+                        serde_json::from_slice(&bytes).context("parse daemon release manifest")?;
+                    return Ok(ReleaseManifestSelection {
+                        manifest,
+                        manifest_url: url,
+                        download_base_url: source.clone(),
+                    });
+                }
+                Err(error) => errors.push(format!(
+                    "{} via {}: {}",
+                    diagnostic_url(&url),
+                    route.label,
+                    sanitize_public_error_chain(error.chain())
+                )),
+            }
+        }
+    }
+    bail!(
+        "daemon release manifest unavailable from all sources: {}",
+        errors.join("; ")
+    )
+}
+
+async fn rank_package_download_candidates<F>(
+    sources: &[String],
+    package_path: &str,
+    progress: &mut F,
+) -> Result<Vec<ReleaseDownloadCandidate>>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    if sources.is_empty() {
+        bail!("daemon package download source is not configured");
+    }
+    let routes = release_http_routes();
+    let mut candidates = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let package_url = package_url(source, package_path)?;
+        if is_local_release_url(&package_url) {
+            candidates.push(ReleaseDownloadCandidate {
+                base_url: source.clone(),
+                package_url,
+                route: None,
+                score_bytes_per_sec: Some(u64::MAX),
+            });
+            continue;
+        }
+        for route in &routes {
+            emit_upgrade_progress_detailed(
+                progress,
+                DaemonUpgradeProgress {
+                    stage: "selecting_source".to_string(),
+                    message: "正在测试下载线路".to_string(),
+                    target_version: None,
+                    source_url: Some(diagnostic_url(source)),
+                    route: Some(route.label.clone()),
+                    attempt: None,
+                    source_index: Some(index + 1),
+                    source_count: Some(sources.len()),
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    percent: None,
+                    speed_bytes_per_sec: None,
+                },
+            );
+            let score = probe_package_download(&package_url, route).await.ok();
+            candidates.push(ReleaseDownloadCandidate {
+                base_url: source.clone(),
+                package_url: package_url.clone(),
+                route: Some(route.clone()),
+                score_bytes_per_sec: score,
+            });
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .score_bytes_per_sec
+            .unwrap_or(0)
+            .cmp(&left.score_bytes_per_sec.unwrap_or(0))
+    });
+    Ok(candidates)
+}
+
+async fn probe_package_download(url: &str, route: &ReleaseHttpRoute) -> Result<u64> {
+    let client = release_http_client(Some(route), RELEASE_PACKAGE_PROBE_TIMEOUT, true)?;
+    let started_at = Instant::now();
+    let response = client
+        .get(url)
+        .header(
+            reqwest::header::RANGE,
+            format!("bytes=0-{}", RELEASE_PACKAGE_PROBE_BYTES - 1),
+        )
+        .send()
+        .await
+        .context("send package probe request")?;
+    let response = response.error_for_status().context("HTTP error")?;
+    let bytes = response.bytes().await.context("read package probe body")?;
+    if bytes.is_empty() {
+        bail!("package probe returned empty body");
+    }
+    let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+    Ok((bytes.len() as f64 / elapsed) as u64)
+}
+
+async fn download_package_with_candidates<F>(
+    candidates: &[ReleaseDownloadCandidate],
+    archive_path: &Path,
+    expected_sha256: &str,
+    target_version: &str,
+    progress: &mut F,
+) -> Result<(String, String, Option<String>)>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    if candidates.is_empty() {
+        bail!("daemon package download candidate list is empty");
+    }
+    let mut errors = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let route_label = candidate.route.as_ref().map(|route| route.label.as_str());
+        for attempt in 1..=RELEASE_HTTP_MAX_ATTEMPTS {
+            emit_upgrade_progress_detailed(
+                progress,
+                DaemonUpgradeProgress {
+                    stage: "downloading".to_string(),
+                    message: "正在下载安装包".to_string(),
+                    target_version: Some(target_version.to_string()),
+                    source_url: Some(diagnostic_url(&candidate.base_url)),
+                    route: route_label.map(str::to_string),
+                    attempt: Some(attempt),
+                    source_index: Some(index + 1),
+                    source_count: Some(candidates.len()),
+                    downloaded_bytes: Some(0),
+                    total_bytes: None,
+                    percent: Some(0.0),
+                    speed_bytes_per_sec: candidate.score_bytes_per_sec,
+                },
+            );
+            let result = download_package_once(
+                candidate,
+                archive_path,
+                expected_sha256,
+                target_version,
+                attempt,
+                progress,
+            )
+            .await;
+            match result {
+                Ok(actual_sha) => {
+                    return Ok((
+                        actual_sha,
+                        candidate.base_url.clone(),
+                        route_label.map(str::to_string),
+                    ));
+                }
+                Err(error) => {
+                    let summary = sanitize_public_error_chain(error.chain());
+                    errors.push(format!(
+                        "{} via {} attempt {}: {}",
+                        diagnostic_url(&candidate.package_url),
+                        route_label.unwrap_or("local"),
+                        attempt,
+                        summary
+                    ));
+                    let _ = std::fs::remove_file(archive_path);
+                    if attempt < RELEASE_HTTP_MAX_ATTEMPTS
+                        && release_http_error_is_retryable(&error)
+                    {
+                        emit_upgrade_progress_detailed(
+                            progress,
+                            DaemonUpgradeProgress {
+                                stage: "retrying_source".to_string(),
+                                message: "下载中断，正在重试".to_string(),
+                                target_version: Some(target_version.to_string()),
+                                source_url: Some(diagnostic_url(&candidate.base_url)),
+                                route: route_label.map(str::to_string),
+                                attempt: Some(attempt + 1),
+                                source_index: Some(index + 1),
+                                source_count: Some(candidates.len()),
+                                downloaded_bytes: None,
+                                total_bytes: None,
+                                percent: None,
+                                speed_bytes_per_sec: None,
+                            },
+                        );
+                        tokio::time::sleep(RELEASE_HTTP_RETRY_BASE_DELAY * attempt as u32).await;
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    bail!(
+        "daemon package unavailable from all download sources: {}",
+        errors.join("; ")
+    )
+}
+
+async fn download_package_once<F>(
+    candidate: &ReleaseDownloadCandidate,
+    archive_path: &Path,
+    expected_sha256: &str,
+    target_version: &str,
+    attempt: usize,
+    progress: &mut F,
+) -> Result<String>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    if let Some(path) = file_url_path(&candidate.package_url) {
+        return copy_local_package(
+            &path,
+            archive_path,
+            expected_sha256,
+            target_version,
+            &candidate.base_url,
+            candidate.route.as_ref().map(|route| route.label.as_str()),
+            attempt,
+            progress,
+        )
+        .await;
+    }
+    if candidate.package_url.starts_with('/')
+        || candidate.package_url.starts_with("./")
+        || candidate.package_url.starts_with("../")
+    {
+        return copy_local_package(
+            Path::new(&candidate.package_url),
+            archive_path,
+            expected_sha256,
+            target_version,
+            &candidate.base_url,
+            candidate.route.as_ref().map(|route| route.label.as_str()),
+            attempt,
+            progress,
+        )
+        .await;
+    }
+    let client = release_http_client(candidate.route.as_ref(), RELEASE_PACKAGE_HTTP_TIMEOUT, true)?;
+    let route_label = candidate.route.as_ref().map(|route| route.label.as_str());
+    let response = client
+        .get(&candidate.package_url)
+        .send()
+        .await
+        .context("send HTTP request")?;
+    let response = response.error_for_status().context("HTTP error")?;
+    let total = response.content_length();
+    let mut stream = response.bytes_stream();
+    let mut file = tokio::fs::File::create(archive_path)
+        .await
+        .with_context(|| format!("create daemon package {}", archive_path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0u64;
+    let started_at = Instant::now();
+    let mut last_progress_at = Instant::now() - RELEASE_PROGRESS_MIN_INTERVAL;
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read HTTP body")?;
+        file.write_all(&chunk)
+            .await
+            .with_context(|| format!("write daemon package {}", archive_path.display()))?;
+        hasher.update(&chunk);
+        downloaded += chunk.len() as u64;
+        if last_progress_at.elapsed() >= RELEASE_PROGRESS_MIN_INTERVAL
+            || total.is_some_and(|value| downloaded >= value)
+        {
+            last_progress_at = Instant::now();
+            emit_download_progress(
+                progress,
+                target_version,
+                &candidate.base_url,
+                route_label,
+                attempt,
+                downloaded,
+                total,
+                started_at,
+            );
+        }
+    }
+    file.flush()
+        .await
+        .with_context(|| format!("flush daemon package {}", archive_path.display()))?;
+    let actual_sha = sha256_digest_to_hex(hasher.finalize());
+    if !actual_sha.eq_ignore_ascii_case(expected_sha256.trim()) {
+        bail!("daemon package sha256 mismatch");
+    }
+    Ok(actual_sha)
+}
+
+async fn copy_local_package<F>(
+    source_path: &Path,
+    archive_path: &Path,
+    expected_sha256: &str,
+    target_version: &str,
+    source_url: &str,
+    route: Option<&str>,
+    attempt: usize,
+    progress: &mut F,
+) -> Result<String>
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    let bytes =
+        std::fs::read(source_path).with_context(|| format!("read {}", source_path.display()))?;
+    std::fs::write(archive_path, &bytes)
+        .with_context(|| format!("write daemon package {}", archive_path.display()))?;
+    let actual_sha = sha256_hex(&bytes);
+    if !actual_sha.eq_ignore_ascii_case(expected_sha256.trim()) {
+        bail!("daemon package sha256 mismatch");
+    }
+    emit_upgrade_progress_detailed(
+        progress,
+        DaemonUpgradeProgress {
+            stage: "downloading".to_string(),
+            message: "安装包已准备好".to_string(),
+            target_version: Some(target_version.to_string()),
+            source_url: Some(diagnostic_url(source_url)),
+            route: route.map(str::to_string),
+            attempt: Some(attempt),
+            source_index: None,
+            source_count: None,
+            downloaded_bytes: Some(bytes.len() as u64),
+            total_bytes: Some(bytes.len() as u64),
+            percent: Some(100.0),
+            speed_bytes_per_sec: None,
+        },
+    );
+    Ok(actual_sha)
+}
+
+fn release_http_client(
+    route: Option<&ReleaseHttpRoute>,
+    timeout: Duration,
+    no_proxy_by_default: bool,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(RELEASE_HTTP_CONNECT_TIMEOUT)
+        .timeout(timeout);
+    match route {
+        Some(route) => {
+            builder = builder.no_proxy();
+            if let Some(proxy_url) = &route.proxy_url {
+                builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
+            }
+        }
+        None if no_proxy_by_default => {
+            builder = builder.no_proxy();
+        }
+        None => {}
+    }
+    builder.build().context("create HTTP client")
+}
+
+fn release_http_routes() -> Vec<ReleaseHttpRoute> {
+    let mut routes = Vec::new();
+    routes.push(ReleaseHttpRoute {
+        label: "direct".to_string(),
+        proxy_url: None,
+    });
+    for proxy in environment_proxy_urls() {
+        routes.push(ReleaseHttpRoute {
+            label: "environment_proxy".to_string(),
+            proxy_url: Some(proxy),
+        });
+    }
+    for port in COMMON_LOCAL_HTTP_PROXY_PORTS {
+        routes.push(ReleaseHttpRoute {
+            label: format!("local_proxy:{port}"),
+            proxy_url: Some(format!("http://127.0.0.1:{port}")),
+        });
+    }
+    let mut seen = HashSet::new();
+    routes
+        .into_iter()
+        .filter(|route| seen.insert((route.label.clone(), route.proxy_url.clone())))
+        .collect()
+}
+
+fn environment_proxy_urls() -> Vec<String> {
+    let mut urls = Vec::new();
+    for key in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                urls.push(value.to_string());
+            }
+        }
+    }
+    dedupe_download_sources(urls)
+}
+
+fn is_local_release_url(value: &str) -> bool {
+    file_url_path(value).is_some()
+        || value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+}
+
+fn emit_upgrade_progress<F>(
+    progress: &mut F,
+    stage: &str,
+    message: &str,
+    target_version: Option<String>,
+    source: Option<(&str, Option<&str>)>,
+) where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    emit_upgrade_progress_detailed(
+        progress,
+        DaemonUpgradeProgress {
+            stage: stage.to_string(),
+            message: message.to_string(),
+            target_version,
+            source_url: source.map(|(value, _)| diagnostic_url(value)),
+            route: source.and_then(|(_, route)| route.map(str::to_string)),
+            attempt: None,
+            source_index: None,
+            source_count: None,
+            downloaded_bytes: None,
+            total_bytes: None,
+            percent: None,
+            speed_bytes_per_sec: None,
+        },
+    );
+}
+
+fn emit_download_progress<F>(
+    progress: &mut F,
+    target_version: &str,
+    source_url: &str,
+    route: Option<&str>,
+    attempt: usize,
+    downloaded: u64,
+    total: Option<u64>,
+    started_at: Instant,
+) where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+    let percent = total
+        .filter(|total| *total > 0)
+        .map(|total| ((downloaded as f64 / total as f64) * 100.0).min(100.0));
+    emit_upgrade_progress_detailed(
+        progress,
+        DaemonUpgradeProgress {
+            stage: "downloading".to_string(),
+            message: "正在下载安装包".to_string(),
+            target_version: Some(target_version.to_string()),
+            source_url: Some(diagnostic_url(source_url)),
+            route: route.map(str::to_string),
+            attempt: Some(attempt),
+            source_index: None,
+            source_count: None,
+            downloaded_bytes: Some(downloaded),
+            total_bytes: total,
+            percent,
+            speed_bytes_per_sec: Some((downloaded as f64 / elapsed) as u64),
+        },
+    );
+}
+
+fn emit_upgrade_progress_detailed<F>(progress: &mut F, event: DaemonUpgradeProgress)
+where
+    F: FnMut(DaemonUpgradeProgress),
+{
+    progress(event);
+}
+
+fn read_release_manifest_status_from_sources(
+    sources: &[String],
+) -> Result<ReleaseManifestSelection> {
     if tokio::runtime::Handle::try_current().is_ok() {
-        let url = url.to_string();
+        let sources = sources.to_vec();
         let join = std::thread::Builder::new()
             .name("awiki-daemon-release-status".to_string())
             .spawn(move || {
@@ -558,7 +1325,7 @@ fn read_release_manifest(url: &str) -> Result<DaemonReleaseManifest> {
                     .enable_all()
                     .build()
                     .context("create daemon release status runtime")?;
-                runtime.block_on(read_release_manifest_async(&url))
+                runtime.block_on(read_release_manifest_from_sources(&sources, &mut |_| {}))
             })
             .context("spawn daemon release status runtime thread")?;
         return join
@@ -569,7 +1336,7 @@ fn read_release_manifest(url: &str) -> Result<DaemonReleaseManifest> {
         .enable_all()
         .build()
         .context("create daemon release status runtime")?;
-    runtime.block_on(read_release_manifest_async(url))
+    runtime.block_on(read_release_manifest_from_sources(sources, &mut |_| {}))
 }
 
 async fn read_release_manifest_async(url: &str) -> Result<DaemonReleaseManifest> {
@@ -584,11 +1351,7 @@ async fn read_url_bytes_with_timeout(url: &str, timeout: Duration) -> Result<Vec
     if url.starts_with('/') || url.starts_with("./") || url.starts_with("../") {
         return std::fs::read(url).with_context(|| format!("read {url}"));
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(RELEASE_HTTP_CONNECT_TIMEOUT)
-        .timeout(timeout)
-        .build()
-        .context("create HTTP client")?;
+    let client = release_http_client(None, timeout, false)?;
     read_http_url_bytes_with_retries(&client, url).await
 }
 
@@ -658,7 +1421,15 @@ fn release_arch() -> Option<&'static str> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    sha256_digest_to_hex(digest)
+}
+
+fn sha256_digest_to_hex(digest: impl AsRef<[u8]>) -> String {
+    digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn extract_archive(archive_path: &Path, stage_dir: &Path) -> Result<()> {
@@ -852,6 +1623,26 @@ fn sanitize_error(value: &str) -> String {
     redacted
 }
 
+fn sanitize_public_error_chain(chain: anyhow::Chain<'_>) -> String {
+    let parts = chain
+        .take(4)
+        .map(|error| sanitize_error(&error.to_string()))
+        .filter(|message| !message.trim().is_empty())
+        .collect::<Vec<_>>();
+    let mut deduped = Vec::new();
+    for part in parts {
+        if deduped.last() == Some(&part) {
+            continue;
+        }
+        deduped.push(part);
+    }
+    let mut summary = deduped.join(": ");
+    if summary.chars().count() > 360 {
+        summary = summary.chars().take(360).collect();
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,6 +1704,36 @@ mod tests {
             serde_json::to_vec_pretty(&serde_json::json!({
                 "latest": version,
                 "min_supported": "0.1.0",
+                "packages": [{
+                    "version": version,
+                    "os": release_os().unwrap(),
+                    "arch": release_arch().unwrap(),
+                    "path": package_path,
+                    "sha256": sha,
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        manifest
+    }
+
+    fn write_manifest_with_download_sources(
+        root: &Path,
+        version: &str,
+        package_path: &str,
+        sha: &str,
+        sources: &[String],
+    ) -> PathBuf {
+        let releases = root.join("releases");
+        std::fs::create_dir_all(&releases).unwrap();
+        let manifest = releases.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "latest": version,
+                "min_supported": "0.1.0",
+                "download_base_urls": sources,
                 "packages": [{
                     "version": version,
                     "os": release_os().unwrap(),
@@ -1236,6 +2057,63 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn upgrade_downloads_package_from_manifest_download_base_urls() {
+        let (manifest_root, config) = fixture();
+        let package_root = tempfile::tempdir().unwrap();
+        let bin_root = manifest_root.path().join("bin");
+        let current_dir = bin_root.join("current");
+        let old_dir = bin_root.join("0.1.0");
+        std::fs::create_dir_all(&current_dir).unwrap();
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("awiki-deamon"), "old").unwrap();
+        std::os::unix::fs::symlink("../0.1.0/awiki-deamon", current_dir.join("awiki-deamon"))
+            .unwrap();
+
+        let (archive, sha) = create_package(package_root.path(), "0.2.0");
+        write_manifest_with_download_sources(
+            manifest_root.path(),
+            "0.2.0",
+            &archive
+                .strip_prefix(package_root.path())
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/"),
+            &sha,
+            &[format!("file://{}", package_root.path().display())],
+        );
+
+        let mut progress_events = Vec::new();
+        let report = upgrade_daemon_with_progress(
+            &config,
+            DaemonUpgradeRequest {
+                target_version: "latest".to_string(),
+                download_base_url: format!("file://{}", manifest_root.path().display()),
+                bin_root: bin_root.clone(),
+                restart_service: false,
+            },
+            |event| progress_events.push(event),
+        )
+        .unwrap();
+
+        assert_eq!(report.target_version, "0.2.0");
+        assert_eq!(
+            report.download_base_url,
+            format!("file://{}", package_root.path().display())
+        );
+        assert_eq!(
+            std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
+            PathBuf::from("../0.2.0/awiki-deamon")
+        );
+        assert!(progress_events
+            .iter()
+            .any(|event| event.stage == "selecting_source"));
+        assert!(progress_events
+            .iter()
+            .any(|event| event.stage == "downloading" && event.percent == Some(100.0)));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn upgrade_preserves_current_symlink_when_sha256_mismatches() {
         let (root, config) = fixture();
         let bin_root = root.path().join("bin");
@@ -1260,7 +2138,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("sha256"));
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains("sha256")));
         assert_eq!(
             std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
             PathBuf::from("../0.1.0/awiki-deamon")

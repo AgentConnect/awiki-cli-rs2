@@ -193,10 +193,50 @@ done
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
+curl_with_route() {
+  route="$1"
+  src="$2"
+  dest="$3"
+  set -- curl -fL --show-error --progress-bar \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" \
+    --max-time "$CURL_MAX_TIME_SECONDS" \
+    --retry "$CURL_RETRY_COUNT" \
+    --retry-delay "$CURL_RETRY_DELAY_SECONDS" \
+    --speed-limit "$CURL_SPEED_LIMIT_BYTES" \
+    --speed-time "$CURL_SPEED_TIME_SECONDS"
+  case "$route" in
+    direct)
+      set -- "$@" --noproxy '*'
+      ;;
+    env)
+      ;;
+    http://127.0.0.1:*)
+      set -- "$@" --proxy "$route"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  "$@" "$src" -o "$dest"
+}
+
+curl_route_list() {
+  printf '%s\n' \
+    "env" \
+    "direct" \
+    "http://127.0.0.1:7897" \
+    "http://127.0.0.1:7890" \
+    "http://127.0.0.1:7891" \
+    "http://127.0.0.1:7892" \
+    "http://127.0.0.1:1080" \
+    "http://127.0.0.1:8080"
+}
+
 try_download_to() {
   src="$1"
   dest="$2"
   label="${3:-$(basename "$dest")}"
+  route="${4:-}"
   case "$src" in
     file://*)
       info "Copying ${label} from local file..."
@@ -216,14 +256,21 @@ PY
       ;;
     *)
       info "Downloading ${label}..."
-      curl -fL --show-error --progress-bar \
-        --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" \
-        --max-time "$CURL_MAX_TIME_SECONDS" \
-        --retry "$CURL_RETRY_COUNT" \
-        --retry-delay "$CURL_RETRY_DELAY_SECONDS" \
-        --speed-limit "$CURL_SPEED_LIMIT_BYTES" \
-        --speed-time "$CURL_SPEED_TIME_SECONDS" \
-        "$src" -o "$dest"
+      if [ -n "$route" ]; then
+        curl_with_route "$route" "$src" "$dest"
+      else
+        route_error_log="${TMP_DIR:-/tmp}/awiki-daemon-curl-routes.$$"
+        : > "$route_error_log"
+        for candidate_route in $(curl_route_list); do
+          [ -n "$candidate_route" ] || continue
+          if curl_with_route "$candidate_route" "$src" "$dest"; then
+            return 0
+          fi
+          rm -f "$dest"
+          printf '%s\n' "$candidate_route" >> "$route_error_log"
+        done
+        return 1
+      fi
       ;;
   esac
 }
@@ -426,16 +473,19 @@ validate_version_segment "$PKG_VERSION"
 ARCHIVE_PATH="${TMP_DIR}/awiki-deamon-${OS}-${ARCH}.tar.gz"
 source_candidates_file="${TMP_DIR}/source-candidates.txt"
 printf '%s\n' "$DOWNLOAD_SOURCE_LIST" > "$source_candidates_file"
+route_candidates_file="${TMP_DIR}/route-candidates.txt"
+curl_route_list > "$route_candidates_file"
 ordered_sources_file="${TMP_DIR}/ordered-sources.txt"
-"$PYTHON_BIN" - "$source_candidates_file" "$PKG_PATH" "$PROBE_CONNECT_TIMEOUT_SECONDS" "$PROBE_MAX_TIME_SECONDS" > "$ordered_sources_file" <<'PY'
+"$PYTHON_BIN" - "$source_candidates_file" "$route_candidates_file" "$PKG_PATH" "$PROBE_CONNECT_TIMEOUT_SECONDS" "$PROBE_MAX_TIME_SECONDS" > "$ordered_sources_file" <<'PY'
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 
-source_file, package_path, connect_timeout, max_time = sys.argv[1:5]
+source_file, route_file, package_path, connect_timeout, max_time = sys.argv[1:6]
 sources = [line.strip() for line in open(source_file, encoding="utf-8") if line.strip()]
+routes = [line.strip() for line in open(route_file, encoding="utf-8") if line.strip()]
 
 def join(base, path):
     path = path.lstrip("/")
@@ -456,60 +506,73 @@ ranked = []
 for index, source in enumerate(sources):
     if is_local(source):
         score = 10**15 if local_exists(source) else -1
-        ranked.append((score, -index, source))
+        ranked.append((score, -index, 0, source, "local"))
         continue
     curl = shutil.which("curl")
     if not curl:
-        ranked.append((0, -index, source))
+        ranked.append((0, -index, 0, source, "env"))
         continue
-    fd, output = tempfile.mkstemp(prefix="awiki-daemon-probe-", suffix=".bin")
-    os.close(fd)
-    try:
-        result = subprocess.run(
-            [
-                curl,
-                "-fL",
-                "--silent",
-                "--show-error",
-                "--connect-timeout",
-                connect_timeout,
-                "--max-time",
-                max_time,
-                "--range",
-                "0-262143",
-                "--write-out",
-                "%{speed_download}",
-                "--output",
-                output,
-                join(source, package_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
-        speed = float(result.stdout.strip() or "0") if result.returncode == 0 else 0
-        ranked.append((speed, -index, source))
-    finally:
+    for route_index, route in enumerate(routes):
+        fd, output = tempfile.mkstemp(prefix="awiki-daemon-probe-", suffix=".bin")
+        os.close(fd)
+        command = [
+            curl,
+            "-fL",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            connect_timeout,
+            "--max-time",
+            max_time,
+            "--range",
+            "0-262143",
+            "--write-out",
+            "%{speed_download}",
+            "--output",
+            output,
+        ]
+        if route == "direct":
+            command += ["--noproxy", "*"]
+        elif route.startswith("http://127.0.0.1:"):
+            command += ["--proxy", route]
+        elif route != "env":
+            try:
+                os.remove(output)
+            except OSError:
+                pass
+            continue
+        command.append(join(source, package_path))
         try:
-            os.remove(output)
-        except OSError:
-            pass
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            speed = float(result.stdout.strip() or "0") if result.returncode == 0 else 0
+            ranked.append((speed, -index, -route_index, source, route))
+        finally:
+            try:
+                os.remove(output)
+            except OSError:
+                pass
 
 ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-for _score, _order, source in ranked:
-    print(source)
+for _score, _source_order, _route_order, source, route in ranked:
+    print(f"{source}\t{route}")
 PY
 
 SELECTED_DOWNLOAD_BASE_URL=""
 package_error_log="${TMP_DIR}/package-errors.txt"
 : > "$package_error_log"
-while IFS= read -r download_source; do
+while IFS="$(printf '\t')" read -r download_source download_route; do
   [ -n "$download_source" ] || continue
+  [ -n "$download_route" ] || download_route="env"
   pkg_url="$(join_download_path "$download_source" "$PKG_PATH")"
   rm -f "$ARCHIVE_PATH"
-  if ! try_download_to "$pkg_url" "$ARCHIVE_PATH" "daemon package ${PKG_VERSION} for ${OS}-${ARCH}"; then
-    printf '%s download_failed\n' "$download_source" >> "$package_error_log"
+  if ! try_download_to "$pkg_url" "$ARCHIVE_PATH" "daemon package ${PKG_VERSION} for ${OS}-${ARCH}" "$download_route"; then
+    printf '%s %s download_failed\n' "$download_source" "$download_route" >> "$package_error_log"
     continue
   fi
 
@@ -524,7 +587,7 @@ while IFS= read -r download_source; do
     SELECTED_DOWNLOAD_BASE_URL="$download_source"
     break
   fi
-  printf '%s sha256_mismatch\n' "$download_source" >> "$package_error_log"
+  printf '%s %s sha256_mismatch\n' "$download_source" "$download_route" >> "$package_error_log"
 done < "$ordered_sources_file"
 
 [ -n "$SELECTED_DOWNLOAD_BASE_URL" ] || die "download daemon package failed from all configured sources: $(tr '\n' ' ' < "$package_error_log")"

@@ -288,6 +288,40 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 ],
             )
 
+    def test_generate_manifest_records_download_base_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            create_fake_daemon_package(temp_dir, "linux", "amd64")
+            urls_file = temp_dir / "download-urls.txt"
+            urls_file.write_text(
+                "https://example.com/daemon\nhttps://cdn.example.com/daemon/\n",
+                encoding="utf-8",
+            )
+
+            run_command(
+                [
+                    "node",
+                    "scripts/release/daemon/_generate-manifest.js",
+                    "--version",
+                    "1.2.3",
+                    "--dist",
+                    str(temp_dir),
+                    "--output",
+                    str(temp_dir / "manifest.json"),
+                    "--download-base-urls",
+                    str(urls_file),
+                    "--download-base-url",
+                    "https://example.com/daemon",
+                    "--allow-partial",
+                ]
+            )
+
+            manifest = json.loads((temp_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["download_base_urls"],
+                ["https://example.com/daemon", "https://cdn.example.com/daemon"],
+            )
+
     def test_stage_downloads_can_publish_partial_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
