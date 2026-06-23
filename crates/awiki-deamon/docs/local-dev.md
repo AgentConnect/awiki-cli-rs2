@@ -95,7 +95,7 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 - `runtime_profile`：runtime agent 绑定的 runtime plugin type、展示名和状态。CLI 家族新数据统一使用 `runtime_plugin_id=generic-cli`。
 - `cli_runtime_profile`：`generic-cli` 插件内部 profile，保存 `driver_id`、binary/config、默认 sandbox、默认 workspace mode、`msg.send` recipient policy 和 driver-specific config。
 - `cli_driver_run`：CLI run 的 route/session/workspace/output metadata，包括 workspace instance、command、stdout/stderr/JSONL/final output 路径和 fallback final 来源。
-- `runtime_final_outbox`：Hermes controller final reply 专用持久 outbox。daemon 拿到 Hermes final text 后先写入该表，发送成功后才把 run 标记为 finished；foreground 启动和循环会补发 due pending 记录。
+- `runtime_final_outbox`：Runtime controller final reply 持久 outbox。Hermes final text 以及 Codex / Claude Code 等 generic-cli fallback final text 都先写入该表，再由 daemon 以 Runtime Agent DID 给 controller / requester 发送普通消息；发送成功后标记 sent 并把 run 标记为 finished，foreground 启动和循环会补发 due pending 记录。
 - `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
 
 首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
@@ -179,7 +179,7 @@ daemon 当前提供 Generic CLI runtime MVP 闭环：
 6. daemon 创建 `RuntimeRun`，按 profile/run recipient policy 签发短期 `runtime_rpc_token`。
 7. `GenericCliDriverRegistry` 按 `driver_id` 选择 `CodexDriver`、`command` driver 或后续 driver；Claude Code / Gemini 当前只保留未实现分支。
 8. Codex driver 使用 `codex exec` headless 模式，通过 stdin prompt envelope 传入用户消息，使用 `--output-last-message` 记录 fallback final。
-9. Codex / command driver 通过 daemon CLI wrapper + local RPC 回传 `task.status`、`task.finish`、`msg.send` 和 `artifact.created`；真实 Codex run 不使用 `RuntimeLaunchOutcome.callbacks` 作为 status/final 主链路。
+9. Codex / command driver 通过 daemon CLI wrapper + local RPC 回传 `task.status`、`task.finish`、`msg.send` 和 `artifact.created`；真实 Codex run 不使用 `RuntimeLaunchOutcome.callbacks` 作为 status/final 主链路。若 Codex / Claude Code 只产出 `--output-last-message` / stream final 而没有显式 `msg.send`，daemon 会把该 fallback final 写入 `runtime_final_outbox` 并以 Runtime Agent DID 发送成用户可见普通消息。
 10. daemon 通过 token 反查可信上下文，更新 run 状态，写 audit，并通过 outbox 发送 status/final/message。单元测试使用 `MemoryRuntimeOutbox`；foreground 主链路通过 `im-core` SDK 发送 direct text。
 
 Codex 真实 run 注入的环境变量包括：

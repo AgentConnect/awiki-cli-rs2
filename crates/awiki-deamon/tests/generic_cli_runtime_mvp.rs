@@ -1974,12 +1974,16 @@ fn generic_cli_host_sanitizes_untrusted_fallback_final_text() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
     assert_eq!(
         records[1].text.as_deref(),
         Some("host fallback dirty <redacted-runtime-rpc-token>")
     );
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[2].text.as_deref(), Some("Runtime response sent"));
     assert!(!records[1]
         .text
         .as_deref()
@@ -2012,6 +2016,16 @@ fn generic_cli_host_sanitizes_untrusted_fallback_final_text() {
         run_record.output_json["fallback_final_sanitizer"]["token_redacted"].as_bool(),
         Some(true)
     );
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(
+        final_outbox.final_text,
+        "host fallback dirty <redacted-runtime-rpc-token>"
+    );
+    assert_eq!(final_outbox.final_source, "codex_output_last_message");
 }
 
 #[test]
@@ -3111,8 +3125,16 @@ printf '{"type":"result","result":"registry claude finished"}\n'
     let records = outbox.records();
     assert!(records
         .iter()
-        .any(|record| record.kind == OutboxRecordKind::Final
-            && record.text.as_deref() == Some("registry claude finished")));
+        .any(|record| record.kind == OutboxRecordKind::Message
+            && record.text.as_deref() == Some("registry claude finished")
+            && record.recipient.as_deref() == Some("did:human:alice")));
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(final_outbox.final_text, "registry claude finished");
+    assert_eq!(final_outbox.final_source, "claude-code_output_last_message");
 }
 
 #[cfg(unix)]
@@ -4393,14 +4415,18 @@ exit 0
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
     assert!(result.launch_outcome.callbacks.is_empty());
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 3);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("running"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
     assert_eq!(
         records[1].text.as_deref(),
         Some("fallback final from codex <redacted-runtime-rpc-token>")
     );
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[2].text.as_deref(), Some("Runtime response sent"));
     assert!(!records[1]
         .text
         .as_deref()
@@ -4436,6 +4462,16 @@ exit 0
         run_record.output_json["fallback_final_sanitizer"]["token_redacted"].as_bool(),
         Some(false)
     );
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(
+        final_outbox.final_text,
+        "fallback final from codex <redacted-runtime-rpc-token>"
+    );
+    assert_eq!(final_outbox.final_source, "codex_output_last_message");
 }
 
 #[cfg(unix)]

@@ -190,7 +190,7 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     );
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("succeeded"));
-    assert_eq!(records[2].text.as_deref(), Some("Hermes response sent"));
+    assert_eq!(records[2].text.as_deref(), Some("Runtime response sent"));
 
     let prompts = gateway.submitted_prompts();
     assert_eq!(prompts.len(), 1);
@@ -468,7 +468,7 @@ fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent(
     assert!(records.iter().any(|record| {
         record.kind == OutboxRecordKind::Status
             && record.state.as_deref() == Some("succeeded")
-            && record.text.as_deref() == Some("Hermes response sent")
+            && record.text.as_deref() == Some("Runtime response sent")
     }));
 
     let audit_detail: String = Connection::open(root.path().join("daemon.db"))
@@ -610,7 +610,7 @@ fn hermes_message_auto_approved_approval_still_returns_final_text() {
     );
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("succeeded"));
-    assert_eq!(records[2].text.as_deref(), Some("Hermes response sent"));
+    assert_eq!(records[2].text.as_deref(), Some("Runtime response sent"));
     assert!(records[2].last_error_code.is_none());
     assert!(records[2].last_error_summary.is_none());
     assert!(gateway.observed_events().iter().any(|event| {

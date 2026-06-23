@@ -156,7 +156,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | `cli_runtime_locks` | profile lock / host-home lock。 |
 | `cli_route_message_queue` | route message queue foundation，保存最小 message/run reference。 |
 | `runtime_retry_queue` | runtime retry/backoff foundation。 |
-| `runtime_final_outbox` | final outbox provenance foundation，记录 final source/hash。 |
+| `runtime_final_outbox` | controller final reply 持久 outbox，记录 final source/hash；Hermes final 与 Codex / Claude Code fallback final 都必须通过它发送成用户可见普通消息。 |
 | `audit_log` | 脱敏操作审计。 |
 | `daemon_state_metadata` | daemon-local metadata，例如 route hash salt。 |
 
@@ -242,6 +242,7 @@ codex exec \
 - 禁止 `resume --last --all`。
 - fallback 成功但仍没有可信 native id 时，不能把 synthetic id 写入 `native_session_id`。
 - Codex stdout/final 不能修改 reply target、route、recipient、workspace、policy 或 native id 写回逻辑。
+- Codex fallback final 不能只作为 daemon status payload 上报；必须写入 `runtime_final_outbox`，由 daemon 以 Runtime Agent DID 发送普通消息，确保 App 聊天 UI 能看到回复。
 
 当前默认 `ephemeral=false`，以便 native session 能恢复。`--ephemeral` 只适合 debug/临时模式，不能作为长期 route session 默认。
 

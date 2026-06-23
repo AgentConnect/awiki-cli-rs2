@@ -1168,7 +1168,14 @@ fn foreground_cli_route_message_queue_drains_due_item_and_supersedes_runtime_ret
     assert!(outbox
         .records()
         .iter()
-        .any(|record| record.kind == OutboxRecordKind::Final));
+        .any(|record| record.kind == OutboxRecordKind::Message
+            && record.text.as_deref() == Some("queue drain final")));
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(replay_run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(final_outbox.final_text, "queue drain final");
 }
 
 #[cfg(unix)]

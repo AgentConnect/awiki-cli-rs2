@@ -5,7 +5,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID};
-use crate::cli_wrapper::CliWrapperRequest;
 use crate::controller_scope::VerifiedControllerSender;
 use crate::inbox::{
     route_controller_text_task, route_controller_text_task_with_verified_sender,
@@ -690,21 +689,34 @@ where
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("generic-cli");
-            let response = execute_runtime_rpc_request_with_outbox(
-                state,
-                outbox,
-                CliWrapperRequest::task_finish(
-                    issued.token.as_str().to_string(),
-                    run.task_id.clone(),
-                    fallback_final.text,
-                )
-                .into_rpc_request(),
-            )
-            .context("apply fallback final from CLI driver output")?;
-            if response.ok {
-                fallback_final_source = Some(format!("{fallback_driver_id}_output_last_message"));
-                fallback_final_sanitizer = Some(fallback_final.sanitizer_metadata);
+            let final_source = format!("{fallback_driver_id}_output_last_message");
+            let final_record = runtime_final_outbox_record(
+                profile,
+                &task_controller_did,
+                &task_reply_recipient_did,
+                &run,
+                task_conversation_id.as_deref(),
+                &fallback_final.text,
+                final_source.as_str(),
+            )?;
+            state.upsert_runtime_final_outbox_pending(&final_record)?;
+            flush_runtime_final_outbox(state, outbox, 8)
+                .context("send generic-cli fallback final text as runtime message")?;
+            let refreshed = state
+                .load_runtime_final_outbox_by_run(&run.run_id)?
+                .context("generic-cli fallback final outbox record missing after flush")?;
+            if refreshed.status != "sent" {
+                emit_runtime_status(
+                    outbox,
+                    &run,
+                    "running",
+                    Some("Generic CLI response is ready; delivery is retrying"),
+                    refreshed.last_error_code.as_deref(),
+                    refreshed.last_error_summary.as_deref(),
+                )?;
             }
+            fallback_final_source = Some(final_source);
+            fallback_final_sanitizer = Some(fallback_final.sanitizer_metadata);
         }
     }
 
@@ -1650,12 +1662,12 @@ fn mark_runtime_final_delivered(
     let run = state.load_runtime_run(&record.run_id)?;
     state
         .update_runtime_run_status(&record.run_id, RuntimeRunStatus::Finished)
-        .context("mark Hermes run finished after final delivery")?;
+        .context("mark runtime run finished after final delivery")?;
     emit_runtime_status(
         outbox,
         &run,
         "succeeded",
-        Some("Hermes response sent"),
+        Some("Runtime response sent"),
         None,
         None,
     )?;
@@ -1673,7 +1685,7 @@ fn runtime_final_outbox_record(
 ) -> Result<RuntimeFinalOutboxRecord> {
     let final_text = final_text.trim();
     if final_text.is_empty() {
-        anyhow::bail!("Hermes final text is empty");
+        anyhow::bail!("runtime final text is empty");
     }
     let now = current_time_millis()?;
     Ok(RuntimeFinalOutboxRecord {
