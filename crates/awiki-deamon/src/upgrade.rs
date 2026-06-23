@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
+use crate::service::{
+    manage_service, restart_service_after_upgrade, ServiceAction, ServicePlatform, ServiceStatus,
+};
 use crate::DaemonConfig;
 
 pub const CURRENT_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -512,11 +514,7 @@ where
             Some(package.version.clone()),
             Some((&selected_download.1, selected_download.2.as_deref())),
         );
-        match manage_service(
-            config,
-            &current_dir.join("awiki-deamon"),
-            ServiceAction::Install,
-        ) {
+        match restart_service_after_upgrade(config, &current_dir.join("awiki-deamon")) {
             Ok(status) => status,
             Err(error) => {
                 let _ = restore_current_links(&current_dir, &backup);
