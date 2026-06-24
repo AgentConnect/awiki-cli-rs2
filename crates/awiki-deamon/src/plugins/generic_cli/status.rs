@@ -1,9 +1,12 @@
 use serde_json::{json, Value};
 
+use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID, GEMINI_CLI_DRIVER_ID};
 use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
 use super::GenericCliDriverRegistry;
+
+const COMMAND_CLI_DRIVER_ID: &str = "command";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericCliStatusSummary {
@@ -115,7 +118,7 @@ impl GenericCliStatusSummary {
 
 fn auth_status(profile: &CliRuntimeProfileRecord) -> &'static str {
     match profile.driver_id.as_str() {
-        "codex" => {
+        CODEX_CLI_DRIVER_ID => {
             if profile
                 .config_home
                 .as_ref()
@@ -126,7 +129,7 @@ fn auth_status(profile: &CliRuntimeProfileRecord) -> &'static str {
                 "missing"
             }
         }
-        "command" => "not_applicable",
+        CLAUDE_CODE_CLI_DRIVER_ID | COMMAND_CLI_DRIVER_ID => "not_applicable",
         _ => "unknown",
     }
 }
@@ -137,12 +140,12 @@ fn driver_status_code(
     install_status: &RuntimeInstallStatus,
     install_probe_failed: bool,
 ) -> String {
-    if profile.driver_id == "gemini" {
+    if profile.driver_id == GEMINI_CLI_DRIVER_ID {
         return "not_implemented".to_string();
     }
     if !matches!(
         profile.driver_id.as_str(),
-        "codex" | "claude-code" | "command"
+        CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID | COMMAND_CLI_DRIVER_ID
     ) {
         return "unsupported_driver".to_string();
     }
@@ -254,6 +257,32 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_status_uses_install_probe_without_codex_auth_requirement() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("claude");
+        write_fake_version_executable(&binary, "claude 9.9.9").unwrap();
+        let mut profile =
+            CliRuntimeProfileRecord::for_driver("profile_claude", "claude-code").unwrap();
+        profile.binary_path = Some(binary);
+
+        let ready = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(ready.setup_ready);
+        assert_eq!(ready.error_code(), None);
+        assert_eq!(ready.driver_status_code, "ok");
+        assert_eq!(
+            ready.diagnostics_summary()["config_summary"]["auth_status"],
+            "not_applicable"
+        );
+        assert_eq!(
+            ready.diagnostics_summary()["config_summary"]["setup_status"],
+            "ready"
+        );
+        let dump = ready.diagnostics_summary().to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
     fn public_errors_redact_paths_and_secret_words() {
         let sanitized = sanitize_public_error(
             "spawn /Users/alice/bin/codex failed with token abc and ApiKey xyz",
@@ -267,19 +296,26 @@ mod tests {
     }
 
     fn write_fake_codex_executable(path: &std::path::Path) -> std::io::Result<()> {
+        write_fake_version_executable(path, "codex-cli 9.9.9")
+    }
+
+    fn write_fake_version_executable(path: &std::path::Path, version: &str) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(
             path,
-            r#"#!/bin/sh
-if [ "${1-}" = "--version" ]; then
-  echo "codex-cli 9.9.9"
+            format!(
+                r#"#!/bin/sh
+if [ "${{1-}}" = "--version" ]; then
+  echo "{}"
   exit 0
 fi
 cat >/dev/null
 exit 0
 "#,
+                version
+            ),
         )?;
         #[cfg(unix)]
         {
