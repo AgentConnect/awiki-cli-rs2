@@ -1,4 +1,5 @@
 use super::*;
+use crate::public_error::sanitize_public_error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RuntimeInboundAttachment {
@@ -105,7 +106,7 @@ async fn resolve_inbound_attachment(
         }
         Err(error) => {
             attachment.download_status = "failed".to_string();
-            attachment.error = Some(sanitize_error_message(&error.to_string()));
+            attachment.error = Some(sanitize_public_error(&error.to_string()));
         }
     }
     attachment
