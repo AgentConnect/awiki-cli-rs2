@@ -1560,7 +1560,7 @@ fn generic_cli_foreground_route_uses_cli_profile_registry_not_test_fallback() {
     profile.display_name = Some("Alice Generic CLI".to_string());
     state.upsert_runtime_agent_profile(&profile).unwrap();
     let mut cli_profile =
-        crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex")
+        crate::state::CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "command")
             .unwrap();
     cli_profile.binary_path = Some(root.path().join("missing-codex"));
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();

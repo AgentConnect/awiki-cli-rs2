@@ -123,9 +123,22 @@ pub struct RuntimeLaunchContext {
     pub task: RuntimeTask,
     pub workspace_root: Option<PathBuf>,
     pub workspace_instance: Option<WorkspaceInstance>,
+    pub cli_route_session: Option<GenericCliRouteSession>,
     pub runtime_temp_dir: Option<PathBuf>,
     pub runtime_rpc_token: RuntimeRpcToken,
     pub local_socket_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenericCliRouteSession {
+    pub route_key: String,
+    pub route_key_hash: String,
+    pub session_dir: PathBuf,
+    pub last_run_id: Option<String>,
+    pub last_message_id: Option<String>,
+    pub native_session_id: Option<String>,
+    pub synthetic_session_id: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

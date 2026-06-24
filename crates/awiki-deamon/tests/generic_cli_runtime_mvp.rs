@@ -139,9 +139,11 @@ fn failed_generic_cli_marks_run_failed_without_final_callback() {
     assert_eq!(result.launch_outcome.exit_code, Some(7));
 
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
+    assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
 }
 
 #[derive(Debug, Clone)]
@@ -819,8 +821,15 @@ PY
 }
 
 fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
+    let config_home = binary_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("codex-home");
+    std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(config_home.join("auth.json"), "{}").unwrap();
     CodexDriverConfig {
         binary_path,
+        config_home,
         profile: Some("awiki".to_string()),
         model: Some("gpt-test".to_string()),
         sandbox: "workspace-write".to_string(),
@@ -829,6 +838,7 @@ fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
         ephemeral: true,
         output_dir: None,
         cli_wrapper: "library:awiki_deamon::cli_wrapper".to_string(),
+        run_timeout: std::time::Duration::from_secs(30),
     }
 }
 
@@ -879,6 +889,7 @@ fn codex_driver_config_prefers_driver_config_sandbox_over_profile_default() {
     let mut cli_profile =
         CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "codex").unwrap();
     cli_profile.binary_path = Some(root.path().join("codex-from-profile"));
+    cli_profile.config_home = Some(root.path().join("codex-home"));
     cli_profile.default_model = Some("model-from-profile".to_string());
     cli_profile.default_sandbox = Some("read-only".to_string());
     cli_profile.driver_config_json = json!({
@@ -1259,6 +1270,116 @@ exit 0
 
 #[cfg(unix)]
 #[test]
+fn codex_route_session_reuses_native_session_on_same_conversation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-resume");
+    let args_capture = root.path().join("codex-resume-args.txt");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+printf '%s\n' "$@" >> "{args_capture}"
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf '{{"type":"thread.started","thread_id":"019ef9e5-1e70-78d2-9508-05f5af0ff34a"}}\n'
+printf 'codex final\n' > "$FINAL_OUTPUT"
+exit 0
+"#,
+            args_capture = args_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    let config_home = root.path().join("codex-home");
+    std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+    driver_config.config_home = config_home;
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_resume_1".to_string(),
+            conversation_id: Some("conv_codex_resume".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "first".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(first.run.status, RuntimeRunStatus::Finished);
+    let first_record = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    assert_eq!(
+        first_record.native_session_id.as_deref(),
+        Some("019ef9e5-1e70-78d2-9508-05f5af0ff34a")
+    );
+
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_resume_2".to_string(),
+            conversation_id: Some("conv_codex_resume".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "second".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(second.run.status, RuntimeRunStatus::Finished);
+    let second_record = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    assert_eq!(second_record.route_key, first_record.route_key);
+    assert_eq!(
+        second_record.native_session_id.as_deref(),
+        Some("019ef9e5-1e70-78d2-9508-05f5af0ff34a")
+    );
+
+    let args_dump = std::fs::read_to_string(args_capture).unwrap();
+    assert!(args_dump.contains("resume\n019ef9e5-1e70-78d2-9508-05f5af0ff34a\n-\n"));
+}
+
+#[cfg(unix)]
+#[test]
 fn worktree_per_task_uses_daemon_runtime_temp_and_records_metadata() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1538,6 +1659,7 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
         workspace_root: None,
         workspace_instance: None,
         runtime_temp_dir: None,
+        route_session: None,
         runtime_rpc_token: "rtok_debug_secret_value_123456789".to_string(),
         local_socket_path: None,
         callbacks: Vec::new(),

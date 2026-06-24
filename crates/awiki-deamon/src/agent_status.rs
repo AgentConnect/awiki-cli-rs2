@@ -219,6 +219,24 @@ fn latest_status_items_with_release(
     now_ms: i64,
     release: &DaemonReleaseStatus,
 ) -> Result<Vec<AgentLatestStatusUpdateItem>> {
+    latest_status_items_with_runtime_status(
+        config,
+        state,
+        daemon,
+        now_ms,
+        release,
+        |config, state, runtime| runtime_status_summary(config, state, runtime),
+    )
+}
+
+fn latest_status_items_with_runtime_status(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+    now_ms: i64,
+    release: &DaemonReleaseStatus,
+    runtime_status: impl Fn(&DaemonConfig, &DaemonState, &AgentDefinition) -> RuntimeStatusSummary,
+) -> Result<Vec<AgentLatestStatusUpdateItem>> {
     let last_seen_at = Some(rfc3339_from_millis(now_ms));
     let service = service_status(config);
     let mut items = vec![AgentLatestStatusUpdateItem {
@@ -243,7 +261,7 @@ fn latest_status_items_with_release(
         diagnostics_summary: daemon_diagnostics_summary(&service, release),
     }];
     for runtime in state.list_runtime_agent_definitions_for_daemon(&daemon.agent_did)? {
-        let runtime_status = runtime_status_summary(config, state, &runtime);
+        let runtime_status = runtime_status(config, state, &runtime);
         items.push(AgentLatestStatusUpdateItem {
             agent_did: runtime.agent_did.clone(),
             agent_kind: AgentKind::Runtime,
@@ -957,7 +975,26 @@ mod tests {
             })
             .unwrap();
 
-        let items = latest_status_items(&config, &state, &daemon, 1_700_000_000_000).unwrap();
+        let release = DaemonReleaseStatus {
+            current_version: crate::upgrade::CURRENT_DAEMON_VERSION.to_string(),
+            latest_version: None,
+            needs_upgrade: false,
+            manifest_url: "https://example.test/daemon/releases/latest.json".to_string(),
+            error: None,
+        };
+        let items = latest_status_items_with_runtime_status(
+            &config,
+            &state,
+            &daemon,
+            1_700_000_000_000,
+            &release,
+            |config, state, runtime| {
+                runtime_status_summary_with_gateway_status(config, state, runtime, || {
+                    HermesGatewayCommandStatus::Configured
+                })
+            },
+        )
+        .unwrap();
         assert_eq!(items.len(), 2);
         let allowed = allowed_latest_diagnostics_keys();
         for item in &items {

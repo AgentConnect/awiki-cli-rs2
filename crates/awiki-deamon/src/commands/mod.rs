@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Chain, Context, Result};
@@ -204,6 +205,14 @@ struct RuntimeAgentCreateArgs {
     recipient_policy: Option<Value>,
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    workspace_mode: Option<String>,
+    #[serde(default)]
+    workspace_strategy: Option<String>,
+    #[serde(default)]
+    default_sandbox: Option<String>,
+    #[serde(default)]
+    default_model: Option<String>,
     controller_did: String,
     registration_token: String,
     #[serde(default)]
@@ -546,6 +555,10 @@ where
                 driver_config: request.driver_config,
                 recipient_policy: request.recipient_policy,
                 workspace: request.workspace,
+                workspace_mode: None,
+                workspace_strategy: None,
+                default_sandbox: None,
+                default_model: None,
                 controller_did: request.controller_did,
                 registration_token: request.registration_token,
                 client_request_id: request.client_request_id,
@@ -596,10 +609,28 @@ where
     let resolution = validate_runtime_create_args_contract(&payload.args)?;
     let plugin_id = resolution.runtime_plugin_id.clone();
     let profile_id = runtime_profile_id(&payload.args.runtime, &handle)?;
-    let workspace_root = workspace_path(payload.args.workspace.as_deref())?;
+    let is_generic_cli = plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID;
+    let workspace_mode = runtime_create_workspace_mode(&payload.args, is_generic_cli)?;
+    let workspace_root = if is_generic_cli {
+        Some(
+            workspace_path(payload.args.workspace.as_deref())?
+                .unwrap_or_else(|| generic_cli_workspace_root(config, &profile_id)),
+        )
+    } else {
+        workspace_path(payload.args.workspace.as_deref())?
+    };
     let workspace_id = workspace_root
         .as_ref()
-        .map(|_| workspace_id(&handle))
+        .map(|_| {
+            if is_generic_cli {
+                generic_cli_workspace_id(
+                    resolution.driver_id.as_deref().unwrap_or("generic-cli"),
+                    &handle,
+                )
+            } else {
+                workspace_id(&handle)
+            }
+        })
         .transpose()?;
     let display_name = payload
         .args
@@ -645,7 +676,7 @@ where
         display_name: Some(display_name.clone()),
         workspace_id: workspace_id.clone(),
         workspace_root,
-        workspace_mode: workspace_id.as_ref().map(|_| WorkspaceMode::SharedRoot),
+        workspace_mode: workspace_id.as_ref().map(|_| workspace_mode),
     };
     state.upsert_runtime_agent_profile_with_handle(&profile, &exchange.handle)?;
     state.upsert_runtime_daemon_binding(
@@ -662,8 +693,25 @@ where
             .clone()
             .context("generic-cli runtime must have driver_id")?;
         let mut cli_profile = CliRuntimeProfileRecord::for_driver(&profile_id, driver_id)?;
+        if cli_profile.driver_id == "codex" {
+            let profile_dir = codex_profile_dir(config, &profile_id);
+            create_private_dir_all(&profile_dir)?;
+            let config_home = profile_dir.join("codex-home");
+            create_private_dir_all(&config_home)?;
+            seed_codex_profile_home_from_host(&config_home)?;
+            cli_profile.config_home = Some(config_home);
+        }
         if let Some(recipient_policy) = payload.args.recipient_policy.clone() {
             cli_profile.recipient_policy_json = recipient_policy;
+        }
+        cli_profile.default_workspace_mode = workspace_mode;
+        if let Some(default_sandbox) =
+            normalize_optional_arg(payload.args.default_sandbox.as_deref())
+        {
+            cli_profile.default_sandbox = Some(default_sandbox);
+        }
+        if let Some(default_model) = normalize_optional_arg(payload.args.default_model.as_deref()) {
+            cli_profile.default_model = Some(default_model);
         }
         if let Some(driver_config) = payload.args.driver_config.clone() {
             cli_profile.driver_config_json = driver_config;
@@ -761,7 +809,161 @@ fn validate_runtime_create_args_contract(
     let resolution = resolve_runtime(&args.runtime, args.driver_id.as_deref())?;
     validate_optional_object(args.driver_config.as_ref(), "driver_config")?;
     validate_optional_object(args.recipient_policy.as_ref(), "recipient_policy")?;
+    if let Some(workspace_mode) = args.workspace_mode.as_deref() {
+        WorkspaceMode::parse(workspace_mode)?;
+    }
+    if let Some(workspace_strategy) = args.workspace_strategy.as_deref() {
+        WorkspaceMode::parse(workspace_strategy)?;
+    }
+    if let (Some(workspace_mode), Some(workspace_strategy)) = (
+        args.workspace_mode.as_deref(),
+        args.workspace_strategy.as_deref(),
+    ) {
+        let workspace_mode = WorkspaceMode::parse(workspace_mode)?;
+        let workspace_strategy = WorkspaceMode::parse(workspace_strategy)?;
+        if workspace_mode != workspace_strategy {
+            bail!("workspace_mode and workspace_strategy must resolve to the same value");
+        }
+    }
     Ok(resolution)
+}
+
+fn runtime_create_workspace_mode(
+    args: &RuntimeAgentCreateArgs,
+    is_generic_cli: bool,
+) -> Result<WorkspaceMode> {
+    if let Some(workspace_mode) = args.workspace_mode.as_deref() {
+        return WorkspaceMode::parse(workspace_mode);
+    }
+    if let Some(workspace_strategy) = args.workspace_strategy.as_deref() {
+        return WorkspaceMode::parse(workspace_strategy);
+    }
+    if is_generic_cli {
+        Ok(WorkspaceMode::SharedRoot)
+    } else {
+        Ok(WorkspaceMode::SharedRoot)
+    }
+}
+
+fn generic_cli_workspace_root(config: &DaemonConfig, runtime_profile_id: &str) -> PathBuf {
+    config
+        .runtime_cache_dir
+        .join("generic-cli")
+        .join("workspaces")
+        .join(runtime_profile_id)
+}
+
+fn generic_cli_workspace_id(driver_id: &str, handle: &str) -> Result<String> {
+    workspace_id(&format!("{driver_id}-{handle}"))
+}
+
+fn codex_profile_dir(config: &DaemonConfig, runtime_profile_id: &str) -> PathBuf {
+    config
+        .runtime_cache_dir
+        .join("generic-cli")
+        .join("profiles")
+        .join(runtime_profile_id)
+}
+
+fn normalize_optional_arg(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+const CODEX_PROFILE_SEED_FILES: &[&str] = &["config.toml", "auth.json"];
+
+fn seed_codex_profile_home_from_host(config_home: &Path) -> Result<()> {
+    let Some(source_home) = host_codex_home_for_profile_seed(config_home) else {
+        return Ok(());
+    };
+    seed_codex_profile_home_from_source(config_home, &source_home)
+}
+
+fn host_codex_home_for_profile_seed(config_home: &Path) -> Option<PathBuf> {
+    let candidates = [
+        std::env::var_os("CODEX_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.is_dir() && !same_path(candidate, config_home))
+}
+
+fn seed_codex_profile_home_from_source(config_home: &Path, source_home: &Path) -> Result<()> {
+    create_private_dir_all(config_home)?;
+    for file_name in CODEX_PROFILE_SEED_FILES {
+        copy_codex_seed_file_if_missing(source_home, config_home, file_name)?;
+    }
+    Ok(())
+}
+
+fn copy_codex_seed_file_if_missing(
+    source_home: &Path,
+    config_home: &Path,
+    file_name: &str,
+) -> Result<()> {
+    let source = source_home.join(file_name);
+    let target = config_home.join(file_name);
+    let source_metadata = match std::fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.file_type().is_file() => metadata,
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("inspect {}", source.display())),
+    };
+    if target.exists() {
+        return Ok(());
+    }
+    if source_metadata.len() > 2 * 1024 * 1024 {
+        return Ok(());
+    }
+    std::fs::copy(&source, &target)
+        .with_context(|| format!("seed Codex profile file {}", target.display()))?;
+    set_owner_private_file_permissions(&target)?;
+    Ok(())
+}
+
+fn create_private_dir_all(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+    set_owner_private_dir_permissions(path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_owner_private_dir_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_private_dir_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_owner_private_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_private_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 fn runtime_handle_from_args(args: &RuntimeAgentCreateArgs) -> Result<String> {

@@ -15,9 +15,9 @@ use crate::outbox::{
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
 use crate::runtime::{
-    runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeInvocationAuthority,
-    RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus,
-    RuntimeTask,
+    runtime_task_matches_profile_controller_scope, GenericCliRouteSession, RuntimeAgentProfile,
+    RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
+    RuntimeRun, RuntimeRunStatus, RuntimeTask,
 };
 use crate::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
@@ -360,12 +360,24 @@ where
         ),
         _ => None,
     };
+    let cli_route_session = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        Some(prepare_generic_cli_route_session(
+            state,
+            profile,
+            &run,
+            &task_conversation_id,
+            runtime_temp_dir.as_ref(),
+        )?)
+    } else {
+        None
+    };
 
     let launch_context = RuntimeLaunchContext {
         run: run.clone(),
         task,
         workspace_root: profile.workspace_root.clone(),
         workspace_instance: workspace_instance.clone(),
+        cli_route_session: cli_route_session.clone(),
         runtime_temp_dir,
         runtime_rpc_token: issued.token.clone(),
         local_socket_path,
@@ -507,6 +519,7 @@ where
             &launch_outcome,
             workspace_instance.as_ref(),
             fallback_final_source.as_deref(),
+            cli_route_session.as_ref(),
         )?;
     }
 
@@ -1149,6 +1162,7 @@ fn persist_cli_driver_run(
     launch_outcome: &RuntimeLaunchOutcome,
     workspace_instance: Option<&WorkspaceInstance>,
     fallback_final_source: Option<&str>,
+    route_session: Option<&GenericCliRouteSession>,
 ) -> Result<()> {
     let task = state.load_runtime_task(&run.task_id)?;
     let Some(driver_id) = state
@@ -1176,6 +1190,26 @@ fn persist_cli_driver_run(
         .get("command")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+    let native_session_id = launch_outcome
+        .metadata
+        .get("native_session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| route_session.and_then(|session| session.native_session_id.clone()));
+    let route_key = route_session
+        .map(|session| session.route_key.clone())
+        .unwrap_or_else(|| {
+            generic_cli_route_key(
+                &run.agent_did,
+                &profile.controller_scope_key,
+                task.conversation_id.as_deref(),
+            )
+        });
+    let synthetic_session_id = route_session
+        .and_then(|session| session.synthetic_session_id.clone())
+        .or_else(|| Some(route_key.clone()));
     state.upsert_cli_driver_run(&CliDriverRunRecord {
         run_id: run.run_id.clone(),
         agent_did: run.agent_did.clone(),
@@ -1186,11 +1220,7 @@ fn persist_cli_driver_run(
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: task.controller_did.clone(),
         conversation_id: task.conversation_id.clone(),
-        route_key: generic_cli_route_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            task.conversation_id.as_deref(),
-        ),
+        route_key,
         workspace_id: profile.workspace_id.clone(),
         workspace_root: workspace_instance
             .map(|instance| instance.workspace_root.clone())
@@ -1211,16 +1241,56 @@ fn persist_cli_driver_run(
             .get("final_output_path")
             .and_then(Value::as_str)
             .map(std::path::PathBuf::from),
-        native_session_id: None,
-        synthetic_session_id: Some(generic_cli_route_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            task.conversation_id.as_deref(),
-        )),
+        native_session_id,
+        synthetic_session_id,
         status: launch_outcome.status.as_str().to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
     })?;
     Ok(())
+}
+
+fn prepare_generic_cli_route_session(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+    conversation_id: &Option<String>,
+    runtime_temp_dir: Option<&std::path::PathBuf>,
+) -> Result<GenericCliRouteSession> {
+    let route_key = generic_cli_route_key(
+        &run.agent_did,
+        &profile.controller_scope_key,
+        conversation_id.as_deref(),
+    );
+    let route_key_hash = stable_id_suffix(&route_key);
+    let session_dir = runtime_temp_dir
+        .cloned()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("awiki-deamon")
+        .join("generic-cli")
+        .join("sessions")
+        .join(&route_key_hash);
+    let previous = state.load_latest_cli_driver_run_by_route(&route_key)?;
+    Ok(GenericCliRouteSession {
+        route_key,
+        route_key_hash: route_key_hash.clone(),
+        session_dir,
+        last_run_id: previous.as_ref().map(|record| record.run_id.clone()),
+        last_message_id: previous
+            .as_ref()
+            .and_then(|record| state.load_runtime_task_for_run(&record.run_id).ok())
+            .map(|task| task.task_id.trim_start_matches("task_").to_string()),
+        native_session_id: previous
+            .as_ref()
+            .and_then(|record| record.native_session_id.clone()),
+        synthetic_session_id: previous
+            .as_ref()
+            .and_then(|record| record.synthetic_session_id.clone())
+            .or_else(|| Some(route_key_hash.clone())),
+        status: previous
+            .as_ref()
+            .map(|record| record.status.clone())
+            .unwrap_or_else(|| "new".to_string()),
+    })
 }
 
 fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {

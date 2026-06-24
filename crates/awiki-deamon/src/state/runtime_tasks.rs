@@ -830,6 +830,53 @@ WHERE run_id = ?1
             )
             .context("load cli driver run")
     }
+
+    pub fn load_latest_cli_driver_run_by_route(
+        &self,
+        route_key: &str,
+    ) -> Result<Option<CliDriverRunRecord>> {
+        if route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    run_id,
+    agent_did,
+    runtime_profile_id,
+    driver_id,
+    controller_user_id,
+    controller_full_handle,
+    controller_scope_key,
+    controller_did,
+    conversation_id,
+    route_key,
+    workspace_id,
+    workspace_root,
+    workspace_instance_path,
+    workspace_mode,
+    is_security_boundary,
+    command_json,
+    output_json,
+    final_output_path,
+    native_session_id,
+    synthetic_session_id,
+    status,
+    fallback_final_source
+FROM cli_driver_run
+WHERE route_key = ?1
+  AND status = 'finished'
+ORDER BY updated_at_ms DESC, created_at_ms DESC
+LIMIT 1
+"#,
+                [route_key],
+                cli_driver_run_from_row,
+            )
+            .optional()
+            .context("load latest cli driver run by route")
+    }
 }
 
 fn conversation_scope_from_storage(kind: &str, key: &str) -> Result<RuntimeConversationScope> {

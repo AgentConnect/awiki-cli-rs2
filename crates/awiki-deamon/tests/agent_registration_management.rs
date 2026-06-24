@@ -370,7 +370,7 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     );
     assert_eq!(
         created.workspace_id.as_deref(),
-        Some("workspace_alice_awiki_coder")
+        Some("workspace_claude_code_alice_awiki_coder")
     );
     assert!(created
         .agent_did
@@ -1295,6 +1295,105 @@ fn runtime_agent_create_accepts_generic_cli_driver_contract_fields() {
         cli_profile.recipient_policy_json,
         json!({ "allow": ["did:human:alice", "@bob"] })
     );
+}
+
+#[test]
+fn runtime_agent_create_prepares_codex_profile_home_and_default_workspace() {
+    let (root, config, state) = fixture();
+    let host_codex_home = root.path().join("host-codex");
+    std::fs::create_dir_all(&host_codex_home).unwrap();
+    std::fs::write(host_codex_home.join("auth.json"), r#"{"api_key":"test"}"#).unwrap();
+    std::fs::write(host_codex_home.join("config.toml"), "model = 'gpt-test'\n").unwrap();
+    std::env::set_var("CODEX_HOME", &host_codex_home);
+
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+
+    let outbox = MemoryRuntimeOutbox::default();
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_codex_profile".to_string(),
+            conversation_id: Some("conv_create_codex_profile".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_codex_profile",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-profile",
+                    "runtime": "codex",
+                    "default_model": "gpt-test-model",
+                    "default_sandbox": "workspace-write",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value",
+                    "display_name": "Codex Profile"
+                }
+            }),
+        },
+    )
+    .unwrap();
+    std::env::remove_var("CODEX_HOME");
+
+    let created = expect_created(outcome);
+    assert_eq!(created.runtime_plugin_id, "generic-cli");
+    assert_eq!(created.driver_id.as_deref(), Some("codex"));
+    assert_eq!(
+        created.workspace_id.as_deref(),
+        Some("workspace_codex_alice_codex_profile")
+    );
+
+    let runtime_agent = state.load_agent_definition(&created.agent_did).unwrap();
+    assert_eq!(
+        runtime_agent.runtime_plugin_id.as_deref(),
+        Some("generic-cli")
+    );
+
+    let profile = state
+        .load_runtime_agent_profile(&created.agent_did)
+        .unwrap();
+    assert_eq!(
+        profile.workspace_mode,
+        Some(awiki_deamon::workspace::WorkspaceMode::SharedRoot)
+    );
+    assert!(profile
+        .workspace_root
+        .as_ref()
+        .unwrap()
+        .starts_with(config.runtime_cache_dir.join("generic-cli/workspaces")));
+
+    let cli_profile = state
+        .load_cli_runtime_profile(&created.runtime_profile_id)
+        .unwrap();
+    assert_eq!(cli_profile.driver_id, "codex");
+    assert_eq!(cli_profile.default_model.as_deref(), Some("gpt-test-model"));
+    assert_eq!(
+        cli_profile.default_sandbox.as_deref(),
+        Some("workspace-write")
+    );
+    let config_home = cli_profile.config_home.as_ref().unwrap();
+    assert!(config_home.starts_with(config.runtime_cache_dir.join("generic-cli/profiles")));
+    assert_eq!(
+        std::fs::read_to_string(config_home.join("auth.json")).unwrap(),
+        r#"{"api_key":"test"}"#
+    );
+    assert!(std::fs::read_to_string(config_home.join("config.toml"))
+        .unwrap()
+        .contains("gpt-test"));
 }
 
 #[test]
