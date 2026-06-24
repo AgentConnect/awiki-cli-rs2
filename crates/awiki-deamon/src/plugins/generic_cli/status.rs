@@ -81,6 +81,7 @@ impl GenericCliStatusSummary {
     pub fn error_code(&self) -> Option<&'static str> {
         match (self.driver_status_code.as_str(), self.auth_status.as_str()) {
             ("profile_missing", _) => Some("generic_cli_profile_missing"),
+            ("profile_inactive", _) => Some("generic_cli_profile_inactive"),
             ("config_home_missing", _) => Some("generic_cli_config_home_missing"),
             ("missing_binary", _) => Some("generic_cli_driver_missing"),
             ("probe_failed", _) => Some("generic_cli_driver_probe_failed"),
@@ -148,6 +149,9 @@ fn driver_status_code(
     if profile.driver_id == GEMINI_CLI_DRIVER_ID {
         return "not_implemented".to_string();
     }
+    if profile.status != "active" {
+        return "profile_inactive".to_string();
+    }
     if !matches!(
         profile.driver_id.as_str(),
         CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID | COMMAND_CLI_DRIVER_ID
@@ -176,6 +180,7 @@ fn setup_status(driver_status_code: &str, setup_ready: bool, auth_status: &str) 
     }
     match driver_status_code {
         "profile_missing" | "config_home_missing" | "missing_binary" => "needs_setup",
+        "profile_inactive" => "inactive",
         "probe_failed" => "probe_failed",
         "not_implemented" | "unsupported_driver" => "unsupported",
         "ok" if auth_status == "missing" => "needs_setup",
@@ -316,6 +321,31 @@ mod tests {
         assert_eq!(
             summary.diagnostics_summary()["config_summary"]["setup_status"],
             "unsupported"
+        );
+    }
+
+    #[test]
+    fn inactive_profile_is_not_reported_ready_even_when_driver_and_auth_are_valid() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("codex");
+        write_fake_codex_executable(&binary).unwrap();
+        let config_home = root.path().join("codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+        let mut profile = CliRuntimeProfileRecord::for_driver("profile_codex", "codex").unwrap();
+        profile.binary_path = Some(binary);
+        profile.config_home = Some(config_home);
+        profile.status = "archived".to_string();
+
+        let summary = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(!summary.setup_ready);
+        assert_eq!(summary.profile_status, "archived");
+        assert_eq!(summary.driver_status_code, "profile_inactive");
+        assert_eq!(summary.error_code(), Some("generic_cli_profile_inactive"));
+        assert_eq!(
+            summary.diagnostics_summary()["config_summary"]["setup_status"],
+            "inactive"
         );
     }
 
