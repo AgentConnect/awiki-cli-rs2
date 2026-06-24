@@ -63,6 +63,53 @@ anp_service_did = did:wba:<did_domain>
 - `AWIKI_DAEMON_ANP_SERVICE_DID`
 - `AWIKI_HERMES_GATEWAY_CMD`
 
+## CLI Runtime 环境文件
+
+产品安装模式下，daemon service 会引用一个通用的 CLI runtime 环境文件：
+
+```text
+~/.awiki-daemon/deamon/env/agent-cli.env
+```
+
+该文件用于把用户已经配置好的本机 CLI 环境显式注入到 `awiki-deamon` 进程中，供
+Codex CLI、Claude Code CLI、Hermes gateway 或后续 generic-cli driver 复用。它不是
+Claude Code 专用配置，也不是登录流程；daemon 不解析其中变量的业务含义，只在 service
+启动时加载它。generic-cli driver 启动子进程时仍会先 `env_clear()`，再恢复最小运行环境和
+driver 允许透传的变量，避免把 daemon 的完整环境无差别交给外部 CLI。
+
+安全约束：
+
+- 文件不存在时 service 仍能启动；安装只会创建 `env/` 目录，不会创建或覆盖 secret 文件。
+- 该文件可能包含 token、API key、base URL 等敏感值，权限应保持为 `0600`，目录权限应为
+  `0700`。
+- 不要把该文件提交到仓库，不要在日志、E2E 报告或 UI 中打印变量值。
+- 文件内容应使用 systemd 与 POSIX shell 都可读取的简单格式，例如：
+
+```text
+ANTHROPIC_BASE_URL=http://127.0.0.1:4000
+ANTHROPIC_AUTH_TOKEN=...
+CLAUDE_CODEX_MODEL=gpt-5.4-mini
+AWIKI_DAEMON_CLI_ENV_PASSTHROUGH=ANTHROPIC_*,CLAUDE_CODEX_MODEL
+```
+
+子进程透传策略：
+
+- 为避免把 daemon 的完整环境无差别交给外部 provider CLI，Codex / Claude Code driver 默认只恢复
+  PATH、locale、terminal、必要 HOME / profile home 与 AWiki callback 变量。
+- 如果 provider 依赖环境变量认证、私有 base URL 或模型变量，必须在同一 env file 中设置
+  `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH`。
+- `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 的值是逗号、分号、冒号或空白分隔的变量名 / 前缀选择器，
+  例如 `ANTHROPIC_*,CLAUDE_CODEX_MODEL`、`OPENAI_API_KEY,OPENAI_BASE_URL` 或
+  `MY_PROVIDER_TOKEN,MY_PROVIDER_BASE_URL,ACME_*`。变量值不会被日志打印。
+- Codex driver 仍会强制设置 profile-scoped `CODEX_HOME`；如果用户只使用 Codex profile home 的
+  `auth.json`，不需要额外透传 provider secret。
+
+Linux `systemd --user` service 使用 optional `EnvironmentFile=-.../agent-cli.env`，因此缺失
+文件不会阻止 daemon 启动。macOS LaunchAgent 通过 `/bin/sh -c` wrapper 只 source 这个
+AWiki env file 后再 `exec awiki-deamon foreground`；不会默认读取用户 shell rc。Windows 后续
+service 化时应复用同一“daemon runtime env file / credential provider”设计，而不是在
+Claude/Codex driver 中写死平台专用环境变量。
+
 Hermes Runtime 使用 Hermes TUI Gateway 的 stdio JSON-RPC 入口，不是普通 messaging gateway。官方 TUI Gateway 入口形态是：
 
 ```text

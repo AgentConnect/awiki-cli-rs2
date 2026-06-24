@@ -93,6 +93,33 @@ pub fn product_current_executable_path() -> Result<PathBuf> {
         .join("awiki-deamon"))
 }
 
+pub fn runtime_env_file_path(config: &DaemonConfig) -> PathBuf {
+    let daemon_root = config
+        .state_root
+        .file_name()
+        .filter(|name| *name == OsStr::new("state"))
+        .and_then(|_| config.state_root.parent())
+        .unwrap_or(&config.state_root);
+    daemon_root.join("env").join("agent-cli.env")
+}
+
+fn ensure_runtime_env_dir(config: &DaemonConfig) -> Result<()> {
+    let env_file = runtime_env_file_path(config);
+    let Some(parent) = env_file.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create daemon runtime env directory {}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("secure daemon runtime env directory {}", parent.display()))?;
+    }
+    Ok(())
+}
+
 fn platform_manager() -> ServicePlatform {
     if cfg!(target_os = "macos") {
         ServicePlatform::LaunchAgent
@@ -219,6 +246,7 @@ fn shell_escape_systemd(value: &Path) -> String {
         .to_string()
         .replace('\\', "\\\\")
         .replace(' ', "\\x20")
+        .replace('%', "%%")
 }
 
 fn systemd_environment_escape(value: &OsStr) -> String {
@@ -227,6 +255,11 @@ fn systemd_environment_escape(value: &OsStr) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('%', "%%")
+}
+
+fn shell_single_quote_path(value: &Path) -> String {
+    let escaped = value.display().to_string().replace('\'', "'\\''");
+    format!("'{escaped}'")
 }
 
 pub(crate) mod macos {
@@ -242,8 +275,23 @@ pub(crate) mod macos {
     }
 
     pub fn plist_content(config: &DaemonConfig, executable: &Path) -> String {
+        plist_content_with_env_file(config, executable, &runtime_env_file_path(config))
+    }
+
+    pub(super) fn plist_content_with_env_file(
+        config: &DaemonConfig,
+        executable: &Path,
+        env_file: &Path,
+    ) -> String {
         let stdout = config.state_root.join("logs").join("daemon.stdout.log");
         let stderr = config.state_root.join("logs").join("daemon.stderr.log");
+        let command = format!(
+            "set -a; [ ! -f {env_file} ] || . {env_file}; set +a; exec {exe} foreground --state-root {state_root} --ready-file {ready_file}",
+            env_file = shell_single_quote_path(env_file),
+            exe = shell_single_quote_path(executable),
+            state_root = shell_single_quote_path(&config.state_root),
+            ready_file = shell_single_quote_path(&ready_file(config)),
+        );
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -253,12 +301,9 @@ pub(crate) mod macos {
   <string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{exe}</string>
-    <string>foreground</string>
-    <string>--state-root</string>
-    <string>{state_root}</string>
-    <string>--ready-file</string>
-    <string>{ready_file}</string>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>{command}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -272,9 +317,7 @@ pub(crate) mod macos {
 </plist>
 "#,
             label = LABEL,
-            exe = xml_escape(&executable.display().to_string()),
-            state_root = xml_escape(&config.state_root.display().to_string()),
-            ready_file = xml_escape(&ready_file(config).display().to_string()),
+            command = xml_escape(&command),
             stdout = xml_escape(&stdout.display().to_string()),
             stderr = xml_escape(&stderr.display().to_string()),
         )
@@ -289,6 +332,7 @@ pub(crate) mod macos {
         let domain = format!("gui/{}", unsafe { libc::getuid() });
         match action {
             ServiceAction::Install => {
+                ensure_runtime_env_dir(config)?;
                 write_if_changed(&path, &plist_content(config, executable))?;
                 let _ = run_status(
                     std::process::Command::new("launchctl")
@@ -380,13 +424,33 @@ pub(crate) mod linux {
     }
 
     pub fn unit_content(config: &DaemonConfig, executable: &Path) -> String {
-        unit_content_with_path(config, executable, std::env::var_os("PATH").as_deref())
+        unit_content_with_path_and_env_file(
+            config,
+            executable,
+            std::env::var_os("PATH").as_deref(),
+            &runtime_env_file_path(config),
+        )
     }
 
+    #[cfg(test)]
     pub(super) fn unit_content_with_path(
         config: &DaemonConfig,
         executable: &Path,
         path: Option<&OsStr>,
+    ) -> String {
+        unit_content_with_path_and_env_file(
+            config,
+            executable,
+            path,
+            &runtime_env_file_path(config),
+        )
+    }
+
+    pub(super) fn unit_content_with_path_and_env_file(
+        config: &DaemonConfig,
+        executable: &Path,
+        path: Option<&OsStr>,
+        env_file: &Path,
     ) -> String {
         let environment = path
             .filter(|value| !value.is_empty())
@@ -397,12 +461,13 @@ pub(crate) mod linux {
                 )
             })
             .unwrap_or_default();
+        let environment_file = format!("EnvironmentFile=-{}\n", shell_escape_systemd(env_file));
         format!(
             r#"[Unit]
 Description=Awiki Daemon Agent Runtime Host
 
 [Service]
-{}
+{}{}
 ExecStart={} foreground --state-root {} --ready-file {}
 Restart=on-failure
 RestartSec=5
@@ -411,6 +476,7 @@ RestartSec=5
 WantedBy=default.target
 "#,
             environment,
+            environment_file,
             shell_escape_systemd(executable),
             shell_escape_systemd(&config.state_root),
             shell_escape_systemd(&ready_file(config)),
@@ -514,6 +580,7 @@ WantedBy=default.target
         let mut enable_linger_error = None;
         match action {
             ServiceAction::Install => {
+                ensure_runtime_env_dir(config)?;
                 write_if_changed(&path, &unit_content(config, executable))?;
                 let _ = run_status(
                     std::process::Command::new("systemctl").args(["--user", "daemon-reload"]),
@@ -622,22 +689,46 @@ mod tests {
         let executable = root.path().join("bin").join("awiki-deamon");
 
         let plist = macos::plist_content(&config, &executable);
-        assert!(plist.contains("<string>foreground</string>"));
-        assert!(plist.contains("<string>--ready-file</string>"));
+        assert!(plist.contains("<string>/bin/sh</string>"));
+        assert!(plist.contains("agent-cli.env"));
+        assert!(plist.contains("exec "));
+        assert!(plist.contains("foreground --state-root"));
+        assert!(plist.contains("--ready-file"));
         assert!(plist.contains("daemon.stdout.log"));
         assert!(plist.contains("daemon.stderr.log"));
 
         let unit = linux::unit_content(&config, &executable);
+        assert!(unit.contains("EnvironmentFile=-"));
+        assert!(unit.contains("agent-cli.env"));
         assert!(unit.contains("foreground --state-root"));
         assert!(unit.contains("--ready-file"));
         assert!(unit.contains("Restart=on-failure"));
 
+        let env_file = root.path().join("runtime env").join("agent%cli.env");
         let unit = linux::unit_content_with_path(
             &config,
             &executable,
             Some(OsStr::new(r#"/home/alice/.nvm/bin:/tmp/a"b:%p"#)),
         );
         assert!(unit.contains(r#"Environment="PATH=/home/alice/.nvm/bin:/tmp/a\"b:%%p""#));
+
+        let unit =
+            linux::unit_content_with_path_and_env_file(&config, &executable, None, &env_file);
+        assert!(unit.contains("EnvironmentFile=-"));
+        assert!(unit.contains("runtime\\x20env"));
+        assert!(unit.contains("agent%%cli.env"));
+    }
+
+    #[test]
+    fn runtime_env_file_uses_daemon_product_root_when_state_root_is_named_state() {
+        let root = tempfile::tempdir().unwrap();
+        let state_root = root.path().join("deamon").join("state");
+        let config = DaemonConfig::for_state_root(&state_root).unwrap();
+
+        assert_eq!(
+            runtime_env_file_path(&config),
+            root.path().join("deamon").join("env").join("agent-cli.env")
+        );
     }
 
     #[test]

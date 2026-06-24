@@ -11,6 +11,7 @@ use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
+    apply_runtime_env_passthrough,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -563,6 +564,7 @@ fn apply_minimal_process_env(command: &mut Command) {
             command.env(key, value);
         }
     }
+    apply_runtime_env_passthrough(command, &[]);
 }
 
 fn default_codex_binary_path() -> PathBuf {

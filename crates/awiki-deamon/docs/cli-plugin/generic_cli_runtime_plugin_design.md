@@ -201,7 +201,13 @@ daemon 在启动 Codex 子进程前会清空环境并恢复 allowlist；由于 L
 
 Codex route workspace 可能是 daemon 为会话创建的空目录，不一定是 Git 仓库；driver 默认附加 `--skip-git-repo-check`，避免 Codex CLI 在会话目录缺少 `.git` 时直接退出。沙箱模式仍由 runtime profile 的 `read-only` / `workspace-write` 控制。
 
-Linux service install 还会把安装时的 PATH 写入 `awiki-deamon.service` 的 `Environment=PATH=...`。这用于保留用户通过 nvm / Homebrew / local bin 安装的 CLI 可见性；敏感凭据仍必须通过 CLI 自身的 profile home 或 host home 机制管理，不能写入 service unit。
+service install 还会写入通用 CLI runtime 环境注入入口：
+
+- Linux `systemd --user` unit 引用 optional `EnvironmentFile=-<home>/.awiki-daemon/deamon/env/agent-cli.env`。
+- macOS LaunchAgent 使用 `/bin/sh -c` wrapper 只 source 同一路径下的 `agent-cli.env`，再 `exec awiki-deamon foreground`。
+- 该文件缺失不影响 daemon 启动；存在时用于把用户已配置好的 provider/base URL/model 等 CLI 环境显式注入 daemon 进程。
+
+driver 子进程仍不会继承 daemon 完整环境，而是先 `env_clear()` 后恢复最小 PATH/locale/HOME、profile home 与 AWiki callback 变量。provider/API/base URL/model 等额外变量必须通过 `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 显式列出变量名或前缀选择器，例如 `ANTHROPIC_*,CLAUDE_CODEX_MODEL` 或 `OPENAI_API_KEY,OPENAI_BASE_URL`。敏感值不能写入 service unit、日志、E2E 报告或仓库。
 
 首轮新 route 或无可恢复 native id：
 
@@ -397,6 +403,7 @@ Codex/Claude run 使用结构化 `Command::new`，不走 shell 拼接。真实 p
 Codex run env：
 
 - `env_clear()` 后恢复最小 `PATH` / locale / terminal 变量。
+- 从 daemon runtime env file / service 环境中按 `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 显式选择的变量名或前缀透传 provider 环境；未显式选择的 provider/API/cloud token 不透传。
 - 设置 `CODEX_HOME` 到 profile-scoped config home。
 - 注入本次 run 需要的 AWiki wrapper/socket/token/run/profile env。
 
@@ -404,7 +411,7 @@ Claude run env：
 
 - `env_clear()` 后恢复最小 `PATH` / locale / terminal 变量和 `HOME`。
 - `HOME` 保留只表达 host-default Claude setup/auth 诊断，不等于 profile auth 隔离。
-- 不继承 provider/API/cloud token、OAuth/JWT/private key 或 daemon secret。
+- 从 daemon runtime env file / service 环境中按 `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 显式选择的变量名或前缀透传 provider 环境；不继承未被显式选择的 provider/API/cloud token、OAuth/JWT/private key 或 daemon secret。
 
 Probe env 与 run env 分离；`--version` / install probe 不注入 AWiki runtime token/socket/run env。
 
