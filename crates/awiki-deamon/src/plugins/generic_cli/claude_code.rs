@@ -458,6 +458,7 @@ impl ClaudeCodeDriver {
     pub fn command_args_for_mode(&self, session_mode: ClaudeCodeSessionMode) -> Vec<String> {
         let mut args = vec![
             "-p".to_string(),
+            "--verbose".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--permission-mode".to_string(),

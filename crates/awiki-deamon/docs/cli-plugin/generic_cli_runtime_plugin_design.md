@@ -127,7 +127,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | `cli_route_sessions` | 已实现 | 长期 route session 表，保存 route hash、workspace/session path、active native session id、lock、last message/run、错误摘要。 |
 | keyed route hash/salt | 已实现 | 新 route 使用 daemon-local keyed hash，降低路径可枚举风险；hash 不是授权凭据。 |
 | Codex driver | 已实现 | `codex exec` fresh/resume/resume-last gated fallback，`CODEX_HOME` profile home，create 时种子复制 `config.toml` / `auth.json`，auth 缺失 fail fast，stdout/stderr/final output sanitizer，native id parser。 |
-| Claude Code driver | 已实现 | `claude -p --output-format stream-json --session-id/--resume`，cwd 固定 route workspace，native id parser，settings/MCP 来源默认收紧。 |
+| Claude Code driver | 已实现 | `claude -p --verbose --output-format stream-json --session-id/--resume`，cwd 固定 route workspace，native id parser，settings/MCP 来源默认收紧；Claude Code 2.1.x 在 `stream-json` 输出下要求显式 `--verbose`。 |
 | Gemini driver | 未实现 | create alias 可解析，但 registry 对 `gemini` fail closed。 |
 | route list/status/reset | 已实现 | 只返回脱敏 route 摘要；Hermes 对 generic-cli list/status 返回 unsupported。 |
 | profile/host-home lock | 已实现 | 获取顺序是 route lease -> profile lock -> host-home lock；Claude host default HOME 需要 host-home driver lock。 |
@@ -256,6 +256,7 @@ Claude Code 使用 `claude -p` print/headless 模式，cwd 必须固定为 route
 
 ```bash
 claude -p \
+  --verbose \
   --output-format stream-json \
   --permission-mode <plan|default> \
   --setting-sources user \
@@ -267,6 +268,7 @@ claude -p \
 
 ```bash
 claude -p \
+  --verbose \
   --output-format stream-json \
   --permission-mode <plan|default> \
   --setting-sources user \

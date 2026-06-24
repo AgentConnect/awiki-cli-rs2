@@ -2971,6 +2971,7 @@ fn claude_code_driver_command_builder_uses_safe_print_contract() {
     });
 
     assert_eq!(args[0], "-p");
+    assert!(args.contains(&"--verbose".to_string()));
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--output-format", "stream-json"]));
@@ -3003,6 +3004,7 @@ fn claude_code_driver_command_builder_uses_resume_without_continue() {
     ));
 
     assert_eq!(args[0], "-p");
+    assert!(args.contains(&"--verbose".to_string()));
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--resume", "claude-session-123"]));
@@ -4016,6 +4018,7 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     let first_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_1.args")).unwrap();
     assert!(first_args.starts_with("-p\n"));
+    assert!(first_args.contains("--verbose\n"));
     assert!(first_args.contains("--output-format\nstream-json\n"));
     assert!(first_args.contains("--permission-mode\nplan\n"));
     assert!(first_args.contains("--session-id\n"));
