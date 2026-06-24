@@ -31,18 +31,27 @@ impl GenericCliStatusSummary {
         let config_home_exists = effective_config_home.is_some_and(|path| path.is_dir());
         let missing_config_home = profile.driver_id == CODEX_CLI_DRIVER_ID && !config_home_exists;
         let auth_status = auth_status(&profile, effective_config_home).to_string();
-        let install_probe = GenericCliDriverRegistry::new(profile.clone()).check_install_status();
-        let install_probe_failed = install_probe.is_err();
-        let install_status = install_probe.unwrap_or_else(|error| RuntimeInstallStatus {
-            installed: false,
-            detail: Some(sanitize_public_error(&error.to_string())),
-        });
-        let driver_status_code = driver_status_code(
-            &profile,
-            missing_config_home,
-            &install_status,
-            install_probe_failed,
-        );
+        let early_status_code = pre_probe_driver_status_code(&profile, missing_config_home);
+        let (install_status, driver_status_code) = if let Some(status_code) = early_status_code {
+            (
+                RuntimeInstallStatus {
+                    installed: false,
+                    detail: None,
+                },
+                status_code.to_string(),
+            )
+        } else {
+            let install_probe =
+                GenericCliDriverRegistry::new(profile.clone()).check_install_status();
+            let install_probe_failed = install_probe.is_err();
+            let install_status = install_probe.unwrap_or_else(|error| RuntimeInstallStatus {
+                installed: false,
+                detail: Some(sanitize_public_error(&error.to_string())),
+            });
+            let driver_status_code =
+                probed_driver_status_code(&install_status, install_probe_failed);
+            (install_status, driver_status_code)
+        };
         let setup_ready = setup_ready(&driver_status_code, &auth_status);
         let setup_status = setup_status(&driver_status_code, setup_ready, &auth_status);
         Self {
@@ -140,27 +149,32 @@ fn auth_status(
     }
 }
 
-fn driver_status_code(
+fn pre_probe_driver_status_code(
     profile: &CliRuntimeProfileRecord,
     missing_config_home: bool,
-    install_status: &RuntimeInstallStatus,
-    install_probe_failed: bool,
-) -> String {
+) -> Option<&'static str> {
     if profile.driver_id == GEMINI_CLI_DRIVER_ID {
-        return "not_implemented".to_string();
+        return Some("not_implemented");
     }
     if profile.status != "active" {
-        return "profile_inactive".to_string();
+        return Some("profile_inactive");
     }
     if !matches!(
         profile.driver_id.as_str(),
         CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID | COMMAND_CLI_DRIVER_ID
     ) {
-        return "unsupported_driver".to_string();
+        return Some("unsupported_driver");
     }
     if missing_config_home {
-        return "config_home_missing".to_string();
+        return Some("config_home_missing");
     }
+    None
+}
+
+fn probed_driver_status_code(
+    install_status: &RuntimeInstallStatus,
+    install_probe_failed: bool,
+) -> String {
     if install_probe_failed {
         return "probe_failed".to_string();
     }
@@ -350,6 +364,26 @@ mod tests {
     }
 
     #[test]
+    fn inactive_profile_does_not_probe_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("codex");
+        let config_home = root.path().join("codex-home");
+        let marker = root.path().join("probe-marker");
+        write_probe_marker_executable(&binary, &marker).unwrap();
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+        let mut profile = CliRuntimeProfileRecord::for_driver("profile_codex", "codex").unwrap();
+        profile.binary_path = Some(binary);
+        profile.config_home = Some(config_home);
+        profile.status = "archived".to_string();
+
+        let summary = GenericCliStatusSummary::from_profile(profile);
+
+        assert_eq!(summary.driver_status_code, "profile_inactive");
+        assert!(!marker.exists());
+    }
+
+    #[test]
     fn claude_code_status_uses_install_probe_without_codex_auth_requirement() {
         let root = tempfile::tempdir().unwrap();
         let binary = root.path().join("claude");
@@ -390,6 +424,33 @@ mod tests {
 
     fn write_fake_codex_executable(path: &std::path::Path) -> std::io::Result<()> {
         write_fake_version_executable(path, "codex-cli 9.9.9")
+    }
+
+    fn write_probe_marker_executable(
+        path: &std::path::Path,
+        marker: &std::path::Path,
+    ) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            path,
+            format!(
+                r#"#!/bin/sh
+touch "{}"
+exit 0
+"#,
+                marker.display()
+            ),
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions)?;
+        }
+        Ok(())
     }
 
     fn write_fake_version_executable(path: &std::path::Path, version: &str) -> std::io::Result<()> {
