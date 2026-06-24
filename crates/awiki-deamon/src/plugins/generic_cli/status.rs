@@ -4,7 +4,7 @@ use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID, GEMINI_CLI_DR
 use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
-use super::GenericCliDriverRegistry;
+use super::{codex::codex_profile_auth_ready, GenericCliDriverRegistry};
 
 const COMMAND_CLI_DRIVER_ID: &str = "command";
 
@@ -26,12 +26,11 @@ pub struct GenericCliStatusSummary {
 
 impl GenericCliStatusSummary {
     pub fn from_profile(profile: CliRuntimeProfileRecord) -> Self {
-        let config_home_exists = profile
-            .config_home
-            .as_ref()
-            .is_some_and(|path| path.is_dir());
-        let missing_config_home = profile.driver_id == "codex" && !config_home_exists;
-        let auth_status = auth_status(&profile).to_string();
+        let effective_config_home = effective_config_home(&profile);
+        let config_home_configured = effective_config_home.is_some();
+        let config_home_exists = effective_config_home.is_some_and(|path| path.is_dir());
+        let missing_config_home = profile.driver_id == CODEX_CLI_DRIVER_ID && !config_home_exists;
+        let auth_status = auth_status(&profile, effective_config_home).to_string();
         let install_probe = GenericCliDriverRegistry::new(profile.clone()).check_install_status();
         let install_probe_failed = install_probe.is_err();
         let install_status = install_probe.unwrap_or_else(|error| RuntimeInstallStatus {
@@ -55,10 +54,7 @@ impl GenericCliStatusSummary {
             auth_status,
             setup_ready,
             setup_status,
-            config_home: profile
-                .config_home
-                .as_ref()
-                .map(|_| "configured".to_string()),
+            config_home: config_home_configured.then(|| "configured".to_string()),
             config_home_exists,
             default_workspace_mode: Some(profile.default_workspace_mode.as_str().to_string()),
             default_sandbox: profile.default_sandbox,
@@ -116,14 +112,23 @@ impl GenericCliStatusSummary {
     }
 }
 
-fn auth_status(profile: &CliRuntimeProfileRecord) -> &'static str {
+fn effective_config_home(profile: &CliRuntimeProfileRecord) -> Option<&std::path::Path> {
+    profile.config_home.as_deref().or_else(|| {
+        profile
+            .driver_config_json
+            .get("config_home")
+            .and_then(Value::as_str)
+            .map(std::path::Path::new)
+    })
+}
+
+fn auth_status(
+    profile: &CliRuntimeProfileRecord,
+    effective_config_home: Option<&std::path::Path>,
+) -> &'static str {
     match profile.driver_id.as_str() {
         CODEX_CLI_DRIVER_ID => {
-            if profile
-                .config_home
-                .as_ref()
-                .is_some_and(|path| path.join("auth.json").is_file())
-            {
+            if effective_config_home.is_some_and(codex_profile_auth_ready) {
                 "ok"
             } else {
                 "missing"
@@ -239,6 +244,64 @@ mod tests {
         let dump = ready.diagnostics_summary().to_string();
         assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
         assert!(!dump.contains("auth.json"));
+    }
+
+    #[test]
+    fn codex_status_uses_effective_config_home_from_driver_config() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("codex");
+        write_fake_codex_executable(&binary).unwrap();
+        let config_home = root.path().join("codex-home-from-driver-config");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+        let mut profile = CliRuntimeProfileRecord::for_driver("profile_codex", "codex").unwrap();
+        profile.binary_path = Some(binary);
+        profile.driver_config_json = json!({
+            "config_home": config_home,
+        });
+
+        let ready = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(ready.setup_ready);
+        assert_eq!(ready.error_code(), None);
+        assert_eq!(ready.driver_status_code, "ok");
+        assert_eq!(
+            ready.diagnostics_summary()["config_summary"]["auth_status"],
+            "ok"
+        );
+        assert_eq!(
+            ready.diagnostics_summary()["config_summary"]["config_home"],
+            "configured"
+        );
+        assert_eq!(
+            ready.diagnostics_summary()["config_summary"]["config_home_exists"],
+            true
+        );
+        let dump = ready.diagnostics_summary().to_string();
+        assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!dump.contains("auth.json"));
+    }
+
+    #[test]
+    fn codex_status_requires_nonempty_auth_json_like_runtime_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("codex");
+        write_fake_codex_executable(&binary).unwrap();
+        let config_home = root.path().join("codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::write(config_home.join("auth.json"), "").unwrap();
+        let mut profile = CliRuntimeProfileRecord::for_driver("profile_codex", "codex").unwrap();
+        profile.binary_path = Some(binary);
+        profile.config_home = Some(config_home);
+
+        let missing = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(!missing.setup_ready);
+        assert_eq!(missing.error_code(), Some("generic_cli_auth_missing"));
+        assert_eq!(
+            missing.diagnostics_summary()["config_summary"]["auth_status"],
+            "missing"
+        );
     }
 
     #[test]

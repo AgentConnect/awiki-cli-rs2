@@ -513,7 +513,7 @@ fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
     CodexResumeMode::Fresh
 }
 
-fn codex_profile_auth_ready(config_home: &Path) -> bool {
+pub(crate) fn codex_profile_auth_ready(config_home: &Path) -> bool {
     let auth_path = config_home.join("auth.json");
     auth_path
         .metadata()
