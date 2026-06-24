@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 pub mod claude_code;
 pub mod codex;
 mod process;
+pub(crate) mod status;
 
 use crate::cli_wrapper::CliWrapperRequest;
 use crate::local_rpc::RuntimeRpcRequest;

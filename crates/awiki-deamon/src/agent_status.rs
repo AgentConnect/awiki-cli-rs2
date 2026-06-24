@@ -4,7 +4,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::agent::{AgentDefinition, AgentKind};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
-use crate::plugins::generic_cli::GenericCliDriverRegistry;
+use crate::plugins::generic_cli::status::GenericCliStatusSummary;
 use crate::plugins::hermes::{
     ensure_runtime_model_config, hermes_runtime_model_config_status,
     repair_hermes_profile_if_needed, HermesGatewayCommandStatus, HermesRuntimeModelConfigStatus,
@@ -14,10 +14,9 @@ use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
     UserServiceAgentRegistrationClient,
 };
-use crate::runtime::RuntimePlugin;
 use crate::security::runtime_token::current_time_millis;
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
-use crate::state::{CliRuntimeProfileRecord, DaemonState};
+use crate::state::DaemonState;
 use crate::upgrade::{check_release_status, DaemonReleaseStatus};
 use crate::{DaemonConfig, ImCoreAdapter};
 
@@ -532,22 +531,6 @@ struct RuntimeStatusSummary {
     generic_cli: Option<GenericCliStatusSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GenericCliStatusSummary {
-    profile_status: String,
-    driver_id: Option<String>,
-    binary_installed: bool,
-    binary_detail: Option<String>,
-    driver_status_code: String,
-    auth_status: String,
-    setup_ready: bool,
-    setup_status: String,
-    config_home: Option<String>,
-    config_home_exists: bool,
-    default_workspace_mode: Option<String>,
-    default_sandbox: Option<String>,
-}
-
 fn runtime_status_summary(
     config: &DaemonConfig,
     state: &DaemonState,
@@ -585,7 +568,7 @@ fn runtime_status_summary_with_gateway_status(
             is_hermes: false,
             is_generic_cli: true,
             needs_config: !generic_cli.setup_ready,
-            last_error_code: generic_cli_error_code(&generic_cli).map(str::to_string),
+            last_error_code: generic_cli.error_code().map(str::to_string),
             gateway_command_status: None,
             model_config_status: None,
             generic_cli: Some(generic_cli),
@@ -652,22 +635,7 @@ fn runtime_diagnostics_summary(
             .generic_cli
             .clone()
             .unwrap_or_else(|| generic_cli_status_summary(state, runtime));
-        return json!({
-            "profile_status": generic_cli.profile_status,
-            "driver_id": generic_cli.driver_id,
-            "config_summary": {
-                "binary_installed": generic_cli.binary_installed,
-                "binary_detail": generic_cli.binary_detail,
-                "driver_status_code": generic_cli.driver_status_code,
-                "auth_status": generic_cli.auth_status,
-                "setup_ready": generic_cli.setup_ready,
-                "setup_status": generic_cli.setup_status,
-                "config_home": generic_cli.config_home,
-                "config_home_exists": generic_cli.config_home_exists,
-                "default_workspace_mode": generic_cli.default_workspace_mode,
-                "default_sandbox": generic_cli.default_sandbox,
-            },
-        });
+        return generic_cli.diagnostics_summary();
     }
     if runtime.runtime_plugin_id.as_deref()
         != Some(crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID)
@@ -711,154 +679,12 @@ fn generic_cli_status_summary(
     runtime: &AgentDefinition,
 ) -> GenericCliStatusSummary {
     let Some(runtime_profile_id) = runtime.runtime_profile_id.as_deref() else {
-        return missing_generic_cli_status("missing runtime_profile_id");
+        return GenericCliStatusSummary::missing("missing runtime_profile_id");
     };
     let Ok(profile) = state.load_cli_runtime_profile(runtime_profile_id) else {
-        return missing_generic_cli_status("missing cli runtime profile");
+        return GenericCliStatusSummary::missing("missing cli runtime profile");
     };
-    generic_cli_status_from_profile(profile)
-}
-
-fn generic_cli_status_from_profile(profile: CliRuntimeProfileRecord) -> GenericCliStatusSummary {
-    let config_home_exists = profile
-        .config_home
-        .as_ref()
-        .is_some_and(|path| path.is_dir());
-    let missing_config_home = profile.driver_id == "codex" && !config_home_exists;
-    let auth_status = generic_cli_auth_status(&profile).to_string();
-    let install_probe = GenericCliDriverRegistry::new(profile.clone()).check_install_status();
-    let install_probe_failed = install_probe.is_err();
-    let install_status =
-        install_probe.unwrap_or_else(|error| crate::runtime::RuntimeInstallStatus {
-            installed: false,
-            detail: Some(sanitize_public_error(&error.to_string())),
-        });
-    let driver_status_code = generic_cli_driver_status_code(
-        &profile,
-        missing_config_home,
-        &install_status,
-        install_probe_failed,
-    );
-    let setup_ready = generic_cli_setup_ready(&driver_status_code, &auth_status);
-    let setup_status = generic_cli_setup_status(&driver_status_code, setup_ready, &auth_status);
-    GenericCliStatusSummary {
-        profile_status: profile.status,
-        driver_id: Some(profile.driver_id),
-        binary_installed: install_status.installed,
-        binary_detail: install_status.detail.as_deref().map(sanitize_public_error),
-        driver_status_code,
-        auth_status,
-        setup_ready,
-        setup_status,
-        config_home: profile
-            .config_home
-            .as_ref()
-            .map(|_| "configured".to_string()),
-        config_home_exists,
-        default_workspace_mode: Some(profile.default_workspace_mode.as_str().to_string()),
-        default_sandbox: profile.default_sandbox,
-    }
-}
-
-fn missing_generic_cli_status(detail: &str) -> GenericCliStatusSummary {
-    GenericCliStatusSummary {
-        profile_status: "missing".to_string(),
-        driver_id: None,
-        binary_installed: false,
-        binary_detail: Some(detail.to_string()),
-        driver_status_code: "profile_missing".to_string(),
-        auth_status: "unknown".to_string(),
-        setup_ready: false,
-        setup_status: "needs_setup".to_string(),
-        config_home: None,
-        config_home_exists: false,
-        default_workspace_mode: None,
-        default_sandbox: None,
-    }
-}
-
-fn generic_cli_auth_status(profile: &CliRuntimeProfileRecord) -> &'static str {
-    match profile.driver_id.as_str() {
-        "codex" => {
-            if profile
-                .config_home
-                .as_ref()
-                .is_some_and(|path| path.join("auth.json").is_file())
-            {
-                "ok"
-            } else {
-                "missing"
-            }
-        }
-        "command" => "not_applicable",
-        _ => "unknown",
-    }
-}
-
-fn generic_cli_driver_status_code(
-    profile: &CliRuntimeProfileRecord,
-    missing_config_home: bool,
-    install_status: &crate::runtime::RuntimeInstallStatus,
-    install_probe_failed: bool,
-) -> String {
-    if profile.driver_id == "gemini" {
-        return "not_implemented".to_string();
-    }
-    if !matches!(
-        profile.driver_id.as_str(),
-        "codex" | "claude-code" | "command"
-    ) {
-        return "unsupported_driver".to_string();
-    }
-    if missing_config_home {
-        return "config_home_missing".to_string();
-    }
-    if install_probe_failed {
-        return "probe_failed".to_string();
-    }
-    if !install_status.installed {
-        return "missing_binary".to_string();
-    }
-    "ok".to_string()
-}
-
-fn generic_cli_setup_ready(driver_status_code: &str, auth_status: &str) -> bool {
-    driver_status_code == "ok" && matches!(auth_status, "ok" | "not_applicable")
-}
-
-fn generic_cli_setup_status(
-    driver_status_code: &str,
-    setup_ready: bool,
-    auth_status: &str,
-) -> String {
-    if setup_ready {
-        return "ready".to_string();
-    }
-    match driver_status_code {
-        "profile_missing" | "config_home_missing" | "missing_binary" => "needs_setup",
-        "probe_failed" => "probe_failed",
-        "not_implemented" | "unsupported_driver" => "unsupported",
-        "ok" if auth_status == "missing" => "needs_setup",
-        _ => "unknown",
-    }
-    .to_string()
-}
-
-fn generic_cli_error_code(summary: &GenericCliStatusSummary) -> Option<&'static str> {
-    match (
-        summary.driver_status_code.as_str(),
-        summary.auth_status.as_str(),
-    ) {
-        ("profile_missing", _) => Some("generic_cli_profile_missing"),
-        ("config_home_missing", _) => Some("generic_cli_config_home_missing"),
-        ("missing_binary", _) => Some("generic_cli_driver_missing"),
-        ("probe_failed", _) => Some("generic_cli_driver_probe_failed"),
-        ("not_implemented", _) => Some("generic_cli_driver_not_implemented"),
-        ("unsupported_driver", _) => Some("generic_cli_driver_unsupported"),
-        ("ok", "missing") => Some("generic_cli_auth_missing"),
-        ("ok", "unknown") => Some("generic_cli_auth_unknown"),
-        _ => None,
-    }
+    GenericCliStatusSummary::from_profile(profile)
 }
 
 fn service_status(config: &DaemonConfig) -> ServiceStatus {
