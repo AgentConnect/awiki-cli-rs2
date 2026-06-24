@@ -1,10 +1,6 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
-
-use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
-
 pub(super) const DAEMON_SCHEMA_VERSION: i64 = 22;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
@@ -1228,7 +1224,7 @@ fn migrate_cli_runtime_profile_v8(connection: &Connection) -> Result<()> {
         ("default_sandbox", "TEXT"),
         (
             "default_workspace_mode",
-            "TEXT NOT NULL DEFAULT 'shared-root'",
+            "TEXT NOT NULL DEFAULT 'route-root'",
         ),
         (
             "recipient_policy_json",
@@ -1240,63 +1236,6 @@ fn migrate_cli_runtime_profile_v8(connection: &Connection) -> Result<()> {
         ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         add_column_if_missing(connection, "cli_runtime_profile", column, definition)?;
-    }
-    migrate_legacy_cli_runtime_profiles(connection)?;
-    Ok(())
-}
-
-fn migrate_legacy_cli_runtime_profiles(connection: &Connection) -> Result<()> {
-    for (legacy_plugin_id, driver_id) in [
-        ("runtime.cli.codex", "codex"),
-        ("runtime.cli.claude-code", "claude-code"),
-        ("runtime.cli.gemini-cli", "gemini"),
-    ] {
-        connection.execute(
-            r#"
-INSERT INTO cli_runtime_profile (
-    runtime_profile_id,
-    driver_id,
-    default_workspace_mode,
-    recipient_policy_json,
-    driver_config_json,
-    status,
-    created_at_ms,
-    updated_at_ms
-)
-SELECT
-    runtime_profile_id,
-    ?2,
-    'shared-root',
-    ?3,
-    '{}',
-    status,
-    0,
-    0
-FROM runtime_profile
-WHERE runtime_plugin_id = ?1
-  AND COALESCE(runtime_profile_id, '') <> ''
-ON CONFLICT(runtime_profile_id) DO UPDATE SET
-    driver_id = excluded.driver_id,
-    default_workspace_mode = excluded.default_workspace_mode,
-    recipient_policy_json = excluded.recipient_policy_json,
-    driver_config_json = excluded.driver_config_json,
-    status = excluded.status,
-    updated_at_ms = excluded.updated_at_ms
-"#,
-            rusqlite::params![
-                legacy_plugin_id,
-                driver_id,
-                DEFAULT_CLI_RECIPIENT_POLICY_JSON,
-            ],
-        )?;
-        connection.execute(
-            "UPDATE runtime_profile SET runtime_plugin_id = ?1 WHERE runtime_plugin_id = ?2",
-            rusqlite::params![GENERIC_CLI_RUNTIME_PLUGIN_ID, legacy_plugin_id],
-        )?;
-        connection.execute(
-            "UPDATE agent_definition SET runtime_plugin_id = ?1 WHERE runtime_plugin_id = ?2",
-            rusqlite::params![GENERIC_CLI_RUNTIME_PLUGIN_ID, legacy_plugin_id],
-        )?;
     }
     Ok(())
 }

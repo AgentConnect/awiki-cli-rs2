@@ -17,6 +17,16 @@ use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
 use serde_json::json;
 
+#[cfg(unix)]
+static GENERIC_CLI_PROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+fn generic_cli_process_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    GENERIC_CLI_PROCESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn fixture() -> (tempfile::TempDir, DaemonState) {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -576,6 +586,8 @@ fn generic_cli_runtime_profile_policy_persists_allowed_recipients_in_token_scope
 #[cfg(unix)]
 #[test]
 fn command_driver_uses_local_rpc_without_task_text_env_or_callbacks() {
+    let _guard = generic_cli_process_test_guard();
+
     use awiki_deamon::local_rpc::{bind_uds_listener, handle_uds_stream_with_outbox};
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
@@ -711,6 +723,8 @@ PY
 #[cfg(unix)]
 #[test]
 fn generic_cli_driver_registry_runs_command_profile() {
+    let _guard = generic_cli_process_test_guard();
+
     use awiki_deamon::local_rpc::{bind_uds_listener, handle_uds_stream_with_outbox};
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
@@ -914,6 +928,8 @@ fn codex_driver_config_prefers_driver_config_sandbox_over_profile_default() {
 #[cfg(unix)]
 #[test]
 fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {
+    let _guard = generic_cli_process_test_guard();
+
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -950,6 +966,8 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn codex_driver_fake_binary_uses_stdin_env_outputs_and_local_rpc() {
+    let _guard = generic_cli_process_test_guard();
+
     use awiki_deamon::local_rpc::{bind_uds_listener, handle_uds_stream_with_outbox};
     use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
@@ -1158,7 +1176,7 @@ PY
     );
     assert_eq!(
         run_record.route_key,
-        "cli:did:agent:alice-coder:controller-scope:v1:test-alice-anpclaw-com:conv_codex_driver:message-run"
+        "cli:alice-coder:controller-scope:v1:test-alice-anpclaw-com:conv_codex_driver:message-run"
     );
     assert_eq!(run_record.workspace_mode, Some(WorkspaceMode::SharedRoot));
     assert!(!run_record.is_security_boundary);
@@ -1184,6 +1202,8 @@ PY
 #[cfg(unix)]
 #[test]
 fn codex_driver_success_without_finish_uses_fallback_final_once() {
+    let _guard = generic_cli_process_test_guard();
+
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -1271,6 +1291,8 @@ exit 0
 #[cfg(unix)]
 #[test]
 fn codex_route_session_reuses_native_session_on_same_conversation() {
+    let _guard = generic_cli_process_test_guard();
+
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -1342,6 +1364,7 @@ exit 0
     .unwrap();
     assert_eq!(first.run.status, RuntimeRunStatus::Finished);
     let first_record = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    assert_eq!(first_record.workspace_mode, Some(WorkspaceMode::SharedRoot));
     assert_eq!(
         first_record.native_session_id.as_deref(),
         Some("019ef9e5-1e70-78d2-9508-05f5af0ff34a")
@@ -1370,6 +1393,10 @@ exit 0
     let second_record = state.load_cli_driver_run(&second.run.run_id).unwrap();
     assert_eq!(second_record.route_key, first_record.route_key);
     assert_eq!(
+        second_record.workspace_instance_path,
+        first_record.workspace_instance_path
+    );
+    assert_eq!(
         second_record.native_session_id.as_deref(),
         Some("019ef9e5-1e70-78d2-9508-05f5af0ff34a")
     );
@@ -1380,7 +1407,271 @@ exit 0
 
 #[cfg(unix)]
 #[test]
+fn generic_cli_route_key_uses_stable_agent_handle_not_agent_did() {
+    let _guard = generic_cli_process_test_guard();
+
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let mut profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-stable-route");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf '{"type":"thread.started","thread_id":"019ef9e5-1e70-78d2-9508-05f5af0ff34a"}\n'
+printf 'stable route final\n' > "$FINAL_OUTPUT"
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    let config_home = root.path().join("codex-home");
+    std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+    driver_config.config_home = config_home;
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_stable_route_1".to_string(),
+            conversation_id: Some("conv_stable_route".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: profile.agent_did.clone(),
+            text: "first".to_string(),
+        },
+    )
+    .unwrap();
+
+    profile.agent_did = "did:agent:alice-coder:e1_rotated".to_string();
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_stable_route_2".to_string(),
+            conversation_id: Some("conv_stable_route".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: profile.agent_did.clone(),
+            text: "second".to_string(),
+        },
+    )
+    .unwrap();
+
+    let first_record = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let second_record = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    assert_eq!(first_record.route_key, second_record.route_key);
+    assert!(first_record.route_key.contains("alice-coder"));
+    assert!(!first_record.route_key.contains("did:agent"));
+    assert_eq!(
+        second_record.native_session_id.as_deref(),
+        Some("019ef9e5-1e70-78d2-9508-05f5af0ff34a")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn route_root_uses_stable_workspace_per_conversation() {
+    let _guard = generic_cli_process_test_guard();
+
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-route-root");
+    let pwd_capture = root.path().join("codex-route-pwd.txt");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+if [ "${{1-}}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+pwd >> "{pwd_capture}"
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf '{{"type":"thread.started","thread_id":"019ef9e5-1e70-78d2-9508-05f5af0ff34a"}}\n'
+printf 'route root final\n' > "$FINAL_OUTPUT"
+exit 0
+"#,
+            pwd_capture = pwd_capture.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    let config_home = root.path().join("codex-home");
+    std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+    driver_config.config_home = config_home;
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let first = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_root_1".to_string(),
+            conversation_id: Some("conv_route_root".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "first".to_string(),
+        },
+    )
+    .unwrap();
+    let second = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_root_2".to_string(),
+            conversation_id: Some("conv_route_root".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "second".to_string(),
+        },
+    )
+    .unwrap();
+    let third = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_route_root_3".to_string(),
+            conversation_id: Some("conv_route_root_other".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "third".to_string(),
+        },
+    )
+    .unwrap();
+
+    let first_record = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let second_record = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    let third_record = state.load_cli_driver_run(&third.run.run_id).unwrap();
+    assert_eq!(first_record.workspace_mode, Some(WorkspaceMode::RouteRoot));
+    assert_eq!(
+        first_record.workspace_instance_path,
+        second_record.workspace_instance_path
+    );
+    assert_ne!(
+        first_record.workspace_instance_path,
+        third_record.workspace_instance_path
+    );
+    let workspace_root = profile
+        .workspace_root
+        .as_ref()
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let conversations_root = workspace_root.join("conversations");
+    assert!(first_record
+        .workspace_instance_path
+        .as_ref()
+        .unwrap()
+        .starts_with(&conversations_root));
+    assert!(!first_record.is_security_boundary);
+
+    let captured_workdirs = std::fs::read_to_string(pwd_capture)
+        .unwrap()
+        .lines()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    assert_eq!(captured_workdirs.len(), 3);
+    assert_eq!(
+        captured_workdirs[0],
+        *first_record.workspace_instance_path.as_ref().unwrap()
+    );
+    assert_eq!(
+        captured_workdirs[1],
+        *second_record.workspace_instance_path.as_ref().unwrap()
+    );
+    assert_eq!(
+        captured_workdirs[2],
+        *third_record.workspace_instance_path.as_ref().unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn worktree_per_task_uses_daemon_runtime_temp_and_records_metadata() {
+    let _guard = generic_cli_process_test_guard();
+
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -1503,13 +1794,15 @@ exit 0
     );
     assert_eq!(
         run_record.route_key,
-        "cli:did:agent:alice-coder:controller-scope:v1:test-alice-anpclaw-com:no-conversation:message-run"
+        "cli:alice-coder:controller-scope:v1:test-alice-anpclaw-com:no-conversation:message-run"
     );
 }
 
 #[cfg(unix)]
 #[test]
 fn codex_driver_nonzero_exit_does_not_forge_success_final() {
+    let _guard = generic_cli_process_test_guard();
+
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -1617,12 +1910,16 @@ fn controller_text_route_preserves_verified_current_sender_did() {
 #[test]
 fn workspace_modes_document_security_boundary() {
     assert!(!WorkspaceMode::SharedRoot.is_security_boundary());
+    assert!(!WorkspaceMode::RouteRoot.is_security_boundary());
     assert!(!WorkspaceMode::WorktreePerTask.is_security_boundary());
     assert!(WorkspaceMode::Container.is_security_boundary());
     assert!(WorkspaceMode::Sandbox.is_security_boundary());
     assert!(WorkspaceMode::SharedRoot
         .isolation_note()
         .contains("不是硬隔离"));
+    assert!(WorkspaceMode::RouteRoot
+        .isolation_note()
+        .contains("按消息会话"));
 }
 
 #[test]

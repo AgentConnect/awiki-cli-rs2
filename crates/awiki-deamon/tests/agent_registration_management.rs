@@ -434,7 +434,8 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert!(audit_dump.contains(&created.registration_token_id));
     assert!(audit_dump.contains("\"runtime_plugin_id\":\"generic-cli\""));
     assert!(audit_dump.contains("\"driver_id\":\"claude-code\""));
-    assert!(audit_dump.contains("\"legacy_runtime_plugin_id\":\"runtime.cli.claude-code\""));
+    assert!(!audit_dump.contains("runtime.cli."));
+    assert!(!audit_dump.contains("legacy_runtime_plugin_id"));
     assert!(!audit_dump.contains("tok_runtime_secret_value"));
 }
 
@@ -1368,7 +1369,7 @@ fn runtime_agent_create_prepares_codex_profile_home_and_default_workspace() {
         .unwrap();
     assert_eq!(
         profile.workspace_mode,
-        Some(awiki_deamon::workspace::WorkspaceMode::SharedRoot)
+        Some(awiki_deamon::workspace::WorkspaceMode::RouteRoot)
     );
     assert!(profile
         .workspace_root

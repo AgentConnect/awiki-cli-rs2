@@ -734,7 +734,6 @@ where
             "runtime_plugin_id": profile.runtime_plugin_id.clone(),
             "driver_id": resolution.driver_id.clone(),
             "defaulted_driver_id": resolution.defaulted_driver_id,
-            "legacy_runtime_plugin_id": resolution.legacy_runtime_plugin_id.clone(),
         }),
     )?;
 
@@ -839,7 +838,7 @@ fn runtime_create_workspace_mode(
         return WorkspaceMode::parse(workspace_strategy);
     }
     if is_generic_cli {
-        Ok(WorkspaceMode::SharedRoot)
+        Ok(WorkspaceMode::RouteRoot)
     } else {
         Ok(WorkspaceMode::SharedRoot)
     }

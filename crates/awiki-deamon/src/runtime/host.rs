@@ -26,7 +26,9 @@ use crate::security::runtime_token::{
 use crate::state::{
     AuthorizedRuntimeContext, CliDriverRunRecord, DaemonState, RuntimeFinalOutboxRecord,
 };
-use crate::workspace::{prepare_workspace_instance, WorkspaceBindingConfig, WorkspaceInstance};
+use crate::workspace::{
+    prepare_workspace_instance, WorkspaceBindingConfig, WorkspaceInstance, WorkspaceMode,
+};
 use crate::DaemonConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,6 +339,21 @@ where
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
+    let cli_route_session = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        Some(prepare_generic_cli_route_session(
+            state,
+            profile,
+            &task_conversation_id,
+            runtime_temp_dir.as_ref(),
+        )?)
+    } else {
+        None
+    };
+    let workspace_instance_key = cli_route_session
+        .as_ref()
+        .filter(|_| profile.workspace_mode == Some(WorkspaceMode::RouteRoot))
+        .map(|session| session.route_key_hash.as_str())
+        .unwrap_or(run.run_id.as_str());
     let workspace_instance = match (
         profile.workspace_id.as_ref(),
         profile.workspace_root.as_ref(),
@@ -354,22 +371,11 @@ where
                     workspace_root: workspace_root.clone(),
                     workspace_mode,
                 },
-                &run.run_id,
+                workspace_instance_key,
             )
             .context("prepare runtime workspace instance")?,
         ),
         _ => None,
-    };
-    let cli_route_session = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
-        Some(prepare_generic_cli_route_session(
-            state,
-            profile,
-            &run,
-            &task_conversation_id,
-            runtime_temp_dir.as_ref(),
-        )?)
-    } else {
-        None
     };
 
     let launch_context = RuntimeLaunchContext {
@@ -1202,7 +1208,7 @@ fn persist_cli_driver_run(
         .map(|session| session.route_key.clone())
         .unwrap_or_else(|| {
             generic_cli_route_key(
-                &run.agent_did,
+                &profile.agent_handle,
                 &profile.controller_scope_key,
                 task.conversation_id.as_deref(),
             )
@@ -1252,12 +1258,11 @@ fn persist_cli_driver_run(
 fn prepare_generic_cli_route_session(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
-    run: &RuntimeRun,
     conversation_id: &Option<String>,
     runtime_temp_dir: Option<&std::path::PathBuf>,
 ) -> Result<GenericCliRouteSession> {
     let route_key = generic_cli_route_key(
-        &run.agent_did,
+        &profile.agent_handle,
         &profile.controller_scope_key,
         conversation_id.as_deref(),
     );
@@ -1298,12 +1303,12 @@ fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::
 }
 
 fn generic_cli_route_key(
-    agent_did: &str,
+    agent_handle: &str,
     controller_scope_key: &str,
     conversation_id: Option<&str>,
 ) -> String {
     format!(
-        "cli:{agent_did}:{controller_scope_key}:{}:message-run",
+        "cli:{agent_handle}:{controller_scope_key}:{}:message-run",
         conversation_id.unwrap_or("no-conversation")
     )
 }

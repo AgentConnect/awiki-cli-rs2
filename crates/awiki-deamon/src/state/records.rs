@@ -102,7 +102,7 @@ impl CliRuntimeProfileRecord {
             auth_mode: None,
             default_model: None,
             default_sandbox: Some("read-only".to_string()),
-            default_workspace_mode: WorkspaceMode::SharedRoot,
+            default_workspace_mode: WorkspaceMode::RouteRoot,
             recipient_policy_json: serde_json::from_str(DEFAULT_CLI_RECIPIENT_POLICY_JSON)?,
             driver_config_json: serde_json::from_str(DEFAULT_CLI_DRIVER_CONFIG_JSON)?,
             status: "active".to_string(),
