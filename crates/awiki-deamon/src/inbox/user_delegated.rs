@@ -24,6 +24,7 @@ use crate::outbox::{
 };
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
+use crate::public_error::sanitize_public_error;
 use crate::runtime::host::run_existing_runtime_task_with_config;
 use crate::runtime::{
     RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRunStatus, RuntimeTask,
@@ -1476,28 +1477,7 @@ fn short_excerpt(text: &str) -> String {
 }
 
 fn sanitize_error_message(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_ascii_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("jwt")
-                || lower.contains("key")
-            {
-                "<redacted>"
-            } else if part.starts_with('/') || part.starts_with("file://") {
-                "<path>"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if sanitized.chars().count() > 240 {
-        sanitized = sanitized.chars().take(240).collect();
-    }
-    sanitized
+    sanitize_public_error(message)
 }
 
 #[cfg(test)]

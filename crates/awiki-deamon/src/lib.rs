@@ -13,6 +13,7 @@ pub mod inbox;
 pub mod local_rpc;
 pub mod outbox;
 pub mod plugins;
+mod public_error;
 pub mod registration;
 pub mod runtime;
 pub mod runtime_inbox;

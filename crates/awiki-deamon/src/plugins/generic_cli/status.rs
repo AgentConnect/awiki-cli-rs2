@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 
 use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID, GEMINI_CLI_DRIVER_ID};
+use crate::public_error::sanitize_public_error;
 use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
@@ -217,31 +218,6 @@ fn setup_status(driver_status_code: &str, setup_ready: bool, auth_status: &str) 
         _ => "unknown",
     }
     .to_string()
-}
-
-fn sanitize_public_error(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_ascii_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("jwt")
-                || lower.contains("key")
-            {
-                "<redacted>"
-            } else if part.starts_with('/') || part.starts_with("file://") {
-                "<path>"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if sanitized.chars().count() > 240 {
-        sanitized = sanitized.chars().take(240).collect();
-    }
-    sanitized
 }
 
 #[cfg(test)]

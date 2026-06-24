@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use anyhow::{bail, Chain, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -16,6 +16,7 @@ use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
 use crate::plugins::hermes::{
     initialize_hermes_profile, mark_hermes_profile_failed, HERMES_RUNTIME_PLUGIN_ID,
 };
+use crate::public_error::{sanitize_public_error, sanitize_public_error_chain};
 use crate::registration::{
     AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
     AgentRegistrationExchangeResult, DidAuthMaterial, RegistrationToken,
@@ -2215,51 +2216,6 @@ fn optional_arg_u64(args: &Value, field: &str) -> Option<u64> {
                 .and_then(|text| text.parse::<u64>().ok())
         })
     })
-}
-
-fn sanitize_public_error(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_ascii_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("jwt")
-                || lower.contains("key")
-            {
-                "<redacted>"
-            } else if part.starts_with('/') || part.starts_with("file://") {
-                "<path>"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if sanitized.chars().count() > 240 {
-        sanitized = sanitized.chars().take(240).collect();
-    }
-    sanitized
-}
-
-fn sanitize_public_error_chain(chain: Chain<'_>) -> String {
-    let parts = chain
-        .take(4)
-        .map(|error| sanitize_public_error(&error.to_string()))
-        .filter(|message| !message.trim().is_empty())
-        .collect::<Vec<_>>();
-    let mut deduped = Vec::new();
-    for part in parts {
-        if deduped.last() == Some(&part) {
-            continue;
-        }
-        deduped.push(part);
-    }
-    let mut summary = deduped.join(": ");
-    if summary.chars().count() > 360 {
-        summary = summary.chars().take(360).collect();
-    }
-    summary
 }
 
 fn validate_application_json_payload(message: &IncomingAgentPayloadMessage) -> Result<()> {

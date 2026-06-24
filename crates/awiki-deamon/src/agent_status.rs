@@ -10,6 +10,7 @@ use crate::plugins::hermes::{
     repair_hermes_profile_if_needed, HermesGatewayCommandStatus, HermesRuntimeModelConfigStatus,
     StdioHermesGateway,
 };
+use crate::public_error::sanitize_public_error;
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
     UserServiceAgentRegistrationClient,
@@ -804,31 +805,6 @@ fn rfc3339_from_millis(ms: i64) -> String {
         return rfc3339_now();
     };
     value.format(&Rfc3339).unwrap_or_else(|_| rfc3339_now())
-}
-
-fn sanitize_public_error(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_ascii_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("jwt")
-                || lower.contains("key")
-            {
-                "<redacted>"
-            } else if part.starts_with('/') || part.starts_with("file://") {
-                "<path>"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if sanitized.chars().count() > 240 {
-        sanitized = sanitized.chars().take(240).collect();
-    }
-    sanitized
 }
 
 #[cfg(test)]

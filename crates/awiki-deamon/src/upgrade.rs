@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
+use crate::public_error::{sanitize_public_error, sanitize_public_error_chain};
 use crate::service::{
     manage_service, restart_service_after_upgrade, ServiceAction, ServicePlatform, ServiceStatus,
 };
@@ -1707,48 +1708,7 @@ fn diagnostic_url(url: &str) -> String {
 }
 
 fn sanitize_error(value: &str) -> String {
-    let mut redacted = value
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_ascii_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("jwt")
-                || lower.contains("key")
-            {
-                "<redacted>"
-            } else if part.starts_with('/') || part.starts_with("file://") {
-                "<path>"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if redacted.chars().count() > 240 {
-        redacted = redacted.chars().take(240).collect();
-    }
-    redacted
-}
-
-fn sanitize_public_error_chain(chain: anyhow::Chain<'_>) -> String {
-    let parts = chain
-        .take(4)
-        .map(|error| sanitize_error(&error.to_string()))
-        .filter(|message| !message.trim().is_empty())
-        .collect::<Vec<_>>();
-    let mut deduped = Vec::new();
-    for part in parts {
-        if deduped.last() == Some(&part) {
-            continue;
-        }
-        deduped.push(part);
-    }
-    let mut summary = deduped.join(": ");
-    if summary.chars().count() > 360 {
-        summary = summary.chars().take(360).collect();
-    }
-    summary
+    sanitize_public_error(value)
 }
 
 #[cfg(test)]

@@ -47,6 +47,7 @@ use crate::plugins::hermes::{
     repair_hermes_profile_if_needed, HermesGateway, HermesRuntimePlugin, StdioHermesGateway,
     HERMES_RUNTIME_PLUGIN_ID,
 };
+use crate::public_error::sanitize_public_error;
 use crate::registration::{AgentInventoryClient, UserServiceAgentRegistrationClient};
 use crate::runtime::host::{
     flush_runtime_final_outbox, run_controller_text_task_with_config,
@@ -854,28 +855,7 @@ fn validate_retry_task_binding(
 }
 
 fn sanitize_error_message(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_ascii_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("jwt")
-                || lower.contains("key")
-            {
-                "<redacted>"
-            } else if part.starts_with('/') || part.starts_with("file://") {
-                "<path>"
-            } else {
-                part
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if sanitized.chars().count() > 240 {
-        sanitized = sanitized.chars().take(240).collect::<String>();
-    }
-    sanitized
+    sanitize_public_error(message)
 }
 
 async fn route_message(
