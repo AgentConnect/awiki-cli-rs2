@@ -132,7 +132,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | route list/status/reset | 已实现 | 只返回脱敏 route 摘要；Hermes 对 generic-cli list/status 返回 unsupported。 |
 | profile/host-home lock | 已实现 | 获取顺序是 route lease -> profile lock -> host-home lock；Claude host default HOME 需要 host-home driver lock。 |
 | install/status probe env allowlist | 已实现 | probe 使用 `env_clear()`，只恢复最小运行环境；Codex probe 可带 profile `CODEX_HOME`，并会补充常见用户 CLI bin 路径（如 `~/.nvm/versions/node/*/bin`）以覆盖 systemd user service 的最小 PATH；Claude probe 保留 `HOME` 仅表达 host-default setup 诊断。 |
-| setup/status/version gate | foundation | create capability 与 setup readiness 分离；Codex `CODEX_HOME/auth.json` 缺失会显示 `auth_status=missing`，`auth_status=unknown` / `missing` 都不视为可运行。 |
+| setup/status/version gate | foundation | create capability 与 setup readiness 分离；Codex `CODEX_HOME/auth.json` 缺失会显示 `auth_status=missing`，`auth_status=unknown` / `missing` 都不视为可运行；Claude Code 复用 host `HOME` 中用户已配置的 CLI 登录态，daemon 无法用 profile `auth.json` 判定登录，因此 `auth_status=not_applicable`，真实可用性由 `claude --version` probe 与实际 run 失败/成功证明。 |
 | queue/deferred | foundation only | 有 `runtime_retry_queue` 和 `cli_route_message_queue` foundation、replay/drain/status summary；不承诺完整 durable FIFO、完整 rehydrate 或 manual replay。 |
 | runtime card/App visual mapping | foundation | daemon 暴露低敏 `runtime_card`；App 消费 schema v1。它不是完整 remediation action UI。 |
 | final provenance/output sanitizer | foundation | final source/hash、fallback source、sanitizer metadata 已有基础能力；不是完整 provider send ledger 或 support bundle。 |

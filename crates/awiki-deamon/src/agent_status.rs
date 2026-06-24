@@ -1056,6 +1056,7 @@ fn generic_cli_auth_status(profile: &CliRuntimeProfileRecord) -> &'static str {
                 "missing"
             }
         }
+        "claude-code" => "not_applicable",
         "command" => "not_applicable",
         _ => "unknown",
     }
@@ -3335,6 +3336,62 @@ mod tests {
         let dump = diagnostics.to_string();
         assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
         assert!(!dump.contains(home.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn generic_cli_runtime_status_treats_claude_host_auth_as_not_applicable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = EnvGuard::clear(&["HOME"]);
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("host-home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+        let fake_claude = root.path().join("fake-claude");
+        std::fs::write(
+            &fake_claude,
+            "#!/bin/sh\nif [ \"${1-}\" = \"--version\" ]; then echo '2.1.185 (Claude Code)'; exit 0; fi\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let mut runtime = generic_cli_runtime();
+        runtime.agent_did = "did:agent:claude".to_string();
+        runtime.handle = "alice-claude".to_string();
+        runtime.runtime_profile_id = Some("profile_claude_alice".to_string());
+        state.upsert_agent_definition(&runtime).unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_claude_alice", "claude-code").unwrap();
+        cli_profile.binary_path = Some(fake_claude);
+        cli_profile.default_workspace_mode = WorkspaceMode::RouteRoot;
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+
+        assert!(!status.needs_config);
+        assert!(status.last_error_code.is_none());
+        assert_eq!(
+            diagnostics["config_summary"]["auth_status"],
+            "not_applicable"
+        );
+        assert_eq!(diagnostics["config_summary"]["setup_ready"], true);
+        assert_eq!(diagnostics["config_summary"]["setup_status"], "ready");
+        assert_eq!(diagnostics["config_summary"]["next_action"], "none");
+        assert_eq!(
+            diagnostics["config_summary"]["home_isolation"],
+            "host_default"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_card"]["lifecycle_state"],
+            "created"
+        );
     }
 
     #[test]

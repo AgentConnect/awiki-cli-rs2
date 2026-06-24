@@ -103,6 +103,9 @@ AWIKI_DAEMON_CLI_ENV_PASSTHROUGH=ANTHROPIC_*,CLAUDE_CODEX_MODEL
   `MY_PROVIDER_TOKEN,MY_PROVIDER_BASE_URL,ACME_*`。变量值不会被日志打印。
 - Codex driver 仍会强制设置 profile-scoped `CODEX_HOME`；如果用户只使用 Codex profile home 的
   `auth.json`，不需要额外透传 provider secret。
+- Claude Code driver 复用 daemon 进程的 host `HOME`，即用户已经配置好的 Claude Code CLI
+  登录态；daemon 不要求也不解析 Claude 专用登录文件。因此 Claude Code setup diagnostics 使用
+  `auth_status=not_applicable`，真实认证问题会在实际 `claude -p` run 中暴露。
 
 Linux `systemd --user` service 使用 optional `EnvironmentFile=-.../agent-cli.env`，因此缺失
 文件不会阻止 daemon 启动。macOS LaunchAgent 通过 `/bin/sh -c` wrapper 只 source 这个
