@@ -92,6 +92,7 @@ impl GenericCliStatusSummary {
             ("profile_missing", _) => Some("generic_cli_profile_missing"),
             ("profile_inactive", _) => Some("generic_cli_profile_inactive"),
             ("config_home_missing", _) => Some("generic_cli_config_home_missing"),
+            ("driver_config_missing", _) => Some("generic_cli_driver_config_missing"),
             ("missing_binary", _) => Some("generic_cli_driver_missing"),
             ("probe_failed", _) => Some("generic_cli_driver_probe_failed"),
             ("not_implemented", _) => Some("generic_cli_driver_not_implemented"),
@@ -168,7 +169,20 @@ fn pre_probe_driver_status_code(
     if missing_config_home {
         return Some("config_home_missing");
     }
+    if profile.driver_id == COMMAND_CLI_DRIVER_ID && command_program(profile).is_none() {
+        return Some("driver_config_missing");
+    }
     None
+}
+
+fn command_program(profile: &CliRuntimeProfileRecord) -> Option<&std::path::Path> {
+    profile.binary_path.as_deref().or_else(|| {
+        profile
+            .driver_config_json
+            .get("program")
+            .and_then(Value::as_str)
+            .map(std::path::Path::new)
+    })
 }
 
 fn probed_driver_status_code(
@@ -193,7 +207,9 @@ fn setup_status(driver_status_code: &str, setup_ready: bool, auth_status: &str) 
         return "ready".to_string();
     }
     match driver_status_code {
-        "profile_missing" | "config_home_missing" | "missing_binary" => "needs_setup",
+        "profile_missing" | "config_home_missing" | "driver_config_missing" | "missing_binary" => {
+            "needs_setup"
+        }
         "profile_inactive" => "inactive",
         "probe_failed" => "probe_failed",
         "not_implemented" | "unsupported_driver" => "unsupported",
@@ -336,6 +352,26 @@ mod tests {
             summary.diagnostics_summary()["config_summary"]["setup_status"],
             "unsupported"
         );
+    }
+
+    #[test]
+    fn command_status_reports_missing_program_as_configuration_issue() {
+        let profile =
+            CliRuntimeProfileRecord::for_driver("profile_command", COMMAND_CLI_DRIVER_ID).unwrap();
+
+        let summary = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(!summary.setup_ready);
+        assert_eq!(summary.driver_status_code, "driver_config_missing");
+        assert_eq!(
+            summary.error_code(),
+            Some("generic_cli_driver_config_missing")
+        );
+        assert_eq!(
+            summary.diagnostics_summary()["config_summary"]["setup_status"],
+            "needs_setup"
+        );
+        assert!(summary.binary_detail.is_none());
     }
 
     #[test]
