@@ -305,6 +305,18 @@ WHERE retry_id = ?3
         Ok(updated > 0)
     }
 
+    pub fn start_queued_runtime_retry(&self, retry_id: &str) -> Result<bool> {
+        self.mark_runtime_retry_status_if_status_in(retry_id, &["queued"], "running")
+    }
+
+    pub fn succeed_running_runtime_retry(&self, retry_id: &str) -> Result<bool> {
+        self.mark_runtime_retry_status_if_status_in(retry_id, &["running"], "succeeded")
+    }
+
+    pub fn fail_running_runtime_retry(&self, retry_id: &str) -> Result<bool> {
+        self.mark_runtime_retry_status_if_status_in(retry_id, &["running"], "failed")
+    }
+
     pub fn recover_stale_runtime_retries_running(&self, stale_before_ms: i64) -> Result<usize> {
         let connection = self.connection()?;
         let updated = connection.execute(

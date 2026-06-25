@@ -1059,9 +1059,7 @@ fn runtime_retry_queue_recovers_stale_running_retries() {
         .unwrap();
     assert_eq!(retry.status, "queued");
 
-    state
-        .mark_runtime_retry_status(&retry.retry_id, "running")
-        .unwrap();
+    assert!(state.start_queued_runtime_retry(&retry.retry_id).unwrap());
     let running = state.load_runtime_retry_request(&retry.retry_id).unwrap();
     assert_eq!(running.status, "running");
     assert_eq!(running.attempts, 1);
@@ -1110,9 +1108,7 @@ fn runtime_retry_queue_rejects_unknown_status_and_preserves_terminal_state() {
     state
         .mark_runtime_retry_status(&retry.retry_id, "failed")
         .unwrap();
-    let updated = state
-        .mark_runtime_retry_status_if_status_in(&retry.retry_id, &["queued"], "running")
-        .unwrap();
+    let updated = state.start_queued_runtime_retry(&retry.retry_id).unwrap();
     assert!(!updated);
 
     let stored = state.load_runtime_retry_request(&retry.retry_id).unwrap();
