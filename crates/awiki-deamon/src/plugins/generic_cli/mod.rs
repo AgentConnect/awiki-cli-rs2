@@ -811,19 +811,12 @@ fn command_driver_from_profile(
         .binary_path
         .clone()
         .or_else(|| {
-            profile
-                .driver_config_json
-                .get("program")
-                .and_then(Value::as_str)
-                .map(std::path::PathBuf::from)
+            json_string_field(&profile.driver_config_json, "program").map(std::path::PathBuf::from)
         })
         .context("command generic-cli driver requires binary_path or driver_config.program")?;
     let args = string_array(profile.driver_config_json.get("args"))?;
-    let cli_wrapper = profile
-        .driver_config_json
-        .get("cli_wrapper")
-        .and_then(Value::as_str)
-        .unwrap_or("library:awiki_deamon::cli_wrapper");
+    let cli_wrapper = json_string_field(&profile.driver_config_json, "cli_wrapper")
+        .unwrap_or_else(|| "library:awiki_deamon::cli_wrapper".to_string());
     let run_timeout = json_duration_ms_field(
         &profile.driver_config_json,
         "run_timeout_ms",

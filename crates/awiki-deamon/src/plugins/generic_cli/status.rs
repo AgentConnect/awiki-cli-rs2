@@ -7,7 +7,7 @@ use crate::public_error::sanitize_public_error;
 use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
-use super::{codex::codex_profile_auth_ready, GenericCliDriverRegistry};
+use super::{codex::codex_profile_auth_ready, json_string_field, GenericCliDriverRegistry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericCliStatusSummary {
@@ -29,9 +29,11 @@ impl GenericCliStatusSummary {
     pub fn from_profile(profile: CliRuntimeProfileRecord) -> Self {
         let effective_config_home = effective_config_home(&profile);
         let config_home_configured = effective_config_home.is_some();
-        let config_home_exists = effective_config_home.is_some_and(|path| path.is_dir());
+        let config_home_exists = effective_config_home
+            .as_deref()
+            .is_some_and(|path| path.is_dir());
         let missing_config_home = profile.driver_id == CODEX_CLI_DRIVER_ID && !config_home_exists;
-        let auth_status = auth_status(&profile, effective_config_home).to_string();
+        let auth_status = auth_status(&profile, effective_config_home.as_deref()).to_string();
         let early_status_code = pre_probe_driver_status_code(&profile, missing_config_home);
         let (install_status, driver_status_code) = if let Some(status_code) = early_status_code {
             (
@@ -124,13 +126,9 @@ impl GenericCliStatusSummary {
     }
 }
 
-fn effective_config_home(profile: &CliRuntimeProfileRecord) -> Option<&std::path::Path> {
-    profile.config_home.as_deref().or_else(|| {
-        profile
-            .driver_config_json
-            .get("config_home")
-            .and_then(Value::as_str)
-            .map(std::path::Path::new)
+fn effective_config_home(profile: &CliRuntimeProfileRecord) -> Option<std::path::PathBuf> {
+    profile.config_home.clone().or_else(|| {
+        json_string_field(&profile.driver_config_json, "config_home").map(std::path::PathBuf::from)
     })
 }
 
@@ -176,13 +174,9 @@ fn pre_probe_driver_status_code(
     None
 }
 
-fn command_program(profile: &CliRuntimeProfileRecord) -> Option<&std::path::Path> {
-    profile.binary_path.as_deref().or_else(|| {
-        profile
-            .driver_config_json
-            .get("program")
-            .and_then(Value::as_str)
-            .map(std::path::Path::new)
+fn command_program(profile: &CliRuntimeProfileRecord) -> Option<std::path::PathBuf> {
+    profile.binary_path.clone().or_else(|| {
+        json_string_field(&profile.driver_config_json, "program").map(std::path::PathBuf::from)
     })
 }
 
@@ -348,6 +342,22 @@ mod tests {
             "needs_setup"
         );
         assert!(summary.binary_detail.is_none());
+
+        let mut blank_program =
+            CliRuntimeProfileRecord::for_driver("profile_command_blank", COMMAND_CLI_DRIVER_ID)
+                .unwrap();
+        blank_program.driver_config_json = json!({
+            "program": "   ",
+        });
+
+        let blank_summary = GenericCliStatusSummary::from_profile(blank_program);
+
+        assert!(!blank_summary.setup_ready);
+        assert_eq!(blank_summary.driver_status_code, "driver_config_missing");
+        assert_eq!(
+            blank_summary.error_code(),
+            Some("generic_cli_driver_config_missing")
+        );
     }
 
     #[test]
@@ -393,6 +403,31 @@ mod tests {
 
         assert_eq!(summary.driver_status_code, "profile_inactive");
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn codex_status_treats_blank_config_home_as_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("codex");
+        write_fake_codex_executable(&binary).unwrap();
+        let mut profile = CliRuntimeProfileRecord::for_driver("profile_codex", "codex").unwrap();
+        profile.binary_path = Some(binary);
+        profile.driver_config_json = json!({
+            "config_home": "   ",
+        });
+
+        let summary = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(!summary.setup_ready);
+        assert_eq!(summary.driver_status_code, "config_home_missing");
+        assert_eq!(
+            summary.error_code(),
+            Some("generic_cli_config_home_missing")
+        );
+        assert_eq!(
+            summary.diagnostics_summary()["config_summary"]["config_home"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
