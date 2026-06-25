@@ -45,6 +45,15 @@ impl ManagedChildTimeoutError {
     pub fn metadata_json(&self) -> Value {
         process_metadata_json(self.metadata)
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(context: &'static str, timeout: Duration) -> Self {
+        Self {
+            context,
+            timeout,
+            metadata: test_process_management_metadata(),
+        }
+    }
 }
 
 impl fmt::Display for ManagedChildTimeoutError {
@@ -171,6 +180,24 @@ fn process_metadata_json(metadata: ProcessManagementMetadata) -> Value {
         "process_tree_cleanup_supported": metadata.process_tree_cleanup_supported,
         "process_tree_cleanup_strategy": metadata.process_tree_cleanup_strategy,
     })
+}
+
+#[cfg(test)]
+fn test_process_management_metadata() -> ProcessManagementMetadata {
+    ProcessManagementMetadata {
+        process_group_isolated: cfg!(unix),
+        process_tree_cleanup_supported: cfg!(unix),
+        process_tree_cleanup_strategy: if cfg!(unix) {
+            "unix_process_group"
+        } else {
+            "unsupported"
+        },
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_process_management_strategy() -> &'static str {
+    test_process_management_metadata().process_tree_cleanup_strategy
 }
 
 fn spawn_pipe_reader<R>(mut reader: R) -> JoinHandle<std::io::Result<Vec<u8>>>

@@ -533,6 +533,36 @@ impl GenericCliExit {
             metadata: serde_json::json!({}),
         }
     }
+
+    pub(crate) fn timeout(
+        driver_id: &str,
+        error_code: &str,
+        timeout: &process::ManagedChildTimeoutError,
+        extra_metadata: impl IntoIterator<Item = (&'static str, Value)>,
+    ) -> Self {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("driver_id".to_string(), json!(driver_id));
+        for (key, value) in extra_metadata {
+            metadata.insert(key.to_string(), value);
+        }
+        metadata.insert("error_code".to_string(), json!(error_code));
+        metadata.insert("error_summary".to_string(), json!(timeout.to_string()));
+        metadata.insert("next_action".to_string(), json!("manual_review_required"));
+        metadata.insert(
+            "process".to_string(),
+            json!({
+                "timed_out": true,
+                "timeout_ms": timeout.timeout_ms(),
+                "management": timeout.metadata_json(),
+            }),
+        );
+        Self {
+            exit_code: 124,
+            status: RuntimeRunStatus::Failed,
+            callbacks: Vec::new(),
+            metadata: Value::Object(metadata),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -739,22 +769,12 @@ impl GenericCliDriver for CommandGenericCliDriver {
             Ok(output) => output,
             Err(error) => {
                 if let Some(timeout) = error.downcast_ref::<process::ManagedChildTimeoutError>() {
-                    return Ok(GenericCliExit {
-                        exit_code: 124,
-                        status: RuntimeRunStatus::Failed,
-                        callbacks: Vec::new(),
-                        metadata: serde_json::json!({
-                            "driver_id": "generic-cli",
-                            "error_code": "generic_cli_timeout",
-                            "error_summary": timeout.to_string(),
-                            "next_action": "manual_review_required",
-                            "process": {
-                                "timed_out": true,
-                                "timeout_ms": timeout.timeout_ms(),
-                                "management": timeout.metadata_json(),
-                            },
-                        }),
-                    });
+                    return Ok(GenericCliExit::timeout(
+                        "generic-cli",
+                        "generic_cli_timeout",
+                        timeout,
+                        [],
+                    ));
                 }
                 return Err(error);
             }
@@ -1073,6 +1093,39 @@ mod tests {
         assert_eq!(
             json_duration_ms_field(&config, "zero_timeout", Duration::from_millis(10)),
             Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn shared_timeout_exit_keeps_driver_specific_metadata_inside_common_shape() {
+        let error = process::ManagedChildTimeoutError::new_for_test(
+            "wait for test driver",
+            Duration::from_millis(2500),
+        );
+
+        let exit = GenericCliExit::timeout(
+            "codex",
+            "codex_cli_timeout",
+            &error,
+            [("config_home", json!("configured"))],
+        );
+
+        assert_eq!(exit.exit_code, 124);
+        assert_eq!(exit.status, RuntimeRunStatus::Failed);
+        assert!(exit.callbacks.is_empty());
+        assert_eq!(exit.metadata["driver_id"], "codex");
+        assert_eq!(exit.metadata["config_home"], "configured");
+        assert_eq!(exit.metadata["error_code"], "codex_cli_timeout");
+        assert_eq!(
+            exit.metadata["error_summary"],
+            "wait for test driver timed out after 2500 ms"
+        );
+        assert_eq!(exit.metadata["next_action"], "manual_review_required");
+        assert_eq!(exit.metadata["process"]["timed_out"], true);
+        assert_eq!(exit.metadata["process"]["timeout_ms"], 2500);
+        assert_eq!(
+            exit.metadata["process"]["management"]["process_tree_cleanup_strategy"],
+            process::test_process_management_strategy()
         );
     }
 }

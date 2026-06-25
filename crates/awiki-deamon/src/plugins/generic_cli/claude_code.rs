@@ -291,23 +291,12 @@ impl GenericCliDriver for ClaudeCodeDriver {
             Ok(output) => output,
             Err(error) => {
                 if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
-                    return Ok(GenericCliExit {
-                        exit_code: 124,
-                        status: RuntimeRunStatus::Failed,
-                        callbacks: Vec::new(),
-                        metadata: serde_json::json!({
-                            "driver_id": CLAUDE_CODE_CLI_DRIVER_ID,
-                            "home_isolation": home_isolation(),
-                            "error_code": "claude_code_cli_timeout",
-                            "error_summary": timeout.to_string(),
-                            "next_action": "manual_review_required",
-                            "process": {
-                                "timed_out": true,
-                                "timeout_ms": timeout.timeout_ms(),
-                                "management": timeout.metadata_json(),
-                            },
-                        }),
-                    });
+                    return Ok(GenericCliExit::timeout(
+                        CLAUDE_CODE_CLI_DRIVER_ID,
+                        "claude_code_cli_timeout",
+                        timeout,
+                        [("home_isolation", serde_json::json!(home_isolation()))],
+                    ));
                 }
                 return Err(error);
             }
