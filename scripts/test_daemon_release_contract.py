@@ -3,8 +3,9 @@ import hashlib
 import http.server
 import json
 import os
-import platform
 import pathlib
+import platform
+import shutil
 import socketserver
 import subprocess
 import tempfile
@@ -34,6 +35,24 @@ def run_command(args, *, cwd=ROOT, env=None):
         stderr=subprocess.PIPE,
         check=True,
     )
+
+
+def current_installer_target() -> tuple[str, str]:
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Darwin":
+        os_name = "darwin"
+    elif system == "Linux":
+        os_name = "linux"
+    else:
+        raise unittest.SkipTest(f"unsupported installer test OS: {system}")
+    if machine in ("x86_64", "amd64"):
+        arch = "amd64"
+    elif machine in ("arm64", "aarch64"):
+        arch = "arm64"
+    else:
+        raise unittest.SkipTest(f"unsupported installer test arch: {machine}")
+    return os_name, arch
 
 
 def create_fake_daemon_package(source_dir: pathlib.Path, os_name: str, arch: str) -> pathlib.Path:
@@ -70,22 +89,10 @@ def create_fake_daemon_package(source_dir: pathlib.Path, os_name: str, arch: str
     return archive
 
 
-def current_installer_target() -> tuple[str, str]:
-    system = platform.system()
-    machine = platform.machine()
-    if system == "Darwin":
-        os_name = "darwin"
-    elif system == "Linux":
-        os_name = "linux"
-    else:
-        raise unittest.SkipTest(f"unsupported installer test OS: {system}")
-    if machine in ("x86_64", "amd64"):
-        arch = "amd64"
-    elif machine in ("arm64", "aarch64"):
-        arch = "arm64"
-    else:
-        raise unittest.SkipTest(f"unsupported installer test arch: {machine}")
-    return os_name, arch
+def create_all_fake_packages(source_dir: pathlib.Path) -> None:
+    source_dir.mkdir(parents=True, exist_ok=True)
+    for os_name, arch in TARGETS:
+        create_fake_daemon_package(source_dir, os_name, arch)
 
 
 class QuietHttpServer(socketserver.ThreadingTCPServer):
@@ -114,18 +121,26 @@ def serve_directory(directory: pathlib.Path):
             thread.join(timeout=5)
 
 
+def file_url(path: pathlib.Path) -> str:
+    return "file://" + quote(str(path.resolve()))
+
+
+def readlink(path: pathlib.Path) -> str:
+    if hasattr(path, "readlink"):
+        return str(path.readlink())
+    return subprocess.check_output(["readlink", str(path)], text=True).strip()
+
+
 class DaemonReleaseContractTests(unittest.TestCase):
-    def test_stage_daemon_download_layout_matches_installer_contract(self) -> None:
+    def test_stage_download_layout_uses_path_only_manifest_and_embeds_download_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             source_dir = temp_dir / "source"
-            source_dir.mkdir()
-            for os_name, arch in TARGETS:
-                create_fake_daemon_package(source_dir, os_name, arch)
+            create_all_fake_packages(source_dir)
 
             output_dir = temp_dir / "daemon"
-            backend_base_url = "https://example.com"
             download_base_url = "https://example.com/daemon"
+            mirror_url = "https://download.example.com/daemon"
             run_command(
                 [
                     "scripts/release/daemon/_stage-downloads.sh",
@@ -135,29 +150,31 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     str(source_dir),
                     "--output-dir",
                     str(output_dir),
+                    "--base-url",
+                    "https://api.example.com",
                     "--download-base-url",
                     download_base_url,
+                    "--download-mirror-url",
+                    mirror_url,
                     "--min-supported",
                     "1.0.0",
                 ]
             )
 
-            self.assertTrue((output_dir / "install.sh").is_file())
-            manifest_path = output_dir / "releases" / "manifest.json"
-            self.assertTrue(manifest_path.is_file())
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            install_text = (output_dir / "install.sh").read_text(encoding="utf-8")
+            self.assertIn("https://api.example.com", install_text)
+            self.assertIn("DEFAULT_DOWNLOAD_BASE_URLS='https://example.com/daemon", install_text)
+            self.assertIn("https://download.example.com/daemon", install_text)
+            self.assertIn("SELECTED_DOWNLOAD_BASE_URL", install_text)
+            self.assertIn("--progress-bar", install_text)
+            self.assertIn("--speed-limit \"$CURL_SPEED_LIMIT_BYTES\"", install_text)
+
+            manifest = json.loads(
+                (output_dir / "releases" / "manifest.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(manifest["latest"], "1.2.3")
             self.assertEqual(manifest["min_supported"], "1.0.0")
             self.assertEqual(len(manifest["packages"]), len(TARGETS))
-            install_text = (output_dir / "install.sh").read_text(encoding="utf-8")
-            self.assertIn(
-                "BASE_URL=\"${AWIKI_DAEMON_BASE_URL:-${AWIKI_DAEMON_SERVICE_BASE_URL:-https://example.com}}\"",
-                install_text,
-            )
-            self.assertIn(
-                "DOWNLOAD_BASE_URL=\"${AWIKI_DAEMON_DOWNLOAD_BASE_URL:-https://example.com/daemon}\"",
-                install_text,
-            )
 
             packages_by_target = {
                 (package["os"], package["arch"]): package for package in manifest["packages"]
@@ -168,28 +185,18 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 self.assertTrue(package_path.is_file())
                 package = packages_by_target[(os_name, arch)]
                 self.assertEqual(package["version"], "1.2.3")
-                self.assertEqual(
-                    package["url"],
-                    f"{download_base_url}/releases/1.2.3/{package_name}",
-                )
+                self.assertNotIn("url", package)
+                self.assertEqual(package["path"], f"releases/1.2.3/{package_name}")
                 expected_sha = hashlib.sha256(package_path.read_bytes()).hexdigest()
                 self.assertEqual(package["sha256"], expected_sha)
 
-            checksums = (output_dir / "releases" / "1.2.3" / "checksums.txt").read_text(
-                encoding="utf-8"
-            )
-            for os_name, arch in TARGETS:
-                self.assertIn(f"awiki-deamon-{os_name}-{arch}.tar.gz", checksums)
-
-    def test_stage_daemon_downloads_resolves_relative_paths_from_caller_directory(self) -> None:
+    def test_stage_downloads_resolves_relative_paths_from_caller_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             caller_dir = temp_dir / "caller"
             caller_dir.mkdir()
             source_dir = caller_dir / "dist"
-            source_dir.mkdir()
-            for os_name, arch in TARGETS:
-                create_fake_daemon_package(source_dir, os_name, arch)
+            create_all_fake_packages(source_dir)
 
             run_command(
                 [
@@ -221,106 +228,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 ).is_file()
             )
 
-    def test_publish_daemon_linux_dry_run_rejects_non_incremental_published_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            temp_dir = pathlib.Path(temp)
-            output_dir = temp_dir / "daemon"
-            (output_dir / "releases").mkdir(parents=True)
-            (output_dir / "releases" / "manifest.json").write_text(
-                json.dumps({"latest": self.read_crate_version(), "packages": []}) + "\n",
-                encoding="utf-8",
-            )
-
-            with serve_directory(temp_dir) as base_url:
-                result = subprocess.run(
-                    [
-                        "scripts/release/daemon/publish-linux.sh",
-                        "--base-url",
-                        base_url,
-                        "--dry-run",
-                    ],
-                    cwd=ROOT,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                )
-
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("must be greater than published latest", result.stderr)
-
-    def test_publish_daemon_linux_dry_run_accepts_incremental_published_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            temp_dir = pathlib.Path(temp)
-            output_dir = temp_dir / "daemon"
-            (output_dir / "releases").mkdir(parents=True)
-            (output_dir / "releases" / "manifest.json").write_text(
-                json.dumps({"latest": "0.0.1", "packages": []}) + "\n",
-                encoding="utf-8",
-            )
-
-            with serve_directory(temp_dir) as base_url:
-                result = run_command(
-                    [
-                        "scripts/release/daemon/publish-linux.sh",
-                        "--base-url",
-                        base_url,
-                        "--dry-run",
-                    ]
-                )
-
-            self.assertIn(f"version: {self.read_crate_version()}", result.stdout)
-            self.assertIn("dry run: no build, staging, or nginx publish performed", result.stdout)
-
-    @staticmethod
-    def read_crate_version() -> str:
-        version = ""
-        in_package = False
-        for line in (ROOT / "crates/awiki-deamon/Cargo.toml").read_text(
-            encoding="utf-8"
-        ).splitlines():
-            stripped = line.strip()
-            if stripped == "[package]":
-                in_package = True
-                continue
-            if in_package and stripped.startswith("["):
-                break
-            if in_package and stripped.startswith("version"):
-                version = stripped.split("=", 1)[1].strip().strip('"')
-                break
-        if not version:
-            raise AssertionError("failed to read awiki-deamon crate version")
-        return version.removeprefix("v")
-
-    def test_stage_daemon_downloads_rejects_implicit_base_for_nonstandard_download_url(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            temp_dir = pathlib.Path(temp)
-            source_dir = temp_dir / "source"
-            source_dir.mkdir()
-
-            result = subprocess.run(
-                [
-                    "scripts/release/daemon/_stage-downloads.sh",
-                    "--version",
-                    "1.2.3",
-                    "--source-dir",
-                    str(source_dir),
-                    "--output-dir",
-                    str(temp_dir / "daemon"),
-                    "--download-base-url",
-                    "https://cdn.example.com/static/daemon-assets",
-                ],
-                cwd=ROOT,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("--base-url is required unless --download-base-url ends with /daemon", result.stderr)
-
-    def test_generate_daemon_manifest_requires_all_supported_packages(self) -> None:
+    def test_generate_manifest_requires_all_supported_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             for os_name, arch in TARGETS[:-1]:
@@ -334,8 +242,6 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "1.2.3",
                     "--dist",
                     str(temp_dir),
-                    "--base-url",
-                    "https://example.com/daemon/releases",
                     "--output",
                     str(temp_dir / "manifest.json"),
                 ],
@@ -349,34 +255,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("missing daemon package", result.stderr)
 
-    def test_generate_daemon_manifest_requires_base_url(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            temp_dir = pathlib.Path(temp)
-            create_fake_daemon_package(temp_dir, "linux", "amd64")
-
-            result = subprocess.run(
-                [
-                    "node",
-                    "scripts/release/daemon/_generate-manifest.js",
-                    "--version",
-                    "1.2.3",
-                    "--dist",
-                    str(temp_dir),
-                    "--output",
-                    str(temp_dir / "manifest.json"),
-                    "--allow-partial",
-                ],
-                cwd=ROOT,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("--base-url is required", result.stderr)
-
-    def test_generate_daemon_manifest_can_allow_partial_existing_packages(self) -> None:
+    def test_generate_manifest_allows_partial_existing_packages_without_base_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             package_path = create_fake_daemon_package(temp_dir, "linux", "amd64")
@@ -389,8 +268,6 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "1.2.3",
                     "--dist",
                     str(temp_dir),
-                    "--base-url",
-                    "https://example.com/daemon/releases",
                     "--output",
                     str(temp_dir / "manifest.json"),
                     "--allow-partial",
@@ -398,8 +275,6 @@ class DaemonReleaseContractTests(unittest.TestCase):
             )
 
             manifest = json.loads((temp_dir / "manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["latest"], "1.2.3")
-            self.assertEqual(manifest["min_supported"], "1.2.3")
             self.assertEqual(
                 manifest["packages"],
                 [
@@ -407,13 +282,47 @@ class DaemonReleaseContractTests(unittest.TestCase):
                         "version": "1.2.3",
                         "os": "linux",
                         "arch": "amd64",
-                        "url": "https://example.com/daemon/releases/1.2.3/awiki-deamon-linux-amd64.tar.gz",
+                        "path": "releases/1.2.3/awiki-deamon-linux-amd64.tar.gz",
                         "sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
                     }
                 ],
             )
 
-    def test_stage_daemon_downloads_can_publish_partial_layout(self) -> None:
+    def test_generate_manifest_records_download_base_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            create_fake_daemon_package(temp_dir, "linux", "amd64")
+            urls_file = temp_dir / "download-urls.txt"
+            urls_file.write_text(
+                "https://example.com/daemon\nhttps://cdn.example.com/daemon/\n",
+                encoding="utf-8",
+            )
+
+            run_command(
+                [
+                    "node",
+                    "scripts/release/daemon/_generate-manifest.js",
+                    "--version",
+                    "1.2.3",
+                    "--dist",
+                    str(temp_dir),
+                    "--output",
+                    str(temp_dir / "manifest.json"),
+                    "--download-base-urls",
+                    str(urls_file),
+                    "--download-base-url",
+                    "https://example.com/daemon",
+                    "--allow-partial",
+                ]
+            )
+
+            manifest = json.loads((temp_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["download_base_urls"],
+                ["https://example.com/daemon", "https://cdn.example.com/daemon"],
+            )
+
+    def test_stage_downloads_can_publish_partial_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             source_dir = temp_dir / "source"
@@ -442,24 +351,13 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 (output_dir / "releases" / "manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(len(manifest["packages"]), 1)
-            self.assertEqual(manifest["packages"][0]["os"], "linux")
-            self.assertEqual(manifest["packages"][0]["arch"], "amd64")
-            self.assertTrue(
-                (
-                    output_dir
-                    / "releases"
-                    / "1.2.3"
-                    / "awiki-deamon-linux-amd64.tar.gz"
-                ).is_file()
-            )
+            self.assertEqual(manifest["packages"][0]["path"], "releases/1.2.3/awiki-deamon-linux-amd64.tar.gz")
 
     def test_installer_downloads_verifies_extracts_and_execs_token_only_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             source_dir = temp_dir / "source"
-            source_dir.mkdir()
-            for os_name, arch in TARGETS:
-                create_fake_daemon_package(source_dir, os_name, arch)
+            create_all_fake_packages(source_dir)
 
             output_dir = temp_dir / "daemon"
             with serve_directory(output_dir) as base_url:
@@ -481,18 +379,9 @@ class DaemonReleaseContractTests(unittest.TestCase):
 
                 home = temp_dir / "home"
                 home.mkdir()
-                env = {
-                    **os.environ,
-                    "HOME": str(home),
-                }
                 run_command(
-                    [
-                        "sh",
-                        str(output_dir / "install.sh"),
-                        "--token",
-                        "test-install-token",
-                    ],
-                    env=env,
+                    ["sh", str(output_dir / "install.sh"), "--token", "test-install-token"],
+                    env={"HOME": str(home)},
                 )
 
             args_path = home / "fake-awiki-deamon-args.txt"
@@ -521,16 +410,14 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 pathlib.Path("../1.2.3/awiki-deamon-runtime"),
             )
 
-    def test_installer_can_use_local_file_download_layout_without_cdn(self) -> None:
+    def test_installer_uses_successful_mirror_when_primary_package_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             source_dir = temp_dir / "source"
-            source_dir.mkdir()
-            for os_name, arch in TARGETS:
-                create_fake_daemon_package(source_dir, os_name, arch)
+            create_all_fake_packages(source_dir)
 
-            output_dir = temp_dir / "daemon"
-            download_base_url = file_url(output_dir)
+            primary_dir = temp_dir / "primary" / "daemon"
+            mirror_dir = temp_dir / "mirror" / "daemon"
             run_command(
                 [
                     "scripts/release/daemon/_stage-downloads.sh",
@@ -539,36 +426,28 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--source-dir",
                     str(source_dir),
                     "--output-dir",
-                    str(output_dir),
+                    str(mirror_dir),
                     "--base-url",
                     "https://example.com",
                     "--download-base-url",
-                    download_base_url,
+                    file_url(primary_dir),
+                    "--download-mirror-url",
+                    file_url(mirror_dir),
                 ]
             )
+            shutil.copytree(mirror_dir, primary_dir)
+            os_name, arch = current_installer_target()
+            (primary_dir / "releases" / "1.2.3" / f"awiki-deamon-{os_name}-{arch}.tar.gz").unlink()
 
             home = temp_dir / "home"
             home.mkdir()
-            env = {
-                **os.environ,
-                "HOME": str(home),
-            }
             run_command(
-                [
-                    "sh",
-                    str(output_dir / "install.sh"),
-                    "--token",
-                    "test-install-token",
-                    "--state-root",
-                    str(temp_dir / "state"),
-                    "--foreground",
-                ],
-                env=env,
+                ["sh", str(mirror_dir / "install.sh"), "--token", "test-install-token"],
+                env={"HOME": str(home)},
             )
 
-            args_path = home / "fake-awiki-deamon-args.txt"
             self.assertEqual(
-                args_path.read_text(encoding="utf-8").splitlines(),
+                (home / "fake-awiki-deamon-args.txt").read_text(encoding="utf-8").splitlines(),
                 [
                     "install",
                     "--token",
@@ -576,10 +455,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "--base-url",
                     "https://example.com",
                     "--download-base-url",
-                    file_url(output_dir),
-                    "--state-root",
-                    str(temp_dir / "state"),
-                    "--foreground",
+                    file_url(mirror_dir),
                 ],
             )
 
@@ -587,9 +463,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             source_dir = temp_dir / "source"
-            source_dir.mkdir()
-            for os_name, arch in TARGETS:
-                create_fake_daemon_package(source_dir, os_name, arch)
+            create_all_fake_packages(source_dir)
 
             output_dir = temp_dir / "daemon"
             with serve_directory(output_dir) as base_url:
@@ -611,24 +485,16 @@ class DaemonReleaseContractTests(unittest.TestCase):
 
                 home = temp_dir / "home"
                 home.mkdir()
-                env = {
-                    **os.environ,
-                    "HOME": str(home),
-                    "AWIKI_DAEMON_SERVICE_BASE_URL": "http://127.0.0.1:9999",
-                }
                 run_command(
-                    [
-                        "sh",
-                        str(output_dir / "install.sh"),
-                        "--token",
-                        "test-install-token",
-                    ],
-                    env=env,
+                    ["sh", str(output_dir / "install.sh"), "--token", "test-install-token"],
+                    env={
+                        "HOME": str(home),
+                        "AWIKI_DAEMON_SERVICE_BASE_URL": "http://127.0.0.1:9999",
+                    },
                 )
 
-            args_path = home / "fake-awiki-deamon-args.txt"
             self.assertEqual(
-                args_path.read_text(encoding="utf-8").splitlines(),
+                (home / "fake-awiki-deamon-args.txt").read_text(encoding="utf-8").splitlines(),
                 [
                     "install",
                     "--token",
@@ -644,9 +510,7 @@ class DaemonReleaseContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             temp_dir = pathlib.Path(temp)
             source_dir = temp_dir / "source"
-            source_dir.mkdir()
-            for os_name, arch in TARGETS:
-                create_fake_daemon_package(source_dir, os_name, arch)
+            create_all_fake_packages(source_dir)
 
             download_root = temp_dir / "download-root"
             output_dir = download_root / "daemon"
@@ -668,24 +532,16 @@ class DaemonReleaseContractTests(unittest.TestCase):
 
                 home = temp_dir / "home"
                 home.mkdir()
-                env = {
-                    **os.environ,
-                    "HOME": str(home),
-                    "AWIKI_DAEMON_DOWNLOAD_BASE_URL": download_base_url,
-                }
                 run_command(
-                    [
-                        "sh",
-                        "scripts/release/daemon/_install.sh.template",
-                        "--token",
-                        "test-install-token",
-                    ],
-                    env=env,
+                    ["sh", "scripts/release/daemon/_install.sh.template", "--token", "test-install-token"],
+                    env={
+                        "HOME": str(home),
+                        "AWIKI_DAEMON_DOWNLOAD_BASE_URL": download_base_url,
+                    },
                 )
 
-            args_path = home / "fake-awiki-deamon-args.txt"
             self.assertEqual(
-                args_path.read_text(encoding="utf-8").splitlines(),
+                (home / "fake-awiki-deamon-args.txt").read_text(encoding="utf-8").splitlines(),
                 [
                     "install",
                     "--token",
@@ -728,11 +584,9 @@ class DaemonReleaseContractTests(unittest.TestCase):
                     "unexpected.txt",
                 ]
             )
-
             for os_name, arch in TARGETS:
-                if (os_name, arch) == (bad_os, bad_arch):
-                    continue
-                create_fake_daemon_package(bad_source, os_name, arch)
+                if (os_name, arch) != (bad_os, bad_arch):
+                    create_fake_daemon_package(bad_source, os_name, arch)
 
             output_dir = temp_dir / "daemon"
             with serve_directory(output_dir) as base_url:
@@ -753,19 +607,10 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 )
                 home = temp_dir / "home"
                 home.mkdir()
-                env = {
-                    **os.environ,
-                    "HOME": str(home),
-                }
                 result = subprocess.run(
-                    [
-                        "sh",
-                        str(output_dir / "install.sh"),
-                        "--token",
-                        "test-install-token",
-                    ],
+                    ["sh", str(output_dir / "install.sh"), "--token", "test-install-token"],
                     cwd=ROOT,
-                    env=env,
+                    env={**os.environ, "HOME": str(home)},
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -776,16 +621,66 @@ class DaemonReleaseContractTests(unittest.TestCase):
             self.assertIn("unexpected daemon package entry: unexpected.txt", result.stderr)
             self.assertFalse((home / "fake-awiki-deamon-args.txt").exists())
 
+    def test_mirror_sync_accepts_config_only_and_pulls_from_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            source_packages = temp_dir / "packages"
+            create_all_fake_packages(source_packages)
+            source_daemon = temp_dir / "source" / "daemon"
+            run_command(
+                [
+                    "scripts/release/daemon/_stage-downloads.sh",
+                    "--version",
+                    "1.2.3",
+                    "--source-dir",
+                    str(source_packages),
+                    "--output-dir",
+                    str(source_daemon),
+                    "--base-url",
+                    "https://example.com",
+                    "--download-base-url",
+                    "https://source.example.com/daemon",
+                ]
+            )
 
-def readlink(path: pathlib.Path) -> str:
-    if hasattr(path, "readlink"):
-        return str(path.readlink())
-    return subprocess.check_output(["readlink", str(path)], text=True).strip()
+            script_dir = temp_dir / "script"
+            script_dir.mkdir()
+            shutil.copy2(ROOT / "scripts/release/daemon/sync-download-mirror.sh", script_dir)
+            target_dir = temp_dir / "target" / "daemon"
 
+            with serve_directory(temp_dir / "source") as source_base:
+                (script_dir / "sync-download-mirror.toml").write_text(
+                    f'source_base_url = "{source_base}/daemon"\n'
+                    f'target_dir = "{target_dir}"\n'
+                    'keep_versions = "2"\n',
+                    encoding="utf-8",
+                )
+                run_command([str(script_dir / "sync-download-mirror.sh")])
 
-def file_url(path: pathlib.Path) -> str:
-    absolute = path.resolve()
-    return "file://" + quote(str(absolute))
+            self.assertTrue((target_dir / "install.sh").is_file())
+            self.assertEqual(
+                json.loads((target_dir / "releases" / "manifest.json").read_text(encoding="utf-8")),
+                json.loads((source_daemon / "releases" / "manifest.json").read_text(encoding="utf-8")),
+            )
+            manifest = json.loads((target_dir / "releases" / "manifest.json").read_text(encoding="utf-8"))
+            for package in manifest["packages"]:
+                self.assertTrue((target_dir / package["path"]).is_file())
+                self.assertEqual(
+                    hashlib.sha256((target_dir / package["path"]).read_bytes()).hexdigest(),
+                    package["sha256"],
+                )
+            self.assertTrue((target_dir / "releases" / "1.2.3" / "checksums.txt").is_file())
+
+            result = subprocess.run(
+                [str(script_dir / "sync-download-mirror.sh"), "--source-base-url", "http://example.com"],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("accepts no arguments", result.stderr)
 
 
 if __name__ == "__main__":

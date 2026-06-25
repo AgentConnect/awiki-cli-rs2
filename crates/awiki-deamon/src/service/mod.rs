@@ -62,6 +62,30 @@ pub fn manage_service(
     }
 }
 
+pub fn restart_service_after_upgrade(
+    config: &DaemonConfig,
+    executable: &Path,
+) -> Result<ServiceStatus> {
+    match platform_manager() {
+        ServicePlatform::LaunchAgent => macos::restart_after_upgrade(config, executable),
+        ServicePlatform::SystemdUser => linux::restart_after_upgrade(config, executable),
+        ServicePlatform::Foreground => Ok(ServiceStatus {
+            platform: ServicePlatform::Foreground,
+            installed: false,
+            running: false,
+            unit_path: None,
+            detail: Some("systemd user environment unavailable; foreground mode required".into()),
+        }),
+        ServicePlatform::Unsupported => Ok(ServiceStatus {
+            platform: ServicePlatform::Unsupported,
+            installed: false,
+            running: false,
+            unit_path: None,
+            detail: Some("service manager unsupported on this platform".into()),
+        }),
+    }
+}
+
 pub fn current_platform_label() -> String {
     platform_label_for(std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -336,6 +360,12 @@ pub(crate) mod macos {
                 write_if_changed(&path, &plist_content(config, executable))?;
                 let _ = run_status(
                     std::process::Command::new("launchctl")
+                        .arg("bootout")
+                        .arg(&domain)
+                        .arg(&path),
+                )?;
+                let _ = run_status(
+                    std::process::Command::new("launchctl")
                         .arg("bootstrap")
                         .arg(&domain)
                         .arg(&path),
@@ -392,6 +422,49 @@ pub(crate) mod macos {
             std::process::Command::new("launchctl")
                 .arg("print")
                 .arg(format!("{domain}/{LABEL}")),
+        )?;
+        Ok(ServiceStatus {
+            platform: ServicePlatform::LaunchAgent,
+            installed: path.exists(),
+            running,
+            unit_path: Some(path),
+            detail: None,
+        })
+    }
+
+    pub fn restart_after_upgrade(
+        config: &DaemonConfig,
+        executable: &Path,
+    ) -> Result<ServiceStatus> {
+        let path = launch_agent_path()?;
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        write_if_changed(&path, &plist_content(config, executable))?;
+
+        let service = format!("{domain}/{LABEL}");
+        let loaded = run_status(
+            std::process::Command::new("launchctl")
+                .arg("print")
+                .arg(&service),
+        )?;
+        if !loaded {
+            let _ = run_status(
+                std::process::Command::new("launchctl")
+                    .arg("bootstrap")
+                    .arg(&domain)
+                    .arg(&path),
+            )?;
+        }
+        let _ = run_status(
+            std::process::Command::new("launchctl")
+                .arg("kickstart")
+                .arg("-k")
+                .arg(&service),
+        )?;
+
+        let running = run_status(
+            std::process::Command::new("launchctl")
+                .arg("print")
+                .arg(&service),
         )?;
         Ok(ServiceStatus {
             platform: ServicePlatform::LaunchAgent,
@@ -657,6 +730,50 @@ WantedBy=default.target
             detail,
         })
     }
+
+    pub fn restart_after_upgrade(
+        config: &DaemonConfig,
+        executable: &Path,
+    ) -> Result<ServiceStatus> {
+        if !systemd_user_available() {
+            return Ok(ServiceStatus {
+                platform: ServicePlatform::Foreground,
+                installed: false,
+                running: false,
+                unit_path: None,
+                detail: Some(
+                    "systemd user environment unavailable; foreground mode required".into(),
+                ),
+            });
+        }
+        let path = unit_path()?;
+        write_if_changed(&path, &unit_content(config, executable))?;
+        let _ =
+            run_status(std::process::Command::new("systemctl").args(["--user", "daemon-reload"]))?;
+        let _ = run_status(
+            std::process::Command::new("systemctl").args(["--user", "enable", UNIT_NAME]),
+        )?;
+        let enable_linger_error = enable_linger_for_current_user();
+        let _ = run_status(
+            std::process::Command::new("systemctl").args(["--user", "restart", UNIT_NAME]),
+        )?;
+        let installed = path.exists();
+        let running = run_status(std::process::Command::new("systemctl").args([
+            "--user",
+            "is-active",
+            "--quiet",
+            UNIT_NAME,
+        ]))?;
+        let linger_state = current_user_linger_state();
+        let detail = service_detail(installed, linger_state, enable_linger_error.as_deref());
+        Ok(ServiceStatus {
+            platform: ServicePlatform::SystemdUser,
+            installed,
+            running,
+            unit_path: Some(path),
+            detail,
+        })
+    }
 }
 
 pub fn require_service_state_root_is_product(config: &DaemonConfig) -> Result<()> {
@@ -695,7 +812,9 @@ mod tests {
         assert!(plist.contains("foreground --state-root"));
         assert!(plist.contains("--ready-file"));
         assert!(plist.contains("daemon.stdout.log"));
-        assert!(plist.contains("daemon.stderr.log"));
+        assert!(plist.contains("/logs/daemon.stdout.log"));
+        assert!(plist.contains("/logs/daemon.stderr.log"));
+        assert!(!plist.contains("logsaemon.stderr.log"));
 
         let unit = linux::unit_content(&config, &executable);
         assert!(unit.contains("EnvironmentFile=-"));

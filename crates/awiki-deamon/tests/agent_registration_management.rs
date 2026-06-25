@@ -813,9 +813,11 @@ fn runtime_session_reset_archives_active_hermes_route() {
     let created = expect_created(outcome);
     let route = HermesSessionRoute::new(
         created.agent_did.clone(),
+        created.handle.clone(),
         created.runtime_profile_id.clone(),
         daemon.controller_scope_key.clone(),
-        "did:human:alice",
+        "controller_private",
+        format!("controller:{}", daemon.controller_scope_key),
         Some("dm:alice:hermes".to_string()),
         "conversation",
     );
@@ -2023,14 +2025,20 @@ fn runtime_run_retry_validates_failed_run_state_without_prompt_leakage() {
         .insert_runtime_task(&awiki_deamon::runtime::RuntimeTask {
             task_id: "task_failed_retry".to_string(),
             agent_did: created.agent_did.clone(),
+            agent_handle: created.handle.clone(),
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:alice".to_string(),
             sender_did: "did:human:alice".to_string(),
             requester_did: "did:human:alice".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: Some("alice.anpclaw.com".to_string()),
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            conversation_scope: awiki_deamon::runtime::RuntimeConversationScope::controller_private(
+                "controller-scope:v1:test-alice-anpclaw-com",
+            ),
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             reply_recipient_did: "did:human:alice".to_string(),
             conversation_id: Some("dm:alice:retry".to_string()),
             text: "super secret prompt".to_string(),
@@ -2203,6 +2211,122 @@ fn daemon_upgrade_rejects_other_daemon_target_without_running_download() {
     assert_eq!(
         status.payload["result"]["error_code"],
         "daemon_target_mismatch"
+    );
+}
+
+#[test]
+fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_upgrade_cancel_idle".to_string(),
+            conversation_id: Some("conv_upgrade_cancel_idle".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_upgrade_cancel_idle",
+                "command": "daemon.upgrade.cancel",
+                "target_agent_kind": "daemon",
+                "args": {}
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "ready");
+    assert_eq!(status.payload["result"]["command"], "daemon.upgrade.cancel");
+    assert_eq!(status.payload["result"]["status"], "not_running");
+}
+
+#[test]
+fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
+    let (_root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    state
+        .try_begin_control_command(
+            &daemon.agent_did,
+            &daemon.controller_scope_key,
+            "cmd_upgrade_restarting",
+            "daemon.upgrade",
+            "msg_upgrade_restarting",
+            Some("latest"),
+        )
+        .unwrap();
+    state
+        .mark_control_command_state(
+            &daemon.agent_did,
+            &daemon.controller_scope_key,
+            "cmd_upgrade_restarting",
+            "restart_scheduled",
+            json!({
+                "command": "daemon.upgrade",
+                "daemon_agent_did": daemon.agent_did,
+                "status": "restart_scheduled",
+            }),
+            None,
+        )
+        .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_upgrade_cancel_restarting".to_string(),
+            conversation_id: Some("conv_upgrade_cancel_restarting".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_upgrade_cancel_restarting",
+                "command": "daemon.upgrade.cancel",
+                "target_agent_kind": "daemon",
+                "args": {}
+            }),
+        },
+    )
+    .unwrap();
+
+    let status = outbox.agent_statuses().pop().unwrap();
+    assert_eq!(status.payload["state"], "failed");
+    assert_eq!(
+        status.payload["result"]["error_code"],
+        "upgrade_not_cancellable"
+    );
+    assert_eq!(
+        status.payload["result"]["upgrade_command_id"],
+        "cmd_upgrade_restarting"
     );
 }
 
@@ -3699,9 +3823,11 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
     assert_eq!(created.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
     let route = awiki_deamon::state::HermesSessionRoute::new(
         created.agent_did.clone(),
+        created.handle.clone(),
         created.runtime_profile_id.clone(),
         "controller-scope:v1:test-alice-anpclaw-com",
-        "did:human:alice",
+        "controller_private",
+        "controller:controller-scope:v1:test-alice-anpclaw-com",
         Some("direct:did:human:alice".to_string()),
         "conversation",
     );

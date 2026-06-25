@@ -707,14 +707,19 @@ fn delegated_runtime_status_and_final_are_queued_without_plaintext_final() {
     let task = RuntimeTask {
         task_id: "task_user_msg_1".to_string(),
         agent_did: binding.runtime_agent_did.clone(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
         controller_did: binding.user_did.clone(),
         sender_did: "did:human:bob".to_string(),
         requester_did: "did:human:bob".to_string(),
+        requester_user_id: Some("user-bob".to_string()),
         requester_full_handle: Some("bob.example.com".to_string()),
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        conversation_scope: RuntimeConversationScope::direct("user-bob", "bob.example.com")
+            .unwrap(),
+        invocation_authority: RuntimeInvocationAuthority::Requester,
         reply_recipient_did: binding.user_did.clone(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::to_string(&json!({
@@ -801,14 +806,19 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
     let task = RuntimeTask {
         task_id: "task_user_msg_host_final".to_string(),
         agent_did: binding.runtime_agent_did.clone(),
+        agent_handle: "alice-hermes".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
         controller_did: binding.user_did.clone(),
         sender_did: "did:human:bob".to_string(),
         requester_did: "did:human:bob".to_string(),
+        requester_user_id: Some("user-bob".to_string()),
         requester_full_handle: Some("bob.example.com".to_string()),
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        conversation_scope: RuntimeConversationScope::direct("user-bob", "bob.example.com")
+            .unwrap(),
+        invocation_authority: RuntimeInvocationAuthority::Requester,
         reply_recipient_did: binding.user_did.clone(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: serde_json::to_string(&json!({
@@ -924,6 +934,7 @@ fn fixture() -> TestFixture {
     state
         .upsert_runtime_agent_profile(&RuntimeAgentProfile {
             agent_did: "did:agent:hermes".to_string(),
+            agent_handle: "alice-hermes".to_string(),
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_scope_key: "controller-scope:v1:user-alice:alice.anpclaw.com".to_string(),
@@ -986,6 +997,16 @@ fn plain_message(id: &str, sender: &str, text: &str) -> Message {
         received_at: Some("2026-06-09T00:00:01Z".to_string()),
         metadata: MessageMetadata {
             content_type: Some("text/plain".to_string()),
+            attributes: vec![
+                MessageMetadataAttribute {
+                    key: "peer_user_id".to_string(),
+                    value: "user-bob".to_string(),
+                },
+                MessageMetadataAttribute {
+                    key: "peer_full_handle".to_string(),
+                    value: "bob.example.com".to_string(),
+                },
+            ],
             ..MessageMetadata::default()
         },
     }

@@ -54,13 +54,15 @@ use crate::runtime::host::{
 };
 use crate::runtime::{
     is_group_conversation_id, runtime_task_matches_profile_controller_scope, RuntimeInstallStatus,
-    RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRunStatus, RuntimeTask,
+    RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
+    RuntimeRunStatus, RuntimeTask,
 };
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
 use crate::security::runtime_token::current_time_millis;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 mod attachments;
+mod group_context;
 mod lifecycle_support;
 mod outbox;
 mod runtime_support;
@@ -72,6 +74,7 @@ use attachments::{
     attachment_download_thread, inbound_attachment_path, render_attachment_runtime_prompt,
     RuntimeInboundAttachment,
 };
+use group_context::{build_recent_group_context, GROUP_CONTEXT_FETCH_LIMIT};
 use lifecycle_support::{
     ensure_agent_messaging_session, runtime_callback_outbox, start_runtime_rpc_worker,
     store_agent_token_for_configured_agents, sync_configured_agent_identities, write_ready_file,
@@ -199,6 +202,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     if let Some(path) = options.ready_file.as_ref() {
         write_ready_file(path, &status)?;
     }
+    let hermes_gateway = StdioHermesGateway::from_config(&config);
     println!(
         "awiki-deamon foreground ready state_root={} socket={}",
         status.state_root.display(),
@@ -209,7 +213,8 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
-        let newly_processed = process_inbox_once(&config, &state, &im_core, &mut processed).await?;
+        let newly_processed =
+            process_inbox_once(&config, &state, &im_core, &hermes_gateway, &mut processed).await?;
         processed_messages += newly_processed;
         if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
             let report = crate::archive::finalize_daemon_archive_for_foreground_shutdown(
@@ -218,7 +223,8 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             )?;
             break format!("daemon_archived:{}", report.archive_id);
         }
-        let delegated_processed = process_user_delegated_inbox_once(&config, &state, &im_core)?;
+        let delegated_processed =
+            process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
         if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
             state.insert_audit_event_json(
                 "message_sync_outbox.flush.failed",
@@ -241,7 +247,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             let outbox = rpc_outbox
                 .lock()
                 .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-            drain_runtime_retry_queue_once(&config, &state, &*outbox)?
+            drain_runtime_retry_queue_once(&config, &state, &*outbox, &hermes_gateway)?
         };
         {
             let outbox = rpc_outbox
@@ -319,6 +325,7 @@ async fn process_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     processed: &mut HashSet<String>,
 ) -> Result<usize> {
     let agents = state.list_agent_definitions()?;
@@ -378,6 +385,7 @@ async fn process_inbox_once(
                         config,
                         state,
                         im_core,
+                        hermes_gateway,
                         &registration,
                         &client,
                         &agent.agent_did,
@@ -399,6 +407,7 @@ async fn process_inbox_once(
                         config,
                         state,
                         im_core,
+                        hermes_gateway,
                         &registration,
                         &client,
                         &agent.agent_did,
@@ -425,6 +434,7 @@ async fn process_agent_direct_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -452,11 +462,13 @@ async fn process_agent_direct_inbox_once(
             config,
             state,
             im_core,
+            hermes_gateway,
             registration,
             client,
             agent_did,
             &message,
             processed,
+            None,
         )
         .await?
         .unwrap_or(false)
@@ -471,6 +483,7 @@ async fn process_agent_group_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
@@ -496,7 +509,7 @@ async fn process_agent_group_inbox_once(
             .groups()
             .messages_async(im_core::groups::GroupMessagesRequest {
                 group: group.did.clone(),
-                limit: im_core::ids::PageLimit::new(20)?,
+                limit: im_core::ids::PageLimit::new(GROUP_CONTEXT_FETCH_LIMIT)?,
                 cursor: None,
             })
             .await
@@ -506,16 +519,19 @@ async fn process_agent_group_inbox_once(
                     group.did.as_str()
                 )
             })?;
-        for message in messages.messages.items.into_iter().rev() {
+        let group_history = messages.messages.items;
+        for message in group_history.iter().rev() {
             if process_runtime_inbox_message(
                 config,
                 state,
                 im_core,
+                hermes_gateway,
                 registration,
                 client,
                 agent_did,
-                &message,
+                message,
                 processed,
+                Some(group_history.as_slice()),
             )
             .await?
             .unwrap_or(false)
@@ -531,11 +547,13 @@ async fn process_runtime_inbox_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     client: &im_core::ImClient,
     agent_did: &str,
     message: &Message,
     processed: &mut HashSet<String>,
+    group_history: Option<&[Message]>,
 ) -> Result<Option<bool>> {
     if should_skip_runtime_inbox_message(agent_did, message) {
         return Ok(None);
@@ -552,10 +570,12 @@ async fn process_runtime_inbox_message(
         config,
         state,
         im_core,
+        hermes_gateway,
         registration,
         client,
         agent_did,
         message,
+        group_history,
     )
     .await
     {
@@ -720,6 +740,7 @@ fn drain_runtime_retry_queue_once(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
+    hermes_gateway: &StdioHermesGateway,
 ) -> Result<usize> {
     let retries = state.list_queued_runtime_retries_due(current_time_millis()?, 10)?;
     let mut processed = 0usize;
@@ -746,7 +767,7 @@ fn drain_runtime_retry_queue_once(
             continue;
         }
         state.mark_runtime_retry_status(&retry.retry_id, "running")?;
-        let result = run_runtime_retry(config, state, outbox, &retry);
+        let result = run_runtime_retry(config, state, outbox, hermes_gateway, &retry);
         match result {
             Ok(run_id) => {
                 state.mark_runtime_retry_status(&retry.retry_id, "succeeded")?;
@@ -941,6 +962,7 @@ fn run_runtime_retry(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
+    hermes_gateway: &StdioHermesGateway,
     retry: &crate::state::RuntimeRetryQueueRecord,
 ) -> Result<String> {
     let original_run = state.load_runtime_run(&retry.original_run_id)?;
@@ -962,7 +984,7 @@ fn run_runtime_retry(
         HERMES_RUNTIME_PLUGIN_ID => {
             let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
             let plugin = HermesRuntimePlugin::with_state(
-                StdioHermesGateway::from_config(config),
+                hermes_gateway.clone(),
                 hermes_profile,
                 state.clone(),
             );
@@ -1185,10 +1207,12 @@ async fn route_message(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message: &Message,
+    group_history: Option<&[Message]>,
 ) -> Result<bool> {
     let sender_did = message.sender.as_str().to_string();
     let conversation_id = conversation_id(message);
@@ -1201,10 +1225,12 @@ async fn route_message(
             config,
             state,
             im_core,
+            hermes_gateway,
             registration,
             target_client,
             target_agent_did,
             message,
+            group_history.unwrap_or(&[]),
         )? {
             return Ok(routed);
         }
@@ -1262,6 +1288,7 @@ async fn route_message(
                     config,
                     state,
                     im_core,
+                    hermes_gateway,
                     target_client,
                     target_agent_did,
                     message.id.as_str(),
@@ -1283,7 +1310,14 @@ async fn route_message(
                 return Ok(false);
             }
             if payload.get("command").and_then(Value::as_str) == Some("runtime.task.submit") {
-                run_runtime_task_command(config, state, im_core, registration, payload_message)?;
+                run_runtime_task_command(
+                    config,
+                    state,
+                    im_core,
+                    hermes_gateway,
+                    registration,
+                    payload_message,
+                )?;
             } else {
                 let outbox = ImCoreAgentOutbox::new(target_client.clone());
                 let outcome = handle_agent_payload_message(
@@ -1305,6 +1339,7 @@ async fn route_message(
                 config,
                 state,
                 im_core,
+                hermes_gateway,
                 registration,
                 target_client,
                 target_agent_did,
@@ -1358,10 +1393,12 @@ fn try_route_group_agent_mention<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message: &Message,
+    group_history: &[Message],
 ) -> Result<Option<bool>>
 where
     C: AgentInventoryClient,
@@ -1420,6 +1457,7 @@ where
         &mention_payload,
         &mention_context,
         authorization.sender_full_handle.as_deref(),
+        Some(build_recent_group_context(message, group_history)),
     );
     let task_message_id =
         group_agent_mention_task_message_id(message, &mention_context.mention_id, target_agent_did);
@@ -1451,13 +1489,19 @@ where
             message_id: task_message_id,
             conversation_id: conversation_id.clone(),
             sender_did: message.sender.as_str().to_string(),
+            requester_user_id: authorization.sender_user_id.clone(),
             requester_full_handle: authorization.sender_full_handle.clone(),
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::GroupMention,
+            invocation_authority: group_mention_invocation_authority(
+                &binding,
+                authorization.sender_user_id.as_deref(),
+                authorization.sender_full_handle.as_deref(),
+            ),
             target_agent_did: target_agent_did.to_string(),
             text: task_payload.to_string(),
         },
         None,
-        || StdioHermesGateway::from_config(config),
+        hermes_gateway.clone(),
     )?;
     state.insert_audit_event_json(
         "daemon.group_mention.dispatched",
@@ -1640,9 +1684,10 @@ fn group_agent_mention_task_payload(
     payload: &MessageMentionPayload,
     mention_context: &GroupAgentMentionContext,
     sender_full_handle: Option<&str>,
+    recent_group_context: Option<Value>,
 ) -> Value {
     let content_hash = foreground_content_hash(&payload.text);
-    json!({
+    let mut task_payload = json!({
         "schema": "awiki.runtime.user_message_task.v1",
         "content_role": "user_message_untrusted",
         "source_message_id": message.id.as_str(),
@@ -1670,7 +1715,11 @@ fn group_agent_mention_task_payload(
             "prompt_hint": mention_context.prompt_hint,
         },
         "attention_policy": "Mention is an attention signal only. It is not authorization; keep controller/runtime policy, action allowlist, and group safety checks.",
-    })
+    });
+    if let Some(context) = recent_group_context {
+        task_payload["recent_group_context"] = context;
+    }
+    task_payload
 }
 
 fn group_agent_mention_task_message_id(
@@ -1687,6 +1736,20 @@ fn group_agent_mention_task_message_id(
             target_agent_did
         ))
     )
+}
+
+fn group_mention_invocation_authority(
+    binding: &crate::state::RuntimeDaemonBindingRecord,
+    sender_user_id: Option<&str>,
+    sender_full_handle: Option<&str>,
+) -> RuntimeInvocationAuthority {
+    if sender_user_id == Some(binding.controller_user_id.as_str())
+        && sender_full_handle == Some(binding.controller_full_handle.as_str())
+    {
+        RuntimeInvocationAuthority::Controller
+    } else {
+        RuntimeInvocationAuthority::Requester
+    }
 }
 
 fn external_direct_agent_task_payload(
@@ -1744,6 +1807,7 @@ fn route_runtime_controller_text(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
     message_id: &str,
@@ -1805,13 +1869,17 @@ fn route_runtime_controller_text(
             message_id: message_id.to_string(),
             conversation_id,
             sender_did: sender_did.clone(),
+            requester_user_id: verified_sender
+                .as_ref()
+                .map(|sender| sender.controller_user_id.clone()),
             requester_full_handle: None,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: RuntimeInvocationAuthority::Controller,
             target_agent_did: target_agent_did.to_string(),
             text,
         },
         verified_sender,
-        || StdioHermesGateway::from_config(config),
+        hermes_gateway.clone(),
     )?;
     Ok(())
 }
@@ -1820,6 +1888,7 @@ fn route_runtime_direct_text<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -1842,6 +1911,7 @@ where
             config,
             state,
             im_core,
+            hermes_gateway,
             target_client,
             target_agent_did,
             message_id,
@@ -1854,6 +1924,7 @@ where
             config,
             state,
             im_core,
+            hermes_gateway,
             registration,
             target_client,
             target_agent_did,
@@ -1870,6 +1941,7 @@ fn route_runtime_external_direct_text<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &C,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
@@ -1957,13 +2029,15 @@ where
             message_id: task_message_id,
             conversation_id,
             sender_did,
+            requester_user_id: authorization.sender_user_id,
             requester_full_handle: authorization.sender_full_handle,
             trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ExternalDirect,
+            invocation_authority: RuntimeInvocationAuthority::Requester,
             target_agent_did: target_agent_did.to_string(),
             text: task_payload.to_string(),
         },
         None,
-        || StdioHermesGateway::from_config(config),
+        hermes_gateway.clone(),
     )
     .with_context(|| {
         format!(
@@ -2296,28 +2370,24 @@ impl RuntimeWelcomeSender for ImCoreWelcomeSender<'_> {
     }
 }
 
-fn run_runtime_text_message_with_gateway<G, F>(
+fn run_runtime_text_message_with_gateway<G>(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     message: ControllerTextMessage,
     verified_sender: Option<VerifiedControllerSender>,
-    hermes_gateway_factory: F,
+    hermes_gateway: G,
 ) -> Result<crate::runtime::host::RuntimeTaskRunResult>
 where
     G: HermesGateway + Clone,
-    F: Fn() -> G,
 {
     let current_profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
     match current_profile.runtime_plugin_id.as_str() {
         HERMES_RUNTIME_PLUGIN_ID => {
             let hermes_profile =
                 current_hermes_profile_for_runtime(config, state, &current_profile)?;
-            let plugin = HermesRuntimePlugin::with_state(
-                hermes_gateway_factory(),
-                hermes_profile,
-                state.clone(),
-            );
+            let plugin =
+                HermesRuntimePlugin::with_state(hermes_gateway, hermes_profile, state.clone());
             if let Some(verified) = verified_sender.as_ref() {
                 run_controller_text_task_with_verified_sender_config(
                     config,
@@ -2408,6 +2478,7 @@ fn run_runtime_task_command(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     message: IncomingAgentPayloadMessage,
 ) -> Result<()> {
@@ -2443,12 +2514,30 @@ fn run_runtime_task_command(
         message_id,
         conversation_id: message.conversation_id,
         sender_did: verified_sender.sender_did,
+        requester_user_id: Some(verified_sender.controller_user_id),
         requester_full_handle: Some(verified_sender.controller_full_handle),
         trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+        invocation_authority: RuntimeInvocationAuthority::Controller,
         target_agent_did,
         text: payload.text,
     };
     match profile.runtime_plugin_id.as_str() {
+        HERMES_RUNTIME_PLUGIN_ID => {
+            let hermes_profile = current_hermes_profile_for_runtime(config, state, &profile)?;
+            let plugin = HermesRuntimePlugin::with_state(
+                hermes_gateway.clone(),
+                hermes_profile,
+                state.clone(),
+            );
+            run_controller_text_task_with_config(
+                config,
+                state,
+                &profile,
+                &plugin,
+                &runtime_outbox,
+                task_message,
+            )?;
+        }
         GENERIC_CLI_RUNTIME_PLUGIN_ID => {
             let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
             let plugin = GenericCliDriverRegistry::new(cli_profile);

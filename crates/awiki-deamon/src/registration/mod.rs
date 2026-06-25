@@ -43,8 +43,8 @@ pub struct RegistrationTokenMetadata {
     pub token_id: String,
     pub agent_kind: AgentKind,
     pub handle: Option<String>,
-    pub controller_user_id: Option<String>,
-    pub controller_full_handle: Option<String>,
+    pub controller_user_id: String,
+    pub controller_full_handle: String,
     pub controller_did: String,
     pub status: String,
     pub scope: Value,
@@ -64,6 +64,7 @@ pub struct AgentInvocationAuthorization {
     pub reason: String,
     pub agent_did: String,
     pub sender_did: String,
+    pub sender_user_id: Option<String>,
     pub sender_full_handle: Option<String>,
     pub active_mode: String,
 }
@@ -792,8 +793,8 @@ fn parse_verify_response(bytes: &[u8]) -> Result<RegistrationTokenMetadata> {
         token_id: required_string(&result, "token_id")?,
         agent_kind: AgentKind::parse(&required_string(&result, "agent_kind")?)?,
         handle: optional_string(&result, "handle"),
-        controller_user_id: optional_string(&result, "controller_user_id"),
-        controller_full_handle: optional_string(&result, "controller_full_handle"),
+        controller_user_id: required_string(&result, "controller_user_id")?,
+        controller_full_handle: required_string(&result, "controller_full_handle")?,
         controller_did: required_string(&result, "controller_did")?,
         status: required_string(&result, "status")?,
         scope: result.get("scope").cloned().unwrap_or(Value::Null),
@@ -839,14 +840,20 @@ fn parse_verify_controller_sender_response(bytes: &[u8]) -> Result<ControllerSen
 
 fn parse_authorize_agent_invocation_response(bytes: &[u8]) -> Result<AgentInvocationAuthorization> {
     let result = parse_json_rpc_result(bytes, "agent inventory authorize agent invocation")?;
+    let allowed = result
+        .get("allowed")
+        .and_then(Value::as_bool)
+        .context("authorization response missing bool field allowed")?;
+    let sender_user_id = optional_string(&result, "sender_user_id");
+    if allowed && sender_user_id.as_deref().is_none_or(str::is_empty) {
+        bail!("authorization allowed response missing sender_user_id");
+    }
     Ok(AgentInvocationAuthorization {
-        allowed: result
-            .get("allowed")
-            .and_then(Value::as_bool)
-            .context("authorization response missing bool field allowed")?,
+        allowed,
         reason: required_string(&result, "reason")?,
         agent_did: required_string(&result, "agent_did")?,
         sender_did: required_string(&result, "sender_did")?,
+        sender_user_id,
         sender_full_handle: optional_string(&result, "sender_full_handle"),
         active_mode: required_string(&result, "active_mode")?,
     })

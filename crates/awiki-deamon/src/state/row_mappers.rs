@@ -198,7 +198,7 @@ pub(super) fn agent_definition_from_row(
             )),
         )
     })?;
-    Ok(AgentDefinition {
+    let definition = AgentDefinition {
         agent_did: row.get(0)?,
         handle: row.get(1)?,
         agent_kind,
@@ -213,7 +213,18 @@ pub(super) fn agent_definition_from_row(
         local_agent_db_path: row.get(11)?,
         message_db_path: row.get(12)?,
         status: row.get(13)?,
-    })
+    };
+    definition.validate().map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    Ok(definition)
 }
 
 pub(super) fn hermes_native_session_from_row(
@@ -223,18 +234,21 @@ pub(super) fn hermes_native_session_from_row(
         id: row.get(0)?,
         runtime_session_id: row.get(1)?,
         agent_did: row.get(2)?,
-        runtime_profile_id: row.get(3)?,
-        controller_scope_key: row.get(4)?,
-        controller_did: row.get(5)?,
-        session_actor_did: row.get(6)?,
-        conversation_id: row.get(7)?,
-        route_key: row.get(8)?,
-        hermes_profile: row.get(9)?,
-        hermes_session_id: row.get(10)?,
-        session_kind: row.get(11)?,
-        status: row.get(12)?,
-        created_at_ms: row.get(13)?,
-        updated_at_ms: row.get(14)?,
+        agent_handle: row.get(3)?,
+        runtime_profile_id: row.get(4)?,
+        controller_scope_key: row.get(5)?,
+        controller_did: row.get(6)?,
+        session_actor_did: row.get(7)?,
+        scope_kind: row.get(8)?,
+        scope_key: row.get(9)?,
+        conversation_id: row.get(10)?,
+        route_key: row.get(11)?,
+        hermes_profile: row.get(12)?,
+        hermes_session_id: row.get(13)?,
+        session_kind: row.get(14)?,
+        status: row.get(15)?,
+        created_at_ms: row.get(16)?,
+        updated_at_ms: row.get(17)?,
     })
 }
 

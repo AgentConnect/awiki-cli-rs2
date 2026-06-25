@@ -1,0 +1,5 @@
+source_base_url = "https://anpclaw.com/daemon" # 权威 daemon 下载源，只支持 http/https。
+
+target_dir = "/var/www/awiki-web/daemon" # 当前镜像服务器上的 Nginx daemon 静态目录。
+
+keep_versions = "3" # 除当前 manifest 中引用的版本外，额外保留最近几个旧版本目录。

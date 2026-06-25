@@ -25,7 +25,10 @@ use crate::outbox::{
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 use crate::runtime::host::run_existing_runtime_task_with_config;
-use crate::runtime::{RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind};
+use crate::runtime::{
+    RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRunStatus, RuntimeTask,
+    RuntimeTaskTriggerKind,
+};
 use crate::security::runtime_token::current_time_millis;
 use crate::state::{
     AppMessageAgentBindingRecord, AuthorizedRuntimeContext, DaemonState, InboxCursorRecord,
@@ -80,6 +83,8 @@ pub struct UserMessageEnvelope {
     pub source_message_id: String,
     pub source_conversation_id: Option<String>,
     pub source_sender_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sender_user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_sender_full_handle: Option<String>,
     pub inbox_owner_did: String,
@@ -184,11 +189,20 @@ impl MessageSyncPayloadSender for ImCoreMessageSyncPayloadSender<'_> {
 pub struct RuntimeHostMessageDispatcher<'a> {
     config: &'a DaemonConfig,
     state: &'a DaemonState,
+    hermes_gateway: StdioHermesGateway,
 }
 
 impl<'a> RuntimeHostMessageDispatcher<'a> {
-    pub fn new(config: &'a DaemonConfig, state: &'a DaemonState) -> Self {
-        Self { config, state }
+    pub fn new(
+        config: &'a DaemonConfig,
+        state: &'a DaemonState,
+        hermes_gateway: StdioHermesGateway,
+    ) -> Self {
+        Self {
+            config,
+            state,
+            hermes_gateway,
+        }
     }
 }
 
@@ -206,7 +220,7 @@ impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
             HERMES_RUNTIME_PLUGIN_ID => {
                 let hermes_profile = self.state.load_hermes_profile(&profile.agent_did)?;
                 let plugin = HermesRuntimePlugin::with_state(
-                    StdioHermesGateway::from_config(self.config),
+                    self.hermes_gateway.clone(),
                     hermes_profile,
                     self.state.clone(),
                 );
@@ -830,9 +844,10 @@ pub fn process_user_delegated_inbox_once(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
+    hermes_gateway: StdioHermesGateway,
 ) -> Result<usize> {
     let client = ImCoreDelegatedInboxClient::new(config, state, im_core);
-    let dispatcher = RuntimeHostMessageDispatcher::new(config, state);
+    let dispatcher = RuntimeHostMessageDispatcher::new(config, state, hermes_gateway);
     process_user_delegated_inbox_once_with_client(state, &client, &dispatcher)
 }
 
@@ -1121,7 +1136,12 @@ fn user_message_envelope(
         source_message_id: message.id.as_str().to_string(),
         source_conversation_id: conversation_id(message),
         source_sender_did: message.sender.as_str().to_string(),
-        source_sender_full_handle: None,
+        source_sender_user_id: message_metadata_attribute(message, "source_sender_user_id")
+            .or_else(|| message_metadata_attribute(message, "sender_user_id"))
+            .or_else(|| message_metadata_attribute(message, "peer_user_id")),
+        source_sender_full_handle: message_metadata_attribute(message, "source_sender_full_handle")
+            .or_else(|| message_metadata_attribute(message, "sender_full_handle"))
+            .or_else(|| message_metadata_attribute(message, "peer_full_handle")),
         inbox_owner_did: binding.user_did.clone(),
         message_kind: dispatch_content.message_kind.to_string(),
         received_at: message
@@ -1146,6 +1166,7 @@ fn runtime_task_from_envelope(
         "source_message_id": envelope.source_message_id,
         "source_conversation_id": envelope.source_conversation_id,
         "source_sender_did": envelope.source_sender_did,
+        "source_sender_user_id": envelope.source_sender_user_id,
         "source_sender_full_handle": envelope.source_sender_full_handle,
         "inbox_owner_did": envelope.inbox_owner_did,
         "message_kind": envelope.message_kind,
@@ -1157,18 +1178,33 @@ fn runtime_task_from_envelope(
     let text = serde_json::to_string(&payload)?;
     let controller_did = profile.controller_did.clone();
     let requester_did = envelope.source_sender_did.clone();
+    let requester_user_id = envelope
+        .source_sender_user_id
+        .clone()
+        .with_context(|| "delegated direct message is missing source_sender_user_id")?;
+    let requester_full_handle = envelope
+        .source_sender_full_handle
+        .clone()
+        .with_context(|| "delegated direct message is missing source_sender_full_handle")?;
     let task_key = format!("{}:{}", binding.user_did, envelope.source_message_id);
     let task = RuntimeTask {
         task_id: format!("task_user_msg_{}", stable_id_suffix(&task_key)),
         agent_did: binding.runtime_agent_did.clone(),
+        agent_handle: profile.agent_handle,
         controller_user_id: profile.controller_user_id,
         controller_full_handle: profile.controller_full_handle,
         controller_scope_key: profile.controller_scope_key,
         controller_did,
         sender_did: requester_did.clone(),
         requester_did: requester_did.clone(),
-        requester_full_handle: envelope.source_sender_full_handle.clone(),
+        requester_user_id: Some(requester_user_id.clone()),
+        requester_full_handle: Some(requester_full_handle.clone()),
         trigger_kind: RuntimeTaskTriggerKind::DelegatedDirect,
+        conversation_scope: RuntimeConversationScope::direct(
+            requester_user_id,
+            requester_full_handle,
+        )?,
+        invocation_authority: RuntimeInvocationAuthority::Requester,
         reply_recipient_did: binding.user_did.clone(),
         conversation_id: envelope.source_conversation_id.clone(),
         text,
@@ -1270,6 +1306,7 @@ fn message_sync_outbox_record(
             "message_id": envelope.source_message_id,
             "conversation_id": envelope.source_conversation_id,
             "sender_did": envelope.source_sender_did,
+            "sender_user_id": envelope.source_sender_user_id,
             "sender_full_handle": envelope.source_sender_full_handle,
             "owner_did": envelope.inbox_owner_did,
             "processing_status": MESSAGE_EVENT_STATUS_DISPATCHED,
@@ -1443,6 +1480,17 @@ fn is_e2ee_opaque_message(message: &Message) -> bool {
         (key == "security" || key == "security_profile" || key == "message_security_profile")
             && (value.contains("e2ee") || value.contains("secure-direct"))
     })
+}
+
+fn message_metadata_attribute(message: &Message, key: &str) -> Option<String> {
+    message
+        .metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn conversation_id(message: &Message) -> Option<String> {

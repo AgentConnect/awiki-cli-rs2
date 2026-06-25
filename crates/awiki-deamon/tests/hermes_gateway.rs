@@ -135,14 +135,21 @@ fn hermes_gateway_plugin_launch_observes_complete_without_final_callback() {
             task: RuntimeTask {
                 task_id: "task_msg_001".to_string(),
                 agent_did: "did:agent:hermes".to_string(),
+                agent_handle: "alice-hermes".to_string(),
                 controller_user_id: "user-alice".to_string(),
                 controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:alice".to_string(),
                 sender_did: "did:human:alice".to_string(),
                 requester_did: "did:human:alice".to_string(),
+                requester_user_id: Some("user-alice".to_string()),
                 requester_full_handle: Some("alice.anpclaw.com".to_string()),
                 trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+                conversation_scope:
+                    awiki_deamon::runtime::RuntimeConversationScope::controller_private(
+                        "controller-scope:v1:test-alice-anpclaw-com",
+                    ),
+                invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
                 reply_recipient_did: "did:human:alice".to_string(),
                 conversation_id: Some("direct:did:human:alice".to_string()),
                 text: "不要把 complete 直接当 final".to_string(),
@@ -194,14 +201,21 @@ fn hermes_gateway_plugin_rejects_mismatched_profile_binding() {
             task: RuntimeTask {
                 task_id: "task_msg_001".to_string(),
                 agent_did: "did:agent:other".to_string(),
+                agent_handle: "alice-hermes".to_string(),
                 controller_user_id: "user-alice".to_string(),
                 controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:alice".to_string(),
                 sender_did: "did:human:alice".to_string(),
                 requester_did: "did:human:alice".to_string(),
+                requester_user_id: Some("user-alice".to_string()),
                 requester_full_handle: Some("alice.anpclaw.com".to_string()),
                 trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+                conversation_scope:
+                    awiki_deamon::runtime::RuntimeConversationScope::controller_private(
+                        "controller-scope:v1:test-alice-anpclaw-com",
+                    ),
+                invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
                 reply_recipient_did: "did:human:alice".to_string(),
                 conversation_id: None,
                 text: "wrong binding".to_string(),
@@ -247,14 +261,22 @@ fn hermes_gateway_plugin_rejects_mismatched_task_context() {
             task: RuntimeTask {
                 task_id: "task_msg_other".to_string(),
                 agent_did: "did:agent:hermes".to_string(),
+                agent_handle: "alice-hermes".to_string(),
                 controller_user_id: "user-alice".to_string(),
                 controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
                 controller_did: "did:human:alice".to_string(),
                 sender_did: "did:human:bob".to_string(),
                 requester_did: "did:human:bob".to_string(),
+                requester_user_id: Some("user-bob".to_string()),
                 requester_full_handle: Some("bob.anpclaw.com".to_string()),
                 trigger_kind: RuntimeTaskTriggerKind::ExternalDirect,
+                conversation_scope: awiki_deamon::runtime::RuntimeConversationScope::direct(
+                    "user-bob",
+                    "bob.example.com",
+                )
+                .unwrap(),
+                invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Requester,
                 reply_recipient_did: "did:human:bob".to_string(),
                 conversation_id: None,
                 text: "wrong task binding".to_string(),
@@ -305,7 +327,7 @@ fn hermes_gateway_from_config_detects_home_venv_and_persists_command() {
     let gateway = StdioHermesGateway::from_config(&config);
 
     assert_eq!(
-        gateway.gateway_cmd(),
+        gateway.gateway_cmd().as_deref(),
         Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
     );
     assert_eq!(
@@ -321,7 +343,7 @@ fn hermes_gateway_from_config_detects_home_venv_and_persists_command() {
 
     let reused_gateway = StdioHermesGateway::from_config(&config);
     assert_eq!(
-        reused_gateway.gateway_cmd(),
+        reused_gateway.gateway_cmd().as_deref(),
         Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
     );
 }
@@ -351,6 +373,44 @@ fn hermes_gateway_from_config_keeps_missing_when_detection_fails() {
 }
 
 #[test]
+fn hermes_gateway_from_config_refreshes_command_after_foreground_start() {
+    let _env = EnvGuard::clear(&["AWIKI_HERMES_GATEWAY_CMD", "AWIKI_HERMES_BIN", "HOME"]);
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let state_root = root.path().join("state");
+    let fake_python = home
+        .join(".hermes")
+        .join("hermes-agent")
+        .join("venv")
+        .join("bin")
+        .join("python");
+    std::env::set_var("HOME", &home);
+
+    let config = DaemonConfig::for_state_root(&state_root).unwrap();
+    config.ensure_state_layout().unwrap();
+    let gateway = StdioHermesGateway::from_config(&config);
+    assert!(gateway.gateway_cmd().is_none());
+
+    write_fake_ready_gateway_executable(&fake_python).unwrap();
+    let record = HermesProfileRecord {
+        hermes_home: root.path().join("hermes-home"),
+        ..hermes_record()
+    };
+    let runner = HermesRunner::start(gateway.clone(), &record).unwrap();
+
+    assert_eq!(runner.runner_ref().runner_id, "stdio:awiki_alice_hermes");
+    assert_eq!(
+        gateway.gateway_cmd().as_deref(),
+        Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
+    );
+    let loaded = DaemonConfig::for_state_root(&state_root).unwrap();
+    assert_eq!(
+        loaded.hermes_gateway_cmd.as_deref(),
+        Some(format!("{} -m tui_gateway.entry", fake_python.display()).as_str())
+    );
+}
+
+#[test]
 #[ignore]
 fn hermes_real_gateway_auto_detect_uses_local_installation() {
     let _env = EnvGuard::clear(&["AWIKI_HERMES_GATEWAY_CMD", "AWIKI_HERMES_BIN"]);
@@ -362,8 +422,7 @@ fn hermes_real_gateway_auto_detect_uses_local_installation() {
     let gateway = StdioHermesGateway::from_config(&config);
     let command = gateway
         .gateway_cmd()
-        .expect("local Hermes TUI Gateway command was not auto-detected")
-        .to_string();
+        .expect("local Hermes TUI Gateway command was not auto-detected");
 
     eprintln!("auto-detected Hermes TUI Gateway command: {command}");
     assert!(command.contains("tui_gateway.entry"));
@@ -522,6 +581,7 @@ fn hermes_gateway_stdio_scopes_subprocess_to_profile_home() {
     std::fs::create_dir_all(&hermes_home).unwrap();
     let script_path = root.path().join("fake_env_gateway.py");
     let env_report_path = root.path().join("env_report.json");
+    let prompt_report_path = root.path().join("prompt_report.jsonl");
     let mut script = std::fs::File::create(&script_path).unwrap();
     script
         .write_all(
@@ -542,21 +602,47 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
             "PATH": os.environ.get("PATH"),
         }, fh)
 
+prompt_report_path = sys.argv[2]
+session_create_count = 0
+
 print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "gateway.ready", "payload": {"version": "env-shape"}}}), flush=True)
 for line in sys.stdin:
     req = json.loads(line)
-    if req.get("method") == "session.create":
+    method = req.get("method")
+    if method == "session.create":
+        session_create_count += 1
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_env"}}), flush=True)
+    elif method == "prompt.submit":
+        params = req.get("params", {})
+        path_entries = os.environ.get("PATH", "").split(os.pathsep)
+        launcher_dir = path_entries[0] if path_entries else ""
+        socket_path = os.path.join(launcher_dir, ".awiki-runtime-socket")
+        token_path = os.path.join(launcher_dir, ".awiki-runtime-token")
+        with open(socket_path, "r", encoding="utf-8") as fh:
+            socket = fh.read()
+        with open(token_path, "r", encoding="utf-8") as fh:
+            token = fh.read()
+        with open(prompt_report_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "session_id": params.get("session_id"),
+                "text": params.get("text"),
+                "socket": socket,
+                "token": token,
+                "session_create_count": session_create_count,
+                "process_id": os.getpid(),
+            }) + "\n")
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "ok", "session_id": params.get("session_id"), "text": "env final"}}), flush=True)
 "#,
         )
         .unwrap();
     drop(script);
 
     let command = format!(
-        "{} {} {}",
+        "{} {} {} {}",
         std::env::var("PYTHON").unwrap_or_else(|_| "python3".into()),
         script_path.display(),
         env_report_path.display(),
+        prompt_report_path.display(),
     );
     let gateway = StdioHermesGateway::with_gateway_cmd(command);
     let record = HermesProfileRecord {
@@ -569,8 +655,8 @@ for line in sys.stdin:
         "rtok_secret_for_env_test_123456789",
     );
     assert!(!format!("{launch_context:?}").contains("rtok_secret_for_env_test"));
-    let runner = HermesRunner::start_for_launch(gateway, &record, &launch_context).unwrap();
-    runner
+    let runner = HermesRunner::start_for_launch(gateway.clone(), &record, &launch_context).unwrap();
+    let session = runner
         .create_session(HermesSessionCreateRequest {
             route_key: "direct:did:human:alice".to_string(),
             conversation_id: Some("direct:did:human:alice".to_string()),
@@ -603,8 +689,57 @@ for line in sys.stdin:
         Some("awiki_alice_hermes")
     );
     assert_eq!(env_report["HERMES_YOLO_MODE"].as_str(), Some("1"));
+    assert!(env_report["AWIKI_DAEMON_RPC_SOCKET"].is_null());
+    assert!(env_report["AWIKI_RUNTIME_RPC_TOKEN"].is_null());
+    let path_entries =
+        std::env::split_paths(std::ffi::OsStr::new(env_report["PATH"].as_str().unwrap()))
+            .collect::<Vec<_>>();
+    assert_eq!(path_entries.first(), Some(&hermes_home.join("bin")));
+    assert!(hermes_home
+        .join("bin")
+        .join("awiki-deamon-runtime")
+        .exists());
+    let first_outcome = runner
+        .submit_prompt(
+            &session,
+            HermesPromptSubmitRequest {
+                run_id: "run-env".to_string(),
+                message_id: "task-env".to_string(),
+                prompt: "first prompt".to_string(),
+            },
+        )
+        .unwrap();
+    assert_eq!(first_outcome.final_text.as_deref(), Some("env final"));
+    let second_context = HermesGatewayLaunchContext::new(
+        "run-env-2",
+        root.path().join("awiki-deamon-2.sock"),
+        "rtok_secret_for_env_test_987654321",
+    );
+    let second_runner =
+        HermesRunner::start_for_launch(gateway.clone(), &record, &second_context).unwrap();
+    let second_outcome = second_runner
+        .submit_prompt(
+            &session,
+            HermesPromptSubmitRequest {
+                run_id: "run-env-2".to_string(),
+                message_id: "task-env-2".to_string(),
+                prompt: "second prompt".to_string(),
+            },
+        )
+        .unwrap();
+    assert_eq!(second_outcome.final_text.as_deref(), Some("env final"));
+    let prompt_reports = std::fs::read_to_string(&prompt_report_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(prompt_reports.len(), 2);
+    assert_eq!(prompt_reports[0]["session_id"].as_str(), Some("hs_env"));
+    assert_eq!(prompt_reports[1]["session_id"].as_str(), Some("hs_env"));
+    assert_eq!(prompt_reports[0]["text"].as_str(), Some("first prompt"));
+    assert_eq!(prompt_reports[1]["text"].as_str(), Some("second prompt"));
     assert_eq!(
-        env_report["AWIKI_DAEMON_RPC_SOCKET"].as_str(),
+        prompt_reports[0]["socket"].as_str(),
         Some(
             root.path()
                 .join("awiki-deamon.sock")
@@ -614,16 +749,36 @@ for line in sys.stdin:
         )
     );
     assert_eq!(
-        env_report["AWIKI_RUNTIME_RPC_TOKEN"].as_str(),
+        prompt_reports[1]["socket"].as_str(),
+        Some(
+            root.path()
+                .join("awiki-deamon-2.sock")
+                .display()
+                .to_string()
+                .as_str()
+        )
+    );
+    assert_eq!(
+        prompt_reports[0]["token"].as_str(),
         Some("rtok_secret_for_env_test_123456789")
     );
-    let path_entries =
-        std::env::split_paths(std::ffi::OsStr::new(env_report["PATH"].as_str().unwrap()))
-            .collect::<Vec<_>>();
-    assert_eq!(path_entries.first(), Some(&hermes_home.join("bin")));
-    assert!(hermes_home
+    assert_eq!(
+        prompt_reports[1]["token"].as_str(),
+        Some("rtok_secret_for_env_test_987654321")
+    );
+    assert_eq!(prompt_reports[0]["session_create_count"].as_i64(), Some(1));
+    assert_eq!(prompt_reports[1]["session_create_count"].as_i64(), Some(1));
+    assert_eq!(
+        prompt_reports[0]["process_id"],
+        prompt_reports[1]["process_id"]
+    );
+    assert!(!hermes_home
         .join("bin")
-        .join("awiki-deamon-runtime")
+        .join(".awiki-runtime-socket")
+        .exists());
+    assert!(!hermes_home
+        .join("bin")
+        .join(".awiki-runtime-token")
         .exists());
 }
 

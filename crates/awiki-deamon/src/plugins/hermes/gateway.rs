@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -23,6 +24,8 @@ const AWIKI_DAEMON_RPC_SOCKET_ENV: &str = "AWIKI_DAEMON_RPC_SOCKET";
 const AWIKI_RUNTIME_RPC_TOKEN_ENV: &str = "AWIKI_RUNTIME_RPC_TOKEN";
 const AWIKI_HERMES_TUI_TOOLSETS_ENV: &str = "AWIKI_HERMES_TUI_TOOLSETS";
 const HERMES_TUI_TOOLSETS_ENV: &str = "HERMES_TUI_TOOLSETS";
+const RUNTIME_CONTEXT_SOCKET_FILE: &str = ".awiki-runtime-socket";
+const RUNTIME_CONTEXT_TOKEN_FILE: &str = ".awiki-runtime-token";
 const HERMES_GATEWAY_DETECTION_READY_TIMEOUT: Duration = Duration::from_secs(4);
 const DEFAULT_AWIKI_HERMES_TUI_TOOLSETS: &str = "terminal,skills";
 
@@ -43,7 +46,9 @@ pub trait HermesGateway {
     ) -> Result<HermesSessionRef>;
     fn submit_prompt(
         &self,
+        runner: &HermesRunnerRef,
         session: &HermesSessionRef,
+        launch_context: Option<&HermesGatewayLaunchContext>,
         request: HermesPromptSubmitRequest,
     ) -> Result<HermesPromptOutcome>;
 }
@@ -88,26 +93,8 @@ impl HermesGatewayLaunchContext {
         }
     }
 
-    fn env(&self) -> BTreeMap<String, String> {
-        BTreeMap::from([
-            (
-                AWIKI_DAEMON_RPC_SOCKET_ENV.to_string(),
-                self.local_socket_path.display().to_string(),
-            ),
-            (
-                AWIKI_RUNTIME_RPC_TOKEN_ENV.to_string(),
-                self.runtime_rpc_token.clone(),
-            ),
-        ])
-    }
-
     fn process_context_key(&self, launcher_dir: &Path) -> String {
-        format!(
-            "{}:{}:{}",
-            self.run_id,
-            self.local_socket_path.display(),
-            launcher_dir.display()
-        )
+        format!("launcher:{}", launcher_dir.display())
     }
 }
 
@@ -223,7 +210,8 @@ impl HermesRuntimeEvent {
 
 #[derive(Debug, Clone)]
 pub struct StdioHermesGateway {
-    gateway_cmd: Option<String>,
+    config: Option<DaemonConfig>,
+    gateway_cmd: Arc<Mutex<Option<String>>>,
     hermes_bin: Option<PathBuf>,
     processes: Arc<Mutex<BTreeMap<String, StdioGatewayProcess>>>,
     timeouts: HermesGatewayTimeouts,
@@ -232,10 +220,13 @@ pub struct StdioHermesGateway {
 impl StdioHermesGateway {
     pub fn from_env() -> Self {
         Self {
-            gateway_cmd: std::env::var(HERMES_GATEWAY_CMD_ENV)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            config: None,
+            gateway_cmd: Arc::new(Mutex::new(
+                std::env::var(HERMES_GATEWAY_CMD_ENV)
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            )),
             hermes_bin: std::env::var_os(HERMES_BIN_ENV).map(PathBuf::from),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             timeouts: HermesGatewayTimeouts::default(),
@@ -250,7 +241,8 @@ impl StdioHermesGateway {
             })
         });
         Self {
-            gateway_cmd,
+            config: Some(config.clone()),
+            gateway_cmd: Arc::new(Mutex::new(gateway_cmd)),
             hermes_bin: std::env::var_os(HERMES_BIN_ENV).map(PathBuf::from),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             timeouts: HermesGatewayTimeouts::default(),
@@ -259,7 +251,8 @@ impl StdioHermesGateway {
 
     pub fn from_config_without_detection(config: &DaemonConfig) -> Self {
         Self {
-            gateway_cmd: configured_gateway_command(config),
+            config: Some(config.clone()),
+            gateway_cmd: Arc::new(Mutex::new(configured_gateway_command(config))),
             hermes_bin: std::env::var_os(HERMES_BIN_ENV).map(PathBuf::from),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             timeouts: HermesGatewayTimeouts::default(),
@@ -268,7 +261,8 @@ impl StdioHermesGateway {
 
     pub fn new(hermes_bin: impl Into<PathBuf>) -> Self {
         Self {
-            gateway_cmd: None,
+            config: None,
+            gateway_cmd: Arc::new(Mutex::new(None)),
             hermes_bin: Some(hermes_bin.into()),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             timeouts: HermesGatewayTimeouts::default(),
@@ -277,7 +271,8 @@ impl StdioHermesGateway {
 
     pub fn with_gateway_cmd(gateway_cmd: impl Into<String>) -> Self {
         Self {
-            gateway_cmd: Some(gateway_cmd.into()),
+            config: None,
+            gateway_cmd: Arc::new(Mutex::new(Some(gateway_cmd.into()))),
             hermes_bin: None,
             processes: Arc::new(Mutex::new(BTreeMap::new())),
             timeouts: HermesGatewayTimeouts::default(),
@@ -290,10 +285,10 @@ impl StdioHermesGateway {
     }
 
     pub fn gateway_command_status(&self) -> HermesGatewayCommandStatus {
-        let Some(command) = self.gateway_cmd.as_deref() else {
+        let Some(command) = self.current_gateway_cmd() else {
             return HermesGatewayCommandStatus::Missing;
         };
-        match split_gateway_command(command) {
+        match split_gateway_command(&command) {
             Ok(parts) => parts
                 .first()
                 .map(String::as_str)
@@ -304,8 +299,8 @@ impl StdioHermesGateway {
         }
     }
 
-    pub fn gateway_cmd(&self) -> Option<&str> {
-        self.gateway_cmd.as_deref()
+    pub fn gateway_cmd(&self) -> Option<String> {
+        self.current_gateway_cmd()
     }
 
     pub fn ensure_detected_config(
@@ -468,15 +463,15 @@ impl Default for StdioHermesGateway {
 
 impl HermesGateway for StdioHermesGateway {
     fn check_installation(&self) -> Result<RuntimeInstallStatus> {
-        if let Some(command) = self.gateway_cmd.as_deref() {
-            let parts = split_gateway_command(command)?;
+        if let Some(command) = self.current_gateway_cmd() {
+            let parts = split_gateway_command(&command)?;
             let executable = parts
                 .first()
                 .map(String::as_str)
                 .context("AWIKI_HERMES_GATEWAY_CMD is empty")?;
             return Ok(RuntimeInstallStatus {
                 installed: executable_is_available(executable),
-                detail: Some(sanitize_gateway_command(command)),
+                detail: Some(sanitize_gateway_command(&command)),
             });
         }
         let Some(path) = self.hermes_bin.as_ref() else {
@@ -532,16 +527,25 @@ impl HermesGateway for StdioHermesGateway {
 
     fn submit_prompt(
         &self,
+        runner: &HermesRunnerRef,
         session: &HermesSessionRef,
+        launch_context: Option<&HermesGatewayLaunchContext>,
         request: HermesPromptSubmitRequest,
     ) -> Result<HermesPromptOutcome> {
         let mut processes = self
             .processes
             .lock()
             .expect("Hermes gateway process lock poisoned");
+        if session.runner_id != runner.runner_id {
+            bail!("Hermes session runner does not match active runner");
+        }
         let process = processes
-            .get_mut(&session.runner_id)
+            .get_mut(&runner.runner_id)
             .context("Hermes gateway process is not running")?;
+        let _runtime_context = match launch_context {
+            Some(context) => Some(process.activate_runtime_context(context)?),
+            None => None,
+        };
         let mut events = Vec::new();
         let response = process.call(
             "prompt.submit",
@@ -573,6 +577,36 @@ impl HermesGateway for StdioHermesGateway {
 }
 
 impl StdioHermesGateway {
+    fn current_gateway_cmd(&self) -> Option<String> {
+        self.gateway_cmd
+            .lock()
+            .expect("Hermes gateway command lock poisoned")
+            .clone()
+    }
+
+    fn refresh_gateway_cmd(&self) -> Option<String> {
+        let current = self.current_gateway_cmd();
+        if current.is_some() {
+            return current;
+        }
+        let Some(config) = self.config.as_ref() else {
+            return None;
+        };
+        let refreshed = configured_gateway_command(config).or_else(|| {
+            detect_hermes_gateway_command(config).map(|detected| {
+                let _ = config.write_persistent_hermes_gateway_cmd(Some(detected.command.clone()));
+                detected.command
+            })
+        });
+        if refreshed.is_some() {
+            *self
+                .gateway_cmd
+                .lock()
+                .expect("Hermes gateway command lock poisoned") = refreshed.clone();
+        }
+        refreshed
+    }
+
     fn start_with_env(
         &self,
         profile: &HermesProfileRecord,
@@ -580,12 +614,9 @@ impl StdioHermesGateway {
     ) -> Result<HermesRunnerRef> {
         ensure_runtime_model_config(&profile.hermes_home)?;
         let launcher_dir = ensure_runtime_wrapper_launcher(&profile.hermes_home)?;
-        let launch_env = launch_context
-            .map(HermesGatewayLaunchContext::env)
-            .unwrap_or_default();
         let process_context_key = launch_context
             .map(|context| context.process_context_key(&launcher_dir))
-            .unwrap_or_else(|| format!("profile:{}", launcher_dir.display()));
+            .unwrap_or_else(|| format!("launcher:{}", launcher_dir.display()));
         let runner = HermesRunnerRef {
             runner_id: format!("stdio:{}", profile.hermes_profile),
             agent_did: profile.agent_did.clone(),
@@ -593,7 +624,8 @@ impl StdioHermesGateway {
             hermes_profile: profile.hermes_profile.clone(),
             hermes_home: profile.hermes_home.clone(),
         };
-        if self.gateway_cmd.is_none() {
+        let gateway_cmd = self.refresh_gateway_cmd();
+        if gateway_cmd.is_none() {
             let status = self.check_installation()?;
             if !status.installed {
                 bail!(
@@ -614,11 +646,13 @@ impl StdioHermesGateway {
             process.terminate();
             processes.remove(&runner.runner_id);
         }
+        clear_runtime_context_files(&launcher_dir);
+        let gateway_cmd = gateway_cmd.context("AWIKI_HERMES_GATEWAY_CMD is required")?;
         let mut process = spawn_gateway_process(
-            self.gateway_cmd.as_deref().unwrap_or_default(),
+            &gateway_cmd,
             profile,
             &launcher_dir,
-            launch_env,
+            BTreeMap::new(),
             process_context_key,
         )?;
         process.wait_for_ready(self.timeouts.gateway_ready)?;
@@ -633,6 +667,7 @@ struct StdioGatewayProcess {
     stdin: ChildStdin,
     stdout_rx: mpsc::Receiver<String>,
     stderr_lines: Arc<Mutex<Vec<String>>>,
+    launcher_dir: PathBuf,
     process_context_key: String,
     next_id: u64,
 }
@@ -648,6 +683,23 @@ impl StdioGatewayProcess {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    fn activate_runtime_context(
+        &self,
+        context: &HermesGatewayLaunchContext,
+    ) -> Result<RuntimeLauncherContextGuard> {
+        write_private_text_atomic(
+            &self.launcher_dir.join(RUNTIME_CONTEXT_SOCKET_FILE),
+            &context.local_socket_path.display().to_string(),
+        )?;
+        write_private_text_atomic(
+            &self.launcher_dir.join(RUNTIME_CONTEXT_TOKEN_FILE),
+            &context.runtime_rpc_token,
+        )?;
+        Ok(RuntimeLauncherContextGuard {
+            launcher_dir: self.launcher_dir.clone(),
+        })
     }
 
     fn wait_for_ready(&mut self, timeout: Duration) -> Result<()> {
@@ -916,6 +968,7 @@ fn spawn_gateway_process(
         stdin,
         stdout_rx,
         stderr_lines,
+        launcher_dir: launcher_dir.to_path_buf(),
         process_context_key,
         next_id: 1,
     })
@@ -927,6 +980,73 @@ fn awiki_hermes_tui_toolsets() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_AWIKI_HERMES_TUI_TOOLSETS.to_string())
+}
+
+#[derive(Debug)]
+struct RuntimeLauncherContextGuard {
+    launcher_dir: PathBuf,
+}
+
+impl Drop for RuntimeLauncherContextGuard {
+    fn drop(&mut self) {
+        clear_runtime_context_files(&self.launcher_dir);
+    }
+}
+
+fn clear_runtime_context_files(launcher_dir: &Path) {
+    let _ = std::fs::remove_file(launcher_dir.join(RUNTIME_CONTEXT_TOKEN_FILE));
+    let _ = std::fs::remove_file(launcher_dir.join(RUNTIME_CONTEXT_SOCKET_FILE));
+}
+
+fn write_private_text_atomic(path: &Path, value: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("runtime context file path has no parent")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create runtime context dir {}", parent.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("runtime-context");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()));
+    let write_result = (|| -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp_path)
+                .with_context(|| format!("create {}", tmp_path.display()))?;
+            file.write_all(value.as_bytes())
+                .with_context(|| format!("write {}", tmp_path.display()))?;
+            let _ = file.sync_all();
+        }
+        #[cfg(not(unix))]
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .with_context(|| format!("create {}", tmp_path.display()))?;
+            file.write_all(value.as_bytes())
+                .with_context(|| format!("write {}", tmp_path.display()))?;
+            let _ = file.sync_all();
+        }
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    write_result?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("install runtime context file {}", path.display()))?;
+    Ok(())
 }
 
 fn ensure_runtime_wrapper_launcher(hermes_home: &Path) -> Result<PathBuf> {
@@ -945,8 +1065,12 @@ fn ensure_runtime_wrapper_launcher(hermes_home: &Path) -> Result<PathBuf> {
 
         let launcher_path = launcher_dir.join("awiki-deamon-runtime");
         let script = format!(
-            "#!/bin/sh\nexec {} __runtime-wrapper \"$@\"\n",
-            shell_quote_arg(&current_exe.display().to_string())
+            "#!/bin/sh\nset -eu\nlauncher_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nsocket_file=\"$launcher_dir/{socket_file}\"\ntoken_file=\"$launcher_dir/{token_file}\"\nif [ ! -s \"$socket_file\" ] || [ ! -s \"$token_file\" ]; then\n  echo \"Awiki runtime context is not active\" >&2\n  exit 2\nfi\n{socket_env}=$(cat \"$socket_file\")\n{token_env}=$(cat \"$token_file\")\nexport {socket_env} {token_env}\nexec {current_exe} __runtime-wrapper \"$@\"\n",
+            socket_file = RUNTIME_CONTEXT_SOCKET_FILE,
+            token_file = RUNTIME_CONTEXT_TOKEN_FILE,
+            socket_env = AWIKI_DAEMON_RPC_SOCKET_ENV,
+            token_env = AWIKI_RUNTIME_RPC_TOKEN_ENV,
+            current_exe = shell_quote_arg(&current_exe.display().to_string())
         );
         std::fs::write(&launcher_path, script)
             .with_context(|| format!("write {}", launcher_path.display()))?;
@@ -962,8 +1086,12 @@ fn ensure_runtime_wrapper_launcher(hermes_home: &Path) -> Result<PathBuf> {
     {
         let launcher_path = launcher_dir.join("awiki-deamon-runtime.cmd");
         let script = format!(
-            "@echo off\r\n\"{}\" __runtime-wrapper %*\r\n",
-            current_exe.display()
+            "@echo off\r\nsetlocal\r\nset \"launcher_dir=%~dp0\"\r\nif not exist \"%launcher_dir%{socket_file}\" (\r\n  echo Awiki runtime context is not active 1>&2\r\n  exit /b 2\r\n)\r\nif not exist \"%launcher_dir%{token_file}\" (\r\n  echo Awiki runtime context is not active 1>&2\r\n  exit /b 2\r\n)\r\nset /p {socket_env}=<\"%launcher_dir%{socket_file}\"\r\nset /p {token_env}=<\"%launcher_dir%{token_file}\"\r\nif \"%{socket_env}%\"==\"\" (\r\n  echo Awiki runtime context is not active 1>&2\r\n  exit /b 2\r\n)\r\nif \"%{token_env}%\"==\"\" (\r\n  echo Awiki runtime context is not active 1>&2\r\n  exit /b 2\r\n)\r\n\"{current_exe}\" __runtime-wrapper %*\r\n",
+            socket_file = RUNTIME_CONTEXT_SOCKET_FILE,
+            token_file = RUNTIME_CONTEXT_TOKEN_FILE,
+            socket_env = AWIKI_DAEMON_RPC_SOCKET_ENV,
+            token_env = AWIKI_RUNTIME_RPC_TOKEN_ENV,
+            current_exe = current_exe.display()
         );
         std::fs::write(&launcher_path, script)
             .with_context(|| format!("write {}", launcher_path.display()))?;
@@ -1543,7 +1671,9 @@ impl HermesGateway for FakeHermesGateway {
 
     fn submit_prompt(
         &self,
+        _runner: &HermesRunnerRef,
         session: &HermesSessionRef,
+        _launch_context: Option<&HermesGatewayLaunchContext>,
         request: HermesPromptSubmitRequest,
     ) -> Result<HermesPromptOutcome> {
         let prompt_attempt = {

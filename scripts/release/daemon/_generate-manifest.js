@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 function usage() {
   console.error(`Usage:
-  node scripts/release/daemon/_generate-manifest.js --version VERSION --base-url URL [--min-supported VERSION] [--dist DIR] [--output FILE] [--allow-partial]`);
+  node scripts/release/daemon/_generate-manifest.js --version VERSION [--min-supported VERSION] [--dist DIR] [--output FILE] [--download-base-urls FILE] [--download-base-url URL] [--allow-partial]`);
 }
 
 function die(message) {
@@ -22,9 +22,22 @@ function validateVersionSegment(value, fieldName) {
 let version = '';
 let minSupported = '';
 let distDir = path.join(process.cwd(), 'dist', 'daemon');
-let baseUrl = '';
 let output = '';
 let allowPartial = false;
+const downloadBaseUrls = [];
+
+function addDownloadBaseUrls(raw) {
+  if (!raw) {
+    return;
+  }
+  for (const part of raw.replace(/,/g, '\n').split(/\r?\n/)) {
+    const value = part.trim().replace(/\/+$/, '');
+    if (!value || downloadBaseUrls.includes(value)) {
+      continue;
+    }
+    downloadBaseUrls.push(value);
+  }
+}
 
 for (let i = 2; i < process.argv.length; i += 1) {
   const arg = process.argv[i];
@@ -45,11 +58,14 @@ for (let i = 2; i < process.argv.length; i += 1) {
     case '--dist':
       distDir = next();
       break;
-    case '--base-url':
-      baseUrl = next().replace(/\/+$/, '');
-      break;
     case '--output':
       output = next();
+      break;
+    case '--download-base-url':
+      addDownloadBaseUrls(next());
+      break;
+    case '--download-base-urls':
+      addDownloadBaseUrls(fs.readFileSync(next(), 'utf8'));
       break;
     case '--allow-partial':
       allowPartial = true;
@@ -68,9 +84,6 @@ if (!version) {
   die('--version is required');
 }
 validateVersionSegment(version, 'version');
-if (!baseUrl) {
-  die('--base-url is required');
-}
 if (!minSupported) {
   minSupported = version;
 }
@@ -130,7 +143,7 @@ const packages = selectedTargets.map(([os, arch]) => {
     version,
     os,
     arch,
-    url: `${baseUrl}/${version}/${fileName}`,
+    path: `releases/${version}/${fileName}`,
     sha256,
   };
 });
@@ -138,6 +151,7 @@ const packages = selectedTargets.map(([os, arch]) => {
 const manifest = {
   latest: version,
   min_supported: minSupported,
+  download_base_urls: downloadBaseUrls,
   packages,
 };
 

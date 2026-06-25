@@ -2,11 +2,20 @@
 set -eu
 
 BASE_URL="${AWIKI_DAEMON_BASE_URL:-${AWIKI_DAEMON_SERVICE_BASE_URL:-__AWIKI_DAEMON_BASE_URL__}}"
-DOWNLOAD_BASE_URL="${AWIKI_DAEMON_DOWNLOAD_BASE_URL:-__AWIKI_DAEMON_DOWNLOAD_BASE_URL__}"
+DEFAULT_DOWNLOAD_BASE_URLS='__AWIKI_DAEMON_DOWNLOAD_BASE_URLS__'
+DOWNLOAD_BASE_URLS="${AWIKI_DAEMON_DOWNLOAD_BASE_URLS:-$DEFAULT_DOWNLOAD_BASE_URLS}"
 TOKEN=""
 VERSION=""
 STATE_ROOT=""
 FOREGROUND=0
+CURL_CONNECT_TIMEOUT_SECONDS="${AWIKI_DAEMON_CURL_CONNECT_TIMEOUT_SECONDS:-20}"
+CURL_MAX_TIME_SECONDS="${AWIKI_DAEMON_CURL_MAX_TIME_SECONDS:-900}"
+CURL_RETRY_COUNT="${AWIKI_DAEMON_CURL_RETRY_COUNT:-3}"
+CURL_RETRY_DELAY_SECONDS="${AWIKI_DAEMON_CURL_RETRY_DELAY_SECONDS:-2}"
+CURL_SPEED_LIMIT_BYTES="${AWIKI_DAEMON_CURL_SPEED_LIMIT_BYTES:-1024}"
+CURL_SPEED_TIME_SECONDS="${AWIKI_DAEMON_CURL_SPEED_TIME_SECONDS:-90}"
+PROBE_CONNECT_TIMEOUT_SECONDS="${AWIKI_DAEMON_PROBE_CONNECT_TIMEOUT_SECONDS:-5}"
+PROBE_MAX_TIME_SECONDS="${AWIKI_DAEMON_PROBE_MAX_TIME_SECONDS:-8}"
 
 usage() {
   cat <<'USAGE'
@@ -20,9 +29,13 @@ die() {
   exit 1
 }
 
+info() {
+  printf '%s\n' "$*" >&2
+}
+
 normalize_config_value() {
   base_placeholder="__AWIKI_DAEMON_""BASE_URL__"
-  download_placeholder="__AWIKI_DAEMON_""DOWNLOAD_BASE_URL__"
+  download_placeholder="__AWIKI_DAEMON_""DOWNLOAD_BASE_URLS__"
   case "$1" in
     "$base_placeholder"|"$download_placeholder")
       printf '\n'
@@ -51,6 +64,56 @@ infer_base_url_from_download_base_url() {
       return 1
       ;;
   esac
+}
+
+validate_download_base_url() {
+  case "$1" in
+    http://*|https://*|file://*|/*|./*|../*) ;;
+    *) die "daemon download base URL must be a URL or local path" ;;
+  esac
+}
+
+join_download_path() {
+  base="$(trim_trailing_slash "$1")"
+  path="$2"
+  while [ "${path#/}" != "$path" ]; do
+    path="${path#/}"
+  done
+  case "$base" in
+    file://*) printf '%s/%s\n' "$base" "$path" ;;
+    /*|./*|../*) printf '%s/%s\n' "$base" "$path" ;;
+    *) printf '%s/%s\n' "$base" "$path" ;;
+  esac
+}
+
+normalize_download_sources() {
+  "$PYTHON_BIN" - "$@" <<'PY'
+import os
+import sys
+
+values = []
+for value in sys.argv[1:]:
+    if value:
+        values.append(value)
+
+for key in ("AWIKI_DAEMON_DOWNLOAD_BASE_URL",):
+    value = os.environ.get(key, "")
+    if value:
+        values.append(value)
+
+seen = set()
+for raw in values:
+    for line in raw.replace(",", "\n").splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        while value.endswith("/"):
+            value = value[:-1]
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        print(value)
+PY
 }
 
 validate_version_segment() {
@@ -93,11 +156,20 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-BASE_URL="$(normalize_config_value "$BASE_URL")"
-DOWNLOAD_BASE_URL="$(normalize_config_value "$DOWNLOAD_BASE_URL")"
-if [ -n "$DOWNLOAD_BASE_URL" ]; then
-  DOWNLOAD_BASE_URL="$(trim_trailing_slash "$DOWNLOAD_BASE_URL")"
+command -v tar >/dev/null 2>&1 || die "tar is required"
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+else
+  die "python3 is required to parse manifest.json"
 fi
+
+BASE_URL="$(normalize_config_value "$BASE_URL")"
+DOWNLOAD_BASE_URLS="$(normalize_config_value "$DOWNLOAD_BASE_URLS")"
+DOWNLOAD_SOURCE_LIST="$(normalize_download_sources "$DOWNLOAD_BASE_URLS")"
+DOWNLOAD_BASE_URL="$(printf '%s\n' "$DOWNLOAD_SOURCE_LIST" | sed -n '1p')"
 if [ -z "$BASE_URL" ] && [ -n "$DOWNLOAD_BASE_URL" ]; then
   if inferred_base_url="$(infer_base_url_from_download_base_url "$DOWNLOAD_BASE_URL")"; then
     BASE_URL="$inferred_base_url"
@@ -109,25 +181,66 @@ fi
 
 [ -n "$TOKEN" ] || die "--token is required"
 [ -n "$BASE_URL" ] || die "daemon base URL is not configured"
-[ -n "$DOWNLOAD_BASE_URL" ] || die "daemon download base URL is not configured"
+[ -n "$DOWNLOAD_SOURCE_LIST" ] || die "daemon download base URL is not configured"
 case "$BASE_URL" in
   http://*|https://*) ;;
   *) die "daemon base URL must start with http:// or https://" ;;
 esac
-case "$DOWNLOAD_BASE_URL" in
-  http://*|https://*|file://*|/*|./*|../*) ;;
-  *) die "daemon download base URL must be a URL or local path" ;;
-esac
+printf '%s\n' "$DOWNLOAD_SOURCE_LIST" | while IFS= read -r download_source; do
+  [ -n "$download_source" ] || continue
+  validate_download_base_url "$download_source"
+done
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
-command -v tar >/dev/null 2>&1 || die "tar is required"
 
-download_to() {
+curl_with_route() {
+  route="$1"
+  src="$2"
+  dest="$3"
+  set -- curl -fL --show-error --progress-bar \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" \
+    --max-time "$CURL_MAX_TIME_SECONDS" \
+    --retry "$CURL_RETRY_COUNT" \
+    --retry-delay "$CURL_RETRY_DELAY_SECONDS" \
+    --speed-limit "$CURL_SPEED_LIMIT_BYTES" \
+    --speed-time "$CURL_SPEED_TIME_SECONDS"
+  case "$route" in
+    direct)
+      set -- "$@" --noproxy '*'
+      ;;
+    env)
+      ;;
+    http://127.0.0.1:*)
+      set -- "$@" --proxy "$route"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  "$@" "$src" -o "$dest"
+}
+
+curl_route_list() {
+  printf '%s\n' \
+    "env" \
+    "direct" \
+    "http://127.0.0.1:7897" \
+    "http://127.0.0.1:7890" \
+    "http://127.0.0.1:7891" \
+    "http://127.0.0.1:7892" \
+    "http://127.0.0.1:1080" \
+    "http://127.0.0.1:8080"
+}
+
+try_download_to() {
   src="$1"
   dest="$2"
+  label="${3:-$(basename "$dest")}"
+  route="${4:-}"
   case "$src" in
     file://*)
-      "$PYTHON_BIN" - "$src" "$dest" <<'PY' || die "copy local file URL failed"
+      info "Copying ${label} from local file..."
+      "$PYTHON_BIN" - "$src" "$dest" <<'PY'
 import shutil
 import sys
 from urllib.parse import unquote, urlparse
@@ -138,12 +251,35 @@ shutil.copyfile(path, dest)
 PY
       ;;
     /*|./*|../*)
+      info "Copying ${label} from local path..."
       cp "$src" "$dest"
       ;;
     *)
-      curl -fsSL "$src" -o "$dest"
+      info "Downloading ${label}..."
+      if [ -n "$route" ]; then
+        curl_with_route "$route" "$src" "$dest"
+      else
+        route_error_log="${TMP_DIR:-/tmp}/awiki-daemon-curl-routes.$$"
+        : > "$route_error_log"
+        for candidate_route in $(curl_route_list); do
+          [ -n "$candidate_route" ] || continue
+          if curl_with_route "$candidate_route" "$src" "$dest"; then
+            return 0
+          fi
+          rm -f "$dest"
+          printf '%s\n' "$candidate_route" >> "$route_error_log"
+        done
+        return 1
+      fi
       ;;
   esac
+}
+
+download_to() {
+  src="$1"
+  dest="$2"
+  label="${3:-$(basename "$dest")}"
+  try_download_to "$src" "$dest" "$label" || die "download ${label} failed: $src"
 }
 
 case "$(uname -s)" in
@@ -273,18 +409,24 @@ cleanup_daemon_bin_root() {
   done
 }
 
-PYTHON_BIN=""
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN="python3"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON_BIN="python"
-else
-  die "python3 is required to parse manifest.json"
-fi
-
-MANIFEST_URL="${DOWNLOAD_BASE_URL%/}/releases/manifest.json"
 MANIFEST_PATH="${TMP_DIR}/manifest.json"
-download_to "$MANIFEST_URL" "$MANIFEST_PATH"
+MANIFEST_DOWNLOAD_BASE_URL=""
+manifest_error_log="${TMP_DIR}/manifest-errors.txt"
+: > "$manifest_error_log"
+printf '%s\n' "$DOWNLOAD_SOURCE_LIST" | while IFS= read -r download_source; do
+  [ -n "$download_source" ] || continue
+  manifest_url="$(join_download_path "$download_source" "releases/manifest.json")"
+  manifest_tmp="${MANIFEST_PATH}.$$"
+  if try_download_to "$manifest_url" "$manifest_tmp" "daemon release manifest"; then
+    mv "$manifest_tmp" "$MANIFEST_PATH"
+    printf '%s\n' "$download_source" > "${TMP_DIR}/manifest-source.txt"
+    exit 0
+  fi
+  rm -f "$manifest_tmp"
+  printf '%s\n' "$download_source" >> "$manifest_error_log"
+done
+[ -f "$MANIFEST_PATH" ] || die "download daemon release manifest failed from all configured sources: $(tr '\n' ' ' < "$manifest_error_log")"
+MANIFEST_DOWNLOAD_BASE_URL="$(cat "${TMP_DIR}/manifest-source.txt")"
 
 selection="$($PYTHON_BIN - "$MANIFEST_PATH" "$OS" "$ARCH" "$VERSION" <<'PY'
 import json
@@ -299,8 +441,19 @@ for package in manifest.get("packages", []):
         and package.get("os") == os_name
         and package.get("arch") == arch_name
     ):
+        path = str(package.get("path", ""))
+        if (
+            not path
+            or path.startswith("/")
+            or path.startswith("./")
+            or path.startswith("../")
+            or "/../" in path
+            or path.endswith("/..")
+            or "\\" in path
+        ):
+            raise SystemExit(f"unsafe daemon package path: {path or '<empty>'}")
         print(package.get("version", ""))
-        print(package.get("url", ""))
+        print(path)
         print(package.get("sha256", ""))
         break
 else:
@@ -309,25 +462,135 @@ PY
 )"
 
 PKG_VERSION="$(printf '%s\n' "$selection" | sed -n '1p')"
-PKG_URL="$(printf '%s\n' "$selection" | sed -n '2p')"
+PKG_PATH="$(printf '%s\n' "$selection" | sed -n '2p')"
 PKG_SHA="$(printf '%s\n' "$selection" | sed -n '3p')"
 
 [ -n "$PKG_VERSION" ] || die "manifest package version is empty"
-[ -n "$PKG_URL" ] || die "manifest package URL is empty"
+[ -n "$PKG_PATH" ] || die "manifest package path is empty"
 [ -n "$PKG_SHA" ] || die "manifest package sha256 is empty"
 validate_version_segment "$PKG_VERSION"
 
 ARCHIVE_PATH="${TMP_DIR}/awiki-deamon-${OS}-${ARCH}.tar.gz"
-download_to "$PKG_URL" "$ARCHIVE_PATH"
+source_candidates_file="${TMP_DIR}/source-candidates.txt"
+printf '%s\n' "$DOWNLOAD_SOURCE_LIST" > "$source_candidates_file"
+route_candidates_file="${TMP_DIR}/route-candidates.txt"
+curl_route_list > "$route_candidates_file"
+ordered_sources_file="${TMP_DIR}/ordered-sources.txt"
+"$PYTHON_BIN" - "$source_candidates_file" "$route_candidates_file" "$PKG_PATH" "$PROBE_CONNECT_TIMEOUT_SECONDS" "$PROBE_MAX_TIME_SECONDS" > "$ordered_sources_file" <<'PY'
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 
-if command -v shasum >/dev/null 2>&1; then
-  ACTUAL_SHA="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
-elif command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL_SHA="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
-else
-  die "sha256 verification requires shasum or sha256sum"
-fi
-[ "$ACTUAL_SHA" = "$PKG_SHA" ] || die "daemon package sha256 mismatch"
+source_file, route_file, package_path, connect_timeout, max_time = sys.argv[1:6]
+sources = [line.strip() for line in open(source_file, encoding="utf-8") if line.strip()]
+routes = [line.strip() for line in open(route_file, encoding="utf-8") if line.strip()]
+
+def join(base, path):
+    path = path.lstrip("/")
+    return base.rstrip("/") + "/" + path
+
+def is_local(base):
+    return base.startswith("file://") or base.startswith("/") or base.startswith("./") or base.startswith("../")
+
+def local_exists(base):
+    if base.startswith("file://"):
+        from urllib.parse import unquote, urlparse
+        root = unquote(urlparse(base).path)
+    else:
+        root = base
+    return os.path.exists(os.path.join(root, package_path.lstrip("/")))
+
+ranked = []
+for index, source in enumerate(sources):
+    if is_local(source):
+        score = 10**15 if local_exists(source) else -1
+        ranked.append((score, -index, 0, source, "local"))
+        continue
+    curl = shutil.which("curl")
+    if not curl:
+        ranked.append((0, -index, 0, source, "env"))
+        continue
+    for route_index, route in enumerate(routes):
+        fd, output = tempfile.mkstemp(prefix="awiki-daemon-probe-", suffix=".bin")
+        os.close(fd)
+        command = [
+            curl,
+            "-fL",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            connect_timeout,
+            "--max-time",
+            max_time,
+            "--range",
+            "0-262143",
+            "--write-out",
+            "%{speed_download}",
+            "--output",
+            output,
+        ]
+        if route == "direct":
+            command += ["--noproxy", "*"]
+        elif route.startswith("http://127.0.0.1:"):
+            command += ["--proxy", route]
+        elif route != "env":
+            try:
+                os.remove(output)
+            except OSError:
+                pass
+            continue
+        command.append(join(source, package_path))
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            speed = float(result.stdout.strip() or "0") if result.returncode == 0 else 0
+            ranked.append((speed, -index, -route_index, source, route))
+        finally:
+            try:
+                os.remove(output)
+            except OSError:
+                pass
+
+ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+for _score, _source_order, _route_order, source, route in ranked:
+    print(f"{source}\t{route}")
+PY
+
+SELECTED_DOWNLOAD_BASE_URL=""
+package_error_log="${TMP_DIR}/package-errors.txt"
+: > "$package_error_log"
+while IFS="$(printf '\t')" read -r download_source download_route; do
+  [ -n "$download_source" ] || continue
+  [ -n "$download_route" ] || download_route="env"
+  pkg_url="$(join_download_path "$download_source" "$PKG_PATH")"
+  rm -f "$ARCHIVE_PATH"
+  if ! try_download_to "$pkg_url" "$ARCHIVE_PATH" "daemon package ${PKG_VERSION} for ${OS}-${ARCH}" "$download_route"; then
+    printf '%s %s download_failed\n' "$download_source" "$download_route" >> "$package_error_log"
+    continue
+  fi
+
+  if command -v shasum >/dev/null 2>&1; then
+    ACTUAL_SHA="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SHA="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
+  else
+    die "sha256 verification requires shasum or sha256sum"
+  fi
+  if [ "$ACTUAL_SHA" = "$PKG_SHA" ]; then
+    SELECTED_DOWNLOAD_BASE_URL="$download_source"
+    break
+  fi
+  printf '%s %s sha256_mismatch\n' "$download_source" "$download_route" >> "$package_error_log"
+done < "$ordered_sources_file"
+
+[ -n "$SELECTED_DOWNLOAD_BASE_URL" ] || die "download daemon package failed from all configured sources: $(tr '\n' ' ' < "$package_error_log")"
 
 validate_archive_entries
 
@@ -366,7 +629,7 @@ fi
 cleanup_daemon_bin_root "${HOME}/.awiki-daemon/deamon/bin" "$PKG_VERSION" "$PREVIOUS_VERSION"
 
 set -- "$CURRENT_DIR/awiki-deamon" install --token "$TOKEN"
-set -- "$@" --base-url "$BASE_URL" --download-base-url "$DOWNLOAD_BASE_URL"
+set -- "$@" --base-url "$BASE_URL" --download-base-url "$SELECTED_DOWNLOAD_BASE_URL"
 if [ -n "$STATE_ROOT" ]; then
   set -- "$@" --state-root "$STATE_ROOT"
 fi

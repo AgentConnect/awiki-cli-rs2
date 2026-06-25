@@ -59,6 +59,7 @@ fn insert_runtime_task_context(
         state
             .upsert_runtime_agent_profile(&RuntimeAgentProfile {
                 agent_did: agent_did.to_string(),
+                agent_handle: "test-runtime".to_string(),
                 controller_user_id: "user-alice".to_string(),
                 controller_full_handle: "alice.anpclaw.com".to_string(),
                 controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
@@ -76,14 +77,20 @@ fn insert_runtime_task_context(
         .insert_runtime_task(&RuntimeTask {
             task_id: "task_attachment".to_string(),
             agent_did: agent_did.to_string(),
+            agent_handle: "test-runtime".to_string(),
             controller_user_id: "user-alice".to_string(),
             controller_full_handle: "alice.anpclaw.com".to_string(),
             controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
             controller_did: "did:human:controller".to_string(),
             sender_did: "did:human:controller".to_string(),
             requester_did: "did:human:controller".to_string(),
+            requester_user_id: Some("user-alice".to_string()),
             requester_full_handle: Some("alice.anpclaw.com".to_string()),
             trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+            conversation_scope: awiki_deamon::runtime::RuntimeConversationScope::controller_private(
+                "controller-scope:v1:test-alice-anpclaw-com",
+            ),
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             reply_recipient_did: "did:human:controller".to_string(),
             conversation_id: Some("dm:controller-agent".to_string()),
             text: "send attachment".to_string(),

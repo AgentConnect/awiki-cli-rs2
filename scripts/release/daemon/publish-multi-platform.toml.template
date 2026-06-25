@@ -1,4 +1,10 @@
-base_url = "https://anpclaw.com" # 当前服务器对外服务根地址。daemon 下载根地址固定为 base_url/daemon。
+base_url = "https://anpclaw.com" # 当前服务器对外服务/API 根地址。
+
+download_base_url = "https://anpclaw.com/daemon" # 当前服务器对外 daemon 下载根地址；省略时默认使用 base_url/daemon。
+
+download_mirror_urls = [
+  "https://awiki.ai/daemon",
+] # 可选镜像下载源。发布脚本只把它们写入 install.sh，不会主动推送或校验镜像。
 
 source_ref = "release/0526" # 要发布的 Git ref。可以是远端分支、tag 或 commit SHA；GitHub Actions 会 checkout 这个 ref 来构建。
 

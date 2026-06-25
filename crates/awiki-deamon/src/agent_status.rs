@@ -157,7 +157,7 @@ pub fn daemon_snapshot_payload(
     let runtimes = state
         .list_runtime_agent_definitions_for_daemon(&daemon.agent_did)?
         .into_iter()
-        .map(|agent| runtime_status_payload(config, state, daemon, agent, &now, &release))
+        .map(|agent| runtime_status_payload(config, state, daemon, agent, &now))
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({
         "command": "agent.status.query",
@@ -219,6 +219,7 @@ pub fn latest_status_items(
     now_ms: i64,
 ) -> Result<Vec<AgentLatestStatusUpdateItem>> {
     let release = check_release_status(config);
+    reconcile_daemon_upgrade_state(state, daemon, &release)?;
     latest_status_items_with_release(config, state, daemon, now_ms, &release)
 }
 
@@ -268,12 +269,12 @@ fn latest_status_items_with_release(
             }
             .to_string(),
             last_seen_at: last_seen_at.clone(),
-            version: Some(release.current_version.clone()),
-            latest_version: release.latest_version.clone(),
+            version: None,
+            latest_version: None,
             min_supported_version: None,
-            platform: Some(crate::service::current_platform_label()),
-            service: Some(service_label(service.platform).to_string()),
-            needs_upgrade: release.needs_upgrade,
+            platform: None,
+            service: None,
+            needs_upgrade: false,
             needs_config: runtime_status.needs_config,
             last_error_code: runtime_status.last_error_code.clone(),
             last_error_summary: None,
@@ -451,7 +452,6 @@ fn runtime_status_payload(
     daemon: &AgentDefinition,
     runtime: AgentDefinition,
     now: &str,
-    release: &DaemonReleaseStatus,
 ) -> Result<Value> {
     let runtime_status = runtime_status_summary(config, state, &runtime);
     Ok(json!({
@@ -461,10 +461,7 @@ fn runtime_status_payload(
         "runtime_profile_id": runtime.runtime_profile_id,
         "status": if runtime_status.needs_config { "needs_config" } else { "ready" },
         "last_seen_at": now,
-        "version": release.current_version.clone(),
-        "latest_version": release.latest_version.clone(),
         "needs_config": runtime_status.needs_config,
-        "needs_upgrade": release.needs_upgrade,
         "last_error_code": runtime_status.last_error_code,
         "last_error_summary": null,
         "diagnostics_summary": runtime_diagnostics_summary(state, &runtime, &runtime_status),
@@ -543,7 +540,7 @@ fn daemon_diagnostics_summary(
     })
 }
 
-fn reconcile_daemon_upgrade_state(
+pub fn reconcile_daemon_upgrade_state(
     state: &DaemonState,
     daemon: &AgentDefinition,
     release: &DaemonReleaseStatus,
@@ -622,6 +619,15 @@ fn x25519_public_key_bytes_from_multibase(value: &str) -> Result<[u8; 32]> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("daemon bootstrap public key must be 32 bytes"))?;
     Ok(bytes)
+}
+
+pub fn reconcile_daemon_upgrade_state_from_release_status(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+) -> Result<()> {
+    let release = check_release_status(config);
+    reconcile_daemon_upgrade_state(state, daemon, &release)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2288,6 +2294,13 @@ mod tests {
             .iter()
             .find(|item| item.agent_kind == AgentKind::Runtime)
             .unwrap();
+        assert_eq!(runtime_item.status, "ready");
+        assert_eq!(runtime_item.version, None);
+        assert_eq!(runtime_item.latest_version, None);
+        assert_eq!(runtime_item.min_supported_version, None);
+        assert_eq!(runtime_item.platform, None);
+        assert_eq!(runtime_item.service, None);
+        assert!(!runtime_item.needs_upgrade);
         assert_eq!(runtime_item.diagnostics_summary["profile_status"], "ready");
         assert_eq!(runtime_item.diagnostics_summary["runtime_version"], "1.2.3");
         assert!(runtime_item.diagnostics_summary["awiki_skills_version"].is_null());

@@ -1,6 +1,8 @@
 use super::row_mappers::*;
 use super::*;
-use crate::runtime::RuntimeTaskTriggerKind;
+use crate::runtime::{
+    RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeTaskTriggerKind,
+};
 use rand::{rngs::OsRng, RngCore};
 
 const CLI_ROUTE_HASH_SALT_METADATA_KEY: &str = "generic_cli.route_hash_salt.v2";
@@ -78,27 +80,37 @@ ON CONFLICT(key) DO NOTHING
 INSERT INTO runtime_task (
     task_id,
     agent_did,
+    agent_handle,
     controller_user_id,
     controller_full_handle,
     controller_scope_key,
     controller_did,
     sender_did,
     requester_did,
+    requester_user_id,
     requester_full_handle,
     trigger_kind,
+    conversation_scope_kind,
+    conversation_scope_key,
+    invocation_authority,
     reply_recipient_did,
     conversation_id,
     task_text,
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'created', ?14, ?14)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 'created', ?19, ?19)
 ON CONFLICT(task_id) DO UPDATE SET
     task_text = excluded.task_text,
+    agent_handle = excluded.agent_handle,
     sender_did = excluded.sender_did,
     requester_did = excluded.requester_did,
+    requester_user_id = excluded.requester_user_id,
     requester_full_handle = excluded.requester_full_handle,
     trigger_kind = excluded.trigger_kind,
+    conversation_scope_kind = excluded.conversation_scope_kind,
+    conversation_scope_key = excluded.conversation_scope_key,
+    invocation_authority = excluded.invocation_authority,
     reply_recipient_did = excluded.reply_recipient_did,
     conversation_id = excluded.conversation_id,
     updated_at_ms = excluded.updated_at_ms
@@ -106,14 +118,19 @@ ON CONFLICT(task_id) DO UPDATE SET
             rusqlite::params![
                 task.task_id,
                 task.agent_did,
+                task.agent_handle,
                 task.controller_user_id,
                 task.controller_full_handle,
                 task.controller_scope_key,
                 task.controller_did,
                 task.sender_did,
                 task.requester_did,
+                task.requester_user_id,
                 task.requester_full_handle,
                 task.trigger_kind.as_str(),
+                task.conversation_scope.kind_str(),
+                task.conversation_scope.scope_key(),
+                task.invocation_authority.as_str(),
                 task.reply_recipient_did,
                 task.conversation_id,
                 task.text,
@@ -793,14 +810,19 @@ WHERE run_id = ?1
 SELECT
     task_id,
     agent_did,
+    agent_handle,
     controller_user_id,
     controller_full_handle,
     controller_scope_key,
     controller_did,
     sender_did,
     requester_did,
+    requester_user_id,
     requester_full_handle,
     trigger_kind,
+    conversation_scope_kind,
+    conversation_scope_key,
+    invocation_authority,
     reply_recipient_did,
     conversation_id,
     task_text
@@ -809,7 +831,7 @@ WHERE task_id = ?1
 "#,
                 [task_id],
                 |row| {
-                    let trigger_raw: String = row.get(9)?;
+                    let trigger_raw: String = row.get(11)?;
                     let trigger_kind =
                         RuntimeTaskTriggerKind::parse(&trigger_raw).map_err(|err| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -821,20 +843,51 @@ WHERE task_id = ?1
                                 )),
                             )
                         })?;
+                    let scope_kind_raw: String = row.get(12)?;
+                    let scope_key: String = row.get(13)?;
+                    let conversation_scope =
+                        conversation_scope_from_storage(&scope_kind_raw, &scope_key).map_err(
+                            |err| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    scope_kind_raw.len() + scope_key.len(),
+                                    rusqlite::types::Type::Text,
+                                    Box::new(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        err.to_string(),
+                                    )),
+                                )
+                            },
+                        )?;
+                    let authority_raw: String = row.get(14)?;
+                    let invocation_authority = RuntimeInvocationAuthority::parse(&authority_raw)
+                        .map_err(|err| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                authority_raw.len(),
+                                rusqlite::types::Type::Text,
+                                Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    err.to_string(),
+                                )),
+                            )
+                        })?;
                     Ok(RuntimeTask {
                         task_id: row.get(0)?,
                         agent_did: row.get(1)?,
-                        controller_user_id: row.get(2)?,
-                        controller_full_handle: row.get(3)?,
-                        controller_scope_key: row.get(4)?,
-                        controller_did: row.get(5)?,
-                        sender_did: row.get(6)?,
-                        requester_did: row.get(7)?,
-                        requester_full_handle: row.get(8)?,
+                        agent_handle: row.get(2)?,
+                        controller_user_id: row.get(3)?,
+                        controller_full_handle: row.get(4)?,
+                        controller_scope_key: row.get(5)?,
+                        controller_did: row.get(6)?,
+                        sender_did: row.get(7)?,
+                        requester_did: row.get(8)?,
+                        requester_user_id: row.get(9)?,
+                        requester_full_handle: row.get(10)?,
                         trigger_kind,
-                        reply_recipient_did: row.get(10)?,
-                        conversation_id: row.get(11)?,
-                        text: row.get(12)?,
+                        conversation_scope,
+                        invocation_authority,
+                        reply_recipient_did: row.get(15)?,
+                        conversation_id: row.get(16)?,
+                        text: row.get(17)?,
                     })
                 },
             )
@@ -2808,4 +2861,37 @@ FROM cli_route_sessions
 {where_clause}
 "#
     )
+}
+
+fn conversation_scope_from_storage(kind: &str, key: &str) -> Result<RuntimeConversationScope> {
+    match kind {
+        "controller_private" => {
+            let controller_scope_key = key
+                .strip_prefix("controller:")
+                .unwrap_or(key)
+                .trim()
+                .to_string();
+            Ok(RuntimeConversationScope::controller_private(
+                controller_scope_key,
+            ))
+        }
+        "direct" => {
+            let Some(rest) = key.strip_prefix("user:") else {
+                bail!("direct runtime conversation scope key must start with user:");
+            };
+            let Some((requester_user_id, requester_full_handle)) = rest.split_once(":handle:")
+            else {
+                bail!("direct runtime conversation scope key must include handle");
+            };
+            RuntimeConversationScope::direct(
+                requester_user_id.to_string(),
+                requester_full_handle.to_string(),
+            )
+        }
+        "group_visible" => {
+            let group_key = key.strip_prefix("group:").unwrap_or(key).trim().to_string();
+            Ok(RuntimeConversationScope::group_visible(group_key))
+        }
+        other => bail!("unsupported runtime conversation scope kind: {other}"),
+    }
 }

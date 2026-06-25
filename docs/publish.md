@@ -102,10 +102,14 @@ cp scripts/release/daemon/publish-multi-platform.toml.template \
   scripts/release/daemon/publish-multi-platform.toml
 ```
 
-配置文件只保存发布环境和触发构建所需的信息：`base_url`、`source_ref` 和 `github_token`。
+配置文件只保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
+`download_mirror_urls`、`source_ref` 和 `github_token`。
 它不配置当前版本号或最低可用版本号。当前发布版本固定来自
 `crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验；第一版发布流程中，
-manifest 的 `min_supported` 自动等于当前 Daemon 版本。标准路由下，Daemon 下载根地址固定派生为 `<base_url>/daemon`。
+manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是后端服务/API 根地址；
+`download_base_url` 是当前发布机器提供的 daemon 静态下载根地址，省略时默认使用
+`<base_url>/daemon`；`download_mirror_urls` 是可选镜像下载源列表，只写入安装脚本，
+发布脚本不会主动推送或校验这些镜像。
 其中 `source_ref` 是实际要构建的源码 ref，可以是分支、tag 或 commit SHA。GitHub
 `workflow_dispatch` 入口本身需要存在于仓库默认分支；发布脚本固定从默认分支触发 workflow，
 再把 `source_ref` 传给 workflow checkout。
@@ -119,6 +123,11 @@ manifest 的 `min_supported` 自动等于当前 Daemon 版本。标准路由下�
 - 生成 `install.sh`、`releases/manifest.json` 和版本化 release 目录。
 - 发布到本机 Nginx daemon 静态目录 `/var/www/awiki-web/daemon`。
 - 通过 HTTP 校验 manifest、安装脚本和三个平台 tar 包可访问。
+
+manifest 中的包条目只保存相对 `path` 和 `sha256`，不保存完整 URL。安装脚本会从
+`download_base_url` 和 `download_mirror_urls` 中选择可用且较快的下载源，下载包后用
+manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下一个源。Daemon 自升级也按
+持久化的 `download_base_url + package.path` 下载并校验。
 
 脚本不会修改版本号、提交代码或推送代码。发布前需要先在
 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。
@@ -161,8 +170,21 @@ scripts/release/daemon/_stage-downloads.sh \
 
 参数含义：
 
-- `--download-base-url`：安装脚本、manifest 和 release tar 包的静态下载根地址。脚本会从这里读取 `releases/manifest.json`，manifest 中的包 URL 也会从这里派生。标准线上路由必须使用 `<后端服务根地址>/daemon`，发布脚本会据此推导 daemon 持久配置中的后端服务根地址。
+- `--download-base-url`：主静态下载根地址。安装脚本会优先从这里读取 `releases/manifest.json` 和 release tar 包。
+- `--download-mirror-url`：可重复传入的镜像静态下载根地址。生成的安装脚本会把主源和镜像源一起作为候选下载源。
 - `--base-url`：daemon 持久配置中的后端服务根地址，默认派生 user-service、message-service、mail-service、DID domain 和 ANP service。标准线上路由下可省略；如果下载域名和后端 API 域名不同，或者使用 `file://` / 本地路径测试，则必须显式传入。
+
+manifest 的包条目保存相对路径：
+
+```json
+{
+  "version": "1.2.3",
+  "os": "darwin",
+  "arch": "arm64",
+  "path": "releases/1.2.3/awiki-deamon-darwin-arm64.tar.gz",
+  "sha256": "..."
+}
+```
 
 标准域名手工 staging 使用：
 
@@ -183,6 +205,19 @@ scripts/release/daemon/_stage-downloads.sh \
   --output-dir dist/daemon-downloads \
   --base-url https://api.example.com \
   --download-base-url https://cdn.example.com/daemon
+```
+
+如果需要把多个下载源写入安装脚本：
+
+```bash
+scripts/release/daemon/_stage-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --base-url https://api.example.com \
+  --download-base-url https://primary.example.com/daemon \
+  --download-mirror-url https://mirror-a.example.com/daemon \
+  --download-mirror-url https://mirror-b.example.com/daemon
 ```
 
 输出目录结构：
@@ -207,7 +242,37 @@ curl -fsSL https://example.com/daemon/install.sh | sh -s -- --token <install-tok
 
 如果当前阶段只做本地联调，也可以直接使用 tar 包或 `file://` 方式验证安装脚本，不需要公网 CDN。
 
-## 6. 建议发布检查
+## 6. 同步 daemon 下载镜像
+
+镜像服务器不需要主发布服务器的 SSH 权限。每个镜像节点只需要能通过 HTTP(S) 访问主下载源，
+然后在镜像节点本机执行同步脚本：
+
+```bash
+cp scripts/release/daemon/sync-download-mirror.toml.template \
+  scripts/release/daemon/sync-download-mirror.toml
+```
+
+配置示例：
+
+```toml
+source_base_url = "https://anpclaw.com/daemon"
+target_dir = "/var/www/awiki-web/daemon"
+keep_versions = "3"
+```
+
+执行：
+
+```bash
+scripts/release/daemon/sync-download-mirror.sh
+```
+
+同步脚本不接受命令行参数，所有配置都来自 `sync-download-mirror.toml`。它会拉取主源的
+`install.sh`、`releases/manifest.json` 和 manifest 中列出的 release 包，逐个校验
+`sha256`，校验通过后再写入目标静态目录。`manifest.json` 最后替换，避免用户读到半同步状态。
+`keep_versions` 用于清理未被当前 manifest 引用的旧版本目录，当前 `latest`、`min_supported`
+和 manifest 中的 package 版本总会保留。
+
+## 7. 建议发布检查
 
 发布前至少执行：
 
@@ -234,7 +299,7 @@ cargo test -p awiki-deamon --locked
 python3 scripts/test_daemon_release_contract.py
 ```
 
-## 7. 回滚
+## 8. 回滚
 
 文件服务发布采用目录和 manifest 管理。回滚时按实际发布目录操作：
 

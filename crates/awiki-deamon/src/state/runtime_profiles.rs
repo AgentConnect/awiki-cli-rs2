@@ -3,7 +3,7 @@ use super::*;
 
 impl DaemonState {
     pub fn upsert_runtime_agent_profile(&self, profile: &RuntimeAgentProfile) -> Result<()> {
-        self.upsert_runtime_agent_profile_with_handle(profile, &profile.agent_did)
+        self.upsert_runtime_agent_profile_with_handle(profile, &profile.agent_handle)
     }
 
     pub fn upsert_runtime_agent_profile_with_handle(
@@ -530,10 +530,13 @@ INSERT INTO hermes_native_sessions (
     id,
     runtime_session_id,
     agent_did,
+    agent_handle,
     runtime_profile_id,
     controller_scope_key,
     controller_did,
     session_actor_did,
+    scope_kind,
+    scope_key,
     conversation_id,
     route_key,
     hermes_profile,
@@ -542,14 +545,17 @@ INSERT INTO hermes_native_sessions (
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
 ON CONFLICT(id) DO UPDATE SET
     runtime_session_id = excluded.runtime_session_id,
     agent_did = excluded.agent_did,
+    agent_handle = excluded.agent_handle,
     runtime_profile_id = excluded.runtime_profile_id,
     controller_scope_key = excluded.controller_scope_key,
     controller_did = excluded.controller_did,
     session_actor_did = excluded.session_actor_did,
+    scope_kind = excluded.scope_kind,
+    scope_key = excluded.scope_key,
     conversation_id = excluded.conversation_id,
     route_key = excluded.route_key,
     hermes_profile = excluded.hermes_profile,
@@ -562,10 +568,13 @@ ON CONFLICT(id) DO UPDATE SET
                     session.id,
                     session.runtime_session_id,
                     session.agent_did,
+                    session.agent_handle,
                     session.runtime_profile_id,
                     session.controller_scope_key,
                     session.controller_did,
                     session.session_actor_did,
+                    session.scope_kind,
+                    session.scope_key,
                     session.conversation_id,
                     session.route_key,
                     session.hermes_profile,
@@ -593,10 +602,13 @@ SELECT
     id,
     runtime_session_id,
     agent_did,
+    agent_handle,
     runtime_profile_id,
     controller_scope_key,
     controller_did,
     session_actor_did,
+    scope_kind,
+    scope_key,
     conversation_id,
     route_key,
     hermes_profile,
@@ -974,6 +986,69 @@ WHERE daemon_agent_did = ?1
             .context("load control command state")
     }
 
+    pub fn load_latest_control_command_state(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command: &str,
+        statuses: &[&str],
+    ) -> Result<Option<ControlCommandStateRecord>> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command", command),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        let connection = self.connection()?;
+        let mut sql = r#"
+SELECT
+    daemon_agent_did,
+    controller_scope_key,
+    command_id,
+    command,
+    message_id,
+    status,
+    target_version,
+    result_json,
+    error_summary,
+    created_at_ms,
+    updated_at_ms
+FROM control_command_state
+WHERE daemon_agent_did = ?1
+  AND controller_scope_key = ?2
+  AND command = ?3
+"#
+        .to_string();
+        if !statuses.is_empty() {
+            sql.push_str("  AND status IN (");
+            sql.push_str(
+                &std::iter::repeat("?")
+                    .take(statuses.len())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            sql.push_str(")\n");
+        }
+        sql.push_str("ORDER BY updated_at_ms DESC, created_at_ms DESC LIMIT 1");
+
+        let mut values: Vec<&dyn rusqlite::ToSql> =
+            vec![&daemon_agent_did, &controller_scope_key, &command];
+        for status in statuses {
+            values.push(status);
+        }
+        connection
+            .query_row(
+                &sql,
+                values.as_slice(),
+                control_command_state_record_from_row,
+            )
+            .optional()
+            .context("load latest control command state")
+    }
+
     pub fn mark_control_command_state(
         &self,
         daemon_agent_did: &str,
@@ -1332,6 +1407,7 @@ WHERE runtime_profile_id = ?1
                     Ok(RuntimeAgentProfile {
                         runtime_profile_id: row.get(0)?,
                         agent_did: row.get(1)?,
+                        agent_handle: definition.handle.clone(),
                         runtime_plugin_id: row.get(2)?,
                         display_name: row.get(3)?,
                         controller_user_id: definition.controller_user_id.clone(),

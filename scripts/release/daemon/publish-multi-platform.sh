@@ -122,21 +122,52 @@ read_config() {
   python3 - "${CONFIG_PATH}" <<'PY'
 import re
 import pathlib
+import shlex
 import sys
 
 config_path = pathlib.Path(sys.argv[1])
 data = {}
-for line_no, raw_line in enumerate(config_path.read_text(encoding="utf-8").splitlines(), start=1):
+lines = config_path.read_text(encoding="utf-8").splitlines()
+index = 0
+
+def decode_string(raw: str) -> str:
+    return bytes(raw, "utf-8").decode("unicode_escape")
+
+while index < len(lines):
+    raw_line = lines[index]
+    line_no = index + 1
+    index += 1
     line = raw_line.strip()
     if not line or line.startswith("#"):
         continue
     match = re.fullmatch(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"((?:[^"\\]|\\.)*)"\s*(?:#.*)?', line)
-    if not match:
-        raise SystemExit(f"invalid config line {line_no}: only simple quoted string values are supported")
-    key, raw_value = match.groups()
+    if match:
+        key, raw_value = match.groups()
+        value = decode_string(raw_value)
+    else:
+        array_match = re.fullmatch(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[\s*(?:#.*)?', line)
+        if not array_match:
+            raise SystemExit(f"invalid config line {line_no}: only quoted strings and quoted string arrays are supported")
+        key = array_match.group(1)
+        items = []
+        while index < len(lines):
+            item_line_no = index + 1
+            item_line = lines[index].strip()
+            index += 1
+            if not item_line or item_line.startswith("#"):
+                continue
+            if re.fullmatch(r'\]\s*(?:#.*)?', item_line):
+                break
+            item_match = re.fullmatch(r'"((?:[^"\\]|\\.)*)"\s*,?\s*(?:#.*)?', item_line)
+            if not item_match:
+                raise SystemExit(f"invalid config line {item_line_no}: array items must be quoted strings")
+            items.append(decode_string(item_match.group(1)))
+        else:
+            raise SystemExit(f"unterminated array for config field {key!r}")
+        value = items
     if key in data:
         raise SystemExit(f"duplicate config field {key!r}")
-    data[key] = bytes(raw_value, "utf-8").decode("unicode_escape")
+    data[key] = value
 
 required = ["base_url", "source_ref", "github_token"]
 for key in required:
@@ -144,13 +175,27 @@ for key in required:
     if not isinstance(value, str) or not value.strip():
         raise SystemExit(f"config field {key!r} is required")
 
-allowed = set(required)
+allowed = set(required + ["download_base_url", "download_mirror_urls"])
 for key in data:
     if key not in allowed:
         raise SystemExit(f"unsupported config field {key!r}")
 
 for key in required:
-    print(f"{key}={data[key].strip()}")
+    print(f"{key}={shlex.quote(data[key].strip())}")
+download_base_url = data.get("download_base_url")
+if isinstance(download_base_url, str) and download_base_url.strip():
+    print(f"download_base_url={shlex.quote(download_base_url.strip())}")
+mirror_urls = data.get("download_mirror_urls", [])
+if mirror_urls is None:
+    mirror_urls = []
+if not isinstance(mirror_urls, list):
+    raise SystemExit("config field 'download_mirror_urls' must be a quoted string array")
+normalized_mirror_urls = []
+for value in mirror_urls:
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit("download_mirror_urls must not contain empty values")
+    normalized_mirror_urls.append(value.strip())
+print("download_mirror_urls=(" + " ".join(shlex.quote(value) for value in normalized_mirror_urls) + ")")
 PY
 }
 
@@ -197,6 +242,14 @@ sudo_prefix_for_path() {
   fi
   command -v sudo >/dev/null 2>&1 || die "sudo is required to write ${NGINX_DAEMON_DIR}"
   printf '%s\n' "sudo"
+}
+
+run_as_nginx_writer() {
+  if [[ -n "${NGINX_SUDO_WORD:-}" ]]; then
+    "${NGINX_SUDO_WORD}" "$@"
+  else
+    "$@"
+  fi
 }
 
 ensure_required_commands() {
@@ -331,31 +384,26 @@ collect_packages() {
 }
 
 publish_to_nginx() {
-  local sudo_cmd=()
-  local sudo_word
-  sudo_word="$(sudo_prefix_for_path "${NGINX_DAEMON_DIR}")"
-  if [[ -n "${sudo_word}" ]]; then
-    sudo_cmd=("${sudo_word}")
-  fi
+  NGINX_SUDO_WORD="$(sudo_prefix_for_path "${NGINX_DAEMON_DIR}")"
 
   local tmp_publish_dir="${NGINX_DAEMON_DIR}.tmp.${VERSION}.$$"
-  "${sudo_cmd[@]}" rm -rf "${tmp_publish_dir}"
-  "${sudo_cmd[@]}" mkdir -p "${tmp_publish_dir}/releases"
-  "${sudo_cmd[@]}" cp "${STAGE_DIR}/install.sh" "${tmp_publish_dir}/install.sh"
-  "${sudo_cmd[@]}" cp "${STAGE_DIR}/releases/manifest.json" "${tmp_publish_dir}/releases/manifest.json"
-  "${sudo_cmd[@]}" cp -R "${STAGE_DIR}/releases/${VERSION}" "${tmp_publish_dir}/releases/${VERSION}"
+  run_as_nginx_writer rm -rf "${tmp_publish_dir}"
+  run_as_nginx_writer mkdir -p "${tmp_publish_dir}/releases"
+  run_as_nginx_writer cp "${STAGE_DIR}/install.sh" "${tmp_publish_dir}/install.sh"
+  run_as_nginx_writer cp "${STAGE_DIR}/releases/manifest.json" "${tmp_publish_dir}/releases/manifest.json"
+  run_as_nginx_writer cp -R "${STAGE_DIR}/releases/${VERSION}" "${tmp_publish_dir}/releases/${VERSION}"
 
-  "${sudo_cmd[@]}" mkdir -p "${NGINX_DAEMON_DIR}/releases"
-  "${sudo_cmd[@]}" rm -rf "${NGINX_DAEMON_DIR}/releases/${VERSION}"
-  "${sudo_cmd[@]}" cp -R "${tmp_publish_dir}/releases/${VERSION}" "${NGINX_DAEMON_DIR}/releases/${VERSION}"
+  run_as_nginx_writer mkdir -p "${NGINX_DAEMON_DIR}/releases"
+  run_as_nginx_writer rm -rf "${NGINX_DAEMON_DIR}/releases/${VERSION}"
+  run_as_nginx_writer cp -R "${tmp_publish_dir}/releases/${VERSION}" "${NGINX_DAEMON_DIR}/releases/${VERSION}"
 
-  "${sudo_cmd[@]}" cp "${tmp_publish_dir}/install.sh" "${NGINX_DAEMON_DIR}/install.sh.tmp"
-  "${sudo_cmd[@]}" mv "${NGINX_DAEMON_DIR}/install.sh.tmp" "${NGINX_DAEMON_DIR}/install.sh"
+  run_as_nginx_writer cp "${tmp_publish_dir}/install.sh" "${NGINX_DAEMON_DIR}/install.sh.tmp"
+  run_as_nginx_writer mv "${NGINX_DAEMON_DIR}/install.sh.tmp" "${NGINX_DAEMON_DIR}/install.sh"
 
-  "${sudo_cmd[@]}" cp "${tmp_publish_dir}/releases/manifest.json" "${NGINX_DAEMON_DIR}/releases/manifest.json.tmp"
-  "${sudo_cmd[@]}" mv "${NGINX_DAEMON_DIR}/releases/manifest.json.tmp" "${NGINX_DAEMON_DIR}/releases/manifest.json"
+  run_as_nginx_writer cp "${tmp_publish_dir}/releases/manifest.json" "${NGINX_DAEMON_DIR}/releases/manifest.json.tmp"
+  run_as_nginx_writer mv "${NGINX_DAEMON_DIR}/releases/manifest.json.tmp" "${NGINX_DAEMON_DIR}/releases/manifest.json"
 
-  "${sudo_cmd[@]}" rm -rf "${tmp_publish_dir}"
+  run_as_nginx_writer rm -rf "${tmp_publish_dir}"
 }
 
 verify_published_http() {
@@ -388,10 +436,26 @@ MIN_SUPPORTED_VERSION="${VERSION}"
 BASE_URL="$(trim_trailing_slash "${base_url}")"
 SOURCE_REF="${source_ref}"
 GITHUB_TOKEN_VALUE="${github_token}"
-DOWNLOAD_BASE_URL="${BASE_URL}/daemon"
+DOWNLOAD_BASE_URL="${download_base_url:-${BASE_URL}/daemon}"
+DOWNLOAD_BASE_URL="$(trim_trailing_slash "${DOWNLOAD_BASE_URL}")"
+DOWNLOAD_MIRROR_URLS=()
+if [[ "$(declare -p download_mirror_urls 2>/dev/null)" == declare\ -a* ]] && ((${#download_mirror_urls[@]})); then
+  for mirror_url in "${download_mirror_urls[@]}"; do
+    [[ -n "${mirror_url}" ]] || continue
+    mirror_url="$(trim_trailing_slash "${mirror_url}")"
+    [[ "${mirror_url}" != "${DOWNLOAD_BASE_URL}" ]] || continue
+    DOWNLOAD_MIRROR_URLS+=("${mirror_url}")
+  done
+fi
 
 validate_numeric_version "${VERSION}" "version"
 validate_base_url "${BASE_URL}"
+validate_base_url "${DOWNLOAD_BASE_URL}"
+if ((${#DOWNLOAD_MIRROR_URLS[@]})); then
+  for mirror_url in "${DOWNLOAD_MIRROR_URLS[@]}"; do
+    validate_base_url "${mirror_url}"
+  done
+fi
 case "${GITHUB_TOKEN_VALUE}" in
   ghp_replace_with_token|github_token|changeme|CHANGE_ME)
     die "github_token still contains a template placeholder"
@@ -422,12 +486,18 @@ trap cleanup_release_tmp EXIT INT TERM
 rm -rf "${RELEASE_TMP_DIR}"
 mkdir -p "${RELEASE_TMP_DIR}"
 
+DOWNLOAD_MIRROR_URLS_TEXT="none"
+if ((${#DOWNLOAD_MIRROR_URLS[@]})); then
+  DOWNLOAD_MIRROR_URLS_TEXT="${DOWNLOAD_MIRROR_URLS[*]}"
+fi
+
 cat <<EOF
 daemon release plan
   version: ${VERSION}
   min_supported_version: ${MIN_SUPPORTED_VERSION}
   base_url: ${BASE_URL}
   download_base_url: ${DOWNLOAD_BASE_URL}
+  download_mirror_urls: ${DOWNLOAD_MIRROR_URLS_TEXT}
   source_ref: ${SOURCE_REF}
   github_repo: ${GITHUB_REPO}
   workflow: ${WORKFLOW_FILE}@${WORKFLOW_REF}
@@ -442,12 +512,21 @@ wait_for_workflow
 download_artifacts "${ARTIFACT_DIR}"
 collect_packages "${ARTIFACT_DIR}" "${PACKAGE_DIR}"
 
-scripts/release/daemon/_stage-downloads.sh \
+stage_args=(
+  scripts/release/daemon/_stage-downloads.sh
   --version "${VERSION}" \
   --min-supported "${MIN_SUPPORTED_VERSION}" \
   --source-dir "${PACKAGE_DIR}" \
   --output-dir "${STAGE_DIR}" \
-  --base-url "${BASE_URL}"
+  --base-url "${BASE_URL}" \
+  --download-base-url "${DOWNLOAD_BASE_URL}"
+)
+if ((${#DOWNLOAD_MIRROR_URLS[@]})); then
+  for mirror_url in "${DOWNLOAD_MIRROR_URLS[@]}"; do
+    stage_args+=(--download-mirror-url "${mirror_url}")
+  done
+fi
+"${stage_args[@]}"
 
 publish_to_nginx
 verify_published_http
