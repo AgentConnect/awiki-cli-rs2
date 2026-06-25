@@ -1,6 +1,9 @@
 use awiki_deamon::controller_scope::VerifiedControllerSender;
 use awiki_deamon::inbox::{route_controller_text_task_with_verified_sender, ControllerTextMessage};
-use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
+use awiki_deamon::outbox::{
+    MemoryRuntimeOutbox, OutboxRecord, OutboxRecordKind, RuntimeAttachmentSend,
+    RuntimeAttachmentSendResult, RuntimeMessageSend, RuntimeMessageSendResult, RuntimeOutbox,
+};
 use awiki_deamon::plugins::generic_cli::{
     codex::{CodexDriver, CodexDriverConfig},
     CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
@@ -11,7 +14,7 @@ use awiki_deamon::runtime::{
     RuntimeAgentProfile, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
     RuntimePlugin, RuntimeRunStatus,
 };
-use awiki_deamon::state::CliRuntimeProfileRecord;
+use awiki_deamon::state::{AuthorizedRuntimeContext, CliRuntimeProfileRecord};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
@@ -34,6 +37,78 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
     let state = DaemonState::open(&config).unwrap();
     state.initialize().unwrap();
     (root, state)
+}
+
+#[derive(Debug, Clone, Default)]
+struct FailingFinalOutbox {
+    inner: MemoryRuntimeOutbox,
+}
+
+impl FailingFinalOutbox {
+    fn records(&self) -> Vec<OutboxRecord> {
+        self.inner.records()
+    }
+}
+
+impl RuntimeOutbox for FailingFinalOutbox {
+    fn resolve_recipient_did(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> anyhow::Result<Option<String>> {
+        RuntimeOutbox::resolve_recipient_did(&self.inner, context, recipient)
+    }
+
+    fn send_status(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        RuntimeOutbox::send_status(&self.inner, context, state, text)
+    }
+
+    fn send_status_with_detail(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) -> anyhow::Result<()> {
+        RuntimeOutbox::send_status_with_detail(
+            &self.inner,
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+        )
+    }
+
+    fn send_final(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        _text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("simulated final delivery failure")
+    }
+
+    fn send_message(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
+    ) -> anyhow::Result<RuntimeMessageSendResult> {
+        RuntimeOutbox::send_message(&self.inner, context, message)
+    }
+
+    fn send_attachment(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        attachment: &RuntimeAttachmentSend,
+    ) -> anyhow::Result<RuntimeAttachmentSendResult> {
+        RuntimeOutbox::send_attachment(&self.inner, context, attachment)
+    }
 }
 
 fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
@@ -1543,6 +1618,98 @@ exit 0
         run_record.final_output_path,
         Some(output_dir.join("final-output.txt"))
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_fallback_final_delivery_failure_marks_run_failed() {
+    let _guard = generic_cli_process_test_guard();
+
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let profile = profile(root.path().join("workspace"));
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-fallback-final-send-fails");
+    let output_dir = root.path().join("codex-fallback-send-fails-output");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf 'fallback final that cannot be delivered\n' > "$FINAL_OUTPUT"
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let mut driver_config = codex_config(fake_codex);
+    driver_config.output_dir = Some(output_dir.clone());
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
+    let outbox = FailingFinalOutbox::default();
+    let error = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_fallback_send_fails".to_string(),
+            conversation_id: Some("conv_codex_fallback_send_fails".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "run codex fallback with failing final delivery".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("apply generic CLI final fallback"));
+    let run = state
+        .load_runtime_run("run_task_msg_codex_fallback_send_fails")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("running"));
+    assert_eq!(records[1].kind, OutboxRecordKind::Status);
+    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[1].last_error_code.as_deref(),
+        Some("runtime_fallback_final_failed")
+    );
+    assert_eq!(
+        records[1].last_error_summary.as_deref(),
+        Some("simulated final delivery failure")
+    );
+    assert!(std::fs::read_to_string(output_dir.join("final-output.txt"))
+        .unwrap()
+        .contains("fallback final that cannot be delivered"));
 }
 
 #[cfg(unix)]

@@ -443,8 +443,15 @@ where
     };
     for callback in launch_outcome.callbacks.iter().cloned() {
         if let Err(error) = execute_runtime_rpc_request_with_outbox(state, outbox, callback) {
-            state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-            emit_runtime_callback_failed_status(outbox, &run, &error.to_string())?;
+            let error_summary = error.root_cause().to_string();
+            mark_runtime_run_failed_with_status(
+                state,
+                outbox,
+                &run,
+                "Runtime callback failed",
+                "runtime_callback_failed",
+                &error_summary,
+            )?;
             return Err(error).context("apply runtime callback");
         }
     }
@@ -517,13 +524,27 @@ where
 
     let fallback_final_source = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
     {
-        apply_generic_cli_final_fallback(
+        match apply_generic_cli_final_fallback(
             state,
             outbox,
             &run,
             &launch_outcome,
             issued.token.as_str(),
-        )?
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                let error_summary = error.root_cause().to_string();
+                mark_runtime_run_failed_with_status(
+                    state,
+                    outbox,
+                    &run,
+                    "Runtime final fallback failed",
+                    "runtime_fallback_final_failed",
+                    &error_summary,
+                )?;
+                return Err(error).context("apply generic CLI final fallback");
+            }
+        }
     } else {
         None
     };
@@ -1039,17 +1060,21 @@ fn emit_runtime_launch_failed_status(
     )
 }
 
-fn emit_runtime_callback_failed_status(
+fn mark_runtime_run_failed_with_status(
+    state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     run: &RuntimeRun,
+    message: &str,
+    error_code: &str,
     error_summary: &str,
 ) -> Result<()> {
+    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
     emit_runtime_status(
         outbox,
         run,
         "failed",
-        Some("Runtime callback failed"),
-        Some("runtime_callback_failed"),
+        Some(message),
+        Some(error_code),
         Some(&sanitize_user_visible_error_summary(error_summary)),
     )
 }
@@ -1083,7 +1108,12 @@ fn apply_generic_cli_final_fallback(
     if response.ok {
         Ok(Some("generic_cli_final_output"))
     } else {
-        Ok(None)
+        let error_summary = response
+            .error
+            .as_ref()
+            .map(|error| format!("{}: {}", error.code, error.message))
+            .unwrap_or_else(|| "runtime RPC rejected fallback final".to_string());
+        anyhow::bail!("runtime RPC rejected fallback final: {error_summary}")
     }
 }
 
