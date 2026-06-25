@@ -807,6 +807,68 @@ fn control_command_conditional_transition_preserves_late_terminal_result() {
 }
 
 #[test]
+fn control_command_restart_scheduled_does_not_overwrite_failed_state() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    state
+        .try_begin_control_command(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_progress_race",
+            "daemon.upgrade",
+            "msg_upgrade_progress_race",
+            Some("latest"),
+        )
+        .unwrap();
+    state
+        .mark_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_progress_race",
+            "failed",
+            serde_json::json!({
+                "command": "daemon.upgrade",
+                "status": "failed",
+                "source": "upgrade_task",
+            }),
+            Some("daemon upgrade failed"),
+        )
+        .unwrap();
+
+    let updated = state
+        .mark_control_command_state_if_status_in(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_progress_race",
+            &["in_progress"],
+            "restart_scheduled",
+            serde_json::json!({
+                "command": "daemon.upgrade",
+                "status": "restart_scheduled",
+                "source": "progress_callback",
+            }),
+            None,
+        )
+        .unwrap();
+    assert!(!updated);
+
+    let stored = state
+        .load_control_command_state(
+            "did:agent:daemon",
+            "controller-scope:v1:test-alice",
+            "cmd_upgrade_progress_race",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "failed");
+    assert_eq!(stored.result_json["source"], "upgrade_task");
+    assert!(stored.error_summary.is_some());
+}
+
+#[test]
 fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

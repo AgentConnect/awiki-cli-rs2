@@ -1650,10 +1650,11 @@ where
                     if progress.stage == "restarting" && !restart_scheduled {
                         restart_scheduled = true;
                         let restart_target_version = task_target_version.clone();
-                        let _ = task_state.mark_control_command_state(
+                        let _ = task_state.mark_control_command_state_if_status_in(
                             &task_daemon_agent.agent_did,
                             &task_daemon_agent.controller_scope_key,
                             &task_command_id,
+                            &["in_progress"],
                             "restart_scheduled",
                             json!({
                                 "command": DAEMON_UPGRADE,

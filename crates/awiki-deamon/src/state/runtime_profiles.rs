@@ -1096,7 +1096,7 @@ WHERE daemon_agent_did = ?5
         Ok(())
     }
 
-    pub(super) fn mark_control_command_state_if_status_in(
+    pub(crate) fn mark_control_command_state_if_status_in(
         &self,
         daemon_agent_did: &str,
         controller_scope_key: &str,
