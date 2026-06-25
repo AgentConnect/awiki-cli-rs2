@@ -927,6 +927,48 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
 }
 
 #[test]
+fn runtime_retry_queue_recovers_stale_running_retries() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let run = RuntimeRun {
+        run_id: "run_retry_original".to_string(),
+        task_id: "task_retry_original".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        runtime_plugin_id: "hermes".to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Failed,
+    };
+    state.insert_runtime_run(&run).unwrap();
+    let retry = state
+        .insert_runtime_retry_request(&run, "cmd_retry")
+        .unwrap();
+    assert_eq!(retry.status, "queued");
+
+    state
+        .mark_runtime_retry_status(&retry.retry_id, "running")
+        .unwrap();
+    let running = state.load_runtime_retry_request(&retry.retry_id).unwrap();
+    assert_eq!(running.status, "running");
+    assert_eq!(running.attempts, 1);
+    assert!(state.list_queued_runtime_retries(10).unwrap().is_empty());
+
+    let recovered = state
+        .recover_stale_runtime_retries_running(current_time_millis().unwrap())
+        .unwrap();
+    assert_eq!(recovered, 1);
+
+    let queued = state.list_queued_runtime_retries(10).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].retry_id, retry.retry_id);
+    assert_eq!(queued[0].status, "queued");
+    assert_eq!(queued[0].attempts, 1);
+}
+
+#[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

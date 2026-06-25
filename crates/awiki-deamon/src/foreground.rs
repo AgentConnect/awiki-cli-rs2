@@ -59,6 +59,7 @@ use crate::runtime::{
     RuntimeRunStatus, RuntimeTask,
 };
 use crate::runtime_inbox::repair_runtime_controller_inbox_projection;
+use crate::security::runtime_token::current_time_millis;
 use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 mod attachments;
@@ -128,6 +129,20 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     config.ensure_state_layout()?;
     let state = DaemonState::open(&config)?;
     let state_summary = state.initialize()?;
+    let recovered_runtime_retries =
+        state.recover_stale_runtime_retries_running(current_time_millis()?)?;
+    if recovered_runtime_retries > 0 {
+        state.insert_audit_event_json(
+            "runtime.run.retry.recovered",
+            None,
+            None,
+            None,
+            None,
+            json!({
+                "recovered_count": recovered_runtime_retries,
+            }),
+        )?;
+    }
     let im_core = ImCoreAdapter::open(&config)?;
     let im_core_status = im_core
         .initialize_local_state()

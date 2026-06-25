@@ -263,6 +263,21 @@ WHERE retry_id = ?3
         Ok(())
     }
 
+    pub fn recover_stale_runtime_retries_running(&self, stale_before_ms: i64) -> Result<usize> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = 'queued',
+    updated_at_ms = ?1
+WHERE status = 'running'
+  AND updated_at_ms <= ?2
+"#,
+            rusqlite::params![current_time_millis()?, stale_before_ms],
+        )?;
+        Ok(updated)
+    }
+
     pub fn upsert_runtime_final_outbox_pending(
         &self,
         record: &RuntimeFinalOutboxRecord,
