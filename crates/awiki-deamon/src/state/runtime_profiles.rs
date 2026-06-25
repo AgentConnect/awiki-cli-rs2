@@ -1096,6 +1096,73 @@ WHERE daemon_agent_did = ?5
         Ok(())
     }
 
+    pub(super) fn mark_control_command_state_if_status_in(
+        &self,
+        daemon_agent_did: &str,
+        controller_scope_key: &str,
+        command_id: &str,
+        current_statuses: &[&str],
+        status: &str,
+        result_json: Value,
+        error_summary: Option<&str>,
+    ) -> Result<bool> {
+        for (field_name, value) in [
+            ("daemon_agent_did", daemon_agent_did),
+            ("controller_scope_key", controller_scope_key),
+            ("command_id", command_id),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{field_name} must not be empty");
+            }
+        }
+        if current_statuses.is_empty() {
+            bail!("current_statuses must not be empty");
+        }
+        for current_status in current_statuses {
+            validate_control_command_status(current_status)?;
+        }
+        validate_control_command_status(status)?;
+
+        let mut sql = r#"
+UPDATE control_command_state
+SET status = ?1,
+    result_json = ?2,
+    error_summary = ?3,
+    updated_at_ms = ?4
+WHERE daemon_agent_did = ?5
+  AND controller_scope_key = ?6
+  AND command_id = ?7
+  AND status IN (
+"#
+        .to_string();
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(current_statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push_str(")\n");
+
+        let result_json = result_json.to_string();
+        let updated_at_ms = current_time_millis()?;
+        let connection = self.connection()?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![
+            &status,
+            &result_json,
+            &error_summary,
+            &updated_at_ms,
+            &daemon_agent_did,
+            &controller_scope_key,
+            &command_id,
+        ];
+        for current_status in current_statuses {
+            values.push(current_status);
+        }
+
+        let updated = connection.execute(&sql, values.as_slice())?;
+        Ok(updated > 0)
+    }
+
     pub fn reconcile_daemon_upgrade_commands(
         &self,
         daemon_agent_did: &str,
@@ -1162,10 +1229,11 @@ ORDER BY created_at_ms ASC
                 Some(target) => crate::upgrade::version_is_at_least(current_version, target),
             };
             if reached_target {
-                self.mark_control_command_state(
+                self.mark_control_command_state_if_status_in(
                     daemon_agent_did,
                     controller_scope_key,
                     &record.command_id,
+                    &["in_progress", "restart_scheduled"],
                     "succeeded",
                     serde_json::json!({
                         "command": "daemon.upgrade",
@@ -1184,10 +1252,11 @@ ORDER BY created_at_ms ASC
             if age_ms < UPGRADE_RECONCILE_FAILURE_GRACE_MS {
                 continue;
             }
-            self.mark_control_command_state(
+            self.mark_control_command_state_if_status_in(
                 daemon_agent_did,
                 controller_scope_key,
                 &record.command_id,
+                &["in_progress", "restart_scheduled"],
                 "failed",
                 serde_json::json!({
                     "command": "daemon.upgrade",
