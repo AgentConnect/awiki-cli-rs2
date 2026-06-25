@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ use crate::runtime::{
     GenericCliRouteSession, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
     RuntimePlugin, RuntimeRunStatus,
 };
+use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 use crate::workspace::WorkspaceInstance;
 
@@ -376,6 +377,77 @@ pub(crate) fn output_metadata(
         metadata.insert("sanitizer".to_string(), sanitizer);
     }
     Value::Object(metadata)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericCliRunPaths {
+    pub output_dir: PathBuf,
+    pub final_output_path: PathBuf,
+    pub stdout_path: PathBuf,
+    pub stderr_path: PathBuf,
+    pub jsonl_path: PathBuf,
+}
+
+pub(crate) fn generic_cli_run_paths(
+    invocation: &GenericCliInvocation,
+    configured_output_dir: Option<&Path>,
+    driver_dir_name: &str,
+    stdout_filename: &str,
+    stderr_filename: &str,
+    observation_filename: &str,
+) -> GenericCliRunPaths {
+    let output_dir = configured_output_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            if let Some(route_session) = invocation.route_session.as_ref() {
+                return route_session
+                    .session_dir
+                    .join("runs")
+                    .join(sanitize_path_component(&invocation.run_id));
+            }
+            invocation
+                .runtime_temp_dir
+                .clone()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("awiki-deamon")
+                .join("generic-cli")
+                .join(driver_dir_name)
+                .join(sanitize_path_component(&invocation.run_id))
+        });
+    let final_output_path = if configured_output_dir.is_some() {
+        output_dir.join("final-output.txt")
+    } else {
+        invocation
+            .route_session
+            .as_ref()
+            .map(|route_session| route_session.session_dir.join("last-output.md"))
+            .unwrap_or_else(|| output_dir.join("final-output.txt"))
+    };
+    GenericCliRunPaths {
+        final_output_path,
+        stdout_path: output_dir.join(stdout_filename),
+        stderr_path: output_dir.join(stderr_filename),
+        jsonl_path: output_dir.join(observation_filename),
+        output_dir,
+    }
+}
+
+fn sanitize_path_component(input: &str) -> String {
+    let sanitized = input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        format!("run_{}", current_time_millis().unwrap_or_default())
+    } else {
+        sanitized
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -784,5 +856,86 @@ mod tests {
         );
         assert_eq!(output["output_dir"], "/tmp/output");
         assert!(output.get("sanitizer").is_none());
+    }
+
+    #[test]
+    fn shared_run_paths_preserve_route_session_and_configured_output_rules() {
+        let route_session = GenericCliRouteSession {
+            route_key: "route-key".to_string(),
+            route_key_hash: "route-hash".to_string(),
+            session_dir: std::path::PathBuf::from("/tmp/awiki-session"),
+            last_run_id: None,
+            last_message_id: None,
+            native_session_id: None,
+            synthetic_session_id: Some("route-hash".to_string()),
+            status: "new".to_string(),
+        };
+        let base_invocation = GenericCliInvocation {
+            run_id: "run:one".to_string(),
+            task_id: "task-1".to_string(),
+            message_id: "msg-1".to_string(),
+            conversation_id: Some("conv-1".to_string()),
+            task_text: "hello".to_string(),
+            agent_did: "did:agent:one".to_string(),
+            runtime_profile_id: "profile-1".to_string(),
+            workspace_root: None,
+            workspace_instance: None,
+            route_session: Some(route_session),
+            runtime_temp_dir: Some(std::path::PathBuf::from("/tmp/runtime")),
+            runtime_rpc_token: "rtok_1".to_string(),
+            local_socket_path: None,
+            callbacks: Vec::new(),
+        };
+
+        let route_paths = generic_cli_run_paths(
+            &base_invocation,
+            None,
+            "codex",
+            "stdout.jsonl",
+            "stderr.log",
+            "observation.jsonl",
+        );
+        assert_eq!(
+            route_paths.output_dir,
+            std::path::PathBuf::from("/tmp/awiki-session/runs/run_one")
+        );
+        assert_eq!(
+            route_paths.final_output_path,
+            std::path::PathBuf::from("/tmp/awiki-session/last-output.md")
+        );
+
+        let configured_output = std::path::PathBuf::from("/tmp/configured-output");
+        let configured_paths = generic_cli_run_paths(
+            &base_invocation,
+            Some(&configured_output),
+            "codex",
+            "stdout.jsonl",
+            "stderr.log",
+            "observation.jsonl",
+        );
+        assert_eq!(configured_paths.output_dir, configured_output);
+        assert_eq!(
+            configured_paths.final_output_path,
+            std::path::PathBuf::from("/tmp/configured-output/final-output.txt")
+        );
+
+        let mut no_route_invocation = base_invocation.clone();
+        no_route_invocation.route_session = None;
+        let no_route_paths = generic_cli_run_paths(
+            &no_route_invocation,
+            None,
+            "claude-code",
+            "stdout.jsonl",
+            "stderr.log",
+            "observation.jsonl",
+        );
+        assert_eq!(
+            no_route_paths.output_dir,
+            std::path::PathBuf::from("/tmp/runtime/awiki-deamon/generic-cli/claude-code/run_one")
+        );
+        assert_eq!(
+            no_route_paths.final_output_path,
+            no_route_paths.output_dir.join("final-output.txt")
+        );
     }
 }

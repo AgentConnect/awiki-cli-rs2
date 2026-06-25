@@ -7,18 +7,17 @@ use rand::RngCore;
 use serde_json::Value;
 
 use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
-use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    output_metadata, output_sanitizer_metadata,
+    generic_cli_run_paths, output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
     route_session_metadata, sanitize_cli_output_text, validate_native_session_id,
     workspace_metadata, write_sanitized_cli_output, GenericCliDriver, GenericCliExit,
-    GenericCliInvocation, CLAUDE_CODE_CLI_DRIVER_ID,
+    GenericCliInvocation, GenericCliRunPaths, CLAUDE_CODE_CLI_DRIVER_ID,
 };
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
@@ -46,15 +45,6 @@ pub struct ClaudeCodeDriverConfig {
 #[derive(Debug, Clone)]
 pub struct ClaudeCodeDriver {
     config: ClaudeCodeDriverConfig,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaudeCodeRunPaths {
-    pub output_dir: PathBuf,
-    pub final_output_path: PathBuf,
-    pub stdout_path: PathBuf,
-    pub stderr_path: PathBuf,
-    pub jsonl_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,40 +463,15 @@ impl ClaudeCodeDriver {
         args
     }
 
-    pub fn run_paths(&self, invocation: &GenericCliInvocation) -> Result<ClaudeCodeRunPaths> {
-        let output_dir = self.config.output_dir.clone().unwrap_or_else(|| {
-            if let Some(route_session) = invocation.route_session.as_ref() {
-                return route_session
-                    .session_dir
-                    .join("runs")
-                    .join(sanitize_path_component(&invocation.run_id));
-            }
-            invocation
-                .runtime_temp_dir
-                .clone()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("awiki-deamon")
-                .join("generic-cli")
-                .join("claude-code")
-                .join(sanitize_path_component(&invocation.run_id))
-        });
-        let final_output_path = self.config.output_dir.as_ref().map_or_else(
-            || {
-                invocation
-                    .route_session
-                    .as_ref()
-                    .map(|route_session| route_session.session_dir.join("last-output.md"))
-                    .unwrap_or_else(|| output_dir.join("final-output.txt"))
-            },
-            |_| output_dir.join("final-output.txt"),
-        );
-        Ok(ClaudeCodeRunPaths {
-            final_output_path,
-            stdout_path: output_dir.join("claude-stdout.jsonl"),
-            stderr_path: output_dir.join("claude-stderr.log"),
-            jsonl_path: output_dir.join("claude-observation.jsonl"),
-            output_dir,
-        })
+    pub fn run_paths(&self, invocation: &GenericCliInvocation) -> Result<GenericCliRunPaths> {
+        Ok(generic_cli_run_paths(
+            invocation,
+            self.config.output_dir.as_deref(),
+            CLAUDE_CODE_CLI_DRIVER_ID,
+            "claude-stdout.jsonl",
+            "claude-stderr.log",
+            "claude-observation.jsonl",
+        ))
     }
 }
 
@@ -804,22 +769,4 @@ fn generate_uuid_v4() -> String {
         bytes[14],
         bytes[15],
     )
-}
-
-fn sanitize_path_component(input: &str) -> String {
-    let sanitized = input
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if sanitized.is_empty() {
-        format!("run_{}", current_time_millis().unwrap_or_default())
-    } else {
-        sanitized
-    }
 }
