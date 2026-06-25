@@ -335,13 +335,11 @@ where
                     error_summary.as_str(),
                 )?;
             } else {
-                emit_runtime_status(
+                emit_runtime_setup_failed_status(
                     outbox,
                     &run,
-                    "failed",
-                    Some("Runtime setup check failed"),
-                    Some("runtime_install_probe_failed"),
-                    Some(&sanitize_user_visible_error_summary(&error_summary)),
+                    "runtime_install_probe_failed",
+                    &error_summary,
                 )?;
             }
             return Err(error).context("check runtime plugin install status");
@@ -364,6 +362,12 @@ where
                 error_code,
                 error_summary.as_str(),
             )?;
+        } else {
+            let detail = install_status
+                .detail
+                .as_deref()
+                .unwrap_or("runtime plugin is not installed");
+            emit_runtime_setup_failed_status(outbox, &run, "runtime_not_installed", detail)?;
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
@@ -997,6 +1001,22 @@ fn mark_pending_run_as_running(
     state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
     emit_runtime_status(outbox, run, "running", Some("Runtime started"), None, None)?;
     Ok(())
+}
+
+fn emit_runtime_setup_failed_status(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<()> {
+    emit_runtime_status(
+        outbox,
+        run,
+        "failed",
+        Some("Runtime setup failed"),
+        Some(error_code),
+        Some(&sanitize_user_visible_error_summary(error_summary)),
+    )
 }
 
 fn apply_generic_cli_final_fallback(

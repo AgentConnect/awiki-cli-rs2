@@ -173,6 +173,26 @@ impl RuntimePlugin for InstallProbeErrorPlugin {
     }
 }
 
+#[derive(Debug, Clone)]
+struct NotInstalledPlugin;
+
+impl RuntimePlugin for NotInstalledPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: false,
+            detail: Some("missing generic CLI binary".to_string()),
+        })
+    }
+
+    fn launch_run(&self, _context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        unreachable!("runtime host must not launch when plugin is not installed")
+    }
+}
+
 #[test]
 fn install_probe_error_marks_run_failed_with_status_callback() {
     let (root, state) = fixture();
@@ -210,6 +230,50 @@ fn install_probe_error_marks_run_failed_with_status_callback() {
     assert_eq!(
         records[0].last_error_code.as_deref(),
         Some("runtime_install_probe_failed")
+    );
+}
+
+#[test]
+fn not_installed_runtime_marks_run_failed_with_status_callback() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let profile = profile(root.path().join("workspace"));
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &NotInstalledPlugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_not_installed".to_string(),
+            conversation_id: Some("conv_not_installed".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "missing runtime".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("not installed"));
+    let run = state
+        .load_runtime_run("run_task_msg_not_installed")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("runtime_not_installed")
+    );
+    assert_eq!(
+        records[0].last_error_summary.as_deref(),
+        Some("missing generic CLI binary")
     );
 }
 
