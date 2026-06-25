@@ -731,49 +731,51 @@ where
         };
         match send_result {
             Ok(message_id) => {
-                state.mark_message_sync_outbox_sent(&record.idempotency_key)?;
-                state.insert_audit_event_json(
-                    "message_sync_outbox.sent",
-                    None,
-                    None,
-                    record.payload_json.get("run_id").and_then(Value::as_str),
-                    None,
-                    json!({
-                        "idempotency_key": record.idempotency_key,
-                        "owner_did": record.owner_did,
-                        "app_instance_id": record.app_instance_id,
-                        "schema": record.payload_json.get("schema").and_then(Value::as_str),
-                        "sync_type": record.payload_json.get("sync_type").and_then(Value::as_str),
-                        "source_message_id": record.payload_json.get("source_message_id")
-                            .or_else(|| record.payload_json.get("message_id"))
-                            .and_then(Value::as_str),
-                        "message_id": message_id,
-                        "attempt_count": record.attempt_count + 1,
-                    }),
-                )?;
-                sent_count += 1;
-            }
-            Err(error) => {
-                let error_summary = sanitize_error_message(&error.to_string());
-                let attempts = record.attempt_count + 1;
-                if attempts >= MAX_MESSAGE_SYNC_OUTBOX_ATTEMPTS {
-                    state.mark_message_sync_outbox_failed_terminal(
-                        &record.idempotency_key,
-                        "message_sync_delivery_failed",
-                        &error_summary,
-                    )?;
+                if state.mark_message_sync_outbox_sent(&record.idempotency_key)? {
                     state.insert_audit_event_json(
-                        "message_sync_outbox.failed_terminal",
+                        "message_sync_outbox.sent",
                         None,
                         None,
                         record.payload_json.get("run_id").and_then(Value::as_str),
                         None,
                         json!({
                             "idempotency_key": record.idempotency_key,
-                            "attempt_count": attempts,
-                            "reason": error_summary,
+                            "owner_did": record.owner_did,
+                            "app_instance_id": record.app_instance_id,
+                            "schema": record.payload_json.get("schema").and_then(Value::as_str),
+                            "sync_type": record.payload_json.get("sync_type").and_then(Value::as_str),
+                            "source_message_id": record.payload_json.get("source_message_id")
+                                .or_else(|| record.payload_json.get("message_id"))
+                                .and_then(Value::as_str),
+                            "message_id": message_id,
+                            "attempt_count": record.attempt_count + 1,
                         }),
                     )?;
+                    sent_count += 1;
+                }
+            }
+            Err(error) => {
+                let error_summary = sanitize_error_message(&error.to_string());
+                let attempts = record.attempt_count + 1;
+                if attempts >= MAX_MESSAGE_SYNC_OUTBOX_ATTEMPTS {
+                    if state.mark_message_sync_outbox_failed_terminal(
+                        &record.idempotency_key,
+                        "message_sync_delivery_failed",
+                        &error_summary,
+                    )? {
+                        state.insert_audit_event_json(
+                            "message_sync_outbox.failed_terminal",
+                            None,
+                            None,
+                            record.payload_json.get("run_id").and_then(Value::as_str),
+                            None,
+                            json!({
+                                "idempotency_key": record.idempotency_key,
+                                "attempt_count": attempts,
+                                "reason": error_summary,
+                            }),
+                        )?;
+                    }
                 } else {
                     let next_attempt_at_ms = now + message_sync_retry_delay_ms(attempts);
                     state.mark_message_sync_outbox_retry(

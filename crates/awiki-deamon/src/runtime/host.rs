@@ -642,51 +642,59 @@ pub fn flush_runtime_final_outbox(
         };
         match outbox.send_message(&context, &message) {
             Ok(result) => {
-                mark_runtime_final_delivered(state, outbox, &record, result.message_id.as_deref())?;
-                state.insert_audit_event_json(
-                    "runtime.final_outbox.sent",
-                    Some(&record.agent_did),
-                    Some(&record.runtime_profile_id),
-                    Some(&record.run_id),
-                    None,
-                    serde_json::json!({
-                        "idempotency_key": record.idempotency_key,
-                        "message_id": result.message_id,
-                        "attempt_count": record.attempt_count + 1,
-                    }),
-                )?;
-                sent_count += 1;
-            }
-            Err(error) => {
-                let error_summary = sanitize_user_visible_error_summary(&error.to_string());
-                let attempts = record.attempt_count + 1;
-                if attempts >= MAX_RUNTIME_FINAL_OUTBOX_ATTEMPTS {
-                    state.mark_runtime_final_outbox_failed_terminal(
-                        &record.idempotency_key,
-                        "final_delivery_failed",
-                        &error_summary,
-                    )?;
-                    let run = state.load_runtime_run(&record.run_id)?;
-                    mark_runtime_run_failed_with_status(
-                        state,
-                        outbox,
-                        &run,
-                        "Hermes response delivery failed",
-                        "final_delivery_failed",
-                        &error_summary,
-                    )?;
+                if mark_runtime_final_delivered(
+                    state,
+                    outbox,
+                    &record,
+                    result.message_id.as_deref(),
+                )? {
                     state.insert_audit_event_json(
-                        "runtime.final_outbox.failed_terminal",
+                        "runtime.final_outbox.sent",
                         Some(&record.agent_did),
                         Some(&record.runtime_profile_id),
                         Some(&record.run_id),
                         None,
                         serde_json::json!({
                             "idempotency_key": record.idempotency_key,
-                            "attempt_count": attempts,
-                            "reason": error_summary,
+                            "message_id": result.message_id,
+                            "attempt_count": record.attempt_count + 1,
                         }),
                     )?;
+                    sent_count += 1;
+                }
+            }
+            Err(error) => {
+                let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                let attempts = record.attempt_count + 1;
+                if attempts >= MAX_RUNTIME_FINAL_OUTBOX_ATTEMPTS {
+                    let failed_terminal = state.mark_runtime_final_outbox_failed_terminal(
+                        &record.idempotency_key,
+                        "final_delivery_failed",
+                        &error_summary,
+                    )?;
+                    if failed_terminal {
+                        let run = state.load_runtime_run(&record.run_id)?;
+                        mark_runtime_run_failed_with_status(
+                            state,
+                            outbox,
+                            &run,
+                            "Hermes response delivery failed",
+                            "final_delivery_failed",
+                            &error_summary,
+                        )?;
+                        state.insert_audit_event_json(
+                            "runtime.final_outbox.failed_terminal",
+                            Some(&record.agent_did),
+                            Some(&record.runtime_profile_id),
+                            Some(&record.run_id),
+                            None,
+                            serde_json::json!({
+                                "idempotency_key": record.idempotency_key,
+                                "attempt_count": attempts,
+                                "reason": error_summary,
+                            }),
+                        )?;
+                    }
                 } else {
                     let next_attempt_at_ms = now + runtime_final_retry_delay_ms(attempts);
                     state.mark_runtime_final_outbox_retry(
@@ -872,8 +880,10 @@ fn mark_runtime_final_delivered(
     outbox: &impl RuntimeOutbox,
     record: &RuntimeFinalOutboxRecord,
     message_id: Option<&str>,
-) -> Result<()> {
-    state.mark_runtime_final_outbox_sent(&record.idempotency_key, message_id)?;
+) -> Result<bool> {
+    if !state.mark_runtime_final_outbox_sent(&record.idempotency_key, message_id)? {
+        return Ok(false);
+    }
     let run = state.load_runtime_run(&record.run_id)?;
     let updated = state
         .update_runtime_run_status_if_status_in(
@@ -892,7 +902,7 @@ fn mark_runtime_final_delivered(
             None,
         )?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn runtime_final_outbox_record(

@@ -373,9 +373,16 @@ fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
     state
         .mark_message_sync_outbox_sending(&sync.idempotency_key)
         .unwrap();
-    state
+    assert!(state
         .mark_message_sync_outbox_sent(&sync.idempotency_key)
-        .unwrap();
+        .unwrap());
+    assert!(!state
+        .mark_message_sync_outbox_failed_terminal(
+            &sync.idempotency_key,
+            "message_sync_delivery_failed",
+            "late terminal failure",
+        )
+        .unwrap());
     let sent_sync = state
         .load_message_sync_outbox(&sync.idempotency_key)
         .unwrap()
@@ -410,13 +417,16 @@ fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
     assert!(state
         .mark_message_sync_outbox_sending(&failed_sync.idempotency_key)
         .unwrap());
-    state
+    assert!(state
         .mark_message_sync_outbox_failed_terminal(
             &failed_sync.idempotency_key,
             "message_sync_delivery_failed",
             "terminal delivery failure",
         )
-        .unwrap();
+        .unwrap());
+    assert!(!state
+        .mark_message_sync_outbox_sent(&failed_sync.idempotency_key)
+        .unwrap());
     state
         .upsert_message_sync_outbox(&MessageSyncOutboxRecord {
             status: "pending".to_string(),
@@ -1194,9 +1204,16 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     assert!(state
         .mark_runtime_final_outbox_sending(&record.idempotency_key)
         .unwrap());
-    state
+    assert!(state
         .mark_runtime_final_outbox_sent(&record.idempotency_key, Some("msg_final_1"))
-        .unwrap();
+        .unwrap());
+    assert!(!state
+        .mark_runtime_final_outbox_failed_terminal(
+            &record.idempotency_key,
+            "final_delivery_failed",
+            "late terminal failure",
+        )
+        .unwrap());
     let stored = state
         .load_runtime_final_outbox_by_run("run_1")
         .unwrap()
@@ -1225,13 +1242,19 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
             "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice"
         )
         .unwrap());
-    state
+    assert!(state
         .mark_runtime_final_outbox_failed_terminal(
             "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice",
             "final_delivery_failed",
             "terminal delivery failure",
         )
-        .unwrap();
+        .unwrap());
+    assert!(!state
+        .mark_runtime_final_outbox_sent(
+            "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice",
+            Some("late_msg_final"),
+        )
+        .unwrap());
     state
         .upsert_runtime_final_outbox_pending(&RuntimeFinalOutboxRecord {
             idempotency_key:

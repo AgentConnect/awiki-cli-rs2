@@ -486,7 +486,7 @@ WHERE idempotency_key = ?2
         &self,
         idempotency_key: &str,
         message_id: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let now = current_time_millis()?;
         let connection = self.connection()?;
         let updated = connection.execute(
@@ -499,13 +499,14 @@ SET status = 'sent',
     last_error_code = NULL,
     last_error_summary = NULL
 WHERE idempotency_key = ?3
+  AND status = 'sending'
 "#,
             rusqlite::params![message_id, now, idempotency_key],
         )?;
         if updated == 0 {
-            bail!("runtime final outbox does not exist: {idempotency_key}");
+            ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
-        Ok(())
+        Ok(updated > 0)
     }
 
     pub fn mark_runtime_final_outbox_retry(
@@ -568,7 +569,7 @@ WHERE status = 'sending'
         idempotency_key: &str,
         error_code: &str,
         error_summary: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let connection = self.connection()?;
         let updated = connection.execute(
             r#"
@@ -578,6 +579,7 @@ SET status = 'failed_terminal',
     last_error_summary = ?2,
     updated_at_ms = ?3
 WHERE idempotency_key = ?4
+  AND status = 'sending'
 "#,
             rusqlite::params![
                 error_code,
@@ -587,9 +589,9 @@ WHERE idempotency_key = ?4
             ],
         )?;
         if updated == 0 {
-            bail!("runtime final outbox does not exist: {idempotency_key}");
+            ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
-        Ok(())
+        Ok(updated > 0)
     }
 
     pub fn update_runtime_run_status(&self, run_id: &str, status: RuntimeRunStatus) -> Result<()> {
@@ -1026,6 +1028,21 @@ LIMIT 1
             .optional()
             .context("load latest cli driver run by route")
     }
+}
+
+fn ensure_runtime_final_outbox_exists(
+    connection: &rusqlite::Connection,
+    idempotency_key: &str,
+) -> Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_final_outbox WHERE idempotency_key = ?1)",
+        [idempotency_key],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        bail!("runtime final outbox does not exist: {idempotency_key}");
+    }
+    Ok(())
 }
 
 fn conversation_scope_from_storage(kind: &str, key: &str) -> Result<RuntimeConversationScope> {

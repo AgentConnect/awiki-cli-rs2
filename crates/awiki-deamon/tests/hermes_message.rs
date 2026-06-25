@@ -444,7 +444,7 @@ fn hermes_message_failed_status_does_not_send_success_final() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("failed"));
     assert_eq!(records[1].kind, OutboxRecordKind::Message);
@@ -457,8 +457,6 @@ fn hermes_message_failed_status_does_not_send_success_final() {
         records[1].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[2].kind, OutboxRecordKind::Status);
-    assert_eq!(records[2].state.as_deref(), Some("failed"));
     assert!(!records
         .iter()
         .any(|record| record.kind == OutboxRecordKind::Final));

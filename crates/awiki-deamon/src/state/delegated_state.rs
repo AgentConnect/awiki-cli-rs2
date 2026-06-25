@@ -862,7 +862,7 @@ WHERE idempotency_key = ?2
         Ok(updated > 0)
     }
 
-    pub fn mark_message_sync_outbox_sent(&self, idempotency_key: &str) -> Result<()> {
+    pub fn mark_message_sync_outbox_sent(&self, idempotency_key: &str) -> Result<bool> {
         let now = current_time_millis()?;
         let connection = self.connection()?;
         let updated = connection.execute(
@@ -874,13 +874,14 @@ SET status = 'sent',
     last_error_code = NULL,
     last_error_summary = NULL
 WHERE idempotency_key = ?2
+  AND status = 'sending'
 "#,
             rusqlite::params![now, idempotency_key],
         )?;
         if updated == 0 {
-            bail!("message sync outbox does not exist: {idempotency_key}");
+            ensure_message_sync_outbox_exists(&connection, idempotency_key)?;
         }
-        Ok(())
+        Ok(updated > 0)
     }
 
     pub fn mark_message_sync_outbox_retry(
@@ -943,7 +944,7 @@ WHERE status = 'sending'
         idempotency_key: &str,
         error_code: &str,
         error_summary: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let connection = self.connection()?;
         let updated = connection.execute(
             r#"
@@ -953,6 +954,7 @@ SET status = 'failed_terminal',
     last_error_summary = ?2,
     updated_at_ms = ?3
 WHERE idempotency_key = ?4
+  AND status = 'sending'
 "#,
             rusqlite::params![
                 error_code,
@@ -962,9 +964,9 @@ WHERE idempotency_key = ?4
             ],
         )?;
         if updated == 0 {
-            bail!("message sync outbox does not exist: {idempotency_key}");
+            ensure_message_sync_outbox_exists(&connection, idempotency_key)?;
         }
-        Ok(())
+        Ok(updated > 0)
     }
 
     pub fn store_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<()> {
@@ -1020,4 +1022,19 @@ ORDER BY agent_did ASC
         }
         Ok(tokens)
     }
+}
+
+fn ensure_message_sync_outbox_exists(
+    connection: &rusqlite::Connection,
+    idempotency_key: &str,
+) -> Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM message_sync_outbox WHERE idempotency_key = ?1)",
+        [idempotency_key],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        bail!("message sync outbox does not exist: {idempotency_key}");
+    }
+    Ok(())
 }
