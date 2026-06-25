@@ -289,6 +289,105 @@ fn msg_send_requires_recipient_text_and_supported_security() {
 }
 
 #[test]
+fn task_status_rejects_unknown_state_and_preserves_terminal_run_state() {
+    let (_root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
+    let issued = issue(
+        &state,
+        vec![RpcMethod::TaskStatus, RpcMethod::TaskFinish],
+        None,
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let unknown_state = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.status".to_string(),
+            params: json!({ "state": "waiting" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(unknown_state
+        .to_string()
+        .contains("unsupported runtime run status"));
+    assert_eq!(
+        state.load_runtime_run("run_1").unwrap().status,
+        RuntimeRunStatus::Pending
+    );
+    assert!(outbox.records().is_empty());
+
+    execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.finish".to_string(),
+            params: json!({ "text": "done" }),
+            debug: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        state.load_runtime_run("run_1").unwrap().status,
+        RuntimeRunStatus::Finished
+    );
+
+    execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.status".to_string(),
+            params: json!({ "state": "failed", "text": "late failure" }),
+            debug: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        state.load_runtime_run("run_1").unwrap().status,
+        RuntimeRunStatus::Finished
+    );
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Final);
+    assert_eq!(records[0].state.as_deref(), Some("finished"));
+    assert_eq!(records[0].text.as_deref(), Some("done"));
+}
+
+#[test]
+fn task_finish_does_not_resurrect_failed_run() {
+    let (_root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
+    state
+        .update_runtime_run_status("run_1", RuntimeRunStatus::Failed)
+        .unwrap();
+    let issued = issue(&state, vec![RpcMethod::TaskFinish], None);
+    let outbox = MemoryRuntimeOutbox::default();
+
+    execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.finish".to_string(),
+            params: json!({ "text": "late success" }),
+            debug: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        state.load_runtime_run("run_1").unwrap().status,
+        RuntimeRunStatus::Failed
+    );
+    assert!(outbox.records().is_empty());
+}
+
+#[test]
 fn msg_send_records_direct_message_side_effect_with_security_mode() {
     let (_root, state) = fixture();
     let issued = issue(

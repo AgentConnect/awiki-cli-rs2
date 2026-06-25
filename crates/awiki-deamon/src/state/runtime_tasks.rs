@@ -627,6 +627,79 @@ WHERE run_id = ?6
         Ok(())
     }
 
+    pub fn update_runtime_run_status_if_status_in(
+        &self,
+        run_id: &str,
+        current_statuses: &[RuntimeRunStatus],
+        status: RuntimeRunStatus,
+    ) -> Result<bool> {
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        if current_statuses.is_empty() {
+            bail!("current_statuses must not be empty");
+        }
+
+        let now = current_time_millis()?;
+        let completed_at = match status {
+            RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => Some(now.to_string()),
+            RuntimeRunStatus::Pending | RuntimeRunStatus::Running => None,
+        };
+        let completed_at_ms = match status {
+            RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => Some(now),
+            RuntimeRunStatus::Pending | RuntimeRunStatus::Running => None,
+        };
+        let mut sql = r#"
+UPDATE runtime_run
+SET status = ?1,
+    completed_at = COALESCE(?2, completed_at),
+    updated_at = ?3,
+    completed_at_ms = COALESCE(?4, completed_at_ms),
+    updated_at_ms = ?5
+WHERE run_id = ?6
+  AND status IN (
+"#
+        .to_string();
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(current_statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push_str(")\n");
+
+        let status_value = status.as_str();
+        let updated_at = now.to_string();
+        let current_status_values = current_statuses
+            .iter()
+            .map(RuntimeRunStatus::as_str)
+            .collect::<Vec<_>>();
+        let connection = self.connection()?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![
+            &status_value,
+            &completed_at,
+            &updated_at,
+            &completed_at_ms,
+            &now,
+            &run_id,
+        ];
+        for current_status in current_status_values.iter() {
+            values.push(current_status);
+        }
+        let updated = connection.execute(&sql, values.as_slice())?;
+        if updated == 0 {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_run WHERE run_id = ?1)",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                bail!("runtime run does not exist: {run_id}");
+            }
+        }
+        Ok(updated > 0)
+    }
+
     pub fn recover_stale_active_runtime_runs(&self, stale_before_ms: i64) -> Result<usize> {
         let connection = self.connection()?;
         let now = current_time_millis()?;

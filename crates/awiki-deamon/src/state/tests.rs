@@ -979,6 +979,63 @@ fn runtime_run_recovery_marks_stale_active_runs_failed() {
 }
 
 #[test]
+fn runtime_run_conditional_status_update_preserves_terminal_state() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    for (run_id, status) in [
+        ("run_terminal_finished", RuntimeRunStatus::Finished),
+        ("run_terminal_failed", RuntimeRunStatus::Failed),
+    ] {
+        state
+            .insert_runtime_run(&RuntimeRun {
+                run_id: run_id.to_string(),
+                task_id: format!("task_{run_id}"),
+                agent_did: "did:agent:hermes".to_string(),
+                runtime_profile_id: "profile_hermes".to_string(),
+                runtime_plugin_id: "hermes".to_string(),
+                workspace_id: None,
+                status,
+            })
+            .unwrap();
+    }
+
+    let finished_updated = state
+        .update_runtime_run_status_if_status_in(
+            "run_terminal_finished",
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Failed,
+        )
+        .unwrap();
+    let failed_updated = state
+        .update_runtime_run_status_if_status_in(
+            "run_terminal_failed",
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Finished,
+        )
+        .unwrap();
+
+    assert!(!finished_updated);
+    assert!(!failed_updated);
+    assert_eq!(
+        state
+            .load_runtime_run("run_terminal_finished")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Finished
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_terminal_failed")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+}
+
+#[test]
 fn runtime_retry_queue_recovers_stale_running_retries() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

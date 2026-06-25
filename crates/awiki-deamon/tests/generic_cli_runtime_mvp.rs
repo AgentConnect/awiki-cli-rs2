@@ -544,6 +544,37 @@ impl RuntimePlugin for DuplicateFinishCallbackPlugin {
 }
 
 #[derive(Debug, Clone)]
+struct FinishCallbackWithFailedOutcomePlugin;
+
+impl RuntimePlugin for FinishCallbackWithFailedOutcomePlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("finish callback with failed outcome test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        Ok(RuntimeLaunchOutcome {
+            run_id: context.run.run_id,
+            status: RuntimeRunStatus::Failed,
+            exit_code: Some(17),
+            callbacks: vec![awiki_deamon::cli_wrapper::CliWrapperRequest::task_finish(
+                context.runtime_rpc_token.as_str().to_string(),
+                context.task.task_id,
+                "callback final arrived before driver failure",
+            )
+            .into_rpc_request()],
+            metadata: json!({"driver_id": "codex"}),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct UnauthorizedMsgSendCallbackPlugin;
 
 impl RuntimePlugin for UnauthorizedMsgSendCallbackPlugin {
@@ -605,6 +636,43 @@ fn duplicate_task_finish_callback_is_idempotent() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Final);
     assert_eq!(records[0].text.as_deref(), Some("first done"));
+}
+
+#[test]
+fn failed_driver_outcome_does_not_overwrite_finished_callback() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = FinishCallbackWithFailedOutcomePlugin;
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_finished_then_failed".to_string(),
+            conversation_id: Some("conv_finished_then_failed".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "finish callback then failed outcome".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Final);
+    assert_eq!(
+        records[0].text.as_deref(),
+        Some("callback final arrived before driver failure")
+    );
 }
 
 #[test]

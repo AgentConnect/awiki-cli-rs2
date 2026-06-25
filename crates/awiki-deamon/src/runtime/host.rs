@@ -875,17 +875,23 @@ fn mark_runtime_final_delivered(
 ) -> Result<()> {
     state.mark_runtime_final_outbox_sent(&record.idempotency_key, message_id)?;
     let run = state.load_runtime_run(&record.run_id)?;
-    state
-        .update_runtime_run_status(&record.run_id, RuntimeRunStatus::Finished)
+    let updated = state
+        .update_runtime_run_status_if_status_in(
+            &record.run_id,
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Finished,
+        )
         .context("mark Hermes run finished after final delivery")?;
-    emit_runtime_status(
-        outbox,
-        &run,
-        "succeeded",
-        Some("Hermes response sent"),
-        None,
-        None,
-    )?;
+    if updated {
+        emit_runtime_status(
+            outbox,
+            &run,
+            "succeeded",
+            Some("Hermes response sent"),
+            None,
+            None,
+        )?;
+    }
     Ok(())
 }
 
@@ -1013,15 +1019,16 @@ fn emit_hermes_failure_outputs(
             security: RuntimeMessageSecurity::DefaultPlain,
         },
     );
-    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-    emit_runtime_status(
-        outbox,
-        run,
-        "failed",
-        Some("Hermes run failed"),
-        Some(error_code),
-        Some(&sanitized),
-    )?;
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some("Hermes run failed"),
+            Some(error_code),
+            Some(&sanitized),
+        )?;
+    }
     Ok(())
 }
 
@@ -1030,11 +1037,13 @@ fn mark_pending_run_as_running(
     outbox: &impl RuntimeOutbox,
     run: &RuntimeRun,
 ) -> Result<()> {
-    if state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Pending {
-        return Ok(());
+    if state.update_runtime_run_status_if_status_in(
+        &run.run_id,
+        &[RuntimeRunStatus::Pending],
+        RuntimeRunStatus::Running,
+    )? {
+        emit_runtime_status(outbox, run, "running", Some("Runtime started"), None, None)?;
     }
-    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
-    emit_runtime_status(outbox, run, "running", Some("Runtime started"), None, None)?;
     Ok(())
 }
 
@@ -1077,15 +1086,17 @@ fn mark_runtime_run_failed_with_status(
     error_code: &str,
     error_summary: &str,
 ) -> Result<()> {
-    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-    emit_runtime_status(
-        outbox,
-        run,
-        "failed",
-        Some(message),
-        Some(error_code),
-        Some(&sanitize_user_visible_error_summary(error_summary)),
-    )
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some(message),
+            Some(error_code),
+            Some(&sanitize_user_visible_error_summary(error_summary)),
+        )?;
+    }
+    Ok(())
 }
 
 fn apply_generic_cli_final_fallback(
@@ -1095,8 +1106,12 @@ fn apply_generic_cli_final_fallback(
     launch_outcome: &RuntimeLaunchOutcome,
     runtime_rpc_token: &str,
 ) -> Result<Option<&'static str>> {
+    let stored_status = state.load_runtime_run(&run.run_id)?.status;
     if launch_outcome.status != RuntimeRunStatus::Finished
-        || state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Finished
+        || !matches!(
+            stored_status,
+            RuntimeRunStatus::Pending | RuntimeRunStatus::Running
+        )
     {
         return Ok(None);
     }
@@ -1132,21 +1147,28 @@ fn apply_terminal_failure_fallback(
     run: &RuntimeRun,
     launch_outcome: &RuntimeLaunchOutcome,
 ) -> Result<()> {
-    if launch_outcome.status != RuntimeRunStatus::Failed
-        || state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Failed
-    {
+    if launch_outcome.status != RuntimeRunStatus::Failed {
         return Ok(());
     }
-    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-    emit_runtime_status(
-        outbox,
-        run,
-        "failed",
-        Some("Runtime failed"),
-        Some("runtime_failed"),
-        Some(&runtime_launch_failure_summary(launch_outcome)),
-    )?;
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some("Runtime failed"),
+            Some("runtime_failed"),
+            Some(&runtime_launch_failure_summary(launch_outcome)),
+        )?;
+    }
     Ok(())
+}
+
+fn mark_active_runtime_run_failed(state: &DaemonState, run_id: &str) -> Result<bool> {
+    state.update_runtime_run_status_if_status_in(
+        run_id,
+        &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+        RuntimeRunStatus::Failed,
+    )
 }
 
 fn emit_runtime_status(

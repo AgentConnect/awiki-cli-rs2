@@ -267,27 +267,26 @@ fn apply_runtime_rpc_side_effects(
                 .get("state")
                 .and_then(Value::as_str)
                 .unwrap_or("running");
-            let status = match state_value {
-                "pending" => RuntimeRunStatus::Pending,
-                "running" => RuntimeRunStatus::Running,
-                "finished" => RuntimeRunStatus::Finished,
-                "failed" => RuntimeRunStatus::Failed,
-                _ => RuntimeRunStatus::Running,
-            };
-            state.update_runtime_run_status(&context.run_id, status)?;
-            outbox.send_status(
-                context,
-                state_value,
-                params.get("text").and_then(Value::as_str),
-            )?;
+            let status = RuntimeRunStatus::parse(state_value)?;
+            let should_send_status =
+                update_runtime_run_status_from_callback(state, &context.run_id, status)?;
+            if should_send_status {
+                outbox.send_status(
+                    context,
+                    state_value,
+                    params.get("text").and_then(Value::as_str),
+                )?;
+            }
         }
         RpcMethod::TaskFinish => {
-            let run = state.load_runtime_run(&context.run_id)?;
-            if run.status == RuntimeRunStatus::Finished {
-                return Ok(());
+            let should_send_final = state.update_runtime_run_status_if_status_in(
+                &context.run_id,
+                &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+                RuntimeRunStatus::Finished,
+            )?;
+            if should_send_final {
+                outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
             }
-            state.update_runtime_run_status(&context.run_id, RuntimeRunStatus::Finished)?;
-            outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
         }
         RpcMethod::AppActionRequest => {
             queue_runtime_app_action_request(state, context, params)?;
@@ -296,6 +295,31 @@ fn apply_runtime_rpc_side_effects(
         RpcMethod::RpcPing | RpcMethod::ArtifactCreated => {}
     }
     Ok(())
+}
+
+fn update_runtime_run_status_from_callback(
+    state: &DaemonState,
+    run_id: &str,
+    status: RuntimeRunStatus,
+) -> Result<bool> {
+    match status {
+        RuntimeRunStatus::Pending => state.update_runtime_run_status_if_status_in(
+            run_id,
+            &[RuntimeRunStatus::Pending],
+            RuntimeRunStatus::Pending,
+        ),
+        RuntimeRunStatus::Running => state.update_runtime_run_status_if_status_in(
+            run_id,
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Running,
+        ),
+        RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => state
+            .update_runtime_run_status_if_status_in(
+                run_id,
+                &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+                status,
+            ),
+    }
 }
 
 fn resolve_message_recipient(
