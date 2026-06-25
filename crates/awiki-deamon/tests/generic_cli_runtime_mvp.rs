@@ -686,7 +686,18 @@ fn generic_cli_runtime_profile_policy_rejects_unlisted_msg_send() {
     .unwrap_err();
 
     assert!(error.to_string().contains("runtime callback"));
-    assert!(outbox.records().is_empty());
+    let run = state
+        .load_runtime_run("run_task_msg_policy_blocked")
+        .unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("runtime_callback_failed")
+    );
 }
 
 #[derive(Debug, Clone)]

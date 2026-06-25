@@ -442,8 +442,11 @@ where
         }
     };
     for callback in launch_outcome.callbacks.iter().cloned() {
-        execute_runtime_rpc_request_with_outbox(state, outbox, callback)
-            .context("apply runtime callback")?;
+        if let Err(error) = execute_runtime_rpc_request_with_outbox(state, outbox, callback) {
+            state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+            emit_runtime_callback_failed_status(outbox, &run, &error.to_string())?;
+            return Err(error).context("apply runtime callback");
+        }
     }
     mark_pending_run_as_running(state, outbox, &run)?;
 
@@ -1032,6 +1035,21 @@ fn emit_runtime_launch_failed_status(
         "failed",
         Some("Runtime launch failed"),
         Some("runtime_launch_failed"),
+        Some(&sanitize_user_visible_error_summary(error_summary)),
+    )
+}
+
+fn emit_runtime_callback_failed_status(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    error_summary: &str,
+) -> Result<()> {
+    emit_runtime_status(
+        outbox,
+        run,
+        "failed",
+        Some("Runtime callback failed"),
+        Some("runtime_callback_failed"),
         Some(&sanitize_user_visible_error_summary(error_summary)),
     )
 }
