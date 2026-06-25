@@ -193,6 +193,26 @@ impl RuntimePlugin for NotInstalledPlugin {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LaunchErrorPlugin;
+
+impl RuntimePlugin for LaunchErrorPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        Ok(RuntimeInstallStatus {
+            installed: true,
+            detail: Some("launch error test plugin".to_string()),
+        })
+    }
+
+    fn launch_run(&self, _context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        anyhow::bail!("launch crashed")
+    }
+}
+
 #[test]
 fn install_probe_error_marks_run_failed_with_status_callback() {
     let (root, state) = fixture();
@@ -274,6 +294,48 @@ fn not_installed_runtime_marks_run_failed_with_status_callback() {
     assert_eq!(
         records[0].last_error_summary.as_deref(),
         Some("missing generic CLI binary")
+    );
+}
+
+#[test]
+fn launch_error_marks_run_failed_with_status_callback() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let profile = profile(root.path().join("workspace"));
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &LaunchErrorPlugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_launch_error".to_string(),
+            conversation_id: Some("conv_launch_error".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "launch runtime".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("launch runtime run"));
+    let run = state.load_runtime_run("run_task_msg_launch_error").unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("runtime_launch_failed")
+    );
+    assert_eq!(
+        records[0].last_error_summary.as_deref(),
+        Some("launch crashed")
     );
 }
 

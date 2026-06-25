@@ -435,6 +435,8 @@ where
                     error_code,
                     error_summary.as_str(),
                 )?;
+            } else {
+                emit_runtime_launch_failed_status(outbox, &run, &error.to_string())?;
             }
             return Err(error).context("launch runtime run");
         }
@@ -1015,6 +1017,21 @@ fn emit_runtime_setup_failed_status(
         "failed",
         Some("Runtime setup failed"),
         Some(error_code),
+        Some(&sanitize_user_visible_error_summary(error_summary)),
+    )
+}
+
+fn emit_runtime_launch_failed_status(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    error_summary: &str,
+) -> Result<()> {
+    emit_runtime_status(
+        outbox,
+        run,
+        "failed",
+        Some("Runtime launch failed"),
+        Some("runtime_launch_failed"),
         Some(&sanitize_user_visible_error_summary(error_summary)),
     )
 }
