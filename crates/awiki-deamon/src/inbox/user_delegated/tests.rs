@@ -467,6 +467,52 @@ fn delegated_inbox_skips_app_recovery_control_payload_without_resyncing() {
 }
 
 #[test]
+fn delegated_inbox_skips_bound_daemon_status_payload_without_resyncing() {
+    let fixture = fixture();
+    let state = &fixture.state;
+    let binding = &fixture.binding;
+    let client = MockClient {
+        pages: Arc::new(Mutex::new(vec![DelegatedInboxPage {
+            messages: vec![direct_payload_message(
+                "msg_daemon_status",
+                &binding.daemon_agent_did,
+                json!({
+                    "command_id": "cmd_agent_status_1",
+                    "daemon_agent_did": binding.daemon_agent_did,
+                    "daemon": {},
+                }),
+            )],
+            next_cursor: None,
+            has_more: false,
+        }])),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let dispatcher = RecordingDispatcher::default();
+
+    let outcome =
+        process_user_delegated_inbox_for_binding(state, &client, &dispatcher, binding).unwrap();
+
+    assert_eq!(outcome.dispatched_messages, 0);
+    assert_eq!(outcome.skipped_app_control_messages, 1);
+    assert_eq!(outcome.skipped_unsupported_messages, 0);
+    assert!(dispatcher.dispatched.lock().unwrap().is_empty());
+    let processed = state
+        .load_processed_message(&binding.user_did, "msg_daemon_status")
+        .unwrap()
+        .unwrap();
+    assert_eq!(processed.schema, "awiki.app_control.unknown.v1");
+    assert_eq!(processed.status, PROCESSED_STATUS_SKIPPED_APP_CONTROL);
+    assert!(state
+        .load_message_event(&event_id(&binding.user_did, "msg_daemon_status"))
+        .unwrap()
+        .is_none());
+    assert!(state
+        .load_message_sync_outbox(&message_sync_idempotency_key(binding, "msg_daemon_status"))
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn delegated_inbox_ignores_structured_group_agent_mentions() {
     let fixture = fixture();
     let state = &fixture.state;

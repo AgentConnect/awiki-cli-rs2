@@ -20,9 +20,16 @@ use crate::state::{CliRouteSessionRecord, CliRuntimeProfileRecord};
 use self::process::{ManagedChild, DEFAULT_GENERIC_CLI_RUN_TIMEOUT};
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
+pub const CLI_ENV_PASSTHROUGH_KEY: &str = "AWIKI_DAEMON_CLI_ENV_PASSTHROUGH";
 const MAX_NATIVE_SESSION_ID_LEN: usize = 128;
 pub const OUTPUT_SANITIZER_VERSION: &str = "generic-cli-output-sanitizer-v1";
 pub const DEFAULT_SANITIZED_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeEnvSelector {
+    Exact(String),
+    Prefix(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SanitizedCliOutput {
@@ -116,6 +123,87 @@ pub fn sanitize_cli_output_file(
     std::fs::write(path, sanitized.text.as_bytes())
         .with_context(|| format!("write sanitized CLI output {}", path.display()))?;
     Ok(Some(sanitized))
+}
+
+pub fn apply_runtime_env_passthrough(command: &mut Command, default_selectors: &[&str]) {
+    let extra = std::env::var(CLI_ENV_PASSTHROUGH_KEY).ok();
+    let selectors = runtime_env_selectors(default_selectors, extra.as_deref());
+    if selectors.is_empty() {
+        return;
+    }
+    for (key, value) in std::env::vars_os() {
+        let Some(key_str) = key.to_str() else {
+            continue;
+        };
+        if key_str == CLI_ENV_PASSTHROUGH_KEY {
+            continue;
+        }
+        if runtime_env_key_allowed(key_str, &selectors) {
+            command.env(key, value);
+        }
+    }
+}
+
+fn runtime_env_selectors(
+    default_selectors: &[&str],
+    extra: Option<&str>,
+) -> Vec<RuntimeEnvSelector> {
+    let mut selectors = Vec::new();
+    for token in default_selectors
+        .iter()
+        .copied()
+        .chain(extra.into_iter().flat_map(split_runtime_env_selector_list))
+    {
+        let Some(selector) = parse_runtime_env_selector(token) else {
+            continue;
+        };
+        if !selectors.contains(&selector) {
+            selectors.push(selector);
+        }
+    }
+    selectors
+}
+
+fn split_runtime_env_selector_list(value: &str) -> impl Iterator<Item = &str> {
+    value.split(|ch: char| ch == ',' || ch == ';' || ch == ':' || ch.is_ascii_whitespace())
+}
+
+fn parse_runtime_env_selector(raw: &str) -> Option<RuntimeEnvSelector> {
+    let token = raw.trim();
+    if token.is_empty() {
+        return None;
+    }
+    if let Some(prefix) = token.strip_suffix('*') {
+        let prefix = prefix.trim();
+        if valid_runtime_env_name_prefix(prefix) {
+            return Some(RuntimeEnvSelector::Prefix(prefix.to_string()));
+        }
+        return None;
+    }
+    if valid_runtime_env_name(token) {
+        Some(RuntimeEnvSelector::Exact(token.to_string()))
+    } else {
+        None
+    }
+}
+
+fn runtime_env_key_allowed(key: &str, selectors: &[RuntimeEnvSelector]) -> bool {
+    selectors.iter().any(|selector| match selector {
+        RuntimeEnvSelector::Exact(exact) => key == exact,
+        RuntimeEnvSelector::Prefix(prefix) => key.starts_with(prefix),
+    })
+}
+
+fn valid_runtime_env_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn valid_runtime_env_name_prefix(value: &str) -> bool {
+    valid_runtime_env_name(value)
 }
 
 fn truncate_utf8_to_bytes(text: String, max_text_bytes: usize) -> (String, bool) {
@@ -648,4 +736,30 @@ fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration 
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_env_selectors_accept_exact_prefix_and_extra_list() {
+        let selectors = runtime_env_selectors(
+            &["ANTHROPIC_*", "CLAUDE_CODEX_MODEL", "invalid-lower"],
+            Some("OPENAI_API_KEY;OPENAI_BASE_URL CODEX_*:bad-name"),
+        );
+
+        assert!(runtime_env_key_allowed("ANTHROPIC_BASE_URL", &selectors));
+        assert!(runtime_env_key_allowed("ANTHROPIC_AUTH_TOKEN", &selectors));
+        assert!(runtime_env_key_allowed("CLAUDE_CODEX_MODEL", &selectors));
+        assert!(runtime_env_key_allowed("OPENAI_API_KEY", &selectors));
+        assert!(runtime_env_key_allowed("OPENAI_BASE_URL", &selectors));
+        assert!(runtime_env_key_allowed("CODEX_SANDBOX", &selectors));
+        assert!(!runtime_env_key_allowed("ANTHROPIC", &selectors));
+        assert!(!runtime_env_key_allowed("invalid-lower", &selectors));
+        assert!(!runtime_env_key_allowed(
+            CLI_ENV_PASSTHROUGH_KEY,
+            &selectors
+        ));
+    }
 }

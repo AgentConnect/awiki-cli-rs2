@@ -142,6 +142,19 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         im_core_schema_version: im_core_status.schema_version,
     };
 
+    if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
+        let report =
+            crate::archive::finalize_daemon_archive_for_foreground_shutdown(&config, &archive_id)?;
+        return Ok(ForegroundRunSummary {
+            status,
+            processed_messages: 0,
+            sent_status_messages: 0,
+            status_message_ids: Vec::new(),
+            runtime_ms: started_at.elapsed().as_millis(),
+            exit_reason: format!("daemon_archived:{}", report.archive_id),
+        });
+    }
+
     if let Some(token) = options.agent_jwt_token.as_deref() {
         store_agent_token_for_configured_agents(&state, token)?;
     }
@@ -197,6 +210,14 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
         let newly_processed = process_inbox_once(&config, &state, &im_core, &mut processed).await?;
+        processed_messages += newly_processed;
+        if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
+            let report = crate::archive::finalize_daemon_archive_for_foreground_shutdown(
+                &config,
+                &archive_id,
+            )?;
+            break format!("daemon_archived:{}", report.archive_id);
+        }
         let delegated_processed = process_user_delegated_inbox_once(&config, &state, &im_core)?;
         if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
             state.insert_audit_event_json(
@@ -262,8 +283,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 Ok(_) => {}
             }
         };
-        let newly_processed =
-            newly_processed + delegated_processed + queue_processed + retry_processed;
+        let newly_processed = delegated_processed + queue_processed + retry_processed;
         processed_messages += newly_processed;
         if let Some(limit) = options.max_processed_messages {
             if processed_messages >= limit {

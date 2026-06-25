@@ -321,6 +321,44 @@ async fn foreground_fails_closed_when_state_root_owner_is_busy() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn foreground_finalizes_pending_daemon_archive_before_requiring_active_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = root.path().join("state");
+    let config = DaemonConfig::for_state_root(&state_root).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let archive_id = "restart-pending-daemon-archive";
+    crate::archive::write_pending_daemon_archive_finalizer(&config, archive_id).unwrap();
+
+    let summary = run_foreground(ForegroundOptions {
+        state_root: config.state_root.clone(),
+        poll_interval_ms: 1,
+        max_runtime_ms: Some(1),
+        max_processed_messages: Some(1),
+        ready_file: None,
+        agent_jwt_token: None,
+        mock_status_outbox: true,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(summary.exit_reason, format!("daemon_archived:{archive_id}"));
+    assert_eq!(summary.processed_messages, 0);
+    assert_eq!(summary.sent_status_messages, 0);
+    assert!(!config.state_root.exists());
+    assert!(root
+        .path()
+        .join("archive")
+        .join("daemon")
+        .join(archive_id)
+        .join("state")
+        .join("daemon.db")
+        .is_file());
+}
+
 fn bootstrap_key_material() -> (String, String) {
     let mut key_bytes = [0_u8; 32];
     key_bytes[0] = 17;
@@ -946,6 +984,11 @@ printf '{"session_id":"codex-queue-drain-session"}\n'
     cli_profile.binary_path = Some(fake_codex);
     cli_profile.config_home = Some(root.join("codex-home"));
     std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    std::fs::write(
+        cli_profile.config_home.as_ref().unwrap().join("auth.json"),
+        "{}",
+    )
+    .unwrap();
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 }
 
@@ -1130,7 +1173,14 @@ fn foreground_cli_route_message_queue_drains_due_item_and_supersedes_runtime_ret
     assert!(outbox
         .records()
         .iter()
-        .any(|record| record.kind == OutboxRecordKind::Final));
+        .any(|record| record.kind == OutboxRecordKind::Message
+            && record.text.as_deref() == Some("queue drain final")));
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(replay_run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(final_outbox.final_text, "queue drain final");
 }
 
 #[cfg(unix)]

@@ -3570,7 +3570,7 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
         .unwrap(),
     );
 
-    handle_agent_payload_message(
+    let delete_outcome = handle_agent_payload_message(
         &config,
         &state,
         &registration,
@@ -3618,6 +3618,16 @@ fn daemon_delete_archives_daemon_family_and_reports_status() {
     assert_eq!(
         archived.payload["result"]["daemon_agent_did"],
         daemon.agent_did
+    );
+    assert!(matches!(
+        delete_outcome,
+        AgentCommandOutcome::StatusReported { .. }
+    ));
+    assert_eq!(
+        awiki_deamon::archive::pending_daemon_archive_finalizer(&config)
+            .unwrap()
+            .as_deref(),
+        archived.payload["result"]["archive_id"].as_str()
     );
 }
 

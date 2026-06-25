@@ -11,6 +11,7 @@ use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
+    apply_runtime_env_passthrough,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -458,6 +459,7 @@ impl ClaudeCodeDriver {
     pub fn command_args_for_mode(&self, session_mode: ClaudeCodeSessionMode) -> Vec<String> {
         let mut args = vec![
             "-p".to_string(),
+            "--verbose".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--permission-mode".to_string(),
@@ -587,6 +589,7 @@ fn apply_claude_code_base_env(command: &mut Command) {
             command.env(key, value);
         }
     }
+    apply_runtime_env_passthrough(command, &[]);
 }
 
 pub fn claude_code_native_session_id_from_stream_json(stdout: &[u8]) -> Option<String> {

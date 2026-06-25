@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_BASE_URL: &str = "https://awiki.ai";
 const PERSISTENT_CONFIG_FILE_NAME: &str = "config.json";
+const LOCAL_RPC_DIR_NAME: &str = "run";
+const LOCAL_RPC_SOCKET_FILE_NAME: &str = "d.sock";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonConfig {
@@ -161,7 +163,9 @@ impl DaemonConfig {
             default_identity_path: Some(state_root.join("identity").join("default")),
             runtime_cache_dir: state_root.join("runtime").join("cache"),
             runtime_temp_dir: state_root.join("runtime").join("tmp"),
-            local_socket_path: state_root.join("rpc").join("awiki-deamon.sock"),
+            local_socket_path: state_root
+                .join(LOCAL_RPC_DIR_NAME)
+                .join(LOCAL_RPC_SOCKET_FILE_NAME),
             audit_log_path: state_root.join("audit").join("audit.log"),
             service_base_url,
             user_service_base_url,
@@ -638,7 +642,8 @@ mod tests {
         assert_eq!(config.daemon_db_path, root.join("daemon.db"));
         assert_eq!(
             config.local_socket_path,
-            root.join("rpc").join("awiki-deamon.sock")
+            root.join(LOCAL_RPC_DIR_NAME)
+                .join(LOCAL_RPC_SOCKET_FILE_NAME)
         );
         assert_eq!(
             config.identity_registry_path,
@@ -652,6 +657,32 @@ mod tests {
         assert_eq!(config.did_domain, "awiki.ai");
         assert_eq!(config.anp_service_endpoint, "https://awiki.ai/anp-im/rpc");
         assert_eq!(config.anp_service_did, "did:wba:awiki.ai");
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn local_rpc_socket_uses_short_state_root_child_path() {
+        let _env = EnvGuard::clear();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp
+            .path()
+            .join("awiki-me")
+            .join(".e2e")
+            .join("message-agent")
+            .join("20260622-real")
+            .join("daemon-state");
+        let config = DaemonConfig::for_state_root(&root).unwrap();
+
+        assert_eq!(
+            config.local_socket_path,
+            root.join(LOCAL_RPC_DIR_NAME)
+                .join(LOCAL_RPC_SOCKET_FILE_NAME)
+        );
+        assert!(
+            config.local_socket_path.as_os_str().len()
+                < root.join("rpc").join("awiki-deamon.sock").as_os_str().len(),
+            "daemon local RPC socket path should stay compact for macOS SUN_LEN"
+        );
         config.validate().unwrap();
     }
 

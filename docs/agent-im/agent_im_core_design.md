@@ -7,6 +7,12 @@
 > Message Agent MVP 契约。当前权威方案以
 > `awiki-me-message-agent/docs/message-agent/message-agent-design.md`
 > 以及本仓库代码中的 secure bootstrap / no-send 实现为准。
+>
+> 2026-06-22 实现备注：daemon 的 Message Agent delegated inbox 会忽略
+> 已绑定 daemon/runtime 自己发给 App 的状态、sync、action 控制消息，不再把它们
+> 当作用户消息二次同步；轮询页大小提升到 100，用于降低控制消息积压时真实
+> 用户消息被挤出首屏的风险。macOS 本地 RPC socket 默认使用 `run/d.sock`，
+> 避免深层 E2E state root 下触发 Unix domain socket 路径长度限制。
 
 > 目标分支：`feature/release-0526/agent-im-hutong`  
 > 相关仓库：`awiki-cli-rs2`、`awiki-me`、`user-service`、`message-service`、ANP SDK / `im-core` 兼容扩展；长期再涉及 `AgentNetworkProtocol` delegated proof  
@@ -189,6 +195,8 @@ Agent 可以很强，但必须可控。所有自动化能力都要可配置、�
 ### 2.1.3 Hermes 不直接持有私钥、不直连 message-service 是正确安全边界
 
 当前 Hermes profile / SOUL 对 Hermes 的边界限制很清楚：Hermes 通过 daemon wrapper/local RPC 获得能力，不直接连接 message-service，不持有 DID 私钥，不持久化 run capability token。这是正确的分层。后续 APP 反向操纵、E2EE 转发、代发消息都应继续保留这个边界。
+
+Daemon 启动 Hermes TUI gateway 时还必须把工具面收窄到 AWiki 消息 Agent 所需的最小集合。默认注入 `HERMES_TUI_TOOLSETS=terminal,skills`，避免继承 Hermes 默认 `hermes-cli` 全量工具集后在冷启动阶段安装 browser / Chromium 依赖，导致首条消息返回 `agent initialization timed out`。如果运维确实需要扩展 Hermes 工具面，应通过 `AWIKI_HERMES_TUI_TOOLSETS` 显式覆盖并承担冷启动依赖成本。
 
 ## 2.2 需要调整的点
 

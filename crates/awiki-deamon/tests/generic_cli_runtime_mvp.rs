@@ -1974,12 +1974,16 @@ fn generic_cli_host_sanitizes_untrusted_fallback_final_text() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
     assert_eq!(
         records[1].text.as_deref(),
         Some("host fallback dirty <redacted-runtime-rpc-token>")
     );
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[2].text.as_deref(), Some("Runtime response sent"));
     assert!(!records[1]
         .text
         .as_deref()
@@ -2012,6 +2016,16 @@ fn generic_cli_host_sanitizes_untrusted_fallback_final_text() {
         run_record.output_json["fallback_final_sanitizer"]["token_redacted"].as_bool(),
         Some(true)
     );
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(
+        final_outbox.final_text,
+        "host fallback dirty <redacted-runtime-rpc-token>"
+    );
+    assert_eq!(final_outbox.final_source, "codex_output_last_message");
 }
 
 #[test]
@@ -2417,6 +2431,7 @@ fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("codex-home");
     std::fs::create_dir_all(&config_home).unwrap();
+    std::fs::write(config_home.join("auth.json"), "{}").unwrap();
     CodexDriverConfig {
         binary_path,
         config_home,
@@ -2453,6 +2468,7 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
     assert!(args.contains(&"--ignore-user-config".to_string()));
     assert!(args.contains(&"--ignore-rules".to_string()));
     assert!(!args.contains(&"--ephemeral".to_string()));
+    assert!(args.contains(&"--skip-git-repo-check".to_string()));
     assert!(args.contains(&"--json".to_string()));
     assert!(args
         .windows(2)
@@ -2675,6 +2691,57 @@ fn codex_driver_config_requires_profile_config_home() {
     let error = CodexDriverConfig::from_profile(&cli_profile).unwrap_err();
 
     assert!(error.to_string().contains("config_home"));
+}
+
+#[test]
+fn codex_driver_fails_fast_when_profile_auth_is_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let fake_codex = root.path().join("codex");
+    let marker = root.path().join("codex-executed.marker");
+    std::fs::write(
+        &fake_codex,
+        format!(
+            r#"#!/bin/sh
+printf 'executed' > "{marker}"
+exit 0
+"#,
+            marker = marker.display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_codex, permissions).unwrap();
+    }
+    let mut config = codex_config(fake_codex);
+    std::fs::remove_file(config.config_home.join("auth.json")).unwrap();
+    config.output_dir = Some(root.path().join("codex-output"));
+    let workspace_root = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace_root).unwrap();
+    let driver = CodexDriver::new(config).unwrap();
+
+    let exit = driver
+        .run(generic_cli_invocation_for_process_test(
+            root.path(),
+            &workspace_root,
+        ))
+        .unwrap();
+
+    assert_eq!(exit.status, RuntimeRunStatus::Failed);
+    assert_eq!(exit.exit_code, 78);
+    assert_eq!(
+        exit.metadata["error_code"].as_str(),
+        Some("generic_cli_auth_missing")
+    );
+    assert_eq!(exit.metadata["auth_status"].as_str(), Some("missing"));
+    assert_eq!(exit.metadata["process"]["spawned"].as_bool(), Some(false));
+    assert!(
+        !marker.exists(),
+        "Codex binary should not be spawned when auth.json is missing"
+    );
 }
 
 #[cfg(unix)]
@@ -2904,6 +2971,7 @@ fn claude_code_driver_command_builder_uses_safe_print_contract() {
     });
 
     assert_eq!(args[0], "-p");
+    assert!(args.contains(&"--verbose".to_string()));
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--output-format", "stream-json"]));
@@ -2936,6 +3004,7 @@ fn claude_code_driver_command_builder_uses_resume_without_continue() {
     ));
 
     assert_eq!(args[0], "-p");
+    assert!(args.contains(&"--verbose".to_string()));
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--resume", "claude-session-123"]));
@@ -3110,8 +3179,16 @@ printf '{"type":"result","result":"registry claude finished"}\n'
     let records = outbox.records();
     assert!(records
         .iter()
-        .any(|record| record.kind == OutboxRecordKind::Final
-            && record.text.as_deref() == Some("registry claude finished")));
+        .any(|record| record.kind == OutboxRecordKind::Message
+            && record.text.as_deref() == Some("registry claude finished")
+            && record.recipient.as_deref() == Some("did:human:alice")));
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(final_outbox.final_text, "registry claude finished");
+    assert_eq!(final_outbox.final_source, "claude-code_output_last_message");
 }
 
 #[cfg(unix)]
@@ -3534,6 +3611,11 @@ esac
     cli_profile.binary_path = Some(fake_codex);
     cli_profile.config_home = Some(root.path().join("codex-home-route"));
     std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    std::fs::write(
+        cli_profile.config_home.as_ref().unwrap().join("auth.json"),
+        "{}",
+    )
+    .unwrap();
     cli_profile.default_sandbox = Some("read-only".to_string());
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let plugin = GenericCliDriverRegistry::new(cli_profile);
@@ -3719,6 +3801,11 @@ fi
     cli_profile.binary_path = Some(fake_codex);
     cli_profile.config_home = Some(root.path().join("codex-home-route-last"));
     std::fs::create_dir_all(cli_profile.config_home.as_ref().unwrap()).unwrap();
+    std::fs::write(
+        cli_profile.config_home.as_ref().unwrap().join("auth.json"),
+        "{}",
+    )
+    .unwrap();
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
     let plugin = GenericCliDriverRegistry::new(cli_profile);
 
@@ -3931,6 +4018,7 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     let first_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_1.args")).unwrap();
     assert!(first_args.starts_with("-p\n"));
+    assert!(first_args.contains("--verbose\n"));
     assert!(first_args.contains("--output-format\nstream-json\n"));
     assert!(first_args.contains("--permission-mode\nplan\n"));
     assert!(first_args.contains("--session-id\n"));
@@ -4392,14 +4480,18 @@ exit 0
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
     assert!(result.launch_outcome.callbacks.is_empty());
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 3);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("running"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(records[1].kind, OutboxRecordKind::Message);
     assert_eq!(
         records[1].text.as_deref(),
         Some("fallback final from codex <redacted-runtime-rpc-token>")
     );
+    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[2].kind, OutboxRecordKind::Status);
+    assert_eq!(records[2].state.as_deref(), Some("succeeded"));
+    assert_eq!(records[2].text.as_deref(), Some("Runtime response sent"));
     assert!(!records[1]
         .text
         .as_deref()
@@ -4435,6 +4527,16 @@ exit 0
         run_record.output_json["fallback_final_sanitizer"]["token_redacted"].as_bool(),
         Some(false)
     );
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(
+        final_outbox.final_text,
+        "fallback final from codex <redacted-runtime-rpc-token>"
+    );
+    assert_eq!(final_outbox.final_source, "codex_output_last_message");
 }
 
 #[cfg(unix)]

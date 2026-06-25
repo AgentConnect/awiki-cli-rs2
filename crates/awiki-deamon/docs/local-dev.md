@@ -63,6 +63,56 @@ anp_service_did = did:wba:<did_domain>
 - `AWIKI_DAEMON_ANP_SERVICE_DID`
 - `AWIKI_HERMES_GATEWAY_CMD`
 
+## CLI Runtime 环境文件
+
+产品安装模式下，daemon service 会引用一个通用的 CLI runtime 环境文件：
+
+```text
+~/.awiki-daemon/deamon/env/agent-cli.env
+```
+
+该文件用于把用户已经配置好的本机 CLI 环境显式注入到 `awiki-deamon` 进程中，供
+Codex CLI、Claude Code CLI、Hermes gateway 或后续 generic-cli driver 复用。它不是
+Claude Code 专用配置，也不是登录流程；daemon 不解析其中变量的业务含义，只在 service
+启动时加载它。generic-cli driver 启动子进程时仍会先 `env_clear()`，再恢复最小运行环境和
+driver 允许透传的变量，避免把 daemon 的完整环境无差别交给外部 CLI。
+
+安全约束：
+
+- 文件不存在时 service 仍能启动；安装只会创建 `env/` 目录，不会创建或覆盖 secret 文件。
+- 该文件可能包含 token、API key、base URL 等敏感值，权限应保持为 `0600`，目录权限应为
+  `0700`。
+- 不要把该文件提交到仓库，不要在日志、E2E 报告或 UI 中打印变量值。
+- 文件内容应使用 systemd 与 POSIX shell 都可读取的简单格式，例如：
+
+```text
+ANTHROPIC_BASE_URL=http://127.0.0.1:4000
+ANTHROPIC_AUTH_TOKEN=...
+CLAUDE_CODEX_MODEL=gpt-5.4-mini
+AWIKI_DAEMON_CLI_ENV_PASSTHROUGH=ANTHROPIC_*,CLAUDE_CODEX_MODEL
+```
+
+子进程透传策略：
+
+- 为避免把 daemon 的完整环境无差别交给外部 provider CLI，Codex / Claude Code driver 默认只恢复
+  PATH、locale、terminal、必要 HOME / profile home 与 AWiki callback 变量。
+- 如果 provider 依赖环境变量认证、私有 base URL 或模型变量，必须在同一 env file 中设置
+  `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH`。
+- `AWIKI_DAEMON_CLI_ENV_PASSTHROUGH` 的值是逗号、分号、冒号或空白分隔的变量名 / 前缀选择器，
+  例如 `ANTHROPIC_*,CLAUDE_CODEX_MODEL`、`OPENAI_API_KEY,OPENAI_BASE_URL` 或
+  `MY_PROVIDER_TOKEN,MY_PROVIDER_BASE_URL,ACME_*`。变量值不会被日志打印。
+- Codex driver 仍会强制设置 profile-scoped `CODEX_HOME`；如果用户只使用 Codex profile home 的
+  `auth.json`，不需要额外透传 provider secret。
+- Claude Code driver 复用 daemon 进程的 host `HOME`，即用户已经配置好的 Claude Code CLI
+  登录态；daemon 不要求也不解析 Claude 专用登录文件。因此 Claude Code setup diagnostics 使用
+  `auth_status=not_applicable`，真实认证问题会在实际 `claude -p` run 中暴露。
+
+Linux `systemd --user` service 使用 optional `EnvironmentFile=-.../agent-cli.env`，因此缺失
+文件不会阻止 daemon 启动。macOS LaunchAgent 通过 `/bin/sh -c` wrapper 只 source 这个
+AWiki env file 后再 `exec awiki-deamon foreground`；不会默认读取用户 shell rc。Windows 后续
+service 化时应复用同一“daemon runtime env file / credential provider”设计，而不是在
+Claude/Codex driver 中写死平台专用环境变量。
+
 Hermes Runtime 使用 Hermes TUI Gateway 的 stdio JSON-RPC 入口，不是普通 messaging gateway。官方 TUI Gateway 入口形态是：
 
 ```text
@@ -95,7 +145,7 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 - `runtime_profile`：runtime agent 绑定的 runtime plugin type、展示名和状态。CLI 家族新数据统一使用 `runtime_plugin_id=generic-cli`。
 - `cli_runtime_profile`：`generic-cli` 插件内部 profile，保存 `driver_id`、binary/config、默认 sandbox、默认 workspace mode、`msg.send` recipient policy 和 driver-specific config。
 - `cli_driver_run`：CLI run 的 route/session/workspace/output metadata，包括 workspace instance、command、stdout/stderr/JSONL/final output 路径和 fallback final 来源。
-- `runtime_final_outbox`：Hermes controller final reply 专用持久 outbox。daemon 拿到 Hermes final text 后先写入该表，发送成功后才把 run 标记为 finished；foreground 启动和循环会补发 due pending 记录。
+- `runtime_final_outbox`：Runtime controller final reply 持久 outbox。Hermes final text 以及 Codex / Claude Code 等 generic-cli fallback final text 都先写入该表，再由 daemon 以 Runtime Agent DID 给 controller / requester 发送普通消息；发送成功后标记 sent 并把 run 标记为 finished，foreground 启动和循环会补发 due pending 记录。
 - `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
 
 首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
@@ -179,7 +229,7 @@ daemon 当前提供 Generic CLI runtime MVP 闭环：
 6. daemon 创建 `RuntimeRun`，按 profile/run recipient policy 签发短期 `runtime_rpc_token`。
 7. `GenericCliDriverRegistry` 按 `driver_id` 选择 `CodexDriver`、`command` driver 或后续 driver；Claude Code / Gemini 当前只保留未实现分支。
 8. Codex driver 使用 `codex exec` headless 模式，通过 stdin prompt envelope 传入用户消息，使用 `--output-last-message` 记录 fallback final。
-9. Codex / command driver 通过 daemon CLI wrapper + local RPC 回传 `task.status`、`task.finish`、`msg.send` 和 `artifact.created`；真实 Codex run 不使用 `RuntimeLaunchOutcome.callbacks` 作为 status/final 主链路。
+9. Codex / command driver 通过 daemon CLI wrapper + local RPC 回传 `task.status`、`task.finish`、`msg.send` 和 `artifact.created`；真实 Codex run 不使用 `RuntimeLaunchOutcome.callbacks` 作为 status/final 主链路。若 Codex / Claude Code 只产出 `--output-last-message` / stream final 而没有显式 `msg.send`，daemon 会把该 fallback final 写入 `runtime_final_outbox` 并以 Runtime Agent DID 发送成用户可见普通消息。
 10. daemon 通过 token 反查可信上下文，更新 run 状态，写 audit，并通过 outbox 发送 status/final/message。单元测试使用 `MemoryRuntimeOutbox`；foreground 主链路通过 `im-core` SDK 发送 direct text。
 
 Codex 真实 run 注入的环境变量包括：

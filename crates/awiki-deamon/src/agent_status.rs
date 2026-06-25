@@ -779,21 +779,29 @@ fn generic_cli_runtime_status(
             .config_home
             .as_ref()
             .is_some_and(|path| path.is_dir());
-    let install_status = GenericCliDriverRegistry::new(profile).check_install_status();
+    let install_status = GenericCliDriverRegistry::new(profile.clone()).check_install_status();
     let missing_binary = install_status
         .as_ref()
         .map(|status| !status.installed)
         .unwrap_or(true);
+    let auth_status = generic_cli_auth_status(&profile);
     let last_error_code = if missing_config_home {
         Some("generic_cli_config_home_missing".to_string())
     } else if missing_binary {
         Some("generic_cli_driver_missing".to_string())
     } else if install_status.is_err() {
         Some("generic_cli_driver_probe_failed".to_string())
+    } else if auth_status == "missing" {
+        Some("generic_cli_auth_missing".to_string())
+    } else if auth_status == "unknown" {
+        Some("generic_cli_auth_unknown".to_string())
     } else {
         None
     };
-    (missing_config_home || missing_binary, last_error_code)
+    (
+        missing_config_home || missing_binary || matches!(auth_status, "missing" | "unknown"),
+        last_error_code,
+    )
 }
 
 fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinition) -> Value {
@@ -936,9 +944,9 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
         install_probe_failed,
     );
     let create_supported = generic_cli_create_supported(&profile.driver_id);
-    let auth_status = generic_cli_auth_status(&profile.driver_id);
+    let auth_status = generic_cli_auth_status(&profile);
     let setup_ready = generic_cli_setup_ready(driver_status_code, create_supported, auth_status);
-    let setup_status = generic_cli_setup_status(driver_status_code, setup_ready);
+    let setup_status = generic_cli_setup_status(driver_status_code, setup_ready, auth_status);
     let probe_status = generic_cli_probe_status(driver_status_code, install_probe_failed);
     let driver_version = if driver_status_code == "ok" {
         generic_cli_driver_version(install_status.detail.as_deref())
@@ -974,7 +982,6 @@ fn generic_cli_diagnostics_summary(state: &DaemonState, runtime: &AgentDefinitio
         .unwrap_or(0);
     json!({
         "profile_status": profile.status,
-        "driver_id": profile.driver_id,
         "active_session_count": active_session_count,
         "config_summary": {
             "driver_id": profile.driver_id,
@@ -1036,8 +1043,20 @@ fn generic_cli_create_supported(driver_id: &str) -> bool {
     matches!(driver_id, "codex" | "claude-code" | "command")
 }
 
-fn generic_cli_auth_status(driver_id: &str) -> &'static str {
-    match driver_id {
+fn generic_cli_auth_status(profile: &CliRuntimeProfileRecord) -> &'static str {
+    match profile.driver_id.as_str() {
+        "codex" => {
+            if profile
+                .config_home
+                .as_ref()
+                .is_some_and(|path| path.join("auth.json").is_file())
+            {
+                "ok"
+            } else {
+                "missing"
+            }
+        }
+        "claude-code" => "not_applicable",
         "command" => "not_applicable",
         _ => "unknown",
     }
@@ -1051,7 +1070,11 @@ fn generic_cli_setup_ready(
     create_supported && driver_status_code == "ok" && matches!(auth_status, "ok" | "not_applicable")
 }
 
-fn generic_cli_setup_status(driver_status_code: &str, setup_ready: bool) -> &'static str {
+fn generic_cli_setup_status(
+    driver_status_code: &str,
+    setup_ready: bool,
+    auth_status: &str,
+) -> &'static str {
     if setup_ready {
         "ready"
     } else {
@@ -1059,6 +1082,7 @@ fn generic_cli_setup_status(driver_status_code: &str, setup_ready: bool) -> &'st
             "missing_binary" | "config_home_missing" | "profile_missing" => "needs_setup",
             "probe_failed" => "probe_failed",
             "not_implemented" | "unsupported_driver" => "unsupported",
+            "ok" if auth_status == "missing" => "needs_setup",
             _ => "unknown",
         }
     }
@@ -1560,7 +1584,7 @@ fn generic_cli_driver_status_code(
 
 fn generic_cli_next_action(driver_status_code: &str, auth_status: &str) -> &'static str {
     match (driver_status_code, auth_status) {
-        ("ok", "unknown") => "manual_review_required",
+        ("ok", "unknown" | "missing") => "manual_review_required",
         ("ok", _) => "none",
         ("missing_binary", _) => "install_driver",
         ("config_home_missing", _) => "manual_review_required",
@@ -2008,7 +2032,6 @@ mod tests {
             "runner_status",
             "active_session_count",
             "runtime_version",
-            "driver_id",
             "config_summary",
             "release_manifest_url",
             "release_status",
@@ -2373,7 +2396,7 @@ mod tests {
         let mut cli_profile =
             CliRuntimeProfileRecord::for_driver("profile_codex_alice", "codex").unwrap();
         cli_profile.binary_path = Some(root.path().join("missing-codex"));
-        cli_profile.config_home = Some(config_home);
+        cli_profile.config_home = Some(config_home.clone());
         state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 
         let status = runtime_status_summary(&config, &state, &runtime);
@@ -2385,7 +2408,7 @@ mod tests {
             Some("generic_cli_driver_missing")
         );
         assert_eq!(diagnostics["profile_status"], "active");
-        assert_eq!(diagnostics["driver_id"], "codex");
+        assert!(diagnostics.get("driver_id").is_none());
         assert_eq!(diagnostics["active_session_count"], 0);
         assert_eq!(diagnostics["config_summary"]["driver_id"], "codex");
         assert_eq!(
@@ -2451,7 +2474,7 @@ mod tests {
         assert_eq!(card["contains_user_content"], false);
         assert_eq!(card["contains_provider_auth_material"], false);
         assert_eq!(card["last_message_id_watermark_policy"], "final_only");
-        assert_eq!(diagnostics["config_summary"]["auth_status"], "unknown");
+        assert_eq!(diagnostics["config_summary"]["auth_status"], "missing");
         assert_eq!(
             diagnostics["config_summary"]["home_isolation"],
             "profile_home"
@@ -2795,15 +2818,18 @@ mod tests {
         let mut cli_profile =
             CliRuntimeProfileRecord::for_driver("profile_codex_alice", "codex").unwrap();
         cli_profile.binary_path = Some(fake_codex);
-        cli_profile.config_home = Some(config_home);
+        cli_profile.config_home = Some(config_home.clone());
         cli_profile.default_workspace_mode = WorkspaceMode::RouteRoot;
         state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 
         let status = runtime_status_summary(&config, &state, &runtime);
         let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
 
-        assert!(!status.needs_config);
-        assert!(status.last_error_code.is_none());
+        assert!(status.needs_config);
+        assert_eq!(
+            status.last_error_code.as_deref(),
+            Some("generic_cli_auth_missing")
+        );
         assert_eq!(diagnostics["config_summary"]["binary_installed"], true);
         assert_eq!(diagnostics["config_summary"]["driver_status_code"], "ok");
         assert_eq!(
@@ -2811,9 +2837,9 @@ mod tests {
             "codex-cli 9.9.9"
         );
         assert_eq!(diagnostics["config_summary"]["create_supported"], true);
-        assert_eq!(diagnostics["config_summary"]["auth_status"], "unknown");
+        assert_eq!(diagnostics["config_summary"]["auth_status"], "missing");
         assert_eq!(diagnostics["config_summary"]["setup_ready"], false);
-        assert_eq!(diagnostics["config_summary"]["setup_status"], "unknown");
+        assert_eq!(diagnostics["config_summary"]["setup_status"], "needs_setup");
         assert_eq!(diagnostics["config_summary"]["probe_status"], "fresh");
         assert_eq!(
             diagnostics["config_summary"]["probe_ttl_ms"],
@@ -2829,12 +2855,12 @@ mod tests {
         );
         assert_eq!(
             diagnostics["config_summary"]["setup"]["auth_status"],
-            "unknown"
+            "missing"
         );
         assert_eq!(diagnostics["config_summary"]["setup"]["setup_ready"], false);
         assert_eq!(
             diagnostics["config_summary"]["setup"]["setup_status"],
-            "unknown"
+            "needs_setup"
         );
         assert_eq!(
             diagnostics["config_summary"]["setup"]["probe_status"],
@@ -2847,6 +2873,25 @@ mod tests {
         assert_eq!(
             diagnostics["config_summary"]["driver_args_schema_version"],
             "codex-exec-v1"
+        );
+
+        std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+
+        assert!(!status.needs_config);
+        assert!(status.last_error_code.is_none());
+        assert_eq!(diagnostics["config_summary"]["auth_status"], "ok");
+        assert_eq!(diagnostics["config_summary"]["setup_ready"], true);
+        assert_eq!(diagnostics["config_summary"]["setup_status"], "ready");
+        assert_eq!(diagnostics["config_summary"]["next_action"], "none");
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_card"]["lifecycle_state"],
+            "created"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_card"]["setup_state"],
+            "ready"
         );
 
         let dump = diagnostics.to_string();
@@ -3256,7 +3301,8 @@ mod tests {
             status.last_error_code.as_deref(),
             Some("generic_cli_driver_missing")
         );
-        assert_eq!(diagnostics["driver_id"], "claude-code");
+        assert!(diagnostics.get("driver_id").is_none());
+        assert_eq!(diagnostics["config_summary"]["driver_id"], "claude-code");
         assert_eq!(
             diagnostics["config_summary"]["driver_status_code"],
             "missing_binary"
@@ -3290,6 +3336,62 @@ mod tests {
         let dump = diagnostics.to_string();
         assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
         assert!(!dump.contains(home.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn generic_cli_runtime_status_treats_claude_host_auth_as_not_applicable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = EnvGuard::clear(&["HOME"]);
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("host-home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+        let fake_claude = root.path().join("fake-claude");
+        std::fs::write(
+            &fake_claude,
+            "#!/bin/sh\nif [ \"${1-}\" = \"--version\" ]; then echo '2.1.185 (Claude Code)'; exit 0; fi\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_claude).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_claude, permissions).unwrap();
+
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let mut runtime = generic_cli_runtime();
+        runtime.agent_did = "did:agent:claude".to_string();
+        runtime.handle = "alice-claude".to_string();
+        runtime.runtime_profile_id = Some("profile_claude_alice".to_string());
+        state.upsert_agent_definition(&runtime).unwrap();
+        let mut cli_profile =
+            CliRuntimeProfileRecord::for_driver("profile_claude_alice", "claude-code").unwrap();
+        cli_profile.binary_path = Some(fake_claude);
+        cli_profile.default_workspace_mode = WorkspaceMode::RouteRoot;
+        state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+        let status = runtime_status_summary(&config, &state, &runtime);
+        let diagnostics = runtime_diagnostics_summary(&state, &runtime, &status);
+
+        assert!(!status.needs_config);
+        assert!(status.last_error_code.is_none());
+        assert_eq!(
+            diagnostics["config_summary"]["auth_status"],
+            "not_applicable"
+        );
+        assert_eq!(diagnostics["config_summary"]["setup_ready"], true);
+        assert_eq!(diagnostics["config_summary"]["setup_status"], "ready");
+        assert_eq!(diagnostics["config_summary"]["next_action"], "none");
+        assert_eq!(
+            diagnostics["config_summary"]["home_isolation"],
+            "host_default"
+        );
+        assert_eq!(
+            diagnostics["config_summary"]["runtime_card"]["lifecycle_state"],
+            "created"
+        );
     }
 
     #[test]
