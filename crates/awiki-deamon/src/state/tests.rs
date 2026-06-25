@@ -892,6 +892,50 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         .list_due_runtime_final_outbox(now + 60_000, 10)
         .unwrap()
         .is_empty());
+
+    state
+        .upsert_runtime_final_outbox_pending(&RuntimeFinalOutboxRecord {
+            idempotency_key:
+                "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice"
+                    .to_string(),
+            run_id: "run_failed".to_string(),
+            final_text: "failed final text".to_string(),
+            ..record.clone()
+        })
+        .unwrap();
+    assert!(state
+        .mark_runtime_final_outbox_sending(
+            "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice"
+        )
+        .unwrap());
+    state
+        .mark_runtime_final_outbox_failed_terminal(
+            "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice",
+            "final_delivery_failed",
+            "terminal delivery failure",
+        )
+        .unwrap();
+    state
+        .upsert_runtime_final_outbox_pending(&RuntimeFinalOutboxRecord {
+            idempotency_key:
+                "runtime-final:did:agent:hermes:run_failed:controller-scope:v1:test-alice"
+                    .to_string(),
+            run_id: "run_failed".to_string(),
+            final_text: "changed final text".to_string(),
+            next_attempt_at_ms: now + 60_000,
+            ..record.clone()
+        })
+        .unwrap();
+    let failed = state
+        .load_runtime_final_outbox_by_run("run_failed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.status, "failed_terminal");
+    assert_eq!(failed.final_text, "failed final text");
+    assert_eq!(
+        failed.last_error_code.as_deref(),
+        Some("final_delivery_failed")
+    );
 }
 
 #[test]

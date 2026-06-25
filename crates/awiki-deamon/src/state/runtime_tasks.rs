@@ -297,14 +297,14 @@ INSERT INTO runtime_final_outbox (
     sent_at_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', 0, ?11, NULL, NULL, NULL, ?12, ?12, NULL)
 ON CONFLICT(idempotency_key) DO UPDATE SET
-    final_text = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
-    security = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.security ELSE excluded.security END,
-    recipient_did = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.recipient_did ELSE excluded.recipient_did END,
-    conversation_id = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.conversation_id ELSE excluded.conversation_id END,
-    status = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.status ELSE 'pending' END,
-    next_attempt_at_ms = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
-    last_error_code = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_code ELSE NULL END,
-    last_error_summary = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_summary ELSE NULL END,
+    final_text = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
+    security = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.security ELSE excluded.security END,
+    recipient_did = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.recipient_did ELSE excluded.recipient_did END,
+    conversation_id = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.conversation_id ELSE excluded.conversation_id END,
+    status = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.status ELSE 'pending' END,
+    next_attempt_at_ms = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
+    last_error_code = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.last_error_code ELSE NULL END,
+    last_error_summary = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.last_error_summary ELSE NULL END,
     updated_at_ms = excluded.updated_at_ms
 "#,
             rusqlite::params![
