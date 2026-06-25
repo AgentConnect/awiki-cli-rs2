@@ -939,6 +939,159 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
 }
 
 #[test]
+fn runtime_final_plain_delivery_migration_preserves_terminal_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("daemon.db");
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            INSERT INTO schema_migrations (version, applied_at)
+            VALUES (14, 'legacy-fixture');
+
+            CREATE TABLE runtime_final_outbox (
+                idempotency_key TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL UNIQUE,
+                agent_did TEXT NOT NULL,
+                runtime_profile_id TEXT NOT NULL,
+                controller_did TEXT NOT NULL,
+                conversation_id TEXT,
+                final_text TEXT NOT NULL,
+                security TEXT NOT NULL DEFAULT 'default_plain',
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+                last_error_code TEXT,
+                last_error_summary TEXT,
+                message_id TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                sent_at_ms INTEGER
+            );
+
+            INSERT INTO runtime_final_outbox (
+                idempotency_key,
+                run_id,
+                agent_did,
+                runtime_profile_id,
+                controller_did,
+                conversation_id,
+                final_text,
+                security,
+                status,
+                attempt_count,
+                next_attempt_at_ms,
+                last_error_code,
+                last_error_summary,
+                message_id,
+                created_at_ms,
+                updated_at_ms,
+                sent_at_ms
+            ) VALUES
+            (
+                'runtime-final:pending',
+                'run_pending',
+                'did:agent:hermes',
+                'profile_hermes',
+                'did:human:alice',
+                'direct:did:human:alice',
+                'pending final',
+                'direct_e2ee',
+                'pending',
+                3,
+                12345,
+                'final_delivery_retry',
+                'retry later',
+                NULL,
+                1,
+                1,
+                NULL
+            ),
+            (
+                'runtime-final:failed',
+                'run_failed',
+                'did:agent:hermes',
+                'profile_hermes',
+                'did:human:alice',
+                'direct:did:human:alice',
+                'failed final',
+                'direct_e2ee',
+                'failed_terminal',
+                5,
+                12345,
+                'final_delivery_failed',
+                'terminal failure',
+                NULL,
+                1,
+                1,
+                NULL
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    DaemonState::open(&config).unwrap().initialize().unwrap();
+
+    let connection = Connection::open(db_path).unwrap();
+    let pending: (String, i64, i64, Option<String>, Option<String>) = connection
+        .query_row(
+            r#"
+SELECT status, attempt_count, next_attempt_at_ms, last_error_code, last_error_summary
+FROM runtime_final_outbox
+WHERE idempotency_key = 'runtime-final:pending'
+"#,
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(pending, ("pending".to_string(), 0, 0, None, None));
+
+    let failed: (String, i64, i64, Option<String>, Option<String>) = connection
+        .query_row(
+            r#"
+SELECT status, attempt_count, next_attempt_at_ms, last_error_code, last_error_summary
+FROM runtime_final_outbox
+WHERE idempotency_key = 'runtime-final:failed'
+"#,
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        failed,
+        (
+            "failed_terminal".to_string(),
+            5,
+            12345,
+            Some("final_delivery_failed".to_string()),
+            Some("terminal failure".to_string())
+        )
+    );
+}
+
+#[test]
 fn agent_definition_v4_roundtrips_daemon_and_runtime_agents() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

@@ -893,14 +893,14 @@ fn migrate_runtime_final_plain_delivery_v15(connection: &Connection) -> Result<(
         r#"
         UPDATE runtime_final_outbox
         SET security = 'default_plain',
-            status = CASE WHEN status = 'sent' THEN status ELSE 'pending' END,
-            attempt_count = CASE WHEN status = 'sent' THEN attempt_count ELSE 0 END,
-            next_attempt_at_ms = CASE WHEN status = 'sent' THEN next_attempt_at_ms ELSE 0 END,
-            last_error_code = CASE WHEN status = 'sent' THEN last_error_code ELSE NULL END,
-            last_error_summary = CASE WHEN status = 'sent' THEN last_error_summary ELSE NULL END,
+            status = CASE WHEN status IN ('sent', 'failed_terminal') THEN status ELSE 'pending' END,
+            attempt_count = CASE WHEN status IN ('sent', 'failed_terminal') THEN attempt_count ELSE 0 END,
+            next_attempt_at_ms = CASE WHEN status IN ('sent', 'failed_terminal') THEN next_attempt_at_ms ELSE 0 END,
+            last_error_code = CASE WHEN status IN ('sent', 'failed_terminal') THEN last_error_code ELSE NULL END,
+            last_error_summary = CASE WHEN status IN ('sent', 'failed_terminal') THEN last_error_summary ELSE NULL END,
             updated_at_ms = strftime('%s','now') * 1000
         WHERE security = 'direct_e2ee'
-          AND status != 'sent';
+          AND status NOT IN ('sent', 'failed_terminal');
         "#,
     )?;
     Ok(())
