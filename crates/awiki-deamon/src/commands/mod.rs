@@ -1637,7 +1637,8 @@ where
         &task_command_id,
     );
     register_daemon_upgrade_task(task_key.clone(), cancel_token.clone());
-    std::thread::Builder::new()
+    let task_key_for_thread = task_key.clone();
+    let spawn_result = std::thread::Builder::new()
         .name("awiki-daemon-upgrade-control".to_string())
         .spawn(move || {
             let mut restart_scheduled = false;
@@ -1673,7 +1674,7 @@ where
                     );
                 },
             );
-            unregister_daemon_upgrade_task(&task_key);
+            unregister_daemon_upgrade_task(&task_key_for_thread);
             finish_daemon_upgrade_task(
                 &task_state,
                 &task_outbox,
@@ -1683,9 +1684,64 @@ where
                 &task_target_version,
                 result,
             );
-        })
-        .context("spawn daemon upgrade control task")?;
+        });
+    if let Err(error) = spawn_result {
+        let error = anyhow::Error::new(error).context("spawn daemon upgrade control task");
+        finish_daemon_upgrade_spawn_failure(
+            state,
+            outbox,
+            daemon_agent,
+            message,
+            &payload.command_id,
+            &target_version,
+            &task_key,
+            &error,
+        )?;
+        return Err(error);
+    }
     Ok(())
+}
+
+fn finish_daemon_upgrade_spawn_failure<O>(
+    state: &DaemonState,
+    outbox: &O,
+    daemon_agent: &AgentDefinition,
+    message: &IncomingAgentPayloadMessage,
+    command_id: &str,
+    target_version: &str,
+    task_key: &DaemonUpgradeTaskKey,
+    error: &anyhow::Error,
+) -> Result<()>
+where
+    O: AgentManagementOutbox,
+{
+    unregister_daemon_upgrade_task(task_key);
+    let summary = sanitize_public_error_chain(error.chain());
+    let result = json!({
+        "command": DAEMON_UPGRADE,
+        "daemon_agent_did": daemon_agent.agent_did,
+        "target_version": target_version,
+        "status": "failed",
+        "error_code": "upgrade_task_start_failed",
+        "last_error_summary": summary,
+    });
+    state.mark_control_command_state(
+        &daemon_agent.agent_did,
+        &daemon_agent.controller_scope_key,
+        command_id,
+        "failed",
+        result.clone(),
+        Some(&summary),
+    )?;
+    send_command_status(
+        outbox,
+        daemon_agent,
+        message,
+        command_id,
+        "failed",
+        Some("daemon upgrade failed".to_string()),
+        result,
+    )
 }
 
 fn finish_daemon_upgrade_task<O>(
@@ -2491,6 +2547,105 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outbox::MemoryRuntimeOutbox;
+
+    fn daemon_definition_fixture() -> AgentDefinition {
+        AgentDefinition {
+            agent_did: "did:agent:daemon".to_string(),
+            handle: "alice-daemon".to_string(),
+            agent_kind: AgentKind::Daemon,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:user-alice:alice-anpclaw-com".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agent-local.sqlite".to_string(),
+            message_db_path: "agent-message.sqlite".to_string(),
+            status: "active".to_string(),
+        }
+    }
+
+    #[test]
+    fn daemon_upgrade_spawn_failure_marks_command_failed_and_clears_cancel_token() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon = daemon_definition_fixture();
+        state.upsert_agent_definition(&daemon).unwrap();
+        state
+            .try_begin_control_command(
+                &daemon.agent_did,
+                &daemon.controller_scope_key,
+                "cmd_upgrade_spawn_failed",
+                DAEMON_UPGRADE,
+                "msg_upgrade_spawn_failed",
+                Some("latest"),
+            )
+            .unwrap();
+        let task_key = DaemonUpgradeTaskKey::new(
+            &daemon.agent_did,
+            &daemon.controller_scope_key,
+            "cmd_upgrade_spawn_failed",
+        );
+        register_daemon_upgrade_task(task_key.clone(), DaemonUpgradeCancelToken::default());
+        let outbox = MemoryRuntimeOutbox::default();
+        let message = IncomingAgentPayloadMessage {
+            message_id: "msg_upgrade_spawn_failed".to_string(),
+            conversation_id: Some("conv_upgrade".to_string()),
+            sender_did: daemon.controller_did.clone(),
+            target_agent_did: daemon.agent_did.clone(),
+            content_type: "application/json".to_string(),
+            payload: json!({}),
+        };
+        let error =
+            anyhow::anyhow!("thread limit reached").context("spawn daemon upgrade control task");
+
+        finish_daemon_upgrade_spawn_failure(
+            &state,
+            &outbox,
+            &daemon,
+            &message,
+            "cmd_upgrade_spawn_failed",
+            "latest",
+            &task_key,
+            &error,
+        )
+        .unwrap();
+
+        let stored = state
+            .load_control_command_state(
+                &daemon.agent_did,
+                &daemon.controller_scope_key,
+                "cmd_upgrade_spawn_failed",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "failed");
+        assert_eq!(
+            stored.result_json["error_code"],
+            "upgrade_task_start_failed"
+        );
+        assert!(stored
+            .error_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("spawn daemon upgrade control task")));
+        assert!(!cancel_daemon_upgrade_task(&task_key));
+
+        let statuses = outbox.agent_statuses();
+        assert_eq!(statuses.len(), 1);
+        let payload = &statuses[0].payload;
+        assert_eq!(payload["command_id"], "cmd_upgrade_spawn_failed");
+        assert_eq!(payload["state"], "failed");
+        assert_eq!(
+            payload["details"]["error_code"],
+            "upgrade_task_start_failed"
+        );
+        assert_eq!(statuses[0].recipient_did, daemon.controller_did);
+    }
 
     #[test]
     fn public_error_chain_keeps_upgrade_download_root_cause() {
