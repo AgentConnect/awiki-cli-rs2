@@ -93,6 +93,10 @@ impl AgentKind {
 }
 
 impl AgentDefinition {
+    pub fn is_active(&self) -> bool {
+        self.status == "active"
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.agent_did.trim().is_empty() {
             bail!("agent_did must not be empty");
@@ -460,6 +464,32 @@ mod tests {
         assert_eq!(normalize_handle("@Alice-Coder").unwrap(), "alice-coder");
         assert!(normalize_handle("").is_err());
         assert!(normalize_handle("alice/coder").is_err());
+    }
+
+    #[test]
+    fn agent_definition_active_status_is_exact() {
+        let mut definition = AgentDefinition {
+            agent_did: "did:agent:test".to_string(),
+            handle: "test-agent".to_string(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: Some("runtime.hermes".to_string()),
+            runtime_profile_id: Some("profile_test".to_string()),
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/test/agent.sqlite".to_string(),
+            message_db_path: "agents/test/messages.sqlite".to_string(),
+            status: "active".to_string(),
+        };
+
+        assert!(definition.is_active());
+        definition.status = "archived".to_string();
+        assert!(!definition.is_active());
+        definition.status = " active ".to_string();
+        assert!(!definition.is_active());
     }
 
     #[test]

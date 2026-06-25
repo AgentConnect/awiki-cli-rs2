@@ -58,7 +58,7 @@ fn issue(
 fn ensure_test_runtime_agent(state: &DaemonState, agent_did: &str, runtime_profile_id: &str) {
     if matches!(
         state.load_agent_definition(agent_did),
-        Ok(agent) if agent.status == "active"
+        Ok(agent) if agent.is_active()
     ) {
         return;
     }

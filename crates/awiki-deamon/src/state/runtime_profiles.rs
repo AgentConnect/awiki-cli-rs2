@@ -1411,7 +1411,7 @@ WHERE agent_did = ?1
 
     pub fn load_active_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
         let definition = self.load_agent_definition(agent_did)?;
-        if definition.status != "active" {
+        if !definition.is_active() {
             bail!("agent is not active: {agent_did}");
         }
         Ok(definition)
