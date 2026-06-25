@@ -827,12 +827,8 @@ impl GenericCliDriver for TestGenericCliDriver {
 fn command_driver_from_profile(
     profile: &CliRuntimeProfileRecord,
 ) -> Result<CommandGenericCliDriver> {
-    let program = profile
-        .binary_path
-        .clone()
-        .or_else(|| {
-            json_string_field(&profile.driver_config_json, "program").map(std::path::PathBuf::from)
-        })
+    let program = optional_path_field(&profile.binary_path)
+        .or_else(|| json_path_field(&profile.driver_config_json, "program"))
         .context("command generic-cli driver requires binary_path or driver_config.program")?;
     let args = string_array(profile.driver_config_json.get("args"))?;
     let cli_wrapper = json_string_field(&profile.driver_config_json, "cli_wrapper")
@@ -871,6 +867,16 @@ pub(crate) fn json_string_field(value: &Value, field: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+pub(crate) fn optional_path_field(path: &Option<PathBuf>) -> Option<PathBuf> {
+    path.as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+        .cloned()
+}
+
+pub(crate) fn json_path_field(value: &Value, field: &str) -> Option<PathBuf> {
+    json_string_field(value, field).map(PathBuf::from)
 }
 
 pub(crate) fn json_bool_field(value: &Value, field: &str, default: bool) -> bool {

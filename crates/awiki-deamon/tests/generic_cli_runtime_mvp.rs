@@ -925,6 +925,30 @@ fn codex_driver_config_prefers_driver_config_sandbox_over_profile_default() {
     assert!(!config.ephemeral);
 }
 
+#[test]
+fn codex_driver_config_treats_empty_profile_paths_as_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "codex").unwrap();
+    cli_profile.binary_path = Some(std::path::PathBuf::new());
+    cli_profile.config_home = Some(std::path::PathBuf::new());
+    cli_profile.driver_config_json = json!({
+        "binary_path": root.path().join("codex-from-driver-config"),
+        "config_home": root.path().join("codex-home-from-driver-config"),
+    });
+
+    let config = CodexDriverConfig::from_profile(&cli_profile).unwrap();
+
+    assert_eq!(
+        config.binary_path,
+        root.path().join("codex-from-driver-config")
+    );
+    assert_eq!(
+        config.config_home,
+        root.path().join("codex-home-from-driver-config")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {

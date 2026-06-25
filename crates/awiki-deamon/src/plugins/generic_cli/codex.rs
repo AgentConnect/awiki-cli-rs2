@@ -11,7 +11,8 @@ use crate::state::CliRuntimeProfileRecord;
 
 use super::{
     build_generic_cli_prompt_envelope, generic_cli_run_paths, json_bool_field,
-    json_duration_ms_field, json_string_field, output_metadata, output_sanitizer_metadata,
+    json_duration_ms_field, json_path_field, json_string_field, optional_path_field,
+    output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -91,19 +92,15 @@ impl CodexDriver {
 impl CodexDriverConfig {
     pub fn from_profile(profile: &CliRuntimeProfileRecord) -> Result<Self> {
         let config = &profile.driver_config_json;
-        let binary_path = profile
-            .binary_path
-            .clone()
-            .or_else(|| json_string_field(config, "binary_path").map(PathBuf::from))
+        let binary_path = optional_path_field(&profile.binary_path)
+            .or_else(|| json_path_field(config, "binary_path"))
             .unwrap_or_else(default_codex_binary_path);
         let sandbox = json_string_field(config, "sandbox")
             .or_else(|| profile.default_sandbox.clone())
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
-        let output_dir = json_string_field(config, "output_dir").map(PathBuf::from);
-        let config_home = profile
-            .config_home
-            .clone()
-            .or_else(|| json_string_field(config, "config_home").map(PathBuf::from))
+        let output_dir = json_path_field(config, "output_dir");
+        let config_home = optional_path_field(&profile.config_home)
+            .or_else(|| json_path_field(config, "config_home"))
             .context("Codex generic-cli profile requires config_home for CODEX_HOME")?;
         let record = Self {
             binary_path,

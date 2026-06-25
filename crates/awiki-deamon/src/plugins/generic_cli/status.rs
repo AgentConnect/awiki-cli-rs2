@@ -7,7 +7,9 @@ use crate::public_error::sanitize_public_error;
 use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
-use super::{codex::codex_profile_auth_ready, json_string_field, GenericCliDriverRegistry};
+use super::{
+    codex::codex_profile_auth_ready, json_path_field, optional_path_field, GenericCliDriverRegistry,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericCliStatusSummary {
@@ -127,9 +129,8 @@ impl GenericCliStatusSummary {
 }
 
 fn effective_config_home(profile: &CliRuntimeProfileRecord) -> Option<std::path::PathBuf> {
-    profile.config_home.clone().or_else(|| {
-        json_string_field(&profile.driver_config_json, "config_home").map(std::path::PathBuf::from)
-    })
+    optional_path_field(&profile.config_home)
+        .or_else(|| json_path_field(&profile.driver_config_json, "config_home"))
 }
 
 fn auth_status(
@@ -175,9 +176,8 @@ fn pre_probe_driver_status_code(
 }
 
 fn command_program(profile: &CliRuntimeProfileRecord) -> Option<std::path::PathBuf> {
-    profile.binary_path.clone().or_else(|| {
-        json_string_field(&profile.driver_config_json, "program").map(std::path::PathBuf::from)
-    })
+    optional_path_field(&profile.binary_path)
+        .or_else(|| json_path_field(&profile.driver_config_json, "program"))
 }
 
 fn probed_driver_status_code(
@@ -356,6 +356,26 @@ mod tests {
         assert_eq!(blank_summary.driver_status_code, "driver_config_missing");
         assert_eq!(
             blank_summary.error_code(),
+            Some("generic_cli_driver_config_missing")
+        );
+
+        let mut empty_structured_program = CliRuntimeProfileRecord::for_driver(
+            "profile_command_empty_path",
+            COMMAND_CLI_DRIVER_ID,
+        )
+        .unwrap();
+        empty_structured_program.binary_path = Some(std::path::PathBuf::new());
+
+        let empty_structured_summary =
+            GenericCliStatusSummary::from_profile(empty_structured_program);
+
+        assert!(!empty_structured_summary.setup_ready);
+        assert_eq!(
+            empty_structured_summary.driver_status_code,
+            "driver_config_missing"
+        );
+        assert_eq!(
+            empty_structured_summary.error_code(),
             Some("generic_cli_driver_config_missing")
         );
     }
