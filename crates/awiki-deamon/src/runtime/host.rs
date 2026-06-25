@@ -337,7 +337,6 @@ where
 
     let install_status = plugin.check_install_status()?;
     if !install_status.installed {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
         if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
             let detail = install_status
                 .detail
@@ -361,15 +360,17 @@ where
                 .unwrap_or_else(|| "generic-cli driver is not installed".to_string());
             let metadata =
                 generic_cli_failed_status_metadata("runtime_not_installed", "setup_required");
-            emit_runtime_status_with_metadata(
-                outbox,
-                &run,
-                "failed",
-                Some("Runtime setup is required"),
-                Some("runtime_not_installed"),
-                Some(&error_summary),
-                Some(&metadata),
-            )?;
+            if mark_active_runtime_run_failed(state, &run.run_id)? {
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime setup is required"),
+                    Some("runtime_not_installed"),
+                    Some(&error_summary),
+                    Some(&metadata),
+                )?;
+            }
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
@@ -377,7 +378,7 @@ where
         match prepare_generic_cli_route_session(state, profile, &task, &run) {
             Ok(session) => session,
             Err(error) => {
-                state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                let failed = mark_active_runtime_run_failed(state, &run.run_id)?;
                 let deferred = maybe_enqueue_generic_cli_busy_retry(
                     state,
                     profile,
@@ -387,19 +388,21 @@ where
                     &error.summary,
                 )?;
                 let metadata = error.status_metadata();
-                emit_runtime_status_with_metadata(
-                    outbox,
-                    &run,
-                    if deferred.is_some() {
-                        "queued"
-                    } else {
-                        "failed"
-                    },
-                    Some(error.user_message()),
-                    Some(error.code),
-                    Some(&error.summary),
-                    metadata.as_ref(),
-                )?;
+                if failed {
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        if deferred.is_some() {
+                            "queued"
+                        } else {
+                            "failed"
+                        },
+                        Some(error.user_message()),
+                        Some(error.code),
+                        Some(&error.summary),
+                        metadata.as_ref(),
+                    )?;
+                }
                 return Err(error.into_error()).context("prepare generic-cli route session");
             }
         }
@@ -423,7 +426,7 @@ where
                         Some(&error.summary),
                     );
                 }
-                state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+                let failed = mark_active_runtime_run_failed(state, &run.run_id)?;
                 let deferred = maybe_enqueue_generic_cli_busy_retry(
                     state,
                     profile,
@@ -433,19 +436,21 @@ where
                     &error.summary,
                 )?;
                 let metadata = error.status_metadata();
-                emit_runtime_status_with_metadata(
-                    outbox,
-                    &run,
-                    if deferred.is_some() {
-                        "queued"
-                    } else {
-                        "failed"
-                    },
-                    Some(error.user_message()),
-                    Some(error.code),
-                    Some(&error.summary),
-                    metadata.as_ref(),
-                )?;
+                if failed {
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        if deferred.is_some() {
+                            "queued"
+                        } else {
+                            "failed"
+                        },
+                        Some(error.user_message()),
+                        Some(error.code),
+                        Some(&error.summary),
+                        metadata.as_ref(),
+                    )?;
+                }
                 return Err(error.into_error()).context("acquire generic-cli runtime lock");
             }
         }
@@ -476,7 +481,6 @@ where
             match prepared {
                 Ok(instance) => instance,
                 Err(error) => {
-                    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
                     if let Some(route_session) = cli_route_session.as_ref() {
                         let _ = state.release_cli_route_session_lease(
                             &route_session.route_key,
@@ -493,15 +497,17 @@ where
                         "workspace_preparation_failed",
                         "manual_review_required",
                     );
-                    emit_runtime_status_with_metadata(
-                        outbox,
-                        &run,
-                        "failed",
-                        Some("Runtime workspace preparation failed"),
-                        Some("workspace_preparation_failed"),
-                        Some(&error_summary),
-                        Some(&metadata),
-                    )?;
+                    if mark_active_runtime_run_failed(state, &run.run_id)? {
+                        emit_runtime_status_with_metadata(
+                            outbox,
+                            &run,
+                            "failed",
+                            Some("Runtime workspace preparation failed"),
+                            Some("workspace_preparation_failed"),
+                            Some(&error_summary),
+                            Some(&metadata),
+                        )?;
+                    }
                     return Err(error).context("prepare runtime workspace instance");
                 }
             }
@@ -522,7 +528,6 @@ where
     let launch_outcome = match plugin.launch_run(launch_context) {
         Ok(outcome) => outcome,
         Err(error) => {
-            state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
             if let Some(route_session) = cli_route_session.as_ref() {
                 let _ = state.release_cli_route_session_lease(
                     &route_session.route_key,
@@ -538,15 +543,17 @@ where
                 let error_summary = sanitize_user_visible_error_summary(&error.to_string());
                 let metadata =
                     generic_cli_failed_status_metadata("launch_failed", "manual_review_required");
-                emit_runtime_status_with_metadata(
-                    outbox,
-                    &run,
-                    "failed",
-                    Some("Runtime launch failed"),
-                    Some("launch_failed"),
-                    Some(&error_summary),
-                    Some(&metadata),
-                )?;
+                if mark_active_runtime_run_failed(state, &run.run_id)? {
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        "failed",
+                        Some("Runtime launch failed"),
+                        Some("launch_failed"),
+                        Some(&error_summary),
+                        Some(&metadata),
+                    )?;
+                }
             } else if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
                 emit_hermes_failure_outputs(
@@ -572,17 +579,18 @@ where
             {
                 generic_cli_late_callback_rejected = true;
                 if state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed {
-                    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
                     let metadata = generic_cli_late_callback_rejected_status_metadata();
-                    emit_runtime_status_with_metadata(
-                        outbox,
-                        &run,
-                        "failed",
-                        Some("Runtime callback arrived after route reset"),
-                        Some("late_callback_rejected"),
-                        Some("Route session no longer belongs to this run"),
-                        Some(&metadata),
-                    )?;
+                    if mark_active_runtime_run_failed(state, &run.run_id)? {
+                        emit_runtime_status_with_metadata(
+                            outbox,
+                            &run,
+                            "failed",
+                            Some("Runtime callback arrived after route reset"),
+                            Some("late_callback_rejected"),
+                            Some("Route session no longer belongs to this run"),
+                            Some(&metadata),
+                        )?;
+                    }
                 }
                 break;
             }
@@ -598,10 +606,13 @@ where
         true
     };
 
-    if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending
-        && generic_cli_route_still_locked
+    if generic_cli_route_still_locked
+        && state.update_runtime_run_status_if_status_in(
+            &run.run_id,
+            &[RuntimeRunStatus::Pending],
+            RuntimeRunStatus::Running,
+        )?
     {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
         emit_runtime_status(outbox, &run, "running", Some("Runtime started"), None, None)?;
     }
 
@@ -726,17 +737,18 @@ where
         && !generic_cli_late_callback_rejected
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
     {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
         let metadata = generic_cli_late_callback_rejected_status_metadata();
-        emit_runtime_status_with_metadata(
-            outbox,
-            &run,
-            "failed",
-            Some("Runtime callback arrived after route reset"),
-            Some("late_callback_rejected"),
-            Some("Route session no longer belongs to this run"),
-            Some(&metadata),
-        )?;
+        if mark_active_runtime_run_failed(state, &run.run_id)? {
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime callback arrived after route reset"),
+                Some("late_callback_rejected"),
+                Some("Route session no longer belongs to this run"),
+                Some(&metadata),
+            )?;
+        }
         if let Some(route_session) = cli_route_session.as_ref() {
             let current = state.load_cli_route_session(&route_session.route_key)?;
             state.insert_audit_event_json(
@@ -765,29 +777,30 @@ where
     if launch_outcome.status == RuntimeRunStatus::Failed
         && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
     {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-        if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
-            let failure = generic_cli_failure_detail(&launch_outcome);
-            let metadata = failure.metadata_json();
-            emit_runtime_status_with_metadata(
-                outbox,
-                &run,
-                "failed",
-                Some("Runtime failed"),
-                Some(failure.error_code.as_str()),
-                Some(failure.error_summary.as_str()),
-                Some(&metadata),
-            )?;
-        } else {
-            let failure_summary = runtime_launch_failure_summary(&launch_outcome);
-            emit_runtime_status(
-                outbox,
-                &run,
-                "failed",
-                Some("Runtime failed"),
-                Some("runtime_failed"),
-                Some(&failure_summary),
-            )?;
+        if mark_active_runtime_run_failed(state, &run.run_id)? {
+            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+                let failure = generic_cli_failure_detail(&launch_outcome);
+                let metadata = failure.metadata_json();
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime failed"),
+                    Some(failure.error_code.as_str()),
+                    Some(failure.error_summary.as_str()),
+                    Some(&metadata),
+                )?;
+            } else {
+                let failure_summary = runtime_launch_failure_summary(&launch_outcome);
+                emit_runtime_status(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime failed"),
+                    Some("runtime_failed"),
+                    Some(&failure_summary),
+                )?;
+            }
         }
     }
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
@@ -1454,23 +1467,34 @@ pub fn flush_runtime_final_outbox(
                 let error_summary = sanitize_user_visible_error_summary(&error.to_string());
                 let attempts = record.attempt_count + 1;
                 if attempts >= MAX_RUNTIME_FINAL_OUTBOX_ATTEMPTS {
-                    state.mark_runtime_final_outbox_failed_terminal(
+                    let failed_terminal = state.mark_runtime_final_outbox_failed_terminal(
                         &record.idempotency_key,
                         "final_delivery_failed",
                         &error_summary,
                     )?;
-                    state.insert_audit_event_json(
-                        "runtime.final_outbox.failed_terminal",
-                        Some(&record.agent_did),
-                        Some(&record.runtime_profile_id),
-                        Some(&record.run_id),
-                        None,
-                        serde_json::json!({
-                            "idempotency_key": record.idempotency_key,
-                            "attempt_count": attempts,
-                            "reason": error_summary,
-                        }),
-                    )?;
+                    if failed_terminal {
+                        let run = state.load_runtime_run(&record.run_id)?;
+                        mark_runtime_run_failed_with_status(
+                            state,
+                            outbox,
+                            &run,
+                            "智能体回复发送失败",
+                            "final_delivery_failed",
+                            &error_summary,
+                        )?;
+                        state.insert_audit_event_json(
+                            "runtime.final_outbox.failed_terminal",
+                            Some(&record.agent_did),
+                            Some(&record.runtime_profile_id),
+                            Some(&record.run_id),
+                            None,
+                            serde_json::json!({
+                                "idempotency_key": record.idempotency_key,
+                                "attempt_count": attempts,
+                                "reason": error_summary,
+                            }),
+                        )?;
+                    }
                 } else {
                     let next_attempt_at_ms = now + runtime_final_retry_delay_ms(attempts);
                     state.mark_runtime_final_outbox_retry(
@@ -1657,19 +1681,23 @@ fn mark_runtime_final_delivered(
     record: &RuntimeFinalOutboxRecord,
     message_id: Option<&str>,
 ) -> Result<()> {
-    state.mark_runtime_final_outbox_sent(&record.idempotency_key, message_id)?;
+    if !state.mark_runtime_final_outbox_sent(&record.idempotency_key, message_id)? {
+        return Ok(());
+    }
     let run = state.load_runtime_run(&record.run_id)?;
-    state
-        .update_runtime_run_status(&record.run_id, RuntimeRunStatus::Finished)
+    let updated = state
+        .finish_active_runtime_run(&record.run_id)
         .context("mark runtime run finished after final delivery")?;
-    emit_runtime_status(
-        outbox,
-        &run,
-        "succeeded",
-        Some("Runtime response sent"),
-        None,
-        None,
-    )?;
+    if updated {
+        emit_runtime_status(
+            outbox,
+            &run,
+            "succeeded",
+            Some("Runtime response sent"),
+            None,
+            None,
+        )?;
+    }
     Ok(())
 }
 
@@ -1809,16 +1837,42 @@ fn emit_hermes_failure_outputs(
             security: RuntimeMessageSecurity::DefaultPlain,
         },
     );
-    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-    emit_runtime_status(
-        outbox,
-        run,
-        "failed",
-        Some("Hermes run failed"),
-        Some(error_code),
-        Some(&sanitized),
-    )?;
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some("Hermes run failed"),
+            Some(error_code),
+            Some(&sanitized),
+        )?;
+    }
     Ok(())
+}
+
+fn mark_runtime_run_failed_with_status(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    message: &str,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<()> {
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some(message),
+            Some(error_code),
+            Some(&sanitize_user_visible_error_summary(error_summary)),
+        )?;
+    }
+    Ok(())
+}
+
+fn mark_active_runtime_run_failed(state: &DaemonState, run_id: &str) -> Result<bool> {
+    state.fail_active_runtime_run(run_id)
 }
 
 fn emit_runtime_status(

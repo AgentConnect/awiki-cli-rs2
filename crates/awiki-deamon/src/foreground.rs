@@ -131,6 +131,35 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let _state_root_owner = StateRootOwnerGuard::acquire(&config)?;
     let state = DaemonState::open(&config)?;
     let state_summary = state.initialize()?;
+    let startup_recovery_cutoff = current_time_millis()?;
+    let recovered_runtime_runs =
+        state.recover_stale_active_runtime_runs(startup_recovery_cutoff)?;
+    if recovered_runtime_runs > 0 {
+        state.insert_audit_event_json(
+            "runtime.run.recovered_failed",
+            None,
+            None,
+            None,
+            None,
+            json!({
+                "recovered_count": recovered_runtime_runs,
+            }),
+        )?;
+    }
+    let recovered_runtime_retries =
+        state.recover_stale_runtime_retries_running(startup_recovery_cutoff)?;
+    if recovered_runtime_retries > 0 {
+        state.insert_audit_event_json(
+            "runtime.run.retry.recovered",
+            None,
+            None,
+            None,
+            None,
+            json!({
+                "recovered_count": recovered_runtime_retries,
+            }),
+        )?;
+    }
     let im_core = ImCoreAdapter::open(&config)?;
     let im_core_status = im_core
         .initialize_local_state()
@@ -766,23 +795,26 @@ fn drain_runtime_retry_queue_once(
             processed += 1;
             continue;
         }
-        state.mark_runtime_retry_status(&retry.retry_id, "running")?;
+        if !state.start_queued_runtime_retry(&retry.retry_id)? {
+            continue;
+        }
         let result = run_runtime_retry(config, state, outbox, hermes_gateway, &retry);
         match result {
             Ok(run_id) => {
-                state.mark_runtime_retry_status(&retry.retry_id, "succeeded")?;
-                state.insert_audit_event_json(
-                    "runtime.run.retry.succeeded",
-                    Some(&retry.agent_did),
-                    Some(&retry.runtime_profile_id),
-                    Some(&run_id),
-                    None,
-                    json!({
-                        "retry_id": retry.retry_id,
-                        "original_run_id": retry.original_run_id,
-                        "task_id": retry.task_id,
-                    }),
-                )?;
+                if state.succeed_running_runtime_retry(&retry.retry_id)? {
+                    state.insert_audit_event_json(
+                        "runtime.run.retry.succeeded",
+                        Some(&retry.agent_did),
+                        Some(&retry.runtime_profile_id),
+                        Some(&run_id),
+                        None,
+                        json!({
+                            "retry_id": retry.retry_id,
+                            "original_run_id": retry.original_run_id,
+                            "task_id": retry.task_id,
+                        }),
+                    )?;
+                }
             }
             Err(error) => {
                 let busy_reason = runtime_retry_busy_reason_from_error(&error);
@@ -806,20 +838,21 @@ fn drain_runtime_retry_queue_once(
                         }),
                     )?;
                 } else {
-                    state.mark_runtime_retry_status(&retry.retry_id, "failed")?;
-                    state.insert_audit_event_json(
-                        "runtime.run.retry.failed",
-                        Some(&retry.agent_did),
-                        Some(&retry.runtime_profile_id),
-                        Some(&retry.original_run_id),
-                        None,
-                        json!({
-                            "retry_id": retry.retry_id,
-                            "original_run_id": retry.original_run_id,
-                            "task_id": retry.task_id,
-                            "error": sanitized_error,
-                        }),
-                    )?;
+                    if state.fail_running_runtime_retry(&retry.retry_id)? {
+                        state.insert_audit_event_json(
+                            "runtime.run.retry.failed",
+                            Some(&retry.agent_did),
+                            Some(&retry.runtime_profile_id),
+                            Some(&retry.original_run_id),
+                            None,
+                            json!({
+                                "retry_id": retry.retry_id,
+                                "original_run_id": retry.original_run_id,
+                                "task_id": retry.task_id,
+                                "error": sanitized_error,
+                            }),
+                        )?;
+                    }
                 }
             }
         }
@@ -2247,9 +2280,6 @@ fn send_runtime_agent_welcome_message_with_sender(
     sender: &impl RuntimeWelcomeSender,
     created: &crate::commands::RuntimeAgentCreateOutcome,
 ) -> Result<()> {
-    if created.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID {
-        return Ok(());
-    }
     let controller_did = controller_did_for_runtime(state, &created.agent_did)?;
     let idempotency_key = welcome_idempotency_key(&created.agent_did, &controller_did);
     if state.audit_event_exists(
@@ -2298,7 +2328,7 @@ fn try_send_runtime_agent_welcome_message(
         &identity,
         jwt_token.as_deref(),
         &controller_did,
-        "Hermes 已准备好。",
+        runtime_agent_welcome_text(created),
         RuntimeMessageSecurity::DefaultPlain,
         MessageDeliveryOptions {
             idempotency_key: Some(idempotency_key.to_string()),
@@ -2317,6 +2347,12 @@ fn try_send_runtime_agent_welcome_message(
         }),
     )?;
     Ok(())
+}
+
+fn runtime_agent_welcome_text(
+    _created: &crate::commands::RuntimeAgentCreateOutcome,
+) -> &'static str {
+    "Agent 已准备好。"
 }
 
 fn welcome_idempotency_key(runtime_agent_did: &str, controller_did: &str) -> String {

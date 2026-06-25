@@ -1802,6 +1802,143 @@ fn failed_runtime_run(run_id: &str, task_id: &str) -> RuntimeRun {
     }
 }
 
+fn runtime_final_outbox_record(
+    run_id: &str,
+    idempotency_key: &str,
+    final_text: &str,
+    now: i64,
+) -> RuntimeFinalOutboxRecord {
+    RuntimeFinalOutboxRecord {
+        idempotency_key: idempotency_key.to_string(),
+        run_id: run_id.to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        recipient_did: "did:human:alice".to_string(),
+        conversation_id: Some("direct:did:human:alice".to_string()),
+        final_text: final_text.to_string(),
+        final_source: "hermes_final_text".to_string(),
+        final_body_hash: test_final_body_hash(final_text),
+        security: "default_plain".to_string(),
+        status: "pending".to_string(),
+        attempt_count: 0,
+        next_attempt_at_ms: now,
+        last_error_code: None,
+        last_error_summary: None,
+        message_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        sent_at_ms: None,
+    }
+}
+
+#[test]
+fn runtime_run_active_transitions_are_conditional() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let pending = RuntimeRun {
+        run_id: "run_active_pending".to_string(),
+        task_id: "task_active_pending".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        runtime_plugin_id: "hermes".to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Pending,
+    };
+    state.insert_runtime_run(&pending).unwrap();
+    assert!(state
+        .finish_active_runtime_run("run_active_pending")
+        .unwrap());
+    assert_eq!(
+        state.load_runtime_run("run_active_pending").unwrap().status,
+        RuntimeRunStatus::Finished
+    );
+    assert!(!state.fail_active_runtime_run("run_active_pending").unwrap());
+    assert_eq!(
+        state.load_runtime_run("run_active_pending").unwrap().status,
+        RuntimeRunStatus::Finished
+    );
+
+    let running = RuntimeRun {
+        run_id: "run_active_running".to_string(),
+        task_id: "task_active_running".to_string(),
+        status: RuntimeRunStatus::Running,
+        ..pending
+    };
+    state.insert_runtime_run(&running).unwrap();
+    assert!(state.fail_active_runtime_run("run_active_running").unwrap());
+    assert_eq!(
+        state.load_runtime_run("run_active_running").unwrap().status,
+        RuntimeRunStatus::Failed
+    );
+    assert!(!state
+        .finish_active_runtime_run("run_active_running")
+        .unwrap());
+}
+
+#[test]
+fn runtime_run_recovery_marks_only_stale_active_runs_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let pending = RuntimeRun {
+        run_id: "run_recover_pending".to_string(),
+        task_id: "task_recover_pending".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        runtime_plugin_id: "hermes".to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Pending,
+    };
+    let running = RuntimeRun {
+        run_id: "run_recover_running".to_string(),
+        task_id: "task_recover_running".to_string(),
+        status: RuntimeRunStatus::Running,
+        ..pending.clone()
+    };
+    let finished = RuntimeRun {
+        run_id: "run_recover_finished".to_string(),
+        task_id: "task_recover_finished".to_string(),
+        status: RuntimeRunStatus::Finished,
+        ..pending.clone()
+    };
+    state.insert_runtime_run(&pending).unwrap();
+    state.insert_runtime_run(&running).unwrap();
+    state.insert_runtime_run(&finished).unwrap();
+
+    assert_eq!(
+        state.recover_stale_active_runtime_runs(i64::MAX).unwrap(),
+        2
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_recover_pending")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_recover_running")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_recover_finished")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Finished
+    );
+}
+
 #[test]
 fn runtime_retry_queue_v26_migrates_legacy_table_without_due_column() {
     let root = tempfile::tempdir().unwrap();
@@ -2029,6 +2166,90 @@ fn runtime_retry_queue_lists_retries_for_original_run_without_payload() {
 }
 
 #[test]
+fn runtime_retry_queue_state_transitions_are_conditional() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let run = failed_runtime_run("run_retry_transition", "task_retry_transition");
+    state.insert_runtime_run(&run).unwrap();
+    let retry = state
+        .insert_runtime_retry_request_due_at(&run, "cmd_retry_transition", now)
+        .unwrap();
+
+    assert!(!state
+        .succeed_running_runtime_retry(&retry.retry_id)
+        .unwrap());
+    let stored = state.load_runtime_retry_request(&retry.retry_id).unwrap();
+    assert_eq!(stored.status, "queued");
+    assert_eq!(stored.attempts, 0);
+
+    assert!(state.start_queued_runtime_retry(&retry.retry_id).unwrap());
+    let stored = state.load_runtime_retry_request(&retry.retry_id).unwrap();
+    assert_eq!(stored.status, "running");
+    assert_eq!(stored.attempts, 1);
+    assert!(!state.start_queued_runtime_retry(&retry.retry_id).unwrap());
+
+    assert!(state
+        .succeed_running_runtime_retry(&retry.retry_id)
+        .unwrap());
+    let stored = state.load_runtime_retry_request(&retry.retry_id).unwrap();
+    assert_eq!(stored.status, "succeeded");
+    assert_eq!(stored.attempts, 1);
+    assert!(!state.fail_running_runtime_retry(&retry.retry_id).unwrap());
+    state
+        .reschedule_runtime_retry_request(&retry.retry_id, now + 60_000)
+        .unwrap();
+    assert_eq!(
+        state
+            .load_runtime_retry_request(&retry.retry_id)
+            .unwrap()
+            .status,
+        "succeeded"
+    );
+}
+
+#[test]
+fn runtime_retry_queue_recovery_requeues_only_running_retries() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let queued_run = failed_runtime_run("run_retry_recover_queued", "task_retry_recover_queued");
+    let running_run = failed_runtime_run("run_retry_recover_running", "task_retry_recover_running");
+    state.insert_runtime_run(&queued_run).unwrap();
+    state.insert_runtime_run(&running_run).unwrap();
+    let queued = state
+        .insert_runtime_retry_request_due_at(&queued_run, "cmd_retry_recover_queued", now)
+        .unwrap();
+    let running = state
+        .insert_runtime_retry_request_due_at(&running_run, "cmd_retry_recover_running", now)
+        .unwrap();
+    assert!(state.start_queued_runtime_retry(&running.retry_id).unwrap());
+
+    assert_eq!(
+        state
+            .recover_stale_runtime_retries_running(i64::MAX)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        state
+            .load_runtime_retry_request(&queued.retry_id)
+            .unwrap()
+            .status,
+        "queued"
+    );
+    let recovered = state.load_runtime_retry_request(&running.retry_id).unwrap();
+    assert_eq!(recovered.status, "queued");
+    assert_eq!(recovered.attempts, 1);
+}
+
+#[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -2036,30 +2257,12 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     state.initialize().unwrap();
 
     let now = current_time_millis().unwrap();
-    let record = RuntimeFinalOutboxRecord {
-        idempotency_key: "runtime-final:did:agent:hermes:run_1:controller-scope:v1:test-alice"
-            .to_string(),
-        run_id: "run_1".to_string(),
-        agent_did: "did:agent:hermes".to_string(),
-        runtime_profile_id: "profile_hermes".to_string(),
-        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
-        controller_did: "did:human:alice".to_string(),
-        recipient_did: "did:human:alice".to_string(),
-        conversation_id: Some("direct:did:human:alice".to_string()),
-        final_text: "final text".to_string(),
-        final_source: "hermes_final_text".to_string(),
-        final_body_hash: test_final_body_hash("final text"),
-        security: "default_plain".to_string(),
-        status: "pending".to_string(),
-        attempt_count: 0,
-        next_attempt_at_ms: now,
-        last_error_code: None,
-        last_error_summary: None,
-        message_id: None,
-        created_at_ms: now,
-        updated_at_ms: now,
-        sent_at_ms: None,
-    };
+    let record = runtime_final_outbox_record(
+        "run_1",
+        "runtime-final:did:agent:hermes:run_1:controller-scope:v1:test-alice",
+        "final text",
+        now,
+    );
 
     state.upsert_runtime_final_outbox_pending(&record).unwrap();
     let due = state.list_due_runtime_final_outbox(now, 10).unwrap();
@@ -2108,9 +2311,9 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     assert!(state
         .mark_runtime_final_outbox_sending(&record.idempotency_key)
         .unwrap());
-    state
+    assert!(state
         .mark_runtime_final_outbox_sent(&record.idempotency_key, Some("msg_final_1"))
-        .unwrap();
+        .unwrap());
     let stored = state
         .load_runtime_final_outbox_by_run("run_1")
         .unwrap()
@@ -2140,6 +2343,66 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         .list_due_runtime_final_outbox(now + 60_000, 10)
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn runtime_final_outbox_failed_terminal_is_not_overwritten() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let now = current_time_millis().unwrap();
+    let record = runtime_final_outbox_record(
+        "run_failed_terminal",
+        "runtime-final:did:agent:hermes:run_failed_terminal:controller-scope:v1:test-alice",
+        "first final text",
+        now,
+    );
+    state.upsert_runtime_final_outbox_pending(&record).unwrap();
+    assert!(state
+        .mark_runtime_final_outbox_sending(&record.idempotency_key)
+        .unwrap());
+    assert!(state
+        .mark_runtime_final_outbox_failed_terminal(
+            &record.idempotency_key,
+            "final_delivery_failed",
+            "network unavailable",
+        )
+        .unwrap());
+
+    let mut duplicate = runtime_final_outbox_record(
+        "run_failed_terminal",
+        &record.idempotency_key,
+        "replacement final text",
+        now,
+    );
+    duplicate.final_source = "stdout_fallback".to_string();
+    state
+        .upsert_runtime_final_outbox_pending(&duplicate)
+        .unwrap();
+
+    let stored = state
+        .load_runtime_final_outbox_by_run("run_failed_terminal")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, "failed_terminal");
+    assert_eq!(stored.final_text, "first final text");
+    assert_eq!(stored.final_source, "hermes_final_text");
+    assert_eq!(
+        stored.last_error_code.as_deref(),
+        Some("final_delivery_failed")
+    );
+    assert!(!state
+        .mark_runtime_final_outbox_sent(&record.idempotency_key, Some("msg_late"))
+        .unwrap());
+    assert!(!state
+        .mark_runtime_final_outbox_failed_terminal(
+            &record.idempotency_key,
+            "late_error",
+            "late failure",
+        )
+        .unwrap());
 }
 
 #[test]

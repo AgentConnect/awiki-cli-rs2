@@ -30,7 +30,6 @@ pub(crate) fn list_conversations_for_owner_identity(
     query: &crate::messages::ConversationQuery,
 ) -> crate::ImResult<Vec<ConversationRecord>> {
     let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
-    super::messages::reconcile_peer_scope_direct_conversations(connection, &owner_identity_id)?;
     let limit = page_limit(query.limit, 50) + 1;
     let mut statement = String::from(
         r#"
@@ -661,7 +660,7 @@ VALUES (?1, 'alice-id', ?2, ?3, ?3, 0, ?4, 'did:example:mentions', 'did:example:
     }
 
     #[test]
-    fn local_state_conversations_reconcile_legacy_direct_did_rows_on_list() {
+    fn local_state_conversations_list_is_local_read_without_reconcile_side_effect() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         seed_identity_message(
@@ -713,9 +712,12 @@ VALUES (?1, ?2, ?3, ?4, ?4, 1, ?3, ?5,
         )
         .unwrap();
 
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].conversation_id, scoped_conversation_id);
-        assert_eq!(records[0].message_count, 2);
+        assert_eq!(records.len(), 2);
+        let scoped_record = records
+            .iter()
+            .find(|record| record.conversation_id == scoped_conversation_id)
+            .unwrap();
+        assert_eq!(scoped_record.message_count, 1);
         let legacy_conversation_id: String = db
             .query_row(
                 "SELECT conversation_id FROM messages WHERE msg_id = 'legacy'",
@@ -723,7 +725,10 @@ VALUES (?1, ?2, ?3, ?4, ?4, 1, ?3, ?5,
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(legacy_conversation_id, scoped_conversation_id);
+        assert_eq!(
+            legacy_conversation_id,
+            "dm:did:wba:anpclaw.com:zhuochengtest:e1_old",
+        );
     }
 
     fn seed_identity_message(

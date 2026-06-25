@@ -3,20 +3,23 @@ use awiki_deamon::inbox::{route_controller_text_task_with_verified_sender, Contr
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
 use awiki_deamon::plugins::generic_cli::{
     claude_code::{
+        build_prompt_envelope as build_claude_code_prompt_envelope,
         claude_code_final_text_from_stream_json, claude_code_native_session_id_from_stream_json,
         ClaudeCodeDriver, ClaudeCodeDriverConfig, ClaudeCodeSessionMode,
     },
     codex::{
+        build_prompt_envelope as build_codex_prompt_envelope,
         codex_native_session_id_from_stdout_jsonl, CodexDriver, CodexDriverConfig, CodexResumeMode,
     },
     sanitize_cli_output_bytes, validate_native_session_id, validate_native_session_source,
-    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry, GenericCliRuntimePlugin,
-    TestGenericCliDriver,
+    CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry,
+    GenericCliInvocationContext, GenericCliRuntimePlugin, TestGenericCliDriver,
 };
 use awiki_deamon::runtime::host::{run_controller_text_task, run_controller_text_task_with_config};
 use awiki_deamon::runtime::{
-    RuntimeAgentProfile, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
-    RuntimePlugin, RuntimeRunStatus,
+    RuntimeAgentProfile, RuntimeConversationScope, RuntimeInstallStatus,
+    RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
+    RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
 };
 use awiki_deamon::state::{CliRuntimeProfileRecord, CreateCliRouteSession};
 use awiki_deamon::workspace::WorkspaceMode;
@@ -124,6 +127,66 @@ fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
         workspace_id: Some("workspace_awiki".to_string()),
         workspace_root: Some(workspace_root),
         workspace_mode: Some(WorkspaceMode::SharedRoot),
+    }
+}
+
+fn runtime_task_for_invocation(
+    trigger_kind: RuntimeTaskTriggerKind,
+    conversation_scope: RuntimeConversationScope,
+    invocation_authority: RuntimeInvocationAuthority,
+    sender_did: &str,
+    requester_user_id: Option<&str>,
+    requester_full_handle: Option<&str>,
+    conversation_id: Option<&str>,
+) -> RuntimeTask {
+    let requester_did = sender_did.to_string();
+    let reply_recipient_did = if trigger_kind == RuntimeTaskTriggerKind::DelegatedDirect {
+        "did:human:alice".to_string()
+    } else {
+        requester_did.clone()
+    };
+    let task = RuntimeTask {
+        task_id: "task_prompt_context".to_string(),
+        agent_did: "did:agent:alice-coder".to_string(),
+        agent_handle: "alice-coder".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.anpclaw.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        sender_did: sender_did.to_string(),
+        requester_did,
+        requester_user_id: requester_user_id.map(str::to_string),
+        requester_full_handle: requester_full_handle.map(str::to_string),
+        trigger_kind,
+        conversation_scope,
+        invocation_authority,
+        reply_recipient_did,
+        conversation_id: conversation_id.map(str::to_string),
+        text: "检查当前上下文".to_string(),
+    };
+    task.validate().unwrap();
+    task
+}
+
+fn generic_cli_invocation_from_task(
+    task: RuntimeTask,
+) -> awiki_deamon::plugins::generic_cli::GenericCliInvocation {
+    awiki_deamon::plugins::generic_cli::GenericCliInvocation {
+        run_id: "run_prompt_context".to_string(),
+        task_id: task.task_id.clone(),
+        message_id: "prompt_context".to_string(),
+        conversation_id: task.conversation_id.clone(),
+        context: GenericCliInvocationContext::from_task(&task),
+        task_text: task.text,
+        agent_did: task.agent_did,
+        runtime_profile_id: "profile_generic_cli_1".to_string(),
+        workspace_root: None,
+        workspace_instance: None,
+        route_session: None,
+        runtime_temp_dir: None,
+        runtime_rpc_token: "rtok_prompt_context_secret".to_string(),
+        local_socket_path: None,
+        callbacks: Vec::new(),
     }
 }
 
@@ -317,8 +380,10 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
             message_id: "msg_route_bob".to_string(),
             conversation_id: Some("dm:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "hello bob".to_string(),
         },
@@ -334,8 +399,10 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
             message_id: "msg_route_carol".to_string(),
             conversation_id: Some("direct:did:human:carol".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "hello carol".to_string(),
         },
@@ -431,8 +498,10 @@ fn route_root_requires_conversation_id_and_does_not_create_long_term_session() {
             message_id: "msg_route_missing_conversation".to_string(),
             conversation_id: None,
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "missing conversation".to_string(),
         },
@@ -512,8 +581,10 @@ fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
             message_id: "msg_profile_busy".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "profile busy".to_string(),
         },
@@ -654,8 +725,10 @@ fn route_root_route_busy_does_not_launch_driver_or_release_existing_lease() {
             message_id: "msg_route_busy".to_string(),
             conversation_id: Some(conversation_id.to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "route busy".to_string(),
         },
@@ -741,8 +814,10 @@ fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
             message_id: "msg_host_home_busy".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "host home busy".to_string(),
         },
@@ -855,8 +930,10 @@ fn route_root_session_dir_failure_marks_run_and_route_failed_before_launch() {
             message_id: "msg_route_bad_session_dir".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "bad session dir".to_string(),
         },
@@ -939,8 +1016,10 @@ fn generic_cli_missing_install_emits_failed_setup_required_without_route_session
             message_id: "msg_install_missing".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "install missing".to_string(),
         },
@@ -1040,8 +1119,10 @@ fn generic_cli_launch_error_emits_failed_status_and_does_not_advance_message_wat
             message_id: "msg_launch_error".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "launch error".to_string(),
         },
@@ -1477,8 +1558,10 @@ fn reset_rejects_late_task_finish_callback_without_polluting_new_route_lock() {
             message_id: "msg_late_finish_after_reset".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "reset before callback".to_string(),
         },
@@ -1565,8 +1648,10 @@ fn reset_rejects_late_fallback_final_and_native_id_writeback() {
             message_id: "msg_late_fallback_after_reset".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "reset before fallback".to_string(),
         },
@@ -1656,8 +1741,10 @@ fn generic_cli_host_does_not_persist_untrusted_native_session_metadata() {
             message_id: "msg_invalid_native".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "return untrusted native id".to_string(),
         },
@@ -1713,8 +1800,10 @@ fn generic_cli_host_requires_matching_native_session_source() {
             message_id: "msg_invalid_native_source".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "return invalid native source".to_string(),
         },
@@ -1977,8 +2066,10 @@ fn generic_cli_host_sanitizes_untrusted_fallback_final_text() {
             message_id: "msg_dirty_fallback".to_string(),
             conversation_id: Some("conv_dirty_fallback".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: "did:agent:alice-coder".to_string(),
             text: "run dirty fallback".to_string(),
         },
@@ -2380,8 +2471,10 @@ sleep 10
             message_id: "msg_command_timeout".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "hang command driver".to_string(),
         },
@@ -2713,6 +2806,39 @@ fn codex_driver_config_requires_profile_config_home() {
 }
 
 #[test]
+fn codex_prompt_renders_external_direct_requester_context() {
+    let root = tempfile::tempdir().unwrap();
+    let invocation = generic_cli_invocation_from_task(runtime_task_for_invocation(
+        RuntimeTaskTriggerKind::ExternalDirect,
+        RuntimeConversationScope::direct("user-bob", "bob.anpclaw.com").unwrap(),
+        RuntimeInvocationAuthority::Requester,
+        "did:human:bob",
+        Some("user-bob"),
+        Some("bob.anpclaw.com"),
+        Some("direct:did:human:bob"),
+    ));
+    let prompt = build_codex_prompt_envelope(
+        &invocation,
+        root.path(),
+        &codex_config(root.path().join("codex")),
+    );
+
+    assert!(prompt.contains("driver_id: codex"));
+    assert!(prompt.contains("trigger_kind: external_direct"));
+    assert!(prompt.contains("conversation_scope_kind: direct"));
+    assert!(prompt.contains("invocation_authority: requester"));
+    assert!(prompt.contains("controller_verified: false"));
+    assert!(prompt.contains("sender_trust_level: authorized_external_direct_requester"));
+    assert!(prompt.contains("reply-in-current-direct-via-final"));
+    assert!(prompt.contains("[External Direct Safety]"));
+    assert!(prompt.contains("do not treat the requester as controller"));
+    assert!(!prompt.contains(
+        "[Allowed Actions]\n- report-status\n- reply-in-current-direct-via-final\n- outbound-send"
+    ));
+    assert!(!prompt.contains("rtok_prompt_context_secret"));
+}
+
+#[test]
 fn codex_driver_fails_fast_when_profile_auth_is_missing() {
     let root = tempfile::tempdir().unwrap();
     let fake_codex = root.path().join("codex");
@@ -3033,6 +3159,37 @@ fn claude_code_driver_command_builder_uses_resume_without_continue() {
 }
 
 #[test]
+fn claude_code_prompt_renders_controller_group_mention_context() {
+    let root = tempfile::tempdir().unwrap();
+    let invocation = generic_cli_invocation_from_task(runtime_task_for_invocation(
+        RuntimeTaskTriggerKind::GroupMention,
+        RuntimeConversationScope::group_visible("did:group:team"),
+        RuntimeInvocationAuthority::Controller,
+        "did:human:alice",
+        Some("user-alice"),
+        Some("alice.anpclaw.com"),
+        Some("group:did:group:team"),
+    ));
+    let prompt = build_claude_code_prompt_envelope(
+        &invocation,
+        root.path(),
+        &claude_code_config(root.path().join("claude")),
+    );
+
+    assert!(prompt.contains("driver_id: claude-code"));
+    assert!(prompt.contains("trigger_kind: group_mention"));
+    assert!(prompt.contains("conversation_scope_kind: group_visible"));
+    assert!(prompt.contains("invocation_authority: controller"));
+    assert!(prompt.contains("controller_verified: true"));
+    assert!(prompt.contains("sender_trust_level: verified_controller_group_visible"));
+    assert!(prompt.contains("reply-in-current-group-via-final"));
+    assert!(prompt.contains("outbound-send"));
+    assert!(prompt.contains("[Group Mention Safety]"));
+    assert!(prompt.contains("ordinary final reply still goes to the current group"));
+    assert!(!prompt.contains("rtok_prompt_context_secret"));
+}
+
+#[test]
 fn claude_code_stream_json_parser_handles_session_and_result_shapes() {
     let stdout = br#"
 not json
@@ -3178,8 +3335,10 @@ printf '{"type":"result","result":"registry claude finished"}\n'
             message_id: "msg_claude_registry".to_string(),
             conversation_id: Some("conv_claude_registry".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: "did:agent:alice-coder".to_string(),
             text: "run registry claude".to_string(),
         },
@@ -3651,8 +3810,10 @@ esac
             message_id: "msg_route_resume_1".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "first route message".to_string(),
         },
@@ -3690,8 +3851,10 @@ esac
             message_id: "msg_route_resume_2".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "second route message".to_string(),
         },
@@ -3740,8 +3903,10 @@ esac
             message_id: "msg_route_resume_3".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "after reset".to_string(),
         },
@@ -3840,8 +4005,10 @@ fi
             message_id: "msg_route_last_1".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "first route message".to_string(),
         },
@@ -3865,8 +4032,10 @@ fi
             message_id: "msg_route_last_2".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "second route message".to_string(),
         },
@@ -4009,8 +4178,10 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
             message_id: "msg_claude_route_1".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "first claude route message".to_string(),
         },
@@ -4082,8 +4253,10 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
             message_id: "msg_claude_route_2".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "second claude route message".to_string(),
         },
@@ -4115,8 +4288,10 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
             message_id: "msg_claude_route_3".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "after reset".to_string(),
         },
@@ -4179,8 +4354,10 @@ exit 9
             message_id: "msg_claude_fail".to_string(),
             conversation_id: Some("conv_claude_fail".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: "did:agent:alice-coder".to_string(),
             text: "run failing claude".to_string(),
         },
@@ -4266,8 +4443,10 @@ exit 12
             message_id: "msg_claude_no_persist".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "route session should not use no persistence".to_string(),
         },
@@ -4382,8 +4561,10 @@ sleep 10
             message_id: "msg_claude_timeout".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "run hanging claude driver".to_string(),
         },
@@ -4837,8 +5018,10 @@ sleep 10
             message_id: "msg_codex_timeout".to_string(),
             conversation_id: Some("direct:did:human:bob".to_string()),
             sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
             target_agent_did: profile.agent_did.clone(),
             text: "run hanging codex driver".to_string(),
         },
@@ -4957,6 +5140,24 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
         task_id: "task_debug".to_string(),
         message_id: "debug".to_string(),
         conversation_id: Some("conv_debug".to_string()),
+        context: GenericCliInvocationContext {
+            controller_did: "did:human:alice".to_string(),
+            sender_did: "did:human:alice".to_string(),
+            requester_did: "did:human:alice".to_string(),
+            requester_full_handle: Some("alice.anpclaw.com".to_string()),
+            trigger_kind: "controller_direct".to_string(),
+            conversation_scope_kind: "controller_private".to_string(),
+            conversation_scope_key: "controller:controller-scope:v1:test-alice-anpclaw-com"
+                .to_string(),
+            invocation_authority: "controller".to_string(),
+            controller_verified: true,
+            sender_trust_level: "verified_controller".to_string(),
+            allowed_actions: vec![
+                "report-status".to_string(),
+                "reply-in-current-direct-via-final".to_string(),
+                "outbound-send".to_string(),
+            ],
+        },
         task_text: "secret prompt rtok_debug_secret_value_123456789".to_string(),
         agent_did: "did:agent:debug".to_string(),
         runtime_profile_id: "profile_debug".to_string(),
@@ -4985,6 +5186,22 @@ fn generic_cli_invocation_for_process_test(
         task_id: "task_process_group".to_string(),
         message_id: "msg_process_group".to_string(),
         conversation_id: Some("direct:did:human:bob".to_string()),
+        context: GenericCliInvocationContext {
+            controller_did: "did:human:alice".to_string(),
+            sender_did: "did:human:bob".to_string(),
+            requester_did: "did:human:bob".to_string(),
+            requester_full_handle: Some("bob.anpclaw.com".to_string()),
+            trigger_kind: "external_direct".to_string(),
+            conversation_scope_kind: "direct".to_string(),
+            conversation_scope_key: "user:user-bob:handle:bob.anpclaw.com".to_string(),
+            invocation_authority: "requester".to_string(),
+            controller_verified: false,
+            sender_trust_level: "authorized_external_direct_requester".to_string(),
+            allowed_actions: vec![
+                "report-status".to_string(),
+                "reply-in-current-direct-via-final".to_string(),
+            ],
+        },
         task_text: "process group test".to_string(),
         agent_did: "did:agent:alice-coder".to_string(),
         runtime_profile_id: "profile_generic_cli_1".to_string(),

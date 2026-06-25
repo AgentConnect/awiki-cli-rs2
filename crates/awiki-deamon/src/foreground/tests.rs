@@ -258,6 +258,15 @@ fn create_hermes_runtime(
     config: &DaemonConfig,
     state: &DaemonState,
 ) -> RuntimeAgentCreateOutcome {
+    create_runtime_with_alias(root, config, state, "hermes")
+}
+
+fn create_runtime_with_alias(
+    root: &Path,
+    config: &DaemonConfig,
+    state: &DaemonState,
+    runtime: &str,
+) -> RuntimeAgentCreateOutcome {
     let registration = MockRegistrationClient;
     let daemon = setup_daemon_agent(
         config,
@@ -269,29 +278,34 @@ fn create_hermes_runtime(
     )
     .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
+    let command_id = format!("cmd_create_{runtime}_runtime");
+    let message_id = format!("msg_create_{runtime}_runtime");
+    let conversation_id = format!("conv_create_{runtime}_runtime");
+    let handle = format!("@alice-{runtime}-runtime");
+    let display_name = format!("Alice {runtime}");
     match handle_agent_payload_message(
         config,
         state,
         &registration,
         &outbox,
         IncomingAgentPayloadMessage {
-            message_id: "msg_create_hermes_runtime".to_string(),
-            conversation_id: Some("conv_create_hermes_runtime".to_string()),
+            message_id,
+            conversation_id: Some(conversation_id),
             sender_did: "did:human:alice".to_string(),
             target_agent_did: daemon.agent_did,
             content_type: "application/json".to_string(),
             payload: json!({
                 "schema": "awiki.agent.command.v1",
-                "command_id": "cmd_create_hermes_runtime",
+                "command_id": command_id,
                 "command": "runtime.agent.create",
                 "target_agent_kind": "runtime",
                 "args": {
-                    "handle": "@alice-hermes-runtime",
-                    "runtime": "hermes",
+                    "handle": handle,
+                    "runtime": runtime,
                     "workspace": root.join("workspace").display().to_string(),
                     "controller_did": "did:human:alice",
                     "registration_token": "tok_runtime_secret_value",
-                    "display_name": "Alice Hermes"
+                    "display_name": display_name
                 }
             }),
         },
@@ -551,7 +565,7 @@ fn write_bootstrap_did_document_cache(config: &DaemonConfig, payload: &Value) {
 }
 
 #[test]
-fn hermes_runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
+fn runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
     state
@@ -576,7 +590,7 @@ fn hermes_runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     assert_eq!(calls[0].agent_did, created.agent_did);
     assert_eq!(calls[0].jwt_token.as_deref(), Some("jwt-runtime-secret"));
     assert_eq!(calls[0].controller_did, "did:human:alice");
-    assert_eq!(calls[0].text, "Hermes 已准备好。");
+    assert_eq!(calls[0].text, "Agent 已准备好。");
     assert_eq!(calls[0].security, RuntimeMessageSecurity::DefaultPlain);
     assert_eq!(
         calls[0].delivery.idempotency_key.as_deref(),
@@ -600,7 +614,29 @@ fn hermes_runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
 }
 
 #[test]
-fn hermes_runtime_welcome_failure_is_sanitized_and_non_fatal() {
+fn generic_cli_runtime_welcome_is_sent_after_create() {
+    let (root, config, state) = fixture();
+    let created = create_runtime_with_alias(root.path(), &config, &state, "codex");
+    assert_eq!(created.runtime_plugin_id, GENERIC_CLI_RUNTIME_PLUGIN_ID);
+    assert_eq!(created.driver_id.as_deref(), Some("codex"));
+    let sender = MockWelcomeSender::default();
+
+    send_runtime_agent_welcome_message_with_sender(&config, &state, &sender, &created).unwrap();
+
+    let calls = sender.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].agent_did, created.agent_did);
+    assert_eq!(calls[0].controller_did, "did:human:alice");
+    assert_eq!(calls[0].text, "Agent 已准备好。");
+    assert!(calls[0]
+        .delivery
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|key| key.starts_with("welcome:")));
+}
+
+#[test]
+fn runtime_welcome_failure_is_sanitized_and_non_fatal() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
     let controller_did = controller_did_for_runtime(&state, &created.agent_did).unwrap();
@@ -947,6 +983,7 @@ fn hermes_record(root: &Path) -> HermesProfileRecord {
 fn generic_cli_profile(root: &Path) -> RuntimeAgentProfile {
     RuntimeAgentProfile {
         agent_did: "did:agent:codex".to_string(),
+        agent_handle: "alice-codex".to_string(),
         controller_user_id: "user-alice".to_string(),
         controller_full_handle: "alice.anpclaw.com".to_string(),
         controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
@@ -1053,14 +1090,20 @@ fn enqueue_generic_cli_route_message(
     let task = RuntimeTask {
         task_id: format!("task_{message_id}"),
         agent_did: profile.agent_did.clone(),
+        agent_handle: profile.agent_handle.clone(),
         controller_user_id: profile.controller_user_id.clone(),
         controller_full_handle: profile.controller_full_handle.clone(),
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: profile.controller_did.clone(),
         sender_did: profile.controller_did.clone(),
         requester_did: profile.controller_did.clone(),
+        requester_user_id: None,
         requester_full_handle: None,
         trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+        conversation_scope: RuntimeConversationScope::controller_private(
+            profile.controller_scope_key.clone(),
+        ),
+        invocation_authority: RuntimeInvocationAuthority::Controller,
         reply_recipient_did: profile.controller_did.clone(),
         conversation_id: Some(conversation_id.to_string()),
         text: text.to_string(),
@@ -1149,10 +1192,12 @@ fn foreground_cli_route_message_queue_drains_due_item_and_supersedes_runtime_ret
         .insert_runtime_retry_request_due_at(&original_run, "runtime.busy.auto-deferred", now)
         .unwrap();
     let outbox = MemoryRuntimeOutbox::default();
+    let hermes_gateway = StdioHermesGateway::default();
 
     let processed = drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
     assert_eq!(processed, 1);
-    let processed_retry = drain_runtime_retry_queue_once(&config, &state, &outbox).unwrap();
+    let processed_retry =
+        drain_runtime_retry_queue_once(&config, &state, &outbox, &hermes_gateway).unwrap();
     assert_eq!(processed_retry, 1);
 
     let queue = state
@@ -2108,14 +2153,20 @@ fn foreground_retry_queue_defers_again_when_generic_cli_route_is_busy() {
     let task = RuntimeTask {
         task_id: "task_retry_route_busy".to_string(),
         agent_did: profile.agent_did.clone(),
+        agent_handle: profile.agent_handle.clone(),
         controller_user_id: profile.controller_user_id.clone(),
         controller_full_handle: profile.controller_full_handle.clone(),
         controller_scope_key: profile.controller_scope_key.clone(),
         controller_did: profile.controller_did.clone(),
         sender_did: "did:human:alice".to_string(),
         requester_did: "did:human:alice".to_string(),
+        requester_user_id: None,
         requester_full_handle: None,
         trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+        conversation_scope: RuntimeConversationScope::controller_private(
+            profile.controller_scope_key.clone(),
+        ),
+        invocation_authority: RuntimeInvocationAuthority::Controller,
         reply_recipient_did: "did:human:alice".to_string(),
         conversation_id: Some("direct:did:human:bob".to_string()),
         text: "retry prompt must not enter queue".to_string(),
@@ -2178,7 +2229,9 @@ fn foreground_retry_queue_defers_again_when_generic_cli_route_is_busy() {
     );
 
     let outbox = MemoryRuntimeOutbox::default();
-    let processed = drain_runtime_retry_queue_once(&config, &state, &outbox).unwrap();
+    let hermes_gateway = StdioHermesGateway::default();
+    let processed =
+        drain_runtime_retry_queue_once(&config, &state, &outbox, &hermes_gateway).unwrap();
 
     assert_eq!(processed, 1);
     let refreshed = state.load_runtime_retry_request(&retry.retry_id).unwrap();

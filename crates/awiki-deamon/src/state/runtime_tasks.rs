@@ -380,6 +380,7 @@ LIMIT ?2
         if status.trim().is_empty() {
             bail!("retry status must not be empty");
         }
+        validate_runtime_retry_status(status)?;
         let connection = self.connection()?;
         let updated = connection.execute(
             r#"
@@ -395,6 +396,104 @@ WHERE retry_id = ?3
             bail!("runtime retry request does not exist: {retry_id}");
         }
         Ok(())
+    }
+
+    pub fn mark_runtime_retry_status_if_status_in(
+        &self,
+        retry_id: &str,
+        current_statuses: &[&str],
+        status: &str,
+    ) -> Result<bool> {
+        if retry_id.trim().is_empty() {
+            bail!("retry_id must not be empty");
+        }
+        if current_statuses.is_empty() {
+            bail!("current_statuses must not be empty");
+        }
+        for current_status in current_statuses {
+            validate_runtime_retry_status(current_status)?;
+        }
+        validate_runtime_retry_status(status)?;
+
+        let mut sql = r#"
+UPDATE runtime_retry_queue
+SET status = ?1,
+    attempts = attempts + CASE WHEN ?1 = 'running' THEN 1 ELSE 0 END,
+    updated_at_ms = ?2
+WHERE retry_id = ?3
+  AND status IN (
+"#
+        .to_string();
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(current_statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push_str(")\n");
+
+        let updated_at_ms = current_time_millis()?;
+        let connection = self.connection()?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&status, &updated_at_ms, &retry_id];
+        for current_status in current_statuses {
+            values.push(current_status);
+        }
+        let updated = connection.execute(&sql, values.as_slice())?;
+        if updated == 0 {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_retry_queue WHERE retry_id = ?1)",
+                [retry_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                bail!("runtime retry request does not exist: {retry_id}");
+            }
+        }
+        Ok(updated > 0)
+    }
+
+    pub fn start_queued_runtime_retry(&self, retry_id: &str) -> Result<bool> {
+        self.mark_runtime_retry_status_if_status_in(
+            retry_id,
+            &[RuntimeRetryStatus::Queued.as_str()],
+            RuntimeRetryStatus::Running.as_str(),
+        )
+    }
+
+    pub fn succeed_running_runtime_retry(&self, retry_id: &str) -> Result<bool> {
+        self.mark_runtime_retry_status_if_status_in(
+            retry_id,
+            &[RuntimeRetryStatus::Running.as_str()],
+            RuntimeRetryStatus::Succeeded.as_str(),
+        )
+    }
+
+    pub fn fail_running_runtime_retry(&self, retry_id: &str) -> Result<bool> {
+        self.mark_runtime_retry_status_if_status_in(
+            retry_id,
+            &[RuntimeRetryStatus::Running.as_str()],
+            RuntimeRetryStatus::Failed.as_str(),
+        )
+    }
+
+    pub fn recover_stale_runtime_retries_running(&self, stale_before_ms: i64) -> Result<usize> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_retry_queue
+SET status = ?1,
+    updated_at_ms = ?2
+WHERE status = ?3
+  AND updated_at_ms <= ?4
+"#,
+            rusqlite::params![
+                RuntimeRetryStatus::Queued.as_str(),
+                current_time_millis()?,
+                RuntimeRetryStatus::Running.as_str(),
+                stale_before_ms
+            ],
+        )?;
+        Ok(updated)
     }
 
     pub fn reschedule_runtime_retry_request(
@@ -416,11 +515,19 @@ SET status = 'queued',
     next_attempt_at_ms = ?1,
     updated_at_ms = ?2
 WHERE retry_id = ?3
+  AND status = 'running'
 "#,
             rusqlite::params![next_attempt_at_ms, current_time_millis()?, retry_id],
         )?;
         if updated == 0 {
-            bail!("runtime retry request does not exist: {retry_id}");
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_retry_queue WHERE retry_id = ?1)",
+                [retry_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                bail!("runtime retry request does not exist: {retry_id}");
+            }
         }
         Ok(())
     }
@@ -485,16 +592,16 @@ INSERT INTO runtime_final_outbox (
     sent_at_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', 0, ?13, NULL, NULL, NULL, ?14, ?14, NULL)
 ON CONFLICT(idempotency_key) DO UPDATE SET
-    final_text = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
-    final_source = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_source ELSE excluded.final_source END,
-    final_body_hash = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.final_body_hash ELSE excluded.final_body_hash END,
-    security = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.security ELSE excluded.security END,
-    recipient_did = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.recipient_did ELSE excluded.recipient_did END,
-    conversation_id = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.conversation_id ELSE excluded.conversation_id END,
-    status = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.status ELSE 'pending' END,
-    next_attempt_at_ms = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
-    last_error_code = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_code ELSE NULL END,
-    last_error_summary = CASE WHEN runtime_final_outbox.status = 'sent' THEN runtime_final_outbox.last_error_summary ELSE NULL END,
+    final_text = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.final_text ELSE excluded.final_text END,
+    final_source = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.final_source ELSE excluded.final_source END,
+    final_body_hash = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.final_body_hash ELSE excluded.final_body_hash END,
+    security = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.security ELSE excluded.security END,
+    recipient_did = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.recipient_did ELSE excluded.recipient_did END,
+    conversation_id = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.conversation_id ELSE excluded.conversation_id END,
+    status = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.status ELSE 'pending' END,
+    next_attempt_at_ms = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
+    last_error_code = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.last_error_code ELSE NULL END,
+    last_error_summary = CASE WHEN runtime_final_outbox.status IN ('sent', 'failed_terminal') THEN runtime_final_outbox.last_error_summary ELSE NULL END,
     updated_at_ms = excluded.updated_at_ms
 "#,
             rusqlite::params![
@@ -625,7 +732,7 @@ WHERE idempotency_key = ?2
         &self,
         idempotency_key: &str,
         message_id: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let now = current_time_millis()?;
         let connection = self.connection()?;
         let updated = connection.execute(
@@ -638,13 +745,14 @@ SET status = 'sent',
     last_error_code = NULL,
     last_error_summary = NULL
 WHERE idempotency_key = ?3
+  AND status = 'sending'
 "#,
             rusqlite::params![message_id, now, idempotency_key],
         )?;
         if updated == 0 {
-            bail!("runtime final outbox does not exist: {idempotency_key}");
+            ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
-        Ok(())
+        Ok(updated > 0)
     }
 
     pub fn mark_runtime_final_outbox_retry(
@@ -707,7 +815,7 @@ WHERE status = 'sending'
         idempotency_key: &str,
         error_code: &str,
         error_summary: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let connection = self.connection()?;
         let updated = connection.execute(
             r#"
@@ -717,6 +825,7 @@ SET status = 'failed_terminal',
     last_error_summary = ?2,
     updated_at_ms = ?3
 WHERE idempotency_key = ?4
+  AND status = 'sending'
 "#,
             rusqlite::params![
                 error_code,
@@ -726,9 +835,9 @@ WHERE idempotency_key = ?4
             ],
         )?;
         if updated == 0 {
-            bail!("runtime final outbox does not exist: {idempotency_key}");
+            ensure_runtime_final_outbox_exists(&connection, idempotency_key)?;
         }
-        Ok(())
+        Ok(updated > 0)
     }
 
     pub fn update_runtime_run_status(&self, run_id: &str, status: RuntimeRunStatus) -> Result<()> {
@@ -764,6 +873,114 @@ WHERE run_id = ?6
             bail!("runtime run does not exist: {run_id}");
         }
         Ok(())
+    }
+
+    pub fn update_runtime_run_status_if_status_in(
+        &self,
+        run_id: &str,
+        current_statuses: &[RuntimeRunStatus],
+        status: RuntimeRunStatus,
+    ) -> Result<bool> {
+        if run_id.trim().is_empty() {
+            bail!("run_id must not be empty");
+        }
+        if current_statuses.is_empty() {
+            bail!("current_statuses must not be empty");
+        }
+
+        let now = current_time_millis()?;
+        let completed_at = match status {
+            RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => Some(now.to_string()),
+            RuntimeRunStatus::Pending | RuntimeRunStatus::Running => None,
+        };
+        let completed_at_ms = match status {
+            RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => Some(now),
+            RuntimeRunStatus::Pending | RuntimeRunStatus::Running => None,
+        };
+        let mut sql = r#"
+UPDATE runtime_run
+SET status = ?1,
+    completed_at = COALESCE(?2, completed_at),
+    updated_at = ?3,
+    completed_at_ms = COALESCE(?4, completed_at_ms),
+    updated_at_ms = ?5
+WHERE run_id = ?6
+  AND status IN (
+"#
+        .to_string();
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(current_statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push_str(")\n");
+
+        let status_value = status.as_str();
+        let updated_at = now.to_string();
+        let current_status_values = current_statuses
+            .iter()
+            .map(RuntimeRunStatus::as_str)
+            .collect::<Vec<_>>();
+        let connection = self.connection()?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![
+            &status_value,
+            &completed_at,
+            &updated_at,
+            &completed_at_ms,
+            &now,
+            &run_id,
+        ];
+        for current_status in current_status_values.iter() {
+            values.push(current_status);
+        }
+        let updated = connection.execute(&sql, values.as_slice())?;
+        if updated == 0 {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_run WHERE run_id = ?1)",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                bail!("runtime run does not exist: {run_id}");
+            }
+        }
+        Ok(updated > 0)
+    }
+
+    pub fn finish_active_runtime_run(&self, run_id: &str) -> Result<bool> {
+        self.update_runtime_run_status_if_status_in(
+            run_id,
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Finished,
+        )
+    }
+
+    pub fn fail_active_runtime_run(&self, run_id: &str) -> Result<bool> {
+        self.update_runtime_run_status_if_status_in(
+            run_id,
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Failed,
+        )
+    }
+
+    pub fn recover_stale_active_runtime_runs(&self, stale_before_ms: i64) -> Result<usize> {
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_run
+SET status = 'failed',
+    completed_at = COALESCE(completed_at, ?1),
+    updated_at = ?1,
+    completed_at_ms = COALESCE(completed_at_ms, ?2),
+    updated_at_ms = ?2
+WHERE status IN ('pending', 'running')
+  AND updated_at_ms <= ?3
+"#,
+            rusqlite::params![now.to_string(), now, stale_before_ms],
+        )?;
+        Ok(updated)
     }
 
     pub fn load_runtime_run(&self, run_id: &str) -> Result<RuntimeRun> {
@@ -2894,4 +3111,19 @@ fn conversation_scope_from_storage(kind: &str, key: &str) -> Result<RuntimeConve
         }
         other => bail!("unsupported runtime conversation scope kind: {other}"),
     }
+}
+
+fn ensure_runtime_final_outbox_exists(
+    connection: &rusqlite::Connection,
+    idempotency_key: &str,
+) -> Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_final_outbox WHERE idempotency_key = ?1)",
+        [idempotency_key],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        bail!("runtime final outbox does not exist: {idempotency_key}");
+    }
+    Ok(())
 }

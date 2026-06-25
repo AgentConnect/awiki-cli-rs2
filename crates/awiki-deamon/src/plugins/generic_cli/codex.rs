@@ -16,8 +16,8 @@ use super::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
-    sanitize_cli_output_file, validate_native_session_id, write_sanitized_cli_output,
-    GenericCliDriver, GenericCliExit, GenericCliInvocation,
+    render_invocation_context_prompt, sanitize_cli_output_file, validate_native_session_id,
+    write_sanitized_cli_output, GenericCliDriver, GenericCliExit, GenericCliInvocation,
 };
 
 const DEFAULT_CODEX_BINARY: &str = "codex";
@@ -709,6 +709,7 @@ pub fn build_prompt_envelope(
     workspace_root: &std::path::Path,
     config: &CodexDriverConfig,
 ) -> String {
+    let invocation_context = render_invocation_context_prompt(invocation);
     format!(
         r#"[Awiki Runtime Context]
 agent_did: {agent_did}
@@ -718,8 +719,7 @@ runtime_profile_id: {runtime_profile_id}
 workspace_instance_path: {workspace_root}
 sandbox: {sandbox}
 
-[Controller]
-controller_verified: true
+{invocation_context}
 
 [Message Run]
 message_id: {message_id}
@@ -729,22 +729,17 @@ conversation_id: {conversation_id}
 user_message:
 {task_text}
 
-[Awiki Callback Rules]
-- Use the daemon CLI wrapper for status, final replies, outgoing messages, and artifacts.
-- Do not connect to message-service directly.
-- Do not read or use DID private keys.
-- If a wrapper call fails, report the failure instead of claiming success.
-
 [Safety]
 - Do not read secrets, private keys, .env files, or credential stores.
 - Do not run destructive shell commands.
 - Do not use unauthorized network access.
-- Request controller approval before higher-risk actions.
+- Request controller approval before higher-risk actions only when invocation_authority is controller.
 "#,
         agent_did = invocation.agent_did,
         runtime_profile_id = invocation.runtime_profile_id,
         workspace_root = workspace_root.display(),
         sandbox = config.sandbox,
+        invocation_context = invocation_context,
         message_id = invocation.message_id,
         task_id = invocation.task_id,
         run_id = invocation.run_id,
