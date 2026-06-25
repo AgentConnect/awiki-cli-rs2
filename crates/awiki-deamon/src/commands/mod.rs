@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use crate::agent::{
     agent_data_paths, generate_agent_identity, normalize_handle, resolve_runtime,
     runtime_profile_id, workspace_id, workspace_path, AgentDefinition, AgentKind,
-    GENERIC_CLI_RUNTIME_PLUGIN_ID,
+    CODEX_CLI_DRIVER_ID, GENERIC_CLI_RUNTIME_PLUGIN_ID,
 };
 use crate::controller_scope::{verify_daemon_controller_sender, VerifiedControllerSender};
 use crate::outbox::{AgentManagementOutbox, AgentStatusResponse};
@@ -694,7 +694,7 @@ where
             .clone()
             .context("generic-cli runtime must have driver_id")?;
         let mut cli_profile = CliRuntimeProfileRecord::for_driver(&profile_id, driver_id)?;
-        if cli_profile.driver_id == "codex" {
+        if cli_profile.driver_id == CODEX_CLI_DRIVER_ID {
             let profile_dir = codex_profile_dir(config, &profile_id);
             create_private_dir_all(&profile_dir)?;
             let config_home = profile_dir.join("codex-home");

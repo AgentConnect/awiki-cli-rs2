@@ -15,6 +15,7 @@ pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = "generic-cli";
 pub const CODEX_CLI_DRIVER_ID: &str = "codex";
 pub const CLAUDE_CODE_CLI_DRIVER_ID: &str = "claude-code";
 pub const GEMINI_CLI_DRIVER_ID: &str = "gemini";
+pub const COMMAND_CLI_DRIVER_ID: &str = "command";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

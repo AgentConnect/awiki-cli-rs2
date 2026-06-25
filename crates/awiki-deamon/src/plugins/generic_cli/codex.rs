@@ -16,7 +16,7 @@ use super::{
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
     sanitize_cli_output_file, validate_native_session_id, write_sanitized_cli_output,
-    GenericCliDriver, GenericCliExit, GenericCliInvocation,
+    GenericCliDriver, GenericCliExit, GenericCliInvocation, CODEX_CLI_DRIVER_ID,
 };
 
 const DEFAULT_CODEX_BINARY: &str = "codex";
@@ -225,7 +225,7 @@ impl GenericCliDriver for CodexDriver {
                 status: RuntimeRunStatus::Failed,
                 callbacks: Vec::new(),
                 metadata: serde_json::json!({
-                    "driver_id": "codex",
+                    "driver_id": CODEX_CLI_DRIVER_ID,
                     "config_home": "configured",
                     "auth_status": "missing",
                     "setup_ready": false,
@@ -279,7 +279,7 @@ impl GenericCliDriver for CodexDriver {
                         status: RuntimeRunStatus::Failed,
                         callbacks: Vec::new(),
                         metadata: serde_json::json!({
-                            "driver_id": "codex",
+                            "driver_id": CODEX_CLI_DRIVER_ID,
                             "config_home": "configured",
                             "error_code": "codex_cli_timeout",
                             "error_summary": timeout.to_string(),
@@ -346,7 +346,7 @@ impl GenericCliDriver for CodexDriver {
             },
             callbacks: Vec::new(),
             metadata: serde_json::json!({
-                "driver_id": "codex",
+                "driver_id": CODEX_CLI_DRIVER_ID,
                 "config_home": "configured",
                 "error_code": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String("codex_cli_failed".to_string()) },
                 "error_summary": if exit_code == 0 { serde_json::Value::Null } else { serde_json::Value::String(format!("Codex CLI exited with status {exit_code}")) },
@@ -503,7 +503,7 @@ fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
     if let Some(id) = session
         .native_session_id
         .as_deref()
-        .filter(|value| validate_native_session_id("codex", value))
+        .filter(|value| validate_native_session_id(CODEX_CLI_DRIVER_ID, value))
     {
         return CodexResumeMode::ResumeId(id.to_string());
     }
@@ -671,7 +671,7 @@ pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String
             continue;
         };
         if let Some(id) = native_session_id_from_json_value(&value)
-            .filter(|id| validate_native_session_id("codex", id))
+            .filter(|id| validate_native_session_id(CODEX_CLI_DRIVER_ID, id))
         {
             return Some(id);
         }

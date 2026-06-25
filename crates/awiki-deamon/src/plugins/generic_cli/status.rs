@@ -1,13 +1,13 @@
 use serde_json::{json, Value};
 
-use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID, GEMINI_CLI_DRIVER_ID};
+use crate::agent::{
+    CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID, COMMAND_CLI_DRIVER_ID, GEMINI_CLI_DRIVER_ID,
+};
 use crate::public_error::sanitize_public_error;
 use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{codex::codex_profile_auth_ready, GenericCliDriverRegistry};
-
-const COMMAND_CLI_DRIVER_ID: &str = "command";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericCliStatusSummary {

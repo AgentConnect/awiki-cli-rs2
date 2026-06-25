@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::agent::{CODEX_CLI_DRIVER_ID, GEMINI_CLI_DRIVER_ID};
 use crate::security::runtime_token::current_time_millis;
 use crate::workspace::WorkspaceMode;
 
@@ -920,8 +921,8 @@ fn normalize_cli_driver_id_for_storage(input: &str) -> Result<String> {
         bail!("driver_id contains unsupported characters");
     }
     Ok(match value.as_str() {
-        "codex-cli" => "codex".to_string(),
-        "gemini-cli" => "gemini".to_string(),
+        "codex-cli" => CODEX_CLI_DRIVER_ID.to_string(),
+        "gemini-cli" => GEMINI_CLI_DRIVER_ID.to_string(),
         _ => value,
     })
 }

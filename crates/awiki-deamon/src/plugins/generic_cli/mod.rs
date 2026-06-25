@@ -21,6 +21,10 @@ use crate::state::CliRuntimeProfileRecord;
 use self::process::{ManagedChild, DEFAULT_GENERIC_CLI_RUN_TIMEOUT};
 
 pub const GENERIC_CLI_RUNTIME_PLUGIN_ID: &str = crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
+pub const CODEX_CLI_DRIVER_ID: &str = crate::agent::CODEX_CLI_DRIVER_ID;
+pub const CLAUDE_CODE_CLI_DRIVER_ID: &str = crate::agent::CLAUDE_CODE_CLI_DRIVER_ID;
+pub const GEMINI_CLI_DRIVER_ID: &str = crate::agent::GEMINI_CLI_DRIVER_ID;
+pub const COMMAND_CLI_DRIVER_ID: &str = crate::agent::COMMAND_CLI_DRIVER_ID;
 const MAX_NATIVE_SESSION_ID_LEN: usize = 128;
 pub const OUTPUT_SANITIZER_VERSION: &str = "generic-cli-output-sanitizer-v1";
 pub const DEFAULT_SANITIZED_OUTPUT_MAX_BYTES: usize = 64 * 1024;
@@ -239,8 +243,10 @@ pub fn validate_native_session_id(driver_id: &str, native_session_id: &str) -> b
         return false;
     }
     let allowed: fn(u8) -> bool = match driver_id {
-        "codex" => |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'),
-        "claude-code" => {
+        CODEX_CLI_DRIVER_ID => {
+            |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+        }
+        CLAUDE_CODE_CLI_DRIVER_ID => {
             |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
         }
         _ => return false,
@@ -251,12 +257,12 @@ pub fn validate_native_session_id(driver_id: &str, native_session_id: &str) -> b
 pub fn validate_native_session_source(driver_id: &str, native_session_source: &str) -> bool {
     matches!(
         (driver_id, native_session_source),
-        ("codex", "json_event")
-            | ("codex", "resume_id")
-            | ("codex", "resume_last")
-            | ("claude-code", "stream_json")
-            | ("claude-code", "generated_session_id")
-            | ("claude-code", "resume_id")
+        (CODEX_CLI_DRIVER_ID, "json_event")
+            | (CODEX_CLI_DRIVER_ID, "resume_id")
+            | (CODEX_CLI_DRIVER_ID, "resume_last")
+            | (CLAUDE_CODE_CLI_DRIVER_ID, "stream_json")
+            | (CLAUDE_CODE_CLI_DRIVER_ID, "generated_session_id")
+            | (CLAUDE_CODE_CLI_DRIVER_ID, "resume_id")
     )
 }
 
@@ -421,11 +427,17 @@ impl RuntimePlugin for GenericCliDriverRegistry {
 
     fn check_install_status(&self) -> Result<RuntimeInstallStatus> {
         match self.cli_profile.driver_id.as_str() {
-            "command" => command_driver_from_profile(&self.cli_profile)?.check_install_status(),
-            "claude-code" => claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?
-                .check_install_status(),
-            "codex" => codex::CodexDriver::from_profile(&self.cli_profile)?.check_install_status(),
-            "gemini" => Ok(RuntimeInstallStatus {
+            COMMAND_CLI_DRIVER_ID => {
+                command_driver_from_profile(&self.cli_profile)?.check_install_status()
+            }
+            CLAUDE_CODE_CLI_DRIVER_ID => {
+                claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?
+                    .check_install_status()
+            }
+            CODEX_CLI_DRIVER_ID => {
+                codex::CodexDriver::from_profile(&self.cli_profile)?.check_install_status()
+            }
+            GEMINI_CLI_DRIVER_ID => Ok(RuntimeInstallStatus {
                 installed: false,
                 detail: Some(format!(
                     "generic-cli driver {} is not implemented yet",
@@ -438,19 +450,19 @@ impl RuntimePlugin for GenericCliDriverRegistry {
 
     fn launch_run(&self, context: RuntimeLaunchContext) -> Result<RuntimeLaunchOutcome> {
         match self.cli_profile.driver_id.as_str() {
-            "command" => {
+            COMMAND_CLI_DRIVER_ID => {
                 GenericCliRuntimePlugin::new(command_driver_from_profile(&self.cli_profile)?)
                     .launch_run(context)
             }
-            "codex" => {
+            CODEX_CLI_DRIVER_ID => {
                 GenericCliRuntimePlugin::new(codex::CodexDriver::from_profile(&self.cli_profile)?)
                     .launch_run(context)
             }
-            "claude-code" => GenericCliRuntimePlugin::new(
+            CLAUDE_CODE_CLI_DRIVER_ID => GenericCliRuntimePlugin::new(
                 claude_code::ClaudeCodeDriver::from_profile(&self.cli_profile)?,
             )
             .launch_run(context),
-            "gemini" => {
+            GEMINI_CLI_DRIVER_ID => {
                 bail!(
                     "generic-cli driver {} is not implemented yet",
                     self.cli_profile.driver_id

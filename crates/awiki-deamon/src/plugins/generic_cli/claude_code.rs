@@ -16,7 +16,7 @@ use super::{
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
     sanitize_cli_output_text, validate_native_session_id, write_sanitized_cli_output,
-    GenericCliDriver, GenericCliExit, GenericCliInvocation,
+    GenericCliDriver, GenericCliExit, GenericCliInvocation, CLAUDE_CODE_CLI_DRIVER_ID,
 };
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
@@ -245,7 +245,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
                 status: RuntimeRunStatus::Failed,
                 callbacks: Vec::new(),
                 metadata: serde_json::json!({
-                    "driver_id": "claude-code",
+                    "driver_id": CLAUDE_CODE_CLI_DRIVER_ID,
                     "error_code": "session_persistence_disabled",
                     "error_summary": "claude-code no_session_persistence cannot be used with route sessions",
                     "next_action": "manual_review_required",
@@ -314,7 +314,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
                         status: RuntimeRunStatus::Failed,
                         callbacks: Vec::new(),
                         metadata: serde_json::json!({
-                            "driver_id": "claude-code",
+                            "driver_id": CLAUDE_CODE_CLI_DRIVER_ID,
                             "home_isolation": home_isolation(),
                             "error_code": "claude_code_cli_timeout",
                             "error_summary": timeout.to_string(),
@@ -402,7 +402,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
             },
             callbacks: Vec::new(),
             metadata: serde_json::json!({
-                "driver_id": "claude-code",
+                "driver_id": CLAUDE_CODE_CLI_DRIVER_ID,
                 "home_isolation": home_isolation(),
                 "error_code": if success { serde_json::Value::Null } else { serde_json::Value::String("claude_code_cli_failed".to_string()) },
                 "error_summary": if success { serde_json::Value::Null } else { serde_json::Value::String(format!("Claude Code CLI exited with status {exit_code}")) },
@@ -536,7 +536,7 @@ fn claude_code_session_mode(invocation: &GenericCliInvocation) -> ClaudeCodeSess
         .route_session
         .as_ref()
         .and_then(|session| session.native_session_id.as_deref())
-        .filter(|value| validate_native_session_id("claude-code", value))
+        .filter(|value| validate_native_session_id(CLAUDE_CODE_CLI_DRIVER_ID, value))
     {
         return ClaudeCodeSessionMode::ResumeId(id.to_string());
     }
@@ -601,7 +601,7 @@ pub fn claude_code_native_session_id_from_stream_json(stdout: &[u8]) -> Option<S
             continue;
         };
         if let Some(id) = native_session_id_from_json_value(&value)
-            .filter(|id| validate_native_session_id("claude-code", id))
+            .filter(|id| validate_native_session_id(CLAUDE_CODE_CLI_DRIVER_ID, id))
         {
             return Some(id);
         }
