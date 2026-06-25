@@ -208,7 +208,9 @@ impl UserDelegatedMessageDispatcher for RuntimeHostMessageDispatcher<'_> {
         task: RuntimeTask,
         _envelope: &UserMessageEnvelope,
     ) -> Result<()> {
-        let profile = self.state.load_runtime_agent_profile(&task.agent_did)?;
+        let profile = self
+            .state
+            .load_active_runtime_agent_profile(&task.agent_did)?;
         let run_id = delegated_runtime_run_id(self.state, &task.task_id)?;
         let outbox = UserDelegatedRuntimeOutbox::new(self.state);
         match profile.runtime_plugin_id.as_str() {
@@ -1059,7 +1061,7 @@ fn runtime_task_from_envelope(
     binding: &AppMessageAgentBindingRecord,
     envelope: &UserMessageEnvelope,
 ) -> Result<RuntimeTask> {
-    let profile = state.load_runtime_agent_profile(&binding.runtime_agent_did)?;
+    let profile = state.load_active_runtime_agent_profile(&binding.runtime_agent_did)?;
     let payload = json!({
         "schema": "awiki.runtime.user_message_task.v1",
         "content_role": envelope.content_role,

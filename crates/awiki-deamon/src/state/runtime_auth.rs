@@ -144,6 +144,17 @@ INSERT INTO runtime_rpc_tokens (
                 reason = "token_already_used".to_string();
                 bail!("runtime RPC token already used");
             }
+            match self.load_agent_definition(&record.scope.agent_did) {
+                Ok(agent) if agent.status == "active" => {}
+                Ok(_) => {
+                    reason = "agent_not_active".to_string();
+                    bail!("runtime RPC agent is not active");
+                }
+                Err(error) => {
+                    reason = "agent_not_found".to_string();
+                    return Err(error).context("runtime RPC agent does not exist");
+                }
+            }
             if !record.scope.allows_method(method) {
                 reason = "method_not_allowed".to_string();
                 bail!("runtime RPC method not allowed");

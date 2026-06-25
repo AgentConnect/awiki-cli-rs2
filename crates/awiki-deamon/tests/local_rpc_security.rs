@@ -1,12 +1,16 @@
 use std::path::Path;
 use std::time::Duration;
 
+use awiki_deamon::agent::{agent_data_paths, AgentDefinition, AgentKind};
 use awiki_deamon::cli_wrapper::CliWrapperRequest;
 use awiki_deamon::local_rpc::{
     execute_runtime_rpc_request, execute_runtime_rpc_request_with_outbox, RuntimeRpcDebug,
     RuntimeRpcRequest,
 };
-use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
+use awiki_deamon::outbox::{
+    MemoryRuntimeOutbox, OutboxRecordKind, RuntimeAttachmentSend, RuntimeAttachmentSendResult,
+    RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageSendResult, RuntimeOutbox,
+};
 use awiki_deamon::runtime::{
     RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
 };
@@ -14,6 +18,7 @@ use awiki_deamon::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
 };
 use awiki_deamon::state::AppMessageAgentBindingRecord;
+use awiki_deamon::state::AuthorizedRuntimeContext;
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
@@ -34,6 +39,7 @@ fn issue(
     methods: Vec<RpcMethod>,
     recipients: Option<Vec<String>>,
 ) -> awiki_deamon::security::runtime_token::IssuedRuntimeToken {
+    ensure_test_runtime_agent(state, "did:agent:test", "profile_1");
     let mut scope = RuntimeTokenScope::new(
         "did:agent:test",
         "profile_1",
@@ -47,6 +53,72 @@ fn issue(
     let issued = issue_runtime_token(scope).unwrap();
     state.store_runtime_token(&issued).unwrap();
     issued
+}
+
+fn ensure_test_runtime_agent(state: &DaemonState, agent_did: &str, runtime_profile_id: &str) {
+    if matches!(
+        state.load_agent_definition(agent_did),
+        Ok(agent) if agent.status == "active"
+    ) {
+        return;
+    }
+    let (local_agent_db_path, message_db_path) = agent_data_paths(agent_did).unwrap();
+    state
+        .upsert_agent_definition(&AgentDefinition {
+            agent_did: agent_did.to_string(),
+            handle: "test-runtime".to_string(),
+            agent_kind: AgentKind::Runtime,
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.anpclaw.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice-anpclaw-com".to_string(),
+            controller_did: "did:human:controller".to_string(),
+            runtime_plugin_id: Some("test-runtime".to_string()),
+            runtime_profile_id: Some(runtime_profile_id.to_string()),
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path,
+            message_db_path,
+            status: "active".to_string(),
+        })
+        .unwrap();
+}
+
+#[derive(Default)]
+struct FailingFinalOutbox;
+
+impl RuntimeOutbox for FailingFinalOutbox {
+    fn send_status(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        _state: &str,
+        _text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn send_final(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        _text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("simulated final delivery failure")
+    }
+
+    fn send_message(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        _message: &RuntimeMessageSend,
+    ) -> anyhow::Result<RuntimeMessageSendResult> {
+        anyhow::bail!("unexpected message send")
+    }
+
+    fn send_attachment(
+        &self,
+        _context: &AuthorizedRuntimeContext,
+        _attachment: &RuntimeAttachmentSend,
+    ) -> anyhow::Result<RuntimeAttachmentSendResult> {
+        anyhow::bail!("unexpected attachment send")
+    }
 }
 
 fn insert_runtime_task_context(
@@ -212,6 +284,33 @@ fn method_and_recipient_scope_are_enforced() {
         .to_string()
         .contains("recipient not allowed"));
     assert!(outbox.records().is_empty());
+}
+
+#[test]
+fn runtime_rpc_rejects_token_after_agent_is_archived() {
+    let (_root, state) = fixture();
+    let issued = issue(&state, vec![RpcMethod::TaskStatus], None);
+    state.mark_agent_archived("did:agent:test").unwrap();
+
+    let error = execute_runtime_rpc_request(
+        &state,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.status".to_string(),
+            params: json!({ "state": "running" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("agent is not active"));
+    assert!(state
+        .audit_event_exists(
+            "runtime_rpc.authorize",
+            Some("did:agent:test"),
+            Some("agent_not_active"),
+        )
+        .unwrap());
 }
 
 #[test]
@@ -385,6 +484,34 @@ fn task_finish_does_not_resurrect_failed_run() {
         RuntimeRunStatus::Failed
     );
     assert!(outbox.records().is_empty());
+}
+
+#[test]
+fn task_finish_does_not_mark_finished_when_final_delivery_fails() {
+    let (_root, state) = fixture();
+    insert_runtime_task_context(&state, "did:agent:test", "run_1", None);
+    let issued = issue(&state, vec![RpcMethod::TaskFinish], None);
+    let outbox = FailingFinalOutbox::default();
+
+    let error = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "task.finish".to_string(),
+            params: json!({ "text": "final that cannot be delivered" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("simulated final delivery failure"));
+    assert_eq!(
+        state.load_runtime_run("run_1").unwrap().status,
+        RuntimeRunStatus::Pending
+    );
 }
 
 #[test]

@@ -101,7 +101,7 @@ where
             bail!("active app message agent binding conflicts with ensure_once_key");
         }
         let _profile = state
-            .load_runtime_agent_profile(&existing.runtime_agent_did)
+            .load_active_runtime_agent_profile(&existing.runtime_agent_did)
             .context("load existing app message runtime profile")?;
         revoke_superseded_bindings(
             state,

@@ -241,7 +241,7 @@ where
 {
     validate_application_json_payload(&message)?;
     let daemon_agent = state
-        .load_agent_definition(&message.target_agent_did)
+        .load_active_agent_definition(&message.target_agent_did)
         .context("load target daemon agent")?;
     if daemon_agent.agent_kind != AgentKind::Daemon {
         bail!("target agent is not a daemon agent");
@@ -255,7 +255,7 @@ where
     )
     .context("verify daemon command sender scope")?;
     let daemon_agent = state
-        .load_agent_definition(&message.target_agent_did)
+        .load_active_agent_definition(&message.target_agent_did)
         .context("reload target daemon agent after controller sender verification")?;
 
     let envelope: AgentCommandEnvelope =
@@ -2232,7 +2232,7 @@ fn load_owned_runtime_agent(
     daemon_agent: &AgentDefinition,
     runtime_agent_did: &str,
 ) -> Result<AgentDefinition> {
-    let runtime_agent = state.load_agent_definition(runtime_agent_did)?;
+    let runtime_agent = state.load_active_agent_definition(runtime_agent_did)?;
     if runtime_agent.agent_kind != AgentKind::Runtime
         || runtime_agent.controller_scope_key != daemon_agent.controller_scope_key
         || !state.runtime_agent_belongs_to_daemon_scope(

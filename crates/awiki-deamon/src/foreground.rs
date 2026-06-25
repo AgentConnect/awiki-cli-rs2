@@ -834,7 +834,7 @@ fn run_runtime_retry(
         bail!("runtime retry queue record does not match original run");
     }
     let task = state.load_runtime_task(&retry.task_id)?;
-    let profile = state.load_runtime_agent_profile(&retry.agent_did)?;
+    let profile = state.load_active_runtime_agent_profile(&retry.agent_did)?;
     validate_retry_task_binding(&task, &profile)?;
     let run_id = format!("run_{}", retry.retry_id);
     match profile.runtime_plugin_id.as_str() {
@@ -1115,14 +1115,14 @@ where
     let binding = state
         .load_runtime_daemon_binding(target_agent_did)?
         .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
-    state.load_agent_definition(&binding.daemon_agent_did)?;
-    state.load_agent_definition(target_agent_did)?;
+    state.load_active_agent_definition(&binding.daemon_agent_did)?;
+    state.load_active_agent_definition(target_agent_did)?;
     let conversation_id = conversation_id(message);
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
     let auth = daemon_auth_material(
         config,
         state,
-        &state.load_agent_definition(&binding.daemon_agent_did)?,
+        &state.load_active_agent_definition(&binding.daemon_agent_did)?,
     )?;
     let authorization = registration.authorize_agent_invocation(
         &binding.daemon_agent_did,
@@ -1539,7 +1539,7 @@ fn route_runtime_controller_text(
         sender_did.clone(),
         Some(
             state
-                .load_runtime_agent_profile(target_agent_did)?
+                .load_active_runtime_agent_profile(target_agent_did)?
                 .controller_did,
         ),
         format!("task_{message_id}"),
@@ -1657,7 +1657,7 @@ where
     let binding = state
         .load_runtime_daemon_binding(target_agent_did)?
         .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
-    let daemon_agent = state.load_agent_definition(&binding.daemon_agent_did)?;
+    let daemon_agent = state.load_active_agent_definition(&binding.daemon_agent_did)?;
     let auth = daemon_auth_material(config, state, &daemon_agent)?;
     let authorization = registration.authorize_agent_invocation(
         &binding.daemon_agent_did,
@@ -1801,7 +1801,7 @@ fn emit_external_direct_invocation_rejection(
         token_id: "host-direct-invocation-rejected".to_string(),
         agent_did: target_agent_did.to_string(),
         runtime_profile_id: state
-            .load_runtime_agent_profile(target_agent_did)?
+            .load_active_runtime_agent_profile(target_agent_did)?
             .runtime_profile_id,
         run_id: format!(
             "run_task_{}",
@@ -1830,7 +1830,7 @@ fn verify_runtime_group_sender(
     let binding = state
         .load_runtime_daemon_binding(target_agent_did)?
         .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
-    state.load_agent_definition(&binding.daemon_agent_did)?;
+    state.load_active_agent_definition(&binding.daemon_agent_did)?;
     Ok(())
 }
 
@@ -1847,7 +1847,7 @@ where
     let binding = state
         .load_runtime_daemon_binding(target_agent_did)?
         .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
-    let daemon_agent = state.load_agent_definition(&binding.daemon_agent_did)?;
+    let daemon_agent = state.load_active_agent_definition(&binding.daemon_agent_did)?;
     let verified =
         verify_daemon_controller_sender(config, state, registration, &daemon_agent, sender_did)?;
     if binding.controller_scope_key != verified.controller_scope_key {
@@ -2076,7 +2076,7 @@ fn run_runtime_text_message_with_gateway<G>(
 where
     G: HermesGateway + Clone,
 {
-    let current_profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
+    let current_profile = state.load_active_runtime_agent_profile(&message.target_agent_did)?;
     match current_profile.runtime_plugin_id.as_str() {
         HERMES_RUNTIME_PLUGIN_ID => {
             let hermes_profile =
@@ -2160,7 +2160,7 @@ fn current_hermes_profile_for_runtime(
     state: &DaemonState,
     profile: &crate::runtime::RuntimeAgentProfile,
 ) -> Result<crate::state::HermesProfileRecord> {
-    let definition = state.load_agent_definition(&profile.agent_did)?;
+    let definition = state.load_active_agent_definition(&profile.agent_did)?;
     if let Some(repaired) =
         repair_hermes_profile_if_needed(config, state, profile, &definition.handle)?
     {
@@ -2190,8 +2190,8 @@ fn run_runtime_task_command(
         &target_agent_did,
         &message.sender_did,
     )?;
+    let profile = state.load_active_runtime_agent_profile(&target_agent_did)?;
     repair_runtime_controller_inbox_projection_best_effort(config, state, &target_agent_did);
-    let profile = state.load_runtime_agent_profile(&target_agent_did)?;
     let message_id = payload.message_id(&message.message_id);
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, &target_agent_did)?;
     let runtime_outbox = ControllerRuntimeOutbox::new(

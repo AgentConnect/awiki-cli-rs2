@@ -1409,6 +1409,14 @@ WHERE agent_did = ?1
             .with_context(|| format!("load agent definition {agent_did}"))
     }
 
+    pub fn load_active_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
+        let definition = self.load_agent_definition(agent_did)?;
+        if definition.status != "active" {
+            bail!("agent is not active: {agent_did}");
+        }
+        Ok(definition)
+    }
+
     pub fn load_daemon_agent_by_handle(&self, handle: &str) -> Result<Option<AgentDefinition>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
@@ -1451,6 +1459,21 @@ LIMIT 1
 
     pub fn load_runtime_agent_profile(&self, agent_did: &str) -> Result<RuntimeAgentProfile> {
         let definition = self.load_agent_definition(agent_did)?;
+        self.runtime_agent_profile_from_definition(definition)
+    }
+
+    pub fn load_active_runtime_agent_profile(
+        &self,
+        agent_did: &str,
+    ) -> Result<RuntimeAgentProfile> {
+        let definition = self.load_active_agent_definition(agent_did)?;
+        self.runtime_agent_profile_from_definition(definition)
+    }
+
+    fn runtime_agent_profile_from_definition(
+        &self,
+        definition: AgentDefinition,
+    ) -> Result<RuntimeAgentProfile> {
         if definition.agent_kind != AgentKind::Runtime {
             bail!("agent is not a runtime agent");
         }

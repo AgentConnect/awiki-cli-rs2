@@ -59,7 +59,7 @@ where
 {
     validate_application_json_payload(&message)?;
     let daemon_agent = state
-        .load_agent_definition(&message.target_agent_did)
+        .load_active_agent_definition(&message.target_agent_did)
         .context("load target daemon agent")?;
     if daemon_agent.agent_kind != AgentKind::Daemon {
         bail!("target agent is not a daemon agent");

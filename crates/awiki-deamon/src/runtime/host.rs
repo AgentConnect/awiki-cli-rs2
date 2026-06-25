@@ -321,7 +321,6 @@ where
     let install_status = match plugin.check_install_status() {
         Ok(status) => status,
         Err(error) => {
-            state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
             let error_summary = error.to_string();
             if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error_summary);
@@ -335,9 +334,11 @@ where
                     error_summary.as_str(),
                 )?;
             } else {
-                emit_runtime_setup_failed_status(
+                mark_runtime_run_failed_with_status(
+                    state,
                     outbox,
                     &run,
+                    "Runtime setup failed",
                     "runtime_install_probe_failed",
                     &error_summary,
                 )?;
@@ -346,7 +347,6 @@ where
         }
     };
     if !install_status.installed {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
         if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
             let detail = install_status
                 .detail
@@ -367,7 +367,14 @@ where
                 .detail
                 .as_deref()
                 .unwrap_or("runtime plugin is not installed");
-            emit_runtime_setup_failed_status(outbox, &run, "runtime_not_installed", detail)?;
+            mark_runtime_run_failed_with_status(
+                state,
+                outbox,
+                &run,
+                "Runtime setup failed",
+                "runtime_not_installed",
+                detail,
+            )?;
         }
         anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
     }
@@ -423,7 +430,6 @@ where
     let launch_outcome = match plugin.launch_run(launch_context) {
         Ok(outcome) => outcome,
         Err(error) => {
-            state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
             if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
                 let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
                 emit_hermes_failure_outputs(
@@ -436,7 +442,14 @@ where
                     error_summary.as_str(),
                 )?;
             } else {
-                emit_runtime_launch_failed_status(outbox, &run, &error.to_string())?;
+                mark_runtime_run_failed_with_status(
+                    state,
+                    outbox,
+                    &run,
+                    "Runtime launch failed",
+                    "runtime_launch_failed",
+                    &error.to_string(),
+                )?;
             }
             return Err(error).context("launch runtime run");
         }
@@ -549,11 +562,12 @@ where
         None
     };
     apply_terminal_failure_fallback(state, outbox, &run, &launch_outcome)?;
+    let stored_run = state.load_runtime_run(&run.run_id)?;
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
         persist_cli_driver_run(
             state,
             profile,
-            &run,
+            &stored_run,
             &launch_outcome,
             workspace_instance.as_ref(),
             fallback_final_source.as_deref(),
@@ -562,7 +576,7 @@ where
     }
 
     Ok(RuntimeTaskRunResult {
-        run: state.load_runtime_run(&run.run_id)?,
+        run: stored_run,
         launch_outcome,
         token_id: issued.token_id,
     })
@@ -1057,37 +1071,6 @@ fn mark_pending_run_as_running(
     Ok(())
 }
 
-fn emit_runtime_setup_failed_status(
-    outbox: &impl RuntimeOutbox,
-    run: &RuntimeRun,
-    error_code: &str,
-    error_summary: &str,
-) -> Result<()> {
-    emit_runtime_status(
-        outbox,
-        run,
-        "failed",
-        Some("Runtime setup failed"),
-        Some(error_code),
-        Some(&sanitize_user_visible_error_summary(error_summary)),
-    )
-}
-
-fn emit_runtime_launch_failed_status(
-    outbox: &impl RuntimeOutbox,
-    run: &RuntimeRun,
-    error_summary: &str,
-) -> Result<()> {
-    emit_runtime_status(
-        outbox,
-        run,
-        "failed",
-        Some("Runtime launch failed"),
-        Some("runtime_launch_failed"),
-        Some(&sanitize_user_visible_error_summary(error_summary)),
-    )
-}
-
 fn mark_runtime_run_failed_with_status(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
@@ -1446,7 +1429,7 @@ fn persist_cli_driver_run(
             .map(std::path::PathBuf::from),
         native_session_id,
         synthetic_session_id,
-        status: launch_outcome.status.as_str().to_string(),
+        status: run.status.as_str().to_string(),
         fallback_final_source: fallback_final_source.map(str::to_string),
     })?;
     Ok(())
