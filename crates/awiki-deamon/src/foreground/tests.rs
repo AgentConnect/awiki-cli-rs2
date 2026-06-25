@@ -294,6 +294,56 @@ fn create_hermes_runtime(
     }
 }
 
+fn create_codex_runtime(
+    root: &Path,
+    config: &DaemonConfig,
+    state: &DaemonState,
+) -> RuntimeAgentCreateOutcome {
+    let registration = MockRegistrationClient;
+    let daemon = setup_daemon_agent(
+        config,
+        state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    match handle_agent_payload_message(
+        config,
+        state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_codex_runtime".to_string(),
+            conversation_id: Some("conv_create_codex_runtime".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_codex_runtime",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-codex-runtime",
+                    "runtime": "codex",
+                    "workspace": root.join("codex-workspace").display().to_string(),
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_codex_runtime_secret_value",
+                    "display_name": "Alice CodeX"
+                }
+            }),
+        },
+    )
+    .unwrap()
+    {
+        AgentCommandOutcome::RuntimeAgentCreated(created) => created,
+        other => panic!("expected codex runtime agent create outcome, got {other:?}"),
+    }
+}
+
 fn bootstrap_key_material() -> (String, String) {
     let mut key_bytes = [0_u8; 32];
     key_bytes[0] = 17;
@@ -390,7 +440,7 @@ fn write_bootstrap_did_document_cache(config: &DaemonConfig, payload: &Value) {
 }
 
 #[test]
-fn hermes_runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
+fn runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     let (root, config, state) = fixture();
     let created = create_hermes_runtime(root.path(), &config, &state);
     state
@@ -415,7 +465,7 @@ fn hermes_runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
     assert_eq!(calls[0].agent_did, created.agent_did);
     assert_eq!(calls[0].jwt_token.as_deref(), Some("jwt-runtime-secret"));
     assert_eq!(calls[0].controller_did, "did:human:alice");
-    assert_eq!(calls[0].text, "Hermes 已准备好。");
+    assert_eq!(calls[0].text, "智能体已准备好。");
     assert_eq!(calls[0].security, RuntimeMessageSecurity::DefaultPlain);
     assert_eq!(
         calls[0].delivery.idempotency_key.as_deref(),
@@ -436,6 +486,37 @@ fn hermes_runtime_welcome_send_uses_runtime_identity_text_and_idempotency() {
         1,
         "existing sent audit should make welcome delivery idempotent"
     );
+}
+
+#[test]
+fn codex_runtime_welcome_is_not_blocked_by_plugin_type() {
+    let (root, config, state) = fixture();
+    let created = create_codex_runtime(root.path(), &config, &state);
+    assert_eq!(
+        created.runtime_plugin_id,
+        crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+    );
+    assert_eq!(
+        created.driver_id.as_deref(),
+        Some(crate::agent::CODEX_CLI_DRIVER_ID)
+    );
+    state
+        .store_agent_auth_token(&created.agent_did, "jwt-codex-runtime-secret")
+        .unwrap();
+    let sender = MockWelcomeSender::default();
+
+    send_runtime_agent_welcome_message_with_sender(&config, &state, &sender, &created).unwrap();
+
+    let calls = sender.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].agent_did, created.agent_did);
+    assert_eq!(
+        calls[0].jwt_token.as_deref(),
+        Some("jwt-codex-runtime-secret")
+    );
+    assert_eq!(calls[0].controller_did, "did:human:alice");
+    assert_eq!(calls[0].text, "智能体已准备好。");
+    assert_eq!(calls[0].security, RuntimeMessageSecurity::DefaultPlain);
 }
 
 #[test]
@@ -508,7 +589,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
     std::fs::write(attachment_path.path(), b"attachment").unwrap();
 
     outbox
-        .send_status(&context, "succeeded", Some("Hermes response sent"))
+        .send_status(&context, "succeeded", Some("智能体已回复"))
         .unwrap();
     outbox.send_final(&context, Some("legacy final")).unwrap();
     outbox
@@ -520,7 +601,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
                     raw_recipient: "did:human:alice".to_string(),
                     resolved_did: Some("did:human:alice".to_string()),
                 },
-                text: "Hermes 已准备好。".to_string(),
+                text: "智能体已准备好。".to_string(),
                 payload: None,
                 file_path: None,
                 display_filename: None,
@@ -593,7 +674,7 @@ fn controller_runtime_outbox_splits_runtime_messages_from_daemon_status() {
     assert_eq!(final_payload["runs"][0]["status"], "finished");
     assert_eq!(calls[2].sender_id, "runtime");
     assert_eq!(calls[2].kind, "message");
-    assert_eq!(calls[2].text.as_deref(), Some("Hermes 已准备好。"));
+    assert_eq!(calls[2].text.as_deref(), Some("智能体已准备好。"));
     assert_eq!(
         calls[2].security,
         Some(RuntimeMessageSecurity::DefaultPlain)

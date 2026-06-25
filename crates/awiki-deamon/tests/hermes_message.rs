@@ -25,6 +25,30 @@ use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
 
+fn message_record_with_text<'a>(
+    records: &'a [awiki_deamon::outbox::OutboxRecord],
+    text: &str,
+) -> &'a awiki_deamon::outbox::OutboxRecord {
+    records
+        .iter()
+        .find(|record| {
+            record.kind == OutboxRecordKind::Message && record.text.as_deref() == Some(text)
+        })
+        .expect("expected message outbox record")
+}
+
+fn status_record_with_state<'a>(
+    records: &'a [awiki_deamon::outbox::OutboxRecord],
+    state: &str,
+) -> &'a awiki_deamon::outbox::OutboxRecord {
+    records
+        .iter()
+        .find(|record| {
+            record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some(state)
+        })
+        .expect("expected status outbox record")
+}
+
 #[derive(Debug, Clone)]
 struct FlakyFinalOutbox {
     inner: MemoryRuntimeOutbox,
@@ -290,7 +314,7 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
     );
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("succeeded"));
-    assert_eq!(records[2].text.as_deref(), Some("Hermes response sent"));
+    assert_eq!(records[2].text.as_deref(), Some("智能体已回复"));
 
     let prompts = gateway.submitted_prompts();
     assert_eq!(prompts.len(), 1);
@@ -444,17 +468,18 @@ fn hermes_message_failed_status_does_not_send_success_final() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Message);
-    assert_eq!(records[1].recipient.as_deref(), Some("did:human:alice"));
+    status_record_with_state(&records, "failed");
+    let failure_message = message_record_with_text(&records, "Hermes 运行失败：fake failure");
     assert_eq!(
-        records[1].text.as_deref(),
+        failure_message.recipient.as_deref(),
+        Some("did:human:alice")
+    );
+    assert_eq!(
+        failure_message.text.as_deref(),
         Some("Hermes 运行失败：fake failure")
     );
     assert_eq!(
-        records[1].security,
+        failure_message.security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
     assert!(!records
@@ -559,12 +584,12 @@ fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent(
     assert!(records.iter().any(|record| {
         record.kind == OutboxRecordKind::Status
             && record.state.as_deref() == Some("running")
-            && record.text.as_deref() == Some("Hermes response is ready; delivery is retrying")
+            && record.text.as_deref() == Some("智能体回复已生成，正在重试发送")
     }));
     assert!(records.iter().any(|record| {
         record.kind == OutboxRecordKind::Status
             && record.state.as_deref() == Some("succeeded")
-            && record.text.as_deref() == Some("Hermes response sent")
+            && record.text.as_deref() == Some("智能体已回复")
     }));
 }
 
@@ -638,12 +663,12 @@ fn hermes_final_outbox_terminal_failure_marks_run_failed() {
     assert!(records.iter().any(|record| {
         record.kind == OutboxRecordKind::Status
             && record.state.as_deref() == Some("running")
-            && record.text.as_deref() == Some("Hermes response is ready; delivery is retrying")
+            && record.text.as_deref() == Some("智能体回复已生成，正在重试发送")
     }));
     assert!(records.iter().any(|record| {
         record.kind == OutboxRecordKind::Status
             && record.state.as_deref() == Some("failed")
-            && record.text.as_deref() == Some("Hermes response delivery failed")
+            && record.text.as_deref() == Some("智能体回复发送失败")
             && record.last_error_code.as_deref() == Some("final_delivery_failed")
             && record.last_error_summary.as_deref()
                 == Some("message service permanently unavailable")
@@ -771,7 +796,7 @@ fn hermes_message_auto_approved_approval_still_returns_final_text() {
     );
     assert_eq!(records[2].kind, OutboxRecordKind::Status);
     assert_eq!(records[2].state.as_deref(), Some("succeeded"));
-    assert_eq!(records[2].text.as_deref(), Some("Hermes response sent"));
+    assert_eq!(records[2].text.as_deref(), Some("智能体已回复"));
     assert!(records[2].last_error_code.is_none());
     assert!(records[2].last_error_summary.is_none());
     assert!(gateway.observed_events().iter().any(|event| {
@@ -882,24 +907,24 @@ fn hermes_message_send_message_callback_records_direct_message() {
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 4);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
-    assert_eq!(records[0].text.as_deref(), Some("Hermes says hello"));
+    let callback_message = message_record_with_text(&records, "Hermes says hello");
     assert_eq!(
-        records[0].security,
+        callback_message.recipient.as_deref(),
+        Some("did:human:alice")
+    );
+    assert_eq!(
+        callback_message.security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("running"));
-    assert_eq!(records[2].kind, OutboxRecordKind::Message);
-    assert_eq!(records[2].text.as_deref(), Some("fake complete"));
+    assert!(records.iter().any(|record| {
+        record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some("running")
+    }));
+    let final_message = message_record_with_text(&records, "fake complete");
     assert_eq!(
-        records[2].security,
+        final_message.security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[3].kind, OutboxRecordKind::Status);
-    assert_eq!(records[3].state.as_deref(), Some("succeeded"));
+    status_record_with_state(&records, "succeeded");
 }
 
 #[test]
@@ -935,29 +960,23 @@ fn hermes_message_send_message_callback_allows_active_handle_lookup() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 4);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    let callback_message = message_record_with_text(&records, "Hermes says hello Bob");
     assert_eq!(
-        records[0].recipient.as_deref(),
+        callback_message.recipient.as_deref(),
         Some("did:human:bob-resolved")
     );
-    assert_eq!(records[0].raw_recipient.as_deref(), Some("bob"));
+    assert_eq!(callback_message.raw_recipient.as_deref(), Some("bob"));
     assert_eq!(
-        records[0].resolved_did.as_deref(),
+        callback_message.resolved_did.as_deref(),
         Some("did:human:bob-resolved")
     );
-    assert_eq!(records[0].text.as_deref(), Some("Hermes says hello Bob"));
     assert_eq!(
-        records[0].security,
+        callback_message.security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("running"));
-    assert_eq!(records[2].kind, OutboxRecordKind::Message);
-    assert_eq!(records[2].recipient.as_deref(), Some("did:human:alice"));
-    assert_eq!(records[2].text.as_deref(), Some("fake complete"));
-    assert_eq!(records[3].kind, OutboxRecordKind::Status);
-    assert_eq!(records[3].state.as_deref(), Some("succeeded"));
+    let final_message = message_record_with_text(&records, "fake complete");
+    assert_eq!(final_message.recipient.as_deref(), Some("did:human:alice"));
+    status_record_with_state(&records, "succeeded");
 }
 
 #[test]

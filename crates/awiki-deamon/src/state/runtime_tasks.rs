@@ -904,6 +904,130 @@ WHERE task_id = ?1
         self.load_runtime_task(&run.task_id)
     }
 
+    pub fn list_active_runtime_runs_for_daemon(
+        &self,
+        daemon_agent_did: &str,
+    ) -> Result<Vec<(RuntimeRun, RuntimeTask)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    r.run_id,
+    r.task_id,
+    r.agent_did,
+    r.runtime_profile_id,
+    r.runtime_plugin_id,
+    r.workspace_id,
+    r.status,
+    t.task_id,
+    t.agent_did,
+    t.agent_handle,
+    t.controller_user_id,
+    t.controller_full_handle,
+    t.controller_scope_key,
+    t.controller_did,
+    t.sender_did,
+    t.requester_did,
+    t.requester_user_id,
+    t.requester_full_handle,
+    t.trigger_kind,
+    t.conversation_scope_kind,
+    t.conversation_scope_key,
+    t.invocation_authority,
+    t.reply_recipient_did,
+    t.conversation_id,
+    t.task_text
+FROM runtime_run r
+JOIN runtime_task t ON t.task_id = r.task_id
+JOIN runtime_daemon_binding b ON b.runtime_agent_did = r.agent_did
+WHERE b.daemon_agent_did = ?1
+  AND r.status IN ('pending', 'running')
+ORDER BY r.updated_at_ms DESC, r.started_at_ms DESC
+"#,
+        )?;
+        let rows = statement.query_map([daemon_agent_did], |row| {
+            let status_raw: String = row.get(6)?;
+            let status = RuntimeRunStatus::parse(&status_raw).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    status_raw.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        err.to_string(),
+                    )),
+                )
+            })?;
+            let trigger_raw: String = row.get(18)?;
+            let trigger_kind = RuntimeTaskTriggerKind::parse(&trigger_raw).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    trigger_raw.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        err.to_string(),
+                    )),
+                )
+            })?;
+            let scope_kind_raw: String = row.get(19)?;
+            let scope_key: String = row.get(20)?;
+            let conversation_scope = conversation_scope_from_storage(&scope_kind_raw, &scope_key)
+                .map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    scope_kind_raw.len() + scope_key.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        err.to_string(),
+                    )),
+                )
+            })?;
+            let authority_raw: String = row.get(21)?;
+            let invocation_authority =
+                RuntimeInvocationAuthority::parse(&authority_raw).map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        authority_raw.len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            err.to_string(),
+                        )),
+                    )
+                })?;
+            Ok((
+                RuntimeRun {
+                    run_id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    agent_did: row.get(2)?,
+                    runtime_profile_id: row.get(3)?,
+                    runtime_plugin_id: row.get(4)?,
+                    workspace_id: row.get(5)?,
+                    status,
+                },
+                RuntimeTask {
+                    task_id: row.get(7)?,
+                    agent_did: row.get(8)?,
+                    agent_handle: row.get(9)?,
+                    controller_user_id: row.get(10)?,
+                    controller_full_handle: row.get(11)?,
+                    controller_scope_key: row.get(12)?,
+                    controller_did: row.get(13)?,
+                    sender_did: row.get(14)?,
+                    requester_did: row.get(15)?,
+                    requester_user_id: row.get(16)?,
+                    requester_full_handle: row.get(17)?,
+                    trigger_kind,
+                    conversation_scope,
+                    invocation_authority,
+                    reply_recipient_did: row.get(22)?,
+                    conversation_id: row.get(23)?,
+                    text: row.get(24)?,
+                },
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("list active runtime runs for daemon")
+    }
+
     pub fn upsert_cli_driver_run(&self, record: &CliDriverRunRecord) -> Result<()> {
         record.validate()?;
         let connection = self.connection()?;

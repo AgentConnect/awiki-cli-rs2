@@ -15,6 +15,7 @@ use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
     UserServiceAgentRegistrationClient,
 };
+use crate::runtime::{RuntimeRun, RuntimeTask};
 use crate::security::runtime_token::current_time_millis;
 use crate::service::{manage_service, ServiceAction, ServicePlatform, ServiceStatus};
 use crate::state::DaemonState;
@@ -157,13 +158,51 @@ pub fn daemon_snapshot_payload(
         .into_iter()
         .map(|agent| runtime_status_payload(config, state, daemon, agent, &now))
         .collect::<Result<Vec<_>>>()?;
+    let runs = active_runtime_run_payloads(state, daemon, &now)?;
     Ok(json!({
         "command": "agent.status.query",
+        "schema": "awiki.agent.status.v1",
+        "event_id": format!("evt_{}", current_time_millis().unwrap_or(0)),
+        "sent_at": now,
         "daemon_agent_did": daemon.agent_did,
+        "status_scope": "snapshot",
+        "state": "ready",
         "daemon": daemon_status_payload(config, daemon, &service, &now, &release),
         "runtimes": runtimes,
-        "runs": [],
+        "runs": runs,
     }))
+}
+
+fn active_runtime_run_payloads(
+    state: &DaemonState,
+    daemon: &AgentDefinition,
+    now: &str,
+) -> Result<Vec<Value>> {
+    state
+        .list_active_runtime_runs_for_daemon(&daemon.agent_did)?
+        .into_iter()
+        .map(|(run, task)| Ok(runtime_run_status_payload(&run, &task, now)))
+        .collect()
+}
+
+fn runtime_run_status_payload(run: &RuntimeRun, task: &RuntimeTask, now: &str) -> Value {
+    json!({
+        "run_id": run.run_id,
+        "message_id": task.task_id.strip_prefix("task_").unwrap_or(&task.task_id),
+        "task_id": task.task_id,
+        "runtime_agent_did": run.agent_did,
+        "runtime_agent_handle": task.agent_handle,
+        "agent_did": run.agent_did,
+        "conversation_id": task.conversation_id,
+        "status": run.status.as_str(),
+        "started_at": now,
+        "updated_at": now,
+        "requester_did": task.requester_did,
+        "requester_full_handle": task.requester_full_handle,
+        "trigger_kind": task.trigger_kind.as_str(),
+        "last_error_code": null,
+        "last_error_summary": null,
+    })
 }
 
 pub fn daemon_lightweight_payload(config: &DaemonConfig, daemon: &AgentDefinition) -> Value {
@@ -812,8 +851,11 @@ mod tests {
     use super::*;
     use crate::agent::AgentDefinition;
     use crate::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
-    use crate::state::CliRuntimeProfileRecord;
-    use crate::state::HermesProfileRecord;
+    use crate::runtime::{
+        RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRunStatus,
+        RuntimeTaskTriggerKind,
+    };
+    use crate::state::{CliRuntimeProfileRecord, HermesProfileRecord};
     use std::collections::BTreeSet;
     use std::sync::{Mutex, MutexGuard};
 
@@ -977,6 +1019,80 @@ mod tests {
                 .as_bool()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn daemon_snapshot_payload_includes_active_runtime_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let daemon = daemon();
+        let runtime = generic_cli_runtime("codex");
+        state.upsert_agent_definition(&daemon).unwrap();
+        state.upsert_agent_definition(&runtime).unwrap();
+        state
+            .upsert_runtime_daemon_binding(
+                &runtime.agent_did,
+                &daemon.agent_did,
+                &daemon.controller_user_id,
+                &daemon.controller_full_handle,
+                &daemon.controller_scope_key,
+                &daemon.controller_did,
+            )
+            .unwrap();
+        state
+            .insert_runtime_task(&RuntimeTask {
+                task_id: "task_msg_codex_active".to_string(),
+                agent_did: runtime.agent_did.clone(),
+                agent_handle: runtime.handle.clone(),
+                controller_user_id: daemon.controller_user_id.clone(),
+                controller_full_handle: daemon.controller_full_handle.clone(),
+                controller_scope_key: daemon.controller_scope_key.clone(),
+                controller_did: daemon.controller_did.clone(),
+                sender_did: daemon.controller_did.clone(),
+                requester_did: daemon.controller_did.clone(),
+                requester_user_id: None,
+                requester_full_handle: None,
+                trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+                conversation_scope: RuntimeConversationScope::controller_private(
+                    daemon.controller_scope_key.clone(),
+                ),
+                invocation_authority: RuntimeInvocationAuthority::Controller,
+                reply_recipient_did: daemon.controller_did.clone(),
+                conversation_id: Some("conv_codex_active".to_string()),
+                text: "still running".to_string(),
+            })
+            .unwrap();
+        state
+            .insert_runtime_run(&RuntimeRun {
+                run_id: "run_task_msg_codex_active".to_string(),
+                task_id: "task_msg_codex_active".to_string(),
+                agent_did: runtime.agent_did.clone(),
+                runtime_profile_id: runtime.runtime_profile_id.clone().unwrap(),
+                runtime_plugin_id: runtime.runtime_plugin_id.clone().unwrap(),
+                workspace_id: runtime.workspace_id.clone(),
+                status: RuntimeRunStatus::Running,
+            })
+            .unwrap();
+
+        let payload = daemon_snapshot_payload(&config, &state, &daemon).unwrap();
+
+        assert_eq!(payload["schema"], "awiki.agent.status.v1");
+        assert_eq!(payload["status_scope"], "snapshot");
+        let runs = payload["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run["run_id"], "run_task_msg_codex_active");
+        assert_eq!(run["message_id"], "msg_codex_active");
+        assert_eq!(run["task_id"], "task_msg_codex_active");
+        assert_eq!(run["runtime_agent_did"], runtime.agent_did);
+        assert_eq!(run["runtime_agent_handle"], runtime.handle);
+        assert_eq!(run["conversation_id"], "conv_codex_active");
+        assert_eq!(run["status"], "running");
+        assert_eq!(run["requester_did"], daemon.controller_did);
+        assert_eq!(run["trigger_kind"], "controller_direct");
     }
 
     #[test]

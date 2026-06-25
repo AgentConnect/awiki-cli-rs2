@@ -15,7 +15,7 @@ use crate::cli_wrapper::CliWrapperRequest;
 use crate::local_rpc::RuntimeRpcRequest;
 use crate::runtime::{
     GenericCliRouteSession, RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome,
-    RuntimePlugin, RuntimeRunStatus,
+    RuntimePlugin, RuntimeRunStatus, RuntimeTask,
 };
 use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
@@ -276,6 +276,7 @@ pub struct GenericCliInvocation {
     pub message_id: String,
     pub conversation_id: Option<String>,
     pub task_text: String,
+    pub task: RuntimeTask,
     pub agent_did: String,
     pub runtime_profile_id: String,
     pub workspace_root: Option<std::path::PathBuf>,
@@ -295,6 +296,7 @@ impl std::fmt::Debug for GenericCliInvocation {
             .field("message_id", &self.message_id)
             .field("conversation_id", &self.conversation_id)
             .field("task_text", &"<redacted-task-text>")
+            .field("task", &"<redacted-runtime-task>")
             .field("agent_did", &self.agent_did)
             .field("runtime_profile_id", &self.runtime_profile_id)
             .field("workspace_root", &self.workspace_root)
@@ -458,17 +460,27 @@ pub(crate) fn build_generic_cli_prompt_envelope(input: GenericCliPromptEnvelope<
     for (key, value) in input.driver_runtime_context {
         runtime_context.push_str(&format!("{key}: {value}\n"));
     }
+    for (key, value) in generic_cli_task_context(input.invocation) {
+        runtime_context.push_str(&format!("{key}: {value}\n"));
+    }
 
     format!(
         r#"{runtime_context}
-[Controller]
-controller_verified: true
+[Requester]
+authority: {authority}
+requester_did: {requester_did}
+requester_user_id: {requester_user_id}
+requester_full_handle: {requester_full_handle}
+controller_did: {controller_did}
+controller_full_handle: {controller_full_handle}
 
 [Message Run]
 message_id: {message_id}
 task_id: {task_id}
 run_id: {run_id}
 conversation_id: {conversation_id}
+trigger_kind: {trigger_kind}
+conversation_scope: {conversation_scope}
 user_message:
 {task_text}
 
@@ -489,8 +501,44 @@ user_message:
         task_id = input.invocation.task_id,
         run_id = input.invocation.run_id,
         conversation_id = input.invocation.conversation_id.as_deref().unwrap_or(""),
+        authority = input.invocation.task.invocation_authority.as_str(),
+        requester_did = input.invocation.task.requester_did,
+        requester_user_id = input
+            .invocation
+            .task
+            .requester_user_id
+            .as_deref()
+            .unwrap_or(""),
+        requester_full_handle = input
+            .invocation
+            .task
+            .requester_full_handle
+            .as_deref()
+            .unwrap_or(""),
+        controller_did = input.invocation.task.controller_did,
+        controller_full_handle = input.invocation.task.controller_full_handle,
+        trigger_kind = input.invocation.task.trigger_kind.as_str(),
+        conversation_scope = input.invocation.task.conversation_scope.kind_str(),
         task_text = input.invocation.task_text,
     )
+}
+
+fn generic_cli_task_context(invocation: &GenericCliInvocation) -> Vec<(&'static str, String)> {
+    let task = &invocation.task;
+    let mut context = vec![
+        ("agent_handle", task.agent_handle.clone()),
+        ("reply_recipient_did", task.reply_recipient_did.clone()),
+        (
+            "conversation_scope_key",
+            task.conversation_scope.scope_key(),
+        ),
+    ];
+    if task.invocation_authority == crate::runtime::RuntimeInvocationAuthority::Controller {
+        context.push(("controller_verified", "true".to_string()));
+    } else {
+        context.push(("controller_verified", "false".to_string()));
+    }
+    context
 }
 
 fn sanitize_path_component(input: &str) -> String {
@@ -590,17 +638,13 @@ where
 
     fn launch_run(&self, context: RuntimeLaunchContext) -> Result<RuntimeLaunchOutcome> {
         let token = context.runtime_rpc_token.as_str().to_string();
-        let callbacks = vec![
-            CliWrapperRequest::task_status(
-                token.clone(),
-                context.task.task_id.clone(),
-                "running",
-                "runtime started",
-            )
-            .into_rpc_request(),
-            CliWrapperRequest::task_finish(token, context.task.task_id.clone(), "runtime finished")
-                .into_rpc_request(),
-        ];
+        let callbacks = vec![CliWrapperRequest::task_status(
+            token,
+            context.task.task_id.clone(),
+            "running",
+            "runtime started",
+        )
+        .into_rpc_request()];
         let exit = self.driver.run(GenericCliInvocation {
             run_id: context.run.run_id.clone(),
             task_id: context.task.task_id.clone(),
@@ -612,6 +656,7 @@ where
                 .to_string(),
             conversation_id: context.task.conversation_id.clone(),
             task_text: context.task.text.clone(),
+            task: context.task.clone(),
             workspace_root: context.workspace_root.clone(),
             workspace_instance: context.workspace_instance.clone(),
             route_session: context.cli_route_session.clone(),
@@ -906,6 +951,33 @@ pub(crate) fn json_duration_ms_field(value: &Value, field: &str, default: Durati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::{
+        RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeTask, RuntimeTaskTriggerKind,
+    };
+
+    fn test_runtime_task(task_id: &str, text: &str) -> RuntimeTask {
+        RuntimeTask {
+            task_id: task_id.to_string(),
+            agent_did: "did:agent:one".to_string(),
+            agent_handle: "agent-one".to_string(),
+            controller_user_id: "user-alice".to_string(),
+            controller_full_handle: "alice.example.com".to_string(),
+            controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            sender_did: "did:human:alice".to_string(),
+            requester_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: RuntimeTaskTriggerKind::ControllerDirect,
+            conversation_scope: RuntimeConversationScope::controller_private(
+                "controller-scope:v1:test-alice",
+            ),
+            invocation_authority: RuntimeInvocationAuthority::Controller,
+            reply_recipient_did: "did:human:alice".to_string(),
+            conversation_id: Some("conv-1".to_string()),
+            text: text.to_string(),
+        }
+    }
     use crate::runtime::GenericCliRouteSession;
     use crate::workspace::{WorkspaceCleanupPolicy, WorkspaceInstance, WorkspaceMode};
 
@@ -980,6 +1052,7 @@ mod tests {
             message_id: "msg-1".to_string(),
             conversation_id: Some("conv-1".to_string()),
             task_text: "hello".to_string(),
+            task: test_runtime_task("task-1", "hello"),
             agent_did: "did:agent:one".to_string(),
             runtime_profile_id: "profile-1".to_string(),
             workspace_root: None,
@@ -1051,6 +1124,7 @@ mod tests {
             message_id: "msg-1".to_string(),
             conversation_id: Some("conv-1".to_string()),
             task_text: "please help".to_string(),
+            task: test_runtime_task("task-1", "please help"),
             agent_did: "did:agent:one".to_string(),
             runtime_profile_id: "profile-1".to_string(),
             workspace_root: None,
@@ -1076,6 +1150,13 @@ mod tests {
         assert!(prompt.contains("workspace_instance_path: /tmp/workspace"));
         assert!(prompt.contains("sandbox: read-only"));
         assert!(prompt.contains("permission_mode: plan"));
+        assert!(prompt.contains("agent_handle: agent-one"));
+        assert!(prompt.contains("controller_verified: true"));
+        assert!(prompt.contains("[Requester]"));
+        assert!(prompt.contains("authority: controller"));
+        assert!(prompt.contains("controller_did: did:human:alice"));
+        assert!(prompt.contains("trigger_kind: controller_direct"));
+        assert!(prompt.contains("conversation_scope: controller_private"));
         assert!(prompt.contains("[Awiki Callback Rules]"));
         assert!(prompt.contains("Do not connect to message-service directly."));
         assert!(prompt

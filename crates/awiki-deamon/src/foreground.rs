@@ -1934,9 +1934,6 @@ fn send_runtime_agent_welcome_message_with_sender(
     sender: &impl RuntimeWelcomeSender,
     created: &crate::commands::RuntimeAgentCreateOutcome,
 ) -> Result<()> {
-    if created.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID {
-        return Ok(());
-    }
     let controller_did = controller_did_for_runtime(state, &created.agent_did)?;
     let idempotency_key = welcome_idempotency_key(&created.agent_did, &controller_did);
     if state.audit_event_exists(
@@ -1985,7 +1982,7 @@ fn try_send_runtime_agent_welcome_message(
         &identity,
         jwt_token.as_deref(),
         &controller_did,
-        "Hermes 已准备好。",
+        "智能体已准备好。",
         RuntimeMessageSecurity::DefaultPlain,
         MessageDeliveryOptions {
             idempotency_key: Some(idempotency_key.to_string()),

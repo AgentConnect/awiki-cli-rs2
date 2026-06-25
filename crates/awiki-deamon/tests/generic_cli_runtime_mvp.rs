@@ -39,6 +39,51 @@ fn fixture() -> (tempfile::TempDir, DaemonState) {
     (root, state)
 }
 
+fn records_without_running(records: &[OutboxRecord]) -> Vec<&OutboxRecord> {
+    records
+        .iter()
+        .filter(|record| {
+            !(record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some("running"))
+        })
+        .collect()
+}
+
+fn assert_has_running_status(records: &[OutboxRecord], run_id: &str) {
+    assert!(
+        records.iter().any(|record| {
+            record.run_id == run_id
+                && record.kind == OutboxRecordKind::Status
+                && record.state.as_deref() == Some("running")
+        }),
+        "expected running status for {run_id}, got {records:?}"
+    );
+}
+
+fn final_record(records: &[OutboxRecord]) -> &OutboxRecord {
+    records
+        .iter()
+        .find(|record| record.kind == OutboxRecordKind::Final)
+        .expect("expected final outbox record")
+}
+
+fn message_record_with_text<'a>(records: &'a [OutboxRecord], text: &str) -> &'a OutboxRecord {
+    records
+        .iter()
+        .find(|record| {
+            record.kind == OutboxRecordKind::Message && record.text.as_deref() == Some(text)
+        })
+        .expect("expected message outbox record")
+}
+
+fn status_record_with_state<'a>(records: &'a [OutboxRecord], state: &str) -> &'a OutboxRecord {
+    records
+        .iter()
+        .find(|record| {
+            record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some(state)
+        })
+        .expect("expected status outbox record")
+}
+
 #[derive(Debug, Clone, Default)]
 struct FailingFinalOutbox {
     inner: MemoryRuntimeOutbox,
@@ -96,10 +141,10 @@ impl RuntimeOutbox for FailingFinalOutbox {
 
     fn send_message(
         &self,
-        context: &AuthorizedRuntimeContext,
-        message: &RuntimeMessageSend,
+        _context: &AuthorizedRuntimeContext,
+        _message: &RuntimeMessageSend,
     ) -> anyhow::Result<RuntimeMessageSendResult> {
-        RuntimeOutbox::send_message(&self.inner, context, message)
+        anyhow::bail!("simulated final delivery failure")
     }
 
     fn send_attachment(
@@ -128,8 +173,32 @@ fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
     }
 }
 
+fn debug_runtime_task() -> awiki_deamon::runtime::RuntimeTask {
+    awiki_deamon::runtime::RuntimeTask {
+        task_id: "task_debug".to_string(),
+        agent_did: "did:agent:debug".to_string(),
+        agent_handle: "debug-agent".to_string(),
+        controller_user_id: "user-alice".to_string(),
+        controller_full_handle: "alice.example.com".to_string(),
+        controller_scope_key: "controller-scope:v1:test-alice".to_string(),
+        controller_did: "did:human:alice".to_string(),
+        sender_did: "did:human:alice".to_string(),
+        requester_did: "did:human:alice".to_string(),
+        requester_user_id: None,
+        requester_full_handle: None,
+        trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+        conversation_scope: awiki_deamon::runtime::RuntimeConversationScope::controller_private(
+            "controller-scope:v1:test-alice",
+        ),
+        invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+        reply_recipient_did: "did:human:alice".to_string(),
+        conversation_id: Some("conv_debug".to_string()),
+        text: "secret prompt rtok_debug_secret_value_123456789".to_string(),
+    }
+}
+
 #[test]
-fn controller_text_task_runs_generic_cli_and_records_callbacks() {
+fn generic_cli_success_without_final_output_marks_run_failed() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
     let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
@@ -154,16 +223,17 @@ fn controller_text_task_runs_generic_cli_and_records_callbacks() {
     )
     .unwrap();
 
-    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
-    assert_eq!(result.launch_outcome.callbacks.len(), 2);
+    assert_eq!(result.launch_outcome.callbacks.len(), 1);
 
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("running"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
-    assert_eq!(records[1].state.as_deref(), Some("finished"));
+    assert_has_running_status(&records, "run_task_msg_001");
+    let failed = status_record_with_state(&records, "failed");
+    assert_eq!(
+        failed.last_error_code.as_deref(),
+        Some("final_text_missing")
+    );
     assert!(records
         .iter()
         .all(|record| record.run_id == "run_task_msg_001"));
@@ -176,21 +246,15 @@ fn controller_text_task_runs_generic_cli_and_records_callbacks() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(run_status, "finished");
+    assert_eq!(run_status, "failed");
 
     let task_count: i64 = connection
         .query_row("SELECT COUNT(*) FROM runtime_task", [], |row| row.get(0))
         .unwrap();
     assert_eq!(task_count, 1);
 
-    let audit_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE run_id = 'run_task_msg_001'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(audit_count, 2);
+    let run = state.load_runtime_run("run_task_msg_001").unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
 }
 
 #[test]
@@ -401,17 +465,13 @@ fn launch_error_marks_run_failed_with_status_callback() {
     let run = state.load_runtime_run("run_task_msg_launch_error").unwrap();
     assert_eq!(run.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_has_running_status(&records, "run_task_msg_launch_error");
+    let failed = status_record_with_state(&records, "failed");
     assert_eq!(
-        records[0].last_error_code.as_deref(),
+        failed.last_error_code.as_deref(),
         Some("runtime_launch_failed")
     );
-    assert_eq!(
-        records[0].last_error_summary.as_deref(),
-        Some("launch crashed")
-    );
+    assert_eq!(failed.last_error_summary.as_deref(), Some("launch crashed"));
 }
 
 #[derive(Debug, Clone)]
@@ -633,9 +693,10 @@ fn duplicate_task_finish_callback_is_idempotent() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Final);
-    assert_eq!(records[0].text.as_deref(), Some("first done"));
+    assert_has_running_status(&records, "run_task_msg_duplicate_finish");
+    let final_record = final_record(&records);
+    assert_eq!(final_record.text.as_deref(), Some("first done"));
+    assert_eq!(records_without_running(&records).len(), 1);
 }
 
 #[test]
@@ -667,12 +728,13 @@ fn failed_driver_outcome_does_not_overwrite_finished_callback() {
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Final);
+    assert_has_running_status(&records, "run_task_msg_finished_then_failed");
+    let final_record = final_record(&records);
     assert_eq!(
-        records[0].text.as_deref(),
+        final_record.text.as_deref(),
         Some("callback final arrived before driver failure")
     );
+    assert_eq!(records_without_running(&records).len(), 1);
 }
 
 #[test]
@@ -711,11 +773,10 @@ fn generic_cli_runtime_profile_policy_allows_non_controller_msg_send() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:bob"));
-    assert_eq!(records[0].text.as_deref(), Some("hello from generic-cli"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_has_running_status(&records, "run_task_msg_policy");
+    let message = message_record_with_text(&records, "hello from generic-cli");
+    assert_eq!(message.recipient.as_deref(), Some("did:human:bob"));
+    assert_eq!(final_record(&records).text.as_deref(), Some("done"));
 
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let allowed_recipients_json: String = connection
@@ -764,15 +825,14 @@ fn runtime_run_token_allows_current_conversation_attachment_send() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Message);
-    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_has_running_status(&records, "run_task_msg_attachment_policy");
+    let message = message_record_with_text(&records, "report ready");
+    assert_eq!(message.recipient.as_deref(), Some("did:human:alice"));
     assert_eq!(
-        records[0].raw_recipient.as_deref(),
+        message.raw_recipient.as_deref(),
         Some("current_conversation")
     );
-    assert_eq!(records[0].text.as_deref(), Some("report ready"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_eq!(final_record(&records).text.as_deref(), Some("done"));
 
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let allowed_methods_json: String = connection
@@ -834,11 +894,10 @@ fn generic_cli_runtime_profile_policy_rejects_unlisted_msg_send() {
         .unwrap();
     assert_eq!(run.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_has_running_status(&records, "run_task_msg_policy_blocked");
+    let failed = status_record_with_state(&records, "failed");
     assert_eq!(
-        records[0].last_error_code.as_deref(),
+        failed.last_error_code.as_deref(),
         Some("runtime_callback_failed")
     );
 }
@@ -864,7 +923,7 @@ impl awiki_deamon::plugins::generic_cli::GenericCliDriver for SendMessageDriver 
             "hello from generic-cli",
         )
         .into_rpc_request();
-        assert_eq!(invocation.callbacks.len(), 2);
+        assert_eq!(invocation.callbacks.len(), 1);
         Ok(awiki_deamon::plugins::generic_cli::GenericCliExit {
             exit_code: 0,
             status: RuntimeRunStatus::Finished,
@@ -908,7 +967,7 @@ fn generic_cli_runtime_profile_policy_persists_allowed_recipients_in_token_scope
     )
     .unwrap();
 
-    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(result.run.status, RuntimeRunStatus::Failed);
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let allowed_recipients_json: String = connection
         .query_row(
@@ -1043,9 +1102,11 @@ PY
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
     assert!(result.launch_outcome.callbacks.is_empty());
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    assert_has_running_status(&records, "run_task_msg_command_driver");
+    assert_eq!(
+        final_record(&records).text.as_deref(),
+        Some("command finished")
+    );
 
     let env_dump = std::fs::read_to_string(env_capture).unwrap();
     assert!(env_dump.contains("TASK_TEXT=\n"));
@@ -1166,9 +1227,11 @@ PY
 
     assert_eq!(result.run.status, RuntimeRunStatus::Finished);
     let records = outbox.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, OutboxRecordKind::Final);
-    assert_eq!(records[0].text.as_deref(), Some("registry finished"));
+    assert_has_running_status(&records, "run_task_msg_registry_driver");
+    assert_eq!(
+        final_record(&records).text.as_deref(),
+        Some("registry finished")
+    );
 }
 
 fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
@@ -1513,10 +1576,11 @@ PY
     assert!(result.launch_outcome.callbacks.is_empty());
 
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
-    assert_eq!(records[1].text.as_deref(), Some("codex finished"));
+    assert_has_running_status(&records, "run_task_msg_codex_driver");
+    assert_eq!(
+        final_record(&records).text.as_deref(),
+        Some("codex finished")
+    );
 
     let args_dump = std::fs::read_to_string(args_capture).unwrap();
     assert!(args_dump.contains("exec\n"));
@@ -1531,6 +1595,10 @@ PY
     let prompt = std::fs::read_to_string(prompt_capture).unwrap();
     assert!(prompt.contains("[Awiki Runtime Context]"));
     assert!(prompt.contains("driver_id: codex"));
+    assert!(prompt.contains("agent_handle: alice-coder"));
+    assert!(prompt.contains("authority: controller"));
+    assert!(prompt.contains("trigger_kind: controller_direct"));
+    assert!(prompt.contains("conversation_scope: controller_private"));
     assert!(prompt.contains("message_id: msg_codex_driver"));
     assert!(prompt.contains("conversation_id: conv_codex_driver"));
     assert!(prompt.contains("user_message:\nrun codex driver"));
@@ -1669,14 +1737,11 @@ exit 0
     assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Finished);
     assert!(result.launch_outcome.callbacks.is_empty());
     let records = outbox.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0].kind, OutboxRecordKind::Status);
-    assert_eq!(records[0].state.as_deref(), Some("running"));
-    assert_eq!(records[1].kind, OutboxRecordKind::Final);
-    assert_eq!(
-        records[1].text.as_deref(),
-        Some("fallback final from codex")
-    );
+    assert_has_running_status(&records, "run_task_msg_codex_fallback");
+    let message = message_record_with_text(&records, "fallback final from codex");
+    assert_eq!(message.recipient.as_deref(), Some("did:human:alice"));
+    let succeeded = status_record_with_state(&records, "succeeded");
+    assert_eq!(succeeded.last_error_code, None);
     let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
     assert_eq!(
         run_record.fallback_final_source.as_deref(),
@@ -1690,7 +1755,7 @@ exit 0
 
 #[cfg(unix)]
 #[test]
-fn codex_fallback_final_delivery_failure_marks_run_failed() {
+fn codex_fallback_final_delivery_failure_keeps_run_retrying() {
     let _guard = generic_cli_process_test_guard();
 
     use std::os::unix::fs::PermissionsExt;
@@ -1734,7 +1799,7 @@ exit 0
     driver_config.output_dir = Some(output_dir.clone());
     let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(driver_config).unwrap());
     let outbox = FailingFinalOutbox::default();
-    let error = run_controller_text_task_with_config(
+    let result = run_controller_text_task_with_config(
         &config,
         &state,
         &profile,
@@ -1752,28 +1817,35 @@ exit 0
             text: "run codex fallback with failing final delivery".to_string(),
         },
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(error
-        .to_string()
-        .contains("apply generic CLI final fallback"));
+    assert_eq!(result.run.status, RuntimeRunStatus::Running);
     let run = state
         .load_runtime_run("run_task_msg_codex_fallback_send_fails")
         .unwrap();
-    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    assert_eq!(run.status, RuntimeRunStatus::Running);
     let records = outbox.records();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("running"));
     assert_eq!(records[1].kind, OutboxRecordKind::Status);
-    assert_eq!(records[1].state.as_deref(), Some("failed"));
+    assert_eq!(records[1].state.as_deref(), Some("running"));
     assert_eq!(
         records[1].last_error_code.as_deref(),
-        Some("runtime_fallback_final_failed")
+        Some("final_delivery_retry")
     );
     assert_eq!(
         records[1].last_error_summary.as_deref(),
         Some("simulated final delivery failure")
+    );
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run("run_task_msg_codex_fallback_send_fails")
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "pending");
+    assert_eq!(
+        final_outbox.last_error_code.as_deref(),
+        Some("final_delivery_retry")
     );
     assert!(std::fs::read_to_string(output_dir.join("final-output.txt"))
         .unwrap()
@@ -2443,6 +2515,7 @@ fn generic_cli_invocation_debug_redacts_task_text_and_token() {
         message_id: "debug".to_string(),
         conversation_id: Some("conv_debug".to_string()),
         task_text: "secret prompt rtok_debug_secret_value_123456789".to_string(),
+        task: debug_runtime_task(),
         agent_did: "did:agent:debug".to_string(),
         runtime_profile_id: "profile_debug".to_string(),
         workspace_root: None,

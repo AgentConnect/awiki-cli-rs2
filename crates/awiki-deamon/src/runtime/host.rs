@@ -3,7 +3,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::cli_wrapper::CliWrapperRequest;
 use crate::controller_scope::VerifiedControllerSender;
 use crate::inbox::{
     route_controller_text_task, route_controller_text_task_with_verified_sender,
@@ -427,6 +426,7 @@ where
         runtime_rpc_token: issued.token.clone(),
         local_socket_path,
     };
+    mark_pending_run_as_running(state, outbox, &run)?;
     let launch_outcome = match plugin.launch_run(launch_context) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -468,7 +468,6 @@ where
             return Err(error).context("apply runtime callback");
         }
     }
-    mark_pending_run_as_running(state, outbox, &run)?;
 
     if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
         let hermes_failed = hermes_has_error(&launch_outcome.metadata)?;
@@ -514,7 +513,7 @@ where
                         outbox,
                         &run,
                         "running",
-                        Some("Hermes response is ready; delivery is retrying"),
+                        Some("智能体回复已生成，正在重试发送"),
                         refreshed.last_error_code.as_deref(),
                         refreshed.last_error_summary.as_deref(),
                     )?;
@@ -540,9 +539,12 @@ where
         match apply_generic_cli_final_fallback(
             state,
             outbox,
+            profile,
+            &task_controller_did,
+            &task_reply_recipient_did,
             &run,
             &launch_outcome,
-            issued.token.as_str(),
+            task_conversation_id.as_deref(),
         ) {
             Ok(source) => source,
             Err(error) => {
@@ -692,7 +694,7 @@ pub fn flush_runtime_final_outbox(
                             state,
                             outbox,
                             &run,
-                            "Hermes response delivery failed",
+                            "智能体回复发送失败",
                             "final_delivery_failed",
                             &error_summary,
                         )?;
@@ -903,14 +905,7 @@ fn mark_runtime_final_delivered(
         .finish_active_runtime_run(&record.run_id)
         .context("mark Hermes run finished after final delivery")?;
     if updated {
-        emit_runtime_status(
-            outbox,
-            &run,
-            "succeeded",
-            Some("Hermes response sent"),
-            None,
-            None,
-        )?;
+        emit_runtime_status(outbox, &run, "succeeded", Some("智能体已回复"), None, None)?;
     }
     Ok(true)
 }
@@ -1091,9 +1086,12 @@ fn mark_runtime_run_failed_with_status(
 fn apply_generic_cli_final_fallback(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
+    profile: &RuntimeAgentProfile,
+    controller_did: &str,
+    recipient_did: &str,
     run: &RuntimeRun,
     launch_outcome: &RuntimeLaunchOutcome,
-    runtime_rpc_token: &str,
+    conversation_id: Option<&str>,
 ) -> Result<Option<&'static str>> {
     let stored_status = state.load_runtime_run(&run.run_id)?.status;
     if launch_outcome.status != RuntimeRunStatus::Finished
@@ -1105,29 +1103,41 @@ fn apply_generic_cli_final_fallback(
         return Ok(None);
     }
     let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? else {
+        mark_runtime_run_failed_with_status(
+            state,
+            outbox,
+            run,
+            "Runtime completed without a reply",
+            "final_text_missing",
+            "Runtime completed without final text",
+        )?;
         return Ok(None);
     };
-    let response = execute_runtime_rpc_request_with_outbox(
-        state,
-        outbox,
-        CliWrapperRequest::task_finish(
-            runtime_rpc_token.to_string(),
-            run.task_id.clone(),
-            final_text,
-        )
-        .into_rpc_request(),
-    )
-    .context("apply fallback final from generic CLI driver output")?;
-    if response.ok {
-        Ok(Some("generic_cli_final_output"))
-    } else {
-        let error_summary = response
-            .error
-            .as_ref()
-            .map(|error| format!("{}: {}", error.code, error.message))
-            .unwrap_or_else(|| "runtime RPC rejected fallback final".to_string());
-        anyhow::bail!("runtime RPC rejected fallback final: {error_summary}")
+    let final_record = runtime_final_outbox_record(
+        profile,
+        controller_did,
+        recipient_did,
+        run,
+        conversation_id,
+        &final_text,
+    )?;
+    state.upsert_runtime_final_outbox_pending(&final_record)?;
+    flush_runtime_final_outbox(state, outbox, 8)
+        .context("send generic CLI final text as runtime message")?;
+    let refreshed = state
+        .load_runtime_final_outbox_by_run(&run.run_id)?
+        .context("generic CLI final outbox record missing after flush")?;
+    if refreshed.status != "sent" {
+        emit_runtime_status(
+            outbox,
+            run,
+            "running",
+            Some("智能体回复已生成，正在重试发送"),
+            refreshed.last_error_code.as_deref(),
+            refreshed.last_error_summary.as_deref(),
+        )?;
     }
+    Ok(Some("generic_cli_final_output"))
 }
 
 fn apply_terminal_failure_fallback(
