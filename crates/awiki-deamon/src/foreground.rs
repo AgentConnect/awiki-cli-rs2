@@ -730,11 +730,17 @@ fn drain_runtime_retry_queue_once(
     let retries = state.list_queued_runtime_retries(10)?;
     let mut processed = 0usize;
     for retry in retries {
-        state.mark_runtime_retry_status(&retry.retry_id, "running")?;
+        if !state.mark_runtime_retry_status_if_status_in(&retry.retry_id, &["queued"], "running")? {
+            continue;
+        }
         let result = run_runtime_retry(config, state, outbox, hermes_gateway, &retry);
         match result {
             Ok(run_id) => {
-                state.mark_runtime_retry_status(&retry.retry_id, "succeeded")?;
+                state.mark_runtime_retry_status_if_status_in(
+                    &retry.retry_id,
+                    &["running"],
+                    "succeeded",
+                )?;
                 state.insert_audit_event_json(
                     "runtime.run.retry.succeeded",
                     Some(&retry.agent_did),
@@ -749,7 +755,11 @@ fn drain_runtime_retry_queue_once(
                 )?;
             }
             Err(error) => {
-                state.mark_runtime_retry_status(&retry.retry_id, "failed")?;
+                state.mark_runtime_retry_status_if_status_in(
+                    &retry.retry_id,
+                    &["running"],
+                    "failed",
+                )?;
                 state.insert_audit_event_json(
                     "runtime.run.retry.failed",
                     Some(&retry.agent_did),

@@ -243,9 +243,7 @@ LIMIT ?1
         if retry_id.trim().is_empty() {
             bail!("retry_id must not be empty");
         }
-        if status.trim().is_empty() {
-            bail!("retry status must not be empty");
-        }
+        validate_runtime_retry_status(status)?;
         let connection = self.connection()?;
         let updated = connection.execute(
             r#"
@@ -261,6 +259,50 @@ WHERE retry_id = ?3
             bail!("runtime retry request does not exist: {retry_id}");
         }
         Ok(())
+    }
+
+    pub fn mark_runtime_retry_status_if_status_in(
+        &self,
+        retry_id: &str,
+        current_statuses: &[&str],
+        status: &str,
+    ) -> Result<bool> {
+        if retry_id.trim().is_empty() {
+            bail!("retry_id must not be empty");
+        }
+        if current_statuses.is_empty() {
+            bail!("current_statuses must not be empty");
+        }
+        for current_status in current_statuses {
+            validate_runtime_retry_status(current_status)?;
+        }
+        validate_runtime_retry_status(status)?;
+
+        let mut sql = r#"
+UPDATE runtime_retry_queue
+SET status = ?1,
+    attempts = attempts + CASE WHEN ?1 = 'running' THEN 1 ELSE 0 END,
+    updated_at_ms = ?2
+WHERE retry_id = ?3
+  AND status IN (
+"#
+        .to_string();
+        sql.push_str(
+            &std::iter::repeat("?")
+                .take(current_statuses.len())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        sql.push_str(")\n");
+
+        let updated_at_ms = current_time_millis()?;
+        let connection = self.connection()?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&status, &updated_at_ms, &retry_id];
+        for current_status in current_statuses {
+            values.push(current_status);
+        }
+        let updated = connection.execute(&sql, values.as_slice())?;
+        Ok(updated > 0)
     }
 
     pub fn recover_stale_runtime_retries_running(&self, stale_before_ms: i64) -> Result<usize> {

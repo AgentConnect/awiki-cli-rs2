@@ -690,8 +690,19 @@ impl RuntimeRetryQueueRecord {
                 bail!("{field_name} must not be empty");
             }
         }
+        validate_runtime_retry_status(&self.status)?;
         Ok(())
     }
+}
+
+pub(super) fn validate_runtime_retry_status(status: &str) -> Result<()> {
+    if !matches!(
+        status,
+        "queued" | "running" | "succeeded" | "failed" | "archived"
+    ) {
+        bail!("runtime retry status is unsupported");
+    }
+    Ok(())
 }
 
 impl RuntimeFinalOutboxRecord {

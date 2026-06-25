@@ -969,6 +969,47 @@ fn runtime_retry_queue_recovers_stale_running_retries() {
 }
 
 #[test]
+fn runtime_retry_queue_rejects_unknown_status_and_preserves_terminal_state() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let run = RuntimeRun {
+        run_id: "run_retry_terminal_original".to_string(),
+        task_id: "task_retry_terminal_original".to_string(),
+        agent_did: "did:agent:hermes".to_string(),
+        runtime_profile_id: "profile_hermes".to_string(),
+        runtime_plugin_id: "hermes".to_string(),
+        workspace_id: None,
+        status: RuntimeRunStatus::Failed,
+    };
+    state.insert_runtime_run(&run).unwrap();
+    let retry = state
+        .insert_runtime_retry_request(&run, "cmd_retry_terminal")
+        .unwrap();
+
+    let error = state
+        .mark_runtime_retry_status(&retry.retry_id, "waiting")
+        .unwrap_err();
+    assert!(error.chain().any(|cause| cause
+        .to_string()
+        .contains("runtime retry status is unsupported")));
+
+    state
+        .mark_runtime_retry_status(&retry.retry_id, "failed")
+        .unwrap();
+    let updated = state
+        .mark_runtime_retry_status_if_status_in(&retry.retry_id, &["queued"], "running")
+        .unwrap();
+    assert!(!updated);
+
+    let stored = state.load_runtime_retry_request(&retry.retry_id).unwrap();
+    assert_eq!(stored.status, "failed");
+    assert_eq!(stored.attempts, 0);
+}
+
+#[test]
 fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
