@@ -411,10 +411,7 @@ where
         execute_runtime_rpc_request_with_outbox(state, outbox, callback)
             .context("apply runtime callback")?;
     }
-    if state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Pending {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
-        emit_runtime_status(outbox, &run, "running", Some("Runtime started"), None, None)?;
-    }
+    mark_pending_run_as_running(state, outbox, &run)?;
 
     if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
         let hermes_failed = hermes_has_error(&launch_outcome.metadata)?;
@@ -481,42 +478,19 @@ where
         }
     }
 
-    let mut fallback_final_source = None;
-    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
-        && launch_outcome.status == RuntimeRunStatus::Finished
-        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
+    let fallback_final_source = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
     {
-        if let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? {
-            let response = execute_runtime_rpc_request_with_outbox(
-                state,
-                outbox,
-                CliWrapperRequest::task_finish(
-                    issued.token.as_str().to_string(),
-                    run.task_id.clone(),
-                    final_text,
-                )
-                .into_rpc_request(),
-            )
-            .context("apply fallback final from CLI driver output")?;
-            if response.ok {
-                fallback_final_source = Some("codex_output_last_message".to_string());
-            }
-        }
-    }
-
-    if launch_outcome.status == RuntimeRunStatus::Failed
-        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
-    {
-        state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
-        emit_runtime_status(
+        apply_generic_cli_final_fallback(
+            state,
             outbox,
             &run,
-            "failed",
-            Some("Runtime failed"),
-            Some("runtime_failed"),
-            Some(&runtime_launch_failure_summary(&launch_outcome)),
-        )?;
-    }
+            &launch_outcome,
+            issued.token.as_str(),
+        )?
+    } else {
+        None
+    };
+    apply_terminal_failure_fallback(state, outbox, &run, &launch_outcome)?;
     if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
         persist_cli_driver_run(
             state,
@@ -980,6 +954,75 @@ fn emit_hermes_failure_outputs(
         Some("Hermes run failed"),
         Some(error_code),
         Some(&sanitized),
+    )?;
+    Ok(())
+}
+
+fn mark_pending_run_as_running(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+) -> Result<()> {
+    if state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Pending {
+        return Ok(());
+    }
+    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Running)?;
+    emit_runtime_status(outbox, run, "running", Some("Runtime started"), None, None)?;
+    Ok(())
+}
+
+fn apply_generic_cli_final_fallback(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    launch_outcome: &RuntimeLaunchOutcome,
+    runtime_rpc_token: &str,
+) -> Result<Option<&'static str>> {
+    if launch_outcome.status != RuntimeRunStatus::Finished
+        || state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Finished
+    {
+        return Ok(None);
+    }
+    let Some(final_text) = fallback_final_text(&launch_outcome.metadata)? else {
+        return Ok(None);
+    };
+    let response = execute_runtime_rpc_request_with_outbox(
+        state,
+        outbox,
+        CliWrapperRequest::task_finish(
+            runtime_rpc_token.to_string(),
+            run.task_id.clone(),
+            final_text,
+        )
+        .into_rpc_request(),
+    )
+    .context("apply fallback final from generic CLI driver output")?;
+    if response.ok {
+        Ok(Some("generic_cli_final_output"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn apply_terminal_failure_fallback(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    launch_outcome: &RuntimeLaunchOutcome,
+) -> Result<()> {
+    if launch_outcome.status != RuntimeRunStatus::Failed
+        || state.load_runtime_run(&run.run_id)?.status == RuntimeRunStatus::Failed
+    {
+        return Ok(());
+    }
+    state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+    emit_runtime_status(
+        outbox,
+        run,
+        "failed",
+        Some("Runtime failed"),
+        Some("runtime_failed"),
+        Some(&runtime_launch_failure_summary(launch_outcome)),
     )?;
     Ok(())
 }

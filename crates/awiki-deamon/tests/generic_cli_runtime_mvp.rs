@@ -1280,7 +1280,7 @@ exit 0
     let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
     assert_eq!(
         run_record.fallback_final_source.as_deref(),
-        Some("codex_output_last_message")
+        Some("generic_cli_final_output")
     );
     assert_eq!(
         run_record.final_output_path,
