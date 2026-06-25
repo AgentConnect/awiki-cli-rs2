@@ -280,16 +280,9 @@ fn apply_runtime_rpc_side_effects(
         }
         RpcMethod::TaskFinish => {
             let run = state.load_runtime_run(&context.run_id)?;
-            if matches!(
-                run.status,
-                RuntimeRunStatus::Pending | RuntimeRunStatus::Running
-            ) {
+            if run.status.is_active() {
                 outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
-                state.update_runtime_run_status_if_status_in(
-                    &context.run_id,
-                    &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
-                    RuntimeRunStatus::Finished,
-                )?;
+                state.finish_active_runtime_run(&context.run_id)?;
             }
         }
         RpcMethod::AppActionRequest => {
@@ -317,12 +310,8 @@ fn update_runtime_run_status_from_callback(
             &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
             RuntimeRunStatus::Running,
         ),
-        RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => state
-            .update_runtime_run_status_if_status_in(
-                run_id,
-                &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
-                status,
-            ),
+        RuntimeRunStatus::Finished => state.finish_active_runtime_run(run_id),
+        RuntimeRunStatus::Failed => state.fail_active_runtime_run(run_id),
     }
 }
 

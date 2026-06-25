@@ -1013,18 +1013,10 @@ fn runtime_run_conditional_status_update_preserves_terminal_state() {
     }
 
     let finished_updated = state
-        .update_runtime_run_status_if_status_in(
-            "run_terminal_finished",
-            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
-            RuntimeRunStatus::Failed,
-        )
+        .fail_active_runtime_run("run_terminal_finished")
         .unwrap();
     let failed_updated = state
-        .update_runtime_run_status_if_status_in(
-            "run_terminal_failed",
-            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
-            RuntimeRunStatus::Finished,
-        )
+        .finish_active_runtime_run("run_terminal_failed")
         .unwrap();
 
     assert!(!finished_updated);

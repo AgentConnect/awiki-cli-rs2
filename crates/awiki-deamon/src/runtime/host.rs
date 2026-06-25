@@ -900,11 +900,7 @@ fn mark_runtime_final_delivered(
     }
     let run = state.load_runtime_run(&record.run_id)?;
     let updated = state
-        .update_runtime_run_status_if_status_in(
-            &record.run_id,
-            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
-            RuntimeRunStatus::Finished,
-        )
+        .finish_active_runtime_run(&record.run_id)
         .context("mark Hermes run finished after final delivery")?;
     if updated {
         emit_runtime_status(
@@ -1157,11 +1153,7 @@ fn apply_terminal_failure_fallback(
 }
 
 fn mark_active_runtime_run_failed(state: &DaemonState, run_id: &str) -> Result<bool> {
-    state.update_runtime_run_status_if_status_in(
-        run_id,
-        &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
-        RuntimeRunStatus::Failed,
-    )
+    state.fail_active_runtime_run(run_id)
 }
 
 fn emit_runtime_status(

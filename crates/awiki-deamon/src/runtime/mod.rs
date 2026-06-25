@@ -505,6 +505,10 @@ pub fn runtime_task_matches_profile_controller_scope(
 }
 
 impl RuntimeRunStatus {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Pending | Self::Running)
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",

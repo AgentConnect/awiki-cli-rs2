@@ -702,6 +702,22 @@ WHERE run_id = ?6
         Ok(updated > 0)
     }
 
+    pub fn finish_active_runtime_run(&self, run_id: &str) -> Result<bool> {
+        self.update_runtime_run_status_if_status_in(
+            run_id,
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Finished,
+        )
+    }
+
+    pub fn fail_active_runtime_run(&self, run_id: &str) -> Result<bool> {
+        self.update_runtime_run_status_if_status_in(
+            run_id,
+            &[RuntimeRunStatus::Pending, RuntimeRunStatus::Running],
+            RuntimeRunStatus::Failed,
+        )
+    }
+
     pub fn recover_stale_active_runtime_runs(&self, stale_before_ms: i64) -> Result<usize> {
         let connection = self.connection()?;
         let now = current_time_millis()?;
