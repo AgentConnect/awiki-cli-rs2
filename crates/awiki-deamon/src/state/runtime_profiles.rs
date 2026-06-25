@@ -1,3 +1,4 @@
+use super::records::RuntimeRetryStatus;
 use super::row_mappers::*;
 use super::*;
 
@@ -322,12 +323,18 @@ WHERE agent_did = ?1
         updated += connection.execute(
             r#"
 UPDATE runtime_retry_queue
-SET status = 'archived',
+SET status = ?1,
     updated_at_ms = ?2
-WHERE agent_did = ?1
-  AND status IN ('queued', 'running')
+WHERE agent_did = ?3
+  AND status IN (?4, ?5)
 "#,
-            rusqlite::params![agent_did, now_ms],
+            rusqlite::params![
+                RuntimeRetryStatus::Archived.as_str(),
+                now_ms,
+                agent_did,
+                RuntimeRetryStatus::Queued.as_str(),
+                RuntimeRetryStatus::Running.as_str()
+            ],
         )?;
         Ok(updated)
     }

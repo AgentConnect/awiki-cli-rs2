@@ -620,6 +620,38 @@ pub struct RuntimeRetryQueueRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RuntimeRetryStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Archived,
+}
+
+impl RuntimeRetryStatus {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub(super) fn parse(input: &str) -> Result<Self> {
+        match input {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            "archived" => Ok(Self::Archived),
+            _ => bail!("runtime retry status is unsupported"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeFinalOutboxRecord {
     pub idempotency_key: String,
@@ -696,13 +728,7 @@ impl RuntimeRetryQueueRecord {
 }
 
 pub(super) fn validate_runtime_retry_status(status: &str) -> Result<()> {
-    if !matches!(
-        status,
-        "queued" | "running" | "succeeded" | "failed" | "archived"
-    ) {
-        bail!("runtime retry status is unsupported");
-    }
-    Ok(())
+    RuntimeRetryStatus::parse(status).map(|_| ())
 }
 
 impl RuntimeFinalOutboxRecord {

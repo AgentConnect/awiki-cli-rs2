@@ -1,3 +1,4 @@
+use super::records::RuntimeRetryStatus;
 use super::row_mappers::*;
 use super::*;
 use crate::runtime::{
@@ -128,6 +129,7 @@ INSERT OR IGNORE INTO runtime_run (
             bail!("command_id must not be empty");
         }
         let now = current_time_millis()?;
+        let queued_status = RuntimeRetryStatus::Queued.as_str();
         let retry_id = format!("retry_{}_{}", now, stable_id_suffix(&original_run.run_id));
         let record = RuntimeRetryQueueRecord {
             retry_id,
@@ -137,7 +139,7 @@ INSERT OR IGNORE INTO runtime_run (
             runtime_profile_id: original_run.runtime_profile_id.clone(),
             runtime_plugin_id: original_run.runtime_plugin_id.clone(),
             workspace_id: original_run.workspace_id.clone(),
-            status: "queued".to_string(),
+            status: queued_status.to_string(),
             requested_by_command_id: command_id.to_string(),
             attempts: 0,
             created_at_ms: now,
@@ -160,7 +162,7 @@ INSERT INTO runtime_retry_queue (
     attempts,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', ?8, 0, ?9, ?9)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?10)
 "#,
             rusqlite::params![
                 record.retry_id,
@@ -170,6 +172,7 @@ INSERT INTO runtime_retry_queue (
                 record.runtime_profile_id,
                 record.runtime_plugin_id,
                 record.workspace_id,
+                queued_status,
                 record.requested_by_command_id,
                 now,
             ],
@@ -225,13 +228,15 @@ SELECT
     created_at_ms,
     updated_at_ms
 FROM runtime_retry_queue
-WHERE status = 'queued'
+WHERE status = ?1
 ORDER BY created_at_ms ASC, retry_id ASC
-LIMIT ?1
+LIMIT ?2
 "#,
         )?;
-        let rows =
-            statement.query_map([limit.max(1) as i64], runtime_retry_queue_record_from_row)?;
+        let rows = statement.query_map(
+            rusqlite::params![RuntimeRetryStatus::Queued.as_str(), limit.max(1) as i64],
+            runtime_retry_queue_record_from_row,
+        )?;
         let mut retries = Vec::new();
         for row in rows {
             retries.push(row?);
@@ -306,15 +311,27 @@ WHERE retry_id = ?3
     }
 
     pub fn start_queued_runtime_retry(&self, retry_id: &str) -> Result<bool> {
-        self.mark_runtime_retry_status_if_status_in(retry_id, &["queued"], "running")
+        self.mark_runtime_retry_status_if_status_in(
+            retry_id,
+            &[RuntimeRetryStatus::Queued.as_str()],
+            RuntimeRetryStatus::Running.as_str(),
+        )
     }
 
     pub fn succeed_running_runtime_retry(&self, retry_id: &str) -> Result<bool> {
-        self.mark_runtime_retry_status_if_status_in(retry_id, &["running"], "succeeded")
+        self.mark_runtime_retry_status_if_status_in(
+            retry_id,
+            &[RuntimeRetryStatus::Running.as_str()],
+            RuntimeRetryStatus::Succeeded.as_str(),
+        )
     }
 
     pub fn fail_running_runtime_retry(&self, retry_id: &str) -> Result<bool> {
-        self.mark_runtime_retry_status_if_status_in(retry_id, &["running"], "failed")
+        self.mark_runtime_retry_status_if_status_in(
+            retry_id,
+            &[RuntimeRetryStatus::Running.as_str()],
+            RuntimeRetryStatus::Failed.as_str(),
+        )
     }
 
     pub fn recover_stale_runtime_retries_running(&self, stale_before_ms: i64) -> Result<usize> {
@@ -322,12 +339,17 @@ WHERE retry_id = ?3
         let updated = connection.execute(
             r#"
 UPDATE runtime_retry_queue
-SET status = 'queued',
-    updated_at_ms = ?1
-WHERE status = 'running'
-  AND updated_at_ms <= ?2
+SET status = ?1,
+    updated_at_ms = ?2
+WHERE status = ?3
+  AND updated_at_ms <= ?4
 "#,
-            rusqlite::params![current_time_millis()?, stale_before_ms],
+            rusqlite::params![
+                RuntimeRetryStatus::Queued.as_str(),
+                current_time_millis()?,
+                RuntimeRetryStatus::Running.as_str(),
+                stale_before_ms
+            ],
         )?;
         Ok(updated)
     }
