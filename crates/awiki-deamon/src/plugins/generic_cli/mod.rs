@@ -432,6 +432,67 @@ pub(crate) fn generic_cli_run_paths(
     }
 }
 
+pub(crate) struct GenericCliPromptEnvelope<'a> {
+    pub(crate) invocation: &'a GenericCliInvocation,
+    pub(crate) workspace_root: &'a Path,
+    pub(crate) driver_id: &'a str,
+    pub(crate) sandbox: &'a str,
+    pub(crate) driver_runtime_context: &'a [(&'a str, &'a str)],
+}
+
+pub(crate) fn build_generic_cli_prompt_envelope(input: GenericCliPromptEnvelope<'_>) -> String {
+    let mut runtime_context = String::new();
+    runtime_context.push_str("[Awiki Runtime Context]\n");
+    runtime_context.push_str(&format!("agent_did: {}\n", input.invocation.agent_did));
+    runtime_context.push_str("runtime_plugin_id: generic-cli\n");
+    runtime_context.push_str(&format!("driver_id: {}\n", input.driver_id));
+    runtime_context.push_str(&format!(
+        "runtime_profile_id: {}\n",
+        input.invocation.runtime_profile_id
+    ));
+    runtime_context.push_str(&format!(
+        "workspace_instance_path: {}\n",
+        input.workspace_root.display()
+    ));
+    runtime_context.push_str(&format!("sandbox: {}\n", input.sandbox));
+    for (key, value) in input.driver_runtime_context {
+        runtime_context.push_str(&format!("{key}: {value}\n"));
+    }
+
+    format!(
+        r#"{runtime_context}
+[Controller]
+controller_verified: true
+
+[Message Run]
+message_id: {message_id}
+task_id: {task_id}
+run_id: {run_id}
+conversation_id: {conversation_id}
+user_message:
+{task_text}
+
+[Awiki Callback Rules]
+- Use the daemon CLI wrapper for status, final replies, outgoing messages, and artifacts.
+- Do not connect to message-service directly.
+- Do not read or use DID private keys.
+- If a wrapper call fails, report the failure instead of claiming success.
+
+[Safety]
+- Do not read secrets, private keys, .env files, or credential stores.
+- Do not run destructive shell commands.
+- Do not use unauthorized network access.
+- Request controller approval before higher-risk actions.
+"#,
+        runtime_context = runtime_context,
+        message_id = input.invocation.message_id,
+        task_id = input.invocation.task_id,
+        run_id = input.invocation.run_id,
+        conversation_id = input.invocation.conversation_id.as_deref().unwrap_or(""),
+        task_text = input.invocation.task_text,
+    )
+}
+
 fn sanitize_path_component(input: &str) -> String {
     let sanitized = input
         .chars()
@@ -937,5 +998,50 @@ mod tests {
             no_route_paths.final_output_path,
             no_route_paths.output_dir.join("final-output.txt")
         );
+    }
+
+    #[test]
+    fn shared_prompt_envelope_keeps_driver_specific_context_inside_common_rules() {
+        let invocation = GenericCliInvocation {
+            run_id: "run-1".to_string(),
+            task_id: "task-1".to_string(),
+            message_id: "msg-1".to_string(),
+            conversation_id: Some("conv-1".to_string()),
+            task_text: "please help".to_string(),
+            agent_did: "did:agent:one".to_string(),
+            runtime_profile_id: "profile-1".to_string(),
+            workspace_root: None,
+            workspace_instance: None,
+            route_session: None,
+            runtime_temp_dir: None,
+            runtime_rpc_token: "rtok_prompt_secret".to_string(),
+            local_socket_path: None,
+            callbacks: Vec::new(),
+        };
+
+        let prompt = build_generic_cli_prompt_envelope(GenericCliPromptEnvelope {
+            invocation: &invocation,
+            workspace_root: Path::new("/tmp/workspace"),
+            driver_id: "claude-code",
+            sandbox: "read-only",
+            driver_runtime_context: &[("permission_mode", "plan")],
+        });
+
+        assert!(prompt.contains("[Awiki Runtime Context]"));
+        assert!(prompt.contains("runtime_plugin_id: generic-cli"));
+        assert!(prompt.contains("driver_id: claude-code"));
+        assert!(prompt.contains("workspace_instance_path: /tmp/workspace"));
+        assert!(prompt.contains("sandbox: read-only"));
+        assert!(prompt.contains("permission_mode: plan"));
+        assert!(prompt.contains("[Awiki Callback Rules]"));
+        assert!(prompt.contains("Do not connect to message-service directly."));
+        assert!(prompt
+            .contains("If a wrapper call fails, report the failure instead of claiming success."));
+        assert!(prompt.contains("[Safety]"));
+        assert!(prompt.contains("Request controller approval before higher-risk actions."));
+        assert!(prompt.contains("message_id: msg-1"));
+        assert!(prompt.contains("conversation_id: conv-1"));
+        assert!(prompt.contains("user_message:\nplease help"));
+        assert!(!prompt.contains(&invocation.runtime_rpc_token));
     }
 }

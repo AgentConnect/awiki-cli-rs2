@@ -10,14 +10,15 @@ use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    generic_cli_run_paths, output_metadata, output_sanitizer_metadata,
+    build_generic_cli_prompt_envelope, generic_cli_run_paths, output_metadata,
+    output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
     route_session_metadata, sanitize_cli_output_file, validate_native_session_id,
     workspace_metadata, write_sanitized_cli_output, GenericCliDriver, GenericCliExit,
-    GenericCliInvocation, GenericCliRunPaths, CODEX_CLI_DRIVER_ID,
+    GenericCliInvocation, GenericCliPromptEnvelope, GenericCliRunPaths, CODEX_CLI_DRIVER_ID,
 };
 
 const DEFAULT_CODEX_BINARY: &str = "codex";
@@ -662,48 +663,13 @@ pub fn build_prompt_envelope(
     workspace_root: &std::path::Path,
     config: &CodexDriverConfig,
 ) -> String {
-    format!(
-        r#"[Awiki Runtime Context]
-agent_did: {agent_did}
-runtime_plugin_id: generic-cli
-driver_id: codex
-runtime_profile_id: {runtime_profile_id}
-workspace_instance_path: {workspace_root}
-sandbox: {sandbox}
-
-[Controller]
-controller_verified: true
-
-[Message Run]
-message_id: {message_id}
-task_id: {task_id}
-run_id: {run_id}
-conversation_id: {conversation_id}
-user_message:
-{task_text}
-
-[Awiki Callback Rules]
-- Use the daemon CLI wrapper for status, final replies, outgoing messages, and artifacts.
-- Do not connect to message-service directly.
-- Do not read or use DID private keys.
-- If a wrapper call fails, report the failure instead of claiming success.
-
-[Safety]
-- Do not read secrets, private keys, .env files, or credential stores.
-- Do not run destructive shell commands.
-- Do not use unauthorized network access.
-- Request controller approval before higher-risk actions.
-"#,
-        agent_did = invocation.agent_did,
-        runtime_profile_id = invocation.runtime_profile_id,
-        workspace_root = workspace_root.display(),
-        sandbox = config.sandbox,
-        message_id = invocation.message_id,
-        task_id = invocation.task_id,
-        run_id = invocation.run_id,
-        conversation_id = invocation.conversation_id.as_deref().unwrap_or(""),
-        task_text = invocation.task_text,
-    )
+    build_generic_cli_prompt_envelope(GenericCliPromptEnvelope {
+        invocation,
+        workspace_root,
+        driver_id: CODEX_CLI_DRIVER_ID,
+        sandbox: &config.sandbox,
+        driver_runtime_context: &[],
+    })
 }
 
 fn ensure_prompt_does_not_contain_token(prompt: &str, token: &str) -> Result<()> {
