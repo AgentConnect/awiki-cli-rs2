@@ -129,8 +129,23 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     config.ensure_state_layout()?;
     let state = DaemonState::open(&config)?;
     let state_summary = state.initialize()?;
+    let startup_recovery_cutoff = current_time_millis()?;
+    let recovered_runtime_runs =
+        state.recover_stale_active_runtime_runs(startup_recovery_cutoff)?;
+    if recovered_runtime_runs > 0 {
+        state.insert_audit_event_json(
+            "runtime.run.recovered_failed",
+            None,
+            None,
+            None,
+            None,
+            json!({
+                "recovered_count": recovered_runtime_runs,
+            }),
+        )?;
+    }
     let recovered_runtime_retries =
-        state.recover_stale_runtime_retries_running(current_time_millis()?)?;
+        state.recover_stale_runtime_retries_running(startup_recovery_cutoff)?;
     if recovered_runtime_retries > 0 {
         state.insert_audit_event_json(
             "runtime.run.retry.recovered",

@@ -627,6 +627,25 @@ WHERE run_id = ?6
         Ok(())
     }
 
+    pub fn recover_stale_active_runtime_runs(&self, stale_before_ms: i64) -> Result<usize> {
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_run
+SET status = 'failed',
+    completed_at = COALESCE(completed_at, ?1),
+    updated_at = ?1,
+    completed_at_ms = COALESCE(completed_at_ms, ?2),
+    updated_at_ms = ?2
+WHERE status IN ('pending', 'running')
+  AND updated_at_ms <= ?3
+"#,
+            rusqlite::params![now.to_string(), now, stale_before_ms],
+        )?;
+        Ok(updated)
+    }
+
     pub fn load_runtime_run(&self, run_id: &str) -> Result<RuntimeRun> {
         let connection = self.connection()?;
         connection

@@ -927,6 +927,58 @@ fn runtime_task_for_run_roundtrips_requester_and_trigger_fields() {
 }
 
 #[test]
+fn runtime_run_recovery_marks_stale_active_runs_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    for (run_id, status) in [
+        ("run_recover_pending", RuntimeRunStatus::Pending),
+        ("run_recover_running", RuntimeRunStatus::Running),
+        ("run_recover_finished", RuntimeRunStatus::Finished),
+    ] {
+        state
+            .insert_runtime_run(&RuntimeRun {
+                run_id: run_id.to_string(),
+                task_id: format!("task_{run_id}"),
+                agent_did: "did:agent:hermes".to_string(),
+                runtime_profile_id: "profile_hermes".to_string(),
+                runtime_plugin_id: "hermes".to_string(),
+                workspace_id: None,
+                status,
+            })
+            .unwrap();
+    }
+
+    let recovered = state
+        .recover_stale_active_runtime_runs(current_time_millis().unwrap())
+        .unwrap();
+    assert_eq!(recovered, 2);
+    assert_eq!(
+        state
+            .load_runtime_run("run_recover_pending")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_recover_running")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_recover_finished")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Finished
+    );
+}
+
+#[test]
 fn runtime_retry_queue_recovers_stale_running_retries() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
