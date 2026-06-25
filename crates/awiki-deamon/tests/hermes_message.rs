@@ -107,6 +107,77 @@ impl RuntimeOutbox for FlakyFinalOutbox {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct AlwaysFailFinalOutbox {
+    inner: MemoryRuntimeOutbox,
+}
+
+impl AlwaysFailFinalOutbox {
+    fn records(&self) -> Vec<awiki_deamon::outbox::OutboxRecord> {
+        self.inner.records()
+    }
+}
+
+impl RuntimeOutbox for AlwaysFailFinalOutbox {
+    fn resolve_recipient_did(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.inner.resolve_recipient_did(context, recipient)
+    }
+
+    fn send_status(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_status(context, state, text)
+    }
+
+    fn send_status_with_detail(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_status_with_detail(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+        )
+    }
+
+    fn send_final(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_final(context, text)
+    }
+
+    fn send_message(
+        &self,
+        _context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        _message: &RuntimeMessageSend,
+    ) -> anyhow::Result<RuntimeMessageSendResult> {
+        anyhow::bail!("message service permanently unavailable")
+    }
+
+    fn send_attachment(
+        &self,
+        context: &awiki_deamon::state::AuthorizedRuntimeContext,
+        attachment: &RuntimeAttachmentSend,
+    ) -> anyhow::Result<RuntimeAttachmentSendResult> {
+        self.inner.send_attachment(context, attachment)
+    }
+}
+
 fn fixture() -> (tempfile::TempDir, DaemonState) {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
@@ -496,6 +567,91 @@ fn hermes_message_final_outbox_retries_pending_final_and_finishes_run_once_sent(
         record.kind == OutboxRecordKind::Status
             && record.state.as_deref() == Some("succeeded")
             && record.text.as_deref() == Some("Hermes response sent")
+    }));
+}
+
+#[test]
+fn hermes_final_outbox_terminal_failure_marks_run_failed() {
+    let (root, state) = fixture();
+    let outbox = AlwaysFailFinalOutbox::default();
+    let gateway = FakeHermesGateway::default();
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_terminal_final_failure".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "请处理但最终投递会失败".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Running);
+    let pending = state
+        .load_runtime_final_outbox_by_run("run_task_msg_terminal_final_failure")
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.status, "pending");
+    assert_eq!(pending.attempt_count, 1);
+
+    Connection::open(root.path().join("daemon.db"))
+        .unwrap()
+        .execute(
+            "UPDATE runtime_final_outbox SET attempt_count = 4, next_attempt_at_ms = 0 WHERE run_id = ?1",
+            ["run_task_msg_terminal_final_failure"],
+        )
+        .unwrap();
+
+    let sent = flush_runtime_final_outbox(&state, &outbox, 10).unwrap();
+    assert_eq!(sent, 0);
+    let terminal = state
+        .load_runtime_final_outbox_by_run("run_task_msg_terminal_final_failure")
+        .unwrap()
+        .unwrap();
+    assert_eq!(terminal.status, "failed_terminal");
+    assert_eq!(terminal.attempt_count, 5);
+    assert_eq!(
+        terminal.last_error_code.as_deref(),
+        Some("final_delivery_failed")
+    );
+    assert_eq!(
+        state
+            .load_runtime_run("run_task_msg_terminal_final_failure")
+            .unwrap()
+            .status,
+        RuntimeRunStatus::Failed
+    );
+
+    let records = outbox.records();
+    assert!(records.iter().any(|record| {
+        record.kind == OutboxRecordKind::Status
+            && record.state.as_deref() == Some("running")
+            && record.text.as_deref() == Some("Hermes response is ready; delivery is retrying")
+    }));
+    assert!(records.iter().any(|record| {
+        record.kind == OutboxRecordKind::Status
+            && record.state.as_deref() == Some("failed")
+            && record.text.as_deref() == Some("Hermes response delivery failed")
+            && record.last_error_code.as_deref() == Some("final_delivery_failed")
+            && record.last_error_summary.as_deref()
+                == Some("message service permanently unavailable")
+    }));
+    assert!(!records.iter().any(|record| {
+        record.kind == OutboxRecordKind::Status && record.state.as_deref() == Some("succeeded")
     }));
 }
 

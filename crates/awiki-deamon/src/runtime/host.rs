@@ -666,6 +666,15 @@ pub fn flush_runtime_final_outbox(
                         "final_delivery_failed",
                         &error_summary,
                     )?;
+                    let run = state.load_runtime_run(&record.run_id)?;
+                    mark_runtime_run_failed_with_status(
+                        state,
+                        outbox,
+                        &run,
+                        "Hermes response delivery failed",
+                        "final_delivery_failed",
+                        &error_summary,
+                    )?;
                     state.insert_audit_event_json(
                         "runtime.final_outbox.failed_terminal",
                         Some(&record.agent_did),
