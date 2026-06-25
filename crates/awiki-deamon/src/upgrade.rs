@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use crate::public_error::{sanitize_public_error, sanitize_public_error_chain};
+use crate::public_error::{
+    sanitize_public_error, sanitize_public_error_chain, sanitize_public_url,
+};
 use crate::service::{
     manage_service, restart_service_after_upgrade, ServiceAction, ServicePlatform, ServiceStatus,
 };
@@ -379,8 +381,8 @@ where
             target_version: package.version,
             min_supported_version: manifest.min_supported,
             package_sha256: package.sha256,
-            manifest_url: public_url(&manifest_selection.manifest_url),
-            download_base_url: public_url(&manifest_selection.download_base_url),
+            manifest_url: public_release_url(&manifest_selection.manifest_url),
+            download_base_url: public_release_url(&manifest_selection.download_base_url),
             download_route: None,
             restarted: false,
             service,
@@ -433,7 +435,7 @@ where
     .with_context(|| {
         format!(
             "download daemon package {}",
-            public_url(
+            public_release_url(
                 &candidates
                     .first()
                     .map(|candidate| candidate.package_url.clone())
@@ -545,8 +547,8 @@ where
         target_version: package.version,
         min_supported_version: manifest.min_supported,
         package_sha256: actual_sha,
-        manifest_url: public_url(&manifest_selection.manifest_url),
-        download_base_url: public_url(&selected_download.1),
+        manifest_url: public_release_url(&manifest_selection.manifest_url),
+        download_base_url: public_release_url(&selected_download.1),
         download_route: selected_download.2,
         restarted: request.restart_service,
         service,
@@ -1689,22 +1691,12 @@ fn replace_symlink(_target: &Path, _link: &Path) -> Result<()> {
     bail!("daemon upgrade symlink swap requires Unix")
 }
 
-fn public_url(url: &str) -> String {
-    let value = url.trim();
-    if value.chars().count() > 512 {
-        value.chars().take(512).collect::<String>() + "..."
-    } else {
-        value.to_string()
-    }
+fn diagnostic_url(url: &str) -> String {
+    sanitize_public_url(url, "<local-release-source>")
 }
 
-fn diagnostic_url(url: &str) -> String {
-    let value = url.trim();
-    if value.starts_with("http://") || value.starts_with("https://") {
-        public_url(value)
-    } else {
-        "<local-release-manifest>".to_string()
-    }
+fn public_release_url(url: &str) -> String {
+    sanitize_public_url(url, "<local-release-source>")
 }
 
 fn sanitize_error(value: &str) -> String {
@@ -1966,7 +1958,7 @@ mod tests {
         assert_eq!(status.latest_version.as_deref(), Some("0.10.0"));
         assert!(status.needs_upgrade);
         assert!(status.error.is_none());
-        assert_eq!(status.manifest_url, "<local-release-manifest>");
+        assert_eq!(status.manifest_url, "<local-release-source>");
     }
 
     #[test]
@@ -2184,10 +2176,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.target_version, "0.2.0");
-        assert_eq!(
-            report.download_base_url,
-            format!("file://{}", package_root.path().display())
-        );
+        assert_eq!(report.download_base_url, "<local-release-source>");
         assert_eq!(
             std::fs::read_link(current_dir.join("awiki-deamon")).unwrap(),
             PathBuf::from("../0.2.0/awiki-deamon")
