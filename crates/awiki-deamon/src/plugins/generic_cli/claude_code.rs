@@ -10,8 +10,8 @@ use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    build_generic_cli_prompt_envelope, generic_cli_run_paths, output_metadata,
-    output_sanitizer_metadata,
+    build_generic_cli_prompt_envelope, generic_cli_run_paths, json_bool_field,
+    json_duration_ms_field, json_string_field, output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -87,16 +87,16 @@ impl ClaudeCodeDriverConfig {
         let binary_path = profile
             .binary_path
             .clone()
-            .or_else(|| string_field(config, "binary_path").map(PathBuf::from))
+            .or_else(|| json_string_field(config, "binary_path").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY));
-        let sandbox = string_field(config, "sandbox")
+        let sandbox = json_string_field(config, "sandbox")
             .or_else(|| profile.default_sandbox.clone())
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
-        let permission_mode = string_field(config, "permission_mode")
+        let permission_mode = json_string_field(config, "permission_mode")
             .unwrap_or_else(|| permission_mode_for_sandbox(&sandbox).to_string());
-        let output_dir = string_field(config, "output_dir").map(PathBuf::from);
-        let setting_sources = string_field(config, "setting_sources").or_else(|| {
-            if bool_field(config, "load_project_settings", false) {
+        let output_dir = json_string_field(config, "output_dir").map(PathBuf::from);
+        let setting_sources = json_string_field(config, "setting_sources").or_else(|| {
+            if json_bool_field(config, "load_project_settings", false) {
                 Some("user,project,local".to_string())
             } else {
                 Some("user".to_string())
@@ -107,17 +107,17 @@ impl ClaudeCodeDriverConfig {
             model: profile
                 .default_model
                 .clone()
-                .or_else(|| string_field(config, "model")),
+                .or_else(|| json_string_field(config, "model")),
             sandbox,
             permission_mode,
             setting_sources,
-            strict_mcp_config: bool_field(config, "strict_mcp_config", true),
-            bare: bool_field(config, "bare", false),
-            no_session_persistence: bool_field(config, "no_session_persistence", false),
+            strict_mcp_config: json_bool_field(config, "strict_mcp_config", true),
+            bare: json_bool_field(config, "bare", false),
+            no_session_persistence: json_bool_field(config, "no_session_persistence", false),
             output_dir,
-            cli_wrapper: string_field(config, "cli_wrapper")
+            cli_wrapper: json_string_field(config, "cli_wrapper")
                 .unwrap_or_else(|| DEFAULT_CLI_WRAPPER.to_string()),
-            run_timeout: duration_ms_field(
+            run_timeout: json_duration_ms_field(
                 config,
                 "run_timeout_ms",
                 DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -574,15 +574,15 @@ pub fn claude_code_final_text_from_stream_json(stdout: &[u8]) -> Option<String> 
 
 fn native_session_id_from_json_value(value: &Value) -> Option<String> {
     for field in ["session_id", "sessionId"] {
-        if let Some(id) = string_field(value, field) {
+        if let Some(id) = json_string_field(value, field) {
             return Some(id);
         }
     }
     for field in ["session", "conversation"] {
         if let Some(id) = value.get(field).and_then(|nested| {
-            string_field(nested, "id")
-                .or_else(|| string_field(nested, "session_id"))
-                .or_else(|| string_field(nested, "sessionId"))
+            json_string_field(nested, "id")
+                .or_else(|| json_string_field(nested, "session_id"))
+                .or_else(|| json_string_field(nested, "sessionId"))
         }) {
             return Some(id);
         }
@@ -600,13 +600,13 @@ fn native_session_id_from_json_value(value: &Value) -> Option<String> {
 
 fn final_text_from_json_value(value: &Value) -> Option<String> {
     for field in ["result", "text"] {
-        if let Some(text) = string_field(value, field) {
+        if let Some(text) = json_string_field(value, field) {
             return Some(text);
         }
     }
     if let Some(text) = value
         .get("delta")
-        .and_then(|delta| string_field(delta, "text"))
+        .and_then(|delta| json_string_field(delta, "text"))
     {
         return Some(text);
     }
@@ -661,28 +661,6 @@ fn ensure_prompt_does_not_contain_token(prompt: &str, token: &str) -> Result<()>
         bail!("Claude Code prompt envelope must not contain runtime RPC token");
     }
     Ok(())
-}
-
-fn string_field(value: &Value, field: &str) -> Option<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn bool_field(value: &Value, field: &str, default: bool) -> bool {
-    value.get(field).and_then(Value::as_bool).unwrap_or(default)
-}
-
-fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
-    value
-        .get(field)
-        .and_then(Value::as_u64)
-        .filter(|millis| *millis > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(default)
 }
 
 fn permission_mode_for_sandbox(sandbox: &str) -> &'static str {

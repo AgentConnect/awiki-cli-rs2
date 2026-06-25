@@ -10,8 +10,8 @@ use crate::runtime::{RuntimeInstallStatus, RuntimeRunStatus};
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    build_generic_cli_prompt_envelope, generic_cli_run_paths, output_metadata,
-    output_sanitizer_metadata,
+    build_generic_cli_prompt_envelope, generic_cli_run_paths, json_bool_field,
+    json_duration_ms_field, json_string_field, output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -94,33 +94,33 @@ impl CodexDriverConfig {
         let binary_path = profile
             .binary_path
             .clone()
-            .or_else(|| string_field(config, "binary_path").map(PathBuf::from))
+            .or_else(|| json_string_field(config, "binary_path").map(PathBuf::from))
             .unwrap_or_else(default_codex_binary_path);
-        let sandbox = string_field(config, "sandbox")
+        let sandbox = json_string_field(config, "sandbox")
             .or_else(|| profile.default_sandbox.clone())
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
-        let output_dir = string_field(config, "output_dir").map(PathBuf::from);
+        let output_dir = json_string_field(config, "output_dir").map(PathBuf::from);
         let config_home = profile
             .config_home
             .clone()
-            .or_else(|| string_field(config, "config_home").map(PathBuf::from))
+            .or_else(|| json_string_field(config, "config_home").map(PathBuf::from))
             .context("Codex generic-cli profile requires config_home for CODEX_HOME")?;
         let record = Self {
             binary_path,
             config_home,
-            profile: string_field(config, "profile"),
+            profile: json_string_field(config, "profile"),
             model: profile
                 .default_model
                 .clone()
-                .or_else(|| string_field(config, "model")),
+                .or_else(|| json_string_field(config, "model")),
             sandbox,
-            ignore_user_config: bool_field(config, "ignore_user_config", false),
-            ignore_rules: bool_field(config, "ignore_rules", false),
-            ephemeral: bool_field(config, "ephemeral", false),
+            ignore_user_config: json_bool_field(config, "ignore_user_config", false),
+            ignore_rules: json_bool_field(config, "ignore_rules", false),
+            ephemeral: json_bool_field(config, "ephemeral", false),
             output_dir,
-            cli_wrapper: string_field(config, "cli_wrapper")
+            cli_wrapper: json_string_field(config, "cli_wrapper")
                 .unwrap_or_else(|| DEFAULT_CLI_WRAPPER.to_string()),
-            run_timeout: duration_ms_field(
+            run_timeout: json_duration_ms_field(
                 config,
                 "run_timeout_ms",
                 DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -637,13 +637,13 @@ pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String
 
 fn native_session_id_from_json_value(value: &Value) -> Option<String> {
     for field in ["session_id", "thread_id"] {
-        if let Some(id) = string_field(value, field) {
+        if let Some(id) = json_string_field(value, field) {
             return Some(id);
         }
     }
     for field in ["session", "thread", "rollout"] {
         if let Some(id) = value.get(field).and_then(|nested| {
-            string_field(nested, "id").or_else(|| string_field(nested, "session_id"))
+            json_string_field(nested, "id").or_else(|| json_string_field(nested, "session_id"))
         }) {
             return Some(id);
         }
@@ -677,26 +677,4 @@ fn ensure_prompt_does_not_contain_token(prompt: &str, token: &str) -> Result<()>
         bail!("Codex prompt envelope must not contain runtime RPC token");
     }
     Ok(())
-}
-
-fn string_field(value: &Value, field: &str) -> Option<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn bool_field(value: &Value, field: &str, default: bool) -> bool {
-    value.get(field).and_then(Value::as_bool).unwrap_or(default)
-}
-
-fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
-    value
-        .get(field)
-        .and_then(Value::as_u64)
-        .filter(|millis| *millis > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(default)
 }

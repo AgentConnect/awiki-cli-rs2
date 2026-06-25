@@ -824,7 +824,7 @@ fn command_driver_from_profile(
         .get("cli_wrapper")
         .and_then(Value::as_str)
         .unwrap_or("library:awiki_deamon::cli_wrapper");
-    let run_timeout = duration_ms_field(
+    let run_timeout = json_duration_ms_field(
         &profile.driver_config_json,
         "run_timeout_ms",
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -851,7 +851,20 @@ fn string_array(value: Option<&Value>) -> Result<Vec<String>> {
         .collect()
 }
 
-fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
+pub(crate) fn json_string_field(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn json_bool_field(value: &Value, field: &str, default: bool) -> bool {
+    value.get(field).and_then(Value::as_bool).unwrap_or(default)
+}
+
+pub(crate) fn json_duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration {
     value
         .get(field)
         .and_then(Value::as_u64)
@@ -1043,5 +1056,30 @@ mod tests {
         assert!(prompt.contains("conversation_id: conv-1"));
         assert!(prompt.contains("user_message:\nplease help"));
         assert!(!prompt.contains(&invocation.runtime_rpc_token));
+    }
+
+    #[test]
+    fn shared_json_field_helpers_keep_profile_config_semantics() {
+        let config = json!({
+            "name": "  codex  ",
+            "empty": "   ",
+            "enabled": true,
+            "timeout": 2500,
+            "zero_timeout": 0,
+        });
+
+        assert_eq!(json_string_field(&config, "name").as_deref(), Some("codex"));
+        assert_eq!(json_string_field(&config, "empty"), None);
+        assert_eq!(json_string_field(&config, "missing"), None);
+        assert!(json_bool_field(&config, "enabled", false));
+        assert!(json_bool_field(&config, "missing_bool", true));
+        assert_eq!(
+            json_duration_ms_field(&config, "timeout", Duration::from_millis(10)),
+            Duration::from_millis(2500)
+        );
+        assert_eq!(
+            json_duration_ms_field(&config, "zero_timeout", Duration::from_millis(10)),
+            Duration::from_millis(10)
+        );
     }
 }
