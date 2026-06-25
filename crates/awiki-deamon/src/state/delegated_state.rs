@@ -742,13 +742,13 @@ INSERT INTO message_sync_outbox (
     sent_at_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ON CONFLICT(idempotency_key) DO UPDATE SET
-    payload_json = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.payload_json ELSE excluded.payload_json END,
-    status = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.status ELSE excluded.status END,
-    next_attempt_at_ms = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
-    last_error_code = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.last_error_code ELSE excluded.last_error_code END,
-    last_error_summary = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.last_error_summary ELSE excluded.last_error_summary END,
+    payload_json = CASE WHEN message_sync_outbox.status IN ('sent', 'failed_terminal') THEN message_sync_outbox.payload_json ELSE excluded.payload_json END,
+    status = CASE WHEN message_sync_outbox.status IN ('sent', 'failed_terminal') THEN message_sync_outbox.status ELSE excluded.status END,
+    next_attempt_at_ms = CASE WHEN message_sync_outbox.status IN ('sent', 'failed_terminal') THEN message_sync_outbox.next_attempt_at_ms ELSE excluded.next_attempt_at_ms END,
+    last_error_code = CASE WHEN message_sync_outbox.status IN ('sent', 'failed_terminal') THEN message_sync_outbox.last_error_code ELSE excluded.last_error_code END,
+    last_error_summary = CASE WHEN message_sync_outbox.status IN ('sent', 'failed_terminal') THEN message_sync_outbox.last_error_summary ELSE excluded.last_error_summary END,
     updated_at_ms = excluded.updated_at_ms,
-    sent_at_ms = CASE WHEN message_sync_outbox.status = 'sent' THEN message_sync_outbox.sent_at_ms ELSE excluded.sent_at_ms END
+    sent_at_ms = CASE WHEN message_sync_outbox.status IN ('sent', 'failed_terminal') THEN message_sync_outbox.sent_at_ms ELSE excluded.sent_at_ms END
 "#,
             rusqlite::params![
                 &record.idempotency_key,

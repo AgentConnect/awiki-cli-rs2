@@ -388,7 +388,7 @@ fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
                 "schema": "awiki.message.sync.v1",
                 "message_id": "msg_changed"
             }),
-            ..sync
+            ..sync.clone()
         })
         .unwrap();
     let still_sent = state
@@ -397,6 +397,46 @@ fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
         .unwrap();
     assert_eq!(still_sent.status, "sent");
     assert_eq!(still_sent.payload_json["message_id"], "msg_1");
+
+    let failed_sync = MessageSyncOutboxRecord {
+        idempotency_key: "message-sync:did:human:alice:msg_failed".to_string(),
+        payload_json: serde_json::json!({
+            "schema": "awiki.message.sync.v1",
+            "message_id": "msg_failed"
+        }),
+        ..sync.clone()
+    };
+    state.upsert_message_sync_outbox(&failed_sync).unwrap();
+    assert!(state
+        .mark_message_sync_outbox_sending(&failed_sync.idempotency_key)
+        .unwrap());
+    state
+        .mark_message_sync_outbox_failed_terminal(
+            &failed_sync.idempotency_key,
+            "message_sync_delivery_failed",
+            "terminal delivery failure",
+        )
+        .unwrap();
+    state
+        .upsert_message_sync_outbox(&MessageSyncOutboxRecord {
+            status: "pending".to_string(),
+            payload_json: serde_json::json!({
+                "schema": "awiki.message.sync.v1",
+                "message_id": "msg_failed_changed"
+            }),
+            ..failed_sync.clone()
+        })
+        .unwrap();
+    let still_failed = state
+        .load_message_sync_outbox(&failed_sync.idempotency_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_failed.status, "failed_terminal");
+    assert_eq!(still_failed.payload_json["message_id"], "msg_failed");
+    assert_eq!(
+        still_failed.last_error_code.as_deref(),
+        Some("message_sync_delivery_failed")
+    );
 }
 
 #[test]
