@@ -157,6 +157,63 @@ fn failed_generic_cli_marks_run_failed_without_final_callback() {
 }
 
 #[derive(Debug, Clone)]
+struct InstallProbeErrorPlugin;
+
+impl RuntimePlugin for InstallProbeErrorPlugin {
+    fn plugin_id(&self) -> &str {
+        "generic-cli"
+    }
+
+    fn check_install_status(&self) -> anyhow::Result<RuntimeInstallStatus> {
+        anyhow::bail!("probe timed out")
+    }
+
+    fn launch_run(&self, _context: RuntimeLaunchContext) -> anyhow::Result<RuntimeLaunchOutcome> {
+        unreachable!("runtime host must not launch after install probe failure")
+    }
+}
+
+#[test]
+fn install_probe_error_marks_run_failed_with_status_callback() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let profile = profile(root.path().join("workspace"));
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &InstallProbeErrorPlugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_probe_error".to_string(),
+            conversation_id: Some("conv_probe_error".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: "did:agent:alice-coder".to_string(),
+            text: "probe before launch".to_string(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("check runtime plugin install status"));
+    let run = state.load_runtime_run("run_task_msg_probe_error").unwrap();
+    assert_eq!(run.status, RuntimeRunStatus::Failed);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Status);
+    assert_eq!(records[0].state.as_deref(), Some("failed"));
+    assert_eq!(
+        records[0].last_error_code.as_deref(),
+        Some("runtime_install_probe_failed")
+    );
+}
+
+#[derive(Debug, Clone)]
 struct MsgSendCallbackPlugin;
 
 impl RuntimePlugin for MsgSendCallbackPlugin {
@@ -949,6 +1006,25 @@ fn codex_driver_config_treats_empty_profile_paths_as_missing() {
     );
 }
 
+#[test]
+fn codex_driver_config_treats_blank_profile_strings_as_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cli_profile =
+        CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "codex").unwrap();
+    cli_profile.binary_path = Some(root.path().join("codex"));
+    cli_profile.config_home = Some(root.path().join("codex-home"));
+    cli_profile.default_model = Some("   ".to_string());
+    cli_profile.default_sandbox = Some("   ".to_string());
+    cli_profile.driver_config_json = json!({
+        "model": "model-from-driver-config",
+    });
+
+    let config = CodexDriverConfig::from_profile(&cli_profile).unwrap();
+
+    assert_eq!(config.model.as_deref(), Some("model-from-driver-config"));
+    assert_eq!(config.sandbox, "read-only");
+}
+
 #[cfg(unix)]
 #[test]
 fn codex_driver_check_install_status_handles_fake_binary_and_missing_binary() {
@@ -985,6 +1061,26 @@ exit 0
         .check_install_status()
         .unwrap();
     assert!(!missing.installed);
+
+    let hanging_codex = root.path().join("hanging-codex");
+    std::fs::write(
+        &hanging_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  sleep 10
+fi
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&hanging_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&hanging_codex, permissions).unwrap();
+
+    let error = CodexDriver::new(codex_config(hanging_codex))
+        .unwrap()
+        .check_install_status()
+        .unwrap_err();
+    assert!(error.to_string().contains("probe Codex CLI"));
 }
 
 #[cfg(unix)]

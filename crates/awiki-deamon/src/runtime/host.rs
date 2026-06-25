@@ -318,7 +318,35 @@ where
     let issued = issue_runtime_token(scope)?;
     state.store_runtime_token(&issued)?;
 
-    let install_status = plugin.check_install_status()?;
+    let install_status = match plugin.check_install_status() {
+        Ok(status) => status,
+        Err(error) => {
+            state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
+            let error_summary = error.to_string();
+            if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+                let (error_code, error_summary) = hermes_launch_error_detail(&error_summary);
+                emit_hermes_failure_outputs(
+                    state,
+                    outbox,
+                    profile,
+                    &task_reply_recipient_did,
+                    &run,
+                    error_code,
+                    error_summary.as_str(),
+                )?;
+            } else {
+                emit_runtime_status(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime setup check failed"),
+                    Some("runtime_install_probe_failed"),
+                    Some(&sanitize_user_visible_error_summary(&error_summary)),
+                )?;
+            }
+            return Err(error).context("check runtime plugin install status");
+        }
+    };
     if !install_status.installed {
         state.update_runtime_run_status(&run.run_id, RuntimeRunStatus::Failed)?;
         if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {

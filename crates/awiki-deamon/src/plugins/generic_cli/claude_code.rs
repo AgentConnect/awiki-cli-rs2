@@ -12,7 +12,7 @@ use crate::state::CliRuntimeProfileRecord;
 use super::{
     build_generic_cli_prompt_envelope, generic_cli_run_paths, json_bool_field,
     json_duration_ms_field, json_path_field, json_string_field, optional_path_field,
-    output_metadata, output_sanitizer_metadata,
+    optional_string_field, output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -89,7 +89,7 @@ impl ClaudeCodeDriverConfig {
             .or_else(|| json_path_field(config, "binary_path"))
             .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY));
         let sandbox = json_string_field(config, "sandbox")
-            .or_else(|| profile.default_sandbox.clone())
+            .or_else(|| optional_string_field(&profile.default_sandbox))
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
         let permission_mode = json_string_field(config, "permission_mode")
             .unwrap_or_else(|| permission_mode_for_sandbox(&sandbox).to_string());
@@ -103,9 +103,7 @@ impl ClaudeCodeDriverConfig {
         });
         let record = Self {
             binary_path,
-            model: profile
-                .default_model
-                .clone()
+            model: optional_string_field(&profile.default_model)
                 .or_else(|| json_string_field(config, "model")),
             sandbox,
             permission_mode,
@@ -190,9 +188,15 @@ impl GenericCliDriver for ClaudeCodeDriver {
                     output.output.status.code().unwrap_or(1)
                 )),
             }),
-            Err(error) => Ok(RuntimeInstallStatus {
+            Err(error) if is_missing_program_error(&error) => Ok(RuntimeInstallStatus {
                 installed: false,
                 detail: Some(format!("{}: {error}", self.config.binary_path.display())),
+            }),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "probe Claude Code CLI {}",
+                    self.config.binary_path.display()
+                )
             }),
         }
     }
@@ -673,6 +677,13 @@ fn home_isolation() -> &'static str {
     } else {
         "unknown"
     }
+}
+
+fn is_missing_program_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn generate_uuid_v4() -> String {

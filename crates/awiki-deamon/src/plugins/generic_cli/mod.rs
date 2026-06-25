@@ -864,9 +864,20 @@ pub(crate) fn json_string_field(value: &Value, field: &str) -> Option<String> {
     value
         .get(field)
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .and_then(optional_string_value)
+}
+
+pub(crate) fn optional_string_field(value: &Option<String>) -> Option<String> {
+    value.as_deref().and_then(optional_string_value)
+}
+
+fn optional_string_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 pub(crate) fn optional_path_field(path: &Option<PathBuf>) -> Option<PathBuf> {
@@ -1090,6 +1101,12 @@ mod tests {
         assert_eq!(json_string_field(&config, "name").as_deref(), Some("codex"));
         assert_eq!(json_string_field(&config, "empty"), None);
         assert_eq!(json_string_field(&config, "missing"), None);
+        assert_eq!(
+            optional_string_field(&Some("  profile-model  ".to_string())).as_deref(),
+            Some("profile-model")
+        );
+        assert_eq!(optional_string_field(&Some("   ".to_string())), None);
+        assert_eq!(optional_string_field(&None), None);
         assert!(json_bool_field(&config, "enabled", false));
         assert!(json_bool_field(&config, "missing_bool", true));
         assert_eq!(

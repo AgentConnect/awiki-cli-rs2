@@ -8,7 +8,8 @@ use crate::runtime::{RuntimeInstallStatus, RuntimePlugin};
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
-    codex::codex_profile_auth_ready, json_path_field, optional_path_field, GenericCliDriverRegistry,
+    codex::codex_profile_auth_ready, json_path_field, optional_path_field, optional_string_field,
+    GenericCliDriverRegistry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +72,7 @@ impl GenericCliStatusSummary {
             config_home: config_home_configured.then(|| "configured".to_string()),
             config_home_exists,
             default_workspace_mode: Some(profile.default_workspace_mode.as_str().to_string()),
-            default_sandbox: profile.default_sandbox,
+            default_sandbox: optional_string_field(&profile.default_sandbox),
         }
     }
 
@@ -446,6 +447,28 @@ mod tests {
         );
         assert_eq!(
             summary.diagnostics_summary()["config_summary"]["config_home"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn diagnostics_treat_blank_default_sandbox_as_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("codex");
+        write_fake_codex_executable(&binary).unwrap();
+        let config_home = root.path().join("codex-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::write(config_home.join("auth.json"), "{}").unwrap();
+        let mut profile = CliRuntimeProfileRecord::for_driver("profile_codex", "codex").unwrap();
+        profile.binary_path = Some(binary);
+        profile.config_home = Some(config_home);
+        profile.default_sandbox = Some("   ".to_string());
+
+        let summary = GenericCliStatusSummary::from_profile(profile);
+
+        assert!(summary.setup_ready);
+        assert_eq!(
+            summary.diagnostics_summary()["config_summary"]["default_sandbox"],
             serde_json::Value::Null
         );
     }

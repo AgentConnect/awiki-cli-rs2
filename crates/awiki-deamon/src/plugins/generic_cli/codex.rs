@@ -12,7 +12,7 @@ use crate::state::CliRuntimeProfileRecord;
 use super::{
     build_generic_cli_prompt_envelope, generic_cli_run_paths, json_bool_field,
     json_duration_ms_field, json_path_field, json_string_field, optional_path_field,
-    output_metadata, output_sanitizer_metadata,
+    optional_string_field, output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
@@ -96,7 +96,7 @@ impl CodexDriverConfig {
             .or_else(|| json_path_field(config, "binary_path"))
             .unwrap_or_else(default_codex_binary_path);
         let sandbox = json_string_field(config, "sandbox")
-            .or_else(|| profile.default_sandbox.clone())
+            .or_else(|| optional_string_field(&profile.default_sandbox))
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
         let output_dir = json_path_field(config, "output_dir");
         let config_home = optional_path_field(&profile.config_home)
@@ -106,9 +106,7 @@ impl CodexDriverConfig {
             binary_path,
             config_home,
             profile: json_string_field(config, "profile"),
-            model: profile
-                .default_model
-                .clone()
+            model: optional_string_field(&profile.default_model)
                 .or_else(|| json_string_field(config, "model")),
             sandbox,
             ignore_user_config: json_bool_field(config, "ignore_user_config", false),
@@ -182,10 +180,12 @@ impl GenericCliDriver for CodexDriver {
                     output.output.status.code().unwrap_or(1)
                 )),
             }),
-            Err(error) => Ok(RuntimeInstallStatus {
+            Err(error) if is_missing_program_error(&error) => Ok(RuntimeInstallStatus {
                 installed: false,
                 detail: Some(format!("{}: {error}", self.config.binary_path.display())),
             }),
+            Err(error) => Err(error)
+                .with_context(|| format!("probe Codex CLI {}", self.config.binary_path.display())),
         }
     }
 
@@ -573,6 +573,13 @@ fn find_executable_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
     std::env::split_paths(path)
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+fn is_missing_program_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 #[cfg(test)]
