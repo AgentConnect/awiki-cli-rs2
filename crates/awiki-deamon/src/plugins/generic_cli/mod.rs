@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use crate::runtime::{
     RuntimePlugin, RuntimeRunStatus,
 };
 use crate::state::CliRuntimeProfileRecord;
+use crate::workspace::WorkspaceInstance;
 
 use self::process::{ManagedChild, DEFAULT_GENERIC_CLI_RUN_TIMEOUT};
 
@@ -312,6 +314,68 @@ impl std::fmt::Debug for GenericCliInvocation {
             .field("callbacks", &self.callbacks)
             .finish()
     }
+}
+
+pub(crate) fn route_session_metadata(session: Option<&GenericCliRouteSession>) -> Option<Value> {
+    session.map(|session| {
+        json!({
+            "route_key_hash": session.route_key_hash,
+            "status": session.status,
+            "last_message_id_present": session.last_message_id.is_some(),
+            "last_run_id_present": session.last_run_id.is_some(),
+            "synthetic_session_id_present": session.synthetic_session_id.is_some(),
+            "native_session_id_present": session.native_session_id.is_some(),
+        })
+    })
+}
+
+pub(crate) fn workspace_metadata(
+    workspace_binding_root: &Path,
+    workspace_instance_path: &Path,
+    workspace_instance: Option<&WorkspaceInstance>,
+) -> Value {
+    json!({
+        "workspace_root": workspace_binding_root,
+        "workspace_instance_path": workspace_instance_path,
+        "workspace_mode": workspace_instance.map(|instance| instance.workspace_mode.as_str()),
+        "is_security_boundary": workspace_instance.map(|instance| instance.is_security_boundary),
+        "isolation_note": workspace_instance.map(|instance| instance.isolation_note.as_str()),
+        "cleanup_policy": workspace_instance.map(|instance| instance.cleanup_policy),
+        "base_ref": workspace_instance.and_then(|instance| instance.base_ref.as_deref()),
+        "branch_name": workspace_instance.and_then(|instance| instance.branch_name.as_deref()),
+    })
+}
+
+pub(crate) fn output_sanitizer_metadata(
+    stdout: &SanitizedCliOutput,
+    stderr: &SanitizedCliOutput,
+    final_output: Option<Value>,
+) -> Value {
+    json!({
+        "stdout": stdout.metadata_json(),
+        "stderr": stderr.metadata_json(),
+        "final_output": final_output,
+    })
+}
+
+pub(crate) fn output_metadata(
+    output_dir: &Path,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    jsonl_path: &Path,
+    final_output_path: &Path,
+    sanitizer: Option<Value>,
+) -> Value {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("output_dir".to_string(), json!(output_dir));
+    metadata.insert("stdout_path".to_string(), json!(stdout_path));
+    metadata.insert("stderr_path".to_string(), json!(stderr_path));
+    metadata.insert("jsonl_path".to_string(), json!(jsonl_path));
+    metadata.insert("final_output_path".to_string(), json!(final_output_path));
+    if let Some(sanitizer) = sanitizer {
+        metadata.insert("sanitizer".to_string(), sanitizer);
+    }
+    Value::Object(metadata)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -661,4 +725,64 @@ fn duration_ms_field(value: &Value, field: &str, default: Duration) -> Duration 
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::GenericCliRouteSession;
+    use crate::workspace::{WorkspaceCleanupPolicy, WorkspaceInstance, WorkspaceMode};
+
+    #[test]
+    fn shared_metadata_helpers_keep_stable_runtime_shape() {
+        let session = GenericCliRouteSession {
+            route_key: "controller:alice:conversation".to_string(),
+            route_key_hash: "hash-1".to_string(),
+            session_dir: std::path::PathBuf::from("/tmp/session"),
+            last_run_id: Some("run-1".to_string()),
+            last_message_id: None,
+            native_session_id: Some("native-1".to_string()),
+            synthetic_session_id: Some("synthetic-1".to_string()),
+            status: "active".to_string(),
+        };
+        let workspace_instance = WorkspaceInstance {
+            workspace_id: "workspace-1".to_string(),
+            workspace_root: std::path::PathBuf::from("/tmp/workspace"),
+            workspace_instance_path: std::path::PathBuf::from("/tmp/workspace/conversations/a"),
+            workspace_mode: WorkspaceMode::RouteRoot,
+            is_security_boundary: false,
+            isolation_note: "route scoped".to_string(),
+            cleanup_policy: WorkspaceCleanupPolicy::Preserve,
+            base_ref: Some("main".to_string()),
+            branch_name: Some("awiki/task".to_string()),
+        };
+        let output_dir = std::path::PathBuf::from("/tmp/output");
+
+        let route = route_session_metadata(Some(&session)).unwrap();
+        assert_eq!(route["route_key_hash"], "hash-1");
+        assert_eq!(route["last_run_id_present"], true);
+        assert_eq!(route["last_message_id_present"], false);
+        assert_eq!(route["native_session_id_present"], true);
+
+        let workspace = workspace_metadata(
+            &workspace_instance.workspace_root,
+            &workspace_instance.workspace_instance_path,
+            Some(&workspace_instance),
+        );
+        assert_eq!(workspace["workspace_mode"], "route-root");
+        assert_eq!(workspace["cleanup_policy"], "preserve");
+        assert_eq!(workspace["base_ref"], "main");
+        assert_eq!(workspace["branch_name"], "awiki/task");
+
+        let output = output_metadata(
+            &output_dir,
+            &output_dir.join("stdout.log"),
+            &output_dir.join("stderr.log"),
+            &output_dir.join("observation.jsonl"),
+            &output_dir.join("final-output.txt"),
+            None,
+        );
+        assert_eq!(output["output_dir"], "/tmp/output");
+        assert!(output.get("sanitizer").is_none());
+    }
 }

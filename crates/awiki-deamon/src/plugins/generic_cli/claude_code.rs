@@ -11,12 +11,14 @@ use crate::security::runtime_token::current_time_millis;
 use crate::state::CliRuntimeProfileRecord;
 
 use super::{
+    output_metadata, output_sanitizer_metadata,
     process::{
         ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
         DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
-    sanitize_cli_output_text, validate_native_session_id, write_sanitized_cli_output,
-    GenericCliDriver, GenericCliExit, GenericCliInvocation, CLAUDE_CODE_CLI_DRIVER_ID,
+    route_session_metadata, sanitize_cli_output_text, validate_native_session_id,
+    workspace_metadata, write_sanitized_cli_output, GenericCliDriver, GenericCliExit,
+    GenericCliInvocation, CLAUDE_CODE_CLI_DRIVER_ID,
 };
 
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
@@ -256,35 +258,24 @@ impl GenericCliDriver for ClaudeCodeDriver {
                         "mode": session_mode.as_str(),
                         "native_session_id_present": false,
                     },
-                    "route_session": invocation.route_session.as_ref().map(|session| serde_json::json!({
-                        "route_key_hash": session.route_key_hash,
-                        "status": session.status,
-                        "last_message_id_present": session.last_message_id.is_some(),
-                        "last_run_id_present": session.last_run_id.is_some(),
-                        "synthetic_session_id_present": session.synthetic_session_id.is_some(),
-                        "native_session_id_present": session.native_session_id.is_some(),
-                    })),
+                    "route_session": route_session_metadata(invocation.route_session.as_ref()),
                     "command": {
                         "program": self.config.binary_path,
                         "args": self.command_args_for_mode(session_mode),
                     },
-                    "workspace": {
-                        "workspace_root": workspace_binding_root,
-                        "workspace_instance_path": workspace_root,
-                        "workspace_mode": invocation.workspace_instance.as_ref().map(|instance| instance.workspace_mode.as_str()),
-                        "is_security_boundary": invocation.workspace_instance.as_ref().map(|instance| instance.is_security_boundary),
-                        "isolation_note": invocation.workspace_instance.as_ref().map(|instance| instance.isolation_note.as_str()),
-                        "cleanup_policy": invocation.workspace_instance.as_ref().map(|instance| instance.cleanup_policy),
-                        "base_ref": invocation.workspace_instance.as_ref().and_then(|instance| instance.base_ref.as_deref()),
-                        "branch_name": invocation.workspace_instance.as_ref().and_then(|instance| instance.branch_name.as_deref()),
-                    },
-                    "output": {
-                        "output_dir": paths.output_dir,
-                        "stdout_path": paths.stdout_path,
-                        "stderr_path": paths.stderr_path,
-                        "jsonl_path": paths.jsonl_path,
-                        "final_output_path": paths.final_output_path.clone(),
-                    },
+                    "workspace": workspace_metadata(
+                        &workspace_binding_root,
+                        &workspace_root,
+                        invocation.workspace_instance.as_ref(),
+                    ),
+                    "output": output_metadata(
+                        &paths.output_dir,
+                        &paths.stdout_path,
+                        &paths.stderr_path,
+                        &paths.jsonl_path,
+                        &paths.final_output_path,
+                        None,
+                    ),
                     "final_output_path": paths.final_output_path,
                 }),
             });
@@ -414,40 +405,28 @@ impl GenericCliDriver for ClaudeCodeDriver {
                     "mode": session_mode.as_str(),
                     "native_session_id_present": native_session_id.is_some(),
                 },
-                "route_session": invocation.route_session.as_ref().map(|session| serde_json::json!({
-                    "route_key_hash": session.route_key_hash,
-                    "status": session.status,
-                    "last_message_id_present": session.last_message_id.is_some(),
-                    "last_run_id_present": session.last_run_id.is_some(),
-                    "synthetic_session_id_present": session.synthetic_session_id.is_some(),
-                    "native_session_id_present": session.native_session_id.is_some(),
-                })),
+                "route_session": route_session_metadata(invocation.route_session.as_ref()),
                 "command": {
                     "program": self.config.binary_path,
                     "args": args,
                 },
-                "workspace": {
-                    "workspace_root": workspace_binding_root,
-                    "workspace_instance_path": workspace_root,
-                    "workspace_mode": invocation.workspace_instance.as_ref().map(|instance| instance.workspace_mode.as_str()),
-                    "is_security_boundary": invocation.workspace_instance.as_ref().map(|instance| instance.is_security_boundary),
-                    "isolation_note": invocation.workspace_instance.as_ref().map(|instance| instance.isolation_note.as_str()),
-                    "cleanup_policy": invocation.workspace_instance.as_ref().map(|instance| instance.cleanup_policy),
-                    "base_ref": invocation.workspace_instance.as_ref().and_then(|instance| instance.base_ref.as_deref()),
-                    "branch_name": invocation.workspace_instance.as_ref().and_then(|instance| instance.branch_name.as_deref()),
-                },
-                "output": {
-                    "output_dir": paths.output_dir,
-                    "stdout_path": paths.stdout_path,
-                    "stderr_path": paths.stderr_path,
-                    "jsonl_path": paths.jsonl_path,
-                    "final_output_path": paths.final_output_path.clone(),
-                    "sanitizer": {
-                        "stdout": stdout_sanitizer.metadata_json(),
-                        "stderr": stderr_sanitizer.metadata_json(),
-                        "final_output": final_output_sanitizer.metadata_json(),
-                    },
-                },
+                "workspace": workspace_metadata(
+                    &workspace_binding_root,
+                    &workspace_root,
+                    invocation.workspace_instance.as_ref(),
+                ),
+                "output": output_metadata(
+                    &paths.output_dir,
+                    &paths.stdout_path,
+                    &paths.stderr_path,
+                    &paths.jsonl_path,
+                    &paths.final_output_path,
+                    Some(output_sanitizer_metadata(
+                        &stdout_sanitizer,
+                        &stderr_sanitizer,
+                        Some(final_output_sanitizer.metadata_json()),
+                    )),
+                ),
                 "final_output_path": paths.final_output_path,
             }),
         })
