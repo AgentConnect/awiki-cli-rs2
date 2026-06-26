@@ -11,6 +11,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "contacts"),
         ("table", "contact_handle_bindings"),
         ("table", "messages"),
+        ("table", "conversation_summaries"),
         ("table", "groups"),
         ("table", "group_members"),
         ("table", "relationship_events"),
@@ -28,6 +29,8 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     }
     assert_index_exists(&db, "idx_messages_owner_identity_thread");
     assert_index_exists(&db, "idx_messages_owner_identity_conversation");
+    assert_index_exists(&db, "idx_conversation_summaries_owner_last");
+    assert_index_exists(&db, "idx_conversation_summaries_owner_unread_last");
     assert_index_exists(&db, "idx_groups_owner_identity_status_last_message");
     assert_index_exists(&db, "idx_identity_did_history_current");
     assert_index_exists(&db, "idx_identity_did_history_live_did_unique");
@@ -39,6 +42,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         "contacts",
         "contact_handle_bindings",
         "messages",
+        "conversation_summaries",
         "groups",
         "group_members",
         "relationship_events",
@@ -59,6 +63,10 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
             vec!["owner_identity_id", "handle", "did"],
         ),
         ("messages", vec!["owner_identity_id", "msg_id"]),
+        (
+            "conversation_summaries",
+            vec!["owner_identity_id", "conversation_id"],
+        ),
         ("groups", vec!["owner_identity_id", "group_id"]),
         (
             "group_members",
@@ -78,6 +86,49 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     ] {
         assert_primary_key_columns(&db, table, &key_columns);
     }
+}
+
+#[test]
+fn local_state_schema_upgrades_v17_with_conversation_summary_backfill() {
+    let db = Connection::open_in_memory().unwrap();
+    create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
+    db.execute_batch(
+        r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read)
+VALUES
+    ('old', 'alice-id', 'did:alice', 'dm:did:bob', 'dm:did:bob', 0,
+     'did:bob', 'did:alice', 'text/plain', 'old', '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z', 1),
+    ('new', 'alice-id', 'did:alice', 'dm:did:bob', 'dm:did:bob', 0,
+     'did:bob', 'did:alice', 'text/plain', 'new', '2026-05-02T00:00:00Z', '2026-05-02T00:00:00Z', 0)"#,
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", IDENTITY_OWNED_SCHEMA_VERSION)
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+    assert_schema_object_exists(&db, "table", "conversation_summaries");
+    let summary = db
+        .query_row(
+            r#"
+SELECT message_count, unread_count, last_message_id, last_content
+FROM conversation_summaries
+WHERE owner_identity_id = 'alice-id' AND conversation_id = 'dm:did:bob'"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(summary, (2, 1, "new".to_owned(), "new".to_owned()));
 }
 
 #[test]

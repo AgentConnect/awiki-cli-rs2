@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 
 const V6_TABLES_SQL: &str = r#"
@@ -451,6 +451,7 @@ const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
 ];
 
 const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
+    "conversation_summaries",
     "contacts",
     "contact_handle_bindings",
     "messages",
@@ -841,7 +842,7 @@ pub(crate) struct OwnerInvariantViolation {
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     let version = current_schema_version(connection)?;
     if version == 0 {
-        create_schema(connection)?;
+        create_schema(connection, true)?;
         return set_schema_version(connection, SCHEMA_VERSION);
     }
     if version > SCHEMA_VERSION {
@@ -851,14 +852,14 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
-    if version < SCHEMA_VERSION {
+    if version < IDENTITY_OWNED_SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUnavailable {
             detail: format!(
                 "sqlite schema version {version} requires owner-identity migration before schema {SCHEMA_VERSION}"
             ),
         });
     }
-    create_schema(connection)?;
+    create_schema(connection, version < SCHEMA_VERSION)?;
     set_schema_version(connection, SCHEMA_VERSION)
 }
 
@@ -868,7 +869,10 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
         .map_err(super::local_state_unavailable)
 }
 
-fn create_schema(connection: &Connection) -> crate::ImResult<()> {
+fn create_schema(
+    connection: &Connection,
+    backfill_conversation_summaries: bool,
+) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
@@ -876,6 +880,7 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
     }
+    super::conversation_summaries::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -885,6 +890,9 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
         connection
             .execute(statement, [])
             .map_err(super::local_state_unavailable)?;
+    }
+    if backfill_conversation_summaries {
+        super::conversation_summaries::rebuild_all(connection)?;
     }
     Ok(())
 }

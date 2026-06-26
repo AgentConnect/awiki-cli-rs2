@@ -868,28 +868,32 @@ mod tests {
             } else {
                 (client.did().as_str(), "did:example:bob")
             };
-            connection
-                .execute(
-                    r#"
-INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
-     content_type, content, sent_at, stored_at, is_read)
-VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', ?9, ?10, ?10, ?11)"#,
-                    (
-                        message_id,
-                        client.current_identity().id.as_str(),
-                        client.did().as_str(),
-                        conversation_id,
-                        direction,
-                        sender_did,
-                        receiver_did,
-                        group_did,
-                        content,
-                        sent_at,
-                        is_read,
-                    ),
-                )
-                .unwrap();
+            crate::internal::local_state::messages::upsert_message(
+                &connection,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    conversation_id,
+                    thread_id: if group_did.trim().is_empty() {
+                        "dm:did:example:bob".to_owned()
+                    } else {
+                        format!("group:{group_did}")
+                    },
+                    direction,
+                    sender_did: sender_did.to_owned(),
+                    receiver_did: receiver_did.to_owned(),
+                    group_id: group_did.to_owned(),
+                    group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: content.to_owned(),
+                    sent_at: sent_at.to_owned(),
+                    stored_at: sent_at.to_owned(),
+                    is_read: is_read != 0,
+                    ..crate::internal::local_state::messages::MessageRecord::default()
+                },
+            )
+            .unwrap();
         }
 
         fn seed_message_with_metadata(
@@ -910,27 +914,27 @@ VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', ?9, ?10, ?10, ?11)
             } else {
                 (client.did().as_str(), "did:example:bob")
             };
-            connection
-                .execute(
-                    r#"
-INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
-     content_type, content, sent_at, stored_at, is_read, metadata)
-VALUES (?1, ?2, ?3, 'dm:did:example:bob', 'dm:did:example:bob', ?4, ?5, ?6,
-        'text/plain', ?7, ?8, ?8, 1, ?9)"#,
-                    (
-                        message_id,
-                        client.current_identity().id.as_str(),
-                        client.did().as_str(),
-                        direction,
-                        sender_did,
-                        receiver_did,
-                        content,
-                        sent_at,
-                        metadata,
-                    ),
-                )
-                .unwrap();
+            crate::internal::local_state::messages::upsert_message(
+                &connection,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    conversation_id: "dm:did:example:bob".to_owned(),
+                    thread_id: "dm:did:example:bob".to_owned(),
+                    direction,
+                    sender_did: sender_did.to_owned(),
+                    receiver_did: receiver_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: content.to_owned(),
+                    sent_at: sent_at.to_owned(),
+                    stored_at: sent_at.to_owned(),
+                    is_read: true,
+                    metadata: metadata.to_owned(),
+                    ..crate::internal::local_state::messages::MessageRecord::default()
+                },
+            )
+            .unwrap();
         }
 
         fn seed_scoped_direct_message(
@@ -982,26 +986,25 @@ VALUES (?1, ?2, ?3, 'dm:did:example:bob', 'dm:did:example:bob', ?4, ?5, ?6,
             .unwrap();
             let conversation_id =
                 crate::internal::local_state::owner_scope::direct_conversation_id(sender_did);
-            connection
-                .execute(
-                    r#"
-INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
-     content_type, content, sent_at, stored_at, is_read)
-VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?6,
-        'text/plain', ?7, ?8, ?8, 0)"#,
-                    (
-                        message_id,
-                        client.current_identity().id.as_str(),
-                        client.did().as_str(),
-                        conversation_id,
-                        sender_did,
-                        client.did().as_str(),
-                        content,
-                        sent_at,
-                    ),
-                )
-                .unwrap();
+            crate::internal::local_state::messages::upsert_message(
+                &connection,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    conversation_id: conversation_id.clone(),
+                    thread_id: conversation_id,
+                    direction: 0,
+                    sender_did: sender_did.to_owned(),
+                    receiver_did: client.did().as_str().to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: content.to_owned(),
+                    sent_at: sent_at.to_owned(),
+                    stored_at: sent_at.to_owned(),
+                    ..crate::internal::local_state::messages::MessageRecord::default()
+                },
+            )
+            .unwrap();
         }
     }
 

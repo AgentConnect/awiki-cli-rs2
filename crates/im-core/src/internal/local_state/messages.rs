@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MessageRecord {
     pub(crate) msg_id: String,
@@ -30,12 +32,24 @@ pub(crate) fn upsert_message(
     record: &MessageRecord,
 ) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
+    let touched = upsert_message_record(connection, record)?;
+    super::conversation_summaries::rebuild_touched(connection, &touched)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn upsert_message_record(
+    connection: &rusqlite::Connection,
+    record: &MessageRecord,
+) -> crate::ImResult<BTreeSet<(String, String)>> {
     let msg_id = required("msg_id", &record.msg_id)?;
     let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
     let owner_did = required("owner_did", &record.owner_did)?;
     let conversation_id = required("conversation_id", &stable_conversation_id(record))?;
     let thread_id = conversation_id.clone();
     let stored_at = default_string(&record.stored_at, &now_utc_like());
+    let previous_conversation_id =
+        existing_message_conversation_id(connection, &owner_identity_id, &msg_id)?;
     let mentions_current_user = mentions_current_user_for_projection(
         &owner_did,
         record.direction,
@@ -100,8 +114,21 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
-    merge_legacy_direct_did_conversation(connection, &owner_identity_id, &conversation_id, record)?;
-    Ok(())
+    let mut touched = BTreeSet::new();
+    if let Some(previous_conversation_id) = previous_conversation_id {
+        touched.insert((owner_identity_id.clone(), previous_conversation_id));
+    }
+    touched.insert((owner_identity_id.clone(), conversation_id.clone()));
+    for legacy_id in merge_legacy_direct_did_conversation(
+        connection,
+        &owner_identity_id,
+        &conversation_id,
+        record,
+    )? {
+        touched.insert((owner_identity_id.clone(), legacy_id));
+    }
+    touched.insert((owner_identity_id, conversation_id));
+    Ok(touched)
 }
 
 #[cfg(feature = "sqlite")]
@@ -156,9 +183,12 @@ pub(crate) fn upsert_messages(
     connection: &rusqlite::Connection,
     records: &[MessageRecord],
 ) -> crate::ImResult<()> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let mut touched = BTreeSet::new();
     for record in records {
-        upsert_message(connection, record)?;
+        touched.extend(upsert_message_record(connection, record)?);
     }
+    super::conversation_summaries::rebuild_touched(connection, &touched)?;
     Ok(())
 }
 
@@ -233,6 +263,7 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
     owner_identity_id: &str,
 ) -> crate::ImResult<()> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let mut touched = BTreeSet::new();
     for candidate in peer_scope_direct_candidates(connection, &owner_identity_id)? {
         let record = MessageRecord {
             owner_identity_id: owner_identity_id.clone(),
@@ -244,13 +275,17 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
             metadata: candidate.metadata,
             ..MessageRecord::default()
         };
-        merge_legacy_direct_did_conversation(
+        touched.insert((owner_identity_id.clone(), candidate.conversation_id.clone()));
+        for legacy_id in merge_legacy_direct_did_conversation(
             connection,
             &owner_identity_id,
             &candidate.conversation_id,
             &record,
-        )?;
+        )? {
+            touched.insert((owner_identity_id.clone(), legacy_id));
+        }
     }
+    super::conversation_summaries::rebuild_touched(connection, &touched)?;
     Ok(())
 }
 
@@ -496,6 +531,7 @@ fn mark_messages_read_for_owner(
     );
     let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     required("owner_identity_id", &owner_identity_id)?;
+    let touched = conversation_ids_for_message_ids(connection, &owner_identity_id, &ids)?;
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
     params.push(&owner_identity_id);
     for id in &ids {
@@ -504,7 +540,73 @@ fn mark_messages_read_for_owner(
     let rows = connection
         .execute(&statement, params.as_slice())
         .map_err(super::local_state_unavailable)?;
+    super::conversation_summaries::rebuild_touched(connection, &touched)?;
     Ok(i64::try_from(rows).unwrap_or(i64::MAX))
+}
+
+#[cfg(feature = "sqlite")]
+fn existing_message_conversation_id(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    msg_id: &str,
+) -> crate::ImResult<Option<String>> {
+    let result = connection.query_row(
+        r#"
+SELECT COALESCE(NULLIF(conversation_id, ''), thread_id)
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
+        (owner_identity_id, msg_id),
+        |row| row.get::<_, Option<String>>(0),
+    );
+    match result {
+        Ok(value) => Ok(value.filter(|value| !value.trim().is_empty())),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(super::local_state_unavailable(err)),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn conversation_ids_for_message_ids(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    message_ids: &[&str],
+) -> crate::ImResult<BTreeSet<(String, String)>> {
+    if message_ids.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let placeholders = vec!["?"; message_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT DISTINCT COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id
+FROM messages
+WHERE owner_identity_id = ?
+  AND msg_id IN ({placeholders})"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    params.push(&owner_identity_id);
+    for id in message_ids {
+        params.push(id);
+    }
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), |row| {
+            row.get::<_, Option<String>>("conversation_id")
+                .map(|value| value.unwrap_or_default())
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut touched = BTreeSet::new();
+    for row in rows {
+        let conversation_id = row.map_err(super::local_state_unavailable)?;
+        if !conversation_id.trim().is_empty() {
+            touched.insert((
+                owner_identity_id.to_owned(),
+                conversation_id.trim().to_owned(),
+            ));
+        }
+    }
+    Ok(touched)
 }
 
 #[cfg(feature = "sqlite")]
@@ -790,17 +892,17 @@ fn merge_legacy_direct_did_conversation(
     owner_identity_id: &str,
     conversation_id: &str,
     record: &MessageRecord,
-) -> crate::ImResult<()> {
+) -> crate::ImResult<Vec<String>> {
     if !conversation_id.trim().starts_with("dm:peer-scope:")
         || !record.group_id.trim().is_empty()
         || !record.group_did.trim().is_empty()
     {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let legacy_conversation_ids =
         legacy_direct_conversation_ids_for_peer(connection, owner_identity_id, record)?;
     if legacy_conversation_ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let placeholders = vec!["?"; legacy_conversation_ids.len()].join(",");
     let statement = format!(
@@ -824,7 +926,7 @@ WHERE owner_identity_id = ?
     connection
         .execute(&statement, params.as_slice())
         .map_err(super::local_state_unavailable)?;
-    Ok(())
+    Ok(legacy_conversation_ids)
 }
 
 #[cfg(feature = "sqlite")]
@@ -1221,6 +1323,9 @@ VALUES (?1, ?2, ?3, 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 
             .unwrap();
         }
 
+        super::super::conversation_summaries::rebuild_owner(&db, "owner-1-id").unwrap();
+        super::super::conversation_summaries::rebuild_owner(&db, "owner-2-id").unwrap();
+
         let updated = mark_messages_read_for_owner_identity(
             &db,
             "owner-1-id",
@@ -1232,6 +1337,8 @@ VALUES (?1, ?2, ?3, 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 
         assert_eq!(updated, 1);
         assert_eq!(is_read(&db, "owner-1-id"), 1);
         assert_eq!(is_read(&db, "owner-2-id"), 0);
+        assert_eq!(summary_unread(&db, "owner-1-id", "thread"), 0);
+        assert_eq!(summary_unread(&db, "owner-2-id", "thread"), 1);
     }
 
     #[test]
@@ -1481,6 +1588,23 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
         assert_eq!(row.3, "second");
         assert_eq!(row.4, "2026-05-24T00:00:01Z");
         assert_eq!(row.5, 1);
+
+        let summary = db
+            .query_row(
+                "SELECT message_count, last_message_id, last_content, last_message_at FROM conversation_summaries WHERE owner_identity_id = 'alice-id' AND conversation_id = 'dm:did:example:bob'",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            summary,
+            (
+                1,
+                "msg-1".to_owned(),
+                "second".to_owned(),
+                "2026-05-24T00:00:01Z".to_owned()
+            )
+        );
     }
 
     #[test]
@@ -1631,6 +1755,24 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             .unwrap();
         assert_eq!(conversation_id, scoped_conversation_id);
         assert_eq!(message_count, 2);
+        let (summary_conversation_id, summary_count): (String, i64) = db
+            .query_row(
+                "SELECT conversation_id, message_count FROM conversation_summaries WHERE owner_identity_id = 'owner-id'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(summary_conversation_id, scoped_conversation_id);
+        assert_eq!(summary_count, 2);
+    }
+
+    fn summary_unread(db: &Connection, owner_identity_id: &str, conversation_id: &str) -> i64 {
+        db.query_row(
+            "SELECT unread_count FROM conversation_summaries WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+            (owner_identity_id, conversation_id),
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     fn is_read(db: &Connection, owner_identity_id: &str) -> i64 {

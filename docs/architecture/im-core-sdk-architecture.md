@@ -158,3 +158,22 @@ Stable API references live under `docs/api/`:
 - `docs/api/im-core-interface/*`
 
 These files describe the SDK public surface and interface-level contracts. They should only change when the API changes; architecture-only cleanup should update this document and related feature docs instead.
+
+## 11. Local Conversation Summary Projection
+
+The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries:
+
+- primary key: `(owner_identity_id, conversation_id)`;
+- hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
+- unread index: `idx_conversation_summaries_owner_unread_last(owner_identity_id, unread_count, last_message_at DESC)`.
+
+`list_conversations_for_owner_identity()` reads `conversation_summaries` by owner and joins only the stored `last_message_id` back to `messages`. The legacy `threads` SQLite view remains available for debugging and compatibility, but it is no longer the chat-list hot path.
+
+Summary rows are derived state and may be rebuilt from `messages`:
+
+- schema open creates the table/indexes and backfills v17 stores when summaries are absent;
+- message upsert batches collect touched `(owner_identity_id, conversation_id)` keys and rebuild each touched summary once;
+- mark-read collects affected conversations before updating `messages.is_read`, then rebuilds their unread counters;
+- legacy DID-to-peer-scope direct merges rebuild both old and new conversation keys.
+
+Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.

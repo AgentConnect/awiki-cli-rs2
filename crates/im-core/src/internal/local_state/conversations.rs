@@ -30,6 +30,7 @@ pub(crate) fn list_conversations_for_owner_identity(
     query: &crate::messages::ConversationQuery,
 ) -> crate::ImResult<Vec<ConversationRecord>> {
     let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
+    super::conversation_summaries::ensure_owner_backfilled(connection, &owner_identity_id)?;
     let limit = page_limit(query.limit, 50) + 1;
     let mut statement = String::from(
         r#"
@@ -62,20 +63,10 @@ SELECT
     m.metadata,
     m.mentions_current_user,
     m.credential_name
-FROM threads t
+FROM conversation_summaries t
 LEFT JOIN messages m
   ON m.owner_identity_id = t.owner_identity_id
- AND COALESCE(NULLIF(m.conversation_id, ''), m.thread_id) = t.conversation_id
- AND COALESCE(m.sent_at, m.stored_at) = t.last_message_at
- AND m.msg_id = (
-     SELECT m2.msg_id
-     FROM messages m2
-     WHERE m2.owner_identity_id = t.owner_identity_id
-       AND COALESCE(NULLIF(m2.conversation_id, ''), m2.thread_id) = t.conversation_id
-       AND COALESCE(m2.sent_at, m2.stored_at) = t.last_message_at
-     ORDER BY m2.msg_id DESC
-     LIMIT 1
- )
+ AND m.msg_id = t.last_message_id
 WHERE t.owner_identity_id = ?1"#,
     );
     if query.unread_only {
@@ -99,23 +90,27 @@ LIMIT ?2"#,
     let rows = statement
         .query_map((&owner_identity_id, limit), |row| {
             let msg_id = row.get::<_, Option<String>>("msg_id")?.unwrap_or_default();
+            let owner_identity_id = row
+                .get::<_, Option<String>>("owner_identity_id")?
+                .unwrap_or_default();
+            let owner_did = row
+                .get::<_, Option<String>>("owner_did")?
+                .unwrap_or_default();
+            let conversation_id = row
+                .get::<_, Option<String>>("conversation_id")?
+                .unwrap_or_default();
+            let thread_id = row
+                .get::<_, Option<String>>("thread_id")?
+                .unwrap_or_default();
             let last_message = if msg_id.trim().is_empty() {
                 None
             } else {
                 Some(super::messages::MessageRecord {
                     msg_id,
-                    owner_identity_id: row
-                        .get::<_, Option<String>>("owner_identity_id")?
-                        .unwrap_or_default(),
-                    owner_did: row
-                        .get::<_, Option<String>>("owner_did")?
-                        .unwrap_or_default(),
-                    conversation_id: row
-                        .get::<_, Option<String>>("conversation_id")?
-                        .unwrap_or_default(),
-                    thread_id: row
-                        .get::<_, Option<String>>("thread_id")?
-                        .unwrap_or_default(),
+                    owner_identity_id: owner_identity_id.clone(),
+                    owner_did: owner_did.clone(),
+                    conversation_id: conversation_id.clone(),
+                    thread_id: thread_id.clone(),
                     direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
                     sender_did: row
                         .get::<_, Option<String>>("sender_did")?
@@ -157,18 +152,10 @@ LIMIT ?2"#,
                 })
             };
             Ok(ConversationRecord {
-                owner_identity_id: row
-                    .get::<_, Option<String>>("owner_identity_id")?
-                    .unwrap_or_default(),
-                owner_did: row
-                    .get::<_, Option<String>>("owner_did")?
-                    .unwrap_or_default(),
-                conversation_id: row
-                    .get::<_, Option<String>>("conversation_id")?
-                    .unwrap_or_default(),
-                thread_id: row
-                    .get::<_, Option<String>>("thread_id")?
-                    .unwrap_or_default(),
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                thread_id,
                 message_count: row
                     .get::<_, Option<i64>>("message_count")?
                     .unwrap_or_default(),
@@ -729,6 +716,51 @@ VALUES (?1, ?2, ?3, ?4, ?4, 1, ?3, ?5,
             legacy_conversation_id,
             "dm:did:wba:anpclaw.com:zhuochengtest:e1_old",
         );
+    }
+
+    #[test]
+    fn local_state_conversations_query_uses_materialized_summary_index() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "direct-new",
+            "dm:did:example:bob",
+            0,
+            "did:example:bob",
+            "did:example:alice",
+            "",
+            "new",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        super::super::conversation_summaries::rebuild_owner(&db, "alice-id").unwrap();
+
+        let plan = db
+            .prepare(
+                r#"
+EXPLAIN QUERY PLAN
+SELECT t.owner_identity_id, t.conversation_id
+FROM conversation_summaries t
+WHERE t.owner_identity_id = ?1
+ORDER BY t.last_message_at DESC, t.conversation_id ASC
+LIMIT ?2"#,
+            )
+            .unwrap()
+            .query_map(("alice-id", 10_i64), |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+
+        assert!(plan.contains("conversation_summaries"), "{plan}");
+        assert!(
+            plan.contains("idx_conversation_summaries_owner_last"),
+            "{plan}"
+        );
+        assert!(!plan.contains("threads"), "{plan}");
     }
 
     fn seed_identity_message(
