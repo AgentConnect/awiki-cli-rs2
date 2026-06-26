@@ -3,8 +3,9 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     message::{
-        DartConversationPage, DartInboxHistoryOptions, DartMarkReadResult, DartMessagePage,
-        DartSendMessageResult, DartSendPayloadRequest, DartSendTextRequest, DartThreadRef,
+        DartConversationPage, DartInboxHistoryOptions, DartMarkReadResult,
+        DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult, DartSendPayloadRequest,
+        DartSendTextRequest, DartThreadRef,
     },
 };
 
@@ -101,6 +102,24 @@ pub async fn mark_read(
     inner
         .messages()
         .mark_read_async(ids)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn mark_thread_read(
+    client: &Arc<crate::api::client::DartImClient>,
+    thread: DartThreadRef,
+    max_message_ids: Option<u32>,
+) -> Result<DartMarkThreadReadResult, DartImError> {
+    let inner = client.clone_inner()?;
+    let request = im_core::messages::MarkThreadReadRequest {
+        thread: thread.try_into()?,
+        max_message_ids,
+    };
+    inner
+        .messages()
+        .mark_thread_read_async(request)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

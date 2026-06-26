@@ -432,6 +432,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw);
 
   @protected
+  DartMarkThreadReadResult dco_decode_dart_mark_thread_read_result(dynamic raw);
+
+  @protected
   DartMessage dco_decode_dart_message(dynamic raw);
 
   @protected
@@ -1135,6 +1138,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMarkReadResult sse_decode_dart_mark_read_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMarkThreadReadResult sse_decode_dart_mark_thread_read_result(
     SseDeserializer deserializer,
   );
 
@@ -2029,6 +2037,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_mark_read_result(
     DartMarkReadResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_mark_thread_read_result(
+    DartMarkThreadReadResult self,
     SseSerializer serializer,
   );
 

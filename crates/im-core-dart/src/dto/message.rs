@@ -158,3 +158,15 @@ pub struct DartMarkReadResult {
     pub message_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMarkThreadReadResult {
+    pub updated_count: u32,
+    pub message_ids: Vec<String>,
+    pub local_candidate_count: u32,
+    pub local_updated_count: u32,
+    pub remote_updated_count: u32,
+    pub remote_acknowledged: bool,
+    pub partial: bool,
+    pub warnings: Vec<String>,
+}

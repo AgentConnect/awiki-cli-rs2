@@ -281,3 +281,25 @@ class MarkReadResult {
   final List<String> messageIds;
   final List<String> warnings;
 }
+
+class MarkThreadReadResult {
+  const MarkThreadReadResult({
+    required this.updatedCount,
+    this.messageIds = const [],
+    required this.localCandidateCount,
+    required this.localUpdatedCount,
+    required this.remoteUpdatedCount,
+    required this.remoteAcknowledged,
+    required this.partial,
+    this.warnings = const [],
+  });
+
+  final int updatedCount;
+  final List<String> messageIds;
+  final int localCandidateCount;
+  final int localUpdatedCount;
+  final int remoteUpdatedCount;
+  final bool remoteAcknowledged;
+  final bool partial;
+  final List<String> warnings;
+}

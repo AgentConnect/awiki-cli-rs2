@@ -18,8 +18,8 @@ use crate::dto::{
         DartIdentitySummary, DartRecoverHandleResult,
     },
     message::{
-        DartConversation, DartConversationPage, DartMarkReadResult, DartMessage,
-        DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
+        DartConversation, DartConversationPage, DartMarkReadResult, DartMarkThreadReadResult,
+        DartMessage, DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
         DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
     },
     profile::DartUserProfile,
@@ -901,6 +901,25 @@ impl From<im_core::messages::MarkReadResult> for DartMarkReadResult {
                 .into_iter()
                 .map(|id| id.as_str().to_string())
                 .collect(),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::MarkThreadReadResult> for DartMarkThreadReadResult {
+    fn from(value: im_core::messages::MarkThreadReadResult) -> Self {
+        Self {
+            updated_count: value.updated_count,
+            message_ids: value
+                .message_ids
+                .into_iter()
+                .map(|id| id.as_str().to_string())
+                .collect(),
+            local_candidate_count: value.local_candidate_count,
+            local_updated_count: value.local_updated_count,
+            remote_updated_count: value.remote_updated_count,
+            remote_acknowledged: value.remote_acknowledged,
+            partial: value.partial,
             warnings: value.warnings,
         }
     }

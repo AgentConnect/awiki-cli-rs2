@@ -63,6 +63,16 @@ Future<DartMarkReadResult> markRead({
   messageIds: messageIds,
 );
 
+Future<DartMarkThreadReadResult> markThreadRead({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  int? maxMessageIds,
+}) => RustLib.instance.api.crateApiMessagesMarkThreadRead(
+  client: client,
+  thread: thread,
+  maxMessageIds: maxMessageIds,
+);
+
 Future<DartConversationPage> conversations({
   required ArcDartImClient client,
   required int limit,

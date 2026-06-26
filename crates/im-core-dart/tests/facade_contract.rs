@@ -16,6 +16,31 @@ fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
 }
 
 #[test]
+fn thread_mark_read_result_preserves_best_effort_state_for_dart() {
+    let core = im_core::messages::MarkThreadReadResult {
+        updated_count: 1,
+        message_ids: vec![im_core::ids::MessageId::parse("msg-1").expect("message id")],
+        local_candidate_count: 2,
+        local_updated_count: 1,
+        remote_updated_count: 0,
+        remote_acknowledged: false,
+        partial: true,
+        warnings: vec!["Remote mark-read failed".to_string()],
+    };
+
+    let dart: awiki_im_core::dto::message::DartMarkThreadReadResult = core.into();
+
+    assert_eq!(dart.updated_count, 1);
+    assert_eq!(dart.message_ids, vec!["msg-1"]);
+    assert_eq!(dart.local_candidate_count, 2);
+    assert_eq!(dart.local_updated_count, 1);
+    assert_eq!(dart.remote_updated_count, 0);
+    assert!(!dart.remote_acknowledged);
+    assert!(dart.partial);
+    assert_eq!(dart.warnings, vec!["Remote mark-read failed"]);
+}
+
+#[test]
 fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
     let request = awiki_im_core::dto::attachment::DartAttachmentSendRequest {
         target: awiki_im_core::dto::message::DartMessageTarget::Direct {

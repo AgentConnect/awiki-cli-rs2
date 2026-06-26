@@ -22,3 +22,15 @@ Realtime is exposed as transport-agnostic Dart streams:
 - `AwikiImClient.realtime.start/stop/status/capability`
 
 Apps should not depend on WebSocket URLs, raw frames, bearer headers, ping/pong, or reconnect internals.
+
+Thread-level mark-read is exposed through the message API:
+
+```dart
+final result = await client.messages.markThreadRead(
+  const ThreadRef.direct('did:example:bob'),
+  maxMessageIds: 100,
+);
+```
+
+`markThreadRead` delegates unread-id lookup to `im-core` local state. App code
+must not page through `history()` just to discover unread message ids.

@@ -1,5 +1,6 @@
 import 'models/config.dart';
 import 'models/identity.dart';
+import 'models/message.dart';
 import 'models/secure.dart';
 
 UnsupportedError _unsupported() => UnsupportedError(
@@ -52,9 +53,22 @@ class AwikiImCore {
 }
 
 class AwikiImClient {
+  MessageApi get messages => MessageApi._();
+
   SecureApi get secure => SecureApi._();
 
   Future<void> dispose() async {}
+}
+
+class MessageApi {
+  MessageApi._();
+
+  Future<MarkThreadReadResult> markThreadRead(
+    ThreadRef thread, {
+    int? maxMessageIds,
+  }) async {
+    throw _unsupported();
+  }
 }
 
 class SecureApi {

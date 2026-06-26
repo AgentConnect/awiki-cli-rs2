@@ -183,6 +183,53 @@ class DartMarkReadResult {
           warnings == other.warnings;
 }
 
+class DartMarkThreadReadResult {
+  final int updatedCount;
+  final List<String> messageIds;
+  final int localCandidateCount;
+  final int localUpdatedCount;
+  final int remoteUpdatedCount;
+  final bool remoteAcknowledged;
+  final bool partial;
+  final List<String> warnings;
+
+  const DartMarkThreadReadResult({
+    required this.updatedCount,
+    required this.messageIds,
+    required this.localCandidateCount,
+    required this.localUpdatedCount,
+    required this.remoteUpdatedCount,
+    required this.remoteAcknowledged,
+    required this.partial,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      updatedCount.hashCode ^
+      messageIds.hashCode ^
+      localCandidateCount.hashCode ^
+      localUpdatedCount.hashCode ^
+      remoteUpdatedCount.hashCode ^
+      remoteAcknowledged.hashCode ^
+      partial.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMarkThreadReadResult &&
+          runtimeType == other.runtimeType &&
+          updatedCount == other.updatedCount &&
+          messageIds == other.messageIds &&
+          localCandidateCount == other.localCandidateCount &&
+          localUpdatedCount == other.localUpdatedCount &&
+          remoteUpdatedCount == other.remoteUpdatedCount &&
+          remoteAcknowledged == other.remoteAcknowledged &&
+          partial == other.partial &&
+          warnings == other.warnings;
+}
+
 class DartMessage {
   final String id;
   final String threadKind;

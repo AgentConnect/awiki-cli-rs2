@@ -25,6 +25,29 @@ void main() {
     expect(err.capability, 'realtime-runner');
   });
 
+  test('thread mark-read model exposes best-effort state', () {
+    const result = MarkThreadReadResult(
+      updatedCount: 1,
+      messageIds: ['msg-1'],
+      localCandidateCount: 2,
+      localUpdatedCount: 1,
+      remoteUpdatedCount: 0,
+      remoteAcknowledged: false,
+      partial: true,
+      warnings: ['Remote mark-read failed'],
+    );
+
+    expect(result.updatedCount, 1);
+    expect(result.localCandidateCount, 2);
+    expect(result.remoteAcknowledged, isFalse);
+    expect(result.partial, isTrue);
+    expect(result.warnings.single, contains('Remote'));
+  });
+
+  test('thread mark-read API shape remains app-usable', () {
+    expect(_markThreadReadApiShape, isA<Function>());
+  });
+
   test('realtime options and event models stay transport agnostic', () {
     const options = RealtimeOptions();
     expect(options.reconnect, RealtimeReconnectMode.disabled);
@@ -140,4 +163,11 @@ void main() {
     );
     expect(outbox.status, SecureOutboxStatus.failed);
   });
+}
+
+Future<MarkThreadReadResult> _markThreadReadApiShape(MessageApi api) {
+  return api.markThreadRead(
+    const ThreadRef.direct('did:example:bob'),
+    maxMessageIds: 100,
+  );
 }

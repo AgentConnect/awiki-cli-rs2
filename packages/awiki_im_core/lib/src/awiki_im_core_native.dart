@@ -159,8 +159,9 @@ class AwikiImCore {
     return package._toModel();
   }
 
-  Future<DaemonSubkeyAuthorizationRevokeResult>
-  revokeDaemonSubkeyAuthorization(IdentitySelector selector) async {
+  Future<DaemonSubkeyAuthorizationRevokeResult> revokeDaemonSubkeyAuthorization(
+    IdentitySelector selector,
+  ) async {
     _ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_identity_api.revokeDaemonSubkeyAuthorization(
@@ -554,6 +555,21 @@ class MessageApi {
     final result = await _mapNativeErrors(
       () =>
           gen_messages.markRead(client: _client._inner, messageIds: messageIds),
+    );
+    return result._toModel();
+  }
+
+  Future<MarkThreadReadResult> markThreadRead(
+    ThreadRef thread, {
+    int? maxMessageIds,
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.markThreadRead(
+        client: _client._inner,
+        thread: thread._toGen(),
+        maxMessageIds: maxMessageIds,
+      ),
     );
     return result._toModel();
   }
@@ -1781,6 +1797,19 @@ extension on gen_message.DartMarkReadResult {
   MarkReadResult _toModel() => MarkReadResult(
     updatedCount: updatedCount,
     messageIds: messageIds,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartMarkThreadReadResult {
+  MarkThreadReadResult _toModel() => MarkThreadReadResult(
+    updatedCount: updatedCount,
+    messageIds: messageIds,
+    localCandidateCount: localCandidateCount,
+    localUpdatedCount: localUpdatedCount,
+    remoteUpdatedCount: remoteUpdatedCount,
+    remoteAcknowledged: remoteAcknowledged,
+    partial: partial,
     warnings: warnings,
   );
 }
