@@ -186,6 +186,82 @@ fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
 }
 
 #[test]
+fn messages_read_runtime_annotates_delegated_inbox_peer_scope_from_handle_lookup() {
+    let fixture = Fixture::new();
+    let delegated = fixture.write_delegated_identity();
+    let client = fixture.client();
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [{
+                    "id": "msg-plain-delegated-scope",
+                    "sender_did": "did:example:bob-new",
+                    "receiver_did": delegated.user_did,
+                    "content": "plain delegated scope",
+                    "content_type": "text/plain",
+                    "server_seq": 9
+                }],
+                "has_more": false
+            }),
+        },
+        StaticHandleDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                    inbox_owner_did: Some(delegated.user_did.clone()),
+                    inbox_auth_verification_method: Some(delegated.verification_method.clone()),
+                    inbox_auth_key_ref: Some(format!(
+                        "file:{}",
+                        delegated.private_key_path.display()
+                    )),
+                    inbox_auth: None,
+                }),
+            },
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let message = &result.page.items[0];
+    assert_eq!(
+        message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "peer_user_id")
+            .map(|attribute| attribute.value.as_str()),
+        Some("user-bob")
+    );
+    assert_eq!(
+        message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "peer_full_handle")
+            .map(|attribute| attribute.value.as_str()),
+        Some("bob.anpclaw.com")
+    );
+    assert_eq!(
+        message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "peer_current_did")
+            .map(|attribute| attribute.value.as_str()),
+        Some("did:example:bob-new")
+    );
+}
+
+#[test]
 fn messages_read_runtime_projects_direct_thread_as_current_identity_peer() {
     let fixture = Fixture::new();
     let client = fixture.client();
@@ -1728,18 +1804,24 @@ impl AsyncRpcTransport for NoopDirectoryTransport {
 struct StaticHandleDirectoryTransport;
 
 impl RpcTransport for StaticHandleDirectoryTransport {
-    fn rpc(&mut self, _endpoint: &str, _method: &str, params: Value) -> crate::ImResult<Value> {
+    fn rpc(&mut self, _endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         let did = params
             .get("did")
             .and_then(Value::as_str)
             .unwrap_or("did:example:bob-new");
+        if method == "lookup" {
+            return Ok(json!({
+                "handle": "bob",
+                "full_handle": "bob.anpclaw.com",
+                "did": did,
+                "domain": "anpclaw.com",
+                "status": "active",
+                "user_id": "user-bob"
+            }));
+        }
         Ok(json!({
-            "handle": "bob",
-            "full_handle": "bob.anpclaw.com",
             "did": did,
-            "domain": "anpclaw.com",
-            "status": "active",
-            "user_id": "user-bob"
+            "service_endpoints": []
         }))
     }
 }

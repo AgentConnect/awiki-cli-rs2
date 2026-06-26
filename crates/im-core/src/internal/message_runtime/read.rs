@@ -967,18 +967,37 @@ fn resolve_direct_peer_scope(
     directory_transport: &mut impl RpcTransport,
     peer_did: &str,
 ) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    lookup_direct_peer_scope(directory_transport, peer_did).or_else(|| {
+        let call =
+            crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did)
+                .ok()?;
+        let raw = directory_transport
+            .rpc(call.endpoint, call.method, call.params)
+            .ok()?;
+        direct_peer_scope_from_profile(raw)
+    })
+}
+
+fn lookup_direct_peer_scope(
+    directory_transport: &mut impl RpcTransport,
+    peer_did: &str,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
     let call =
-        crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did).ok()?;
+        crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
+            .ok()?;
     let raw = directory_transport
         .rpc(call.endpoint, call.method, call.params)
         .ok()?;
-    direct_peer_scope_from_profile(raw)
+    direct_peer_scope_from_handle_lookup(raw)
 }
 
 async fn resolve_direct_peer_scope_async(
     directory_transport: &mut impl AsyncRpcTransport,
     peer_did: &str,
 ) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    if let Some(scope) = lookup_direct_peer_scope_async(directory_transport, peer_did).await {
+        return Some(scope);
+    }
     let call =
         crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(peer_did).ok()?;
     let raw = directory_transport
@@ -986,6 +1005,31 @@ async fn resolve_direct_peer_scope_async(
         .await
         .ok()?;
     direct_peer_scope_from_profile(raw)
+}
+
+async fn lookup_direct_peer_scope_async(
+    directory_transport: &mut impl AsyncRpcTransport,
+    peer_did: &str,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let call =
+        crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(peer_did)
+            .ok()?;
+    let raw = directory_transport
+        .rpc(call.endpoint, call.method, call.params)
+        .await
+        .ok()?;
+    direct_peer_scope_from_handle_lookup(raw)
+}
+
+fn direct_peer_scope_from_handle_lookup(
+    raw: Value,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str().to_owned(),
+    )
+    .ok()
 }
 
 fn direct_peer_scope_from_profile(
