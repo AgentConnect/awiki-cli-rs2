@@ -1,4 +1,3 @@
-use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -554,7 +553,7 @@ fn apply_codex_probe_env(command: &mut Command, config: &CodexDriverConfig) {
 }
 
 fn apply_minimal_process_env(command: &mut Command) {
-    if let Some(path) = codex_child_path() {
+    if let Some(path) = crate::cli_runtime_env::cli_child_path() {
         command.env("PATH", path);
     } else if let Some(value) = std::env::var_os("PATH") {
         command.env("PATH", value);
@@ -568,98 +567,11 @@ fn apply_minimal_process_env(command: &mut Command) {
 }
 
 fn default_codex_binary_path() -> PathBuf {
-    codex_child_path()
-        .and_then(|path| find_executable_on_path(DEFAULT_CODEX_BINARY, &path))
+    crate::cli_runtime_env::cli_child_path()
+        .and_then(|path| {
+            crate::cli_runtime_env::find_executable_on_path(DEFAULT_CODEX_BINARY, &path)
+        })
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CODEX_BINARY))
-}
-
-fn codex_child_path() -> Option<OsString> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    build_codex_child_path(home.as_deref(), std::env::var_os("PATH").as_deref())
-}
-
-fn build_codex_child_path(home: Option<&Path>, current_path: Option<&OsStr>) -> Option<OsString> {
-    let mut paths = Vec::<PathBuf>::new();
-    if let Some(home) = home {
-        push_existing_dir(&mut paths, home.join(".local").join("bin"));
-        push_existing_dir(&mut paths, home.join(".npm-global").join("bin"));
-        push_existing_dir(&mut paths, home.join(".nvm").join("current").join("bin"));
-        push_nvm_node_bins(&mut paths, home);
-    }
-    push_existing_dir(&mut paths, PathBuf::from("/opt/homebrew/bin"));
-    push_existing_dir(&mut paths, PathBuf::from("/usr/local/bin"));
-    if let Some(current_path) = current_path {
-        for path in std::env::split_paths(current_path) {
-            push_path(&mut paths, path);
-        }
-    }
-    if paths.is_empty() {
-        return None;
-    }
-    std::env::join_paths(paths).ok()
-}
-
-fn push_nvm_node_bins(paths: &mut Vec<PathBuf>, home: &Path) {
-    let versions_dir = home.join(".nvm").join("versions").join("node");
-    let Ok(entries) = std::fs::read_dir(versions_dir) else {
-        return;
-    };
-    let mut bins = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join("bin"))
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    bins.sort();
-    bins.reverse();
-    for bin in bins {
-        push_path(paths, bin);
-    }
-}
-
-fn push_existing_dir(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.is_dir() {
-        push_path(paths, path);
-    }
-}
-
-fn push_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.as_os_str().is_empty() || paths.iter().any(|existing| existing == &path) {
-        return;
-    }
-    paths.push(path);
-}
-
-fn find_executable_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn codex_child_path_adds_common_user_cli_bins_before_service_path() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        let v18 = home.join(".nvm/versions/node/v18.1.0/bin");
-        let v24 = home.join(".nvm/versions/node/v24.12.0/bin");
-        let local_bin = home.join(".local/bin");
-        std::fs::create_dir_all(&v18).unwrap();
-        std::fs::create_dir_all(&v24).unwrap();
-        std::fs::create_dir_all(&local_bin).unwrap();
-
-        let path = build_codex_child_path(Some(&home), Some(OsStr::new("/usr/bin:/bin")))
-            .expect("path should be built");
-        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
-
-        assert_eq!(entries[0], local_bin);
-        assert_eq!(entries[1], v24);
-        assert_eq!(entries[2], v18);
-        assert!(entries.contains(&PathBuf::from("/usr/bin")));
-        assert!(entries.contains(&PathBuf::from("/bin")));
-    }
 }
 
 pub fn codex_native_session_id_from_stdout_jsonl(stdout: &[u8]) -> Option<String> {

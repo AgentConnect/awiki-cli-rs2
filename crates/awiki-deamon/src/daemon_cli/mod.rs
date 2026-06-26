@@ -208,6 +208,8 @@ pub fn setup_daemon_agent_from_token(
     if options.controller_did.trim().is_empty() {
         bail!("--controller-did is required");
     }
+    crate::cli_runtime_env::capture_and_write(config)
+        .context("capture daemon CLI runtime environment")?;
     let registration_client =
         UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
     let agent = setup_daemon_agent(
@@ -240,6 +242,8 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
     config.validate()?;
     config.ensure_state_layout()?;
     config.write_persistent_config()?;
+    crate::cli_runtime_env::capture_and_write(&config)
+        .context("capture daemon CLI runtime environment")?;
     if !options.foreground && !options.no_service {
         require_service_state_root_is_product(&config)?;
     }

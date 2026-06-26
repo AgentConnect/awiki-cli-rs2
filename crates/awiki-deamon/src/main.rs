@@ -357,6 +357,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<DaemonCommand> {
         "runtime-list" => Ok(DaemonCommand::RuntimeList {
             state_root: required_state_root(state_root)?,
         }),
+        "cli-env-capture" => Ok(DaemonCommand::CliEnvCapture {
+            state_root: state_root.unwrap_or(DaemonConfig::default_product_state_root()?),
+        }),
         "archive-daemon-finalize" => Ok(DaemonCommand::ArchiveDaemonFinalize {
             state_root: required_state_root(state_root)?,
             archive_id: archive_id.context("--archive-id is required")?,
@@ -413,7 +416,7 @@ fn required_state_root(state_root: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 fn usage_error<T>() -> Result<T> {
-    bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|service-uninstall|agent-list|agent-status|runtime-list|archive-daemon-finalize|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [--agent-did <did>] [archive-daemon-finalize: --archive-id <id>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
+    bail!("usage: awiki-deamon <install|foreground|init-state|status|service-status|service-start|service-stop|service-restart|service-uninstall|agent-list|agent-status|runtime-list|cli-env-capture|archive-daemon-finalize|setup-daemon-agent> [--state-root <path>] [install: --token <token> --base-url <url> --download-base-url <url> --foreground --no-service --print-json] [--agent-did <did>] [archive-daemon-finalize: --archive-id <id>] [setup-daemon-agent: --handle <handle> --controller-did <did> --registration-token <token>] [foreground: --ready-file <path> --max-runtime-ms <ms> --max-processed-messages <n> --poll-interval-ms <ms> --agent-jwt-token <token>]")
 }
 
 fn self_check_usage_error<T>() -> Result<T> {

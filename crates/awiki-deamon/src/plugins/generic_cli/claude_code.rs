@@ -96,7 +96,7 @@ impl ClaudeCodeDriverConfig {
             .binary_path
             .clone()
             .or_else(|| string_field(config, "binary_path").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY));
+            .unwrap_or_else(default_claude_code_binary_path);
         let sandbox = string_field(config, "sandbox")
             .or_else(|| profile.default_sandbox.clone())
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
@@ -589,7 +589,21 @@ fn apply_claude_code_base_env(command: &mut Command) {
             command.env(key, value);
         }
     }
-    apply_runtime_env_passthrough(command, &[]);
+    if let Some(path) = crate::cli_runtime_env::cli_child_path() {
+        command.env("PATH", path);
+    }
+    apply_runtime_env_passthrough(
+        command,
+        crate::cli_runtime_env::DEFAULT_CLI_ENV_PASSTHROUGH_SELECTORS,
+    );
+}
+
+fn default_claude_code_binary_path() -> PathBuf {
+    crate::cli_runtime_env::cli_child_path()
+        .and_then(|path| {
+            crate::cli_runtime_env::find_executable_on_path(DEFAULT_CLAUDE_CODE_BINARY, &path)
+        })
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY))
 }
 
 pub fn claude_code_native_session_id_from_stream_json(stdout: &[u8]) -> Option<String> {
