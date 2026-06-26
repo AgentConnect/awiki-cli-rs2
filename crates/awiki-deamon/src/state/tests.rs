@@ -404,6 +404,133 @@ fn cli_route_message_queue_claim_retry_and_dead_letter_are_state_only() {
 }
 
 #[test]
+fn cli_route_message_queue_running_recovers_to_due_queued() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    let now = current_time_millis().unwrap();
+    let item = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &route,
+            "msg_recover_running_queue",
+            Some("task_msg_recover_running_queue"),
+            Some("run_task_msg_recover_running_queue"),
+            now + 60_000,
+        ))
+        .unwrap();
+    state
+        .claim_cli_route_message_queue_item(&item.queue_id, "run_replay_stale")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        state
+            .recover_stale_cli_route_message_queue_running(i64::MAX)
+            .unwrap(),
+        1
+    );
+    let recovered = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.status, "queued");
+    assert_eq!(recovered.run_id.as_deref(), Some("run_replay_stale"));
+    assert_eq!(recovered.attempts, 1);
+    assert!(recovered.next_attempt_at_ms <= current_time_millis().unwrap());
+    assert_eq!(
+        recovered.last_error_code.as_deref(),
+        Some("recovered_stale_running")
+    );
+}
+
+#[test]
+fn cli_route_session_running_recovers_lock_to_active_or_queued() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let active_route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:bob",
+        ))
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &active_route.route_key,
+            "run_stale_active",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+
+    let queued_route = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:did:human:carol",
+        ))
+        .unwrap();
+    let item = state
+        .enqueue_cli_route_message_reference(cli_route_queue_reference(
+            &queued_route,
+            "msg_recover_session_queue",
+            Some("task_msg_recover_session_queue"),
+            Some("run_task_msg_recover_session_queue"),
+            current_time_millis().unwrap(),
+        ))
+        .unwrap();
+    assert!(state
+        .try_acquire_cli_route_session_lease(
+            &queued_route.route_key,
+            "run_stale_queued",
+            "test",
+            current_time_millis().unwrap() + 60_000,
+        )
+        .unwrap());
+
+    assert_eq!(
+        state
+            .recover_stale_cli_route_sessions_running(i64::MAX)
+            .unwrap(),
+        2
+    );
+    let active_recovered = state
+        .load_cli_route_session(&active_route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(active_recovered.status, "active");
+    assert_eq!(active_recovered.lock_run_id, None);
+    assert_eq!(
+        active_recovered.last_error_code.as_deref(),
+        Some("recovered_stale_route_session")
+    );
+
+    let queued_recovered = state
+        .load_cli_route_session(&queued_route.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queued_recovered.status, "queued");
+    assert_eq!(queued_recovered.lock_run_id, None);
+    assert_eq!(
+        state
+            .load_cli_route_message_queue_item(&item.queue_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "queued"
+    );
+}
+
+#[test]
 fn cli_route_message_queue_cancel_helpers_cancel_pending_items() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

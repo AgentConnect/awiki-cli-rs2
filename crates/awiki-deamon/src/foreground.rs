@@ -88,6 +88,8 @@ use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
 use runtime_support::UdsTestRuntimePlugin;
 use state_root_owner::StateRootOwnerGuard;
 
+const GENERIC_CLI_ROUTE_RUNNING_STALE_MS: i64 = 10 * 60 * 1000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
     pub state_root: PathBuf,
@@ -157,6 +159,23 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             None,
             json!({
                 "recovered_count": recovered_runtime_retries,
+            }),
+        )?;
+    }
+    let recovered_cli_route_queue =
+        state.recover_stale_cli_route_message_queue_running(startup_recovery_cutoff)?;
+    let recovered_cli_route_sessions =
+        state.recover_stale_cli_route_sessions_running(startup_recovery_cutoff)?;
+    if recovered_cli_route_queue > 0 || recovered_cli_route_sessions > 0 {
+        state.insert_audit_event_json(
+            "generic_cli.route_runtime.recovered",
+            None,
+            None,
+            None,
+            None,
+            json!({
+                "recovered_queue_count": recovered_cli_route_queue,
+                "recovered_session_count": recovered_cli_route_sessions,
             }),
         )?;
     }
@@ -866,7 +885,11 @@ fn drain_cli_route_message_queue_once(
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
 ) -> Result<usize> {
-    let items = state.list_due_cli_route_message_queue_fair(current_time_millis()?, 10)?;
+    let now = current_time_millis()?;
+    state.recover_stale_cli_route_runtime_state(
+        now.saturating_sub(GENERIC_CLI_ROUTE_RUNNING_STALE_MS),
+    )?;
+    let items = state.list_due_cli_route_message_queue_fair(now, 10)?;
     let mut processed = 0usize;
     for item in items {
         let replay_run_id = format!("run_replay_{}_{}", item.queue_id, item.attempts + 1);

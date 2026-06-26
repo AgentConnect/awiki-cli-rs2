@@ -89,6 +89,9 @@ pub(crate) fn configure(connection: &rusqlite::Connection) -> crate::ImResult<()
     connection
         .pragma_update(None, "busy_timeout", 5000)
         .map_err(local_state_unavailable)?;
+    connection
+        .pragma_update(None, "mmap_size", 0)
+        .map_err(local_state_unavailable)?;
     Ok(())
 }
 

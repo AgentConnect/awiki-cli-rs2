@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
@@ -25,13 +27,18 @@ use crate::{DaemonConfig, ImCoreAdapter};
 pub const IDLE_HEARTBEAT_MS: i64 = 5 * 60 * 1000;
 pub const ACTIVE_HEARTBEAT_MS: i64 = 30 * 1000;
 pub const APP_ATTENTION_WINDOW_MS: i64 = 2 * 60 * 1000;
+pub const LATEST_STATUS_CHECK_MS: i64 = 10 * 1000;
+pub const RELEASE_STATUS_CHECK_MS: i64 = 5 * 60 * 1000;
 const GENERIC_CLI_SETUP_PROBE_TTL_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatScheduler {
     last_control_emit_at_ms: Option<i64>,
-    last_user_service_write_at_ms: Option<i64>,
-    last_status_signature: Option<String>,
+    last_latest_check_at_ms: Option<i64>,
+    last_release_check_at_ms: Option<i64>,
+    last_release_status: Option<DaemonReleaseStatus>,
+    last_user_service_write_at_ms_by_daemon: BTreeMap<String, i64>,
+    last_status_signature_by_daemon: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +52,28 @@ impl HeartbeatScheduler {
     pub fn new() -> Self {
         Self {
             last_control_emit_at_ms: None,
-            last_user_service_write_at_ms: None,
-            last_status_signature: None,
+            last_latest_check_at_ms: None,
+            last_release_check_at_ms: None,
+            last_release_status: None,
+            last_user_service_write_at_ms_by_daemon: BTreeMap::new(),
+            last_status_signature_by_daemon: BTreeMap::new(),
+        }
+    }
+
+    fn release_status(&mut self, config: &DaemonConfig, now: i64) -> DaemonReleaseStatus {
+        let release_due = self
+            .last_release_check_at_ms
+            .map(|last| now.saturating_sub(last) >= RELEASE_STATUS_CHECK_MS)
+            .unwrap_or(true);
+        if release_due || self.last_release_status.is_none() {
+            let release = check_release_status(config);
+            self.last_release_check_at_ms = Some(now);
+            self.last_release_status = Some(release.clone());
+            release
+        } else {
+            self.last_release_status
+                .clone()
+                .unwrap_or_else(|| check_release_status(config))
         }
     }
 
@@ -67,11 +94,15 @@ impl HeartbeatScheduler {
         } else {
             IDLE_HEARTBEAT_MS
         };
-        let due = self
+        let control_due = self
             .last_control_emit_at_ms
             .map(|last| now.saturating_sub(last) >= interval)
             .unwrap_or(true);
-        if !due {
+        let latest_check_due = self
+            .last_latest_check_at_ms
+            .map(|last| now.saturating_sub(last) >= LATEST_STATUS_CHECK_MS)
+            .unwrap_or(true);
+        if !control_due && !latest_check_due {
             return Ok(HeartbeatOutcome {
                 emitted_control: false,
                 wrote_user_service: false,
@@ -87,36 +118,52 @@ impl HeartbeatScheduler {
         let mut emitted = false;
         let mut wrote_latest = false;
         for daemon in daemon_agents {
-            let release = check_release_status(config);
+            let release = self.release_status(config, now);
             reconcile_daemon_upgrade_state(state, &daemon, &release)?;
-            if let Err(error) =
-                emit_daemon_heartbeat(config, state, im_core, outbox, &daemon, &release)
-            {
-                record_status_error(
-                    state,
-                    &daemon,
-                    "daemon.status.heartbeat.control_failed",
-                    &error.to_string(),
-                )?;
-            } else {
-                emitted = true;
+            if control_due {
+                if let Err(error) =
+                    emit_daemon_heartbeat(config, state, im_core, outbox, &daemon, &release)
+                {
+                    record_status_error(
+                        state,
+                        &daemon,
+                        "daemon.status.heartbeat.control_failed",
+                        &error.to_string(),
+                    )?;
+                } else {
+                    emitted = true;
+                }
             }
 
+            if !latest_check_due {
+                continue;
+            }
             let latest_items =
                 latest_status_items_with_release(config, state, &daemon, now, &release)?;
             let signature = latest_signature(&latest_items);
-            let should_write_latest = !active
+            let signature_changed = self
+                .last_status_signature_by_daemon
+                .get(&daemon.agent_did)
+                .map(|last| last != &signature)
+                .unwrap_or(true);
+            let write_interval_due = self
+                .last_user_service_write_at_ms_by_daemon
+                .get(&daemon.agent_did)
+                .map(|last| now.saturating_sub(*last) >= interval)
+                .unwrap_or(true);
+            let should_write_latest = signature_changed
                 || self
-                    .last_status_signature
-                    .as_deref()
-                    .map(|last| last != signature)
-                    .unwrap_or(true)
-                || self.last_user_service_write_at_ms.is_none();
+                    .last_user_service_write_at_ms_by_daemon
+                    .get(&daemon.agent_did)
+                    .is_none()
+                || write_interval_due;
             if should_write_latest {
                 match update_user_service_latest(config, state, &daemon, latest_items) {
                     Ok(()) => {
-                        self.last_user_service_write_at_ms = Some(now);
-                        self.last_status_signature = Some(signature);
+                        self.last_user_service_write_at_ms_by_daemon
+                            .insert(daemon.agent_did.clone(), now);
+                        self.last_status_signature_by_daemon
+                            .insert(daemon.agent_did.clone(), signature);
                         wrote_latest = true;
                     }
                     Err(error) => {
@@ -130,7 +177,12 @@ impl HeartbeatScheduler {
                 }
             }
         }
-        self.last_control_emit_at_ms = Some(now);
+        if control_due {
+            self.last_control_emit_at_ms = Some(now);
+        }
+        if latest_check_due {
+            self.last_latest_check_at_ms = Some(now);
+        }
         Ok(HeartbeatOutcome {
             emitted_control: emitted,
             wrote_user_service: wrote_latest,
@@ -1773,15 +1825,18 @@ fn latest_signature(items: &[AgentLatestStatusUpdateItem]) -> String {
     items
         .iter()
         .map(|item| {
+            let diagnostics = serde_json::to_string(&item.diagnostics_summary)
+                .unwrap_or_else(|_| "diagnostics_unavailable".to_string());
             format!(
-                "{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}",
                 item.agent_did,
                 item.status,
                 item.version.as_deref().unwrap_or_default(),
                 item.latest_version.as_deref().unwrap_or_default(),
                 item.needs_upgrade,
                 item.needs_config,
-                item.last_error_code.as_deref().unwrap_or_default()
+                item.last_error_code.as_deref().unwrap_or_default(),
+                diagnostics
             )
         })
         .collect::<Vec<_>>()
@@ -2320,6 +2375,52 @@ mod tests {
         assert!(!dump.contains("/home/"));
         assert!(!dump.contains("/tmp/"));
         assert!(!dump.contains(root.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn latest_signature_changes_when_runtime_diagnostics_change() {
+        let running = AgentLatestStatusUpdateItem {
+            agent_did: "did:agent:codex".to_string(),
+            agent_kind: AgentKind::Runtime,
+            status: "ready".to_string(),
+            last_seen_at: Some("2026-01-01T00:00:00Z".to_string()),
+            version: None,
+            latest_version: None,
+            min_supported_version: None,
+            platform: None,
+            service: None,
+            needs_upgrade: false,
+            needs_config: false,
+            last_error_code: None,
+            last_error_summary: None,
+            diagnostics_summary: json!({
+                "config_summary": {
+                    "runtime_card": {
+                        "status_schema_version": 1,
+                        "runtime_family": "generic-cli",
+                        "lifecycle_state": "running",
+                        "running_count": 1,
+                        "contains_user_content": false,
+                        "contains_provider_auth_material": false
+                    }
+                }
+            }),
+        };
+        let mut created = running.clone();
+        created.diagnostics_summary = json!({
+            "config_summary": {
+                "runtime_card": {
+                    "status_schema_version": 1,
+                    "runtime_family": "generic-cli",
+                    "lifecycle_state": "created",
+                    "running_count": 0,
+                    "contains_user_content": false,
+                    "contains_provider_auth_material": false
+                }
+            }
+        });
+
+        assert_ne!(latest_signature(&[running]), latest_signature(&[created]));
     }
 
     #[test]

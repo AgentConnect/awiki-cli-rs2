@@ -496,6 +496,36 @@ WHERE status = ?3
         Ok(updated)
     }
 
+    pub fn recover_stale_cli_route_message_queue_running(
+        &self,
+        stale_before_ms: i64,
+    ) -> Result<usize> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_message_queue
+SET status = 'queued',
+    next_attempt_at_ms = ?1,
+    last_error_code = 'recovered_stale_running',
+    last_error_summary = 'Recovered stale route message queue item after daemon recovery',
+    updated_at_ms = ?1
+WHERE status = 'running'
+  AND updated_at_ms <= ?2
+  AND (
+      run_id IS NULL
+      OR NOT EXISTS (
+          SELECT 1
+          FROM runtime_run
+          WHERE runtime_run.run_id = cli_route_message_queue.run_id
+            AND runtime_run.status IN ('pending', 'running')
+      )
+  )
+"#,
+            rusqlite::params![current_time_millis()?, stale_before_ms],
+        )?;
+        Ok(updated)
+    }
+
     pub fn reschedule_runtime_retry_request(
         &self,
         retry_id: &str,
@@ -2365,6 +2395,55 @@ WHERE runtime_profile_id = ?1
             )?
         };
         Ok(count as usize)
+    }
+
+    pub fn recover_stale_cli_route_sessions_running(&self, stale_before_ms: i64) -> Result<usize> {
+        let mut connection = self.connection()?;
+        let now = current_time_millis()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
+            r#"
+UPDATE cli_route_sessions
+SET status = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM cli_route_message_queue AS queue
+            WHERE queue.route_key = cli_route_sessions.route_key
+              AND queue.status IN ('queued', 'running')
+        )
+        THEN 'queued'
+        ELSE 'active'
+    END,
+    lock_run_id = NULL,
+    lock_owner = NULL,
+    lock_expires_at_ms = NULL,
+    last_error_code = 'recovered_stale_route_session',
+    last_error_summary = 'Recovered stale route session lock after daemon recovery',
+    version = version + 1,
+    updated_at_ms = ?1
+WHERE status = 'running'
+  AND updated_at_ms <= ?2
+  AND (
+      lock_run_id IS NULL
+      OR NOT EXISTS (
+          SELECT 1
+          FROM runtime_run
+          WHERE runtime_run.run_id = cli_route_sessions.lock_run_id
+            AND runtime_run.status IN ('pending', 'running')
+      )
+  )
+"#,
+            rusqlite::params![now, stale_before_ms],
+        )?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    pub fn recover_stale_cli_route_runtime_state(&self, stale_before_ms: i64) -> Result<usize> {
+        let recovered_queue =
+            self.recover_stale_cli_route_message_queue_running(stale_before_ms)?;
+        let recovered_sessions = self.recover_stale_cli_route_sessions_running(stale_before_ms)?;
+        Ok(recovered_queue + recovered_sessions)
     }
 
     pub fn try_acquire_cli_route_session_lease(
