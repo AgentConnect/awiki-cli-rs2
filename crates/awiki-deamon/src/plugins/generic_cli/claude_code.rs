@@ -23,6 +23,8 @@ use super::{
 const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
 const DEFAULT_SANDBOX: &str = "danger-full-access";
 const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
+const DEFAULT_TOOLS: &str = "default";
+const DEFAULT_TRUSTED_HOST_ALLOWED_TOOLS: &str = "Bash,WebSearch,WebFetch";
 const DEFAULT_CLI_WRAPPER: &str = "library:awiki_deamon::cli_wrapper";
 const NATIVE_SESSION_SOURCE_STREAM_JSON: &str = "stream_json";
 const NATIVE_SESSION_SOURCE_GENERATED_SESSION_ID: &str = "generated_session_id";
@@ -34,6 +36,8 @@ pub struct ClaudeCodeDriverConfig {
     pub model: Option<String>,
     pub sandbox: String,
     pub permission_mode: String,
+    pub tools: Option<String>,
+    pub allowed_tools: Option<String>,
     pub setting_sources: Option<String>,
     pub strict_mcp_config: bool,
     pub bare: bool,
@@ -103,6 +107,22 @@ impl ClaudeCodeDriverConfig {
             .unwrap_or_else(|| DEFAULT_SANDBOX.to_string());
         let permission_mode = string_field(config, "permission_mode")
             .unwrap_or_else(|| permission_mode_for_sandbox(&sandbox).to_string());
+        let tools = string_field(config, "tools").or_else(|| {
+            if sandbox == "danger-full-access" {
+                Some(DEFAULT_TOOLS.to_string())
+            } else {
+                None
+            }
+        });
+        let allowed_tools = string_field(config, "allowed_tools")
+            .or_else(|| string_field(config, "allowedTools"))
+            .or_else(|| {
+                if sandbox == "danger-full-access" {
+                    Some(DEFAULT_TRUSTED_HOST_ALLOWED_TOOLS.to_string())
+                } else {
+                    None
+                }
+            });
         let output_dir = string_field(config, "output_dir").map(PathBuf::from);
         let setting_sources = string_field(config, "setting_sources").or_else(|| {
             if bool_field(config, "load_project_settings", false) {
@@ -119,6 +139,8 @@ impl ClaudeCodeDriverConfig {
                 .or_else(|| string_field(config, "model")),
             sandbox,
             permission_mode,
+            tools,
+            allowed_tools,
             setting_sources,
             strict_mcp_config: bool_field(config, "strict_mcp_config", true),
             bare: bool_field(config, "bare", false),
@@ -154,6 +176,12 @@ impl ClaudeCodeDriverConfig {
         }
         if self.sandbox == "read-only" && self.permission_mode != "plan" {
             bail!("claude-code read-only sandbox requires permission_mode=plan");
+        }
+        if self.tools.as_deref().is_some_and(str::is_empty) {
+            bail!("claude-code tools must not be empty");
+        }
+        if self.allowed_tools.as_deref().is_some_and(str::is_empty) {
+            bail!("claude-code allowed_tools must not be empty");
         }
         if let Some(setting_sources) = self.setting_sources.as_deref() {
             validate_setting_sources(setting_sources)?;
@@ -469,6 +497,14 @@ impl ClaudeCodeDriver {
             "--permission-mode".to_string(),
             self.config.permission_mode.clone(),
         ];
+        if let Some(tools) = self.config.tools.as_ref() {
+            args.push("--tools".to_string());
+            args.push(tools.clone());
+        }
+        if let Some(allowed_tools) = self.config.allowed_tools.as_ref() {
+            args.push("--allowed-tools".to_string());
+            args.push(allowed_tools.clone());
+        }
         if let Some(model) = self.config.model.as_ref() {
             args.push("--model".to_string());
             args.push(model.clone());
@@ -735,6 +771,8 @@ runtime_profile_id: {runtime_profile_id}
 workspace_instance_path: {workspace_root}
 sandbox: {sandbox}
 permission_mode: {permission_mode}
+tools: {tools}
+allowed_tools: {allowed_tools}
 permission_policy: trusted-host-full-access
 
 {invocation_context}
@@ -758,6 +796,8 @@ user_message:
         workspace_root = workspace_root.display(),
         sandbox = config.sandbox,
         permission_mode = config.permission_mode,
+        tools = config.tools.as_deref().unwrap_or("default"),
+        allowed_tools = config.allowed_tools.as_deref().unwrap_or("none"),
         invocation_context = invocation_context,
         message_id = invocation.message_id,
         task_id = invocation.task_id,

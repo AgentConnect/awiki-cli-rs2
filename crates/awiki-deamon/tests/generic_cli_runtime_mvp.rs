@@ -2969,6 +2969,8 @@ fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig
         model: Some("sonnet-test".to_string()),
         sandbox: "danger-full-access".to_string(),
         permission_mode: "bypassPermissions".to_string(),
+        tools: Some("default".to_string()),
+        allowed_tools: Some("Bash,WebSearch,WebFetch".to_string()),
         setting_sources: Some("user".to_string()),
         strict_mcp_config: true,
         bare: false,
@@ -3129,6 +3131,10 @@ fn claude_code_driver_command_builder_uses_trusted_host_print_contract() {
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--permission-mode", "bypassPermissions"]));
+    assert!(args.windows(2).any(|pair| pair == ["--tools", "default"]));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--allowed-tools", "Bash,WebSearch,WebFetch"]));
     assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     assert!(args
         .windows(2)
@@ -3263,6 +3269,11 @@ fn claude_code_driver_config_defaults_to_host_home_diagnostic() {
     assert_eq!(config.model.as_deref(), Some("model-from-profile"));
     assert_eq!(config.sandbox, "danger-full-access");
     assert_eq!(config.permission_mode, "bypassPermissions");
+    assert_eq!(config.tools.as_deref(), Some("default"));
+    assert_eq!(
+        config.allowed_tools.as_deref(),
+        Some("Bash,WebSearch,WebFetch")
+    );
     assert_eq!(config.setting_sources.as_deref(), Some("user"));
     assert!(config.strict_mcp_config);
     assert!(!config.no_session_persistence);
@@ -4219,6 +4230,8 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     assert!(first_args.contains("--verbose\n"));
     assert!(first_args.contains("--output-format\nstream-json\n"));
     assert!(first_args.contains("--permission-mode\nbypassPermissions\n"));
+    assert!(first_args.contains("--tools\ndefault\n"));
+    assert!(first_args.contains("--allowed-tools\nBash,WebSearch,WebFetch\n"));
     assert!(first_args.contains("--dangerously-skip-permissions\n"));
     assert!(first_args.contains("--session-id\n"));
     assert!(first_args.contains(&format!("{first_native_id}\n")));
@@ -4230,6 +4243,8 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
             .unwrap();
     assert!(first_prompt.contains("driver_id: claude-code"));
     assert!(first_prompt.contains("permission_policy: trusted-host-full-access"));
+    assert!(first_prompt.contains("tools: default"));
+    assert!(first_prompt.contains("allowed_tools: Bash,WebSearch,WebFetch"));
     assert!(first_prompt.contains("message_id: msg_claude_route_1"));
     assert!(first_prompt.contains("user_message:\nfirst claude route message"));
     assert!(!first_prompt.contains("rtok_"));
