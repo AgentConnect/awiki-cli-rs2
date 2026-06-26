@@ -112,6 +112,12 @@ enum LocalStateCommand {
         since_seq: Option<i64>,
         reply: oneshot::Sender<crate::ImResult<Vec<serde_json::Value>>>,
     },
+    ListDirectMessages {
+        owner_identity_id: String,
+        conversation_ids: Vec<String>,
+        limit: i64,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
     ListActiveGroupRefs {
         owner_identity_id: String,
         owner_did: String,
@@ -549,6 +555,23 @@ impl LocalStateDb {
             group_id: group_id.into(),
             limit,
             since_seq,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_direct_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        conversation_ids: Vec<String>,
+        limit: i64,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListDirectMessages {
+            owner_identity_id: owner_identity_id.into(),
+            conversation_ids,
+            limit,
             reply,
         })
         .await?;
@@ -1131,6 +1154,20 @@ fn run_actor(
                     &group_id,
                     limit,
                     since_seq,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListDirectMessages {
+                owner_identity_id,
+                conversation_ids,
+                limit,
+                reply,
+            } => {
+                let result = super::messages::list_direct_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &conversation_ids,
+                    limit,
                 );
                 let _ = reply.send(result);
             }

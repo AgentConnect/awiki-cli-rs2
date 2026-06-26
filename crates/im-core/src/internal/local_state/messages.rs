@@ -163,6 +163,71 @@ pub(crate) fn upsert_messages(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn list_direct_messages_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_ids: &[String],
+    limit: i64,
+) -> crate::ImResult<Vec<MessageRecord>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let conversation_ids = normalized_conversation_ids(conversation_ids);
+    if conversation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       conversation_id,
+       thread_id,
+       direction,
+       sender_did,
+       receiver_did,
+       group_id,
+       group_did,
+       content_type,
+       content,
+       title,
+       server_seq,
+       sent_at,
+       stored_at,
+       is_e2ee,
+       is_read,
+       sender_name,
+       metadata,
+       mentions_current_user,
+       credential_name
+FROM messages
+WHERE owner_identity_id = ?
+  AND NULLIF(TRIM(COALESCE(group_id, '')), '') IS NULL
+  AND NULLIF(TRIM(COALESCE(group_did, '')), '') IS NULL
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})
+ORDER BY COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC
+LIMIT ?"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 2);
+    params.push(&owner_identity_id);
+    for conversation_id in &conversation_ids {
+        params.push(conversation_id);
+    }
+    params.push(&limit);
+
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), message_record_from_row)
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(super::local_state_unavailable)?);
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn reconcile_peer_scope_direct_conversations(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -187,6 +252,71 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
         )?;
     }
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn normalized_conversation_ids(conversation_ids: &[String]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for conversation_id in conversation_ids {
+        push_unique(&mut ids, conversation_id.trim().to_owned());
+    }
+    ids
+}
+
+#[cfg(feature = "sqlite")]
+fn message_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
+    Ok(MessageRecord {
+        msg_id: row.get::<_, Option<String>>("msg_id")?.unwrap_or_default(),
+        owner_identity_id: row
+            .get::<_, Option<String>>("owner_identity_id")?
+            .unwrap_or_default(),
+        owner_did: row
+            .get::<_, Option<String>>("owner_did")?
+            .unwrap_or_default(),
+        conversation_id: row
+            .get::<_, Option<String>>("conversation_id")?
+            .unwrap_or_default(),
+        thread_id: row
+            .get::<_, Option<String>>("thread_id")?
+            .unwrap_or_default(),
+        direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
+        sender_did: row
+            .get::<_, Option<String>>("sender_did")?
+            .unwrap_or_default(),
+        receiver_did: row
+            .get::<_, Option<String>>("receiver_did")?
+            .unwrap_or_default(),
+        group_id: row
+            .get::<_, Option<String>>("group_id")?
+            .unwrap_or_default(),
+        group_did: row
+            .get::<_, Option<String>>("group_did")?
+            .unwrap_or_default(),
+        content_type: row
+            .get::<_, Option<String>>("content_type")?
+            .unwrap_or_default(),
+        content: row.get::<_, Option<String>>("content")?.unwrap_or_default(),
+        title: row.get::<_, Option<String>>("title")?.unwrap_or_default(),
+        server_seq: row.get::<_, Option<i64>>("server_seq")?,
+        sent_at: row.get::<_, Option<String>>("sent_at")?.unwrap_or_default(),
+        stored_at: row
+            .get::<_, Option<String>>("stored_at")?
+            .unwrap_or_default(),
+        is_e2ee: row.get::<_, Option<bool>>("is_e2ee")?.unwrap_or(false),
+        is_read: row.get::<_, Option<bool>>("is_read")?.unwrap_or(false),
+        sender_name: row
+            .get::<_, Option<String>>("sender_name")?
+            .unwrap_or_default(),
+        metadata: row
+            .get::<_, Option<String>>("metadata")?
+            .unwrap_or_default(),
+        mentions_current_user: row
+            .get::<_, Option<bool>>("mentions_current_user")?
+            .unwrap_or(false),
+        credential_name: row
+            .get::<_, Option<String>>("credential_name")?
+            .unwrap_or_default(),
+    })
 }
 
 #[cfg(feature = "sqlite")]

@@ -247,6 +247,13 @@ where
                 );
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
                 persist_projection_best_effort(self.client, &page.items);
+                let page = merge_direct_local_projection_best_effort(
+                    self.client,
+                    page,
+                    &peer.resolved_did,
+                    input.peer_scope.as_ref(),
+                    input.query.limit,
+                );
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -499,6 +506,14 @@ where
                 .await;
                 let page = page_from_raw(self.client, &raw, input.query.limit)?;
                 persist_projection_best_effort_async(self.client, &page.items).await;
+                let page = merge_direct_local_projection_best_effort_async(
+                    self.client,
+                    page,
+                    &peer.resolved_did,
+                    input.peer_scope.as_ref(),
+                    input.query.limit,
+                )
+                .await;
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -593,6 +608,158 @@ fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
     } else {
         i64::from(limit.0)
     }
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn merge_direct_local_projection_best_effort(
+    client: &crate::core::ImClient,
+    mut page: crate::ids::Page<crate::messages::Message>,
+    peer_did: &str,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return page;
+    };
+    let Ok(records) =
+        crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            &direct_local_history_conversation_ids(peer_did, peer_scope),
+            page_limit(requested_limit, 50),
+        )
+    else {
+        return page;
+    };
+    merge_local_message_records_into_page(&mut page, records, requested_limit);
+    page
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+fn merge_direct_local_projection_best_effort(
+    _client: &crate::core::ImClient,
+    page: crate::ids::Page<crate::messages::Message>,
+    _peer_did: &str,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    _requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    page
+}
+
+#[cfg(feature = "sqlite")]
+async fn merge_direct_local_projection_best_effort_async(
+    client: &crate::core::ImClient,
+    mut page: crate::ids::Page<crate::messages::Message>,
+    peer_did: &str,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    let db = match client.core_inner().local_state_db().await {
+        Ok(db) => db,
+        Err(_) => return page,
+    };
+    let records = match db
+        .list_direct_messages(
+            client.current_identity().id.as_str(),
+            direct_local_history_conversation_ids(peer_did, peer_scope),
+            page_limit(requested_limit, 50),
+        )
+        .await
+    {
+        Ok(records) => records,
+        Err(_) => {
+            return page;
+        }
+    };
+    if records.is_empty() {
+        return page;
+    }
+    merge_local_message_records_into_page(&mut page, records, requested_limit);
+    page
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn merge_direct_local_projection_best_effort_async(
+    _client: &crate::core::ImClient,
+    page: crate::ids::Page<crate::messages::Message>,
+    _peer_did: &str,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    _requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    page
+}
+
+#[cfg(feature = "sqlite")]
+fn merge_local_message_records_into_page(
+    page: &mut crate::ids::Page<crate::messages::Message>,
+    records: Vec<crate::internal::local_state::messages::MessageRecord>,
+    requested_limit: crate::ids::PageLimit,
+) {
+    let mut local_messages = records
+        .iter()
+        .filter_map(|record| {
+            crate::internal::message_runtime::conversations::message_from_record(record).ok()
+        })
+        .collect::<Vec<_>>();
+    if local_messages.is_empty() {
+        return;
+    }
+    page.items.append(&mut local_messages);
+    page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_local_history_conversation_ids(
+    peer_did: &str,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(scope) = peer_scope {
+        ids.push(
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(scope),
+        );
+    }
+    let peer_did = peer_did.trim();
+    if peer_did.starts_with("did:") {
+        let did_id = crate::internal::local_state::owner_scope::direct_conversation_id(peer_did);
+        if !ids.iter().any(|known| known == &did_id) {
+            ids.push(did_id);
+        }
+    }
+    ids
+}
+
+fn sort_dedupe_and_truncate_messages(
+    messages: &mut Vec<crate::messages::Message>,
+    requested_limit: crate::ids::PageLimit,
+) -> bool {
+    messages.sort_by(|left, right| compare_messages_desc(left, right));
+    dedupe_and_truncate_messages(messages, requested_limit)
+}
+
+fn compare_messages_desc(
+    left: &crate::messages::Message,
+    right: &crate::messages::Message,
+) -> std::cmp::Ordering {
+    match (
+        left.metadata.server_sequence,
+        right.metadata.server_sequence,
+    ) {
+        (Some(a), Some(b)) if a != b => b.cmp(&a),
+        _ => message_timestamp(right)
+            .cmp(&message_timestamp(left))
+            .then_with(|| right.id.as_str().cmp(left.id.as_str())),
+    }
+}
+
+fn message_timestamp(message: &crate::messages::Message) -> &str {
+    message
+        .sent_at
+        .as_deref()
+        .or(message.received_at.as_deref())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]

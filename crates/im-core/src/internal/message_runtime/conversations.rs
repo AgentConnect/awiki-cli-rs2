@@ -284,7 +284,7 @@ fn direct_peer_from_message(
     message.receiver.clone()
 }
 
-fn message_from_record(
+pub(crate) fn message_from_record(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::ImResult<crate::messages::Message> {
     let thread = message_thread(record)?;

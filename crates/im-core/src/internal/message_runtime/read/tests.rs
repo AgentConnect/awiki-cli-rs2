@@ -793,6 +793,111 @@ fn messages_read_runtime_builds_direct_history_rpc() {
 }
 
 #[test]
+fn messages_read_runtime_merges_local_direct_projection_into_history() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-bob",
+        "bob.awiki.test",
+    )
+    .unwrap();
+    let peer_scope_conversation_id =
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+            &peer_scope,
+        );
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-local-outgoing".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "dm:did:example:bob".to_owned(),
+            thread_id: "dm:did:example:bob".to_owned(),
+            direction: 1,
+            sender_did: "did:example:alice".to_owned(),
+            receiver_did: "did:example:bob".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "question from local projection".to_owned(),
+            sent_at: "2026-05-21T00:00:00Z".to_owned(),
+            stored_at: "2026-05-21T00:00:00Z".to_owned(),
+            is_read: true,
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-local-scoped-outgoing".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: peer_scope_conversation_id.clone(),
+            thread_id: peer_scope_conversation_id,
+            direction: 1,
+            sender_did: "did:example:alice".to_owned(),
+            receiver_did: "did:example:bob".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "scoped question from local projection".to_owned(),
+            sent_at: "2026-05-21T00:00:02Z".to_owned(),
+            stored_at: "2026-05-21T00:00:02Z".to_owned(),
+            metadata: r#"{"peer_user_id":"user-bob","peer_full_handle":"bob.awiki.test","peer_current_did":"did:example:bob"}"#.to_owned(),
+            is_read: true,
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [{
+                    "id": "msg-remote-incoming",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": "did:example:alice",
+                    "content": "answer from remote history",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-05-21T00:00:01Z"
+                }],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .history(HistoryRead {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            query: crate::messages::HistoryQuery {
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+                inbox_history_options: None,
+            },
+            resolved_peer_did: None,
+            peer_scope: Some(peer_scope),
+        })
+        .unwrap();
+
+    assert_eq!(
+        result
+            .page
+            .items
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "msg-local-scoped-outgoing",
+            "msg-remote-incoming",
+            "msg-local-outgoing"
+        ]
+    );
+}
+
+#[test]
 fn messages_read_runtime_uses_remote_created_at_as_sent_at() {
     let fixture = Fixture::new();
     let client = fixture.client();
