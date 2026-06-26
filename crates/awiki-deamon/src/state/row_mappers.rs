@@ -244,11 +244,12 @@ pub(super) fn hermes_native_session_from_row(
         conversation_id: row.get(10)?,
         route_key: row.get(11)?,
         hermes_profile: row.get(12)?,
-        hermes_session_id: row.get(13)?,
-        session_kind: row.get(14)?,
-        status: row.get(15)?,
-        created_at_ms: row.get(16)?,
-        updated_at_ms: row.get(17)?,
+        stored_session_id: row.get(13)?,
+        last_live_session_id: row.get(14)?,
+        session_kind: row.get(15)?,
+        status: row.get(16)?,
+        created_at_ms: row.get(17)?,
+        updated_at_ms: row.get(18)?,
     })
 }
 

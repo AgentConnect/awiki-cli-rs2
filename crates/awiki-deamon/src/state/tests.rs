@@ -2962,6 +2962,8 @@ fn controller_scope_v19_does_not_fabricate_legacy_controller_identity() {
                 route_key TEXT NOT NULL,
                 hermes_profile TEXT NOT NULL,
                 hermes_session_id TEXT NOT NULL,
+                stored_session_id TEXT NOT NULL DEFAULT '',
+                last_live_session_id TEXT,
                 session_kind TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL,
@@ -3231,7 +3233,8 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
         &route,
         "did:human:alice",
         "awiki_alice_hermes",
-        "hermes-session-1",
+        "stored-session-1",
+        Some("live-session-1".to_string()),
     )
     .unwrap();
 
@@ -3268,7 +3271,8 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
         &route,
         "did:human:alice",
         "awiki_alice_hermes",
-        "hermes-session-2",
+        "stored-session-2",
+        Some("live-session-2".to_string()),
     )
     .unwrap();
     state.store_hermes_native_session(&replacement).unwrap();
@@ -3277,8 +3281,8 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
             .load_active_hermes_session_by_route(&route)
             .unwrap()
             .unwrap()
-            .hermes_session_id,
-        "hermes-session-2"
+            .stored_session_id,
+        "stored-session-2"
     );
 
     let reopened = DaemonState::open(&config).unwrap();
@@ -3287,8 +3291,10 @@ fn hermes_native_session_roundtrips_and_resets_active_route() {
             .load_active_hermes_session_by_route(&route)
             .unwrap()
             .unwrap()
-            .hermes_session_id,
-        "hermes-session-2"
+            .last_live_session_id
+            .as_deref()
+            .map(str::to_string),
+        Some("live-session-2".to_string())
     );
 }
 

@@ -87,8 +87,8 @@ fn hermes_gateway_fake_runner_session_prompt_events_are_deterministic() {
 
     assert_eq!(runner.runner_ref().runner_id, "fake:awiki_alice_hermes");
     assert_eq!(
-        session.hermes_session_id,
-        "fake-session-direct:did:human:alice"
+        session.live_session_id,
+        "fake-live-session-direct:did:human:alice"
     );
     assert_eq!(
         outcome
@@ -451,7 +451,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_test"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_test", "stored_session_id": "stored_hs_test"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         assert params.get("text") == "hello Hermes"
@@ -492,7 +492,7 @@ for line in sys.stdin:
         )
         .unwrap();
 
-    assert_eq!(session.hermes_session_id, "hs_test");
+    assert_eq!(session.live_session_id, "hs_test");
     assert!(outcome
         .events
         .iter()
@@ -521,7 +521,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_real"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_real", "stored_session_id": "stored_hs_real"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "message.delta", "payload": {"session_id": params.get("session_id"), "text": "partial"}}}), flush=True)
@@ -562,7 +562,7 @@ for line in sys.stdin:
         )
         .unwrap();
 
-    assert_eq!(session.hermes_session_id, "hs_real");
+    assert_eq!(session.live_session_id, "hs_real");
     assert_eq!(outcome.final_text.as_deref(), Some("real final"));
     assert!(outcome.events.iter().any(|event| {
         event.kind == HermesRuntimeEventKind::MessageDelta
@@ -611,7 +611,7 @@ for line in sys.stdin:
     method = req.get("method")
     if method == "session.create":
         session_create_count += 1
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_env"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_env", "stored_session_id": "stored_hs_env"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         path_entries = os.environ.get("PATH", "").split(os.pathsep)
@@ -799,7 +799,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_stream"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_stream", "stored_session_id": "stored_hs_stream"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "streaming"}}), flush=True)
@@ -865,7 +865,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_noisy"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_noisy", "stored_session_id": "stored_hs_noisy"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "streaming"}}), flush=True)
@@ -931,7 +931,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_error"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_error", "stored_session_id": "stored_hs_error"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "streaming"}}), flush=True)
@@ -997,7 +997,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_approval"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_approval", "stored_session_id": "stored_hs_approval"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {"type": "approval.request", "session_id": params.get("session_id"), "payload": {"reason": "needs approval"}}}), flush=True)
@@ -1172,7 +1172,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_no_first_event"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_no_first_event", "stored_session_id": "stored_hs_no_first_event"}}), flush=True)
     elif method == "prompt.submit":
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "streaming"}}), flush=True)
         time.sleep(60)
@@ -1238,7 +1238,7 @@ for line in sys.stdin:
     req = json.loads(line)
     method = req.get("method")
     if method == "session.create":
-        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_never_terminal"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"session_id": "hs_never_terminal", "stored_session_id": "stored_hs_never_terminal"}}), flush=True)
     elif method == "prompt.submit":
         params = req.get("params", {})
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": {"status": "streaming"}}), flush=True)
@@ -1562,7 +1562,7 @@ fn hermes_real_gateway_cmd_smoke_runs_session_and_prompt() {
         )
         .unwrap();
 
-    assert!(!session.hermes_session_id.trim().is_empty());
+    assert!(!session.live_session_id.trim().is_empty());
     assert!(
         outcome
             .final_text

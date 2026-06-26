@@ -374,7 +374,7 @@ fn hermes_message_failed_status_does_not_send_success_final() {
 
     assert_eq!(result.run.status, RuntimeRunStatus::Failed);
     let records = outbox.records();
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("failed"));
     assert_eq!(records[1].kind, OutboxRecordKind::Message);
@@ -387,8 +387,6 @@ fn hermes_message_failed_status_does_not_send_success_final() {
         records[1].security,
         Some(RuntimeMessageSecurity::DefaultPlain)
     );
-    assert_eq!(records[2].kind, OutboxRecordKind::Status);
-    assert_eq!(records[2].state.as_deref(), Some("failed"));
     assert!(!records
         .iter()
         .any(|record| record.kind == OutboxRecordKind::Final));
@@ -1409,8 +1407,8 @@ fn hermes_session_mapping_reuses_controller_private_session_after_restart() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        active.hermes_session_id,
-        "fake-session-hermes:alice-hermes:controller-scope:v1:test-alice-anpclaw-com:controller_private:controller:controller-scope:v1:test-alice-anpclaw-com:conversation"
+        active.stored_session_id,
+        "fake-stored-session-hermes:alice-hermes:controller-scope:v1:test-alice-anpclaw-com:controller_private:controller:controller-scope:v1:test-alice-anpclaw-com:conversation"
     );
 
     let reopened_state =
@@ -1634,7 +1632,7 @@ fn hermes_session_mapping_reset_archives_old_session_and_creates_replacement() {
 }
 
 #[test]
-fn hermes_session_missing_recreates_session_and_retries_prompt_once() {
+fn hermes_session_missing_resumes_stored_session_and_retries_prompt_once() {
     let (root, state) = fixture();
     let outbox = MemoryRuntimeOutbox::default();
     let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::FailOnceWithMissingSession);
@@ -1662,13 +1660,14 @@ fn hermes_session_missing_recreates_session_and_retries_prompt_once() {
     )
     .unwrap();
 
-    assert_eq!(gateway.created_sessions().len(), 2);
+    assert_eq!(gateway.created_sessions().len(), 1);
+    assert_eq!(gateway.resumed_sessions().len(), 1);
     assert_eq!(gateway.submitted_prompts().len(), 2);
     let active = state
         .load_active_hermes_session_by_route(&route)
         .unwrap()
         .unwrap();
-    assert!(active.hermes_session_id.ends_with("-2"));
+    assert!(!active.stored_session_id.ends_with("-2"));
     let records = outbox.records();
     assert_eq!(records.len(), 3);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);

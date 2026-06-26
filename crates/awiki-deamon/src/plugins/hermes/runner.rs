@@ -10,7 +10,7 @@ use crate::state::{
 
 use super::gateway::{
     HermesGateway, HermesGatewayLaunchContext, HermesPromptOutcome, HermesPromptSubmitRequest,
-    HermesRunnerRef, HermesSessionCreateRequest, HermesSessionRef,
+    HermesRunnerRef, HermesSessionCreateRequest, HermesSessionRef, HermesSessionResumeRequest,
 };
 use super::prompt::HermesPromptWrapper;
 use super::HERMES_RUNTIME_PLUGIN_ID;
@@ -79,6 +79,10 @@ where
 
     pub fn create_session(&self, request: HermesSessionCreateRequest) -> Result<HermesSessionRef> {
         self.gateway.create_session(&self.runner, request)
+    }
+
+    pub fn resume_session(&self, request: HermesSessionResumeRequest) -> Result<HermesSessionRef> {
+        self.gateway.resume_session(&self.runner, request)
     }
 
     pub fn submit_prompt(
@@ -164,7 +168,7 @@ where
                     .state
                     .as_ref()
                     .expect("state checked above for Hermes session recovery");
-                let session = reset_and_create_persisted_session(
+                let session = resume_or_recreate_persisted_session(
                     state,
                     &runner,
                     &self.profile,
@@ -212,13 +216,55 @@ where
     G: HermesGateway,
 {
     if let Some(record) = state.load_active_hermes_session_by_route(route)? {
-        return Ok(super::gateway::HermesSessionRef {
-            runner_id: runner.runner_ref().runner_id.clone(),
-            hermes_session_id: record.hermes_session_id,
-            route_key: record.route_key,
+        return resume_persisted_session(state, runner, record).or_else(|error| {
+            if is_missing_hermes_session_error(&error.to_string()) {
+                reset_and_create_persisted_session(state, runner, profile, route, controller_did)
+            } else {
+                Err(error)
+            }
         });
     }
     create_and_store_persisted_session(state, runner, profile, route, controller_did)
+}
+
+fn resume_or_recreate_persisted_session<G>(
+    state: &DaemonState,
+    runner: &HermesRunner<G>,
+    profile: &HermesProfileRecord,
+    route: &HermesSessionRoute,
+    controller_did: &str,
+) -> Result<super::gateway::HermesSessionRef>
+where
+    G: HermesGateway,
+{
+    if let Some(record) = state.load_active_hermes_session_by_route(route)? {
+        return resume_persisted_session(state, runner, record).or_else(|error| {
+            if is_missing_hermes_session_error(&error.to_string()) {
+                reset_and_create_persisted_session(state, runner, profile, route, controller_did)
+            } else {
+                Err(error)
+            }
+        });
+    }
+    create_and_store_persisted_session(state, runner, profile, route, controller_did)
+}
+
+fn resume_persisted_session<G>(
+    state: &DaemonState,
+    runner: &HermesRunner<G>,
+    record: HermesNativeSessionRecord,
+) -> Result<super::gateway::HermesSessionRef>
+where
+    G: HermesGateway,
+{
+    let session = runner
+        .resume_session(HermesSessionResumeRequest {
+            route_key: record.route_key.clone(),
+            stored_session_id: record.stored_session_id.clone(),
+        })
+        .context("resume Hermes stored session")?;
+    state.update_hermes_session_last_live_session_id(&record.id, &session.live_session_id)?;
+    Ok(session)
 }
 
 fn reset_and_create_persisted_session<G>(
@@ -255,7 +301,8 @@ where
         route,
         controller_did.to_string(),
         profile.hermes_profile.clone(),
-        session.hermes_session_id.clone(),
+        session.stored_session_id.clone(),
+        Some(session.live_session_id.clone()),
     )?;
     state.store_hermes_native_session(&record)?;
     Ok(session)

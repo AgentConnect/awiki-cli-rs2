@@ -44,6 +44,11 @@ pub trait HermesGateway {
         runner: &HermesRunnerRef,
         request: HermesSessionCreateRequest,
     ) -> Result<HermesSessionRef>;
+    fn resume_session(
+        &self,
+        runner: &HermesRunnerRef,
+        request: HermesSessionResumeRequest,
+    ) -> Result<HermesSessionRef>;
     fn submit_prompt(
         &self,
         runner: &HermesRunnerRef,
@@ -105,9 +110,16 @@ pub struct HermesSessionCreateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HermesSessionResumeRequest {
+    pub route_key: String,
+    pub stored_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HermesSessionRef {
     pub runner_id: String,
-    pub hermes_session_id: String,
+    pub live_session_id: String,
+    pub stored_session_id: String,
     pub route_key: String,
 }
 
@@ -516,11 +528,46 @@ impl HermesGateway for StdioHermesGateway {
             self.timeouts.session_create,
             &mut Vec::new(),
         )?;
-        let session_id = extract_session_id(&response)
+        let live_session_id = extract_session_id(&response)
             .context("Hermes session.create response did not include session_id")?;
+        let stored_session_id = extract_stored_session_id(&response)
+            .context("Hermes session.create response did not include stored_session_id")?;
         Ok(HermesSessionRef {
             runner_id: runner.runner_id.clone(),
-            hermes_session_id: session_id,
+            live_session_id,
+            stored_session_id,
+            route_key: request.route_key,
+        })
+    }
+
+    fn resume_session(
+        &self,
+        runner: &HermesRunnerRef,
+        request: HermesSessionResumeRequest,
+    ) -> Result<HermesSessionRef> {
+        let mut processes = self
+            .processes
+            .lock()
+            .expect("Hermes gateway process lock poisoned");
+        let process = processes
+            .get_mut(&runner.runner_id)
+            .context("Hermes gateway process is not running")?;
+        let response = process.call(
+            "session.resume",
+            json!({
+                "session_id": request.stored_session_id,
+            }),
+            self.timeouts.session_create,
+            &mut Vec::new(),
+        )?;
+        let live_session_id = extract_session_id(&response)
+            .context("Hermes session.resume response did not include session_id")?;
+        let stored_session_id = extract_stored_session_id(&response)
+            .unwrap_or_else(|| request.stored_session_id.clone());
+        Ok(HermesSessionRef {
+            runner_id: runner.runner_id.clone(),
+            live_session_id,
+            stored_session_id,
             route_key: request.route_key,
         })
     }
@@ -550,7 +597,7 @@ impl HermesGateway for StdioHermesGateway {
         let response = process.call(
             "prompt.submit",
             json!({
-                "session_id": session.hermes_session_id,
+                "session_id": session.live_session_id,
                 "text": request.prompt,
             }),
             self.timeouts.prompt_first_event,
@@ -1450,6 +1497,19 @@ fn extract_session_id(value: &Value) -> Option<String> {
     })
 }
 
+fn extract_stored_session_id(value: &Value) -> Option<String> {
+    extract_string(
+        value,
+        &[
+            "stored_session_id",
+            "storedSessionId",
+            "session_key",
+            "sessionKey",
+            "resumed",
+        ],
+    )
+}
+
 fn append_events_from_response(
     response: &Value,
     session: &HermesSessionRef,
@@ -1462,7 +1522,7 @@ fn append_events_from_response(
     if let Some(text) = extract_string(response, &["final_text", "text", "content"]) {
         events.push(
             HermesRuntimeEvent::new(HermesRuntimeEventKind::MessageComplete)
-                .with_session(session.hermes_session_id.clone())
+                .with_session(session.live_session_id.clone())
                 .with_run(request.run_id.clone())
                 .with_text(text),
         );
@@ -1557,6 +1617,7 @@ pub struct FakeHermesGateway {
     observed_events: Arc<Mutex<Vec<HermesRuntimeEvent>>>,
     submitted_prompts: Arc<Mutex<Vec<HermesPromptSubmitRequest>>>,
     created_sessions: Arc<Mutex<Vec<HermesSessionCreateRequest>>>,
+    resumed_sessions: Arc<Mutex<Vec<HermesSessionResumeRequest>>>,
     prompt_attempts: Arc<Mutex<usize>>,
     behavior: FakeHermesBehavior,
 }
@@ -1580,6 +1641,7 @@ impl FakeHermesGateway {
             observed_events: Arc::new(Mutex::new(Vec::new())),
             submitted_prompts: Arc::new(Mutex::new(Vec::new())),
             created_sessions: Arc::new(Mutex::new(Vec::new())),
+            resumed_sessions: Arc::new(Mutex::new(Vec::new())),
             prompt_attempts: Arc::new(Mutex::new(0)),
             behavior,
         }
@@ -1596,6 +1658,13 @@ impl FakeHermesGateway {
         self.created_sessions
             .lock()
             .expect("fake Hermes gateway sessions lock poisoned")
+            .clone()
+    }
+
+    pub fn resumed_sessions(&self) -> Vec<HermesSessionResumeRequest> {
+        self.resumed_sessions
+            .lock()
+            .expect("fake Hermes gateway resumed sessions lock poisoned")
             .clone()
     }
 }
@@ -1657,16 +1726,43 @@ impl HermesGateway for FakeHermesGateway {
         } else {
             format!("-{create_count}")
         };
+        let stored_session_id = format!("fake-stored-session-{}{}", request.route_key, suffix);
+        let live_session_id = format!("fake-live-session-{}{}", request.route_key, suffix);
         let session = HermesSessionRef {
             runner_id: runner.runner_id.clone(),
-            hermes_session_id: format!("fake-session-{}{}", request.route_key, suffix),
+            live_session_id,
+            stored_session_id,
             route_key: request.route_key,
         };
         self.push_event(
             HermesRuntimeEvent::new(HermesRuntimeEventKind::SessionCreated)
-                .with_session(session.hermes_session_id.clone()),
+                .with_session(session.live_session_id.clone()),
         );
         Ok(session)
+    }
+
+    fn resume_session(
+        &self,
+        runner: &HermesRunnerRef,
+        request: HermesSessionResumeRequest,
+    ) -> Result<HermesSessionRef> {
+        let resume_count = {
+            let mut sessions = self
+                .resumed_sessions
+                .lock()
+                .expect("fake Hermes gateway resumed sessions lock poisoned");
+            sessions.push(request.clone());
+            sessions.len()
+        };
+        Ok(HermesSessionRef {
+            runner_id: runner.runner_id.clone(),
+            live_session_id: format!(
+                "fake-live-resumed-{}-{resume_count}",
+                request.stored_session_id
+            ),
+            stored_session_id: request.stored_session_id,
+            route_key: request.route_key,
+        })
     }
 
     fn submit_prompt(
@@ -1696,17 +1792,17 @@ impl HermesGateway for FakeHermesGateway {
         let fake_token = "rtok_fake_hermes_runtime_token_placeholder_123456789".to_string();
         let mut events = vec![
             HermesRuntimeEvent::new(HermesRuntimeEventKind::PromptSubmitted)
-                .with_session(session.hermes_session_id.clone())
+                .with_session(session.live_session_id.clone())
                 .with_run(request.run_id.clone()),
             HermesRuntimeEvent::new(HermesRuntimeEventKind::MessageDelta)
-                .with_session(session.hermes_session_id.clone())
+                .with_session(session.live_session_id.clone())
                 .with_run(request.run_id.clone())
                 .with_text("fake delta"),
         ];
         if self.behavior == FakeHermesBehavior::FailWithStatus {
             events.push(
                 HermesRuntimeEvent::new(HermesRuntimeEventKind::Error)
-                    .with_session(session.hermes_session_id.clone())
+                    .with_session(session.live_session_id.clone())
                     .with_run(request.run_id)
                     .with_text("fake failure"),
             );
@@ -1714,26 +1810,26 @@ impl HermesGateway for FakeHermesGateway {
             events.push(
                 HermesRuntimeEvent::new(HermesRuntimeEventKind::ToolCallObserved)
                     .with_code("approval_auto_approved")
-                    .with_session(session.hermes_session_id.clone())
+                    .with_session(session.live_session_id.clone())
                     .with_run(request.run_id.clone())
                     .with_text("Hermes approval request approved by daemon controller policy"),
             );
             events.push(
                 HermesRuntimeEvent::new(HermesRuntimeEventKind::MessageComplete)
-                    .with_session(session.hermes_session_id.clone())
+                    .with_session(session.live_session_id.clone())
                     .with_run(request.run_id)
                     .with_text("fake complete after approval approved"),
             );
         } else if self.behavior == FakeHermesBehavior::CompleteWithoutText {
             events.push(
                 HermesRuntimeEvent::new(HermesRuntimeEventKind::RunnerExited)
-                    .with_session(session.hermes_session_id.clone())
+                    .with_session(session.live_session_id.clone())
                     .with_run(request.run_id),
             );
         } else {
             events.push(
                 HermesRuntimeEvent::new(HermesRuntimeEventKind::MessageComplete)
-                    .with_session(session.hermes_session_id.clone())
+                    .with_session(session.live_session_id.clone())
                     .with_run(request.run_id)
                     .with_text("fake complete"),
             );

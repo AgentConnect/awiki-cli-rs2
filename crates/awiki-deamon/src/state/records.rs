@@ -1085,7 +1085,8 @@ pub struct HermesNativeSessionRecord {
     pub conversation_id: Option<String>,
     pub route_key: String,
     pub hermes_profile: String,
-    pub hermes_session_id: String,
+    pub stored_session_id: String,
+    pub last_live_session_id: Option<String>,
     pub session_kind: String,
     pub status: String,
     pub created_at_ms: i64,
@@ -1359,7 +1360,8 @@ impl HermesNativeSessionRecord {
         route: &HermesSessionRoute,
         controller_did: impl Into<String>,
         hermes_profile: impl Into<String>,
-        hermes_session_id: impl Into<String>,
+        stored_session_id: impl Into<String>,
+        last_live_session_id: Option<String>,
     ) -> Result<Self> {
         route.validate()?;
         let controller_did = controller_did.into();
@@ -1367,8 +1369,8 @@ impl HermesNativeSessionRecord {
             bail!("controller_did must not be empty");
         }
         let route_key = route.route_key();
-        let hermes_session_id = hermes_session_id.into();
-        let id = stable_hermes_session_record_id(&route_key, &hermes_session_id);
+        let stored_session_id = stored_session_id.into();
+        let id = stable_hermes_session_record_id(&route_key, &stored_session_id);
         let now = current_time_millis()?;
         Ok(Self {
             runtime_session_id: format!("rs_{id}"),
@@ -1384,7 +1386,8 @@ impl HermesNativeSessionRecord {
             scope_key: route.scope_key.clone(),
             route_key,
             hermes_profile: hermes_profile.into(),
-            hermes_session_id,
+            stored_session_id,
+            last_live_session_id,
             session_kind: route.session_kind.clone(),
             status: "active".to_string(),
             created_at_ms: now,
@@ -1420,8 +1423,15 @@ impl HermesNativeSessionRecord {
         if self.hermes_profile.trim().is_empty() {
             bail!("hermes_profile must not be empty");
         }
-        if self.hermes_session_id.trim().is_empty() {
-            bail!("hermes_session_id must not be empty");
+        if self.stored_session_id.trim().is_empty() {
+            bail!("stored_session_id must not be empty");
+        }
+        if self
+            .last_live_session_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("last_live_session_id must not be empty when present");
         }
         if self.session_kind.trim().is_empty() {
             bail!("session_kind must not be empty");
@@ -1433,9 +1443,9 @@ impl HermesNativeSessionRecord {
     }
 }
 
-fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> String {
+fn stable_hermes_session_record_id(route_key: &str, stored_session_id: &str) -> String {
     let digest = Sha256::digest(route_key.as_bytes());
-    let digest = Sha256::digest([digest.as_slice(), hermes_session_id.as_bytes()].concat());
+    let digest = Sha256::digest([digest.as_slice(), stored_session_id.as_bytes()].concat());
     format!("hns_{:x}", digest)
 }
 

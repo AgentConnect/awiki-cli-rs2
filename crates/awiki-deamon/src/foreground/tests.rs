@@ -22,7 +22,7 @@ use crate::commands::{
     IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
 };
 use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
-use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
+use crate::plugins::hermes::{FakeHermesBehavior, FakeHermesGateway, AWIKI_SKILLS_VERSION};
 use crate::registration::{
     AgentInventoryClient, AgentInvocationAuthorization, AgentLatestStatusUpdateItem,
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
@@ -1542,7 +1542,53 @@ fn hermes_foreground_runtime_route_reuses_persisted_native_session_across_messag
     }
 
     assert_eq!(gateway.created_sessions().len(), 1);
+    assert_eq!(gateway.resumed_sessions().len(), 1);
     assert_eq!(gateway.submitted_prompts().len(), 2);
+    assert_eq!(
+        state
+            .count_active_hermes_sessions_for_agent("did:agent:hermes")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn hermes_foreground_runtime_route_resumes_stored_session_when_live_session_is_missing() {
+    let (root, config, state) = fixture();
+    let profile = profile(root.path());
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    state
+        .upsert_hermes_profile(&hermes_record(root.path()))
+        .unwrap();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::FailOnceWithMissingSession);
+
+    for index in 1..=2 {
+        let outbox = MemoryRuntimeOutbox::default();
+        let result = run_runtime_text_message_with_gateway(
+            &config,
+            &state,
+            &outbox,
+            ControllerTextMessage {
+                message_id: format!("msg_foreground_hermes_missing_live_{index}"),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                requester_user_id: Some("user-alice".to_string()),
+                requester_full_handle: None,
+                trigger_kind: crate::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+                invocation_authority: RuntimeInvocationAuthority::Controller,
+                target_agent_did: "did:agent:hermes".to_string(),
+                text: format!("foreground route to Hermes with missing live turn {index}"),
+            },
+            None,
+            gateway.clone(),
+        )
+        .unwrap();
+        assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
+    }
+
+    assert_eq!(gateway.created_sessions().len(), 1);
+    assert_eq!(gateway.resumed_sessions().len(), 2);
+    assert_eq!(gateway.submitted_prompts().len(), 3);
     assert_eq!(
         state
             .count_active_hermes_sessions_for_agent("did:agent:hermes")

@@ -826,6 +826,7 @@ fn runtime_session_reset_archives_active_hermes_route() {
         "did:human:alice",
         "awiki_alice_hermes",
         "hsession-1",
+        Some("live-hsession-1".to_string()),
     )
     .unwrap();
     state.store_hermes_native_session(&record).unwrap();
@@ -3836,6 +3837,7 @@ fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
         "did:human:alice",
         "awiki_alice_hermes_status",
         "hermes-session-status",
+        Some("live-hermes-session-status".to_string()),
     )
     .unwrap();
     state.store_hermes_native_session(&session).unwrap();

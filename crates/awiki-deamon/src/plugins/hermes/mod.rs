@@ -15,7 +15,7 @@ pub use gateway::{
     FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesGatewayCommandStatus,
     HermesGatewayLaunchContext, HermesGatewayTimeouts, HermesPromptOutcome,
     HermesPromptSubmitRequest, HermesRunnerRef, HermesRuntimeEvent, HermesRuntimeEventKind,
-    HermesSessionCreateRequest, HermesSessionRef, StdioHermesGateway,
+    HermesSessionCreateRequest, HermesSessionRef, HermesSessionResumeRequest, StdioHermesGateway,
 };
 pub use prompt::HermesPromptWrapper;
 pub use runner::{reset_hermes_session_by_route, HermesRunner, HermesRuntimePlugin};

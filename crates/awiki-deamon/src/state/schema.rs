@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 29;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 30;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -282,6 +282,8 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             route_key TEXT NOT NULL,
             hermes_profile TEXT NOT NULL,
             hermes_session_id TEXT NOT NULL,
+            stored_session_id TEXT NOT NULL DEFAULT '',
+            last_live_session_id TEXT,
             session_kind TEXT NOT NULL,
             status TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
@@ -602,6 +604,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_cli_route_message_queue_v27(connection)?;
     migrate_runtime_final_outbox_provenance_v28(connection)?;
     migrate_runtime_scope_authority_v29(connection)?;
+    migrate_hermes_native_session_stored_ids_v30(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -1096,6 +1099,30 @@ fn migrate_runtime_scope_authority_v29(connection: &Connection) -> Result<()> {
                 ELSE 'controller:' || controller_scope_key
             END
         WHERE scope_key = '';
+        "#,
+    )?;
+    Ok(())
+}
+
+fn migrate_hermes_native_session_stored_ids_v30(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "hermes_native_sessions",
+        "stored_session_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        connection,
+        "hermes_native_sessions",
+        "last_live_session_id",
+        "TEXT",
+    )?;
+    connection.execute_batch(
+        r#"
+        UPDATE hermes_native_sessions
+        SET stored_session_id = hermes_session_id
+        WHERE stored_session_id = ''
+          AND hermes_session_id <> '';
         "#,
     )?;
     Ok(())
@@ -1664,6 +1691,8 @@ fn migrate_hermes_native_sessions_v7(connection: &Connection) -> Result<()> {
             route_key TEXT NOT NULL,
             hermes_profile TEXT NOT NULL,
             hermes_session_id TEXT NOT NULL,
+            stored_session_id TEXT NOT NULL DEFAULT '',
+            last_live_session_id TEXT,
             session_kind TEXT NOT NULL,
             status TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL,
@@ -1684,6 +1713,8 @@ fn migrate_hermes_native_sessions_v7(connection: &Connection) -> Result<()> {
         ("route_key", "TEXT NOT NULL DEFAULT ''"),
         ("hermes_profile", "TEXT NOT NULL DEFAULT ''"),
         ("hermes_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("stored_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("last_live_session_id", "TEXT"),
         ("session_kind", "TEXT NOT NULL DEFAULT 'conversation'"),
         ("status", "TEXT NOT NULL DEFAULT 'active'"),
         ("created_at_ms", "INTEGER NOT NULL DEFAULT 0"),
@@ -1691,6 +1722,14 @@ fn migrate_hermes_native_sessions_v7(connection: &Connection) -> Result<()> {
     ] {
         add_column_if_missing(connection, "hermes_native_sessions", column, definition)?;
     }
+    connection.execute_batch(
+        r#"
+        UPDATE hermes_native_sessions
+        SET stored_session_id = hermes_session_id
+        WHERE stored_session_id = ''
+          AND hermes_session_id <> '';
+        "#,
+    )?;
     Ok(())
 }
 

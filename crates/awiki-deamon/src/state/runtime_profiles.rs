@@ -541,11 +541,13 @@ INSERT INTO hermes_native_sessions (
     route_key,
     hermes_profile,
     hermes_session_id,
+    stored_session_id,
+    last_live_session_id,
     session_kind,
     status,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
 ON CONFLICT(id) DO UPDATE SET
     runtime_session_id = excluded.runtime_session_id,
     agent_did = excluded.agent_did,
@@ -560,6 +562,8 @@ ON CONFLICT(id) DO UPDATE SET
     route_key = excluded.route_key,
     hermes_profile = excluded.hermes_profile,
     hermes_session_id = excluded.hermes_session_id,
+    stored_session_id = excluded.stored_session_id,
+    last_live_session_id = excluded.last_live_session_id,
     session_kind = excluded.session_kind,
     status = excluded.status,
     updated_at_ms = excluded.updated_at_ms
@@ -578,7 +582,9 @@ ON CONFLICT(id) DO UPDATE SET
                     session.conversation_id,
                     session.route_key,
                     session.hermes_profile,
-                    session.hermes_session_id,
+                    session.stored_session_id,
+                    session.stored_session_id,
+                    session.last_live_session_id,
                     session.session_kind,
                     session.status,
                     session.created_at_ms,
@@ -612,7 +618,8 @@ SELECT
     conversation_id,
     route_key,
     hermes_profile,
-    hermes_session_id,
+    stored_session_id,
+    last_live_session_id,
     session_kind,
     status,
     created_at_ms,
@@ -629,6 +636,33 @@ LIMIT 1
             return Ok(None);
         };
         Ok(Some(hermes_native_session_from_row(row)?))
+    }
+
+    pub fn update_hermes_session_last_live_session_id(
+        &self,
+        id: &str,
+        last_live_session_id: &str,
+    ) -> Result<()> {
+        if id.trim().is_empty() {
+            bail!("hermes native session id must not be empty");
+        }
+        if last_live_session_id.trim().is_empty() {
+            bail!("last_live_session_id must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET last_live_session_id = ?1,
+    updated_at_ms = ?2
+WHERE id = ?3
+"#,
+            rusqlite::params![last_live_session_id, current_time_millis()?, id],
+        )?;
+        if updated == 0 {
+            bail!("Hermes native session does not exist: {id}");
+        }
+        Ok(())
     }
 
     pub fn mark_hermes_session_status(&self, id: &str, status: &str) -> Result<()> {
