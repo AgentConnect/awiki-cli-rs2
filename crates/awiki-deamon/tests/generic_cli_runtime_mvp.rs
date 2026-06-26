@@ -2549,7 +2549,7 @@ fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
         config_home,
         profile: Some("awiki".to_string()),
         model: Some("gpt-test".to_string()),
-        sandbox: "workspace-write".to_string(),
+        sandbox: "danger-full-access".to_string(),
         ignore_user_config: true,
         ignore_rules: true,
         ephemeral: false,
@@ -2560,7 +2560,7 @@ fn codex_config(binary_path: std::path::PathBuf) -> CodexDriverConfig {
 }
 
 #[test]
-fn codex_driver_command_builder_uses_safe_exec_contract() {
+fn codex_driver_command_builder_uses_trusted_host_exec_contract() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let final_output = root.path().join("final.txt");
@@ -2574,7 +2574,8 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
         .any(|pair| pair == ["--cd", workspace.to_str().unwrap()]));
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["--sandbox", "workspace-write"]));
+        .any(|pair| pair == ["--sandbox", "danger-full-access"]));
+    assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-test"]));
     assert!(args.windows(2).any(|pair| pair == ["--profile", "awiki"]));
     assert!(args.contains(&"--ignore-user-config".to_string()));
@@ -2586,8 +2587,6 @@ fn codex_driver_command_builder_uses_safe_exec_contract() {
         .windows(2)
         .any(|pair| pair == ["--output-last-message", final_output.to_str().unwrap()]));
     assert_eq!(args.last().map(String::as_str), Some("-"));
-    assert!(!args.contains(&"danger-full-access".to_string()));
-    assert!(!args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     assert!(!args.contains(&"--all".to_string()));
 }
 
@@ -2753,14 +2752,21 @@ fn codex_driver_command_builder_allows_explicit_ephemeral_debug_mode() {
 }
 
 #[test]
-fn codex_driver_rejects_dangerous_default_sandbox() {
+fn codex_driver_accepts_trusted_host_full_access_sandbox() {
     let root = tempfile::tempdir().unwrap();
     let mut config = codex_config(root.path().join("codex"));
     config.sandbox = "danger-full-access".to_string();
 
-    let error = CodexDriver::new(config).unwrap_err();
+    let driver = CodexDriver::new(config).unwrap();
 
-    assert!(error.to_string().contains("sandbox"));
+    let args = driver.command_args(
+        &root.path().join("workspace"),
+        &root.path().join("final.txt"),
+    );
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--sandbox", "danger-full-access"]));
+    assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
 }
 
 #[test]
@@ -2961,8 +2967,8 @@ fn claude_code_config(binary_path: std::path::PathBuf) -> ClaudeCodeDriverConfig
     ClaudeCodeDriverConfig {
         binary_path,
         model: Some("sonnet-test".to_string()),
-        sandbox: "read-only".to_string(),
-        permission_mode: "plan".to_string(),
+        sandbox: "danger-full-access".to_string(),
+        permission_mode: "bypassPermissions".to_string(),
         setting_sources: Some("user".to_string()),
         strict_mcp_config: true,
         bare: false,
@@ -3034,9 +3040,9 @@ exit 0
     assert!(installed.detail.unwrap().contains("Claude Code"));
     let env_dump = std::fs::read_to_string(env_capture).unwrap();
     assert!(env_dump.contains("HOME="));
-    assert!(env_dump.contains("CODEX_HOME=\n"));
-    assert!(env_dump.contains("OPENAI_API_KEY=\n"));
-    assert!(env_dump.contains("ANTHROPIC_API_KEY=\n"));
+    assert!(env_dump.contains("CODEX_HOME=/tmp/host-codex-home\n"));
+    assert!(env_dump.contains("OPENAI_API_KEY=openai-secret\n"));
+    assert!(env_dump.contains("ANTHROPIC_API_KEY=anthropic-secret\n"));
     assert!(env_dump.contains("AWS_SECRET_ACCESS_KEY=\n"));
     assert!(env_dump.contains("GITHUB_TOKEN=\n"));
     assert!(env_dump.contains("NPM_TOKEN=\n"));
@@ -3107,7 +3113,7 @@ printf '{{"type":"result","result":"claude process group final"}}\n'
 }
 
 #[test]
-fn claude_code_driver_command_builder_uses_safe_print_contract() {
+fn claude_code_driver_command_builder_uses_trusted_host_print_contract() {
     let root = tempfile::tempdir().unwrap();
     let driver = ClaudeCodeDriver::new(claude_code_config(root.path().join("claude"))).unwrap();
 
@@ -3122,7 +3128,8 @@ fn claude_code_driver_command_builder_uses_safe_print_contract() {
         .any(|pair| pair == ["--output-format", "stream-json"]));
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["--permission-mode", "plan"]));
+        .any(|pair| pair == ["--permission-mode", "bypassPermissions"]));
+    assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--model", "sonnet-test"]));
@@ -3136,7 +3143,6 @@ fn claude_code_driver_command_builder_uses_safe_print_contract() {
     assert!(!args.contains(&"--resume".to_string()));
     assert!(!args.contains(&"--continue".to_string()));
     assert!(!args.contains(&"--no-session-persistence".to_string()));
-    assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
 }
 
 #[test]
@@ -3227,10 +3233,11 @@ not json
 }
 
 #[test]
-fn claude_code_driver_rejects_unsafe_permission_mode_for_read_only() {
+fn claude_code_driver_still_rejects_non_plan_permission_mode_for_read_only() {
     let root = tempfile::tempdir().unwrap();
     let mut config = claude_code_config(root.path().join("claude"));
     config.permission_mode = "default".to_string();
+    config.sandbox = "read-only".to_string();
 
     let error = ClaudeCodeDriver::new(config).unwrap_err();
 
@@ -3244,7 +3251,7 @@ fn claude_code_driver_config_defaults_to_host_home_diagnostic() {
         CliRuntimeProfileRecord::for_driver("profile_generic_cli_1", "claude-code").unwrap();
     cli_profile.binary_path = Some(root.path().join("claude-from-profile"));
     cli_profile.default_model = Some("model-from-profile".to_string());
-    cli_profile.default_sandbox = Some("read-only".to_string());
+    cli_profile.default_sandbox = Some("danger-full-access".to_string());
     cli_profile.driver_config_json = json!({
         "setting_sources": "user",
         "strict_mcp_config": true
@@ -3254,8 +3261,8 @@ fn claude_code_driver_config_defaults_to_host_home_diagnostic() {
 
     assert_eq!(config.binary_path, root.path().join("claude-from-profile"));
     assert_eq!(config.model.as_deref(), Some("model-from-profile"));
-    assert_eq!(config.sandbox, "read-only");
-    assert_eq!(config.permission_mode, "plan");
+    assert_eq!(config.sandbox, "danger-full-access");
+    assert_eq!(config.permission_mode, "bypassPermissions");
     assert_eq!(config.setting_sources.as_deref(), Some("user"));
     assert!(config.strict_mcp_config);
     assert!(!config.no_session_persistence);
@@ -3609,16 +3616,15 @@ PY
     let args_dump = std::fs::read_to_string(args_capture).unwrap();
     assert!(args_dump.contains("exec\n"));
     assert!(args_dump.contains("--cd\n"));
-    assert!(args_dump.contains("--sandbox\nworkspace-write\n"));
+    assert!(args_dump.contains("--sandbox\ndanger-full-access\n"));
+    assert!(args_dump.contains("--dangerously-bypass-approvals-and-sandbox\n"));
     assert!(args_dump.contains("--json\n"));
     assert!(args_dump.contains("--output-last-message\n"));
     assert!(args_dump.ends_with("-\n"));
-    assert!(!args_dump.contains("danger-full-access"));
-    assert!(!args_dump.contains("dangerously-bypass"));
-
     let prompt = std::fs::read_to_string(prompt_capture).unwrap();
     assert!(prompt.contains("[Awiki Runtime Context]"));
     assert!(prompt.contains("driver_id: codex"));
+    assert!(prompt.contains("permission_policy: trusted-host-full-access"));
     assert!(prompt.contains("message_id: msg_codex_driver"));
     assert!(prompt.contains("conversation_id: conv_codex_driver"));
     assert!(prompt.contains("user_message:\nrun codex driver"));
@@ -4152,7 +4158,7 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     let mut cli_profile =
         CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "claude-code").unwrap();
     cli_profile.binary_path = Some(fake_claude);
-    cli_profile.default_sandbox = Some("read-only".to_string());
+    cli_profile.default_sandbox = Some("danger-full-access".to_string());
     cli_profile.driver_config_json = json!({
         "setting_sources": "user",
         "strict_mcp_config": true
@@ -4212,18 +4218,18 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     assert!(first_args.starts_with("-p\n"));
     assert!(first_args.contains("--verbose\n"));
     assert!(first_args.contains("--output-format\nstream-json\n"));
-    assert!(first_args.contains("--permission-mode\nplan\n"));
+    assert!(first_args.contains("--permission-mode\nbypassPermissions\n"));
+    assert!(first_args.contains("--dangerously-skip-permissions\n"));
     assert!(first_args.contains("--session-id\n"));
     assert!(first_args.contains(&format!("{first_native_id}\n")));
     assert!(!first_args.contains("--resume\n"));
     assert!(!first_args.contains("--continue"));
     assert!(!first_args.contains("--no-session-persistence"));
-    assert!(!first_args.contains("--dangerously-skip-permissions"));
-
     let first_prompt =
         std::fs::read_to_string(prompt_capture_dir.join("run_task_msg_claude_route_1.prompt"))
             .unwrap();
     assert!(first_prompt.contains("driver_id: claude-code"));
+    assert!(first_prompt.contains("permission_policy: trusted-host-full-access"));
     assert!(first_prompt.contains("message_id: msg_claude_route_1"));
     assert!(first_prompt.contains("user_message:\nfirst claude route message"));
     assert!(!first_prompt.contains("rtok_"));
@@ -4237,8 +4243,8 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     assert!(first_env.contains("AGENT_DID=did:agent:alice-coder"));
     assert!(first_env.contains("PROFILE_ID=profile_generic_cli_1"));
     assert!(first_env.contains("WRAPPER=library:awiki_deamon::cli_wrapper"));
-    assert!(first_env.contains("OPENAI_API_KEY=\n"));
-    assert!(first_env.contains("ANTHROPIC_API_KEY=\n"));
+    assert!(first_env.contains("OPENAI_API_KEY=openai-secret\n"));
+    assert!(first_env.contains("ANTHROPIC_API_KEY=anthropic-secret\n"));
     assert!(first_env.contains("AWS_SECRET_ACCESS_KEY=\n"));
     assert!(first_env.contains("GITHUB_TOKEN=\n"));
     assert!(first_env.contains("NPM_TOKEN=\n"));

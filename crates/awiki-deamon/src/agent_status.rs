@@ -1166,7 +1166,7 @@ fn supported_generic_cli_workspace_modes() -> Value {
 }
 
 fn supported_generic_cli_sandbox_modes() -> Value {
-    json!(["read-only", "workspace-write"])
+    json!(["read-only", "workspace-write", "danger-full-access"])
 }
 
 fn supported_generic_cli_runtime_create_args() -> Value {
@@ -1714,6 +1714,8 @@ fn generic_cli_driver_capabilities(driver_id: Option<&str>) -> Value {
             "explicit_session_create": false,
             "resume_last_scoped_by_cwd": true,
             "permission_mode_flag": false,
+            "full_access_supported": true,
+            "bypass_approvals_supported": true,
         }),
         Some("claude-code") => json!({
             "json_stream": true,
@@ -1722,6 +1724,8 @@ fn generic_cli_driver_capabilities(driver_id: Option<&str>) -> Value {
             "explicit_session_create": true,
             "resume_last_scoped_by_cwd": true,
             "permission_mode_flag": true,
+            "full_access_supported": true,
+            "bypass_permissions_supported": true,
         }),
         Some("command") => json!({
             "json_stream": false,
@@ -2133,6 +2137,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("workspace-write")));
+        assert!(generic_cli["supported_sandbox_modes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("danger-full-access")));
         let dump = payload.to_string();
         assert!(!dump.contains("token"));
         assert!(!dump.contains("private"));
@@ -2268,7 +2276,10 @@ mod tests {
     #[test]
     fn latest_status_items_use_user_service_allowed_diagnostics_keys() {
         let root = tempfile::tempdir().unwrap();
-        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let fake_gateway = root.path().join("fake-hermes-gateway");
+        write_fake_ready_gateway_executable(&fake_gateway).unwrap();
+        let mut config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.hermes_gateway_cmd = Some(fake_gateway.display().to_string());
         config.ensure_state_layout().unwrap();
         let state = DaemonState::open(&config).unwrap();
         state.initialize().unwrap();
@@ -2286,12 +2297,19 @@ mod tests {
                 &daemon.controller_did,
             )
             .unwrap();
+        let hermes_home = root.path().join("runtime/hermes/profile");
+        std::fs::create_dir_all(&hermes_home).unwrap();
+        std::fs::write(
+            hermes_home.join("config.yaml"),
+            "model:\n  provider: custom\n  default: gpt-5.2\n",
+        )
+        .unwrap();
         state
             .upsert_hermes_profile(&HermesProfileRecord {
                 agent_did: runtime.agent_did.clone(),
                 runtime_profile_id: runtime.runtime_profile_id.clone().unwrap(),
                 hermes_profile: "awiki_alice_hermes".to_string(),
-                hermes_home: root.path().join("runtime/hermes/profile"),
+                hermes_home,
                 hermes_version: Some("1.2.3".to_string()),
                 awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
                 status: "ready".to_string(),
@@ -2611,7 +2629,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics["config_summary"]["default_sandbox"],
-            "read-only"
+            "danger-full-access"
         );
         assert_eq!(
             diagnostics["config_summary"]["route_hash"]["algorithm"],
