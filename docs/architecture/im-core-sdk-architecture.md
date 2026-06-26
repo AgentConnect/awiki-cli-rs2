@@ -174,7 +174,8 @@ Summary rows are derived state and may be rebuilt from `messages`:
 - schema open creates the table/indexes and backfills v17 stores when summaries are absent;
 - message upsert batches collect touched `(owner_identity_id, conversation_id)` keys and rebuild each touched summary once;
 - mark-read collects affected conversations before updating `messages.is_read`, then rebuilds their unread counters;
-- legacy DID-to-peer-scope direct merges rebuild both old and new conversation keys.
+- legacy DID-to-peer-scope direct merges rebuild both old and new conversation keys;
+- peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 

@@ -45,7 +45,21 @@ fn upsert_message_record(
     let msg_id = required("msg_id", &record.msg_id)?;
     let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
     let owner_did = required("owner_did", &record.owner_did)?;
-    let conversation_id = required("conversation_id", &stable_conversation_id(record))?;
+    let stable_conversation_id = required("conversation_id", &stable_conversation_id(record))?;
+    // Once a rotated DID direct thread has been folded into a peer-scope thread,
+    // late legacy projections should use the same canonical conversation without
+    // re-running the expensive legacy scan/update path.
+    let conversation_id = if record.group_id.trim().is_empty() && record.group_did.trim().is_empty()
+    {
+        cached_peer_scope_conversation_id_for_legacy_direct(
+            connection,
+            &owner_identity_id,
+            &stable_conversation_id,
+        )?
+        .unwrap_or(stable_conversation_id)
+    } else {
+        stable_conversation_id
+    };
     let thread_id = conversation_id.clone();
     let stored_at = default_string(&record.stored_at, &now_utc_like());
     let previous_conversation_id =
@@ -263,6 +277,7 @@ pub(crate) fn reconcile_peer_scope_direct_conversations(
     owner_identity_id: &str,
 ) -> crate::ImResult<()> {
     let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    clear_legacy_direct_merge_memo_for_owner(connection, &owner_identity_id)?;
     let mut touched = BTreeSet::new();
     for candidate in peer_scope_direct_candidates(connection, &owner_identity_id)? {
         let record = MessageRecord {
@@ -1062,15 +1077,31 @@ fn merge_legacy_direct_did_conversation(
     conversation_id: &str,
     record: &MessageRecord,
 ) -> crate::ImResult<Vec<String>> {
-    if !conversation_id.trim().starts_with("dm:peer-scope:")
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let conversation_id = required("conversation_id", conversation_id)?;
+    if !conversation_id.starts_with("dm:peer-scope:")
         || !record.group_id.trim().is_empty()
         || !record.group_did.trim().is_empty()
     {
         return Ok(Vec::new());
     }
+    if legacy_direct_merge_memo_contains(connection, &owner_identity_id, &conversation_id)? {
+        return Ok(Vec::new());
+    }
+    let peer_full_handle = legacy_direct_peer_full_handle(record);
     let legacy_conversation_ids =
-        legacy_direct_conversation_ids_for_peer(connection, owner_identity_id, record)?;
+        legacy_direct_conversation_ids_for_peer(connection, &owner_identity_id, record)?;
     if legacy_conversation_ids.is_empty() {
+        if let Some(peer_full_handle) = peer_full_handle.as_deref() {
+            mark_legacy_direct_merge_memo(
+                connection,
+                &owner_identity_id,
+                &conversation_id,
+                &[],
+                Some(peer_full_handle),
+                0,
+            )?;
+        }
         return Ok(Vec::new());
     }
     let placeholders = vec!["?"; legacy_conversation_ids.len()].join(",");
@@ -1092,10 +1123,221 @@ WHERE owner_identity_id = ?
     for legacy_id in &legacy_conversation_ids {
         params.push(legacy_id);
     }
-    connection
+    let merged_rows = connection
         .execute(&statement, params.as_slice())
         .map_err(super::local_state_unavailable)?;
+    mark_legacy_direct_merge_memo(
+        connection,
+        &owner_identity_id,
+        &conversation_id,
+        &legacy_conversation_ids,
+        peer_full_handle.as_deref(),
+        merged_rows as i64,
+    )?;
     Ok(legacy_conversation_ids)
+}
+
+#[cfg(feature = "sqlite")]
+fn legacy_direct_merge_memo_contains(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> crate::ImResult<bool> {
+    ensure_legacy_direct_merge_memo(connection)?;
+    let exists = connection
+        .query_row(
+            r#"
+SELECT 1
+FROM temp.legacy_direct_merge_memo
+WHERE owner_identity_id = ?1 AND peer_scope_conversation_id = ?2
+LIMIT 1"#,
+            (owner_identity_id, conversation_id),
+            |_| Ok(true),
+        )
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(false),
+            other => Err(other),
+        })
+        .map_err(super::local_state_unavailable)?;
+    Ok(exists)
+}
+
+#[cfg(feature = "sqlite")]
+fn mark_legacy_direct_merge_memo(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    legacy_conversation_ids: &[String],
+    peer_full_handle: Option<&str>,
+    merged_rows: i64,
+) -> crate::ImResult<()> {
+    ensure_legacy_direct_merge_memo(connection)?;
+    let peer_full_handle = peer_full_handle
+        .map(normalize_full_handle)
+        .filter(|value| !value.is_empty());
+    let updated_at = now_utc_like();
+    connection
+        .execute(
+            r#"
+INSERT INTO temp.legacy_direct_merge_memo
+    (owner_identity_id, peer_scope_conversation_id, scan_attempts, merged_rows, updated_at)
+VALUES (?1, ?2, 1, ?3, ?4)
+ON CONFLICT(owner_identity_id, peer_scope_conversation_id) DO UPDATE SET
+    scan_attempts = scan_attempts + 1,
+    merged_rows = merged_rows + excluded.merged_rows,
+    updated_at = excluded.updated_at"#,
+            (owner_identity_id, conversation_id, merged_rows, updated_at),
+        )
+        .map_err(super::local_state_unavailable)?;
+    for legacy_conversation_id in legacy_conversation_ids {
+        connection
+            .execute(
+                r#"
+INSERT OR IGNORE INTO temp.legacy_direct_merge_memo_ids
+    (owner_identity_id, peer_scope_conversation_id, legacy_conversation_id)
+VALUES (?1, ?2, ?3)"#,
+                (owner_identity_id, conversation_id, legacy_conversation_id),
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    if let Some(peer_full_handle) = peer_full_handle {
+        connection
+            .execute(
+                r#"
+INSERT INTO temp.legacy_direct_merge_memo_handles
+    (owner_identity_id, peer_full_handle, peer_scope_conversation_id)
+VALUES (?1, ?2, ?3)
+ON CONFLICT(owner_identity_id, peer_full_handle) DO UPDATE SET
+    peer_scope_conversation_id = excluded.peer_scope_conversation_id"#,
+                (owner_identity_id, peer_full_handle, conversation_id),
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn clear_legacy_direct_merge_memo_for_owner(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+) -> crate::ImResult<()> {
+    ensure_legacy_direct_merge_memo(connection)?;
+    connection
+        .execute(
+            "DELETE FROM temp.legacy_direct_merge_memo_ids WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute(
+            "DELETE FROM temp.legacy_direct_merge_memo_handles WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute(
+            "DELETE FROM temp.legacy_direct_merge_memo WHERE owner_identity_id = ?1",
+            [owner_identity_id],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn ensure_legacy_direct_merge_memo(connection: &rusqlite::Connection) -> crate::ImResult<()> {
+    // TEMP tables keep the memo scoped to the current local-state DB handle.
+    // That avoids global state and schema migrations while removing repeated
+    // legacy scans from the hot message upsert path.
+    connection
+        .execute_batch(
+            r#"
+CREATE TEMP TABLE IF NOT EXISTS legacy_direct_merge_memo (
+    owner_identity_id TEXT NOT NULL,
+    peer_scope_conversation_id TEXT NOT NULL,
+    scan_attempts INTEGER NOT NULL DEFAULT 0,
+    merged_rows INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, peer_scope_conversation_id)
+);
+CREATE TEMP TABLE IF NOT EXISTS legacy_direct_merge_memo_ids (
+    owner_identity_id TEXT NOT NULL,
+    peer_scope_conversation_id TEXT NOT NULL,
+    legacy_conversation_id TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, peer_scope_conversation_id, legacy_conversation_id)
+);
+CREATE INDEX IF NOT EXISTS temp.idx_legacy_direct_merge_memo_ids_lookup
+ON legacy_direct_merge_memo_ids(owner_identity_id, legacy_conversation_id);
+CREATE TEMP TABLE IF NOT EXISTS legacy_direct_merge_memo_handles (
+    owner_identity_id TEXT NOT NULL,
+    peer_full_handle TEXT NOT NULL,
+    peer_scope_conversation_id TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, peer_full_handle)
+);"#,
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+#[cfg(feature = "sqlite")]
+fn cached_peer_scope_conversation_id_for_legacy_direct(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> crate::ImResult<Option<String>> {
+    if !conversation_id.trim().starts_with("dm:did:wba:") {
+        return Ok(None);
+    }
+    ensure_legacy_direct_merge_memo(connection)?;
+    let cached_by_id = connection
+        .query_row(
+            r#"
+SELECT peer_scope_conversation_id
+FROM temp.legacy_direct_merge_memo_ids
+WHERE owner_identity_id = ?1 AND legacy_conversation_id = ?2
+LIMIT 1"#,
+            (owner_identity_id, conversation_id),
+            |row| row.get::<_, String>(0),
+        )
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(super::local_state_unavailable)?;
+    if cached_by_id.is_some() {
+        return Ok(cached_by_id);
+    }
+
+    let Some(peer_full_handle) = did_from_direct_conversation_id(conversation_id)
+        .as_deref()
+        .and_then(did_full_handle)
+    else {
+        return Ok(None);
+    };
+    connection
+        .query_row(
+            r#"
+SELECT peer_scope_conversation_id
+FROM temp.legacy_direct_merge_memo_handles
+WHERE owner_identity_id = ?1 AND peer_full_handle = ?2
+LIMIT 1"#,
+            (owner_identity_id, peer_full_handle),
+            |row| row.get::<_, String>(0),
+        )
+        .map(Some)
+        .or_else(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(super::local_state_unavailable)
+}
+
+#[cfg(feature = "sqlite")]
+fn legacy_direct_peer_full_handle(record: &MessageRecord) -> Option<String> {
+    parse_metadata(&record.metadata)
+        .get("peer_full_handle")
+        .and_then(serde_json::Value::as_str)
+        .map(normalize_full_handle)
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(feature = "sqlite")]
@@ -1856,6 +2098,234 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
     }
 
     #[test]
+    fn local_state_messages_memoizes_legacy_direct_merge_and_rewrites_late_legacy_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:wba:anpclaw.com:zhuocheng:e1_owner";
+        let peer_old_did = "did:wba:anpclaw.com:zhuochengtest:e1_old";
+        let peer_new_did = "did:wba:anpclaw.com:zhuochengtest:e1_new";
+        let legacy_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(peer_old_did);
+        let scoped_conversation_id = scoped_zhuochengtest_conversation_id();
+
+        seed_message_row(
+            &db,
+            "msg-old",
+            owner_identity_id,
+            owner_did,
+            &legacy_conversation_id,
+            0,
+            peer_old_did,
+            owner_did,
+            "",
+            1,
+            "2026-06-10T00:00:00Z",
+        );
+
+        upsert_message(
+            &db,
+            &peer_scope_message_record(
+                "msg-new-1",
+                owner_identity_id,
+                owner_did,
+                &scoped_conversation_id,
+                peer_new_did,
+                "2026-06-10T00:00:01Z",
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            legacy_merge_memo_stats(&db, owner_identity_id, &scoped_conversation_id),
+            Some((1, 1))
+        );
+        assert_eq!(
+            legacy_memo_target_for_legacy_id(&db, owner_identity_id, &legacy_conversation_id),
+            Some(scoped_conversation_id.clone())
+        );
+
+        for index in 2..=100 {
+            let minute = index / 60;
+            let second = index % 60;
+            upsert_message(
+                &db,
+                &peer_scope_message_record(
+                    &format!("msg-new-{index}"),
+                    owner_identity_id,
+                    owner_did,
+                    &scoped_conversation_id,
+                    peer_new_did,
+                    &format!("2026-06-10T00:{minute:02}:{second:02}Z"),
+                ),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            legacy_merge_memo_stats(&db, owner_identity_id, &scoped_conversation_id),
+            Some((1, 1))
+        );
+
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-late-legacy".to_owned(),
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: legacy_conversation_id.clone(),
+                thread_id: legacy_conversation_id.clone(),
+                direction: 0,
+                sender_did: peer_old_did.to_owned(),
+                receiver_did: owner_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "late legacy projection".to_owned(),
+                stored_at: "2026-06-10T00:02:00Z".to_owned(),
+                is_read: true,
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            legacy_merge_memo_stats(&db, owner_identity_id, &scoped_conversation_id),
+            Some((1, 1))
+        );
+        assert_eq!(
+            conversation_ids_for_owner(&db, owner_identity_id),
+            vec![scoped_conversation_id.clone()]
+        );
+        assert_eq!(
+            summary_message_count(&db, owner_identity_id, &scoped_conversation_id),
+            102
+        );
+    }
+
+    #[test]
+    fn local_state_messages_legacy_direct_merge_memo_is_owner_scoped() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let scoped_conversation_id = scoped_zhuochengtest_conversation_id();
+        let peer_old_did = "did:wba:anpclaw.com:zhuochengtest:e1_old";
+        let peer_new_did = "did:wba:anpclaw.com:zhuochengtest:e1_new";
+        let legacy_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(peer_old_did);
+
+        for (owner_identity_id, owner_did, old_msg, new_msg) in [
+            (
+                "owner-1-id",
+                "did:wba:anpclaw.com:ownerone:e1_owner",
+                "owner-1-old",
+                "owner-1-new",
+            ),
+            (
+                "owner-2-id",
+                "did:wba:anpclaw.com:ownertwo:e1_owner",
+                "owner-2-old",
+                "owner-2-new",
+            ),
+        ] {
+            seed_message_row(
+                &db,
+                old_msg,
+                owner_identity_id,
+                owner_did,
+                &legacy_conversation_id,
+                0,
+                peer_old_did,
+                owner_did,
+                "",
+                1,
+                "2026-06-10T00:00:00Z",
+            );
+            upsert_message(
+                &db,
+                &peer_scope_message_record(
+                    new_msg,
+                    owner_identity_id,
+                    owner_did,
+                    &scoped_conversation_id,
+                    peer_new_did,
+                    "2026-06-10T00:00:01Z",
+                ),
+            )
+            .unwrap();
+        }
+
+        for owner_identity_id in ["owner-1-id", "owner-2-id"] {
+            assert_eq!(
+                legacy_merge_memo_stats(&db, owner_identity_id, &scoped_conversation_id),
+                Some((1, 1))
+            );
+            assert_eq!(
+                conversation_ids_for_owner(&db, owner_identity_id),
+                vec![scoped_conversation_id.clone()]
+            );
+            assert_eq!(
+                summary_message_count(&db, owner_identity_id, &scoped_conversation_id),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn local_state_messages_legacy_direct_merge_memo_skips_group_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:wba:anpclaw.com:zhuocheng:e1_owner";
+        let peer_old_did = "did:wba:anpclaw.com:zhuochengtest:e1_old";
+        let legacy_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(peer_old_did);
+        let scoped_conversation_id = scoped_zhuochengtest_conversation_id();
+
+        seed_message_row(
+            &db,
+            "msg-old",
+            owner_identity_id,
+            owner_did,
+            &legacy_conversation_id,
+            0,
+            peer_old_did,
+            owner_did,
+            "",
+            1,
+            "2026-06-10T00:00:00Z",
+        );
+
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-group".to_owned(),
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: scoped_conversation_id.clone(),
+                thread_id: scoped_conversation_id.clone(),
+                direction: 0,
+                sender_did: "did:wba:anpclaw.com:someone:e1_sender".to_owned(),
+                receiver_did: owner_did.to_owned(),
+                group_id: "group-1".to_owned(),
+                group_did: "did:wba:anpclaw.com:groups:e1_group".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "group projection".to_owned(),
+                stored_at: "2026-06-10T00:00:01Z".to_owned(),
+                metadata: r#"{"peer_full_handle":"zhuochengtest.anpclaw.com"}"#.to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            legacy_merge_memo_stats(&db, owner_identity_id, &scoped_conversation_id),
+            None
+        );
+        assert_eq!(
+            conversation_ids_for_owner(&db, owner_identity_id),
+            vec![legacy_conversation_id, scoped_conversation_id]
+        );
+    }
+
+    #[test]
     fn local_state_messages_merge_rotated_did_direct_rows_into_peer_scope() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -1933,6 +2403,98 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             .unwrap();
         assert_eq!(summary_conversation_id, scoped_conversation_id);
         assert_eq!(summary_count, 2);
+    }
+
+    fn scoped_zhuochengtest_conversation_id() -> String {
+        let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "peer-user-id",
+            "zhuochengtest.anpclaw.com",
+        )
+        .unwrap();
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(&scope)
+    }
+
+    fn peer_scope_message_record(
+        msg_id: &str,
+        owner_identity_id: &str,
+        owner_did: &str,
+        scoped_conversation_id: &str,
+        peer_current_did: &str,
+        stored_at: &str,
+    ) -> MessageRecord {
+        MessageRecord {
+            msg_id: msg_id.to_owned(),
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            conversation_id: scoped_conversation_id.to_owned(),
+            thread_id: scoped_conversation_id.to_owned(),
+            direction: 1,
+            sender_did: owner_did.to_owned(),
+            receiver_did: peer_current_did.to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: format!("scoped message {msg_id}"),
+            stored_at: stored_at.to_owned(),
+            metadata: format!(
+                r#"{{"peer_user_id":"peer-user-id","peer_full_handle":"zhuochengtest.anpclaw.com","peer_current_did":"{peer_current_did}"}}"#
+            ),
+            ..MessageRecord::default()
+        }
+    }
+
+    fn conversation_ids_for_owner(db: &Connection, owner_identity_id: &str) -> Vec<String> {
+        db.prepare(
+            "SELECT DISTINCT conversation_id FROM messages WHERE owner_identity_id = ?1 ORDER BY conversation_id",
+        )
+        .unwrap()
+        .query_map([owner_identity_id], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    fn summary_message_count(
+        db: &Connection,
+        owner_identity_id: &str,
+        conversation_id: &str,
+    ) -> i64 {
+        db.query_row(
+            "SELECT message_count FROM conversation_summaries WHERE owner_identity_id = ?1 AND conversation_id = ?2",
+            (owner_identity_id, conversation_id),
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn legacy_merge_memo_stats(
+        db: &Connection,
+        owner_identity_id: &str,
+        conversation_id: &str,
+    ) -> Option<(i64, i64)> {
+        db.query_row(
+            r#"
+SELECT scan_attempts, merged_rows
+FROM temp.legacy_direct_merge_memo
+WHERE owner_identity_id = ?1 AND peer_scope_conversation_id = ?2"#,
+            (owner_identity_id, conversation_id),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()
+    }
+
+    fn legacy_memo_target_for_legacy_id(
+        db: &Connection,
+        owner_identity_id: &str,
+        legacy_conversation_id: &str,
+    ) -> Option<String> {
+        db.query_row(
+            r#"
+SELECT peer_scope_conversation_id
+FROM temp.legacy_direct_merge_memo_ids
+WHERE owner_identity_id = ?1 AND legacy_conversation_id = ?2"#,
+            (owner_identity_id, legacy_conversation_id),
+            |row| row.get(0),
+        )
+        .ok()
     }
 
     fn summary_unread(db: &Connection, owner_identity_id: &str, conversation_id: &str) -> i64 {
