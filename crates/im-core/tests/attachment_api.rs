@@ -45,6 +45,7 @@ fn attachments_input_is_the_canonical_message_body_input() {
     let body = MessageBody::Attachment {
         input: input.clone(),
         caption: Some("caption".to_string()),
+        mention_payload: None,
         mime_type: Some("text/plain".to_string()),
         filename: None,
     };
@@ -63,6 +64,7 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
     let body = MessageBody::Attachment {
         input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
         caption: Some("caption".to_string()),
+        mention_payload: None,
         mime_type: Some("image/png".to_string()),
         filename: Some("override.png".to_string()),
     };
@@ -73,6 +75,7 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
             caption,
             mime_type,
             filename,
+            ..
         } => {
             assert_eq!(path, PathBuf::from("image.png"));
             assert_eq!(caption.as_deref(), Some("caption"));
@@ -99,6 +102,7 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
                 bytes: b"png".to_vec(),
             },
             caption: Some("caption".to_string()),
+            mention_payload: None,
             mime_type: Some("image/png".to_string()),
             filename: None,
             delivery: MessageDeliveryOptions::default(),
@@ -172,6 +176,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
                     bytes: b"hello".to_vec(),
                 },
                 caption: Some("caption".to_string()),
+                mention_payload: None,
                 mime_type: Some("application/custom".to_string()),
                 filename: Some("override.bin".to_string()),
                 delivery: MessageDeliveryOptions::default(),

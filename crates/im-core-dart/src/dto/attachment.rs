@@ -19,6 +19,7 @@ pub struct DartAttachmentSendRequest {
     pub target: DartMessageTarget,
     pub input: DartAttachmentInput,
     pub caption: Option<String>,
+    pub mention_payload_json: Option<String>,
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub security: DartMessageSecurityMode,

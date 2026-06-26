@@ -885,6 +885,7 @@ fn secure_direct_attachment_request(target: &str) -> crate::messages::SendMessag
                 bytes: b"not uploaded in this unit test".to_vec(),
             },
             caption: Some("async direct caption".to_owned()),
+            mention_payload: None,
             mime_type: Some("application/pdf".to_owned()),
             filename: None,
         },
@@ -926,11 +927,13 @@ fn committed_attachment() -> crate::internal::attachment_runtime::upload::Prepar
             &descriptor,
             "async direct caption",
             &secrets,
-        );
+        )
+        .expect("full manifest");
     let redacted_manifest = crate::attachments::manifest::build_attachment_manifest(
         &descriptor,
         "async direct caption",
-    );
+    )
+    .expect("redacted manifest");
     let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)
         .expect("grant ref should build");
     crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {

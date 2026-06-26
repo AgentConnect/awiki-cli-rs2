@@ -38,6 +38,8 @@ pub struct AttachmentManifest {
     pub attachments: Vec<AttachmentDescriptor>,
     pub primary_attachment_id: String,
     pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_payload: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,30 +278,73 @@ pub(crate) async fn prepare_attachment_metadata_from_path(
     .map(PreparedAttachment::from)
 }
 
-pub(crate) fn build_attachment_manifest(descriptor: &AttachmentDescriptor, caption: &str) -> Value {
-    redact_attachment_manifest(&build_attachment_manifest_internal(descriptor, caption))
+pub(crate) fn build_attachment_manifest(
+    descriptor: &AttachmentDescriptor,
+    caption: &str,
+) -> crate::ImResult<Value> {
+    Ok(redact_attachment_manifest(
+        &build_attachment_manifest_internal(descriptor, caption)?,
+    ))
+}
+
+pub(crate) fn build_attachment_manifest_with_mention_payload(
+    descriptor: &AttachmentDescriptor,
+    caption: &str,
+    mention_payload: Option<&Value>,
+) -> crate::ImResult<Value> {
+    Ok(redact_attachment_manifest(
+        &build_attachment_manifest_internal_with_mention_payload(
+            descriptor,
+            caption,
+            mention_payload,
+        )?,
+    ))
 }
 
 pub(crate) fn build_attachment_manifest_internal(
     descriptor: &AttachmentDescriptor,
     caption: &str,
-) -> Value {
-    build_attachment_manifest_value(descriptor, caption, None)
+) -> crate::ImResult<Value> {
+    build_attachment_manifest_internal_with_mention_payload(descriptor, caption, None)
+}
+
+pub(crate) fn build_attachment_manifest_internal_with_mention_payload(
+    descriptor: &AttachmentDescriptor,
+    caption: &str,
+    mention_payload: Option<&Value>,
+) -> crate::ImResult<Value> {
+    build_attachment_manifest_value(descriptor, caption, mention_payload, None)
 }
 
 pub(crate) fn build_attachment_manifest_with_object_e2ee_secrets(
     descriptor: &AttachmentDescriptor,
     caption: &str,
     secrets: &ObjectE2eeAttachmentSecrets,
-) -> Value {
-    build_attachment_manifest_value(descriptor, caption, Some(secrets))
+) -> crate::ImResult<Value> {
+    build_attachment_manifest_value(descriptor, caption, None, Some(secrets))
+}
+
+pub(crate) fn build_attachment_manifest_with_object_e2ee_secrets_and_mention_payload(
+    descriptor: &AttachmentDescriptor,
+    caption: &str,
+    secrets: &ObjectE2eeAttachmentSecrets,
+    mention_payload: Option<&Value>,
+) -> crate::ImResult<Value> {
+    build_attachment_manifest_value(descriptor, caption, mention_payload, Some(secrets))
 }
 
 fn build_attachment_manifest_value(
     descriptor: &AttachmentDescriptor,
     caption: &str,
+    mention_payload: Option<&Value>,
     secrets: Option<&ObjectE2eeAttachmentSecrets>,
-) -> Value {
+) -> crate::ImResult<Value> {
+    let mention_payload = mention_payload
+        .map(|payload| {
+            crate::messages::validate_message_mention_payload(payload)?;
+            Ok::<Value, crate::ImError>(payload.clone())
+        })
+        .transpose()?;
     let manifest = AttachmentManifest {
         attachments: vec![descriptor.clone()],
         primary_attachment_id: descriptor.attachment_id.clone(),
@@ -308,8 +353,9 @@ fn build_attachment_manifest_value(
         } else {
             Some(caption.to_string())
         },
+        mention_payload,
     };
-    manifest_to_value(&manifest, secrets)
+    Ok(manifest_to_value(&manifest, secrets))
 }
 
 pub fn manifest_content_string(manifest: &Value) -> String {
@@ -351,6 +397,7 @@ pub(crate) fn parse_attachment_manifest(value: &Value) -> crate::ImResult<Attach
             .collect(),
         primary_attachment_id: parsed.primary_attachment_id,
         caption: parsed.caption,
+        mention_payload: None,
     })
 }
 
@@ -403,6 +450,17 @@ fn manifest_to_value(
     );
     if let Some(caption) = manifest.caption.as_ref() {
         value.insert("caption".to_string(), Value::String(caption.clone()));
+    }
+    if let Some(mention_payload) = manifest.mention_payload.as_ref() {
+        if let Some(text) = mention_payload.get("text") {
+            value.insert("text".to_string(), text.clone());
+        }
+        if let Some(mentions) = mention_payload.get("mentions") {
+            value.insert("mentions".to_string(), mentions.clone());
+        }
+        if let Some(annotations) = mention_payload.get("annotations") {
+            value.insert("annotations".to_string(), annotations.clone());
+        }
     }
     Value::Object(value)
 }
@@ -555,7 +613,8 @@ mod tests {
             &descriptor,
             "secret",
             &e2ee.secrets,
-        );
+        )
+        .expect("full manifest");
         assert_eq!(
             full["attachments"][0]["encryption_info"]["object_key_b64u"],
             e2ee.secrets.object_key_b64u
@@ -582,7 +641,10 @@ mod tests {
             redacted["attachments"][0]["encryption_info"].get("nonce_b64u"),
             None
         );
-        assert_eq!(build_attachment_manifest(&descriptor, "secret"), redacted);
+        assert_eq!(
+            build_attachment_manifest(&descriptor, "secret").expect("redacted manifest"),
+            redacted
+        );
 
         let parsed = parse_attachment_manifest_internal(&full).expect("full manifest parses");
         let parsed_attachment = &parsed.attachments[0];
@@ -598,5 +660,67 @@ mod tests {
             parsed_attachment.descriptor.object_encryption_mode(),
             OBJECT_ENCRYPTION_MODE_E2EE
         );
+    }
+
+    #[test]
+    fn attachment_manifest_can_carry_structured_mention_payload() {
+        let prepared =
+            prepare_attachment_payload("report.md", "text/markdown", b"# Report".to_vec())
+                .expect("prepared attachment");
+        let descriptor = AttachmentDescriptor::from_prepared(
+            &prepared,
+            "att-mention-1",
+            "https://objects.example/att-mention-1",
+        );
+        let mention_payload = json!({
+            "text": "@Hermes 看看这个文件",
+            "mentions": [{
+                "id": "men_agent",
+                "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                "target": {"kind": "agent", "did": "did:agent:hermes"},
+                "mention_role": "addressee"
+            }]
+        });
+
+        let manifest = build_attachment_manifest_with_mention_payload(
+            &descriptor,
+            "@Hermes 看看这个文件",
+            Some(&mention_payload),
+        )
+        .expect("mention attachment manifest");
+
+        assert_eq!(manifest["caption"], "@Hermes 看看这个文件");
+        assert_eq!(manifest["text"], "@Hermes 看看这个文件");
+        assert_eq!(manifest["mentions"][0]["id"], "men_agent");
+        assert_eq!(manifest["attachments"][0]["attachment_id"], "att-mention-1");
+        crate::messages::parse_message_mention_payload(&manifest)
+            .expect("attachment manifest is also a valid mention payload");
+    }
+
+    #[test]
+    fn attachment_manifest_rejects_invalid_mention_payload() {
+        let prepared =
+            prepare_attachment_payload("report.md", "text/markdown", b"# Report".to_vec())
+                .expect("prepared attachment");
+        let descriptor = AttachmentDescriptor::from_prepared(
+            &prepared,
+            "att-mention-1",
+            "https://objects.example/att-mention-1",
+        );
+        let invalid = json!({
+            "text": "@Hermes",
+            "mentions": [{
+                "id": "men_agent",
+                "range": {"start": 0, "end": 100, "unit": "unicode_code_point"},
+                "target": {"kind": "agent", "did": "did:agent:hermes"}
+            }]
+        });
+
+        assert!(build_attachment_manifest_with_mention_payload(
+            &descriptor,
+            "@Hermes",
+            Some(&invalid)
+        )
+        .is_err());
     }
 }

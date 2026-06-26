@@ -117,7 +117,10 @@ pub(crate) fn mentions_current_user_for_projection(
     if direction != 0 || !is_group_projection(thread_id, group_id, group_did) {
         return false;
     }
-    if content_type.trim() != "application/json" {
+    let content_type = content_type.trim();
+    if content_type != "application/json"
+        && content_type != crate::attachments::attachment_manifest_content_type()
+    {
         return false;
     }
     let owner_did = owner_did.trim();

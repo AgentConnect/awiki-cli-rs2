@@ -1172,6 +1172,7 @@ fn group_e2ee_attachment_request(group: &str) -> crate::messages::SendMessageReq
                 bytes: b"group attachment secret".to_vec(),
             },
             caption: Some("group caption".to_owned()),
+            mention_payload: None,
             mime_type: Some("application/pdf".to_owned()),
             filename: None,
         },
@@ -1213,13 +1214,15 @@ fn committed_attachment(
         slot.object_uri.clone(),
     );
     let redacted_manifest =
-        crate::attachments::manifest::build_attachment_manifest(&descriptor, caption);
+        crate::attachments::manifest::build_attachment_manifest(&descriptor, caption)
+            .expect("redacted manifest");
     let full_manifest =
         crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
             &descriptor,
             caption,
             &e2ee.secrets,
-        );
+        )
+        .expect("full manifest");
     let grant_ref =
         crate::attachments::manifest::build_attachment_grant_ref(&descriptor).expect("grant ref");
     crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {

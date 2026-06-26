@@ -3787,17 +3787,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return DartAttachmentSendRequest(
       target: dco_decode_dart_message_target(arr[0]),
       input: dco_decode_dart_attachment_input(arr[1]),
       caption: dco_decode_opt_String(arr[2]),
-      mimeType: dco_decode_opt_String(arr[3]),
-      filename: dco_decode_opt_String(arr[4]),
-      security: dco_decode_dart_message_security_mode(arr[5]),
-      idempotencyKey: dco_decode_opt_String(arr[6]),
-      waitForFinalAcceptance: dco_decode_bool(arr[7]),
+      mentionPayloadJson: dco_decode_opt_String(arr[3]),
+      mimeType: dco_decode_opt_String(arr[4]),
+      filename: dco_decode_opt_String(arr[5]),
+      security: dco_decode_dart_message_security_mode(arr[6]),
+      idempotencyKey: dco_decode_opt_String(arr[7]),
+      waitForFinalAcceptance: dco_decode_bool(arr[8]),
     );
   }
 
@@ -5820,6 +5821,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_target = sse_decode_dart_message_target(deserializer);
     var var_input = sse_decode_dart_attachment_input(deserializer);
     var var_caption = sse_decode_opt_String(deserializer);
+    var var_mentionPayloadJson = sse_decode_opt_String(deserializer);
     var var_mimeType = sse_decode_opt_String(deserializer);
     var var_filename = sse_decode_opt_String(deserializer);
     var var_security = sse_decode_dart_message_security_mode(deserializer);
@@ -5829,6 +5831,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       target: var_target,
       input: var_input,
       caption: var_caption,
+      mentionPayloadJson: var_mentionPayloadJson,
       mimeType: var_mimeType,
       filename: var_filename,
       security: var_security,
@@ -8436,6 +8439,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_dart_message_target(self.target, serializer);
     sse_encode_dart_attachment_input(self.input, serializer);
     sse_encode_opt_String(self.caption, serializer);
+    sse_encode_opt_String(self.mentionPayloadJson, serializer);
     sse_encode_opt_String(self.mimeType, serializer);
     sse_encode_opt_String(self.filename, serializer);
     sse_encode_dart_message_security_mode(self.security, serializer);

@@ -35,6 +35,7 @@ class AttachmentSendRequest {
     required this.target,
     required this.input,
     this.caption,
+    this.mentionPayloadJson,
     this.mimeType,
     this.filename,
     this.security = MessageSecurityMode.defaultPlain,
@@ -45,6 +46,7 @@ class AttachmentSendRequest {
   final MessageTarget target;
   final AttachmentInput input;
   final String? caption;
+  final String? mentionPayloadJson;
   final String? mimeType;
   final String? filename;
   final MessageSecurityMode security;

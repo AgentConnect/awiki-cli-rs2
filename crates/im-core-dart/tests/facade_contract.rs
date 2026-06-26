@@ -27,6 +27,18 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
             bytes: b"hello".to_vec(),
         },
         caption: Some("caption".to_string()),
+        mention_payload_json: Some(
+            serde_json::json!({
+                "text": "@Hermes caption",
+                "mentions": [{
+                    "id": "men_agent",
+                    "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                    "target": {"kind": "agent", "did": "did:agent:hermes"},
+                    "mention_role": "addressee"
+                }]
+            })
+            .to_string(),
+        ),
         mime_type: None,
         filename: None,
         security: awiki_im_core::dto::message::DartMessageSecurityMode::E2eeRequired,
@@ -44,6 +56,15 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
         im_core::attachments::AttachmentInput::Bytes { bytes, .. } if bytes == b"hello".to_vec()
     ));
     assert_eq!(request.delivery.idempotency_key.as_deref(), Some("idem-1"));
+    assert_eq!(
+        request
+            .mention_payload
+            .as_ref()
+            .and_then(|payload| payload.get("mentions"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
     assert!(request.delivery.wait_for_final_acceptance);
     assert!(matches!(
         request.security,

@@ -7,6 +7,8 @@ use serde_json::Value;
 pub struct AttachmentSendRequest {
     pub input: AttachmentInput,
     pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_payload: Option<Value>,
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub delivery: crate::messages::MessageDeliveryOptions,

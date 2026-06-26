@@ -1404,7 +1404,8 @@ fn object_e2ee_case(plaintext: Vec<u8>) -> ObjectE2eeCase {
             &descriptor,
             "secret",
             &prepared.secrets,
-        );
+        )
+        .expect("full manifest");
     ObjectE2eeCase {
         plaintext,
         ciphertext: prepared.prepared.payload,
