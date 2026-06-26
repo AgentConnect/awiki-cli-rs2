@@ -10,6 +10,7 @@ use crate::state::CliRouteSessionRecord;
 use crate::workspace::{WorkspaceInstance, WorkspaceMode};
 
 pub mod host;
+pub mod reply_payload;
 
 pub fn canonical_full_handle(value: &str) -> Result<String> {
     let value = value.trim().trim_start_matches('@').to_ascii_lowercase();

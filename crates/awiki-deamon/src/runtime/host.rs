@@ -19,6 +19,9 @@ use crate::plugins::generic_cli::{
     DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
 };
 use crate::plugins::hermes::HermesRuntimeEventKind;
+use crate::runtime::reply_payload::{
+    group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
+};
 use crate::runtime::{
     runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeInvocationAuthority,
     RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus,
@@ -1570,109 +1573,19 @@ fn runtime_final_payload(
     else {
         return Ok(None);
     };
-    let mention_surface = mention_surface_for_sender(&payload, sender_did);
-    let text = format!("{} {}", mention_surface, record.final_text.trim());
-    let mention_end = mention_surface.chars().count();
-    Ok(Some(serde_json::json!({
-        "text": text,
-        "mentions": [{
-            "id": format!("reply_{}", stable_id_suffix(&format!("{}:{}", record.run_id, sender_did))),
-            "range": {
-                "start": 0,
-                "end": mention_end,
-                "unit": "unicode_code_point"
-            },
-            "target": {
-                "kind": "human",
-                "did": sender_did,
-                "display_name": mention_surface.trim_start_matches('@')
-            },
-            "mention_role": "addressee"
-        }],
-        "annotations": {
-            "awiki_reply_to_message_id": payload.get("source_message_id").cloned().unwrap_or(serde_json::Value::Null),
-            "awiki_reply_from_agent_did": record.agent_did
-        }
-    })))
-}
-
-fn mention_surface_for_sender(payload: &serde_json::Value, sender_did: &str) -> String {
-    if let Some(handle) = payload
-        .get("source_sender_full_handle")
-        .and_then(serde_json::Value::as_str)
-        .and_then(short_handle)
-    {
-        return format!("@{handle}");
-    }
-    if let Some(handle) = short_handle_from_wba_did(sender_did) {
-        return format!("@{handle}");
-    }
-    let compact = if sender_did.len() <= 18 {
-        sender_did.to_string()
-    } else {
-        format!(
-            "{}…{}",
-            &sender_did[..10],
-            &sender_did[sender_did.len().saturating_sub(6)..]
-        )
-    };
-    format!("@{compact}")
-}
-
-fn short_handle(value: &str) -> Option<String> {
-    let mut trimmed = value.trim();
-    if trimmed.is_empty() || trimmed.starts_with("did:") {
-        return None;
-    }
-    while let Some(rest) = trimmed.strip_prefix('@') {
-        trimmed = rest.trim_start();
-    }
-    if let Some(rest) = trimmed.strip_prefix("wba://") {
-        trimmed = rest.trim_start();
-    }
-    let handle = match trimmed.find('.') {
-        Some(index) if index > 0 => &trimmed[..index],
-        _ => trimmed,
-    }
-    .trim();
-    if handle.is_empty() {
-        None
-    } else {
-        Some(handle.to_string())
-    }
-}
-
-fn short_handle_from_wba_did(did: &str) -> Option<String> {
-    let parts = did.trim().split(':').collect::<Vec<_>>();
-    if parts.len() >= 6 && parts[0] == "did" && parts[1] == "wba" {
-        if parts[3] == "user" {
-            return short_handle(parts[4]);
-        }
-        if parts[3] == "agent" && parts.len() >= 7 {
-            return short_handle(parts[5]);
-        }
-        return short_handle(parts[3]);
-    }
-    None
-}
-
-fn group_did_from_conversation_id(conversation_id: &str) -> Option<&str> {
-    conversation_id
-        .trim()
-        .strip_prefix("group:")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn stable_id_suffix(input: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    let digest = Sha256::digest(input.as_bytes());
-    digest
-        .iter()
-        .take(16)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    Ok(structured_group_reply(StructuredGroupReplyInput {
+        run_id: &record.run_id,
+        agent_did: &record.agent_did,
+        requester_did: sender_did,
+        requester_full_handle: payload
+            .get("source_sender_full_handle")
+            .and_then(serde_json::Value::as_str),
+        source_message_id: payload
+            .get("source_message_id")
+            .and_then(serde_json::Value::as_str),
+        reply_text: &record.final_text,
+    })
+    .map(|reply| reply.payload))
 }
 
 fn mark_runtime_final_delivered(
@@ -2399,31 +2312,7 @@ fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-
-    #[test]
-    fn mention_surface_for_sender_uses_short_handle_from_full_handle() {
-        let payload = json!({
-            "source_sender_full_handle": "bob.anpclaw.com"
-        });
-
-        assert_eq!(
-            mention_surface_for_sender(&payload, "did:human:bob"),
-            "@bob"
-        );
-    }
-
-    #[test]
-    fn mention_surface_for_sender_derives_short_handle_from_wba_did() {
-        let payload = json!({});
-
-        assert_eq!(
-            mention_surface_for_sender(&payload, "did:wba:awiki.info:user:alice:e1_sender"),
-            "@alice"
-        );
-    }
 
     #[test]
     fn runtime_requester_authority_cannot_call_outbound_send_methods() {

@@ -21,6 +21,7 @@ use crate::commands::{
     handle_agent_payload_message, setup_daemon_agent, AgentCommandOutcome,
     IncomingAgentPayloadMessage, RuntimeAgentCreateOutcome,
 };
+use crate::local_rpc::{execute_runtime_rpc_request_with_outbox, RuntimeRpcRequest};
 use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
 use crate::plugins::hermes::{FakeHermesBehavior, FakeHermesGateway, AWIKI_SKILLS_VERSION};
 use crate::registration::{
@@ -31,6 +32,9 @@ use crate::registration::{
 use crate::runtime::{
     RuntimeAgentProfile, RuntimeConversationScope, RuntimeInvocationAuthority, RuntimeRun,
     RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
+};
+use crate::security::runtime_token::{
+    issue_runtime_token, RpcMethod, RuntimeTokenScope, ANY_GROUP_RECIPIENT_SCOPE,
 };
 use crate::state::{
     CliRuntimeProfileRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession,
@@ -903,6 +907,78 @@ fn controller_runtime_outbox_emits_owner_activity_for_external_runs() {
 }
 
 #[test]
+fn controller_runtime_outbox_group_final_sends_structured_mention_reply() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let runtime_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime",
+        Arc::clone(&calls),
+    ));
+    let daemon_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "daemon",
+        Arc::clone(&calls),
+    ));
+    let sent_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sent_message_ids = Arc::new(Mutex::new(Vec::new()));
+    let outbox = ControllerRuntimeOutbox::with_status_correlation(
+        runtime_sender,
+        daemon_sender,
+        Some("did:agent:daemon-control".to_string()),
+        "did:human:bob",
+        Some("did:human:alice".to_string()),
+        "task_group_mention_1",
+        Some("group:did:group:team".to_string()),
+        Some("msg_group_1".to_string()),
+        Some("men_agent".to_string()),
+        Some("did:human:bob".to_string()),
+        Some("bob.anpclaw.com".to_string()),
+        Some("group_mention".to_string()),
+        Arc::clone(&sent_counter),
+        Arc::clone(&sent_message_ids),
+    );
+    let context = crate::state::AuthorizedRuntimeContext {
+        token_id: "rtok_group_final".to_string(),
+        agent_did: "did:agent:runtime-codex".to_string(),
+        runtime_profile_id: "profile_group_final".to_string(),
+        run_id: "run_group_final".to_string(),
+        method: crate::security::runtime_token::RpcMethod::TaskFinish,
+    };
+
+    outbox
+        .send_final(&context, Some("这是群聊里的回复"))
+        .unwrap();
+
+    assert_eq!(sent_counter.load(Ordering::Relaxed), 3);
+    let calls = calls.lock().expect("recorded calls lock poisoned").clone();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].sender_id, "runtime");
+    assert_eq!(calls[0].kind, "message");
+    assert_eq!(calls[0].recipient_did, "did:group:team");
+    assert_eq!(calls[0].text.as_deref(), Some("@bob 这是群聊里的回复"));
+    let mention_payload = calls[0].payload.as_ref().expect("reply payload recorded");
+    assert_eq!(mention_payload["text"], "@bob 这是群聊里的回复");
+    assert_eq!(mention_payload["mentions"][0]["range"]["start"], 0);
+    assert_eq!(mention_payload["mentions"][0]["range"]["end"], 4);
+    assert_eq!(mention_payload["mentions"][0]["target"]["kind"], "human");
+    assert_eq!(
+        mention_payload["mentions"][0]["target"]["did"],
+        "did:human:bob"
+    );
+    assert_eq!(
+        mention_payload["annotations"]["awiki_reply_to_message_id"],
+        "msg_group_1"
+    );
+    assert_eq!(calls[1].sender_id, "daemon");
+    assert_eq!(calls[1].kind, "payload");
+    assert_eq!(calls[1].state.as_deref(), Some("finished"));
+    assert_eq!(calls[2].sender_id, "daemon");
+    assert_eq!(calls[2].kind, "payload");
+    assert_eq!(
+        calls[2].payload.as_ref().unwrap()["status_scope"],
+        "runtime_activity"
+    );
+}
+
+#[test]
 fn controller_runtime_outbox_does_not_duplicate_owner_activity_for_controller_run() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let runtime_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
@@ -949,6 +1025,117 @@ fn controller_runtime_outbox_does_not_duplicate_owner_activity_for_controller_ru
     assert_eq!(calls[0].recipient_did, "did:human:alice");
     let payload = calls[0].payload.as_ref().expect("requester payload");
     assert_eq!(payload["status_scope"], "run");
+}
+
+#[test]
+fn runtime_msg_send_in_group_mention_run_is_structured_as_reply_to_requester() {
+    let (root, _config, state) = fixture();
+    let profile = generic_cli_profile(root.path());
+    state.upsert_runtime_agent_profile(&profile).unwrap();
+    let task = RuntimeTask {
+        task_id: "task_group_mention_msg_send_1".to_string(),
+        agent_did: profile.agent_did.clone(),
+        agent_handle: profile.agent_handle.clone(),
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: profile.controller_did.clone(),
+        sender_did: "did:human:bob".to_string(),
+        requester_did: "did:human:bob".to_string(),
+        requester_user_id: Some("user-bob".to_string()),
+        requester_full_handle: Some("bob.anpclaw.com".to_string()),
+        trigger_kind: RuntimeTaskTriggerKind::GroupMention,
+        conversation_scope: RuntimeConversationScope::group_visible("did:group:team"),
+        invocation_authority: RuntimeInvocationAuthority::Requester,
+        reply_recipient_did: "did:human:bob".to_string(),
+        conversation_id: Some("group:did:group:team".to_string()),
+        text: serde_json::json!({
+            "schema": "awiki.runtime.user_message_task.v1",
+            "source_message_id": "msg_group_1",
+            "source_sender_did": "did:human:bob",
+            "source_sender_full_handle": "bob.anpclaw.com",
+            "message_kind": "group_mention",
+            "content_text": "@codex 看一下",
+            "mention_context": {
+                "mention_id": "men_agent"
+            }
+        })
+        .to_string(),
+    };
+    state.insert_runtime_task(&task).unwrap();
+    let run = RuntimeRun {
+        run_id: "run_group_mention_msg_send_1".to_string(),
+        task_id: task.task_id.clone(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        runtime_plugin_id: profile.runtime_plugin_id.clone(),
+        workspace_id: profile.workspace_id.clone(),
+        status: RuntimeRunStatus::Running,
+    };
+    state.insert_runtime_run(&run).unwrap();
+    let mut scope = RuntimeTokenScope::new(
+        profile.agent_did.clone(),
+        profile.runtime_profile_id.clone(),
+        run.run_id.clone(),
+        vec![RpcMethod::MsgSend],
+        Some(vec![ANY_GROUP_RECIPIENT_SCOPE.to_string()]),
+        std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    scope.allowed_message_security = Some(vec!["default_plain".to_string()]);
+    let issued = issue_runtime_token(scope).unwrap();
+    state.store_runtime_token(&issued).unwrap();
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let outbox = ControllerRuntimeOutbox::new(
+        ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+            "runtime",
+            Arc::clone(&calls),
+        )),
+        ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+            "daemon",
+            Arc::clone(&calls),
+        )),
+        Some("did:agent:daemon-control".to_string()),
+        "did:human:bob",
+        Some(profile.controller_did.clone()),
+        task.task_id.clone(),
+        task.conversation_id.clone(),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+
+    let response = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: serde_json::json!({
+                "group": "did:group:team",
+                "text": "@bob 这里是群聊回复"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap();
+
+    assert!(response.ok);
+    let calls = calls.lock().expect("recorded calls lock poisoned").clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].sender_id, "runtime");
+    assert_eq!(calls[0].kind, "message");
+    assert_eq!(calls[0].recipient_did, "did:group:team");
+    assert_eq!(calls[0].text.as_deref(), Some("@bob 这里是群聊回复"));
+    let payload = calls[0].payload.as_ref().expect("message payload recorded");
+    assert_eq!(payload["text"], "@bob 这里是群聊回复");
+    assert_eq!(payload["mentions"][0]["range"]["end"], 4);
+    assert_eq!(payload["mentions"][0]["target"]["kind"], "human");
+    assert_eq!(payload["mentions"][0]["target"]["did"], "did:human:bob");
+    assert_eq!(
+        payload["annotations"]["awiki_reply_to_message_id"],
+        "msg_group_1"
+    );
 }
 
 fn profile(root: &Path) -> RuntimeAgentProfile {

@@ -10,7 +10,10 @@ use crate::app_bridge::action::queue_runtime_app_action_request;
 use crate::outbox::{
     RuntimeAttachmentSend, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
 };
-use crate::runtime::RuntimeRunStatus;
+use crate::runtime::reply_payload::{
+    group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
+};
+use crate::runtime::{RuntimeRunStatus, RuntimeTaskTriggerKind};
 use crate::security::runtime_token::{RpcMethod, RuntimeRpcToken};
 use crate::state::{AuthorizedRuntimeContext, DaemonState};
 
@@ -166,6 +169,7 @@ pub fn execute_runtime_rpc_request_with_outbox(
                 message.recipient_candidates(),
                 Some(message.security.as_str()),
             )?;
+            let message = standardize_group_mention_reply_msg_send(state, &context, message)?;
             apply_msg_send_side_effect(state, outbox, &context, &message)?;
             context
         }
@@ -357,6 +361,52 @@ fn resolve_message_recipient(
         bail!("msg.send recipient could not be resolved");
     };
     Ok(message.with_resolved_recipient(resolved_did))
+}
+
+fn standardize_group_mention_reply_msg_send(
+    state: &DaemonState,
+    context: &AuthorizedRuntimeContext,
+    mut message: RuntimeMessageSend,
+) -> Result<RuntimeMessageSend> {
+    if message.payload.is_some() || message.file_path.is_some() {
+        return Ok(message);
+    }
+    let RuntimeMessageTarget::Group { group } = &message.target else {
+        return Ok(message);
+    };
+    let task = state.load_runtime_task_for_run(&context.run_id)?;
+    if task.trigger_kind != RuntimeTaskTriggerKind::GroupMention {
+        return Ok(message);
+    }
+    let Some(task_group_did) = task
+        .conversation_id
+        .as_deref()
+        .and_then(group_did_from_conversation_id)
+    else {
+        return Ok(message);
+    };
+    if group.trim() != task_group_did {
+        return Ok(message);
+    }
+    let task_payload = serde_json::from_str::<Value>(&task.text).ok();
+    let source_message_id = task_payload
+        .as_ref()
+        .and_then(|payload| payload.get("source_message_id"))
+        .and_then(Value::as_str);
+    let reply = match structured_group_reply(StructuredGroupReplyInput {
+        run_id: &context.run_id,
+        agent_did: &context.agent_did,
+        requester_did: &task.requester_did,
+        requester_full_handle: task.requester_full_handle.as_deref(),
+        source_message_id,
+        reply_text: &message.text,
+    }) {
+        Some(reply) => reply,
+        None => return Ok(message),
+    };
+    message.text = reply.text;
+    message.payload = Some(reply.payload);
+    Ok(message)
 }
 
 fn apply_attachment_send_side_effect(
