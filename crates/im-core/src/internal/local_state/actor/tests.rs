@@ -85,6 +85,20 @@ async fn db_actor_stores_classifies_marks_and_lists_messages() {
     assert_eq!(classification.direct_ids, vec!["direct-1"]);
     assert_eq!(classification.group_ids, vec!["group-1"]);
 
+    let unread_direct = db
+        .list_unread_incoming_message_ids(
+            "alice-id",
+            "did:example:alice",
+            crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(unread_direct.message_ids, vec!["direct-1"]);
+    assert!(!unread_direct.truncated);
+
     let updated = db
         .mark_messages_read("alice-id", "did:example:alice", classification.local_ids())
         .await

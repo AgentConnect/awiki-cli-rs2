@@ -269,6 +269,25 @@ pub struct MarkReadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkThreadReadRequest {
+    pub thread: ThreadRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_message_ids: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkThreadReadResult {
+    pub updated_count: u32,
+    pub message_ids: Vec<crate::ids::MessageId>,
+    pub local_candidate_count: u32,
+    pub local_updated_count: u32,
+    pub remote_updated_count: u32,
+    pub remote_acknowledged: bool,
+    pub partial: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub thread: ThreadRef,
     pub title: Option<String>,

@@ -338,6 +338,75 @@ impl MarkReadClassification {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ThreadUnreadMessageIds {
+    pub(crate) message_ids: Vec<String>,
+    pub(crate) truncated: bool,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn list_unread_incoming_message_ids_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+    limit: i64,
+) -> crate::ImResult<ThreadUnreadMessageIds> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let limit = normalize_thread_mark_read_limit(limit);
+    let conversation_ids =
+        conversation_ids_for_thread_ref(connection, &owner_identity_id, owner_did, thread)?;
+    if conversation_ids.is_empty() {
+        return Ok(ThreadUnreadMessageIds {
+            message_ids: Vec::new(),
+            truncated: false,
+        });
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT msg_id
+FROM messages
+WHERE owner_identity_id = ?
+  AND direction = 0
+  AND is_read = 0
+  AND NULLIF(TRIM(COALESCE(msg_id, '')), '') IS NOT NULL
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})
+ORDER BY COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC
+LIMIT ?"#
+    );
+    let fetch_limit = limit.saturating_add(1);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 2);
+    params.push(&owner_identity_id);
+    for conversation_id in &conversation_ids {
+        params.push(conversation_id);
+    }
+    params.push(&fetch_limit);
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), |row| {
+            row.get::<_, Option<String>>("msg_id")
+                .map(|value| value.unwrap_or_default())
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut message_ids = Vec::new();
+    for row in rows {
+        let message_id = row.map_err(super::local_state_unavailable)?;
+        push_unique(&mut message_ids, message_id.trim().to_owned());
+    }
+    let truncated = i64::try_from(message_ids.len()).unwrap_or(i64::MAX) > limit;
+    if truncated {
+        message_ids.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+    Ok(ThreadUnreadMessageIds {
+        message_ids,
+        truncated,
+    })
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn classify_mark_read_ids(
     connection: &rusqlite::Connection,
     owner_did: &str,
@@ -494,6 +563,88 @@ WHERE {} AND msg_id IN ({placeholders})"#,
         result.push(row.map_err(super::local_state_unavailable)?);
     }
     Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_thread_mark_read_limit(limit: i64) -> i64 {
+    limit.clamp(1, 500)
+}
+
+#[cfg(feature = "sqlite")]
+fn conversation_ids_for_thread_ref(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+) -> crate::ImResult<Vec<String>> {
+    let mut ids = Vec::new();
+    match thread {
+        crate::messages::ThreadRef::Direct(peer) => {
+            let peer = peer.as_str().trim();
+            if !peer.is_empty() {
+                push_unique(&mut ids, direct_conversation_id_for_peer_ref(peer));
+                if !peer.starts_with("did:") {
+                    for id in peer_scope_direct_conversation_ids_matching_handle(
+                        connection,
+                        owner_identity_id,
+                        peer,
+                    )? {
+                        push_unique(&mut ids, id);
+                    }
+                    for id in legacy_direct_conversation_ids_matching_handle(
+                        connection,
+                        owner_identity_id,
+                        &normalize_full_handle(peer),
+                    )? {
+                        push_unique(&mut ids, id);
+                    }
+                }
+            }
+        }
+        crate::messages::ThreadRef::Group(group) => {
+            let group = group.as_str().trim();
+            if !group.is_empty() {
+                push_unique(&mut ids, group_conversation_id_for_ref(group));
+            }
+        }
+        crate::messages::ThreadRef::Thread(thread) => {
+            let raw = thread.as_str().trim();
+            if !raw.is_empty() {
+                push_unique(&mut ids, raw.to_owned());
+                if let Some(alias) =
+                    crate::internal::local_state::owner_scope::direct_conversation_id_from_thread_alias(
+                        raw,
+                        owner_did,
+                    )
+                {
+                    push_unique(&mut ids, alias);
+                }
+                if let Some(group) = raw.strip_prefix("group:") {
+                    push_unique(&mut ids, group_conversation_id_for_ref(group));
+                }
+            }
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_conversation_id_for_peer_ref(peer: &str) -> String {
+    let peer = peer.trim();
+    if let Some(conversation_id) = peer.strip_prefix("dm:") {
+        return crate::internal::local_state::owner_scope::direct_conversation_id(conversation_id);
+    }
+    crate::internal::local_state::owner_scope::direct_conversation_id(peer)
+}
+
+#[cfg(feature = "sqlite")]
+fn group_conversation_id_for_ref(group: &str) -> String {
+    let group = group.trim();
+    if group.starts_with("group:") {
+        group.to_owned()
+    } else {
+        crate::internal::local_state::owner_scope::group_conversation_id(group)
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -825,6 +976,57 @@ WHERE owner_identity_id = ?1
 }
 
 #[cfg(feature = "sqlite")]
+fn peer_scope_direct_conversation_ids_matching_handle(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    full_handle: &str,
+) -> crate::ImResult<Vec<String>> {
+    let normalized_handle = normalize_full_handle(full_handle);
+    if normalized_handle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT DISTINCT
+    COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
+    metadata
+FROM messages
+WHERE owner_identity_id = ?1
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) LIKE 'dm:peer-scope:%'
+  AND NULLIF(TRIM(COALESCE(group_id, '')), '') IS NULL
+  AND NULLIF(TRIM(COALESCE(group_did, '')), '') IS NULL
+  AND metadata LIKE '%peer_full_handle%'"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([owner_identity_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>("conversation_id")?
+                    .unwrap_or_default(),
+                row.get::<_, Option<String>>("metadata")?
+                    .unwrap_or_default(),
+            ))
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (conversation_id, metadata) = row.map_err(super::local_state_unavailable)?;
+        let metadata = parse_metadata(&metadata);
+        let matches = metadata
+            .get("peer_full_handle")
+            .and_then(serde_json::Value::as_str)
+            .map(normalize_full_handle)
+            .as_deref()
+            == Some(normalized_handle.as_str());
+        if matches {
+            push_unique(&mut ids, conversation_id);
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(feature = "sqlite")]
 fn did_from_direct_conversation_id(conversation_id: &str) -> Option<String> {
     conversation_id
         .trim()
@@ -1080,6 +1282,137 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
     }
 
     #[test]
+    fn local_state_lists_unread_incoming_direct_ids_for_thread() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_message_row(
+            &db,
+            "direct-old",
+            "alice-id",
+            "did:example:alice",
+            "dm:did:example:bob",
+            0,
+            "did:example:bob",
+            "did:example:alice",
+            "",
+            0,
+            "2026-05-21T00:00:00Z",
+        );
+        seed_message_row(
+            &db,
+            "direct-new",
+            "alice-id",
+            "did:example:alice",
+            "dm:did:example:bob",
+            0,
+            "did:example:bob",
+            "did:example:alice",
+            "",
+            0,
+            "2026-05-22T00:00:00Z",
+        );
+        seed_message_row(
+            &db,
+            "direct-outgoing",
+            "alice-id",
+            "did:example:alice",
+            "dm:did:example:bob",
+            1,
+            "did:example:alice",
+            "did:example:bob",
+            "",
+            0,
+            "2026-05-23T00:00:00Z",
+        );
+        seed_message_row(
+            &db,
+            "direct-read",
+            "alice-id",
+            "did:example:alice",
+            "dm:did:example:bob",
+            0,
+            "did:example:bob",
+            "did:example:alice",
+            "",
+            1,
+            "2026-05-24T00:00:00Z",
+        );
+        seed_message_row(
+            &db,
+            "other-owner",
+            "mallory-id",
+            "did:example:mallory",
+            "dm:did:example:bob",
+            0,
+            "did:example:bob",
+            "did:example:mallory",
+            "",
+            0,
+            "2026-05-25T00:00:00Z",
+        );
+
+        let result = list_unread_incoming_message_ids_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(result.message_ids, vec!["direct-new", "direct-old"]);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn local_state_lists_group_unread_ids_and_reports_truncation() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_message_row(
+            &db,
+            "group-old",
+            "alice-id",
+            "did:example:alice",
+            "group:did:example:group",
+            0,
+            "did:example:bob",
+            "",
+            "did:example:group",
+            0,
+            "2026-05-21T00:00:00Z",
+        );
+        seed_message_row(
+            &db,
+            "group-new",
+            "alice-id",
+            "did:example:alice",
+            "group:did:example:group",
+            0,
+            "did:example:carol",
+            "",
+            "did:example:group",
+            0,
+            "2026-05-22T00:00:00Z",
+        );
+
+        let result = list_unread_incoming_message_ids_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(result.message_ids, vec!["group-new"]);
+        assert!(result.truncated);
+    }
+
+    #[test]
     fn local_state_messages_upsert_stores_owner_identity_and_replaces_existing() {
         let db = Connection::open_in_memory().unwrap();
         upsert_message(
@@ -1316,5 +1649,42 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             |row| row.get(0),
         )
         .unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_message_row(
+        db: &Connection,
+        msg_id: &str,
+        owner_identity_id: &str,
+        owner_did: &str,
+        conversation_id: &str,
+        direction: i64,
+        sender_did: &str,
+        receiver_did: &str,
+        group_did: &str,
+        is_read: i64,
+        sent_at: &str,
+    ) {
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, receiver_did, group_id, group_did, content_type, content,
+     sent_at, stored_at, is_read)
+VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', 'hello', ?10, ?10, ?9)"#,
+            (
+                msg_id,
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                direction,
+                sender_did,
+                receiver_did,
+                group_did,
+                is_read,
+                sent_at,
+            ),
+        )
+        .unwrap();
     }
 }

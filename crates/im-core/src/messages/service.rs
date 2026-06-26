@@ -1002,6 +1002,45 @@ impl<'a> MessageService<'a> {
         .map(|result| result.sdk_result)
     }
 
+    pub fn mark_thread_read(
+        &self,
+        request: super::MarkThreadReadRequest,
+    ) -> crate::ImResult<super::MarkThreadReadResult> {
+        #[cfg(feature = "blocking")]
+        {
+            crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .mark_thread_read(
+                crate::internal::message_runtime::mark_read::MarkThreadReadInput { request },
+            )
+            .map(|result| result.sdk_result)
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-message-mark-thread-read"))
+        }
+    }
+
+    pub async fn mark_thread_read_async(
+        &self,
+        request: super::MarkThreadReadRequest,
+    ) -> crate::ImResult<super::MarkThreadReadResult> {
+        crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .mark_thread_read_async(
+            crate::internal::message_runtime::mark_read::MarkThreadReadInput { request },
+        )
+        .await
+        .map(|result| result.sdk_result)
+    }
+
     pub fn conversations(
         &self,
         query: super::ConversationQuery,

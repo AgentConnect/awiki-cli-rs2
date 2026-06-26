@@ -130,6 +130,13 @@ enum LocalStateCommand {
         message_ids: Vec<String>,
         reply: oneshot::Sender<crate::ImResult<super::messages::MarkReadClassification>>,
     },
+    ListUnreadIncomingMessageIds {
+        owner_identity_id: String,
+        owner_did: String,
+        thread: crate::messages::ThreadRef,
+        limit: i64,
+        reply: oneshot::Sender<crate::ImResult<super::messages::ThreadUnreadMessageIds>>,
+    },
     MarkMessagesRead {
         owner_identity_id: String,
         owner_did: String,
@@ -606,6 +613,25 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             message_ids,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_unread_incoming_message_ids(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+        limit: i64,
+    ) -> crate::ImResult<super::messages::ThreadUnreadMessageIds> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListUnreadIncomingMessageIds {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            limit,
             reply,
         })
         .await?;
@@ -1196,6 +1222,22 @@ fn run_actor(
                     &owner_identity_id,
                     &owner_did,
                     &message_ids,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListUnreadIncomingMessageIds {
+                owner_identity_id,
+                owner_did,
+                thread,
+                limit,
+                reply,
+            } => {
+                let result = super::messages::list_unread_incoming_message_ids_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &thread,
+                    limit,
                 );
                 let _ = reply.send(result);
             }

@@ -21,14 +21,24 @@ impl MessageService<'_> {
         thread: ThreadRef,
         query: HistoryQuery,
     ) -> crate::ImResult<crate::ids::Page<Message>>;
+
+    pub fn mark_read(
+        &self,
+        ids: Vec<crate::ids::MessageId>,
+    ) -> crate::ImResult<MarkReadResult>;
+
+    pub fn mark_thread_read(
+        &self,
+        request: MarkThreadReadRequest,
+    ) -> crate::ImResult<MarkThreadReadResult>;
 }
 ```
 
-P1 不提供：
+P1 原始范围不提供完整 mark-read / conversation projection；当前实现已经在后续阶段追加
+`mark_read`、`mark_thread_read` 和 `conversations` 等能力。本文保留 P1 原始说明，
+并在下文补充当前 mark-read 契约。当前仍不属于 P1 基线的能力：
 
 ```rust
-mark_read
-conversations
 attachments
 secure direct
 group E2EE
@@ -354,11 +364,60 @@ pub enum InboxAuth {
 pub struct ScopedInboxToken {
     pub token: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkReadResult {
+    pub updated_count: u32,
+    pub message_ids: Vec<crate::ids::MessageId>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkThreadReadRequest {
+    pub thread: ThreadRef,
+    pub max_message_ids: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkThreadReadResult {
+    pub updated_count: u32,
+    pub message_ids: Vec<crate::ids::MessageId>,
+    pub local_candidate_count: u32,
+    pub local_updated_count: u32,
+    pub remote_updated_count: u32,
+    pub remote_acknowledged: bool,
+    pub partial: bool,
+    pub warnings: Vec<String>,
+}
 ```
 
-P1 不把 `mark_read` 放进 `InboxQuery`。当前 CLI 若有 `--mark-read`，P1 adapter 可以继续走旧逻辑或返回 unsupported；完整 mark-read 放 Phase 3。
+P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
+`MessageService` 的显式方法，避免 inbox/history 查询和 read ack 语义耦合。
 
-### 5.1 Delegated Inbox / History Optional 扩展
+### 5.1 Mark Read / Thread Mark Read 当前补充
+
+`mark_read(ids)` 保留按消息 id 确认已读的兼容语义。`mark_thread_read(request)`
+用于会话打开后的性能敏感路径，行为是：
+
+1. SDK 先在本地 `messages` projection 中按 `owner_identity_id` 和 `ThreadRef`
+   查询 unread incoming `msg_id`，默认最多 500 条；`max_message_ids` 可调但硬上限
+   仍为 500。
+2. 该查询只读本地状态，不调用 `inbox()`、`history()`、`direct.get_history`、
+   `group.list_messages` 或其他历史分页 RPC。
+3. 查询到的本地候选 ids 会先调用本地 mark-read，把 `messages.is_read` 更新为
+   `1`；direct 消息再通过 `inbox.mark_read` 做远端 best-effort ack。
+4. group 和本地 mail notification 当前只做本地 mark-read；后续如果服务端提供
+   thread-level read watermark，可以隐藏在同一个 public method 后面。
+5. 远端 ack 失败不回滚本地已读，返回 `partial = true` 并在 `warnings` 中带失败原因；
+   空 unread 会返回 `updated_count = 0` 且不访问远端。
+6. `message_ids` 是本地查询到并尝试处理的候选 ids；`local_candidate_count`、
+   `local_updated_count`、`remote_updated_count` 和 `remote_acknowledged` 用于上层记录
+   best-effort 状态。
+
+Step 04 引入 `conversation_summaries` 后，thread mark-read 还需要同步维护 summary
+unread 字段；本方法的 public 契约不需要因此变化。
+
+### 5.2 Delegated Inbox / History Optional 扩展
 
 `InboxHistoryOptions` 是 Step 02 新增的 optional 参数，供 Daemon 使用 `user_did#daemon-key-1` 证明自己有权读取用户普通 inbox/history。调用方不传 `inbox_history_options` 时，SDK 继续走当前 identity/session 默认 inbox/history 读取逻辑，老调用行为不变。
 

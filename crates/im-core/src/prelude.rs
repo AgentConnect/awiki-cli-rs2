@@ -49,12 +49,12 @@ pub use crate::ids::{
 };
 pub use crate::messages::{
     Conversation, ConversationQuery, DelegatedSigningOptions, DeliveryState, HistoryQuery,
-    InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope, MarkReadResult, Message, MessageBody,
-    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind, MessageMetadata,
-    MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
-    MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
-    MessageService, MessageTarget, ScopedInboxToken, SendMessageRequest, SendMessageResult,
-    ThreadRef,
+    InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope, MarkReadResult, MarkThreadReadRequest,
+    MarkThreadReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
+    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
+    MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
+    MessageSendState, MessageSendStateKind, MessageService, MessageTarget, ScopedInboxToken,
+    SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 #[cfg(feature = "blocking")]
