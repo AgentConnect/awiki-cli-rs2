@@ -118,6 +118,14 @@ enum LocalStateCommand {
         limit: i64,
         reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
     },
+    ListMessagesForThreadRef {
+        owner_identity_id: String,
+        owner_did: String,
+        thread: crate::messages::ThreadRef,
+        limit: i64,
+        cursor: Option<String>,
+        reply: oneshot::Sender<crate::ImResult<super::messages::ThreadLocalHistoryRecords>>,
+    },
     ListActiveGroupRefs {
         owner_identity_id: String,
         owner_did: String,
@@ -579,6 +587,27 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             conversation_ids,
             limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_messages_for_thread_ref(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+        limit: i64,
+        cursor: Option<String>,
+    ) -> crate::ImResult<super::messages::ThreadLocalHistoryRecords> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListMessagesForThreadRef {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            limit,
+            cursor,
             reply,
         })
         .await?;
@@ -1194,6 +1223,24 @@ fn run_actor(
                     &owner_identity_id,
                     &conversation_ids,
                     limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListMessagesForThreadRef {
+                owner_identity_id,
+                owner_did,
+                thread,
+                limit,
+                cursor,
+                reply,
+            } => {
+                let result = super::messages::list_messages_for_thread_ref_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &thread,
+                    limit,
+                    cursor.as_deref(),
                 );
                 let _ = reply.send(result);
             }

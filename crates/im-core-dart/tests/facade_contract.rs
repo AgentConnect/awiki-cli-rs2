@@ -41,6 +41,20 @@ fn thread_mark_read_result_preserves_best_effort_state_for_dart() {
 }
 
 #[test]
+fn local_history_query_is_public_core_contract_for_dart_facade() {
+    let query = im_core::messages::LocalHistoryQuery {
+        limit: im_core::ids::PageLimit::new(50).expect("limit"),
+        cursor: Some(im_core::ids::Cursor::parse("local-history:v1:dHM:bXNn").expect("cursor")),
+    };
+
+    assert_eq!(query.limit.0, 50);
+    assert_eq!(
+        query.cursor.as_ref().map(im_core::ids::Cursor::as_str),
+        Some("local-history:v1:dHM:bXNn")
+    );
+}
+
+#[test]
 fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
     let request = awiki_im_core::dto::attachment::DartAttachmentSendRequest {
         target: awiki_im_core::dto::message::DartMessageTarget::Direct {

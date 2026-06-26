@@ -793,6 +793,90 @@ fn messages_read_runtime_builds_direct_history_rpc() {
 }
 
 #[test]
+fn messages_read_runtime_local_history_reads_projection_without_rpc() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    for (msg_id, sent_at) in [
+        ("msg-local-old", "2026-05-21T00:00:00Z"),
+        ("msg-local-new", "2026-05-21T00:00:01Z"),
+    ] {
+        crate::internal::local_state::messages::upsert_message(
+            &connection,
+            &crate::internal::local_state::messages::MessageRecord {
+                msg_id: msg_id.to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
+                direction: 0,
+                sender_did: "did:example:bob".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: msg_id.to_owned(),
+                sent_at: sent_at.to_owned(),
+                stored_at: sent_at.to_owned(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        )
+        .unwrap();
+    }
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({"messages": [{"id": "remote-should-not-be-used"}]}),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .local_history(LocalHistoryRead {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            query: crate::messages::LocalHistoryQuery {
+                limit: crate::ids::PageLimit(1),
+                cursor: None,
+            },
+        })
+        .unwrap();
+
+    assert!(calls.borrow().is_empty());
+    assert_eq!(result.raw["source"], "local");
+    assert_eq!(result.page.items.len(), 1);
+    assert_eq!(result.page.items[0].id.as_str(), "msg-local-new");
+    assert!(result.page.has_more);
+    let cursor = result.page.next_cursor.clone().expect("local cursor");
+    let next = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({"messages": [{"id": "remote-should-not-be-used"}]}),
+        },
+        NoopDirectoryTransport,
+    )
+    .local_history(LocalHistoryRead {
+        thread: crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        ),
+        query: crate::messages::LocalHistoryQuery {
+            limit: crate::ids::PageLimit(1),
+            cursor: Some(cursor),
+        },
+    })
+    .unwrap();
+
+    assert!(calls.borrow().is_empty());
+    assert_eq!(next.page.items.len(), 1);
+    assert_eq!(next.page.items[0].id.as_str(), "msg-local-old");
+    assert!(!next.page.has_more);
+}
+
+#[test]
 fn messages_read_runtime_merges_local_direct_projection_into_history() {
     let fixture = Fixture::new();
     let client = fixture.client();

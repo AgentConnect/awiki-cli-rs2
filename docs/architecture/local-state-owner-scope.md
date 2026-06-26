@@ -3,7 +3,7 @@
 ## 状态
 
 - 本文描述当前 Rust `awiki-cli` / `im-core` 本地 SQLite owner scope 的权威模型。
-- 当前 SQLite schema version：`17`。
+- 当前 SQLite schema version：`19`。
 - 当前 workspace schema version：`4`。
 - 本地业务状态已经收敛到 `owner_identity_id` 分区；`owner_did` 只保留为当前 DID snapshot。
 

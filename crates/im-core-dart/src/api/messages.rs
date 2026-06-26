@@ -89,6 +89,28 @@ pub async fn history(
         .map_err(DartImError::from)
 }
 
+pub async fn local_history(
+    client: &Arc<crate::api::client::DartImClient>,
+    thread: DartThreadRef,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<DartMessagePage, DartImError> {
+    let inner = client.clone_inner()?;
+    let query = im_core::messages::LocalHistoryQuery {
+        limit: page_limit(limit)?,
+        cursor: cursor
+            .map(im_core::ids::Cursor::parse)
+            .transpose()
+            .map_err(DartImError::from)?,
+    };
+    inner
+        .messages()
+        .local_history_async(thread.try_into()?, query)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn mark_read(
     client: &Arc<crate::api::client::DartImClient>,
     message_ids: Vec<String>,

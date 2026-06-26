@@ -963,6 +963,59 @@ impl<'a> MessageService<'a> {
         Ok(page)
     }
 
+    pub fn local_history(
+        &self,
+        thread: super::ThreadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.local_history_with_metadata(thread, query)
+            .map(super::MessagePage::into_page)
+    }
+
+    pub async fn local_history_async(
+        &self,
+        thread: super::ThreadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.local_history_with_metadata_async(thread, query)
+            .await
+            .map(super::MessagePage::into_page)
+    }
+
+    pub fn local_history_with_metadata(
+        &self,
+        thread: super::ThreadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        crate::internal::message_runtime::read::MessageReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .local_history(crate::internal::message_runtime::read::LocalHistoryRead { thread, query })
+        .map(message_page_from_read_result)?
+    }
+
+    pub async fn local_history_with_metadata_async(
+        &self,
+        thread: super::ThreadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        crate::internal::message_runtime::read::MessageReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .local_history_async(crate::internal::message_runtime::read::LocalHistoryRead {
+            thread,
+            query,
+        })
+        .await
+        .map(message_page_from_read_result)?
+    }
+
     pub fn mark_read(
         &self,
         ids: Vec<crate::ids::MessageId>,

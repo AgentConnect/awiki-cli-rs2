@@ -31,6 +31,12 @@ pub(crate) struct HistoryRead {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalHistoryRead {
+    pub thread: crate::messages::ThreadRef,
+    pub query: crate::messages::LocalHistoryQuery,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReadPageResult {
     pub page: crate::ids::Page<crate::messages::Message>,
     pub raw: Value,
@@ -284,6 +290,14 @@ where
                 Err(crate::ImError::unsupported("thread-history"))
             }
         }
+    }
+
+    pub(crate) fn local_history(self, input: LocalHistoryRead) -> crate::ImResult<ReadPageResult> {
+        let page = local_history_page(self.client, input)?;
+        Ok(ReadPageResult {
+            page,
+            raw: local_history_raw(),
+        })
     }
 }
 
@@ -544,6 +558,17 @@ where
                 Err(crate::ImError::unsupported("thread-history"))
             }
         }
+    }
+
+    pub(crate) async fn local_history_async(
+        self,
+        input: LocalHistoryRead,
+    ) -> crate::ImResult<ReadPageResult> {
+        let page = local_history_page_async(self.client, input).await?;
+        Ok(ReadPageResult {
+            page,
+            raw: local_history_raw(),
+        })
     }
 }
 
@@ -981,6 +1006,97 @@ fn grouped_inbox_raw(source: &str) -> Value {
     json!({
         "source": source,
         "warnings": [],
+    })
+}
+
+fn local_history_raw() -> Value {
+    json!({
+        "source": "local",
+        "warnings": [],
+    })
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+fn local_history_page(
+    client: &crate::core::ImClient,
+    input: LocalHistoryRead,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let records =
+        crate::internal::local_state::messages::list_messages_for_thread_ref_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            &input.thread,
+            page_limit(input.query.limit, 50),
+            input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
+        )?;
+    local_history_records_to_page(records)
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn local_history_page(
+    _client: &crate::core::ImClient,
+    _input: LocalHistoryRead,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    Err(crate::ImError::unsupported("sync-message-local-history"))
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn local_history_page(
+    _client: &crate::core::ImClient,
+    _input: LocalHistoryRead,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    Err(crate::ImError::unsupported("message-local-history"))
+}
+
+#[cfg(feature = "sqlite")]
+async fn local_history_page_async(
+    client: &crate::core::ImClient,
+    input: LocalHistoryRead,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    let records = client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .list_messages_for_thread_ref(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            input.thread,
+            page_limit(input.query.limit, 50),
+            input.query.cursor.map(|cursor| cursor.as_str().to_owned()),
+        )
+        .await?;
+    local_history_records_to_page(records)
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn local_history_page_async(
+    _client: &crate::core::ImClient,
+    _input: LocalHistoryRead,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    Err(crate::ImError::unsupported("message-local-history"))
+}
+
+#[cfg(feature = "sqlite")]
+fn local_history_records_to_page(
+    records: crate::internal::local_state::messages::ThreadLocalHistoryRecords,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    let next_cursor = records
+        .next_cursor
+        .map(crate::ids::Cursor::parse)
+        .transpose()?;
+    let items = records
+        .records
+        .iter()
+        .map(crate::internal::message_runtime::conversations::message_from_record)
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    Ok(crate::ids::Page {
+        items,
+        next_cursor,
+        has_more: records.has_more,
     })
 }
 

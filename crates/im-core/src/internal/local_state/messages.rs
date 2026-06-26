@@ -380,6 +380,116 @@ pub(crate) struct ThreadUnreadMessageIds {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ThreadLocalHistoryRecords {
+    pub(crate) records: Vec<MessageRecord>,
+    pub(crate) next_cursor: Option<String>,
+    pub(crate) has_more: bool,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn list_messages_for_thread_ref_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+    limit: i64,
+    cursor: Option<&str>,
+) -> crate::ImResult<ThreadLocalHistoryRecords> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let limit = normalize_local_history_limit(limit);
+    let cursor = decode_local_history_cursor(cursor)?;
+    let conversation_ids =
+        conversation_ids_for_thread_ref(connection, &owner_identity_id, owner_did, thread)?;
+    if conversation_ids.is_empty() {
+        return Ok(ThreadLocalHistoryRecords {
+            records: Vec::new(),
+            next_cursor: None,
+            has_more: false,
+        });
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let mut statement = format!(
+        r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       conversation_id,
+       thread_id,
+       direction,
+       sender_did,
+       receiver_did,
+       group_id,
+       group_did,
+       content_type,
+       content,
+       title,
+       server_seq,
+       sent_at,
+       stored_at,
+       is_e2ee,
+       is_read,
+       sender_name,
+       metadata,
+       mentions_current_user,
+       credential_name
+FROM messages
+WHERE owner_identity_id = ?
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
+    );
+    if cursor.is_some() {
+        statement.push_str(
+            r#"
+  AND (
+        COALESCE(NULLIF(sent_at, ''), stored_at) < ?
+     OR (COALESCE(NULLIF(sent_at, ''), stored_at) = ? AND msg_id < ?)
+  )"#,
+        );
+    }
+    statement.push_str(
+        r#"
+ORDER BY COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC
+LIMIT ?"#,
+    );
+    let fetch_limit = limit.saturating_add(1);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 5);
+    params.push(&owner_identity_id);
+    for conversation_id in &conversation_ids {
+        params.push(conversation_id);
+    }
+    if let Some((timestamp, msg_id)) = cursor.as_ref() {
+        params.push(timestamp);
+        params.push(timestamp);
+        params.push(msg_id);
+    }
+    params.push(&fetch_limit);
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), message_record_from_row)
+        .map_err(super::local_state_unavailable)?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(super::local_state_unavailable)?);
+    }
+    let has_more = i64::try_from(records.len()).unwrap_or(i64::MAX) > limit;
+    if has_more {
+        records.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+    let next_cursor = if has_more {
+        records.last().and_then(encode_local_history_cursor)
+    } else {
+        None
+    };
+    Ok(ThreadLocalHistoryRecords {
+        records,
+        next_cursor,
+        has_more,
+    })
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn list_unread_incoming_message_ids_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -670,6 +780,65 @@ WHERE {} AND msg_id IN ({placeholders})"#,
 #[cfg(feature = "sqlite")]
 fn normalize_thread_mark_read_limit(limit: i64) -> i64 {
     limit.clamp(1, 500)
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_local_history_limit(limit: i64) -> i64 {
+    limit.clamp(1, 100)
+}
+
+#[cfg(feature = "sqlite")]
+fn encode_local_history_cursor(record: &MessageRecord) -> Option<String> {
+    let msg_id = non_empty(&record.msg_id)?;
+    let timestamp = non_empty(&record.sent_at)
+        .or_else(|| non_empty(&record.stored_at))
+        .unwrap_or_default();
+    Some(format!(
+        "local-history:v1:{}:{}",
+        base64_url_encode(timestamp),
+        base64_url_encode(msg_id)
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+fn decode_local_history_cursor(cursor: Option<&str>) -> crate::ImResult<Option<(String, String)>> {
+    let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(rest) = cursor.strip_prefix("local-history:v1:") else {
+        return Err(crate::ImError::invalid_input(
+            Some("cursor".to_owned()),
+            "local history cursor must be produced by local_history",
+        ));
+    };
+    let Some((timestamp, msg_id)) = rest.split_once(':') else {
+        return Err(crate::ImError::invalid_input(
+            Some("cursor".to_owned()),
+            "local history cursor is malformed",
+        ));
+    };
+    let timestamp = base64_url_decode(timestamp, "cursor")?;
+    let msg_id = base64_url_decode(msg_id, "cursor")?;
+    required("cursor.message_id", &msg_id)?;
+    Ok(Some((timestamp, msg_id)))
+}
+
+#[cfg(feature = "sqlite")]
+fn base64_url_encode(value: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
+#[cfg(feature = "sqlite")]
+fn base64_url_decode(value: &str, field: &'static str) -> crate::ImResult<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value.as_bytes())
+        .map_err(|err| crate::ImError::invalid_input(Some(field.to_owned()), err.to_string()))?;
+    String::from_utf8(bytes)
+        .map_err(|err| crate::ImError::invalid_input(Some(field.to_owned()), err.to_string()))
 }
 
 #[cfg(feature = "sqlite")]

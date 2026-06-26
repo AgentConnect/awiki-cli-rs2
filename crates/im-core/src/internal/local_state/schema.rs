@@ -2,8 +2,9 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+pub(crate) const SCHEMA_VERSION: i64 = 19;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
+const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -476,6 +477,7 @@ const IDENTITY_OWNED_INDEX_TEMPLATES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_direction{s} ON messages{s}(owner_identity_id, direction)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_sender{s} ON messages{s}(owner_identity_id, sender_did)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_conversation{s} ON messages{s}(owner_identity_id, conversation_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_conversation_expr_last{s} ON messages{s}(owner_identity_id, COALESCE(NULLIF(conversation_id, ''), thread_id), COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_identity_status{s} ON e2ee_outbox{s}(owner_identity_id, local_status, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_identity_sent_msg{s} ON e2ee_outbox{s}(owner_identity_id, sent_msg_id)",
     "CREATE INDEX IF NOT EXISTS idx_groups_owner_identity_status_last_message{s} ON groups{s}(owner_identity_id, membership_status, last_message_at DESC)",
@@ -506,6 +508,7 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_direction ON messages(owner_identity_id, direction)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_sender ON messages(owner_identity_id, sender_did)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity ON messages(owner_identity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_conversation_expr_last ON messages(owner_identity_id, COALESCE(NULLIF(conversation_id, ''), thread_id), COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_thread ON messages(owner_did, thread_id, sent_at)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_thread_seq ON messages(owner_did, thread_id, server_seq)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_direction ON messages(owner_did, direction)",
@@ -859,7 +862,7 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
-    create_schema(connection, version < SCHEMA_VERSION)?;
+    create_schema(connection, version < CONVERSATION_SUMMARIES_SCHEMA_VERSION)?;
     set_schema_version(connection, SCHEMA_VERSION)
 }
 

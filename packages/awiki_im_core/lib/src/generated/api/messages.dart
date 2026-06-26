@@ -55,6 +55,18 @@ Future<DartMessagePage> history({
   inboxHistoryOptions: inboxHistoryOptions,
 );
 
+Future<DartMessagePage> localHistory({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  required int limit,
+  String? cursor,
+}) => RustLib.instance.api.crateApiMessagesLocalHistory(
+  client: client,
+  thread: thread,
+  limit: limit,
+  cursor: cursor,
+);
+
 Future<DartMarkReadResult> markRead({
   required ArcDartImClient client,
   required List<String> messageIds,

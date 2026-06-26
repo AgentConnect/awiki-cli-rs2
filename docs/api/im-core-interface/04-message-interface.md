@@ -22,6 +22,12 @@ impl MessageService<'_> {
         query: HistoryQuery,
     ) -> crate::ImResult<crate::ids::Page<Message>>;
 
+    pub fn local_history(
+        &self,
+        thread: ThreadRef,
+        query: LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<Message>>;
+
     pub fn mark_read(
         &self,
         ids: Vec<crate::ids::MessageId>,
@@ -390,6 +396,26 @@ pub struct MarkThreadReadResult {
     pub warnings: Vec<String>,
 }
 ```
+
+### 5.0 Local History 当前补充
+
+`history(thread, query)` 保持远端 history + 本地 projection/reconcile 语义。性能敏感的首屏读取应使用 `local_history(thread, query)`：
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalHistoryQuery {
+    pub limit: crate::ids::PageLimit,
+    pub cursor: Option<crate::ids::Cursor>,
+}
+```
+
+`local_history` 行为：
+
+1. 只读取本地 `messages` projection，不访问 `direct.get_history`、`group.list_messages`、`inbox.get` 或目录 RPC。
+2. 按 `owner_identity_id` 和 `ThreadRef` 解析出的 conversation ids 查询，返回最近消息，顺序为 newest-first。
+3. `next_cursor` 是 SDK 生成的不透明 `local-history:v1:*` cursor，只能传回 `local_history` 翻页。
+4. direct、group 和 raw thread ref 使用与 thread mark-read 一致的 owner-scoped conversation-id 归一化。
+5. App 首屏应先显示 `local_history`，再后台调用 `history` 做远端 reconcile。
 
 P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 `MessageService` 的显式方法，避免 inbox/history 查询和 read ack 语义耦合。

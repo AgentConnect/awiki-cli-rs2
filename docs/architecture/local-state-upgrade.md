@@ -29,7 +29,7 @@
 crates/awiki-cli/src/workspace_upgrade/types.rs
 ```
 
-当前 local SQLite schema version 为 `17`，定义在：
+当前 local SQLite schema version 为 `19`，定义在：
 
 ```text
 crates/im-core/src/internal/local_state/schema.rs

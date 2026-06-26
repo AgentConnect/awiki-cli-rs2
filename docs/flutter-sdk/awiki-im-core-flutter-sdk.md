@@ -74,6 +74,19 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 `retryMessage` is explicitly unsupported in v0.1 and returns `unsupported_capability("message-retry")`. The SDK must not rebuild a send request from display message DTOs because those DTOs can lose target, body, security, idempotency, and retry-plan information.
 
+## Local-first message reads
+
+`client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view.
+
+`client.messages.localHistory(thread, limit: ..., cursor: ...)` is distinct from `client.messages.history(...)`:
+
+- `localHistory` reads only the local SQLite projection and returns an opaque local cursor;
+- it does not call message-service history RPCs, directory lookup, or remote E2EE projection;
+- it is the correct API for chat first paint before background reconcile;
+- `history` keeps remote history + projection/reconcile semantics and should be called in the background when freshness is required.
+
+Both APIs are async `Future<MessagePage>` methods. Apps must not bypass the SDK or read SQLite directly.
+
 ## Message payloads and ANP P9 mentions
 
 `SendPayloadRequest.payloadJson` accepts any JSON object up to the SDK payload

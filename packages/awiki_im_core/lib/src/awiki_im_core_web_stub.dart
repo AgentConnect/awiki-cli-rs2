@@ -63,6 +63,14 @@ class AwikiImClient {
 class MessageApi {
   MessageApi._();
 
+  Future<MessagePage> localHistory(
+    ThreadRef thread, {
+    required int limit,
+    String? cursor,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<MarkThreadReadResult> markThreadRead(
     ThreadRef thread, {
     int? maxMessageIds,

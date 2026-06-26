@@ -34,3 +34,16 @@ final result = await client.messages.markThreadRead(
 
 `markThreadRead` delegates unread-id lookup to `im-core` local state. App code
 must not page through `history()` just to discover unread message ids.
+
+Local-first message history is exposed separately from remote history:
+
+```dart
+final page = await client.messages.localHistory(
+  const ThreadRef.direct('did:example:bob'),
+  limit: 50,
+);
+```
+
+`localHistory` only reads the local `im-core` projection and is intended for
+fast first paint. Use `history()` afterwards only when the app wants remote
+reconcile/freshness.

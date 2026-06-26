@@ -48,6 +48,10 @@ void main() {
     expect(_markThreadReadApiShape, isA<Function>());
   });
 
+  test('local history API shape remains app-usable', () {
+    expect(_localHistoryApiShape, isA<Function>());
+  });
+
   test('realtime options and event models stay transport agnostic', () {
     const options = RealtimeOptions();
     expect(options.reconnect, RealtimeReconnectMode.disabled);
@@ -169,5 +173,12 @@ Future<MarkThreadReadResult> _markThreadReadApiShape(MessageApi api) {
   return api.markThreadRead(
     const ThreadRef.direct('did:example:bob'),
     maxMessageIds: 100,
+  );
+}
+
+Future<MessagePage> _localHistoryApiShape(MessageApi api) {
+  return api.localHistory(
+    const ThreadRef.direct('did:example:bob'),
+    limit: 100,
   );
 }

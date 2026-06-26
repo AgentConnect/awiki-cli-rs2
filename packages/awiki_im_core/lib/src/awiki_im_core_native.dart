@@ -550,6 +550,23 @@ class MessageApi {
     return page._toModel();
   }
 
+  Future<MessagePage> localHistory(
+    ThreadRef thread, {
+    required int limit,
+    String? cursor,
+  }) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_messages.localHistory(
+        client: _client._inner,
+        thread: thread._toGen(),
+        limit: limit,
+        cursor: cursor,
+      ),
+    );
+    return page._toModel();
+  }
+
   Future<MarkReadResult> markRead(List<String> messageIds) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(

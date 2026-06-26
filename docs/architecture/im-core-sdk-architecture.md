@@ -161,7 +161,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Local Conversation Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries:
+The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries, and schema version 19 adds an owner/conversation/timestamp hot index for local-first message history pagination:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -177,3 +177,16 @@ Summary rows are derived state and may be rebuilt from `messages`:
 - legacy DID-to-peer-scope direct merges rebuild both old and new conversation keys.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
+
+## 12. Local-first Message History
+
+`messages.history()` keeps its remote history + projection/reconcile semantics. Hot UI paths that only need already-projected local messages should use `messages.local_history()` / Dart `client.messages.localHistory(...)` instead.
+
+Local history:
+
+- reads only the local SQLite `messages` projection through `owner_identity_id` and `ThreadRef`;
+- does not call `direct.get_history`, `group.list_messages`, `inbox.get`, directory lookup, or E2EE remote projection;
+- returns newest-first `MessagePage` items and an opaque `local-history:v1:*` cursor for paging older local messages;
+- supports direct, group, and raw thread refs using the same owner-scoped conversation-id normalization as thread mark-read.
+
+The API is for fast first paint. Apps should show local history immediately, then run remote `history()` as a background reconcile when freshness is needed.

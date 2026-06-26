@@ -239,6 +239,12 @@ pub struct HistoryQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalHistoryQuery {
+    pub limit: crate::ids::PageLimit,
+    pub cursor: Option<crate::ids::Cursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxHistoryOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbox_owner_did: Option<String>,
