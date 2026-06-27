@@ -783,13 +783,15 @@ fn direct_remote_history_conversation_ids(
     peer_did: &str,
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
 ) -> Vec<String> {
-    if peer_scope.is_some() {
+    if let Some(scope) = peer_scope {
+        let mut ids = vec![
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(scope),
+        ];
         let peer_did = peer_did.trim();
-        return if peer_did.starts_with("did:") {
-            vec![crate::internal::local_state::owner_scope::direct_conversation_id(peer_did)]
-        } else {
-            Vec::new()
-        };
+        if peer_did.starts_with("did:") && scope.user_id.trim() != peer_did {
+            ids.push(crate::internal::local_state::owner_scope::direct_conversation_id(peer_did));
+        }
+        return ids;
     }
     direct_local_history_conversation_ids(peer_did, peer_scope)
 }

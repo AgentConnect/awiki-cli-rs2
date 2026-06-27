@@ -1125,6 +1125,9 @@ fn merge_legacy_direct_did_conversation(
     if legacy_direct_merge_memo_contains(connection, &owner_identity_id, &conversation_id)? {
         return Ok(Vec::new());
     }
+    if peer_scope_user_id_from_record(record).as_deref() == peer_current_did(record).as_deref() {
+        return Ok(Vec::new());
+    }
     let peer_full_handle = legacy_direct_peer_full_handle(record);
     let legacy_conversation_ids =
         legacy_direct_conversation_ids_for_peer(connection, &owner_identity_id, record)?;
@@ -1375,6 +1378,16 @@ fn legacy_direct_peer_full_handle(record: &MessageRecord) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .map(normalize_full_handle)
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(feature = "sqlite")]
+fn peer_scope_user_id_from_record(record: &MessageRecord) -> Option<String> {
+    parse_metadata(&record.metadata)
+        .get("peer_user_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(feature = "sqlite")]
@@ -2525,6 +2538,71 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
             .unwrap();
         assert_eq!(summary_conversation_id, scoped_conversation_id);
         assert_eq!(summary_count, 2);
+    }
+
+    #[test]
+    fn local_state_messages_do_not_merge_legacy_rows_when_peer_user_id_is_did_fallback() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:wba:anpclaw.com:zhuocheng:e1_owner";
+        let peer_old_did = "did:wba:anpclaw.com:zhuochengtest:e1_old";
+        let peer_current_did = "did:wba:anpclaw.com:zhuochengtest:e1_new";
+        let full_handle = "zhuochengtest.anpclaw.com";
+        let legacy_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(peer_old_did);
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
+     content_type, content, sent_at, stored_at, is_read)
+VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3,
+        'text/plain', 'old did message', '2026-06-10T00:00:00Z', '2026-06-10T00:00:00Z', 1)"#,
+            (
+                "msg-old",
+                owner_identity_id,
+                owner_did,
+                &legacy_conversation_id,
+                peer_old_did,
+            ),
+        )
+        .unwrap();
+        let fallback_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            peer_current_did,
+            full_handle,
+        )
+        .unwrap();
+        let scoped_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &fallback_scope,
+            );
+
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-new".to_owned(),
+                owner_identity_id: owner_identity_id.to_owned(),
+                owner_did: owner_did.to_owned(),
+                conversation_id: scoped_conversation_id.clone(),
+                thread_id: scoped_conversation_id.clone(),
+                direction: 1,
+                sender_did: owner_did.to_owned(),
+                receiver_did: peer_current_did.to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "new scoped message".to_owned(),
+                stored_at: "2026-06-10T00:00:01Z".to_owned(),
+                metadata: format!(
+                    r#"{{"peer_user_id":"{peer_current_did}","peer_full_handle":"{full_handle}","peer_current_did":"{peer_current_did}"}}"#
+                ),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            conversation_ids_for_owner(&db, owner_identity_id),
+            vec![legacy_conversation_id, scoped_conversation_id]
+        );
     }
 
     fn scoped_zhuochengtest_conversation_id() -> String {
