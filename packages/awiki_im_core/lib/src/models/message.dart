@@ -270,6 +270,42 @@ class ConversationListSnapshot {
   final List<ConversationSnapshotItem> items;
 }
 
+enum ConversationStorePatchKind {
+  reset,
+  upsert,
+  remove,
+  reorder,
+  repairRequired,
+}
+
+class ConversationStorePatch {
+  const ConversationStorePatch({
+    required this.kind,
+    required this.ownerIdentityId,
+    required this.ownerDid,
+    required this.version,
+    required this.unreadTotal,
+    this.items = const [],
+    this.item,
+    this.index,
+    this.threadKind,
+    this.threadId,
+    this.reason,
+  });
+
+  final ConversationStorePatchKind kind;
+  final String ownerIdentityId;
+  final String ownerDid;
+  final int version;
+  final int unreadTotal;
+  final List<ConversationSnapshotItem> items;
+  final ConversationSnapshotItem? item;
+  final int? index;
+  final String? threadKind;
+  final String? threadId;
+  final String? reason;
+}
+
 class ConversationSnapshotItem {
   const ConversationSnapshotItem({
     required this.threadKind,

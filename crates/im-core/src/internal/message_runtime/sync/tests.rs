@@ -107,6 +107,55 @@ async fn sync_delta_success_emits_committed_invalidation_after_apply() {
 }
 
 #[tokio::test]
+async fn sync_delta_success_emits_conversation_store_patch_after_commit() {
+    let fixture = Fixture::new("sync-delta-store-patch");
+    let client = fixture.client();
+    fixture.store_checkpoint("776");
+    let mut patches = client.messages().watch_conversation_patches().unwrap();
+    let _initial_hydrate = patches.next_patch().await.unwrap();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event(
+                    "sev-777",
+                    "777",
+                    "msg-delta-777",
+                    777,
+                )],
+                "777",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+    let patch = patches.next_patch().await.unwrap();
+
+    match patch {
+        crate::messages::ConversationStorePatch::Upsert {
+            owner_identity_id,
+            owner_did,
+            item,
+            ..
+        } => {
+            assert_eq!(owner_identity_id, "alice-id");
+            assert_eq!(owner_did, "did:example:alice");
+            assert_eq!(item.last_message.unwrap().id, "msg-delta-777");
+        }
+        other => panic!("expected conversation upsert patch, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn sync_delta_has_more_reads_committed_checkpoint_for_next_page() {
     let fixture = Fixture::new("sync-delta-has-more");
     let client = fixture.client();

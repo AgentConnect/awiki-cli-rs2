@@ -103,6 +103,10 @@ where
             } else {
                 updated_count += (group_ids.len() + local_only_ids.len()) as i64;
             }
+            if local_updated > 0 {
+                self.client
+                    .emit_committed_conversation_projection("local_mark_read");
+            }
         } else if classification.is_ok() {
             warnings.push("Failed to mark local messages read".to_string());
         }
@@ -173,6 +177,10 @@ where
                     0
                 }
             };
+        if local_updated_count > 0 {
+            self.client
+                .emit_committed_conversation_projection("local_mark_read");
+        }
         let mut raw = None;
         let mut remote_updated_count = 0_i64;
         let mut remote_acknowledged = false;
@@ -279,6 +287,10 @@ where
             } else {
                 updated_count += (group_ids.len() + local_only_ids.len()) as i64;
             }
+            if local_updated > 0 {
+                self.client
+                    .emit_committed_conversation_projection("local_mark_read");
+            }
         } else if classification.is_ok() {
             warnings.push("Failed to mark local messages read".to_string());
         }
@@ -350,6 +362,10 @@ where
                     0
                 }
             };
+        if local_updated_count > 0 {
+            self.client
+                .emit_committed_conversation_projection("local_mark_read");
+        }
         let mut raw = None;
         let mut remote_updated_count = 0_i64;
         let mut remote_acknowledged = false;
@@ -886,6 +902,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mark_thread_read_emits_conversation_store_patch_after_local_commit() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_projected_message(&client, "direct-thread-patch", "", 0);
+        let mut patches = client.messages().watch_conversation_patches().unwrap();
+        let _initial_hydrate = patches.next_patch().await.unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        MessageMarkReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls,
+                response: json!({"updated_count": 1}),
+            },
+        )
+        .mark_thread_read(MarkThreadReadInput {
+            request: crate::messages::MarkThreadReadRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                max_message_ids: None,
+            },
+        })
+        .unwrap();
+        let patch = patches.next_patch().await.unwrap();
+
+        match patch {
+            crate::messages::ConversationStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                unread_total,
+                item,
+                ..
+            } => {
+                assert_eq!(owner_identity_id, "alice-id");
+                assert_eq!(owner_did, "did:example:alice");
+                assert_eq!(unread_total, 0);
+                assert_eq!(item.thread_id, "did:example:bob");
+                assert_eq!(item.unread_count, 0);
+            }
+            other => panic!("expected unread upsert patch, got {other:?}"),
+        }
+    }
+
     #[test]
     fn mark_thread_read_runtime_empty_unread_does_not_call_remote() {
         let fixture = Fixture::new();
@@ -1249,6 +1311,46 @@ VALUES (?1, ?2, ?3, ?4, ?4, 0, 'did:example:bob', ?3, ?5, ?5, ?6, 'hello', '2026
                     ),
                 )
                 .unwrap();
+        }
+
+        fn seed_projected_message(
+            &self,
+            client: &crate::core::ImClient,
+            message_id: &str,
+            group_did: &str,
+            direction: i64,
+        ) {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            let conversation_id = if group_did.trim().is_empty() {
+                crate::internal::local_state::owner_scope::direct_conversation_id("did:example:bob")
+            } else {
+                crate::internal::local_state::owner_scope::group_conversation_id(group_did)
+            };
+            crate::internal::local_state::messages::upsert_message(
+                &connection,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    conversation_id: conversation_id.clone(),
+                    thread_id: conversation_id,
+                    direction,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: client.did().as_str().to_owned(),
+                    group_id: String::new(),
+                    group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: "hello".to_owned(),
+                    sent_at: "2026-05-21T00:00:00Z".to_owned(),
+                    stored_at: "2026-05-21T00:00:00Z".to_owned(),
+                    is_read: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         fn is_read(&self, client: &crate::core::ImClient, message_id: &str) -> i64 {

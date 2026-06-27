@@ -1,14 +1,72 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::dto::{
     error::DartImError,
     message::{
-        DartConversationListSnapshot, DartConversationPage, DartInboxHistoryOptions,
-        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult,
-        DartSendPayloadRequest, DartSendTextRequest, DartSyncDeltaRequest, DartSyncDeltaResult,
-        DartSyncThreadAfterRequest, DartSyncThreadAfterResult, DartThreadRef,
+        DartConversationListSnapshot, DartConversationPage, DartConversationStorePatch,
+        DartInboxHistoryOptions, DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage,
+        DartSendMessageResult, DartSendPayloadRequest, DartSendTextRequest, DartSyncDeltaRequest,
+        DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult, DartThreadRef,
     },
 };
+use crate::frb_generated::StreamSink;
+
+pub struct DartConversationPatchSession {
+    session: Mutex<Option<im_core::messages::ConversationPatchSession>>,
+    stream_attached: Mutex<bool>,
+}
+
+impl DartConversationPatchSession {
+    fn new(session: im_core::messages::ConversationPatchSession) -> Self {
+        Self {
+            session: Mutex::new(Some(session)),
+            stream_attached: Mutex::new(false),
+        }
+    }
+
+    fn take_session(&self) -> Result<im_core::messages::ConversationPatchSession, DartImError> {
+        let mut attached = self
+            .stream_attached
+            .lock()
+            .map_err(|_| DartImError::internal("conversation patch session lock poisoned"))?;
+        if *attached {
+            return Err(DartImError::invalid_input(
+                Some("session".to_string()),
+                "conversation patch stream is already attached",
+            ));
+        }
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| DartImError::internal("conversation patch session lock poisoned"))?;
+        let session = guard
+            .take()
+            .ok_or_else(|| DartImError::object_closed("DartConversationPatchSession"))?;
+        *attached = true;
+        Ok(session)
+    }
+
+    async fn stop(&self) -> Result<(), DartImError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| DartImError::internal("conversation patch session lock poisoned"))?
+            .take();
+        if let Some(mut session) = session {
+            session.stop().await.map_err(DartImError::from)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DartConversationPatchSession {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.session.lock() {
+            let _ = guard.take();
+        }
+    }
+}
 
 fn page_limit(limit: u32) -> Result<im_core::ids::PageLimit, DartImError> {
     im_core::ids::PageLimit::new(limit).map_err(DartImError::from)
@@ -216,6 +274,52 @@ pub async fn clear_conversation_snapshot(
         .messages()
         .clear_conversation_snapshot_async()
         .await
+        .map_err(DartImError::from)
+}
+
+pub async fn watch_conversation_patches(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<Arc<DartConversationPatchSession>, DartImError> {
+    let inner = client.clone_inner()?;
+    let session = inner
+        .messages()
+        .watch_conversation_patches_async()
+        .await
+        .map_err(DartImError::from)?;
+    Ok(Arc::new(DartConversationPatchSession::new(session)))
+}
+
+pub async fn conversation_patch_stream(
+    session: &Arc<DartConversationPatchSession>,
+    sink: StreamSink<DartConversationStorePatch>,
+) -> Result<(), DartImError> {
+    let mut session = session.take_session()?;
+    tokio::spawn(async move {
+        while let Some(patch) = session.next_patch().await {
+            if sink.add(patch.into()).is_err() {
+                let _ = session.stop().await;
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+pub async fn stop_conversation_patch_session(
+    session: &Arc<DartConversationPatchSession>,
+) -> Result<(), DartImError> {
+    session.stop().await
+}
+
+pub async fn repair_conversation_store(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<DartConversationStorePatch, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .repair_conversation_store_async()
+        .await
+        .map(Into::into)
         .map_err(DartImError::from)
 }
 

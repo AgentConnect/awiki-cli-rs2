@@ -202,6 +202,49 @@ pub struct DartConversationListSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DartConversationStorePatch {
+    Reset {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        items: Vec<DartConversationSnapshotItem>,
+    },
+    Upsert {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        item: DartConversationSnapshotItem,
+        index: u32,
+    },
+    Remove {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        thread_kind: String,
+        thread_id: String,
+    },
+    Reorder {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        thread_kind: String,
+        thread_id: String,
+        index: u32,
+    },
+    RepairRequired {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversationSnapshotItem {
     pub thread_kind: String,
     pub thread_id: String,

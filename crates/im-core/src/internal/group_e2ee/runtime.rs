@@ -457,14 +457,18 @@ where
             input
                 .body
                 .sdk_result(&result, self.client.did().clone(), input.group.clone())?;
-        if let Err(err) =
-            input
-                .body
-                .persist_outgoing(self.client, input.group.as_str(), &sdk_result)
+        match input
+            .body
+            .persist_outgoing(self.client, input.group.as_str(), &sdk_result)
         {
-            sdk_result
-                .warnings
-                .push(format!("Failed to persist local group E2EE message: {err}"));
+            Ok(()) => self
+                .client
+                .emit_committed_conversation_projection("local_send"),
+            Err(err) => {
+                sdk_result
+                    .warnings
+                    .push(format!("Failed to persist local group E2EE message: {err}"));
+            }
         }
         Ok(GroupE2eeTextSendResult {
             sdk_result,
@@ -739,14 +743,19 @@ where
             input
                 .body
                 .sdk_result(&result, self.client.did().clone(), input.group.clone())?;
-        if let Err(err) = input
+        match input
             .body
             .persist_outgoing_async(self.client, input.group.as_str(), &sdk_result)
             .await
         {
-            sdk_result
-                .warnings
-                .push(format!("Failed to persist local group E2EE message: {err}"));
+            Ok(()) => self
+                .client
+                .emit_committed_conversation_projection("local_send"),
+            Err(err) => {
+                sdk_result
+                    .warnings
+                    .push(format!("Failed to persist local group E2EE message: {err}"));
+            }
         }
         Ok(GroupE2eeTextSendResult {
             sdk_result,

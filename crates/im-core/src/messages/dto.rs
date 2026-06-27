@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageRequest {
@@ -345,6 +347,96 @@ pub struct ConversationListSnapshot {
     pub summary_version: Option<String>,
     pub unread_total: u32,
     pub items: Vec<ConversationSnapshotItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConversationStorePatch {
+    Reset {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        items: Vec<ConversationSnapshotItem>,
+    },
+    Upsert {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        item: ConversationSnapshotItem,
+        index: u32,
+    },
+    Remove {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        thread_kind: String,
+        thread_id: String,
+    },
+    Reorder {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        thread_kind: String,
+        thread_id: String,
+        index: u32,
+    },
+    RepairRequired {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        unread_total: u32,
+        reason: String,
+    },
+}
+
+pub struct ConversationPatchSession {
+    pub(crate) store: Arc<crate::internal::runtime_store::conversation_store::ConversationStore>,
+    pub(crate) receiver: tokio::sync::broadcast::Receiver<ConversationStorePatch>,
+    pub(crate) initial: VecDeque<ConversationStorePatch>,
+    closed: bool,
+}
+
+impl ConversationPatchSession {
+    pub(crate) fn new(
+        store: Arc<crate::internal::runtime_store::conversation_store::ConversationStore>,
+        receiver: tokio::sync::broadcast::Receiver<ConversationStorePatch>,
+        initial: Vec<ConversationStorePatch>,
+    ) -> Self {
+        Self {
+            store,
+            receiver,
+            initial: initial.into(),
+            closed: false,
+        }
+    }
+
+    pub async fn next_patch(&mut self) -> Option<ConversationStorePatch> {
+        if self.closed {
+            return None;
+        }
+        if let Some(patch) = self.initial.pop_front() {
+            return Some(patch);
+        }
+        loop {
+            match self.receiver.recv().await {
+                Ok(patch) => return Some(patch),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    return Some(self.store.repair_required_patch("subscriber_lag"));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    pub async fn stop(&mut self) -> crate::ImResult<()> {
+        self.closed = true;
+        self.receiver.resubscribe();
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

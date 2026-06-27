@@ -649,6 +649,30 @@ class MessageApi {
     );
   }
 
+  Stream<ConversationStorePatch> watchConversationPatches() async* {
+    _client._ensureNotDisposed();
+    final session = await _mapNativeErrors(
+      () => gen_messages.watchConversationPatches(client: _client._inner),
+    );
+    try {
+      yield* gen_messages
+          .conversationPatchStream(session: session)
+          .map((patch) => patch._toModel());
+    } finally {
+      await _mapNativeErrors(
+        () => gen_messages.stopConversationPatchSession(session: session),
+      );
+    }
+  }
+
+  Future<ConversationStorePatch> repairConversationStore() async {
+    _client._ensureNotDisposed();
+    final patch = await _mapNativeErrors(
+      () => gen_messages.repairConversationStore(client: _client._inner),
+    );
+    return patch._toModel();
+  }
+
   Future<SendMessageResult> retryMessage(String messageId) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -1880,6 +1904,55 @@ extension on gen_message.DartConversationListSnapshot {
     summaryVersion: summaryVersion,
     unreadTotal: unreadTotal,
     items: items.map((item) => item._toModel()).toList(),
+  );
+}
+
+extension on gen_message.DartConversationStorePatch {
+  ConversationStorePatch _toModel() => map(
+    reset: (value) => ConversationStorePatch(
+      kind: ConversationStorePatchKind.reset,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      unreadTotal: value.unreadTotal,
+      items: value.items.map((item) => item._toModel()).toList(),
+    ),
+    upsert: (value) => ConversationStorePatch(
+      kind: ConversationStorePatchKind.upsert,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      unreadTotal: value.unreadTotal,
+      item: value.item._toModel(),
+      index: value.index,
+    ),
+    remove: (value) => ConversationStorePatch(
+      kind: ConversationStorePatchKind.remove,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      unreadTotal: value.unreadTotal,
+      threadKind: value.threadKind,
+      threadId: value.threadId,
+    ),
+    reorder: (value) => ConversationStorePatch(
+      kind: ConversationStorePatchKind.reorder,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      unreadTotal: value.unreadTotal,
+      threadKind: value.threadKind,
+      threadId: value.threadId,
+      index: value.index,
+    ),
+    repairRequired: (value) => ConversationStorePatch(
+      kind: ConversationStorePatchKind.repairRequired,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      unreadTotal: value.unreadTotal,
+      reason: value.reason,
+    ),
   );
 }
 

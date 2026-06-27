@@ -1,10 +1,12 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone)]
 pub struct ImClient {
     core: Arc<super::ImCoreInner>,
     identity: crate::identity::IdentitySummary,
     runtime: Arc<crate::internal::identity_runtime::ClientIdentityRuntime>,
+    conversation_store:
+        Arc<OnceLock<Arc<crate::internal::runtime_store::conversation_store::ConversationStore>>>,
 }
 
 impl ImClient {
@@ -17,6 +19,7 @@ impl ImClient {
             core,
             identity,
             runtime: Arc::new(runtime),
+            conversation_store: Arc::new(OnceLock::new()),
         }
     }
 
@@ -86,5 +89,24 @@ impl ImClient {
 
     pub(crate) fn core_inner(&self) -> &super::ImCoreInner {
         &self.core
+    }
+
+    pub(crate) fn conversation_store(
+        &self,
+    ) -> Arc<crate::internal::runtime_store::conversation_store::ConversationStore> {
+        self.conversation_store
+            .get_or_init(|| {
+                crate::internal::runtime_store::conversation_store::ConversationStore::new_for_client(
+                    self,
+                )
+            })
+            .clone()
+    }
+
+    pub(crate) fn emit_committed_conversation_projection(&self, reason: &str) {
+        let Some(store) = self.conversation_store.get() else {
+            return;
+        };
+        store.on_committed_local_projection(self, reason);
     }
 }

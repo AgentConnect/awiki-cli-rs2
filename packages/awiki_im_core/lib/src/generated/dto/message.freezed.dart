@@ -12,6 +12,602 @@ part of 'message.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$DartConversationStorePatch {
+
+ String get ownerIdentityId; String get ownerDid; BigInt get version; int get unreadTotal;
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartConversationStorePatchCopyWith<DartConversationStorePatch> get copyWith => _$DartConversationStorePatchCopyWithImpl<DartConversationStorePatch>(this as DartConversationStorePatch, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal);
+
+@override
+String toString() {
+  return 'DartConversationStorePatch(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartConversationStorePatchCopyWith<$Res>  {
+  factory $DartConversationStorePatchCopyWith(DartConversationStorePatch value, $Res Function(DartConversationStorePatch) _then) = _$DartConversationStorePatchCopyWithImpl;
+@useResult
+$Res call({
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartConversationStorePatchCopyWithImpl<$Res>
+    implements $DartConversationStorePatchCopyWith<$Res> {
+  _$DartConversationStorePatchCopyWithImpl(this._self, this._then);
+
+  final DartConversationStorePatch _self;
+  final $Res Function(DartConversationStorePatch) _then;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,}) {
+  return _then(_self.copyWith(
+ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
+as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
+as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [DartConversationStorePatch].
+extension DartConversationStorePatchPatterns on DartConversationStorePatch {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DartConversationStorePatch_Reset value)?  reset,TResult Function( DartConversationStorePatch_Upsert value)?  upsert,TResult Function( DartConversationStorePatch_Remove value)?  remove,TResult Function( DartConversationStorePatch_Reorder value)?  reorder,TResult Function( DartConversationStorePatch_RepairRequired value)?  repairRequired,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case DartConversationStorePatch_Reset() when reset != null:
+return reset(_that);case DartConversationStorePatch_Upsert() when upsert != null:
+return upsert(_that);case DartConversationStorePatch_Remove() when remove != null:
+return remove(_that);case DartConversationStorePatch_Reorder() when reorder != null:
+return reorder(_that);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
+return repairRequired(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DartConversationStorePatch_Reset value)  reset,required TResult Function( DartConversationStorePatch_Upsert value)  upsert,required TResult Function( DartConversationStorePatch_Remove value)  remove,required TResult Function( DartConversationStorePatch_Reorder value)  reorder,required TResult Function( DartConversationStorePatch_RepairRequired value)  repairRequired,}){
+final _that = this;
+switch (_that) {
+case DartConversationStorePatch_Reset():
+return reset(_that);case DartConversationStorePatch_Upsert():
+return upsert(_that);case DartConversationStorePatch_Remove():
+return remove(_that);case DartConversationStorePatch_Reorder():
+return reorder(_that);case DartConversationStorePatch_RepairRequired():
+return repairRequired(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DartConversationStorePatch_Reset value)?  reset,TResult? Function( DartConversationStorePatch_Upsert value)?  upsert,TResult? Function( DartConversationStorePatch_Remove value)?  remove,TResult? Function( DartConversationStorePatch_Reorder value)?  reorder,TResult? Function( DartConversationStorePatch_RepairRequired value)?  repairRequired,}){
+final _that = this;
+switch (_that) {
+case DartConversationStorePatch_Reset() when reset != null:
+return reset(_that);case DartConversationStorePatch_Upsert() when upsert != null:
+return upsert(_that);case DartConversationStorePatch_Remove() when remove != null:
+return remove(_that);case DartConversationStorePatch_Reorder() when reorder != null:
+return reorder(_that);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
+return repairRequired(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)?  reset,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)?  upsert,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId)?  remove,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  int index)?  reorder,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)?  repairRequired,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case DartConversationStorePatch_Reset() when reset != null:
+return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.items);case DartConversationStorePatch_Upsert() when upsert != null:
+return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.item,_that.index);case DartConversationStorePatch_Remove() when remove != null:
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId);case DartConversationStorePatch_Reorder() when reorder != null:
+return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.index);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
+return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.reason);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)  reset,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)  upsert,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId)  remove,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  int index)  reorder,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)  repairRequired,}) {final _that = this;
+switch (_that) {
+case DartConversationStorePatch_Reset():
+return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.items);case DartConversationStorePatch_Upsert():
+return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.item,_that.index);case DartConversationStorePatch_Remove():
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId);case DartConversationStorePatch_Reorder():
+return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.index);case DartConversationStorePatch_RepairRequired():
+return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.reason);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)?  reset,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)?  upsert,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId)?  remove,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  int index)?  reorder,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)?  repairRequired,}) {final _that = this;
+switch (_that) {
+case DartConversationStorePatch_Reset() when reset != null:
+return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.items);case DartConversationStorePatch_Upsert() when upsert != null:
+return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.item,_that.index);case DartConversationStorePatch_Remove() when remove != null:
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId);case DartConversationStorePatch_Reorder() when reorder != null:
+return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.index);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
+return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.reason);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class DartConversationStorePatch_Reset extends DartConversationStorePatch {
+  const DartConversationStorePatch_Reset({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required final  List<DartConversationSnapshotItem> items}): _items = items,super._();
+
+
+@override final  String ownerIdentityId;
+@override final  String ownerDid;
+@override final  BigInt version;
+@override final  int unreadTotal;
+ final  List<DartConversationSnapshotItem> _items;
+ List<DartConversationSnapshotItem> get items {
+  if (_items is EqualUnmodifiableListView) return _items;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_items);
+}
+
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartConversationStorePatch_ResetCopyWith<DartConversationStorePatch_Reset> get copyWith => _$DartConversationStorePatch_ResetCopyWithImpl<DartConversationStorePatch_Reset>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Reset&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&const DeepCollectionEquality().equals(other._items, _items));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,const DeepCollectionEquality().hash(_items));
+
+@override
+String toString() {
+  return 'DartConversationStorePatch.reset(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, items: $items)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartConversationStorePatch_ResetCopyWith<$Res> implements $DartConversationStorePatchCopyWith<$Res> {
+  factory $DartConversationStorePatch_ResetCopyWith(DartConversationStorePatch_Reset value, $Res Function(DartConversationStorePatch_Reset) _then) = _$DartConversationStorePatch_ResetCopyWithImpl;
+@override @useResult
+$Res call({
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, List<DartConversationSnapshotItem> items
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartConversationStorePatch_ResetCopyWithImpl<$Res>
+    implements $DartConversationStorePatch_ResetCopyWith<$Res> {
+  _$DartConversationStorePatch_ResetCopyWithImpl(this._self, this._then);
+
+  final DartConversationStorePatch_Reset _self;
+  final $Res Function(DartConversationStorePatch_Reset) _then;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? items = null,}) {
+  return _then(DartConversationStorePatch_Reset(
+ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
+as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
+as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
+as int,items: null == items ? _self._items : items // ignore: cast_nullable_to_non_nullable
+as List<DartConversationSnapshotItem>,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class DartConversationStorePatch_Upsert extends DartConversationStorePatch {
+  const DartConversationStorePatch_Upsert({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.item, required this.index}): super._();
+
+
+@override final  String ownerIdentityId;
+@override final  String ownerDid;
+@override final  BigInt version;
+@override final  int unreadTotal;
+ final  DartConversationSnapshotItem item;
+ final  int index;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartConversationStorePatch_UpsertCopyWith<DartConversationStorePatch_Upsert> get copyWith => _$DartConversationStorePatch_UpsertCopyWithImpl<DartConversationStorePatch_Upsert>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Upsert&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.item, item) || other.item == item)&&(identical(other.index, index) || other.index == index));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,item,index);
+
+@override
+String toString() {
+  return 'DartConversationStorePatch.upsert(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, item: $item, index: $index)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartConversationStorePatch_UpsertCopyWith<$Res> implements $DartConversationStorePatchCopyWith<$Res> {
+  factory $DartConversationStorePatch_UpsertCopyWith(DartConversationStorePatch_Upsert value, $Res Function(DartConversationStorePatch_Upsert) _then) = _$DartConversationStorePatch_UpsertCopyWithImpl;
+@override @useResult
+$Res call({
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, DartConversationSnapshotItem item, int index
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartConversationStorePatch_UpsertCopyWithImpl<$Res>
+    implements $DartConversationStorePatch_UpsertCopyWith<$Res> {
+  _$DartConversationStorePatch_UpsertCopyWithImpl(this._self, this._then);
+
+  final DartConversationStorePatch_Upsert _self;
+  final $Res Function(DartConversationStorePatch_Upsert) _then;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? item = null,Object? index = null,}) {
+  return _then(DartConversationStorePatch_Upsert(
+ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
+as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
+as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
+as int,item: null == item ? _self.item : item // ignore: cast_nullable_to_non_nullable
+as DartConversationSnapshotItem,index: null == index ? _self.index : index // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class DartConversationStorePatch_Remove extends DartConversationStorePatch {
+  const DartConversationStorePatch_Remove({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.threadKind, required this.threadId}): super._();
+
+
+@override final  String ownerIdentityId;
+@override final  String ownerDid;
+@override final  BigInt version;
+@override final  int unreadTotal;
+ final  String threadKind;
+ final  String threadId;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartConversationStorePatch_RemoveCopyWith<DartConversationStorePatch_Remove> get copyWith => _$DartConversationStorePatch_RemoveCopyWithImpl<DartConversationStorePatch_Remove>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Remove&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,threadKind,threadId);
+
+@override
+String toString() {
+  return 'DartConversationStorePatch.remove(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, threadKind: $threadKind, threadId: $threadId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartConversationStorePatch_RemoveCopyWith<$Res> implements $DartConversationStorePatchCopyWith<$Res> {
+  factory $DartConversationStorePatch_RemoveCopyWith(DartConversationStorePatch_Remove value, $Res Function(DartConversationStorePatch_Remove) _then) = _$DartConversationStorePatch_RemoveCopyWithImpl;
+@override @useResult
+$Res call({
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String threadKind, String threadId
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartConversationStorePatch_RemoveCopyWithImpl<$Res>
+    implements $DartConversationStorePatch_RemoveCopyWith<$Res> {
+  _$DartConversationStorePatch_RemoveCopyWithImpl(this._self, this._then);
+
+  final DartConversationStorePatch_Remove _self;
+  final $Res Function(DartConversationStorePatch_Remove) _then;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? threadKind = null,Object? threadId = null,}) {
+  return _then(DartConversationStorePatch_Remove(
+ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
+as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
+as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
+as int,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
+as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class DartConversationStorePatch_Reorder extends DartConversationStorePatch {
+  const DartConversationStorePatch_Reorder({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.threadKind, required this.threadId, required this.index}): super._();
+
+
+@override final  String ownerIdentityId;
+@override final  String ownerDid;
+@override final  BigInt version;
+@override final  int unreadTotal;
+ final  String threadKind;
+ final  String threadId;
+ final  int index;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartConversationStorePatch_ReorderCopyWith<DartConversationStorePatch_Reorder> get copyWith => _$DartConversationStorePatch_ReorderCopyWithImpl<DartConversationStorePatch_Reorder>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Reorder&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.index, index) || other.index == index));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,threadKind,threadId,index);
+
+@override
+String toString() {
+  return 'DartConversationStorePatch.reorder(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, threadKind: $threadKind, threadId: $threadId, index: $index)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartConversationStorePatch_ReorderCopyWith<$Res> implements $DartConversationStorePatchCopyWith<$Res> {
+  factory $DartConversationStorePatch_ReorderCopyWith(DartConversationStorePatch_Reorder value, $Res Function(DartConversationStorePatch_Reorder) _then) = _$DartConversationStorePatch_ReorderCopyWithImpl;
+@override @useResult
+$Res call({
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String threadKind, String threadId, int index
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartConversationStorePatch_ReorderCopyWithImpl<$Res>
+    implements $DartConversationStorePatch_ReorderCopyWith<$Res> {
+  _$DartConversationStorePatch_ReorderCopyWithImpl(this._self, this._then);
+
+  final DartConversationStorePatch_Reorder _self;
+  final $Res Function(DartConversationStorePatch_Reorder) _then;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? threadKind = null,Object? threadId = null,Object? index = null,}) {
+  return _then(DartConversationStorePatch_Reorder(
+ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
+as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
+as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
+as int,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
+as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
+as String,index: null == index ? _self.index : index // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class DartConversationStorePatch_RepairRequired extends DartConversationStorePatch {
+  const DartConversationStorePatch_RepairRequired({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.reason}): super._();
+
+
+@override final  String ownerIdentityId;
+@override final  String ownerDid;
+@override final  BigInt version;
+@override final  int unreadTotal;
+ final  String reason;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$DartConversationStorePatch_RepairRequiredCopyWith<DartConversationStorePatch_RepairRequired> get copyWith => _$DartConversationStorePatch_RepairRequiredCopyWithImpl<DartConversationStorePatch_RepairRequired>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_RepairRequired&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.reason, reason) || other.reason == reason));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,reason);
+
+@override
+String toString() {
+  return 'DartConversationStorePatch.repairRequired(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, reason: $reason)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $DartConversationStorePatch_RepairRequiredCopyWith<$Res> implements $DartConversationStorePatchCopyWith<$Res> {
+  factory $DartConversationStorePatch_RepairRequiredCopyWith(DartConversationStorePatch_RepairRequired value, $Res Function(DartConversationStorePatch_RepairRequired) _then) = _$DartConversationStorePatch_RepairRequiredCopyWithImpl;
+@override @useResult
+$Res call({
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String reason
+});
+
+
+
+
+}
+/// @nodoc
+class _$DartConversationStorePatch_RepairRequiredCopyWithImpl<$Res>
+    implements $DartConversationStorePatch_RepairRequiredCopyWith<$Res> {
+  _$DartConversationStorePatch_RepairRequiredCopyWithImpl(this._self, this._then);
+
+  final DartConversationStorePatch_RepairRequired _self;
+  final $Res Function(DartConversationStorePatch_RepairRequired) _then;
+
+/// Create a copy of DartConversationStorePatch
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? reason = null,}) {
+  return _then(DartConversationStorePatch_RepairRequired(
+ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
+as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
+as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
+as int,reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$DartInboxAuth {
 
  DartScopedInboxToken get token;

@@ -20,10 +20,10 @@ use crate::dto::{
     message::{
         DartConversation, DartConversationListSnapshot, DartConversationPage,
         DartConversationSnapshotItem, DartConversationSnapshotMessage,
-        DartConversationSnapshotMessageBody, DartMarkReadResult, DartMarkThreadReadResult,
-        DartMessage, DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
-        DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult, DartSyncDeltaResult,
-        DartSyncThreadAfterResult,
+        DartConversationSnapshotMessageBody, DartConversationStorePatch, DartMarkReadResult,
+        DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
+        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
+        DartSyncDeltaResult, DartSyncThreadAfterResult,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
@@ -629,6 +629,86 @@ impl From<im_core::messages::ConversationListSnapshot> for DartConversationListS
             summary_version: value.summary_version,
             unread_total: value.unread_total,
             items: value.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePatch {
+    fn from(value: im_core::messages::ConversationStorePatch) -> Self {
+        match value {
+            im_core::messages::ConversationStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                items,
+            } => DartConversationStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                items: items.into_iter().map(Into::into).collect(),
+            },
+            im_core::messages::ConversationStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                item,
+                index,
+            } => DartConversationStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                item: item.into(),
+                index,
+            },
+            im_core::messages::ConversationStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+            } => DartConversationStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+            },
+            im_core::messages::ConversationStorePatch::Reorder {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+                index,
+            } => DartConversationStorePatch::Reorder {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+                index,
+            },
+            im_core::messages::ConversationStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                reason,
+            } => DartConversationStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                reason,
+            },
         }
     }
 }

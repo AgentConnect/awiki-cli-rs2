@@ -87,7 +87,7 @@ fn should_update_conversation_snapshot(query: &crate::messages::ConversationQuer
     query.include_groups && query.include_direct && !query.unread_only
 }
 
-fn snapshot_item_from_conversation(
+pub(crate) fn snapshot_item_from_conversation(
     conversation: &crate::messages::Conversation,
 ) -> ConversationSnapshotItem {
     let (thread_kind, thread_id) = thread_ref_parts(&conversation.thread);

@@ -279,7 +279,7 @@ impl<'a> MessageService<'a> {
                     },
                 )?;
                 #[cfg(feature = "sqlite")]
-                if let Err(err) =
+                match
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
                         self.client,
                         &result.target_did,
@@ -288,10 +288,15 @@ impl<'a> MessageService<'a> {
                         &result.sdk_result,
                     )
                 {
-                    result
-                        .sdk_result
-                        .warnings
-                        .push(format!("Failed to persist local message: {err}"));
+                    Ok(()) => self
+                        .client
+                        .emit_committed_conversation_projection("local_send"),
+                    Err(err) => {
+                        result
+                            .sdk_result
+                            .warnings
+                            .push(format!("Failed to persist local message: {err}"));
+                    }
                 }
                 Ok(result.sdk_result)
             }
@@ -316,17 +321,22 @@ impl<'a> MessageService<'a> {
                     credentials: None,
                 })?;
                 #[cfg(feature = "sqlite")]
-                if let Err(err) =
+                match
                     crate::internal::message_runtime::local_projection::persist_group_outgoing_result(
                         self.client,
                         &result.group_did,
                         &result.sdk_result,
                     )
                 {
-                    result
-                        .sdk_result
-                        .warnings
-                        .push(format!("Failed to persist local group message: {err}"));
+                    Ok(()) => self
+                        .client
+                        .emit_committed_conversation_projection("local_send"),
+                    Err(err) => {
+                        result
+                            .sdk_result
+                            .warnings
+                            .push(format!("Failed to persist local group message: {err}"));
+                    }
                 }
                 Ok(result.sdk_result)
             }
@@ -391,7 +401,7 @@ impl<'a> MessageService<'a> {
                 })
                 .await?;
                 #[cfg(feature = "sqlite")]
-                if let Err(err) =
+                match
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
                         self.client,
                         &result.target_did,
@@ -401,10 +411,15 @@ impl<'a> MessageService<'a> {
                     )
                     .await
                 {
-                    result
-                        .sdk_result
-                        .warnings
-                        .push(format!("Failed to persist local message: {err}"));
+                    Ok(()) => self
+                        .client
+                        .emit_committed_conversation_projection("local_send"),
+                    Err(err) => {
+                        result
+                            .sdk_result
+                            .warnings
+                            .push(format!("Failed to persist local message: {err}"));
+                    }
                 }
                 Ok(result.sdk_result)
             }
@@ -430,7 +445,7 @@ impl<'a> MessageService<'a> {
                 })
                 .await?;
                 #[cfg(feature = "sqlite")]
-                if let Err(err) =
+                match
                     crate::internal::message_runtime::local_projection::persist_group_outgoing_result_async(
                         self.client,
                         &result.group_did,
@@ -438,10 +453,15 @@ impl<'a> MessageService<'a> {
                     )
                     .await
                 {
-                    result
-                        .sdk_result
-                        .warnings
-                        .push(format!("Failed to persist local group message: {err}"));
+                    Ok(()) => self
+                        .client
+                        .emit_committed_conversation_projection("local_send"),
+                    Err(err) => {
+                        result
+                            .sdk_result
+                            .warnings
+                            .push(format!("Failed to persist local group message: {err}"));
+                    }
                 }
                 Ok(result.sdk_result)
             }
@@ -1232,6 +1252,30 @@ impl<'a> MessageService<'a> {
     pub async fn clear_conversation_snapshot_async(&self) -> crate::ImResult<()> {
         self.clear_conversation_snapshot()
     }
+
+    pub fn watch_conversation_patches(&self) -> crate::ImResult<super::ConversationPatchSession> {
+        self.client
+            .conversation_store()
+            .watch_for_client(self.client)
+    }
+
+    pub async fn watch_conversation_patches_async(
+        &self,
+    ) -> crate::ImResult<super::ConversationPatchSession> {
+        self.watch_conversation_patches()
+    }
+
+    pub fn repair_conversation_store(&self) -> crate::ImResult<super::ConversationStorePatch> {
+        self.client
+            .conversation_store()
+            .repair_from_client(self.client)
+    }
+
+    pub async fn repair_conversation_store_async(
+        &self,
+    ) -> crate::ImResult<super::ConversationStorePatch> {
+        self.repair_conversation_store()
+    }
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]
@@ -1333,7 +1377,7 @@ async fn persist_deferred_direct_e2ee_effect(
     match result.local_effect {
         crate::internal::secure_direct::send::DirectSecureLocalEffect::None => {}
         crate::internal::secure_direct::send::DirectSecureLocalEffect::PersistOutgoing => {
-            if let Err(err) =
+            match
                 crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing_async(
                     client,
                     &result.target_did,
@@ -1343,10 +1387,13 @@ async fn persist_deferred_direct_e2ee_effect(
                 )
                 .await
             {
-                result
-                    .sdk_result
-                    .warnings
-                    .push(format!("Failed to persist local secure direct message: {err}"));
+                Ok(()) => client.emit_committed_conversation_projection("local_send"),
+                Err(err) => {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local secure direct message: {err}"));
+                }
             }
         }
         crate::internal::secure_direct::send::DirectSecureLocalEffect::QueueOutbox(record) => {
@@ -1369,7 +1416,7 @@ async fn persist_deferred_direct_e2ee_attachment_effect(
     match result.local_effect {
         crate::internal::secure_direct::send::DirectSecureAttachmentLocalEffect::None => {}
         crate::internal::secure_direct::send::DirectSecureAttachmentLocalEffect::PersistOutgoing => {
-            if let Err(err) =
+            match
                 crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing_async(
                     client,
                     &result.target_did,
@@ -1378,10 +1425,13 @@ async fn persist_deferred_direct_e2ee_attachment_effect(
                 )
                 .await
             {
-                result
-                    .sdk_result
-                    .warnings
-                    .push(format!("Failed to persist local secure direct attachment: {err}"));
+                Ok(()) => client.emit_committed_conversation_projection("local_send"),
+                Err(err) => {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local secure direct attachment: {err}"));
+                }
             }
         }
     }

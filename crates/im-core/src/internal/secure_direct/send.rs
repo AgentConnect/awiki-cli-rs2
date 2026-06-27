@@ -208,7 +208,7 @@ where
                 )?;
                 let local_effect = match input.local_persistence {
                     DirectSecureLocalPersistence::LegacySqlite => {
-                        if let Err(err) = crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing(
+                        match crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing(
                             &connection,
                             self.client,
                             &target_did,
@@ -216,9 +216,14 @@ where
                             &kind,
                             &sdk_result,
                         ) {
-                            sdk_result.warnings.push(format!(
-                                "Failed to persist local secure direct message: {err}"
-                            ));
+                            Ok(()) => self
+                                .client
+                                .emit_committed_conversation_projection("local_send"),
+                            Err(err) => {
+                                sdk_result.warnings.push(format!(
+                                    "Failed to persist local secure direct message: {err}"
+                                ));
+                            }
                         }
                         DirectSecureLocalEffect::None
                     }
@@ -400,16 +405,21 @@ where
                 )?;
                 let local_effect = match input.local_persistence {
                     DirectSecureLocalPersistence::LegacySqlite => {
-                        if let Err(err) = crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing(
+                        match crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing(
                             &connection,
                             self.client,
                             &target_did,
                             &input.committed.redacted_manifest,
                             &sdk_result,
                         ) {
-                            sdk_result.warnings.push(format!(
-                                "Failed to persist local secure direct attachment: {err}"
-                            ));
+                            Ok(()) => self
+                                .client
+                                .emit_committed_conversation_projection("local_send"),
+                            Err(err) => {
+                                sdk_result.warnings.push(format!(
+                                    "Failed to persist local secure direct attachment: {err}"
+                                ));
+                            }
                         }
                         DirectSecureAttachmentLocalEffect::None
                     }

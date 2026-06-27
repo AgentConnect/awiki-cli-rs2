@@ -283,6 +283,51 @@ class DartConversationSnapshotMessageBody {
           unsupportedContentType == other.unsupportedContentType;
 }
 
+@freezed
+sealed class DartConversationStorePatch with _$DartConversationStorePatch {
+  const DartConversationStorePatch._();
+
+  const factory DartConversationStorePatch.reset({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required List<DartConversationSnapshotItem> items,
+  }) = DartConversationStorePatch_Reset;
+  const factory DartConversationStorePatch.upsert({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required DartConversationSnapshotItem item,
+    required int index,
+  }) = DartConversationStorePatch_Upsert;
+  const factory DartConversationStorePatch.remove({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required String threadKind,
+    required String threadId,
+  }) = DartConversationStorePatch_Remove;
+  const factory DartConversationStorePatch.reorder({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required String threadKind,
+    required String threadId,
+    required int index,
+  }) = DartConversationStorePatch_Reorder;
+  const factory DartConversationStorePatch.repairRequired({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required String reason,
+  }) = DartConversationStorePatch_RepairRequired;
+}
+
 class DartDelegatedSigningOptions {
   final String? logicalSenderDid;
   final String? signingVerificationMethod;

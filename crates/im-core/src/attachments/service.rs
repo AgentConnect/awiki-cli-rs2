@@ -52,11 +52,16 @@ impl<'a> AttachmentService<'a> {
                     &result.sdk_result,
                 )
             };
-            if let Err(err) = projection {
-                result
-                    .sdk_result
-                    .warnings
-                    .push(format!("Failed to persist local attachment message: {err}"));
+            match projection {
+                Ok(()) => self
+                    .client
+                    .emit_committed_conversation_projection("local_send"),
+                Err(err) => {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local attachment message: {err}"));
+                }
             }
         }
         Ok(super::AttachmentSendResult::from_upload_result(result))
@@ -111,11 +116,16 @@ impl<'a> AttachmentService<'a> {
                 )
                 .await
             };
-            if let Err(err) = projection {
-                result
-                    .sdk_result
-                    .warnings
-                    .push(format!("Failed to persist local attachment message: {err}"));
+            match projection {
+                Ok(()) => self
+                    .client
+                    .emit_committed_conversation_projection("local_send"),
+                Err(err) => {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local attachment message: {err}"));
+                }
             }
         }
         Ok(super::AttachmentSendResult::from_upload_result(result))

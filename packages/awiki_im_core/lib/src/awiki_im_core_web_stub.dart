@@ -95,6 +95,14 @@ class MessageApi {
   Future<void> clearConversationSnapshot() async {
     throw _unsupported();
   }
+
+  Stream<ConversationStorePatch> watchConversationPatches() {
+    throw _unsupported();
+  }
+
+  Future<ConversationStorePatch> repairConversationStore() async {
+    throw _unsupported();
+  }
 }
 
 class SecureApi {

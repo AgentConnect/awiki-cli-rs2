@@ -9,7 +9,8 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `page_limit`
+// These functions are ignored because they are not marked as `pub`: `new`, `page_limit`, `stop`, `take_session`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
 Future<DartSendMessageResult> sendText({
   required ArcDartImClient client,
@@ -126,6 +127,30 @@ Future<void> clearConversationSnapshot({required ArcDartImClient client}) =>
       client: client,
     );
 
+Future<ArcDartConversationPatchSession> watchConversationPatches({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesWatchConversationPatches(
+  client: client,
+);
+
+Stream<DartConversationStorePatch> conversationPatchStream({
+  required ArcDartConversationPatchSession session,
+}) => RustLib.instance.api.crateApiMessagesConversationPatchStream(
+  session: session,
+);
+
+Future<void> stopConversationPatchSession({
+  required ArcDartConversationPatchSession session,
+}) => RustLib.instance.api.crateApiMessagesStopConversationPatchSession(
+  session: session,
+);
+
+Future<DartConversationStorePatch> repairConversationStore({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesRepairConversationStore(
+  client: client,
+);
+
 Future<DartSendMessageResult> retryMessage({
   required ArcDartImClient client,
   required String messageId,
@@ -133,3 +158,6 @@ Future<DartSendMessageResult> retryMessage({
   client: client,
   messageId: messageId,
 );
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartConversationPatchSession >>>
+abstract class ArcDartConversationPatchSession implements RustOpaqueInterface {}
