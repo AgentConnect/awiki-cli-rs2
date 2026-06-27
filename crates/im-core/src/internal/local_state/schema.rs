@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 20;
+pub(crate) const SCHEMA_VERSION: i64 = 21;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
@@ -264,6 +264,29 @@ CREATE TABLE IF NOT EXISTS sync_state (
 
 CREATE INDEX IF NOT EXISTS idx_sync_state_owner_kind
 ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+"#;
+
+const THREAD_READ_STATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS thread_read_state (
+    owner_identity_id          TEXT NOT NULL,
+    owner_did                  TEXT NOT NULL DEFAULT '',
+    thread_scope               TEXT NOT NULL,
+    thread_id                  TEXT NOT NULL,
+    conversation_id            TEXT NOT NULL DEFAULT '',
+    read_watermark_message_id  TEXT,
+    read_watermark_seq         TEXT,
+    read_watermark_at          TEXT,
+    pending_remote_ack         INTEGER NOT NULL DEFAULT 0,
+    remote_ack_at              TEXT,
+    updated_at                 TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_scope, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_read_state_owner_pending
+ON thread_read_state(owner_identity_id, pending_remote_ack, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_thread_read_state_owner_conversation
+ON thread_read_state(owner_identity_id, conversation_id);
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -899,6 +922,9 @@ fn create_schema(
         .map_err(super::local_state_unavailable)?;
     connection
         .execute_batch(SYNC_STATE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;

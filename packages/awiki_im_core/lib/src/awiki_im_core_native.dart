@@ -578,14 +578,16 @@ class MessageApi {
 
   Future<MarkThreadReadResult> markThreadRead(
     ThreadRef thread, {
-    int? maxMessageIds,
+    ReadWatermark? watermark,
+    int? fallbackMaxMessageIds,
   }) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_messages.markThreadRead(
         client: _client._inner,
         thread: thread._toGen(),
-        maxMessageIds: maxMessageIds,
+        watermark: watermark?._toGen(),
+        fallbackMaxMessageIds: fallbackMaxMessageIds,
       ),
     );
     return result._toModel();
@@ -2096,13 +2098,29 @@ extension on gen_message.DartMarkReadResult {
 extension on gen_message.DartMarkThreadReadResult {
   MarkThreadReadResult _toModel() => MarkThreadReadResult(
     updatedCount: updatedCount,
-    messageIds: messageIds,
-    localCandidateCount: localCandidateCount,
-    localUpdatedCount: localUpdatedCount,
-    remoteUpdatedCount: remoteUpdatedCount,
     remoteAcknowledged: remoteAcknowledged,
     partial: partial,
+    fallbackUsed: fallbackUsed,
+    pendingRemoteAck: pendingRemoteAck,
+    effectiveWatermark: effectiveWatermark?._toModel(),
+    legacyMessageIds: legacyMessageIds,
     warnings: warnings,
+  );
+}
+
+extension on ReadWatermark {
+  gen_message.DartReadWatermark _toGen() => gen_message.DartReadWatermark(
+    lastReadMessageId: lastReadMessageId,
+    lastReadThreadSeq: lastReadThreadSeq,
+    readAt: readAt?.toUtc().toIso8601String(),
+  );
+}
+
+extension on gen_message.DartReadWatermark {
+  ReadWatermark _toModel() => ReadWatermark(
+    lastReadMessageId: lastReadMessageId,
+    lastReadThreadSeq: lastReadThreadSeq,
+    readAt: readAt == null ? null : DateTime.tryParse(readAt!),
   );
 }
 

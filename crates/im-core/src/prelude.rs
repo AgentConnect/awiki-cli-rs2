@@ -53,8 +53,8 @@ pub use crate::messages::{
     MarkThreadReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
     MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
     MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
-    MessageSendState, MessageSendStateKind, MessageService, MessageTarget, ScopedInboxToken,
-    SendMessageRequest, SendMessageResult, ThreadRef,
+    MessageSendState, MessageSendStateKind, MessageService, MessageTarget, ReadWatermark,
+    ScopedInboxToken, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 #[cfg(feature = "blocking")]

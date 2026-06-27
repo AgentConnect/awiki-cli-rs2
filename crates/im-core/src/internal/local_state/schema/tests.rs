@@ -22,6 +22,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "direct_e2ee_one_time_prekeys"),
         ("table", "attachment_manifest_cache"),
         ("table", "sync_state"),
+        ("table", "thread_read_state"),
         ("view", "threads"),
         ("view", "inbox"),
         ("view", "outbox"),
@@ -40,6 +41,8 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_direct_e2ee_one_time_prekeys_owner_status");
     assert_index_exists(&db, "idx_attachment_manifest_cache_owner_thread");
     assert_index_exists(&db, "idx_sync_state_owner_kind");
+    assert_index_exists(&db, "idx_thread_read_state_owner_pending");
+    assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -55,6 +58,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         "direct_e2ee_one_time_prekeys",
         "attachment_manifest_cache",
         "sync_state",
+        "thread_read_state",
     ] {
         assert_column_exists(&db, table, "owner_identity_id");
     }
@@ -90,6 +94,10 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
             "sync_state",
             vec!["owner_identity_id", "scope", "checkpoint_kind"],
         ),
+        (
+            "thread_read_state",
+            vec!["owner_identity_id", "thread_scope", "thread_id"],
+        ),
     ] {
         assert_primary_key_columns(&db, table, &key_columns);
     }
@@ -107,10 +115,17 @@ fn local_state_schema_sync_state_is_created_during_v17_upgrade() {
     assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     assert_schema_object_exists(&db, "table", "sync_state");
     assert_index_exists(&db, "idx_sync_state_owner_kind");
+    assert_schema_object_exists(&db, "table", "thread_read_state");
+    assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_primary_key_columns(
         &db,
         "sync_state",
         &["owner_identity_id", "scope", "checkpoint_kind"],
+    );
+    assert_primary_key_columns(
+        &db,
+        "thread_read_state",
+        &["owner_identity_id", "thread_scope", "thread_id"],
     );
 }
 

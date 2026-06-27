@@ -2644,7 +2644,9 @@ fn wire__crate__api__messages__mark_thread_read_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
             >>::sse_decode(&mut deserializer);
             let api_thread = <crate::dto::message::DartThreadRef>::sse_decode(&mut deserializer);
-            let api_max_message_ids = <Option<u32>>::sse_decode(&mut deserializer);
+            let api_watermark =
+                <Option<crate::dto::message::DartReadWatermark>>::sse_decode(&mut deserializer);
+            let api_fallback_max_message_ids = <Option<u32>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::dto::error::DartImError>(
@@ -2671,7 +2673,8 @@ fn wire__crate__api__messages__mark_thread_read_impl(
                         let output_ok = crate::api::messages::mark_thread_read(
                             &*api_client_guard,
                             api_thread,
-                            api_max_message_ids,
+                            api_watermark,
+                            api_fallback_max_message_ids,
                         )
                         .await?;
                         Ok(output_ok)
@@ -6905,21 +6908,22 @@ impl SseDecode for crate::dto::message::DartMarkThreadReadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_updatedCount = <u32>::sse_decode(deserializer);
-        let mut var_messageIds = <Vec<String>>::sse_decode(deserializer);
-        let mut var_localCandidateCount = <u32>::sse_decode(deserializer);
-        let mut var_localUpdatedCount = <u32>::sse_decode(deserializer);
-        let mut var_remoteUpdatedCount = <u32>::sse_decode(deserializer);
         let mut var_remoteAcknowledged = <bool>::sse_decode(deserializer);
         let mut var_partial = <bool>::sse_decode(deserializer);
+        let mut var_fallbackUsed = <bool>::sse_decode(deserializer);
+        let mut var_pendingRemoteAck = <bool>::sse_decode(deserializer);
+        let mut var_effectiveWatermark =
+            <Option<crate::dto::message::DartReadWatermark>>::sse_decode(deserializer);
+        let mut var_legacyMessageIds = <Vec<String>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::message::DartMarkThreadReadResult {
             updated_count: var_updatedCount,
-            message_ids: var_messageIds,
-            local_candidate_count: var_localCandidateCount,
-            local_updated_count: var_localUpdatedCount,
-            remote_updated_count: var_remoteUpdatedCount,
             remote_acknowledged: var_remoteAcknowledged,
             partial: var_partial,
+            fallback_used: var_fallbackUsed,
+            pending_remote_ack: var_pendingRemoteAck,
+            effective_watermark: var_effectiveWatermark,
+            legacy_message_ids: var_legacyMessageIds,
             warnings: var_warnings,
         };
     }
@@ -7100,6 +7104,20 @@ impl SseDecode for crate::dto::profile::DartProfilePatch {
             markdown: var_markdown,
             avatar_uri: var_avatarUri,
             avatar_url: var_avatarUrl,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartReadWatermark {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_lastReadMessageId = <Option<String>>::sse_decode(deserializer);
+        let mut var_lastReadThreadSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_readAt = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartReadWatermark {
+            last_read_message_id: var_lastReadMessageId,
+            last_read_thread_seq: var_lastReadThreadSeq,
+            read_at: var_readAt,
         };
     }
 }
@@ -8137,6 +8155,19 @@ impl SseDecode for Option<crate::dto::message::DartMessage> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::dto::message::DartMessage>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::dto::message::DartReadWatermark> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::message::DartReadWatermark>::sse_decode(
+                deserializer,
+            ));
         } else {
             return None;
         }
@@ -10206,12 +10237,12 @@ impl flutter_rust_bridge::IntoDart for crate::dto::message::DartMarkThreadReadRe
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.updated_count.into_into_dart().into_dart(),
-            self.message_ids.into_into_dart().into_dart(),
-            self.local_candidate_count.into_into_dart().into_dart(),
-            self.local_updated_count.into_into_dart().into_dart(),
-            self.remote_updated_count.into_into_dart().into_dart(),
             self.remote_acknowledged.into_into_dart().into_dart(),
             self.partial.into_into_dart().into_dart(),
+            self.fallback_used.into_into_dart().into_dart(),
+            self.pending_remote_ack.into_into_dart().into_dart(),
+            self.effective_watermark.into_into_dart().into_dart(),
+            self.legacy_message_ids.into_into_dart().into_dart(),
             self.warnings.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -10468,6 +10499,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::profile::DartProfilePatch>
     for crate::dto::profile::DartProfilePatch
 {
     fn into_into_dart(self) -> crate::dto::profile::DartProfilePatch {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartReadWatermark {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.last_read_message_id.into_into_dart().into_dart(),
+            self.last_read_thread_seq.into_into_dart().into_dart(),
+            self.read_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartReadWatermark
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartReadWatermark>
+    for crate::dto::message::DartReadWatermark
+{
+    fn into_into_dart(self) -> crate::dto::message::DartReadWatermark {
         self
     }
 }
@@ -12382,12 +12435,15 @@ impl SseEncode for crate::dto::message::DartMarkThreadReadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u32>::sse_encode(self.updated_count, serializer);
-        <Vec<String>>::sse_encode(self.message_ids, serializer);
-        <u32>::sse_encode(self.local_candidate_count, serializer);
-        <u32>::sse_encode(self.local_updated_count, serializer);
-        <u32>::sse_encode(self.remote_updated_count, serializer);
         <bool>::sse_encode(self.remote_acknowledged, serializer);
         <bool>::sse_encode(self.partial, serializer);
+        <bool>::sse_encode(self.fallback_used, serializer);
+        <bool>::sse_encode(self.pending_remote_ack, serializer);
+        <Option<crate::dto::message::DartReadWatermark>>::sse_encode(
+            self.effective_watermark,
+            serializer,
+        );
+        <Vec<String>>::sse_encode(self.legacy_message_ids, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }
@@ -12534,6 +12590,15 @@ impl SseEncode for crate::dto::profile::DartProfilePatch {
         <Option<String>>::sse_encode(self.markdown, serializer);
         <Option<String>>::sse_encode(self.avatar_uri, serializer);
         <Option<String>>::sse_encode(self.avatar_url, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartReadWatermark {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.last_read_message_id, serializer);
+        <Option<String>>::sse_encode(self.last_read_thread_seq, serializer);
+        <Option<String>>::sse_encode(self.read_at, serializer);
     }
 }
 
@@ -13286,6 +13351,16 @@ impl SseEncode for Option<crate::dto::message::DartMessage> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::message::DartMessage>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::message::DartReadWatermark> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::message::DartReadWatermark>::sse_encode(value, serializer);
         }
     }
 }

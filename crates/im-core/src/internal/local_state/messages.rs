@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
 
+#[cfg(feature = "sqlite")]
+use rusqlite::OptionalExtension;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MessageRecord {
     pub(crate) msg_id: String,
@@ -429,6 +432,30 @@ pub(crate) struct ThreadUnreadMessageIds {
 
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MarkThreadReadWatermarkInput {
+    pub(crate) thread: crate::messages::ThreadRef,
+    pub(crate) read_watermark_message_id: Option<String>,
+    pub(crate) read_watermark_seq: Option<String>,
+    pub(crate) read_watermark_at: Option<String>,
+    pub(crate) pending_remote_ack: bool,
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MarkThreadReadWatermarkResult {
+    pub(crate) thread_scope: String,
+    pub(crate) thread_id: String,
+    pub(crate) conversation_id: String,
+    pub(crate) updated_count: i64,
+    pub(crate) previous_read_watermark_seq: Option<String>,
+    pub(crate) read_watermark_seq: Option<String>,
+    pub(crate) read_watermark_message_id: Option<String>,
+    pub(crate) read_watermark_at: Option<String>,
+    pub(crate) advanced: bool,
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ThreadLocalHistoryRecords {
     pub(crate) records: Vec<MessageRecord>,
     pub(crate) next_cursor: Option<String>,
@@ -634,6 +661,56 @@ LIMIT ?"#
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn list_incoming_message_ids_up_to_watermark_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+    read_watermark_message_id: Option<&str>,
+    read_watermark_seq: Option<&str>,
+    limit: i64,
+) -> crate::ImResult<ThreadUnreadMessageIds> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let limit = normalize_thread_mark_read_limit(limit);
+    let conversation_ids =
+        conversation_ids_for_thread_ref(connection, &owner_identity_id, owner_did, thread)?;
+    if conversation_ids.is_empty() {
+        return Ok(ThreadUnreadMessageIds {
+            message_ids: Vec::new(),
+            truncated: false,
+        });
+    }
+    if let Some(seq) = read_watermark_seq
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return list_incoming_message_ids_up_to_seq(
+            connection,
+            &owner_identity_id,
+            &conversation_ids,
+            seq,
+            limit,
+        );
+    }
+    if let Some(message_id) = read_watermark_message_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return list_incoming_message_ids_up_to_message(
+            connection,
+            &owner_identity_id,
+            &conversation_ids,
+            message_id,
+            limit,
+        );
+    }
+    Ok(ThreadUnreadMessageIds {
+        message_ids: Vec::new(),
+        truncated: false,
+    })
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn classify_mark_read_ids(
     connection: &rusqlite::Connection,
     owner_did: &str,
@@ -700,6 +777,97 @@ pub(crate) fn mark_messages_read_for_owner_identity(
     message_ids: &[String],
 ) -> crate::ImResult<i64> {
     mark_messages_read_for_owner(connection, owner_identity_id, message_ids)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn mark_thread_read_watermark_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    input: MarkThreadReadWatermarkInput,
+) -> crate::ImResult<MarkThreadReadWatermarkResult> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let owner_did = owner_did.trim().to_owned();
+    let thread_key = thread_read_state_key(&input.thread)?;
+    let conversation_ids =
+        conversation_ids_for_thread_ref(connection, &owner_identity_id, &owner_did, &input.thread)?;
+    let conversation_id = conversation_ids.first().cloned().unwrap_or_default();
+    let current = super::read_state::get_thread_read_state(
+        connection,
+        &owner_identity_id,
+        &thread_key.thread_scope,
+        &thread_key.thread_id,
+    )?;
+    let previous_seq = current
+        .as_ref()
+        .and_then(|record| record.read_watermark_seq.clone());
+    let requested_seq = input
+        .read_watermark_seq
+        .as_deref()
+        .map(normalize_read_watermark_seq)
+        .transpose()?
+        .or_else(|| previous_seq.clone());
+    let requested_message_id = input
+        .read_watermark_message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            current
+                .as_ref()
+                .and_then(|record| record.read_watermark_message_id.clone())
+        });
+    let read_at = input
+        .read_watermark_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(now_utc_like);
+    let advanced = watermark_seq_gt(requested_seq.as_deref(), previous_seq.as_deref());
+    let effective_seq = max_watermark_seq(previous_seq.as_deref(), requested_seq.as_deref());
+    let updated_count = if let Some(seq) = effective_seq.as_deref() {
+        mark_thread_messages_read_up_to_seq(connection, &owner_identity_id, &conversation_ids, seq)?
+    } else if let Some(message_id) = requested_message_id.as_deref() {
+        mark_thread_messages_read_up_to_message(
+            connection,
+            &owner_identity_id,
+            &conversation_ids,
+            message_id,
+        )?
+    } else {
+        0
+    };
+    super::read_state::upsert_thread_read_state(
+        connection,
+        &super::read_state::ThreadReadStateRecord {
+            owner_identity_id: owner_identity_id.clone(),
+            owner_did,
+            thread_scope: thread_key.thread_scope.clone(),
+            thread_id: thread_key.thread_id.clone(),
+            conversation_id: conversation_id.clone(),
+            read_watermark_message_id: requested_message_id.clone(),
+            read_watermark_seq: requested_seq.clone(),
+            read_watermark_at: Some(read_at.clone()),
+            pending_remote_ack: input.pending_remote_ack,
+            remote_ack_at: (!input.pending_remote_ack).then(|| read_at.clone()),
+            updated_at: read_at.clone(),
+        },
+    )?;
+
+    Ok(MarkThreadReadWatermarkResult {
+        thread_scope: thread_key.thread_scope,
+        thread_id: thread_key.thread_id,
+        conversation_id,
+        updated_count,
+        previous_read_watermark_seq: previous_seq,
+        read_watermark_seq: effective_seq,
+        read_watermark_message_id: requested_message_id,
+        read_watermark_at: Some(read_at),
+        advanced,
+    })
 }
 
 #[cfg(feature = "sqlite")]
@@ -796,6 +964,260 @@ WHERE {} AND msg_id IN ({placeholders})"#,
         result.push(row.map_err(super::local_state_unavailable)?);
     }
     Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
+fn mark_thread_messages_read_up_to_seq(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_ids: &[String],
+    seq: &str,
+) -> crate::ImResult<i64> {
+    let seq = normalize_read_watermark_seq(seq)?;
+    if conversation_ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let statement = format!(
+        r#"
+UPDATE messages
+SET is_read = 1
+WHERE owner_identity_id = ?
+  AND direction = 0
+  AND is_read = 0
+  AND server_seq IS NOT NULL
+  AND server_seq <= CAST(? AS INTEGER)
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 2);
+    params.push(&owner_identity_id);
+    params.push(&seq);
+    for conversation_id in conversation_ids {
+        params.push(conversation_id);
+    }
+    let rows = connection
+        .execute(&statement, params.as_slice())
+        .map_err(super::local_state_unavailable)?;
+    rebuild_thread_summaries(connection, owner_identity_id, conversation_ids)?;
+    Ok(i64::try_from(rows).unwrap_or(i64::MAX))
+}
+
+#[cfg(feature = "sqlite")]
+fn mark_thread_messages_read_up_to_message(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_ids: &[String],
+    message_id: &str,
+) -> crate::ImResult<i64> {
+    let message_id = required("read_watermark_message_id", message_id)?;
+    if conversation_ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let lookup = format!(
+        r#"
+SELECT server_seq
+FROM messages
+WHERE owner_identity_id = ?
+  AND msg_id = ?
+  AND server_seq IS NOT NULL
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})
+LIMIT 1"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 2);
+    params.push(&owner_identity_id);
+    params.push(&message_id);
+    for conversation_id in conversation_ids {
+        params.push(conversation_id);
+    }
+    let seq = connection
+        .query_row(&lookup, params.as_slice(), |row| row.get::<_, i64>(0))
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if let Some(seq) = seq {
+        return mark_thread_messages_read_up_to_seq(
+            connection,
+            owner_identity_id,
+            conversation_ids,
+            &seq.to_string(),
+        );
+    }
+    let statement = format!(
+        r#"
+UPDATE messages
+SET is_read = 1
+WHERE owner_identity_id = ?
+  AND direction = 0
+  AND is_read = 0
+  AND msg_id = ?
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 2);
+    params.push(&owner_identity_id);
+    params.push(&message_id);
+    for conversation_id in conversation_ids {
+        params.push(conversation_id);
+    }
+    let rows = connection
+        .execute(&statement, params.as_slice())
+        .map_err(super::local_state_unavailable)?;
+    rebuild_thread_summaries(connection, owner_identity_id, conversation_ids)?;
+    Ok(i64::try_from(rows).unwrap_or(i64::MAX))
+}
+
+#[cfg(feature = "sqlite")]
+fn list_incoming_message_ids_up_to_seq(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_ids: &[String],
+    seq: &str,
+    limit: i64,
+) -> crate::ImResult<ThreadUnreadMessageIds> {
+    let seq = normalize_read_watermark_seq(seq)?;
+    if conversation_ids.is_empty() {
+        return Ok(ThreadUnreadMessageIds {
+            message_ids: Vec::new(),
+            truncated: false,
+        });
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT msg_id
+FROM messages
+WHERE owner_identity_id = ?
+  AND direction = 0
+  AND server_seq IS NOT NULL
+  AND server_seq <= CAST(? AS INTEGER)
+  AND NULLIF(TRIM(COALESCE(msg_id, '')), '') IS NOT NULL
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})
+ORDER BY server_seq DESC, COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC
+LIMIT ?"#
+    );
+    let fetch_limit = limit.saturating_add(1);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 3);
+    params.push(&owner_identity_id);
+    params.push(&seq);
+    for conversation_id in conversation_ids {
+        params.push(conversation_id);
+    }
+    params.push(&fetch_limit);
+    collect_message_ids_with_truncation(connection, &statement, params.as_slice(), limit)
+}
+
+#[cfg(feature = "sqlite")]
+fn list_incoming_message_ids_up_to_message(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_ids: &[String],
+    message_id: &str,
+    limit: i64,
+) -> crate::ImResult<ThreadUnreadMessageIds> {
+    let message_id = required("read_watermark_message_id", message_id)?;
+    if conversation_ids.is_empty() {
+        return Ok(ThreadUnreadMessageIds {
+            message_ids: Vec::new(),
+            truncated: false,
+        });
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let lookup = format!(
+        r#"
+SELECT server_seq
+FROM messages
+WHERE owner_identity_id = ?
+  AND msg_id = ?
+  AND server_seq IS NOT NULL
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})
+LIMIT 1"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 2);
+    params.push(&owner_identity_id);
+    params.push(&message_id);
+    for conversation_id in conversation_ids {
+        params.push(conversation_id);
+    }
+    let seq = connection
+        .query_row(&lookup, params.as_slice(), |row| row.get::<_, i64>(0))
+        .optional()
+        .map_err(super::local_state_unavailable)?;
+    if let Some(seq) = seq {
+        return list_incoming_message_ids_up_to_seq(
+            connection,
+            owner_identity_id,
+            conversation_ids,
+            &seq.to_string(),
+            limit,
+        );
+    }
+    let statement = format!(
+        r#"
+SELECT msg_id
+FROM messages
+WHERE owner_identity_id = ?
+  AND direction = 0
+  AND msg_id = ?
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})
+LIMIT ?"#
+    );
+    let fetch_limit = limit.saturating_add(1);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 3);
+    params.push(&owner_identity_id);
+    params.push(&message_id);
+    for conversation_id in conversation_ids {
+        params.push(conversation_id);
+    }
+    params.push(&fetch_limit);
+    collect_message_ids_with_truncation(connection, &statement, params.as_slice(), limit)
+}
+
+#[cfg(feature = "sqlite")]
+fn collect_message_ids_with_truncation(
+    connection: &rusqlite::Connection,
+    statement: &str,
+    params: &[&dyn rusqlite::ToSql],
+    limit: i64,
+) -> crate::ImResult<ThreadUnreadMessageIds> {
+    let mut statement = connection
+        .prepare(statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params, |row| {
+            row.get::<_, Option<String>>("msg_id")
+                .map(|value| value.unwrap_or_default())
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut message_ids = Vec::new();
+    for row in rows {
+        let message_id = row.map_err(super::local_state_unavailable)?;
+        push_unique(&mut message_ids, message_id.trim().to_owned());
+    }
+    let truncated = i64::try_from(message_ids.len()).unwrap_or(i64::MAX) > limit;
+    if truncated {
+        message_ids.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    }
+    Ok(ThreadUnreadMessageIds {
+        message_ids,
+        truncated,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn rebuild_thread_summaries(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    conversation_ids: &[String],
+) -> crate::ImResult<usize> {
+    let mut touched = BTreeSet::new();
+    for conversation_id in conversation_ids {
+        if !conversation_id.trim().is_empty() {
+            touched.insert((
+                owner_identity_id.to_owned(),
+                conversation_id.trim().to_owned(),
+            ));
+        }
+    }
+    super::conversation_summaries::rebuild_touched(connection, &touched)
 }
 
 #[cfg(feature = "sqlite")]
@@ -918,6 +1340,48 @@ fn conversation_ids_for_thread_ref(
         }
     }
     Ok(ids)
+}
+
+#[cfg(feature = "sqlite")]
+struct ThreadReadStateKey {
+    thread_scope: String,
+    thread_id: String,
+}
+
+#[cfg(feature = "sqlite")]
+fn thread_read_state_key(
+    thread: &crate::messages::ThreadRef,
+) -> crate::ImResult<ThreadReadStateKey> {
+    match thread {
+        crate::messages::ThreadRef::Direct(peer) => {
+            let peer = required("thread.peer", peer.as_str())?;
+            Ok(ThreadReadStateKey {
+                thread_scope: "direct".to_owned(),
+                thread_id: direct_conversation_id_for_peer_ref(&peer),
+            })
+        }
+        crate::messages::ThreadRef::Group(group) => {
+            let group = required("thread.group", group.as_str())?;
+            Ok(ThreadReadStateKey {
+                thread_scope: "group".to_owned(),
+                thread_id: group_conversation_id_for_ref(&group),
+            })
+        }
+        crate::messages::ThreadRef::Thread(thread) => {
+            let thread = required("thread.thread_id", thread.as_str())?;
+            let (scope, id) = if thread.starts_with("group:") {
+                ("group", group_conversation_id_for_ref(&thread))
+            } else if thread.starts_with("dm:") {
+                ("direct", thread)
+            } else {
+                ("thread", thread)
+            };
+            Ok(ThreadReadStateKey {
+                thread_scope: scope.to_owned(),
+                thread_id: id,
+            })
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -1624,6 +2088,56 @@ fn non_empty(value: &str) -> Option<&str> {
 }
 
 #[cfg(feature = "sqlite")]
+fn normalize_read_watermark_seq(value: &str) -> crate::ImResult<String> {
+    crate::internal::local_state::sync_state::normalize_decimal_seq(value).map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("read_watermark_seq".to_owned()),
+            format!(
+                "read_watermark_seq must be a non-negative decimal string, got {:?}",
+                value
+            ),
+        )
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn watermark_seq_gt(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            parse_read_watermark_seq(left).unwrap_or(0)
+                > parse_read_watermark_seq(right).unwrap_or(0)
+        }
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn max_watermark_seq(left: Option<&str>, right: Option<&str>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if parse_read_watermark_seq(left).unwrap_or(0)
+                >= parse_read_watermark_seq(right).unwrap_or(0)
+            {
+                Some(left.to_owned())
+            } else {
+                Some(right.to_owned())
+            }
+        }
+        (Some(value), None) | (None, Some(value)) => Some(value.to_owned()),
+        (None, None) => None,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_read_watermark_seq(value: &str) -> crate::ImResult<i64> {
+    let normalized = normalize_read_watermark_seq(value)?;
+    normalized.parse::<i64>().map_err(|err| {
+        crate::ImError::invalid_input(Some("read_watermark_seq".to_owned()), err.to_string())
+    })
+}
+
+#[cfg(feature = "sqlite")]
 fn normalize_owner_identity_id(value: &str) -> String {
     value.trim().to_string()
 }
@@ -1904,6 +2418,70 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
     }
 
     #[test]
+    fn local_state_lists_watermark_fallback_ids_even_after_local_read() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "alice-id";
+        let owner_did = "did:example:alice";
+        let conversation_id = "dm:did:example:bob";
+        for (msg_id, seq) in [("m1", 1), ("m2", 2), ("m3", 3)] {
+            upsert_message(
+                &db,
+                &MessageRecord {
+                    msg_id: msg_id.to_owned(),
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    owner_did: owner_did.to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: owner_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: msg_id.to_owned(),
+                    server_seq: Some(seq),
+                    stored_at: format!("2026-06-27T00:00:0{seq}Z"),
+                    ..MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+        mark_thread_read_watermark_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                read_watermark_message_id: Some("m2".to_owned()),
+                read_watermark_seq: Some("2".to_owned()),
+                read_watermark_at: Some("2026-06-27T00:01:00Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+
+        let result = list_incoming_message_ids_up_to_watermark_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            &crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            Some("m2"),
+            Some("2"),
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(read_by_msg_id(&db, "m1"), 1);
+        assert_eq!(read_by_msg_id(&db, "m2"), 1);
+        assert_eq!(read_by_msg_id(&db, "m3"), 0);
+        assert_eq!(result.message_ids, vec!["m2"]);
+        assert!(result.truncated);
+    }
+
+    #[test]
     fn local_state_lists_group_unread_ids_and_reports_truncation() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -2032,6 +2610,230 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
         assert_eq!(direct, Some(42));
         assert_eq!(group, Some(55));
         assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn local_state_mark_thread_read_watermark_marks_up_to_seq_and_rebuilds_summary() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "alice-id";
+        let owner_did = "did:example:alice";
+        let conversation_id = "dm:did:example:bob";
+        for (msg_id, seq) in [("m1", 1), ("m2", 2), ("m3", 3)] {
+            upsert_message(
+                &db,
+                &MessageRecord {
+                    msg_id: msg_id.to_owned(),
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    owner_did: owner_did.to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: owner_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: msg_id.to_owned(),
+                    server_seq: Some(seq),
+                    stored_at: format!("2026-06-27T00:00:0{seq}Z"),
+                    ..MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(summary_unread(&db, owner_identity_id, conversation_id), 3);
+
+        let result = mark_thread_read_watermark_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                read_watermark_message_id: Some("m2".to_owned()),
+                read_watermark_seq: Some("2".to_owned()),
+                read_watermark_at: Some("2026-06-27T00:01:00Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.updated_count, 2);
+        assert_eq!(result.read_watermark_seq.as_deref(), Some("2"));
+        assert!(result.advanced);
+        assert_eq!(read_by_msg_id(&db, "m1"), 1);
+        assert_eq!(read_by_msg_id(&db, "m2"), 1);
+        assert_eq!(read_by_msg_id(&db, "m3"), 0);
+        assert_eq!(summary_unread(&db, owner_identity_id, conversation_id), 1);
+        let pending: bool = db
+            .query_row(
+                "SELECT pending_remote_ack FROM thread_read_state WHERE owner_identity_id = ?1",
+                [owner_identity_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(pending);
+    }
+
+    #[test]
+    fn local_state_mark_thread_read_watermark_is_monotonic_and_owner_scoped() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        for owner_identity_id in ["alice-id", "mallory-id"] {
+            for (msg_id, seq) in [("m1", 1), ("m2", 2), ("m3", 3)] {
+                upsert_message(
+                    &db,
+                    &MessageRecord {
+                        msg_id: format!("{owner_identity_id}-{msg_id}"),
+                        owner_identity_id: owner_identity_id.to_owned(),
+                        owner_did: "did:example:alice".to_owned(),
+                        conversation_id: "group:did:example:group".to_owned(),
+                        thread_id: "group:did:example:group".to_owned(),
+                        direction: 0,
+                        sender_did: "did:example:bob".to_owned(),
+                        group_id: "did:example:group".to_owned(),
+                        group_did: "did:example:group".to_owned(),
+                        content_type: "text/plain".to_owned(),
+                        content: msg_id.to_owned(),
+                        server_seq: Some(seq),
+                        stored_at: format!("2026-06-27T00:00:0{seq}Z"),
+                        ..MessageRecord::default()
+                    },
+                )
+                .unwrap();
+            }
+        }
+
+        let thread = crate::messages::ThreadRef::Group(
+            crate::ids::GroupRef::parse("did:example:group").unwrap(),
+        );
+        mark_thread_read_watermark_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            MarkThreadReadWatermarkInput {
+                thread: thread.clone(),
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("3".to_owned()),
+                read_watermark_at: None,
+                pending_remote_ack: false,
+            },
+        )
+        .unwrap();
+        let low = mark_thread_read_watermark_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            MarkThreadReadWatermarkInput {
+                thread,
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("1".to_owned()),
+                read_watermark_at: None,
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(low.previous_read_watermark_seq.as_deref(), Some("3"));
+        assert_eq!(low.read_watermark_seq.as_deref(), Some("3"));
+        assert!(!low.advanced);
+        let pending: bool = db
+            .query_row(
+                "SELECT pending_remote_ack FROM thread_read_state WHERE owner_identity_id = ?1",
+                ["alice-id"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!pending);
+        assert_eq!(
+            summary_unread(&db, "alice-id", "group:did:example:group"),
+            0
+        );
+        assert_eq!(
+            summary_unread(&db, "mallory-id", "group:did:example:group"),
+            3
+        );
+    }
+
+    #[test]
+    fn local_state_low_watermark_ack_does_not_clear_newer_pending_state() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "alice-id";
+        let owner_did = "did:example:alice";
+        let conversation_id = "dm:did:example:bob";
+        for (msg_id, seq) in [("m1", 1), ("m2", 2), ("m3", 3)] {
+            upsert_message(
+                &db,
+                &MessageRecord {
+                    msg_id: msg_id.to_owned(),
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    owner_did: owner_did.to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: owner_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: msg_id.to_owned(),
+                    server_seq: Some(seq),
+                    stored_at: format!("2026-06-27T00:00:0{seq}Z"),
+                    ..MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+        let thread = crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        mark_thread_read_watermark_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            MarkThreadReadWatermarkInput {
+                thread: thread.clone(),
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("3".to_owned()),
+                read_watermark_at: Some("2026-06-27T00:03:00Z".to_owned()),
+                pending_remote_ack: true,
+            },
+        )
+        .unwrap();
+
+        let low_ack = mark_thread_read_watermark_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            MarkThreadReadWatermarkInput {
+                thread,
+                read_watermark_message_id: None,
+                read_watermark_seq: Some("1".to_owned()),
+                read_watermark_at: Some("2026-06-27T00:01:00Z".to_owned()),
+                pending_remote_ack: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(low_ack.read_watermark_seq.as_deref(), Some("3"));
+        assert!(!low_ack.advanced);
+        let state = db
+            .query_row(
+                "SELECT read_watermark_seq, pending_remote_ack, remote_ack_at, updated_at FROM thread_read_state WHERE owner_identity_id = ?1",
+                [owner_identity_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(state.0.as_deref(), Some("3"));
+        assert!(state.1);
+        assert!(state.2.is_none());
+        assert_eq!(state.3, "2026-06-27T00:03:00Z");
     }
 
     #[test]

@@ -19,25 +19,33 @@ fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
 fn thread_mark_read_result_preserves_best_effort_state_for_dart() {
     let core = im_core::messages::MarkThreadReadResult {
         updated_count: 1,
-        message_ids: vec![im_core::ids::MessageId::parse("msg-1").expect("message id")],
-        local_candidate_count: 2,
-        local_updated_count: 1,
-        remote_updated_count: 0,
         remote_acknowledged: false,
         partial: true,
-        warnings: vec!["Remote mark-read failed".to_string()],
+        fallback_used: true,
+        pending_remote_ack: true,
+        effective_watermark: Some(im_core::messages::ReadWatermark {
+            last_read_message_id: Some(
+                im_core::ids::MessageId::parse("msg-1").expect("message id"),
+            ),
+            last_read_thread_seq: Some("42".to_string()),
+            read_at: None,
+        }),
+        legacy_message_ids: vec![im_core::ids::MessageId::parse("msg-1").expect("message id")],
+        warnings: vec!["Remote read-state mark-read failed".to_string()],
     };
 
     let dart: awiki_im_core::dto::message::DartMarkThreadReadResult = core.into();
 
     assert_eq!(dart.updated_count, 1);
-    assert_eq!(dart.message_ids, vec!["msg-1"]);
-    assert_eq!(dart.local_candidate_count, 2);
-    assert_eq!(dart.local_updated_count, 1);
-    assert_eq!(dart.remote_updated_count, 0);
     assert!(!dart.remote_acknowledged);
     assert!(dart.partial);
-    assert_eq!(dart.warnings, vec!["Remote mark-read failed"]);
+    assert!(dart.fallback_used);
+    assert!(dart.pending_remote_ack);
+    assert_eq!(dart.legacy_message_ids, vec!["msg-1"]);
+    let watermark = dart.effective_watermark.expect("effective watermark");
+    assert_eq!(watermark.last_read_message_id.as_deref(), Some("msg-1"));
+    assert_eq!(watermark.last_read_thread_seq.as_deref(), Some("42"));
+    assert_eq!(dart.warnings, vec!["Remote read-state mark-read failed"]);
 }
 
 #[test]

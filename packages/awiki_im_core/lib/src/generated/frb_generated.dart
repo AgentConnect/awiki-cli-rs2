@@ -322,7 +322,8 @@ abstract class RustLibApi extends BaseApi {
   Future<DartMarkThreadReadResult> crateApiMessagesMarkThreadRead({
     required ArcDartImClient client,
     required DartThreadRef thread,
-    int? maxMessageIds,
+    DartReadWatermark? watermark,
+    int? fallbackMaxMessageIds,
   });
 
   Future<DartEmailNotificationPage> crateApiEmailNotifications({
@@ -2219,7 +2220,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<DartMarkThreadReadResult> crateApiMessagesMarkThreadRead({
     required ArcDartImClient client,
     required DartThreadRef thread,
-    int? maxMessageIds,
+    DartReadWatermark? watermark,
+    int? fallbackMaxMessageIds,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2230,7 +2232,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_box_autoadd_dart_thread_ref(thread, serializer);
-          sse_encode_opt_box_autoadd_u_32(maxMessageIds, serializer);
+          sse_encode_opt_box_autoadd_dart_read_watermark(watermark, serializer);
+          sse_encode_opt_box_autoadd_u_32(fallbackMaxMessageIds, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -2243,7 +2246,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiMessagesMarkThreadReadConstMeta,
-        argValues: [client, thread, maxMessageIds],
+        argValues: [client, thread, watermark, fallbackMaxMessageIds],
         apiImpl: this,
       ),
     );
@@ -2252,7 +2255,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiMessagesMarkThreadReadConstMeta =>
       const TaskConstMeta(
         debugName: "mark_thread_read",
-        argNames: ["client", "thread", "maxMessageIds"],
+        argNames: ["client", "thread", "watermark", "fallbackMaxMessageIds"],
       );
 
   @override
@@ -4405,6 +4408,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartReadWatermark dco_decode_box_autoadd_dart_read_watermark(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_read_watermark(raw);
+  }
+
+  @protected
   DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(
     dynamic raw,
   ) {
@@ -5522,12 +5531,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartMarkThreadReadResult(
       updatedCount: dco_decode_u_32(arr[0]),
-      messageIds: dco_decode_list_String(arr[1]),
-      localCandidateCount: dco_decode_u_32(arr[2]),
-      localUpdatedCount: dco_decode_u_32(arr[3]),
-      remoteUpdatedCount: dco_decode_u_32(arr[4]),
-      remoteAcknowledged: dco_decode_bool(arr[5]),
-      partial: dco_decode_bool(arr[6]),
+      remoteAcknowledged: dco_decode_bool(arr[1]),
+      partial: dco_decode_bool(arr[2]),
+      fallbackUsed: dco_decode_bool(arr[3]),
+      pendingRemoteAck: dco_decode_bool(arr[4]),
+      effectiveWatermark: dco_decode_opt_box_autoadd_dart_read_watermark(
+        arr[5],
+      ),
+      legacyMessageIds: dco_decode_list_String(arr[6]),
       warnings: dco_decode_list_String(arr[7]),
     );
   }
@@ -5658,6 +5669,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       markdown: dco_decode_opt_String(arr[3]),
       avatarUri: dco_decode_opt_String(arr[4]),
       avatarUrl: dco_decode_opt_String(arr[5]),
+    );
+  }
+
+  @protected
+  DartReadWatermark dco_decode_dart_read_watermark(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartReadWatermark(
+      lastReadMessageId: dco_decode_opt_String(arr[0]),
+      lastReadThreadSeq: dco_decode_opt_String(arr[1]),
+      readAt: dco_decode_opt_String(arr[2]),
     );
   }
 
@@ -6391,6 +6415,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartReadWatermark? dco_decode_opt_box_autoadd_dart_read_watermark(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_dart_read_watermark(raw);
+  }
+
+  @protected
   DartRealtimeSyncHint? dco_decode_opt_box_autoadd_dart_realtime_sync_hint(
     dynamic raw,
   ) {
@@ -6876,6 +6908,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_profile_patch(deserializer));
+  }
+
+  @protected
+  DartReadWatermark sse_decode_box_autoadd_dart_read_watermark(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_read_watermark(deserializer));
   }
 
   @protected
@@ -8292,21 +8332,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_updatedCount = sse_decode_u_32(deserializer);
-    var var_messageIds = sse_decode_list_String(deserializer);
-    var var_localCandidateCount = sse_decode_u_32(deserializer);
-    var var_localUpdatedCount = sse_decode_u_32(deserializer);
-    var var_remoteUpdatedCount = sse_decode_u_32(deserializer);
     var var_remoteAcknowledged = sse_decode_bool(deserializer);
     var var_partial = sse_decode_bool(deserializer);
+    var var_fallbackUsed = sse_decode_bool(deserializer);
+    var var_pendingRemoteAck = sse_decode_bool(deserializer);
+    var var_effectiveWatermark = sse_decode_opt_box_autoadd_dart_read_watermark(
+      deserializer,
+    );
+    var var_legacyMessageIds = sse_decode_list_String(deserializer);
     var var_warnings = sse_decode_list_String(deserializer);
     return DartMarkThreadReadResult(
       updatedCount: var_updatedCount,
-      messageIds: var_messageIds,
-      localCandidateCount: var_localCandidateCount,
-      localUpdatedCount: var_localUpdatedCount,
-      remoteUpdatedCount: var_remoteUpdatedCount,
       remoteAcknowledged: var_remoteAcknowledged,
       partial: var_partial,
+      fallbackUsed: var_fallbackUsed,
+      pendingRemoteAck: var_pendingRemoteAck,
+      effectiveWatermark: var_effectiveWatermark,
+      legacyMessageIds: var_legacyMessageIds,
       warnings: var_warnings,
     );
   }
@@ -8469,6 +8511,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       markdown: var_markdown,
       avatarUri: var_avatarUri,
       avatarUrl: var_avatarUrl,
+    );
+  }
+
+  @protected
+  DartReadWatermark sse_decode_dart_read_watermark(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_lastReadMessageId = sse_decode_opt_String(deserializer);
+    var var_lastReadThreadSeq = sse_decode_opt_String(deserializer);
+    var var_readAt = sse_decode_opt_String(deserializer);
+    return DartReadWatermark(
+      lastReadMessageId: var_lastReadMessageId,
+      lastReadThreadSeq: var_lastReadThreadSeq,
+      readAt: var_readAt,
     );
   }
 
@@ -9525,6 +9582,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartReadWatermark? sse_decode_opt_box_autoadd_dart_read_watermark(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_read_watermark(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartRealtimeSyncHint? sse_decode_opt_box_autoadd_dart_realtime_sync_hint(
     SseDeserializer deserializer,
   ) {
@@ -10120,6 +10190,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_profile_patch(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_read_watermark(
+    DartReadWatermark self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_read_watermark(self, serializer);
   }
 
   @protected
@@ -11187,12 +11266,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_32(self.updatedCount, serializer);
-    sse_encode_list_String(self.messageIds, serializer);
-    sse_encode_u_32(self.localCandidateCount, serializer);
-    sse_encode_u_32(self.localUpdatedCount, serializer);
-    sse_encode_u_32(self.remoteUpdatedCount, serializer);
     sse_encode_bool(self.remoteAcknowledged, serializer);
     sse_encode_bool(self.partial, serializer);
+    sse_encode_bool(self.fallbackUsed, serializer);
+    sse_encode_bool(self.pendingRemoteAck, serializer);
+    sse_encode_opt_box_autoadd_dart_read_watermark(
+      self.effectiveWatermark,
+      serializer,
+    );
+    sse_encode_list_String(self.legacyMessageIds, serializer);
     sse_encode_list_String(self.warnings, serializer);
   }
 
@@ -11319,6 +11401,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.markdown, serializer);
     sse_encode_opt_String(self.avatarUri, serializer);
     sse_encode_opt_String(self.avatarUrl, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_read_watermark(
+    DartReadWatermark self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.lastReadMessageId, serializer);
+    sse_encode_opt_String(self.lastReadThreadSeq, serializer);
+    sse_encode_opt_String(self.readAt, serializer);
   }
 
   @protected
@@ -12147,6 +12240,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_message(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_read_watermark(
+    DartReadWatermark? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_read_watermark(self, serializer);
     }
   }
 

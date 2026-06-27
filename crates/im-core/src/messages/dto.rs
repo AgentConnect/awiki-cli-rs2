@@ -282,18 +282,31 @@ pub struct MarkReadResult {
 pub struct MarkThreadReadRequest {
     pub thread: ThreadRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_message_ids: Option<u32>,
+    pub watermark: Option<ReadWatermark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_max_message_ids: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadWatermark {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_message_id: Option<crate::ids::MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_thread_seq: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkThreadReadResult {
     pub updated_count: u32,
-    pub message_ids: Vec<crate::ids::MessageId>,
-    pub local_candidate_count: u32,
-    pub local_updated_count: u32,
-    pub remote_updated_count: u32,
     pub remote_acknowledged: bool,
     pub partial: bool,
+    pub fallback_used: bool,
+    pub pending_remote_ack: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_watermark: Option<ReadWatermark>,
+    pub legacy_message_ids: Vec<crate::ids::MessageId>,
     pub warnings: Vec<String>,
 }
 

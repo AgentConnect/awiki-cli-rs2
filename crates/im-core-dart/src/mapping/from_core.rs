@@ -22,8 +22,9 @@ use crate::dto::{
         DartConversationSnapshotItem, DartConversationSnapshotMessage,
         DartConversationSnapshotMessageBody, DartConversationStorePatch, DartMarkReadResult,
         DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
-        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
-        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
+        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark,
+        DartSendMessageResult, DartSyncDeltaResult, DartSyncThreadAfterResult,
+        DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
@@ -1126,17 +1127,27 @@ impl From<im_core::messages::MarkThreadReadResult> for DartMarkThreadReadResult 
     fn from(value: im_core::messages::MarkThreadReadResult) -> Self {
         Self {
             updated_count: value.updated_count,
-            message_ids: value
-                .message_ids
+            remote_acknowledged: value.remote_acknowledged,
+            partial: value.partial,
+            fallback_used: value.fallback_used,
+            pending_remote_ack: value.pending_remote_ack,
+            effective_watermark: value.effective_watermark.map(Into::into),
+            legacy_message_ids: value
+                .legacy_message_ids
                 .into_iter()
                 .map(|id| id.as_str().to_string())
                 .collect(),
-            local_candidate_count: value.local_candidate_count,
-            local_updated_count: value.local_updated_count,
-            remote_updated_count: value.remote_updated_count,
-            remote_acknowledged: value.remote_acknowledged,
-            partial: value.partial,
             warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::ReadWatermark> for DartReadWatermark {
+    fn from(value: im_core::messages::ReadWatermark) -> Self {
+        Self {
+            last_read_message_id: value.last_read_message_id.map(|id| id.as_str().to_string()),
+            last_read_thread_seq: value.last_read_thread_seq,
+            read_at: value.read_at.map(|value| value.to_rfc3339()),
         }
     }
 }

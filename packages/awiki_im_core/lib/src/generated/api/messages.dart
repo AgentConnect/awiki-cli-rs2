@@ -9,7 +9,7 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `new`, `new`, `page_limit`, `stop`, `stop`, `take_session`, `take_session`
+// These functions are ignored because they are not marked as `pub`: `new`, `new`, `page_limit`, `read_watermark_to_core`, `stop`, `stop`, `take_session`, `take_session`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
 
 Future<DartSendMessageResult> sendText({
@@ -79,11 +79,13 @@ Future<DartMarkReadResult> markRead({
 Future<DartMarkThreadReadResult> markThreadRead({
   required ArcDartImClient client,
   required DartThreadRef thread,
-  int? maxMessageIds,
+  DartReadWatermark? watermark,
+  int? fallbackMaxMessageIds,
 }) => RustLib.instance.api.crateApiMessagesMarkThreadRead(
   client: client,
   thread: thread,
-  maxMessageIds: maxMessageIds,
+  watermark: watermark,
+  fallbackMaxMessageIds: fallbackMaxMessageIds,
 );
 
 Future<DartSyncDeltaResult> syncDelta({

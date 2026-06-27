@@ -73,7 +73,8 @@ class MessageApi {
 
   Future<MarkThreadReadResult> markThreadRead(
     ThreadRef thread, {
-    int? maxMessageIds,
+    ReadWatermark? watermark,
+    int? fallbackMaxMessageIds,
   }) async {
     throw _unsupported();
   }

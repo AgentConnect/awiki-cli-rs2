@@ -426,34 +426,34 @@ class DartMarkReadResult {
 
 class DartMarkThreadReadResult {
   final int updatedCount;
-  final List<String> messageIds;
-  final int localCandidateCount;
-  final int localUpdatedCount;
-  final int remoteUpdatedCount;
   final bool remoteAcknowledged;
   final bool partial;
+  final bool fallbackUsed;
+  final bool pendingRemoteAck;
+  final DartReadWatermark? effectiveWatermark;
+  final List<String> legacyMessageIds;
   final List<String> warnings;
 
   const DartMarkThreadReadResult({
     required this.updatedCount,
-    required this.messageIds,
-    required this.localCandidateCount,
-    required this.localUpdatedCount,
-    required this.remoteUpdatedCount,
     required this.remoteAcknowledged,
     required this.partial,
+    required this.fallbackUsed,
+    required this.pendingRemoteAck,
+    this.effectiveWatermark,
+    required this.legacyMessageIds,
     required this.warnings,
   });
 
   @override
   int get hashCode =>
       updatedCount.hashCode ^
-      messageIds.hashCode ^
-      localCandidateCount.hashCode ^
-      localUpdatedCount.hashCode ^
-      remoteUpdatedCount.hashCode ^
       remoteAcknowledged.hashCode ^
       partial.hashCode ^
+      fallbackUsed.hashCode ^
+      pendingRemoteAck.hashCode ^
+      effectiveWatermark.hashCode ^
+      legacyMessageIds.hashCode ^
       warnings.hashCode;
 
   @override
@@ -462,12 +462,12 @@ class DartMarkThreadReadResult {
       other is DartMarkThreadReadResult &&
           runtimeType == other.runtimeType &&
           updatedCount == other.updatedCount &&
-          messageIds == other.messageIds &&
-          localCandidateCount == other.localCandidateCount &&
-          localUpdatedCount == other.localUpdatedCount &&
-          remoteUpdatedCount == other.remoteUpdatedCount &&
           remoteAcknowledged == other.remoteAcknowledged &&
           partial == other.partial &&
+          fallbackUsed == other.fallbackUsed &&
+          pendingRemoteAck == other.pendingRemoteAck &&
+          effectiveWatermark == other.effectiveWatermark &&
+          legacyMessageIds == other.legacyMessageIds &&
           warnings == other.warnings;
 }
 
@@ -668,6 +668,31 @@ sealed class DartMessageTarget with _$DartMessageTarget {
       DartMessageTarget_Direct;
   const factory DartMessageTarget.group({required String group}) =
       DartMessageTarget_Group;
+}
+
+class DartReadWatermark {
+  final String? lastReadMessageId;
+  final String? lastReadThreadSeq;
+  final String? readAt;
+
+  const DartReadWatermark({
+    this.lastReadMessageId,
+    this.lastReadThreadSeq,
+    this.readAt,
+  });
+
+  @override
+  int get hashCode =>
+      lastReadMessageId.hashCode ^ lastReadThreadSeq.hashCode ^ readAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartReadWatermark &&
+          runtimeType == other.runtimeType &&
+          lastReadMessageId == other.lastReadMessageId &&
+          lastReadThreadSeq == other.lastReadThreadSeq &&
+          readAt == other.readAt;
 }
 
 class DartScopedInboxToken {

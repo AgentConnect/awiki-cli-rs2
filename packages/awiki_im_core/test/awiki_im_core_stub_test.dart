@@ -28,19 +28,22 @@ void main() {
   test('thread mark-read model exposes best-effort state', () {
     const result = MarkThreadReadResult(
       updatedCount: 1,
-      messageIds: ['msg-1'],
-      localCandidateCount: 2,
-      localUpdatedCount: 1,
-      remoteUpdatedCount: 0,
       remoteAcknowledged: false,
       partial: true,
-      warnings: ['Remote mark-read failed'],
+      fallbackUsed: true,
+      pendingRemoteAck: true,
+      effectiveWatermark: ReadWatermark(lastReadThreadSeq: '42'),
+      legacyMessageIds: ['msg-1'],
+      warnings: ['Remote read-state mark-read failed'],
     );
 
     expect(result.updatedCount, 1);
-    expect(result.localCandidateCount, 2);
     expect(result.remoteAcknowledged, isFalse);
     expect(result.partial, isTrue);
+    expect(result.fallbackUsed, isTrue);
+    expect(result.pendingRemoteAck, isTrue);
+    expect(result.effectiveWatermark?.lastReadThreadSeq, '42');
+    expect(result.legacyMessageIds, ['msg-1']);
     expect(result.warnings.single, contains('Remote'));
   });
 
@@ -222,7 +225,8 @@ void main() {
 Future<MarkThreadReadResult> _markThreadReadApiShape(MessageApi api) {
   return api.markThreadRead(
     const ThreadRef.direct('did:example:bob'),
-    maxMessageIds: 100,
+    watermark: const ReadWatermark(lastReadThreadSeq: '42'),
+    fallbackMaxMessageIds: 100,
   );
 }
 

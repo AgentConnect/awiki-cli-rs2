@@ -497,21 +497,33 @@ class MarkReadResult {
 class MarkThreadReadResult {
   const MarkThreadReadResult({
     required this.updatedCount,
-    this.messageIds = const [],
-    required this.localCandidateCount,
-    required this.localUpdatedCount,
-    required this.remoteUpdatedCount,
     required this.remoteAcknowledged,
     required this.partial,
+    required this.fallbackUsed,
+    required this.pendingRemoteAck,
+    this.effectiveWatermark,
+    this.legacyMessageIds = const [],
     this.warnings = const [],
   });
 
   final int updatedCount;
-  final List<String> messageIds;
-  final int localCandidateCount;
-  final int localUpdatedCount;
-  final int remoteUpdatedCount;
   final bool remoteAcknowledged;
   final bool partial;
+  final bool fallbackUsed;
+  final bool pendingRemoteAck;
+  final ReadWatermark? effectiveWatermark;
+  final List<String> legacyMessageIds;
   final List<String> warnings;
+}
+
+class ReadWatermark {
+  const ReadWatermark({
+    this.lastReadMessageId,
+    this.lastReadThreadSeq,
+    this.readAt,
+  });
+
+  final String? lastReadMessageId;
+  final String? lastReadThreadSeq;
+  final DateTime? readAt;
 }

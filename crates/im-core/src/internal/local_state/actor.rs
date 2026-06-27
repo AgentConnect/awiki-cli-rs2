@@ -159,11 +159,26 @@ enum LocalStateCommand {
         limit: i64,
         reply: oneshot::Sender<crate::ImResult<super::messages::ThreadUnreadMessageIds>>,
     },
+    ListIncomingMessageIdsUpToWatermark {
+        owner_identity_id: String,
+        owner_did: String,
+        thread: crate::messages::ThreadRef,
+        read_watermark_message_id: Option<String>,
+        read_watermark_seq: Option<String>,
+        limit: i64,
+        reply: oneshot::Sender<crate::ImResult<super::messages::ThreadUnreadMessageIds>>,
+    },
     MarkMessagesRead {
         owner_identity_id: String,
         owner_did: String,
         message_ids: Vec<String>,
         reply: oneshot::Sender<crate::ImResult<i64>>,
+    },
+    MarkThreadReadWatermark {
+        owner_identity_id: String,
+        owner_did: String,
+        input: super::messages::MarkThreadReadWatermarkInput,
+        reply: oneshot::Sender<crate::ImResult<super::messages::MarkThreadReadWatermarkResult>>,
     },
     ListConversations {
         owner_identity_id: String,
@@ -721,6 +736,29 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn list_incoming_message_ids_up_to_watermark(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+        read_watermark_message_id: Option<String>,
+        read_watermark_seq: Option<String>,
+        limit: i64,
+    ) -> crate::ImResult<super::messages::ThreadUnreadMessageIds> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListIncomingMessageIdsUpToWatermark {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
+            read_watermark_message_id,
+            read_watermark_seq,
+            limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn mark_messages_read(
         &self,
         owner_identity_id: impl Into<String>,
@@ -732,6 +770,23 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             message_ids,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn mark_thread_read_watermark(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        input: super::messages::MarkThreadReadWatermarkInput,
+    ) -> crate::ImResult<super::messages::MarkThreadReadWatermarkResult> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::MarkThreadReadWatermark {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            input,
             reply,
         })
         .await?;
@@ -1368,6 +1423,27 @@ fn run_actor(
                 );
                 let _ = reply.send(result);
             }
+            LocalStateCommand::ListIncomingMessageIdsUpToWatermark {
+                owner_identity_id,
+                owner_did,
+                thread,
+                read_watermark_message_id,
+                read_watermark_seq,
+                limit,
+                reply,
+            } => {
+                let result =
+                    super::messages::list_incoming_message_ids_up_to_watermark_for_owner_identity(
+                        &connection,
+                        &owner_identity_id,
+                        &owner_did,
+                        &thread,
+                        read_watermark_message_id.as_deref(),
+                        read_watermark_seq.as_deref(),
+                        limit,
+                    );
+                let _ = reply.send(result);
+            }
             LocalStateCommand::MarkMessagesRead {
                 owner_identity_id,
                 owner_did,
@@ -1379,6 +1455,20 @@ fn run_actor(
                     &owner_identity_id,
                     &owner_did,
                     &message_ids,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::MarkThreadReadWatermark {
+                owner_identity_id,
+                owner_did,
+                input,
+                reply,
+            } => {
+                let result = super::messages::mark_thread_read_watermark_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    input,
                 );
                 let _ = reply.send(result);
             }

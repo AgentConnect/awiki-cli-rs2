@@ -248,12 +248,17 @@ pub async fn mark_read(
 pub async fn mark_thread_read(
     client: &Arc<crate::api::client::DartImClient>,
     thread: DartThreadRef,
-    max_message_ids: Option<u32>,
+    watermark: Option<crate::dto::message::DartReadWatermark>,
+    fallback_max_message_ids: Option<u32>,
 ) -> Result<DartMarkThreadReadResult, DartImError> {
     let inner = client.clone_inner()?;
     let request = im_core::messages::MarkThreadReadRequest {
         thread: thread.try_into()?,
-        max_message_ids,
+        watermark: watermark
+            .map(read_watermark_to_core)
+            .transpose()
+            .map_err(DartImError::from)?,
+        fallback_max_message_ids,
     };
     inner
         .messages()
@@ -261,6 +266,28 @@ pub async fn mark_thread_read(
         .await
         .map(Into::into)
         .map_err(DartImError::from)
+}
+
+fn read_watermark_to_core(
+    value: crate::dto::message::DartReadWatermark,
+) -> im_core::ImResult<im_core::messages::ReadWatermark> {
+    Ok(im_core::messages::ReadWatermark {
+        last_read_message_id: value
+            .last_read_message_id
+            .map(im_core::ids::MessageId::parse)
+            .transpose()?,
+        last_read_thread_seq: value.last_read_thread_seq,
+        read_at: value
+            .read_at
+            .map(|value| {
+                chrono::DateTime::parse_from_rfc3339(value.trim())
+                    .map(|value| value.with_timezone(&chrono::Utc))
+                    .map_err(|err| {
+                        im_core::ImError::invalid_input(Some("read_at".to_owned()), err.to_string())
+                    })
+            })
+            .transpose()?,
+    })
 }
 
 pub async fn sync_delta(

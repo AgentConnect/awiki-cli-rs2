@@ -249,6 +249,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
 
   @protected
+  DartReadWatermark dco_decode_box_autoadd_dart_read_watermark(dynamic raw);
+
+  @protected
   DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
 
   @protected
@@ -569,6 +572,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartProfilePatch dco_decode_dart_profile_patch(dynamic raw);
 
   @protected
+  DartReadWatermark dco_decode_dart_read_watermark(dynamic raw);
+
+  @protected
   DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw);
 
   @protected
@@ -773,6 +779,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
+
+  @protected
+  DartReadWatermark? dco_decode_opt_box_autoadd_dart_read_watermark(
+    dynamic raw,
+  );
 
   @protected
   DartRealtimeSyncHint? dco_decode_opt_box_autoadd_dart_realtime_sync_hint(
@@ -1038,6 +1049,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartReadWatermark sse_decode_box_autoadd_dart_read_watermark(
     SseDeserializer deserializer,
   );
 
@@ -1440,6 +1456,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer);
 
   @protected
+  DartReadWatermark sse_decode_dart_read_watermark(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartRealtimeCapability sse_decode_dart_realtime_capability(
     SseDeserializer deserializer,
   );
@@ -1720,6 +1741,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage? sse_decode_opt_box_autoadd_dart_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartReadWatermark? sse_decode_opt_box_autoadd_dart_read_watermark(
     SseDeserializer deserializer,
   );
 
@@ -2025,6 +2051,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_profile_patch(
     DartProfilePatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_read_watermark(
+    DartReadWatermark self,
     SseSerializer serializer,
   );
 
@@ -2524,6 +2556,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_read_watermark(
+    DartReadWatermark self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_realtime_capability(
     DartRealtimeCapability self,
     SseSerializer serializer,
@@ -2862,6 +2900,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_message(
     DartMessage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_read_watermark(
+    DartReadWatermark? self,
     SseSerializer serializer,
   );
 

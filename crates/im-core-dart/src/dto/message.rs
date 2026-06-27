@@ -160,14 +160,21 @@ pub struct DartMarkReadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartReadWatermark {
+    pub last_read_message_id: Option<String>,
+    pub last_read_thread_seq: Option<String>,
+    pub read_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartMarkThreadReadResult {
     pub updated_count: u32,
-    pub message_ids: Vec<String>,
-    pub local_candidate_count: u32,
-    pub local_updated_count: u32,
-    pub remote_updated_count: u32,
     pub remote_acknowledged: bool,
     pub partial: bool,
+    pub fallback_used: bool,
+    pub pending_remote_ack: bool,
+    pub effective_watermark: Option<DartReadWatermark>,
+    pub legacy_message_ids: Vec<String>,
     pub warnings: Vec<String>,
 }
 
