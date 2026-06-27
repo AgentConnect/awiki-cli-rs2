@@ -60,6 +60,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_ArcDartThreadMessagePatchSessionPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
@@ -88,6 +92,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    dynamic raw,
+  );
+
+  @protected
   ArcDartConversationPatchSession
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
     dynamic raw,
@@ -108,6 +118,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartRealtimeSession
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+    dynamic raw,
+  );
+
+  @protected
+  ArcDartThreadMessagePatchSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
     dynamic raw,
   );
 
@@ -136,12 +152,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    dynamic raw,
+  );
+
+  @protected
   RustStreamSink<DartConversationStorePatch>
   dco_decode_StreamSink_dart_conversation_store_patch_Sse(dynamic raw);
 
   @protected
   RustStreamSink<DartRealtimeEvent>
   dco_decode_StreamSink_dart_realtime_event_Sse(dynamic raw);
+
+  @protected
+  RustStreamSink<DartThreadMessageStorePatch>
+  dco_decode_StreamSink_dart_thread_message_store_patch_Sse(dynamic raw);
 
   @protected
   String dco_decode_String(dynamic raw);
@@ -630,6 +656,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartThreadMessageStorePatch dco_decode_dart_thread_message_store_patch(
+    dynamic raw,
+  );
+
+  @protected
   DartThreadRef dco_decode_dart_thread_ref(dynamic raw);
 
   @protected
@@ -824,6 +855,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ArcDartConversationPatchSession
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
     SseDeserializer deserializer,
@@ -844,6 +881,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartRealtimeSession
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ArcDartThreadMessagePatchSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
     SseDeserializer deserializer,
   );
 
@@ -872,6 +915,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<DartConversationStorePatch>
   sse_decode_StreamSink_dart_conversation_store_patch_Sse(
     SseDeserializer deserializer,
@@ -880,6 +929,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RustStreamSink<DartRealtimeEvent>
   sse_decode_StreamSink_dart_realtime_event_Sse(SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<DartThreadMessageStorePatch>
+  sse_decode_StreamSink_dart_thread_message_store_patch_Sse(
+    SseDeserializer deserializer,
+  );
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
@@ -1522,6 +1577,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartThreadMessageStorePatch sse_decode_dart_thread_message_store_patch(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartThreadRef sse_decode_dart_thread_ref(SseDeserializer deserializer);
 
   @protected
@@ -1754,6 +1814,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ArcDartThreadMessagePatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
     ArcDartConversationPatchSession self,
     SseSerializer serializer,
@@ -1777,6 +1844,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     ArcDartRealtimeSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ArcDartThreadMessagePatchSession self,
     SseSerializer serializer,
   );
 
@@ -1809,6 +1883,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ArcDartThreadMessagePatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_dart_conversation_store_patch_Sse(
     RustStreamSink<DartConversationStorePatch> self,
     SseSerializer serializer,
@@ -1817,6 +1898,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_StreamSink_dart_realtime_event_Sse(
     RustStreamSink<DartRealtimeEvent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_dart_thread_message_store_patch_Sse(
+    RustStreamSink<DartThreadMessageStorePatch> self,
     SseSerializer serializer,
   );
 
@@ -2601,6 +2688,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_thread_message_store_patch(
+    DartThreadMessageStorePatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_thread_ref(DartThreadRef self, SseSerializer serializer);
 
   @protected
@@ -2903,6 +2996,22 @@ class RustLibWire implements BaseWire {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
         ptr,
       );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+        ptr,
+      );
 }
 
 @JS('wasm_bindgen')
@@ -2948,6 +3057,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
     int ptr,
   );
 }

@@ -103,6 +103,20 @@ class MessageApi {
   Future<ConversationStorePatch> repairConversationStore() async {
     throw _unsupported();
   }
+
+  Stream<ThreadMessageStorePatch> watchThreadPatches(
+    ThreadRef thread, {
+    int limit = 100,
+  }) {
+    throw _unsupported();
+  }
+
+  Future<ThreadMessageStorePatch> repairThreadStore(
+    ThreadRef thread, {
+    int limit = 100,
+  }) async {
+    throw _unsupported();
+  }
 }
 
 class SecureApi {

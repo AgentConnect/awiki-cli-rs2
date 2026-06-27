@@ -306,6 +306,36 @@ class ConversationStorePatch {
   final String? reason;
 }
 
+enum ThreadMessageStorePatchKind { reset, upsert, remove, repairRequired }
+
+class ThreadMessageStorePatch {
+  const ThreadMessageStorePatch({
+    required this.kind,
+    required this.ownerIdentityId,
+    required this.ownerDid,
+    required this.version,
+    required this.threadKind,
+    required this.threadId,
+    this.items = const [],
+    this.message,
+    this.index,
+    this.messageId,
+    this.reason,
+  });
+
+  final ThreadMessageStorePatchKind kind;
+  final String ownerIdentityId;
+  final String ownerDid;
+  final int version;
+  final String threadKind;
+  final String threadId;
+  final List<Message> items;
+  final Message? message;
+  final int? index;
+  final String? messageId;
+  final String? reason;
+}
+
 class ConversationSnapshotItem {
   const ConversationSnapshotItem({
     required this.threadKind,

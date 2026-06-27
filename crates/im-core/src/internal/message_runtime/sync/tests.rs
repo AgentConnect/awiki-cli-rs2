@@ -370,6 +370,20 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
         "did:example:carol",
         "did:example:alice",
     );
+    let mut patch_session = client
+        .messages()
+        .watch_thread_patches_async(
+            crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            Some(100),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        patch_session.next_patch().await,
+        Some(crate::messages::ThreadMessageStorePatch::Reset { .. })
+    ));
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = MessageSyncRuntime::new(
         &client,
@@ -446,6 +460,17 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     assert_eq!(calls[0].method, "direct.get_history");
     assert_eq!(calls[0].params["body"]["since_seq"], "42");
     assert_eq!(calls[0].params["body"]["limit"], 10);
+    match patch_session.next_patch().await {
+        Some(crate::messages::ThreadMessageStorePatch::Reset { items, .. }) => {
+            assert!(items
+                .iter()
+                .any(|message| message.id.as_str() == "remote-new-44"));
+        }
+        Some(crate::messages::ThreadMessageStorePatch::Upsert { message, .. }) => {
+            assert_eq!(message.id.as_str(), "remote-new-44");
+        }
+        other => panic!("unexpected thread patch after sync_thread_after commit: {other:?}"),
+    }
 }
 
 #[tokio::test]

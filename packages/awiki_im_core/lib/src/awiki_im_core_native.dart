@@ -673,6 +673,44 @@ class MessageApi {
     return patch._toModel();
   }
 
+  Stream<ThreadMessageStorePatch> watchThreadPatches(
+    ThreadRef thread, {
+    int limit = 100,
+  }) async* {
+    _client._ensureNotDisposed();
+    final session = await _mapNativeErrors(
+      () => gen_messages.watchThreadPatches(
+        client: _client._inner,
+        thread: thread._toGen(),
+        limit: limit,
+      ),
+    );
+    try {
+      yield* gen_messages
+          .threadMessagePatchStream(session: session)
+          .map((patch) => patch._toModel());
+    } finally {
+      await _mapNativeErrors(
+        () => gen_messages.stopThreadMessagePatchSession(session: session),
+      );
+    }
+  }
+
+  Future<ThreadMessageStorePatch> repairThreadStore(
+    ThreadRef thread, {
+    int limit = 100,
+  }) async {
+    _client._ensureNotDisposed();
+    final patch = await _mapNativeErrors(
+      () => gen_messages.repairThreadStore(
+        client: _client._inner,
+        thread: thread._toGen(),
+        limit: limit,
+      ),
+    );
+    return patch._toModel();
+  }
+
   Future<SendMessageResult> retryMessage(String messageId) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -1951,6 +1989,48 @@ extension on gen_message.DartConversationStorePatch {
       ownerDid: value.ownerDid,
       version: value.version.toInt(),
       unreadTotal: value.unreadTotal,
+      reason: value.reason,
+    ),
+  );
+}
+
+extension on gen_message.DartThreadMessageStorePatch {
+  ThreadMessageStorePatch _toModel() => map(
+    reset: (value) => ThreadMessageStorePatch(
+      kind: ThreadMessageStorePatchKind.reset,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      threadKind: value.threadKind,
+      threadId: value.threadId,
+      items: value.items.map((message) => message._toModel()).toList(),
+    ),
+    upsert: (value) => ThreadMessageStorePatch(
+      kind: ThreadMessageStorePatchKind.upsert,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      threadKind: value.threadKind,
+      threadId: value.threadId,
+      message: value.message._toModel(),
+      index: value.index,
+    ),
+    remove: (value) => ThreadMessageStorePatch(
+      kind: ThreadMessageStorePatchKind.remove,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      threadKind: value.threadKind,
+      threadId: value.threadId,
+      messageId: value.messageId,
+    ),
+    repairRequired: (value) => ThreadMessageStorePatch(
+      kind: ThreadMessageStorePatchKind.repairRequired,
+      ownerIdentityId: value.ownerIdentityId,
+      ownerDid: value.ownerDid,
+      version: value.version.toInt(),
+      threadKind: value.threadKind,
+      threadId: value.threadId,
       reason: value.reason,
     ),
   );

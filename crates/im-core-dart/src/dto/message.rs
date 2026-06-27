@@ -245,6 +245,43 @@ pub enum DartConversationStorePatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DartThreadMessageStorePatch {
+    Reset {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        items: Vec<DartMessage>,
+    },
+    Upsert {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        message: DartMessage,
+        index: u32,
+    },
+    Remove {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        message_id: String,
+    },
+    RepairRequired {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartConversationSnapshotItem {
     pub thread_kind: String,
     pub thread_id: String,

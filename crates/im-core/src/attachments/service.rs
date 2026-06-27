@@ -55,7 +55,7 @@ impl<'a> AttachmentService<'a> {
             match projection {
                 Ok(()) => self
                     .client
-                    .emit_committed_conversation_projection("local_send"),
+                    .emit_committed_local_message_projection("local_send"),
                 Err(err) => {
                     result
                         .sdk_result
@@ -119,7 +119,7 @@ impl<'a> AttachmentService<'a> {
             match projection {
                 Ok(()) => self
                     .client
-                    .emit_committed_conversation_projection("local_send"),
+                    .emit_committed_local_message_projection("local_send"),
                 Err(err) => {
                     result
                         .sdk_result

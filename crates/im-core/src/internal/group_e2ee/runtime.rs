@@ -463,7 +463,7 @@ where
         {
             Ok(()) => self
                 .client
-                .emit_committed_conversation_projection("local_send"),
+                .emit_committed_local_message_projection("local_send"),
             Err(err) => {
                 sdk_result
                     .warnings
@@ -750,7 +750,7 @@ where
         {
             Ok(()) => self
                 .client
-                .emit_committed_conversation_projection("local_send"),
+                .emit_committed_local_message_projection("local_send"),
             Err(err) => {
                 sdk_result
                     .warnings

@@ -7,7 +7,8 @@ use crate::dto::{
         DartConversationListSnapshot, DartConversationPage, DartConversationStorePatch,
         DartInboxHistoryOptions, DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage,
         DartSendMessageResult, DartSendPayloadRequest, DartSendTextRequest, DartSyncDeltaRequest,
-        DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult, DartThreadRef,
+        DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult,
+        DartThreadMessageStorePatch, DartThreadRef,
     },
 };
 use crate::frb_generated::StreamSink;
@@ -61,6 +62,62 @@ impl DartConversationPatchSession {
 }
 
 impl Drop for DartConversationPatchSession {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.session.lock() {
+            let _ = guard.take();
+        }
+    }
+}
+
+pub struct DartThreadMessagePatchSession {
+    session: Mutex<Option<im_core::messages::ThreadMessagePatchSession>>,
+    stream_attached: Mutex<bool>,
+}
+
+impl DartThreadMessagePatchSession {
+    fn new(session: im_core::messages::ThreadMessagePatchSession) -> Self {
+        Self {
+            session: Mutex::new(Some(session)),
+            stream_attached: Mutex::new(false),
+        }
+    }
+
+    fn take_session(&self) -> Result<im_core::messages::ThreadMessagePatchSession, DartImError> {
+        let mut attached = self
+            .stream_attached
+            .lock()
+            .map_err(|_| DartImError::internal("thread message patch session lock poisoned"))?;
+        if *attached {
+            return Err(DartImError::invalid_input(
+                Some("session".to_string()),
+                "thread message patch stream is already attached",
+            ));
+        }
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| DartImError::internal("thread message patch session lock poisoned"))?;
+        let session = guard
+            .take()
+            .ok_or_else(|| DartImError::object_closed("DartThreadMessagePatchSession"))?;
+        *attached = true;
+        Ok(session)
+    }
+
+    async fn stop(&self) -> Result<(), DartImError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| DartImError::internal("thread message patch session lock poisoned"))?
+            .take();
+        if let Some(mut session) = session {
+            session.stop().await.map_err(DartImError::from)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DartThreadMessagePatchSession {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.session.lock() {
             let _ = guard.take();
@@ -318,6 +375,56 @@ pub async fn repair_conversation_store(
     inner
         .messages()
         .repair_conversation_store_async()
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn watch_thread_patches(
+    client: &Arc<crate::api::client::DartImClient>,
+    thread: DartThreadRef,
+    limit: Option<u32>,
+) -> Result<Arc<DartThreadMessagePatchSession>, DartImError> {
+    let inner = client.clone_inner()?;
+    let session = inner
+        .messages()
+        .watch_thread_patches_async(thread.try_into()?, limit)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(Arc::new(DartThreadMessagePatchSession::new(session)))
+}
+
+pub async fn thread_message_patch_stream(
+    session: &Arc<DartThreadMessagePatchSession>,
+    sink: StreamSink<DartThreadMessageStorePatch>,
+) -> Result<(), DartImError> {
+    let mut session = session.take_session()?;
+    tokio::spawn(async move {
+        while let Some(patch) = session.next_patch().await {
+            if sink.add(patch.into()).is_err() {
+                let _ = session.stop().await;
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+pub async fn stop_thread_message_patch_session(
+    session: &Arc<DartThreadMessagePatchSession>,
+) -> Result<(), DartImError> {
+    session.stop().await
+}
+
+pub async fn repair_thread_store(
+    client: &Arc<crate::api::client::DartImClient>,
+    thread: DartThreadRef,
+    limit: Option<u32>,
+) -> Result<DartThreadMessageStorePatch, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .repair_thread_store_async(thread.try_into()?, limit)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

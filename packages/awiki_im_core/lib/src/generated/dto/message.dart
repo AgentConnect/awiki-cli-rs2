@@ -921,6 +921,45 @@ class DartSyncThreadAfterResult {
 }
 
 @freezed
+sealed class DartThreadMessageStorePatch with _$DartThreadMessageStorePatch {
+  const DartThreadMessageStorePatch._();
+
+  const factory DartThreadMessageStorePatch.reset({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    required List<DartMessage> items,
+  }) = DartThreadMessageStorePatch_Reset;
+  const factory DartThreadMessageStorePatch.upsert({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    required DartMessage message,
+    required int index,
+  }) = DartThreadMessageStorePatch_Upsert;
+  const factory DartThreadMessageStorePatch.remove({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    required String messageId,
+  }) = DartThreadMessageStorePatch_Remove;
+  const factory DartThreadMessageStorePatch.repairRequired({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    required String reason,
+  }) = DartThreadMessageStorePatch_RepairRequired;
+}
+
+@freezed
 sealed class DartThreadRef with _$DartThreadRef {
   const DartThreadRef._();
 

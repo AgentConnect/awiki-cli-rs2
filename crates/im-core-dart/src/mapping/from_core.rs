@@ -23,7 +23,7 @@ use crate::dto::{
         DartConversationSnapshotMessageBody, DartConversationStorePatch, DartMarkReadResult,
         DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
         DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
-        DartSyncDeltaResult, DartSyncThreadAfterResult,
+        DartSyncDeltaResult, DartSyncThreadAfterResult, DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
@@ -707,6 +707,75 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 owner_did,
                 version,
                 unread_total,
+                reason,
+            },
+        }
+    }
+}
+
+impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStorePatch {
+    fn from(value: im_core::messages::ThreadMessageStorePatch) -> Self {
+        match value {
+            im_core::messages::ThreadMessageStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                items,
+            } => DartThreadMessageStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                items: items.into_iter().map(Into::into).collect(),
+            },
+            im_core::messages::ThreadMessageStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                message,
+                index,
+            } => DartThreadMessageStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                message: message.into(),
+                index,
+            },
+            im_core::messages::ThreadMessageStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                message_id,
+            } => DartThreadMessageStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                message_id,
+            },
+            im_core::messages::ThreadMessageStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                reason,
+            } => DartThreadMessageStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
                 reason,
             },
         }

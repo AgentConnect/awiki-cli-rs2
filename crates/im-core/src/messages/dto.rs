@@ -393,6 +393,44 @@ pub enum ConversationStorePatch {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThreadMessageStorePatch {
+    Reset {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        items: Vec<Message>,
+    },
+    Upsert {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        message: Message,
+        index: u32,
+    },
+    Remove {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        message_id: String,
+    },
+    RepairRequired {
+        owner_identity_id: String,
+        owner_did: String,
+        version: u64,
+        thread_kind: String,
+        thread_id: String,
+        reason: String,
+    },
+}
+
 pub struct ConversationPatchSession {
     pub(crate) store: Arc<crate::internal::runtime_store::conversation_store::ConversationStore>,
     pub(crate) receiver: tokio::sync::broadcast::Receiver<ConversationStorePatch>,
@@ -436,6 +474,97 @@ impl ConversationPatchSession {
         self.closed = true;
         self.receiver.resubscribe();
         Ok(())
+    }
+}
+
+pub struct ThreadMessagePatchSession {
+    pub(crate) store: Arc<crate::internal::runtime_store::message_store::MessageStore>,
+    pub(crate) receiver: tokio::sync::broadcast::Receiver<ThreadMessageStorePatch>,
+    pub(crate) initial: VecDeque<ThreadMessageStorePatch>,
+    pub(crate) thread: ThreadRef,
+    pub(crate) limit: u32,
+    closed: bool,
+}
+
+impl ThreadMessagePatchSession {
+    pub(crate) fn new(
+        store: Arc<crate::internal::runtime_store::message_store::MessageStore>,
+        receiver: tokio::sync::broadcast::Receiver<ThreadMessageStorePatch>,
+        initial: Vec<ThreadMessageStorePatch>,
+        thread: ThreadRef,
+        limit: u32,
+    ) -> Self {
+        Self {
+            store,
+            receiver,
+            initial: initial.into(),
+            thread,
+            limit,
+            closed: false,
+        }
+    }
+
+    pub async fn next_patch(&mut self) -> Option<ThreadMessageStorePatch> {
+        if self.closed {
+            return None;
+        }
+        if let Some(patch) = self.initial.pop_front() {
+            return Some(patch);
+        }
+        loop {
+            match self.receiver.recv().await {
+                Ok(patch) if thread_patch_matches(&patch, &self.thread) => return Some(patch),
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    return Some(self.store.repair_required_patch(
+                        &self.thread,
+                        self.limit,
+                        "subscriber_lag",
+                    ));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    pub async fn stop(&mut self) -> crate::ImResult<()> {
+        self.closed = true;
+        self.receiver.resubscribe();
+        Ok(())
+    }
+}
+
+fn thread_patch_matches(patch: &ThreadMessageStorePatch, thread: &ThreadRef) -> bool {
+    let (expected_kind, expected_id) = thread_ref_parts(thread);
+    match patch {
+        ThreadMessageStorePatch::Reset {
+            thread_kind,
+            thread_id,
+            ..
+        }
+        | ThreadMessageStorePatch::Upsert {
+            thread_kind,
+            thread_id,
+            ..
+        }
+        | ThreadMessageStorePatch::Remove {
+            thread_kind,
+            thread_id,
+            ..
+        }
+        | ThreadMessageStorePatch::RepairRequired {
+            thread_kind,
+            thread_id,
+            ..
+        } => thread_kind == &expected_kind && thread_id == &expected_id,
+    }
+}
+
+pub(crate) fn thread_ref_parts(thread: &ThreadRef) -> (String, String) {
+    match thread {
+        ThreadRef::Direct(peer) => ("direct".to_owned(), peer.as_str().to_owned()),
+        ThreadRef::Group(group) => ("group".to_owned(), group.as_str().to_owned()),
+        ThreadRef::Thread(thread) => ("thread".to_owned(), thread.as_str().to_owned()),
     }
 }
 

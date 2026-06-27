@@ -290,7 +290,7 @@ impl<'a> MessageService<'a> {
                 {
                     Ok(()) => self
                         .client
-                        .emit_committed_conversation_projection("local_send"),
+                        .emit_committed_local_message_projection("local_send"),
                     Err(err) => {
                         result
                             .sdk_result
@@ -330,7 +330,7 @@ impl<'a> MessageService<'a> {
                 {
                     Ok(()) => self
                         .client
-                        .emit_committed_conversation_projection("local_send"),
+                        .emit_committed_local_message_projection("local_send"),
                     Err(err) => {
                         result
                             .sdk_result
@@ -413,7 +413,7 @@ impl<'a> MessageService<'a> {
                 {
                     Ok(()) => self
                         .client
-                        .emit_committed_conversation_projection("local_send"),
+                        .emit_committed_local_message_projection("local_send"),
                     Err(err) => {
                         result
                             .sdk_result
@@ -455,7 +455,7 @@ impl<'a> MessageService<'a> {
                 {
                     Ok(()) => self
                         .client
-                        .emit_committed_conversation_projection("local_send"),
+                        .emit_committed_local_message_projection("local_send"),
                     Err(err) => {
                         result
                             .sdk_result
@@ -1276,6 +1276,44 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::ConversationStorePatch> {
         self.repair_conversation_store()
     }
+
+    pub fn watch_thread_patches(
+        &self,
+        thread: super::ThreadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessagePatchSession> {
+        self.client
+            .message_store()
+            .watch_for_client(self.client, thread, limit)
+    }
+
+    pub async fn watch_thread_patches_async(
+        &self,
+        thread: super::ThreadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessagePatchSession> {
+        self.watch_thread_patches(thread, limit)
+    }
+
+    pub fn repair_thread_store(
+        &self,
+        thread: super::ThreadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessageStorePatch> {
+        self.client.message_store().repair_thread_from_client(
+            self.client,
+            thread,
+            limit.unwrap_or(100),
+        )
+    }
+
+    pub async fn repair_thread_store_async(
+        &self,
+        thread: super::ThreadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessageStorePatch> {
+        self.repair_thread_store(thread, limit)
+    }
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]
@@ -1387,7 +1425,7 @@ async fn persist_deferred_direct_e2ee_effect(
                 )
                 .await
             {
-                Ok(()) => client.emit_committed_conversation_projection("local_send"),
+                Ok(()) => client.emit_committed_local_message_projection("local_send"),
                 Err(err) => {
                     result
                         .sdk_result
@@ -1425,7 +1463,7 @@ async fn persist_deferred_direct_e2ee_attachment_effect(
                 )
                 .await
             {
-                Ok(()) => client.emit_committed_conversation_projection("local_send"),
+                Ok(()) => client.emit_committed_local_message_projection("local_send"),
                 Err(err) => {
                     result
                         .sdk_result

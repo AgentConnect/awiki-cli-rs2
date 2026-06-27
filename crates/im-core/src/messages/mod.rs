@@ -2,6 +2,7 @@ mod dto;
 mod mention;
 mod service;
 
+pub(crate) use self::dto::thread_ref_parts;
 pub use self::dto::{
     direct_peer_scope_thread_id, Conversation, ConversationListSnapshot, ConversationPatchSession,
     ConversationQuery, ConversationSnapshotItem, ConversationSnapshotMessage,
@@ -12,7 +13,8 @@ pub use self::dto::{
     MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
     MessageTarget, ScopedInboxToken, SendMessageRequest, SendMessageResult, SyncDeltaRequest,
-    SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult, ThreadRef,
+    SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult, ThreadMessagePatchSession,
+    ThreadMessageStorePatch, ThreadRef,
 };
 
 pub use self::mention::{

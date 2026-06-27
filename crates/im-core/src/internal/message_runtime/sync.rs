@@ -152,11 +152,18 @@ where
                     &raw,
                     crate::ids::PageLimit(limit),
                 )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::read::persist_projection_best_effort(
+                let mut result = thread_after_result(page.items, after_server_seq, raw, limit)?;
+                match crate::internal::message_runtime::local_projection::persist_messages(
                     self.client,
                     &result.messages,
-                );
+                ) {
+                    Ok(()) => self
+                        .client
+                        .emit_committed_message_projection("sync_thread_after"),
+                    Err(err) => result.warnings.push(format!(
+                        "Failed to persist sync.thread_after projection: {err}"
+                    )),
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -184,11 +191,18 @@ where
                     crate::ids::PageLimit(limit),
                     Some(&group),
                 )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::read::persist_projection_best_effort(
+                let mut result = thread_after_result(page.items, after_server_seq, raw, limit)?;
+                match crate::internal::message_runtime::local_projection::persist_messages(
                     self.client,
                     &result.messages,
-                );
+                ) {
+                    Ok(()) => self
+                        .client
+                        .emit_committed_message_projection("sync_thread_after"),
+                    Err(err) => result.warnings.push(format!(
+                        "Failed to persist sync.thread_after projection: {err}"
+                    )),
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Thread(_) => {
@@ -315,12 +329,20 @@ where
                     &raw,
                     crate::ids::PageLimit(limit),
                 )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::read::persist_projection_best_effort_async(
+                let mut result = thread_after_result(page.items, after_server_seq, raw, limit)?;
+                match crate::internal::message_runtime::local_projection::persist_messages_async(
                     self.client,
                     &result.messages,
                 )
-                .await;
+                .await
+                {
+                    Ok(()) => self
+                        .client
+                        .emit_committed_message_projection("sync_thread_after"),
+                    Err(err) => result.warnings.push(format!(
+                        "Failed to persist sync.thread_after projection: {err}"
+                    )),
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -349,12 +371,20 @@ where
                     crate::ids::PageLimit(limit),
                     Some(&group),
                 )?;
-                let result = thread_after_result(page.items, after_server_seq, raw, limit)?;
-                crate::internal::message_runtime::read::persist_projection_best_effort_async(
+                let mut result = thread_after_result(page.items, after_server_seq, raw, limit)?;
+                match crate::internal::message_runtime::local_projection::persist_messages_async(
                     self.client,
                     &result.messages,
                 )
-                .await;
+                .await
+                {
+                    Ok(()) => self
+                        .client
+                        .emit_committed_message_projection("sync_thread_after"),
+                    Err(err) => result.warnings.push(format!(
+                        "Failed to persist sync.thread_after projection: {err}"
+                    )),
+                }
                 Ok(result)
             }
             crate::messages::ThreadRef::Thread(_) => {
@@ -433,6 +463,7 @@ fn emit_committed_sync_invalidation(
     client
         .conversation_store()
         .on_committed_sync_invalidation(client, invalidation);
+    client.emit_committed_message_sync_invalidation_if_initialized(invalidation);
 }
 
 #[cfg(test)]

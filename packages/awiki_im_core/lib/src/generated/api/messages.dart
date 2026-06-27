@@ -9,8 +9,8 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `new`, `page_limit`, `stop`, `take_session`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
+// These functions are ignored because they are not marked as `pub`: `new`, `new`, `page_limit`, `stop`, `stop`, `take_session`, `take_session`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
 
 Future<DartSendMessageResult> sendText({
   required ArcDartImClient client,
@@ -151,6 +151,38 @@ Future<DartConversationStorePatch> repairConversationStore({
   client: client,
 );
 
+Future<ArcDartThreadMessagePatchSession> watchThreadPatches({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesWatchThreadPatches(
+  client: client,
+  thread: thread,
+  limit: limit,
+);
+
+Stream<DartThreadMessageStorePatch> threadMessagePatchStream({
+  required ArcDartThreadMessagePatchSession session,
+}) => RustLib.instance.api.crateApiMessagesThreadMessagePatchStream(
+  session: session,
+);
+
+Future<void> stopThreadMessagePatchSession({
+  required ArcDartThreadMessagePatchSession session,
+}) => RustLib.instance.api.crateApiMessagesStopThreadMessagePatchSession(
+  session: session,
+);
+
+Future<DartThreadMessageStorePatch> repairThreadStore({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesRepairThreadStore(
+  client: client,
+  thread: thread,
+  limit: limit,
+);
+
 Future<DartSendMessageResult> retryMessage({
   required ArcDartImClient client,
   required String messageId,
@@ -161,3 +193,7 @@ Future<DartSendMessageResult> retryMessage({
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartConversationPatchSession >>>
 abstract class ArcDartConversationPatchSession implements RustOpaqueInterface {}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartThreadMessagePatchSession >>>
+abstract class ArcDartThreadMessagePatchSession
+    implements RustOpaqueInterface {}
