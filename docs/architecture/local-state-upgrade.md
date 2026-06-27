@@ -29,7 +29,7 @@
 crates/awiki-cli/src/workspace_upgrade/types.rs
 ```
 
-当前 local SQLite schema version 为 `19`，定义在：
+当前 local SQLite schema version 为 `20`，定义在：
 
 ```text
 crates/im-core/src/internal/local_state/schema.rs
@@ -261,6 +261,19 @@ awiki-cli id import-v1
 - 状态型 CLI 命令在本地状态初始化前触发升级检查。
 - `doctor` / `config show` 可检查升级元数据。
 - SQLite schema 17 的 identity-owned owner invariant 检查。
+- SQLite schema 18 的 `conversation_summaries` 本地会话摘要投影。
+- SQLite schema 19 的 owner/conversation/timestamp 本地历史热路径索引。
+- SQLite schema 20 的 `sync_state` reliable sync checkpoint 表。
+
+`sync_state` 是 `im-core` 内部可靠同步状态，不是 CLI/App/Dart public API：
+
+- 主键为 `(owner_identity_id, scope, checkpoint_kind)`。
+- `event_seq` 保存账号级 reliable sync checkpoint 的十进制字符串。
+- `owner_did`、`updated_at` 和 `metadata_json` 只用于诊断、兼容和后续扩展。
+- `sync.delta` 由 Rust runtime 从 `sync_state` 读取 checkpoint，服务端事件页成功应用到
+  本地 SQLite 后再在同一事务中推进 checkpoint。
+- Dart SDK、Flutter App、CLI adapter 不暴露 checkpoint load/store，不允许调用方传
+  `since_event_seq` 或手动推进 `next_event_seq`。
 
 后续阶段可继续演进：
 

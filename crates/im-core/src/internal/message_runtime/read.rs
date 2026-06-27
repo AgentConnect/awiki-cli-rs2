@@ -652,7 +652,7 @@ fn merge_direct_local_projection_best_effort(
         crate::internal::local_state::messages::list_direct_messages_for_owner_identity(
             &connection,
             client.current_identity().id.as_str(),
-            &direct_local_history_conversation_ids(peer_did, peer_scope),
+            &direct_remote_history_conversation_ids(peer_did, peer_scope),
             page_limit(requested_limit, 50),
         )
     else {
@@ -688,7 +688,7 @@ async fn merge_direct_local_projection_best_effort_async(
     let records = match db
         .list_direct_messages(
             client.current_identity().id.as_str(),
-            direct_local_history_conversation_ids(peer_did, peer_scope),
+            direct_remote_history_conversation_ids(peer_did, peer_scope),
             page_limit(requested_limit, 50),
         )
         .await
@@ -727,12 +727,34 @@ fn merge_local_message_records_into_page(
         .filter_map(|record| {
             crate::internal::message_runtime::conversations::message_from_record(record).ok()
         })
+        .filter(|message| !is_direct_e2ee_wire_sdk_message(message))
         .collect::<Vec<_>>();
     if local_messages.is_empty() {
         return;
     }
     page.items.append(&mut local_messages);
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn is_direct_e2ee_wire_sdk_message(message: &crate::messages::Message) -> bool {
+    let content_type = message
+        .metadata
+        .content_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| match &message.body {
+            crate::messages::MessageBodyView::Unsupported { content_type } => content_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_default()
+                .to_owned(),
+            _ => String::new(),
+        });
+    anp::direct_e2ee::is_direct_e2ee_wire_content_type(&content_type)
 }
 
 #[cfg(feature = "sqlite")]
@@ -754,6 +776,22 @@ fn direct_local_history_conversation_ids(
         }
     }
     ids
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_remote_history_conversation_ids(
+    peer_did: &str,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> Vec<String> {
+    if peer_scope.is_some() {
+        let peer_did = peer_did.trim();
+        return if peer_did.starts_with("did:") {
+            vec![crate::internal::local_state::owner_scope::direct_conversation_id(peer_did)]
+        } else {
+            Vec::new()
+        };
+    }
+    direct_local_history_conversation_ids(peer_did, peer_scope)
 }
 
 pub(crate) fn sort_dedupe_and_truncate_messages(

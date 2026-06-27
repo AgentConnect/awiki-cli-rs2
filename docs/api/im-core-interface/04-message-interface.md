@@ -460,22 +460,15 @@ interface 对 App/CLI/facade 的暴露形态。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SyncDeltaRequest {
     pub limit: Option<u32>,
-    pub reason: Option<SyncReason>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SyncReason {
-    Startup,
-    AppResumed,
-    Reconnect,
-    RealtimeGap,
-    Manual,
+    pub device_id: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncDeltaResult {
-    pub applied_event_count: u32,
-    pub checkpoint_event_seq: Option<String>,
+    pub events_applied: u32,
+    pub pages_fetched: u32,
+    pub last_applied_event_seq: Option<String>,
     pub has_more: bool,
     pub snapshot_required: bool,
     pub retention_floor_event_seq: Option<String>,
@@ -510,11 +503,15 @@ pub struct RealtimeSyncHint {
 1. 从本地 SQLite `sync_state` 读取当前 owner 的 checkpoint。
 2. 调用服务端 `sync.delta`，wire request 中的 `since_event_seq` 只能由 Rust runtime
    注入，public API 调用方不能传入。
-3. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
+3. `limit`、`device_id`、`reason` 只作为分页和诊断输入；`reason` 是字符串，不是封闭
+   enum，便于 App 记录 `startup`、`app_resumed`、`reconnect`、`realtime_gap` 等来源。
+4. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
    projection，并在 apply 成功后写入 `next_event_seq` checkpoint。
-4. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
+5. 返回 `events_applied`、`pages_fetched` 和 `last_applied_event_seq` 作为诊断和 UI 状态；
+   `last_applied_event_seq` 不是 public checkpoint setter。
+6. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
    projection，返回 `snapshot_required=true` 和诊断字段。
-5. `has_more=true` 时可由 runtime 或上层 coordinator 继续调度下一页，但每页仍必须走
+7. `has_more=true` 时可由 runtime 或上层 coordinator 继续调度下一页，但每页仍必须走
    apply + checkpoint transaction。
 
 `sync_thread_after(request)` 行为：

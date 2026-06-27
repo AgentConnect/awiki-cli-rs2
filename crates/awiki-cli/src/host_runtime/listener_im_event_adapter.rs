@@ -260,6 +260,7 @@ fn host_notification_from_message_event(
         attachment_summary,
         download_action,
         warnings: _,
+        sync: _,
     } = event;
     host_notification_from_message(
         &message,

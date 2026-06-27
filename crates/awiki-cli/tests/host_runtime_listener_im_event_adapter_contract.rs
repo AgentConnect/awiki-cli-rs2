@@ -111,6 +111,7 @@ fn im_event_group_message_and_update_dispatch_host_notifications_only() {
         ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:wba:groups.example:groups:demo:e1_group").unwrap(),
             update_kind: GroupUpdateKind::Updated,
+            sync: None,
         }),
         None,
         Some("bob"),
@@ -177,6 +178,7 @@ fn im_event_unknown_notification_records_warning_without_attachment_enrichment()
             content_type: Some("application/vnd.awiki.attachment+json".to_string()),
             notification_type: Some("attachment.ready".to_string()),
             reason: "unsupported notification method".to_string(),
+            sync: None,
         }),
         None,
         Some("bob"),
@@ -319,6 +321,7 @@ fn direct_message_event(message_id: &str, text: &str) -> ImEvent {
         },
         attachment_summary: None,
         download_action: None,
+        sync: None,
         warnings: Vec::new(),
     })
 }
@@ -359,6 +362,7 @@ fn direct_attachment_message_event() -> ImEvent {
             message_id: MessageId::parse("msg-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
         }),
+        sync: None,
         warnings: Vec::new(),
     })
 }
@@ -393,6 +397,7 @@ fn group_message_event() -> ImEvent {
         },
         attachment_summary: None,
         download_action: None,
+        sync: None,
         warnings: Vec::new(),
     })
 }
@@ -434,6 +439,7 @@ fn group_attachment_message_event() -> ImEvent {
             message_id: MessageId::parse("msg-group-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
         }),
+        sync: None,
         warnings: Vec::new(),
     })
 }

@@ -109,7 +109,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 | identity | selectors, summaries, registration, recovery, profile, DID replacement plan | private key material, DID writer, raw identity store rows |
 | auth | login, ensure, refresh, status | proof builder, JWT file format, bearer header handling |
 | directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
-| messages | send, inbox, history, mark-read, conversations | message RPC params, wire DTOs, raw notification frames |
+| messages | send, inbox, history, mark-read, conversations, reliable sync | message RPC params, wire DTOs, raw notification frames, checkpoint load/store |
 | groups | lifecycle, members, profile/policy, group reads | group wire helpers, raw group receipts |
 | attachments | send/download, source/destination DTOs | upload slots, object commit, ticket params, encrypted manifest internals |
 | secure | status, prepare, repair, outbox summary, secure send policy | ciphertext, prekeys, KeyPackage, MLS private state, provider IO |
@@ -122,7 +122,7 @@ Public API expresses product intent. Internal implementation owns wire, store, c
 - `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
 - `identity`: local registry, default identity, handle registration/recovery, profile, contact binding, DID replacement plan.
 - `auth`: DID auth, session/JWT persistence, refresh, status, and retry support for business services.
-- `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, and realtime projection.
+- `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, realtime projection, and reliable sync checkpoints.
 - `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
 - `directory`: DID/Handle lookup, public profile, contact projection, relationship APIs.
 - `messages`: direct/group send, inbox, history, conversations, mark-read, retry plan, local message projection.
@@ -191,3 +191,46 @@ Local history:
 - supports direct, group, and raw thread refs using the same owner-scoped conversation-id normalization as thread mark-read.
 
 The API is for fast first paint. Apps should show local history immediately, then run remote `history()` as a background reconcile when freshness is needed.
+
+## 13. Reliable Message Sync
+
+Reliable message sync is split between service-owned event logs and
+`im-core`-owned local recovery state. The service API is documented in
+`message-service/docs/api/ANP-client-server-api-sync.md`; this document records
+the SDK architecture boundary.
+
+`im-core` Rust/SQLite owns the global reliable checkpoint:
+
+- `messages.sync_delta()` / Dart `client.messages.syncDelta(...)` are high-level
+  calls. Rust reads the current checkpoint from local `sync_state`, injects
+  `since_event_seq` into the wire request, applies the returned page, and writes
+  the new checkpoint only after the local apply transaction succeeds.
+- Public Rust, Dart, Flutter, CLI, and App APIs must not expose
+  `loadGlobalCheckpoint`, `storeGlobalCheckpoint`, raw `since_event_seq`, raw
+  `next_event_seq`, or equivalent manual checkpoint advance.
+- `snapshot_required=true` is fail-closed until a documented repair API exists:
+  no checkpoint advance and no local projection wipe.
+
+`messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` are
+thread-local catch-up APIs. They use `after_server_seq` and do not read or
+advance the account-level checkpoint. Implementations must not return a locally
+merged `history_async` page as a catch-up result; they use a raw remote path or
+strictly filter `server_seq > after_server_seq`.
+
+Realtime notification parsing may expose a readonly `RealtimeSyncHint` from the
+top-level WebSocket `sync` member. The hint is scheduling metadata for
+duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
+Realtime projection is allowed to keep the UI fresh, but receiving a realtime
+hint or applying a realtime projection does not advance the reliable checkpoint.
+
+Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
+
+- key: `(owner_identity_id, scope, checkpoint_kind)`;
+- value: decimal string `event_seq`, plus `owner_did`, `updated_at`, and optional
+  `metadata_json`;
+- index: `idx_sync_state_owner_kind(owner_identity_id, checkpoint_kind,
+  updated_at DESC)`.
+
+`sync_state` is private local recovery state. Diagnostics should report counts,
+durations, redacted owner/thread identifiers, and checkpoint age rather than raw
+message payloads or sensitive E2EE material.
