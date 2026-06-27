@@ -1149,6 +1149,41 @@ impl<'a> MessageService<'a> {
         .await
     }
 
+    pub fn sync_delta(
+        &self,
+        request: super::SyncDeltaRequest,
+    ) -> crate::ImResult<super::SyncDeltaResult> {
+        #[cfg(feature = "blocking")]
+        {
+            crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .sync_delta(crate::internal::message_runtime::sync::SyncDeltaInput { request })
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-delta"))
+        }
+    }
+
+    pub async fn sync_delta_async(
+        &self,
+        request: super::SyncDeltaRequest,
+    ) -> crate::ImResult<super::SyncDeltaResult> {
+        crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .sync_delta_async(crate::internal::message_runtime::sync::SyncDeltaInput { request })
+        .await
+    }
+
     pub fn conversations(
         &self,
         query: super::ConversationQuery,

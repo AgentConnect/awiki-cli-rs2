@@ -312,6 +312,28 @@ pub struct SyncThreadAfterResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncDeltaRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncDeltaResult {
+    pub events_applied: u32,
+    pub pages_fetched: u32,
+    pub last_applied_event_seq: Option<String>,
+    pub has_more: bool,
+    pub snapshot_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_floor_event_seq: Option<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub thread: ThreadRef,

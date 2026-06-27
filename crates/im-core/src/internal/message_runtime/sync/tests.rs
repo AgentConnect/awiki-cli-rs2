@@ -5,9 +5,244 @@ use crate::internal::transport::{
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+
+#[tokio::test]
+async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
+    let fixture = Fixture::new("sync-delta-basic");
+    let client = fixture.client();
+    fixture.store_checkpoint("4");
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![delta_page(
+                vec![message_created_event("sev-5", "5", "msg-delta-5", 5)],
+                "5",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                limit: Some(50),
+                device_id: Some("device-a".to_owned()),
+                reason: Some("app_resumed".to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(result.pages_fetched, 1);
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("5"));
+    assert_eq!(fixture.checkpoint(), Some("5".to_owned()));
+    assert_eq!(fixture.message_server_seq("msg-delta-5"), Some(5));
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].method, "sync.delta");
+    assert_eq!(calls[0].params["body"]["since_event_seq"], "4");
+    assert_eq!(calls[0].params["body"]["limit"], 50);
+    assert_eq!(calls[0].params["body"]["device_id"], "device-a");
+    assert_eq!(calls[0].params["body"]["reason"], "app_resumed");
+}
+
+#[tokio::test]
+async fn sync_delta_has_more_reads_committed_checkpoint_for_next_page() {
+    let fixture = Fixture::new("sync-delta-has-more");
+    let client = fixture.client();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![
+                delta_page(
+                    vec![message_created_event("sev-1", "1", "msg-delta-1", 1)],
+                    "1",
+                    true,
+                ),
+                delta_page(
+                    vec![message_created_event("sev-2", "2", "msg-delta-2", 2)],
+                    "2",
+                    false,
+                ),
+            ],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                limit: Some(1),
+                device_id: None,
+                reason: Some("gap".to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 2);
+    assert_eq!(result.pages_fetched, 2);
+    assert_eq!(fixture.checkpoint(), Some("2".to_owned()));
+    assert_eq!(fixture.message_server_seq("msg-delta-1"), Some(1));
+    assert_eq!(fixture.message_server_seq("msg-delta-2"), Some(2));
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].params["body"]["since_event_seq"], "0");
+    assert_eq!(calls[1].params["body"]["since_event_seq"], "1");
+}
+
+#[tokio::test]
+async fn sync_delta_snapshot_required_is_fail_closed() {
+    let fixture = Fixture::new("sync-delta-snapshot");
+    let client = fixture.client();
+    fixture.store_checkpoint("7");
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![json!({
+                "events": [message_created_event("sev-8", "8", "msg-delta-8", 8)],
+                "next_event_seq": "8",
+                "has_more": false,
+                "snapshot_required": true,
+                "retention_floor_event_seq": "10",
+                "warnings": ["delta_retention_gap"],
+            })],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert!(result.snapshot_required);
+    assert_eq!(result.retention_floor_event_seq.as_deref(), Some("10"));
+    assert_eq!(result.events_applied, 0);
+    assert_eq!(fixture.checkpoint(), Some("7".to_owned()));
+    assert_eq!(fixture.message_server_seq("msg-delta-8"), None);
+}
+
+#[tokio::test]
+async fn sync_delta_invalid_page_rolls_back_message_and_checkpoint() {
+    let fixture = Fixture::new("sync-delta-rollback");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![
+                    message_created_event("sev-1", "1", "msg-before-gap", 1),
+                    message_created_event("sev-3", "3", "msg-after-gap", 3),
+                ],
+                "3",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let err = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("event_seq gap"));
+    assert_eq!(fixture.checkpoint(), None);
+    assert_eq!(fixture.message_server_seq("msg-before-gap"), None);
+    assert_eq!(fixture.message_server_seq("msg-after-gap"), None);
+}
+
+#[tokio::test]
+async fn sync_delta_duplicate_page_is_idempotent() {
+    let fixture = Fixture::new("sync-delta-duplicate");
+    let client = fixture.client();
+    fixture.store_checkpoint("1");
+    fixture.seed_message(
+        "msg-delta-1",
+        "dm:did:example:bob",
+        "",
+        Some(1),
+        "did:example:bob",
+        "did:example:alice",
+    );
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event("sev-1", "1", "msg-delta-1", 1)],
+                "1",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 0);
+    assert_eq!(fixture.checkpoint(), Some("1".to_owned()));
+    assert_eq!(fixture.message_count("msg-delta-1"), 1);
+}
+
+#[tokio::test]
+async fn sync_delta_has_more_duplicate_page_without_progress_is_invalid() {
+    let fixture = Fixture::new("sync-delta-has-more-no-progress");
+    let client = fixture.client();
+    fixture.store_checkpoint("1");
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![delta_page(
+                vec![message_created_event("sev-1", "1", "msg-delta-1", 1)],
+                "1",
+                true,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let err = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("without checkpoint progress"));
+    assert_eq!(fixture.checkpoint(), Some("1".to_owned()));
+    assert_eq!(calls.borrow().len(), 1);
+}
 
 #[tokio::test]
 async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
@@ -33,9 +268,9 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
     let runtime = MessageSyncRuntime::new(
         &client,
         ReadyAnySessionProvider,
-        RecordingTransport {
-            calls: Rc::clone(&calls),
-            response: json!({
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![json!({
                 "messages": [
                     {
                         "id": "remote-old",
@@ -70,8 +305,8 @@ async fn sync_thread_after_uses_local_max_seq_and_filters_numeric_ascending() {
                     }
                 ],
                 "has_more": false
-            }),
-        },
+            })],
+        ),
         NoopDirectoryTransport,
     );
 
@@ -123,9 +358,9 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
     let runtime = MessageSyncRuntime::new(
         &client,
         ReadyAnySessionProvider,
-        RecordingTransport {
-            calls: Rc::clone(&calls),
-            response: json!({
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![json!({
                 "messages": [
                     {
                         "id": "remote-old-1",
@@ -145,8 +380,8 @@ async fn sync_thread_after_explicit_after_seq_does_not_return_old_history_page_i
                     }
                 ],
                 "has_more": false
-            }),
-        },
+            })],
+        ),
         NoopDirectoryTransport,
     );
 
@@ -182,9 +417,9 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
     let runtime = MessageSyncRuntime::new(
         &client,
         ReadyAnySessionProvider,
-        RecordingTransport {
-            calls: Rc::clone(&calls),
-            response: json!({
+        RecordingTransport::queued(
+            Rc::clone(&calls),
+            vec![json!({
                 "messages": [
                     {
                         "id": "group-old",
@@ -205,8 +440,8 @@ async fn sync_thread_after_group_uses_raw_group_messages_since_seq() {
                 ],
                 "has_more": true,
                 "warnings": ["partial"]
-            }),
-        },
+            })],
+        ),
         NoopDirectoryTransport,
     );
 
@@ -302,7 +537,16 @@ impl crate::internal::auth::session::AsyncSessionProvider for ReadyAnySessionPro
 
 struct RecordingTransport {
     calls: Rc<RefCell<Vec<RecordedCall>>>,
-    response: Value,
+    responses: RefCell<VecDeque<Value>>,
+}
+
+impl RecordingTransport {
+    fn queued(calls: Rc<RefCell<Vec<RecordedCall>>>, responses: Vec<Value>) -> Self {
+        Self {
+            calls,
+            responses: RefCell::new(responses.into()),
+        }
+    }
 }
 
 impl AuthenticatedRpcTransport for RecordingTransport {
@@ -317,7 +561,11 @@ impl AuthenticatedRpcTransport for RecordingTransport {
             method: method.to_owned(),
             params,
         });
-        Ok(self.response.clone())
+        Ok(self
+            .responses
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_else(|| json!({ "messages": [], "has_more": false })))
     }
 }
 
@@ -454,6 +702,48 @@ impl Fixture {
         )
         .unwrap();
     }
+
+    fn store_checkpoint(&self, event_seq: &str) {
+        let mut db = crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        let tx = db.transaction().unwrap();
+        crate::internal::local_state::sync_state::store_global_checkpoint_tx(
+            &tx,
+            "alice-id",
+            "did:example:alice",
+            event_seq,
+            None,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn checkpoint(&self) -> Option<String> {
+        let db = crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+        crate::internal::local_state::sync_state::load_global_checkpoint(&db, "alice-id")
+            .unwrap()
+            .map(|checkpoint| checkpoint.event_seq)
+    }
+
+    fn message_server_seq(&self, msg_id: &str) -> Option<i64> {
+        let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
+        db.query_row(
+            "SELECT server_seq FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    fn message_count(&self, msg_id: &str) -> i64 {
+        let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
 }
 
 fn unique_temp_root(name: &str) -> PathBuf {
@@ -467,4 +757,48 @@ fn unique_temp_root(name: &str) -> PathBuf {
         "im-core-sync-runtime-{name}-{}-{nanos}-{counter}",
         std::process::id()
     ))
+}
+
+fn delta_page(events: Vec<Value>, next_event_seq: &str, has_more: bool) -> Value {
+    json!({
+        "events": events,
+        "next_event_seq": next_event_seq,
+        "has_more": has_more,
+        "snapshot_required": false,
+        "retention_floor_event_seq": "1",
+        "warnings": [],
+    })
+}
+
+fn message_created_event(
+    event_id: &str,
+    event_seq: &str,
+    message_id: &str,
+    server_seq: i64,
+) -> Value {
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": "message.created",
+        "aggregate_kind": "direct_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-06-27T00:00:00Z",
+        "payload": {
+            "thread_kind": "direct",
+            "thread": {
+                "kind": "direct",
+                "peer_did": "did:example:bob"
+            },
+            "message": {
+                "id": message_id,
+                "server_seq": server_seq.to_string(),
+                "sender_did": "did:example:bob",
+                "receiver_did": "did:example:alice",
+                "content_type": "text/plain",
+                "content": "hello from sync.delta",
+                "sent_at": "2026-06-27T00:00:00Z"
+            }
+        }
+    })
 }

@@ -30,6 +30,7 @@ fn realtime_projection_direct_incoming_becomes_message_received() {
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -87,6 +88,7 @@ fn realtime_projection_direct_attachment_like_notification_is_generic_unsupporte
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -180,6 +182,7 @@ fn realtime_attachment_projection_direct_manifest_enriches_message_event() {
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected attachment-enriched message received");
@@ -322,6 +325,7 @@ fn realtime_attachment_projection_missing_manifest_warns_and_keeps_generic_body(
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -376,6 +380,7 @@ fn realtime_attachment_projection_encrypted_manifest_warns_without_enrichment() 
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -426,6 +431,7 @@ fn realtime_projection_group_incoming_becomes_group_message_received() {
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -488,6 +494,7 @@ fn realtime_attachment_projection_group_manifest_enriches_message_event() {
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected attachment-enriched group message received");
@@ -537,6 +544,7 @@ fn realtime_projection_group_state_changed_becomes_group_updated() {
         ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:example:group").unwrap(),
             update_kind: GroupUpdateKind::MemberAdded,
+            sync: None,
         })
     );
 }
@@ -638,6 +646,7 @@ fn realtime_projection_unknown_notification_preserves_type_and_content_type() {
             content_type: Some("application/vnd.awiki.attachment+json".to_string()),
             notification_type: Some("attachment.ready".to_string()),
             reason: "unsupported notification method".to_string(),
+            sync: None,
         })
     );
 }
@@ -662,6 +671,34 @@ fn realtime_projection_missing_required_fields_becomes_unknown_instead_of_panic(
             content_type: Some("text/plain".to_string()),
             notification_type: Some("direct.incoming".to_string()),
             reason: "missing sender or target".to_string(),
+            sync: None,
         })
     );
+}
+
+#[test]
+fn realtime_projection_unknown_notification_preserves_sync_hint_for_delta_recovery() {
+    let projection = project_notification(&json!({
+        "method": "direct.incoming",
+        "params": {
+            "meta": {
+                "content_type": "text/plain",
+                "target": {"did": "did:example:alice"}
+            },
+            "body": {"text": "missing sender"}
+        },
+        "sync": {
+            "event_id": "sev-20",
+            "event_seq": "20",
+            "event_type": "message.created"
+        }
+    }));
+
+    let ImEvent::UnknownNotification(event) = projection.event else {
+        panic!("expected unknown notification");
+    };
+    let sync = event.sync.expect("sync hint should be preserved");
+    assert_eq!(sync.event_seq.as_deref(), Some("20"));
+    assert!(sync.sync_dirty);
+    assert!(!sync.gap_detected);
 }

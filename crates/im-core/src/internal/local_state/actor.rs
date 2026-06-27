@@ -17,6 +17,14 @@ enum LocalStateCommand {
         records: Vec<super::messages::MessageRecord>,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    LoadGlobalCheckpoint {
+        owner_identity_id: String,
+        reply: oneshot::Sender<crate::ImResult<Option<super::sync_state::GlobalCheckpoint>>>,
+    },
+    ApplySyncDelta {
+        input: super::sync_state::SyncDeltaApplyInput,
+        reply: oneshot::Sender<crate::ImResult<super::sync_state::SyncDeltaApplyOutcome>>,
+    },
     UpsertContact {
         record: crate::internal::contact_store::records::ContactRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
@@ -335,6 +343,29 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::StoreMessages { records, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn load_global_checkpoint(
+        &self,
+        owner_identity_id: impl Into<String>,
+    ) -> crate::ImResult<Option<super::sync_state::GlobalCheckpoint>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::LoadGlobalCheckpoint {
+            owner_identity_id: owner_identity_id.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn apply_sync_delta(
+        &self,
+        input: super::sync_state::SyncDeltaApplyInput,
+    ) -> crate::ImResult<super::sync_state::SyncDeltaApplyOutcome> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ApplySyncDelta { input, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -1042,6 +1073,18 @@ fn run_actor(
                 let result = super::messages::upsert_messages(&connection, &records);
                 let _ = reply.send(result);
             }
+            LocalStateCommand::LoadGlobalCheckpoint {
+                owner_identity_id,
+                reply,
+            } => {
+                let result =
+                    super::sync_state::load_global_checkpoint(&connection, &owner_identity_id);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ApplySyncDelta { input, reply } => {
+                let result = apply_sync_delta(&mut connection, input);
+                let _ = reply.send(result);
+            }
             LocalStateCommand::UpsertContact { record, reply } => {
                 let result = crate::internal::contact_store::records::upsert_contact(
                     &mut connection,
@@ -1588,6 +1631,20 @@ fn actor_closed() -> crate::ImError {
     crate::ImError::LocalStateUnavailable {
         detail: "local state actor is closed".to_string(),
     }
+}
+
+fn apply_sync_delta(
+    connection: &mut rusqlite::Connection,
+    input: super::sync_state::SyncDeltaApplyInput,
+) -> crate::ImResult<super::sync_state::SyncDeltaApplyOutcome> {
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+    let result = super::sync_state::apply_sync_delta_tx(&transaction, input)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(result)
 }
 
 fn mark_e2ee_outbox_sent_and_store_message(

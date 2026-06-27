@@ -1346,7 +1346,7 @@ fn credential_name(client: &crate::core::ImClient) -> String {
 }
 
 #[cfg(feature = "sqlite")]
-fn message_record_from_message(
+pub(crate) fn message_record_from_message(
     client: &crate::core::ImClient,
     message: &crate::messages::Message,
 ) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {

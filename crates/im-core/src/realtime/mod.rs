@@ -18,7 +18,7 @@ pub use self::events::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupUpdateKind,
     GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
     LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
-    UnknownNotificationEvent,
+    RealtimeSyncHint, UnknownNotificationEvent,
 };
 #[cfg(feature = "blocking")]
 pub use self::handle::{RealtimeEventReceiver, RealtimeHandle};
@@ -54,8 +54,8 @@ pub use crate::internal::realtime::local_projection::{
 pub use crate::internal::realtime::notification::LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY;
 #[doc(hidden)]
 pub use crate::internal::realtime::projection::{
-    is_direct_secure_wire_notification, project_notification, NotificationProjection,
-    NotificationProjectionRoute,
+    is_direct_secure_wire_notification, project_notification, realtime_sync_gap_detected,
+    sync_hint, sync_hint_with_gap, NotificationProjection, NotificationProjectionRoute,
 };
 #[doc(hidden)]
 pub use crate::internal::realtime::reconnect::{

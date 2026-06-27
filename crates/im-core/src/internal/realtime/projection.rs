@@ -7,7 +7,7 @@ use crate::messages::{
 };
 use crate::realtime::{
     GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
-    LocalNotificationEvent, MessageReceivedEvent, UnknownNotificationEvent,
+    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, UnknownNotificationEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +106,7 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
     };
     NotificationProjection {
         route: NotificationProjectionRoute::DirectIncoming,
-        event: message_received_event(message, attachment_projection),
+        event: message_received_event(message, attachment_projection, sync_hint(notification)),
     }
 }
 
@@ -189,7 +189,7 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
     };
     NotificationProjection {
         route: NotificationProjectionRoute::GroupIncoming,
-        event: message_received_event(message, attachment_projection),
+        event: message_received_event(message, attachment_projection, sync_hint(notification)),
     }
 }
 
@@ -208,6 +208,7 @@ fn project_group_state_changed(notification: &Value) -> NotificationProjection {
         event: ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: parse_group(&group_did),
             update_kind,
+            sync: sync_hint(notification),
         }),
     }
 }
@@ -256,6 +257,7 @@ fn unknown_notification(
             content_type: content_type(notification),
             notification_type: none_if_empty(notification_type.to_string()),
             reason: reason.to_string(),
+            sync: sync_hint(notification),
         }),
     }
 }
@@ -265,6 +267,7 @@ fn message_received_event(
     attachment_projection: Option<
         crate::internal::realtime::attachment_projection::AttachmentProjection,
     >,
+    sync: Option<RealtimeSyncHint>,
 ) -> ImEvent {
     let (attachment_summary, download_action, warnings) =
         if let Some(attachment) = attachment_projection {
@@ -280,8 +283,56 @@ fn message_received_event(
         message,
         attachment_summary,
         download_action,
+        sync,
         warnings,
     })
+}
+
+pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
+    let sync = map_value(notification.get("sync"))?;
+    let event_id = string_from_object(Some(sync), "event_id");
+    let event_seq = decimal_event_seq_value(value_from_object(Some(sync), "event_seq"));
+    let event_type = string_from_object(Some(sync), "event_type");
+    if event_id.is_empty() && event_seq.is_none() && event_type.is_empty() {
+        return None;
+    }
+    Some(RealtimeSyncHint {
+        event_id: none_if_empty(event_id),
+        event_seq,
+        event_type: none_if_empty(event_type),
+        sync_dirty: true,
+        gap_detected: false,
+    })
+}
+
+pub fn sync_hint_with_gap(
+    notification: &Value,
+    previous_event_seq: Option<&str>,
+) -> Option<RealtimeSyncHint> {
+    let mut hint = sync_hint(notification)?;
+    hint.gap_detected = realtime_sync_gap_detected(previous_event_seq, hint.event_seq.as_deref());
+    Some(hint)
+}
+
+pub fn realtime_sync_gap_detected(
+    previous_event_seq: Option<&str>,
+    event_seq: Option<&str>,
+) -> bool {
+    let Some(event_seq) = event_seq else {
+        return true;
+    };
+    let Ok(current) = crate::internal::local_state::sync_state::parse_decimal_seq(event_seq) else {
+        return true;
+    };
+    let Some(previous_event_seq) = previous_event_seq else {
+        return false;
+    };
+    let Ok(previous) =
+        crate::internal::local_state::sync_state::parse_decimal_seq(previous_event_seq)
+    else {
+        return true;
+    };
+    current > previous.saturating_add(1)
 }
 
 fn message_body_view(content_type: &str, body: Option<&Map<String, Value>>) -> MessageBodyView {
@@ -444,6 +495,16 @@ fn string_like_value(value: Option<&Value>) -> String {
             }
         }
         _ => String::new(),
+    }
+}
+
+fn decimal_event_seq_value(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => {
+            crate::internal::local_state::sync_state::normalize_decimal_seq(value).ok()
+        }
+        Some(Value::Number(number)) => number.as_u64().map(|value| value.to_string()),
+        _ => None,
     }
 }
 

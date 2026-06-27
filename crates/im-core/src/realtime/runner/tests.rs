@@ -78,6 +78,90 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
 }
 
 #[test]
+fn realtime_sync_hint_parses_dirty_and_gap_without_checkpoint_owner_logic() {
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": "direct.incoming",
+        "params": {
+            "meta": {
+                "sender_did": "did:example:bob",
+                "target": {"kind": "agent", "did": "did:example:alice"},
+                "message_id": "msg-sync-hint",
+                "content_type": "text/plain"
+            },
+            "body": {"text": "hint"}
+        },
+        "sync": {
+            "event_id": "sev-12",
+            "event_seq": "12",
+            "event_type": "message.created"
+        }
+    });
+
+    let hint = crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("10"))
+        .unwrap();
+
+    assert_eq!(hint.event_id.as_deref(), Some("sev-12"));
+    assert_eq!(hint.event_seq.as_deref(), Some("12"));
+    assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+    assert!(hint.sync_dirty);
+    assert!(hint.gap_detected);
+    assert!(
+        crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("11"))
+            .unwrap()
+            .sync_dirty
+    );
+    assert!(
+        !crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("11"))
+            .unwrap()
+            .gap_detected
+    );
+}
+
+#[test]
+fn realtime_sync_hint_ignores_non_integral_event_seq() {
+    let notification = json!({
+        "method": "direct.incoming",
+        "sync": {
+            "event_id": "sev-float",
+            "event_seq": 12.5,
+            "event_type": "message.created"
+        }
+    });
+
+    let hint = crate::internal::realtime::projection::sync_hint_with_gap(&notification, Some("11"))
+        .unwrap();
+
+    assert_eq!(hint.event_id.as_deref(), Some("sev-float"));
+    assert_eq!(hint.event_seq, None);
+    assert!(hint.gap_detected);
+}
+
+#[test]
+#[cfg(feature = "blocking")]
+fn realtime_gap_hint_projection_does_not_write_sync_checkpoint() {
+    let fixture = TestClientFixture::new("realtime-no-checkpoint");
+    let client = fixture.client();
+    let mut projector = LocalStateRealtimeNotificationProjector {
+        client: &client,
+        inner: FixedProjector {
+            event: Some(super::super::ImEvent::MessageReceived(
+                direct_message_event_with_sync(client.did().as_str(), true),
+            )),
+        },
+    };
+
+    let outcome = projector.project(json!({"method": "test.direct"}));
+
+    assert!(outcome.warnings.is_empty());
+    let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+    let checkpoint =
+        crate::internal::local_state::sync_state::load_global_checkpoint(&connection, "alice")
+            .unwrap();
+    assert!(checkpoint.is_none());
+}
+
+#[test]
 #[cfg(feature = "blocking")]
 fn realtime_local_state_projector_stores_group_update() {
     let fixture = TestClientFixture::new("group");
@@ -89,6 +173,7 @@ fn realtime_local_state_projector_stores_group_update() {
                 super::super::GroupUpdatedEvent {
                     group: crate::ids::GroupRef::parse("did:example:group:blue").unwrap(),
                     update_kind: super::super::GroupUpdateKind::Updated,
+                    sync: None,
                 },
             )),
         },
@@ -1024,6 +1109,13 @@ fn group_e2ee_realtime_notification(
 }
 
 fn direct_message_event(owner_did: &str) -> super::super::MessageReceivedEvent {
+    direct_message_event_with_sync(owner_did, false)
+}
+
+fn direct_message_event_with_sync(
+    owner_did: &str,
+    include_sync: bool,
+) -> super::super::MessageReceivedEvent {
     let sender = crate::ids::PeerRef::parse("did:example:bob", "awiki.info").unwrap();
     let receiver = crate::ids::PeerRef::parse(owner_did, "awiki.info").unwrap();
     super::super::MessageReceivedEvent {
@@ -1047,6 +1139,13 @@ fn direct_message_event(owner_did: &str) -> super::super::MessageReceivedEvent {
         },
         attachment_summary: None,
         download_action: None,
+        sync: include_sync.then(|| super::super::RealtimeSyncHint {
+            event_id: Some("sev-99".to_owned()),
+            event_seq: Some("99".to_owned()),
+            event_type: Some("message.created".to_owned()),
+            sync_dirty: true,
+            gap_detected: true,
+        }),
         warnings: Vec::new(),
     }
 }

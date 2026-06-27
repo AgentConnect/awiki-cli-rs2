@@ -6,6 +6,29 @@ const GLOBAL_SCOPE: &str = "global";
 #[cfg(feature = "sqlite")]
 const EVENT_SEQ_CHECKPOINT: &str = "event_seq";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncDeltaApplyInput {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) events: Vec<SyncDeltaApplyEvent>,
+    pub(crate) next_event_seq: String,
+    pub(crate) metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SyncDeltaApplyEvent {
+    pub(crate) event_id: String,
+    pub(crate) event_seq: String,
+    pub(crate) messages: Vec<super::messages::MessageRecord>,
+    pub(crate) groups: Vec<super::groups::GroupRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncDeltaApplyOutcome {
+    pub(crate) applied_events: usize,
+    pub(crate) last_applied_event_seq: String,
+}
+
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GlobalCheckpoint {
@@ -98,6 +121,93 @@ DO UPDATE SET
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) fn apply_sync_delta_tx(
+    transaction: &Transaction<'_>,
+    input: SyncDeltaApplyInput,
+) -> crate::ImResult<SyncDeltaApplyOutcome> {
+    crate::internal::local_state::schema::ensure_schema(transaction)?;
+    let owner_identity_id = required("owner_identity_id", &input.owner_identity_id)?;
+    let owner_did = required("owner_did", &input.owner_did)?;
+    let current_checkpoint = load_global_checkpoint(transaction, &owner_identity_id)?
+        .map(|checkpoint| checkpoint.event_seq)
+        .unwrap_or_else(|| "0".to_owned());
+    let current_seq = parse_decimal_seq(&current_checkpoint)?;
+    let next_event_seq = normalize_decimal_seq(&input.next_event_seq)
+        .map_err(|_| invalid_page("next_event_seq must be a decimal string"))?;
+    let next_seq = parse_decimal_seq(&next_event_seq)?;
+    if next_seq < current_seq {
+        return Err(invalid_page("next_event_seq is behind local checkpoint"));
+    }
+
+    let mut new_events = Vec::new();
+    for event in input.events {
+        let event_seq = normalize_decimal_seq(&event.event_seq)
+            .map_err(|_| invalid_page("event_seq must be a decimal string"))?;
+        let event_seq_num = parse_decimal_seq(&event_seq)?;
+        if event_seq_num <= current_seq {
+            continue;
+        }
+        new_events.push((event_seq_num, event_seq, event));
+    }
+    new_events.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.2.event_id.cmp(&right.2.event_id))
+    });
+
+    let mut expected = current_seq.saturating_add(1);
+    let mut previous_seq = None;
+    for (seq_num, _, _) in &new_events {
+        if previous_seq == Some(*seq_num) {
+            return Err(invalid_page("sync.delta page contains duplicate event_seq"));
+        }
+        if *seq_num != expected {
+            return Err(invalid_page("sync.delta page has an event_seq gap"));
+        }
+        previous_seq = Some(*seq_num);
+        expected = expected.saturating_add(1);
+    }
+
+    let last_new_seq = new_events
+        .last()
+        .map(|(seq_num, _, _)| *seq_num)
+        .unwrap_or(current_seq);
+    if next_seq != last_new_seq {
+        return Err(invalid_page(
+            "next_event_seq must equal the last applied event_seq",
+        ));
+    }
+
+    let mut messages = Vec::new();
+    let mut groups = Vec::new();
+    for (_, _, event) in new_events {
+        messages.extend(event.messages);
+        groups.extend(event.groups);
+    }
+    if !messages.is_empty() {
+        super::messages::upsert_messages(transaction, &messages)?;
+    }
+    for group in groups {
+        super::groups::upsert_group(transaction, group)?;
+    }
+
+    if next_seq > current_seq {
+        store_global_checkpoint_tx(
+            transaction,
+            &owner_identity_id,
+            &owner_did,
+            &next_event_seq,
+            input.metadata_json.as_deref(),
+        )?;
+    }
+
+    Ok(SyncDeltaApplyOutcome {
+        applied_events: usize::try_from(next_seq - current_seq).unwrap_or(usize::MAX),
+        last_applied_event_seq: next_event_seq,
+    })
+}
+
 pub(crate) fn parse_decimal_seq(value: &str) -> crate::ImResult<u64> {
     let value = value.trim();
     if value.is_empty() {
@@ -125,6 +235,15 @@ fn decimal_seq_error(value: &str) -> crate::ImError {
         Some("event_seq".to_owned()),
         format!("sequence must be a non-negative decimal string: {value:?}"),
     )
+}
+
+#[cfg(feature = "sqlite")]
+fn invalid_page(message: impl Into<String>) -> crate::ImError {
+    crate::ImError::Service {
+        status_code: None,
+        code: Some("sync.invalid_page".to_owned()),
+        message: message.into(),
+    }
 }
 
 #[cfg(feature = "sqlite")]

@@ -131,6 +131,7 @@ fn realtime_event_dtos_do_not_require_raw_websocket_frames() {
         message_id,
         thread,
         update_kind: MessageUpdateKind::Read,
+        sync: None,
     });
     assert!(matches!(
         updated,
@@ -144,6 +145,7 @@ fn realtime_event_dtos_do_not_require_raw_websocket_frames() {
         content_type: Some("application/octet-stream".to_string()),
         notification_type: Some("attachment".to_string()),
         reason: "unsupported body".to_string(),
+        sync: None,
     });
     assert!(matches!(
         unknown,
