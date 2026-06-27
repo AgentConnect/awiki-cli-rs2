@@ -342,6 +342,11 @@ impl MessageService<'_> {
     pub fn send(&self, request: SendMessageRequest) -> ImResult<SendMessageResult>;
     pub fn inbox(&self, query: InboxQuery) -> ImResult<Page<Message>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
+    pub fn sync_delta(&self, request: SyncDeltaRequest) -> ImResult<SyncDeltaResult>;
+    pub fn sync_thread_after(
+        &self,
+        request: SyncThreadAfterRequest,
+    ) -> ImResult<SyncThreadAfterResult>;
 }
 ```
 
@@ -353,6 +358,17 @@ impl MessageService<'_> {
     pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
 }
 ```
+
+Reliable sync 补充：
+
+- `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
+  checkpoint 注入，调用方不能传入或推进。
+- `sync_thread_after` 是 thread-local 补新入口，使用 `after_server_seq`，不读写账号级
+  checkpoint。
+- Public API 不得暴露 `loadGlobalCheckpoint`、`storeGlobalCheckpoint`、SQLite helper、
+  raw `sync.delta` wire params 或手动 checkpoint advance。
+- Realtime sync hint 只作为只读事件元数据进入 event stream，用于调度 `sync_delta`，
+  不推进 checkpoint。
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 

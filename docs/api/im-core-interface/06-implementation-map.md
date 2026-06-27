@@ -68,6 +68,8 @@ im-core public API exposes current SendRequest / InboxRequest / RPC params
 | `messages().send(Group + Text)` | current group send | P1 只面向已有 `GroupRef`，不做 group lifecycle。 |
 | `messages().inbox()` | current inbox | P1 返回 `Page<Message>`，不返回默认 raw JSON payload。 |
 | `messages().history()` | current history | direct/group history 统一成 `ThreadRef`。 |
+| `messages().sync_delta()` | message-service `sync.delta` + local SQLite apply | `since_event_seq` 和 checkpoint 只在 `im-core` 内部；不得由 CLI/App 传入。 |
+| `messages().sync_thread_after()` | message-service `sync.thread_after` | thread-local 补新；不得直接返回本地合并的 `history_async` page。 |
 
 ## 4. 现有低层 re-export 收紧目标
 
@@ -78,11 +80,14 @@ build_direct_send_rpc_params
 build_group_send_rpc_params
 build_inbox_rpc_params
 build_history_rpc_params
+build_sync_delta_rpc_params
+build_sync_thread_after_rpc_params
 build_group_*_rpc_params
 build_secure_*_payload
 secure outbox flush internals
 attachment slot/commit/ticket helpers
 SQLite store helpers
+sync checkpoint load/store helpers
 raw wire payload
 ```
 

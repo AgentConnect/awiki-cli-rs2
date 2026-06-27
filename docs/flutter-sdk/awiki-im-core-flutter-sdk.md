@@ -87,6 +87,66 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 Both APIs are async `Future<MessagePage>` methods. Apps must not bypass the SDK or read SQLite directly.
 
+## Reliable message sync
+
+Reliable sync is exposed as high-level async message APIs. The Dart SDK must not expose
+SQLite, WebSocket frames, `since_event_seq`, `next_event_seq`, or checkpoint
+load/store primitives.
+
+Expected public shape:
+
+```dart
+final delta = await client.messages.syncDelta(
+  const SyncDeltaRequest(
+    limit: 100,
+    reason: SyncReason.appResumed,
+  ),
+);
+
+final page = await client.messages.syncThreadAfter(
+  SyncThreadAfterRequest(
+    thread: const MessageThreadRef.direct('did:wba:example.com:user:e1_bob'),
+    afterServerSeq: '991',
+    limit: 100,
+  ),
+);
+```
+
+`syncDelta` semantics:
+
+- Rust `im-core` reads the current global message checkpoint from local SQLite.
+- Rust `im-core` sends `sync.delta` to the home message service and injects
+  `since_event_seq` internally.
+- Rust `im-core` applies all returned events and advances the checkpoint only after
+  the local apply transaction succeeds.
+- If the service returns `snapshot_required=true`, the SDK returns a failed-closed
+  result: no checkpoint advance, no local projection wipe, and diagnostic fields for
+  the App to surface a degraded sync state.
+- Dart callers can choose `limit` and `reason`; they cannot choose or store the
+  reliable checkpoint.
+
+`syncThreadAfter` semantics:
+
+- It is a thread-local freshness API for direct/group chat surfaces.
+- `afterServerSeq` is a thread-local message sequence, not the account-level
+  `event_seq`.
+- It does not read or advance the reliable global checkpoint.
+- The returned page must contain only `server_seq > afterServerSeq` messages in
+  ascending `server_seq` order.
+
+Realtime integration:
+
+- Realtime events may include a readonly `RealtimeSyncHint` with `eventId`,
+  `eventSeq`, and `eventType`.
+- App code may use the hint to schedule `syncDelta` after duplicate/gap/dirty
+  detection.
+- Receiving a realtime hint or successfully projecting a realtime notification must
+  not advance the reliable checkpoint.
+
+The SDK must not add public APIs named `loadGlobalCheckpoint`, `storeGlobalCheckpoint`,
+`setGlobalCheckpoint`, or equivalents. Any checkpoint inspection needed for debugging
+must stay behind internal diagnostics or test-only interfaces.
+
 ## Message payloads and ANP P9 mentions
 
 `SendPayloadRequest.payloadJson` accepts any JSON object up to the SDK payload

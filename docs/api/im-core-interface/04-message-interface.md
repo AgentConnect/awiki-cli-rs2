@@ -37,6 +37,13 @@ impl MessageService<'_> {
         &self,
         request: MarkThreadReadRequest,
     ) -> crate::ImResult<MarkThreadReadResult>;
+
+    pub fn sync_delta(&self, request: SyncDeltaRequest) -> crate::ImResult<SyncDeltaResult>;
+
+    pub fn sync_thread_after(
+        &self,
+        request: SyncThreadAfterRequest,
+    ) -> crate::ImResult<SyncThreadAfterResult>;
 }
 ```
 
@@ -443,7 +450,92 @@ P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 Step 04 引入 `conversation_summaries` 后，thread mark-read 还需要同步维护 summary
 unread 字段；本方法的 public 契约不需要因此变化。
 
-### 5.2 Delegated Inbox / History Optional 扩展
+### 5.2 Reliable Sync API
+
+Reliable sync 是 `im-core` 内部拥有 checkpoint 的高层能力。服务端 wire contract 以
+`message-service/docs/api/ANP-client-server-api-sync.md` 为准；本节定义 Rust public
+interface 对 App/CLI/facade 的暴露形态。
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SyncDeltaRequest {
+    pub limit: Option<u32>,
+    pub reason: Option<SyncReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncReason {
+    Startup,
+    AppResumed,
+    Reconnect,
+    RealtimeGap,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncDeltaResult {
+    pub applied_event_count: u32,
+    pub checkpoint_event_seq: Option<String>,
+    pub has_more: bool,
+    pub snapshot_required: bool,
+    pub retention_floor_event_seq: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncThreadAfterRequest {
+    pub thread: ThreadRef,
+    pub after_server_seq: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncThreadAfterResult {
+    pub messages: Vec<Message>,
+    pub next_after_server_seq: Option<String>,
+    pub has_more: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealtimeSyncHint {
+    pub event_id: String,
+    pub event_seq: String,
+    pub event_type: String,
+}
+```
+
+`sync_delta(request)` 行为：
+
+1. 从本地 SQLite `sync_state` 读取当前 owner 的 checkpoint。
+2. 调用服务端 `sync.delta`，wire request 中的 `since_event_seq` 只能由 Rust runtime
+   注入，public API 调用方不能传入。
+3. 在同一个本地 SQLite transaction 中 apply 所有事件、更新 conversation/message
+   projection，并在 apply 成功后写入 `next_event_seq` checkpoint。
+4. 当服务端返回 `snapshot_required=true` 时 fail-closed：不推进 checkpoint、不清空本地
+   projection，返回 `snapshot_required=true` 和诊断字段。
+5. `has_more=true` 时可由 runtime 或上层 coordinator 继续调度下一页，但每页仍必须走
+   apply + checkpoint transaction。
+
+`sync_thread_after(request)` 行为：
+
+1. 使用 `ThreadRef` 和本地 thread max `server_seq` 或调用方传入的 `after_server_seq`
+   生成服务端 `sync.thread_after`。
+2. 返回并应用 `server_seq > after_server_seq` 的升序消息。
+3. 不读取或写入账号级 checkpoint。
+4. 不得直接返回 `history_async` 的本地合并 page；必要时使用 raw remote history path 并
+   严格过滤。
+
+checkpoint 边界：
+
+- `sync_state`、checkpoint load/store、`since_event_seq` 注入、`next_event_seq` 推进只在
+  `im-core` Rust/SQLite 内部。
+- Public Rust、Dart、Flutter、App API 不暴露 `loadGlobalCheckpoint`、
+  `storeGlobalCheckpoint`、手动 `since_event_seq` 或手动 checkpoint advance。
+- Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
+  realtime projection 成功，也不得推进 checkpoint。
+
+### 5.3 Delegated Inbox / History Optional 扩展
 
 `InboxHistoryOptions` 是 Step 02 新增的 optional 参数，供 Daemon 使用 `user_did#daemon-key-1` 证明自己有权读取用户普通 inbox/history。调用方不传 `inbox_history_options` 时，SDK 继续走当前 identity/session 默认 inbox/history 读取逻辑，老调用行为不变。
 
