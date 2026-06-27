@@ -1,3 +1,7 @@
+use crate::messages::{
+    ConversationSnapshotItem, ConversationSnapshotMessage, ConversationSnapshotMessageBody,
+};
+
 pub(crate) struct MessageConversationRuntime<'a> {
     client: &'a crate::core::ImClient,
 }
@@ -19,6 +23,7 @@ impl<'a> MessageConversationRuntime<'a> {
             .into_iter()
             .map(|record| conversation_from_record(self.client.did().as_str(), record))
             .collect::<crate::ImResult<Vec<_>>>()?;
+        save_snapshot_best_effort(self.client, &query, &items);
         Ok(crate::ids::Page {
             items,
             next_cursor: None,
@@ -38,6 +43,7 @@ impl<'a> MessageConversationRuntime<'a> {
             .into_iter()
             .map(|record| conversation_from_record(self.client.did().as_str(), record))
             .collect::<crate::ImResult<Vec<_>>>()?;
+        save_snapshot_best_effort(self.client, &query, &items);
         Ok(crate::ids::Page {
             items,
             next_cursor: None,
@@ -60,6 +66,145 @@ fn list_conversation_records(
         client.did().as_str(),
         query,
     )
+}
+
+fn save_snapshot_best_effort(
+    client: &crate::core::ImClient,
+    query: &crate::messages::ConversationQuery,
+    conversations: &[crate::messages::Conversation],
+) {
+    if !should_update_conversation_snapshot(query) {
+        return;
+    }
+    let items = conversations
+        .iter()
+        .map(snapshot_item_from_conversation)
+        .collect::<Vec<_>>();
+    let _ = crate::internal::snapshot::conversation_snapshot::save_for_client(client, items);
+}
+
+fn should_update_conversation_snapshot(query: &crate::messages::ConversationQuery) -> bool {
+    query.include_groups && query.include_direct && !query.unread_only
+}
+
+fn snapshot_item_from_conversation(
+    conversation: &crate::messages::Conversation,
+) -> ConversationSnapshotItem {
+    let (thread_kind, thread_id) = thread_ref_parts(&conversation.thread);
+    ConversationSnapshotItem {
+        thread_kind,
+        thread_id,
+        participants: conversation
+            .participants
+            .iter()
+            .map(|peer| peer.as_str().to_owned())
+            .collect(),
+        last_message: conversation.last_message.as_ref().map(snapshot_message),
+        unread_count: conversation.unread_count,
+        unread_mention_count: conversation.unread_mention_count,
+        first_unread_mention_message_id: conversation
+            .first_unread_mention_message_id
+            .as_ref()
+            .map(|message_id| message_id.as_str().to_owned()),
+        message_count: conversation.message_count,
+        last_message_at: conversation.last_message_at.clone(),
+    }
+}
+
+fn snapshot_message(message: &crate::messages::Message) -> ConversationSnapshotMessage {
+    let (thread_kind, thread_id) = thread_ref_parts(&message.thread);
+    ConversationSnapshotMessage {
+        id: message.id.as_str().to_owned(),
+        thread_kind,
+        thread_id,
+        direction: message_direction_name(&message.direction).to_owned(),
+        sender: message.sender.as_str().to_owned(),
+        receiver: message
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.as_str().to_owned()),
+        group: message
+            .group
+            .as_ref()
+            .map(|group| group.as_str().to_owned()),
+        body: snapshot_body(&message.body),
+        sent_at: message.sent_at.clone(),
+        received_at: message.received_at.clone(),
+        server_sequence: message.metadata.server_sequence,
+        content_type: message.metadata.content_type.clone(),
+        attributes: snapshot_attributes(&message.metadata.attributes),
+    }
+}
+
+fn snapshot_body(body: &crate::messages::MessageBodyView) -> ConversationSnapshotMessageBody {
+    match body {
+        crate::messages::MessageBodyView::Text { text, kind } => ConversationSnapshotMessageBody {
+            text: Some(text.clone()),
+            kind: Some(message_kind_to_string(kind).to_owned()),
+            payload_json: None,
+            unsupported_content_type: None,
+        },
+        crate::messages::MessageBodyView::Payload { payload } => ConversationSnapshotMessageBody {
+            text: None,
+            kind: Some("payload".to_owned()),
+            payload_json: Some(payload.to_string()),
+            unsupported_content_type: None,
+        },
+        crate::messages::MessageBodyView::Unsupported { content_type } => {
+            ConversationSnapshotMessageBody {
+                text: None,
+                kind: None,
+                payload_json: None,
+                unsupported_content_type: content_type.clone(),
+            }
+        }
+    }
+}
+
+fn message_kind_to_string(kind: &crate::messages::MessageKind) -> &'static str {
+    match kind {
+        crate::messages::MessageKind::Text => "text",
+        crate::messages::MessageKind::Markdown => "markdown",
+    }
+}
+
+fn snapshot_attributes(
+    attributes: &[crate::messages::MessageMetadataAttribute],
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    attributes
+        .iter()
+        .filter(|attribute| is_snapshot_attribute(attribute.key.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn is_snapshot_attribute(key: &str) -> bool {
+    matches!(
+        key,
+        "peer_user_id"
+            | "peer_full_handle"
+            | "peer_current_did"
+            | "resolved_target_did"
+            | "target_handle"
+    )
+}
+
+fn thread_ref_parts(thread: &crate::messages::ThreadRef) -> (String, String) {
+    match thread {
+        crate::messages::ThreadRef::Direct(peer) => ("direct".to_owned(), peer.as_str().to_owned()),
+        crate::messages::ThreadRef::Group(group) => ("group".to_owned(), group.as_str().to_owned()),
+        crate::messages::ThreadRef::Thread(thread_id) => {
+            ("thread".to_owned(), thread_id.as_str().to_owned())
+        }
+    }
+}
+
+fn message_direction_name(direction: &crate::messages::MessageDirection) -> &'static str {
+    match direction {
+        crate::messages::MessageDirection::Outgoing => "outgoing",
+        crate::messages::MessageDirection::Incoming => "incoming",
+        crate::messages::MessageDirection::Unknown => "unknown",
+    }
 }
 
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
@@ -644,6 +789,7 @@ mod tests {
             1,
             "failed outgoing",
             "2026-05-21T00:00:05Z",
+            true,
             r#"{"delivery_state":"failed","operation_id":"op-failed","failure_reason":"timeout"}"#,
         );
 
@@ -780,6 +926,144 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conversation_query_saves_core_only_snapshot_from_committed_projection() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message_with_metadata(
+            &client,
+            "msg-snapshot",
+            0,
+            "snapshot hello",
+            "2026-05-21T00:00:03Z",
+            false,
+            r#"{
+              "peer_user_id":"user-bob",
+              "peer_full_handle":"bob.awiki.test",
+              "displayName":"Bob Product",
+              "avatarUri":"https://example.test/avatar.png",
+              "pinned":"true",
+              "muted":"true",
+              "hidden":"true",
+              "peerLifecycleState":"deletedAgent"
+            }"#,
+        );
+
+        let page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+
+        let snapshot = crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.owner_identity_id, "alice-id");
+        assert_eq!(snapshot.owner_did, client.did().as_str());
+        assert_eq!(snapshot.items.len(), 1);
+        let item = &snapshot.items[0];
+        assert_eq!(item.thread_kind, "thread");
+        assert!(item.thread_id.starts_with("dm:peer-scope:v1:"));
+        assert_eq!(item.unread_count, 1);
+        assert_eq!(
+            item.last_message.as_ref().unwrap().body.text.as_deref(),
+            Some("snapshot hello")
+        );
+        assert_eq!(
+            item.last_message.as_ref().unwrap().body.kind.as_deref(),
+            Some("text")
+        );
+        let attributes = &item.last_message.as_ref().unwrap().attributes;
+        assert!(attributes
+            .iter()
+            .any(|attribute| attribute.key == "peer_full_handle"));
+        assert!(!attributes
+            .iter()
+            .any(|attribute| attribute.key == "displayName"));
+        assert!(!attributes
+            .iter()
+            .any(|attribute| attribute.key == "avatarUri"));
+        assert!(!attributes.iter().any(|attribute| attribute.key == "pinned"));
+        assert!(!attributes.iter().any(|attribute| attribute.key == "muted"));
+        assert!(!attributes.iter().any(|attribute| attribute.key == "hidden"));
+        assert!(!attributes
+            .iter()
+            .any(|attribute| attribute.key == "peerLifecycleState"));
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(!json.contains("displayName"));
+        assert!(!json.contains("avatarUri"));
+        assert!(!json.contains("pinned"));
+        assert!(!json.contains("muted"));
+        assert!(!json.contains("hidden"));
+        assert!(!json.contains("peerLifecycleState"));
+    }
+
+    #[test]
+    fn filtered_conversation_query_does_not_overwrite_full_snapshot() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message(
+            &client,
+            "direct-snapshot",
+            "",
+            0,
+            "direct",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        fixture.seed_message(
+            &client,
+            "group-snapshot",
+            "did:example:group-1",
+            0,
+            "group",
+            "2026-05-21T00:00:04Z",
+            0,
+        );
+
+        let full_page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+        assert_eq!(full_page.items.len(), 2);
+
+        let snapshot = crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.items.len(), 2);
+
+        let unread_groups_page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: false,
+                unread_only: true,
+            })
+            .unwrap();
+        assert_eq!(unread_groups_page.items.len(), 1);
+
+        let snapshot = crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.items.len(), 2);
+        assert!(snapshot
+            .items
+            .iter()
+            .any(|item| item.thread_kind == "direct"));
+        assert!(snapshot
+            .items
+            .iter()
+            .any(|item| item.thread_kind == "group"));
+    }
+
     struct Fixture {
         root: PathBuf,
     }
@@ -903,6 +1187,7 @@ mod tests {
             direction: i64,
             content: &str,
             sent_at: &str,
+            is_read: bool,
             metadata: &str,
         ) {
             let connection = crate::internal::local_state::open_writable(
@@ -929,7 +1214,7 @@ mod tests {
                     content: content.to_owned(),
                     sent_at: sent_at.to_owned(),
                     stored_at: sent_at.to_owned(),
-                    is_read: true,
+                    is_read,
                     metadata: metadata.to_owned(),
                     ..crate::internal::local_state::messages::MessageRecord::default()
                 },

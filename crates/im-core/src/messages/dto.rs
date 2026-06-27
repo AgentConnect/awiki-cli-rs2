@@ -335,6 +335,72 @@ pub struct SyncDeltaResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationListSnapshot {
+    pub format_version: u32,
+    pub im_schema_version: i64,
+    pub owner_identity_id: String,
+    pub owner_did: String,
+    pub generated_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_version: Option<String>,
+    pub unread_total: u32,
+    pub items: Vec<ConversationSnapshotItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationSnapshotItem {
+    pub thread_kind: String,
+    pub thread_id: String,
+    pub participants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<ConversationSnapshotMessage>,
+    pub unread_count: u32,
+    #[serde(default)]
+    pub unread_mention_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_unread_mention_message_id: Option<String>,
+    pub message_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationSnapshotMessage {
+    pub id: String,
+    pub thread_kind: String,
+    pub thread_id: String,
+    pub direction: String,
+    pub sender: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    pub body: ConversationSnapshotMessageBody,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_sequence: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub attributes: Vec<MessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationSnapshotMessageBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported_content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub thread: ThreadRef,
     pub title: Option<String>,

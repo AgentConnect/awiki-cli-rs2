@@ -18,7 +18,9 @@ use crate::dto::{
         DartIdentitySummary, DartRecoverHandleResult,
     },
     message::{
-        DartConversation, DartConversationPage, DartMarkReadResult, DartMarkThreadReadResult,
+        DartConversation, DartConversationListSnapshot, DartConversationPage,
+        DartConversationSnapshotItem, DartConversationSnapshotMessage,
+        DartConversationSnapshotMessageBody, DartMarkReadResult, DartMarkThreadReadResult,
         DartMessage, DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
         DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult, DartSyncDeltaResult,
         DartSyncThreadAfterResult,
@@ -612,6 +614,70 @@ impl From<im_core::ids::Page<im_core::messages::Conversation>> for DartConversat
             items: value.items.into_iter().map(Into::into).collect(),
             next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_string()),
             has_more: value.has_more,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationListSnapshot> for DartConversationListSnapshot {
+    fn from(value: im_core::messages::ConversationListSnapshot) -> Self {
+        Self {
+            format_version: value.format_version,
+            im_schema_version: value.im_schema_version,
+            owner_identity_id: value.owner_identity_id,
+            owner_did: value.owner_did,
+            generated_at_ms: value.generated_at_ms,
+            summary_version: value.summary_version,
+            unread_total: value.unread_total,
+            items: value.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnapshotItem {
+    fn from(value: im_core::messages::ConversationSnapshotItem) -> Self {
+        Self {
+            thread_kind: value.thread_kind,
+            thread_id: value.thread_id,
+            participants: value.participants,
+            last_message: value.last_message.map(Into::into),
+            unread_count: value.unread_count,
+            unread_mention_count: value.unread_mention_count,
+            first_unread_mention_message_id: value.first_unread_mention_message_id,
+            message_count: value.message_count,
+            last_message_at: value.last_message_at,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationSnapshotMessage> for DartConversationSnapshotMessage {
+    fn from(value: im_core::messages::ConversationSnapshotMessage) -> Self {
+        Self {
+            id: value.id,
+            thread_kind: value.thread_kind,
+            thread_id: value.thread_id,
+            direction: value.direction,
+            sender: value.sender,
+            receiver: value.receiver,
+            group: value.group,
+            body: value.body.into(),
+            sent_at: value.sent_at,
+            received_at: value.received_at,
+            server_sequence: value.server_sequence,
+            content_type: value.content_type,
+            attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationSnapshotMessageBody>
+    for DartConversationSnapshotMessageBody
+{
+    fn from(value: im_core::messages::ConversationSnapshotMessageBody) -> Self {
+        Self {
+            text: value.text,
+            kind: value.kind,
+            payload_json: value.payload_json,
+            unsupported_content_type: value.unsupported_content_type,
         }
     }
 }

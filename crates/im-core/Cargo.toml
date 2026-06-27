@@ -31,6 +31,7 @@ ed25519-dalek.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
+redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

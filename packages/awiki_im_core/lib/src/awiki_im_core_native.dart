@@ -634,6 +634,21 @@ class MessageApi {
     return page._toModel();
   }
 
+  Future<ConversationListSnapshot?> loadConversationSnapshot() async {
+    _client._ensureNotDisposed();
+    final snapshot = await _mapNativeErrors(
+      () => gen_messages.loadConversationSnapshot(client: _client._inner),
+    );
+    return snapshot?._toModel();
+  }
+
+  Future<void> clearConversationSnapshot() async {
+    _client._ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_messages.clearConversationSnapshot(client: _client._inner),
+    );
+  }
+
   Future<SendMessageResult> retryMessage(String messageId) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -1852,6 +1867,60 @@ extension on gen_message.DartConversationPage {
     items: items.map((conversation) => conversation._toModel()).toList(),
     nextCursor: nextCursor,
     hasMore: hasMore,
+  );
+}
+
+extension on gen_message.DartConversationListSnapshot {
+  ConversationListSnapshot _toModel() => ConversationListSnapshot(
+    formatVersion: formatVersion,
+    imSchemaVersion: imSchemaVersion.toInt(),
+    ownerIdentityId: ownerIdentityId,
+    ownerDid: ownerDid,
+    generatedAtMs: generatedAtMs.toInt(),
+    summaryVersion: summaryVersion,
+    unreadTotal: unreadTotal,
+    items: items.map((item) => item._toModel()).toList(),
+  );
+}
+
+extension on gen_message.DartConversationSnapshotItem {
+  ConversationSnapshotItem _toModel() => ConversationSnapshotItem(
+    threadKind: threadKind,
+    threadId: threadId,
+    participants: participants,
+    lastMessage: lastMessage?._toModel(),
+    unreadCount: unreadCount,
+    unreadMentionCount: unreadMentionCount,
+    firstUnreadMentionMessageId: firstUnreadMentionMessageId,
+    messageCount: messageCount,
+    lastMessageAt: lastMessageAt,
+  );
+}
+
+extension on gen_message.DartConversationSnapshotMessage {
+  ConversationSnapshotMessage _toModel() => ConversationSnapshotMessage(
+    id: id,
+    threadKind: threadKind,
+    threadId: threadId,
+    direction: direction,
+    sender: sender,
+    receiver: receiver,
+    group: group,
+    body: body._toModel(),
+    sentAt: sentAt,
+    receivedAt: receivedAt,
+    serverSequence: serverSequence?.toInt(),
+    contentType: contentType,
+    attributes: attributes.map((attribute) => attribute._toModel()).toList(),
+  );
+}
+
+extension on gen_message.DartConversationSnapshotMessageBody {
+  ConversationSnapshotMessageBody _toModel() => ConversationSnapshotMessageBody(
+    text: text,
+    kind: kind,
+    payloadJson: payloadJson,
+    unsupportedContentType: unsupportedContentType,
   );
 }
 

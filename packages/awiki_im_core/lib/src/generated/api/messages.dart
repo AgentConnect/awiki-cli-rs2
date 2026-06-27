@@ -115,6 +115,17 @@ Future<DartConversationPage> conversations({
   unreadOnly: unreadOnly,
 );
 
+Future<DartConversationListSnapshot?> loadConversationSnapshot({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesLoadConversationSnapshot(
+  client: client,
+);
+
+Future<void> clearConversationSnapshot({required ArcDartImClient client}) =>
+    RustLib.instance.api.crateApiMessagesClearConversationSnapshot(
+      client: client,
+    );
+
 Future<DartSendMessageResult> retryMessage({
   required ArcDartImClient client,
   required String messageId,

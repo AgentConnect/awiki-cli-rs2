@@ -33,6 +33,7 @@ pub(crate) mod realtime;
 pub(crate) mod relationship_runtime;
 pub(crate) mod runtime;
 pub(crate) mod secure_direct;
+pub(crate) mod snapshot;
 pub(crate) mod store;
 pub(crate) mod transport;
 pub(crate) mod wire;

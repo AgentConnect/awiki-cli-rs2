@@ -3,14 +3,16 @@ mod mention;
 mod service;
 
 pub use self::dto::{
-    direct_peer_scope_thread_id, Conversation, ConversationQuery, DelegatedSigningOptions,
-    DeliveryState, HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope,
-    LocalHistoryQuery, MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult, Message,
-    MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
-    MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
-    MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
-    MessageTarget, ScopedInboxToken, SendMessageRequest, SendMessageResult, SyncDeltaRequest,
-    SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult, ThreadRef,
+    direct_peer_scope_thread_id, Conversation, ConversationListSnapshot, ConversationQuery,
+    ConversationSnapshotItem, ConversationSnapshotMessage, ConversationSnapshotMessageBody,
+    DelegatedSigningOptions, DeliveryState, HistoryQuery, InboxAuth, InboxHistoryOptions,
+    InboxQuery, InboxScope, LocalHistoryQuery, MarkReadResult, MarkThreadReadRequest,
+    MarkThreadReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
+    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
+    MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
+    MessageSendState, MessageSendStateKind, MessageTarget, ScopedInboxToken, SendMessageRequest,
+    SendMessageResult, SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest,
+    SyncThreadAfterResult, ThreadRef,
 };
 
 pub use self::mention::{

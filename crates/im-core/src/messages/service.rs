@@ -1212,6 +1212,26 @@ impl<'a> MessageService<'a> {
         .conversations_async(query)
         .await
     }
+
+    pub fn load_conversation_snapshot(
+        &self,
+    ) -> crate::ImResult<Option<super::ConversationListSnapshot>> {
+        crate::internal::snapshot::conversation_snapshot::load_for_client(self.client)
+    }
+
+    pub async fn load_conversation_snapshot_async(
+        &self,
+    ) -> crate::ImResult<Option<super::ConversationListSnapshot>> {
+        self.load_conversation_snapshot()
+    }
+
+    pub fn clear_conversation_snapshot(&self) -> crate::ImResult<()> {
+        crate::internal::snapshot::conversation_snapshot::clear_for_client(self.client)
+    }
+
+    pub async fn clear_conversation_snapshot_async(&self) -> crate::ImResult<()> {
+        self.clear_conversation_snapshot()
+    }
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]

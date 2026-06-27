@@ -248,6 +248,98 @@ class SyncDeltaResult {
   final List<String> warnings;
 }
 
+class ConversationListSnapshot {
+  const ConversationListSnapshot({
+    required this.formatVersion,
+    required this.imSchemaVersion,
+    required this.ownerIdentityId,
+    required this.ownerDid,
+    required this.generatedAtMs,
+    this.summaryVersion,
+    required this.unreadTotal,
+    required this.items,
+  });
+
+  final int formatVersion;
+  final int imSchemaVersion;
+  final String ownerIdentityId;
+  final String ownerDid;
+  final int generatedAtMs;
+  final String? summaryVersion;
+  final int unreadTotal;
+  final List<ConversationSnapshotItem> items;
+}
+
+class ConversationSnapshotItem {
+  const ConversationSnapshotItem({
+    required this.threadKind,
+    required this.threadId,
+    this.participants = const [],
+    this.lastMessage,
+    required this.unreadCount,
+    this.unreadMentionCount = 0,
+    this.firstUnreadMentionMessageId,
+    required this.messageCount,
+    this.lastMessageAt,
+  });
+
+  final String threadKind;
+  final String threadId;
+  final List<String> participants;
+  final ConversationSnapshotMessage? lastMessage;
+  final int unreadCount;
+  final int unreadMentionCount;
+  final String? firstUnreadMentionMessageId;
+  final int messageCount;
+  final String? lastMessageAt;
+}
+
+class ConversationSnapshotMessage {
+  const ConversationSnapshotMessage({
+    required this.id,
+    required this.threadKind,
+    required this.threadId,
+    required this.direction,
+    required this.sender,
+    this.receiver,
+    this.group,
+    required this.body,
+    this.sentAt,
+    this.receivedAt,
+    this.serverSequence,
+    this.contentType,
+    this.attributes = const [],
+  });
+
+  final String id;
+  final String threadKind;
+  final String threadId;
+  final String direction;
+  final String sender;
+  final String? receiver;
+  final String? group;
+  final ConversationSnapshotMessageBody body;
+  final String? sentAt;
+  final String? receivedAt;
+  final int? serverSequence;
+  final String? contentType;
+  final List<MessageMetadataAttribute> attributes;
+}
+
+class ConversationSnapshotMessageBody {
+  const ConversationSnapshotMessageBody({
+    this.text,
+    this.kind,
+    this.payloadJson,
+    this.unsupportedContentType,
+  });
+
+  final String? text;
+  final String? kind;
+  final String? payloadJson;
+  final String? unsupportedContentType;
+}
+
 class SyncThreadAfterRequest {
   const SyncThreadAfterRequest({
     required this.thread,

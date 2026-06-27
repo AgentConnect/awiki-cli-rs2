@@ -3,10 +3,10 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     message::{
-        DartConversationPage, DartInboxHistoryOptions, DartMarkReadResult,
-        DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult, DartSendPayloadRequest,
-        DartSendTextRequest, DartSyncDeltaRequest, DartSyncDeltaResult, DartSyncThreadAfterRequest,
-        DartSyncThreadAfterResult, DartThreadRef,
+        DartConversationListSnapshot, DartConversationPage, DartInboxHistoryOptions,
+        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult,
+        DartSendPayloadRequest, DartSendTextRequest, DartSyncDeltaRequest, DartSyncDeltaResult,
+        DartSyncThreadAfterRequest, DartSyncThreadAfterResult, DartThreadRef,
     },
 };
 
@@ -193,6 +193,29 @@ pub async fn conversations(
         .conversations_async(query)
         .await
         .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn load_conversation_snapshot(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<Option<DartConversationListSnapshot>, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .load_conversation_snapshot_async()
+        .await
+        .map(|snapshot| snapshot.map(Into::into))
+        .map_err(DartImError::from)
+}
+
+pub async fn clear_conversation_snapshot(
+    client: &Arc<crate::api::client::DartImClient>,
+) -> Result<(), DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .clear_conversation_snapshot_async()
+        .await
         .map_err(DartImError::from)
 }
 

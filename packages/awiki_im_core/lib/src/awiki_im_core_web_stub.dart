@@ -87,6 +87,14 @@ class MessageApi {
   ) async {
     throw _unsupported();
   }
+
+  Future<ConversationListSnapshot?> loadConversationSnapshot() async {
+    throw _unsupported();
+  }
+
+  Future<void> clearConversationSnapshot() async {
+    throw _unsupported();
+  }
 }
 
 class SecureApi {

@@ -190,6 +190,56 @@ pub struct DartSyncDeltaResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationListSnapshot {
+    pub format_version: u32,
+    pub im_schema_version: i64,
+    pub owner_identity_id: String,
+    pub owner_did: String,
+    pub generated_at_ms: i64,
+    pub summary_version: Option<String>,
+    pub unread_total: u32,
+    pub items: Vec<DartConversationSnapshotItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationSnapshotItem {
+    pub thread_kind: String,
+    pub thread_id: String,
+    pub participants: Vec<String>,
+    pub last_message: Option<DartConversationSnapshotMessage>,
+    pub unread_count: u32,
+    pub unread_mention_count: u32,
+    pub first_unread_mention_message_id: Option<String>,
+    pub message_count: u32,
+    pub last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationSnapshotMessage {
+    pub id: String,
+    pub thread_kind: String,
+    pub thread_id: String,
+    pub direction: String,
+    pub sender: String,
+    pub receiver: Option<String>,
+    pub group: Option<String>,
+    pub body: DartConversationSnapshotMessageBody,
+    pub sent_at: Option<String>,
+    pub received_at: Option<String>,
+    pub server_sequence: Option<i64>,
+    pub content_type: Option<String>,
+    pub attributes: Vec<DartMessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationSnapshotMessageBody {
+    pub text: Option<String>,
+    pub kind: Option<String>,
+    pub payload_json: Option<String>,
+    pub unsupported_content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartSyncThreadAfterRequest {
     pub thread: DartThreadRef,
     pub after_server_seq: Option<String>,
