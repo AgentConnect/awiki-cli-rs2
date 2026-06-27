@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
@@ -45,6 +45,56 @@ struct SummaryMessageRow {
     sender_name: String,
     mentions_current_user: bool,
     sort_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SummaryMessageProjection {
+    pub(crate) owner_identity_id: String,
+    pub(crate) conversation_id: String,
+    row: SummaryMessageRow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MarkReadSummaryRow {
+    owner_identity_id: String,
+    conversation_id: String,
+    mentions_current_user: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SummaryStateRow {
+    message_count: i64,
+    unread_count: i64,
+    unread_mention_count: i64,
+    first_unread_mention_message_id: String,
+    last_message_id: String,
+    last_message_at: String,
+}
+
+impl SummaryMessageRow {
+    fn is_unread_incoming(&self) -> bool {
+        self.direction == 0 && !self.is_read
+    }
+
+    fn is_unread_mention(&self) -> bool {
+        self.is_unread_incoming() && self.mentions_current_user
+    }
+
+    fn unread_count_delta(&self) -> i64 {
+        if self.is_unread_incoming() {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn unread_mention_count_delta(&self) -> i64 {
+        if self.is_unread_mention() {
+            1
+        } else {
+            0
+        }
+    }
 }
 
 pub(crate) fn create_schema(connection: &Connection) -> crate::ImResult<()> {
@@ -134,6 +184,205 @@ pub(crate) fn rebuild_touched(
         }
     }
     Ok(rebuilt)
+}
+
+pub(crate) fn message_projection_for_id(
+    connection: &Connection,
+    owner_identity_id: &str,
+    msg_id: &str,
+) -> crate::ImResult<Option<SummaryMessageProjection>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let msg_id = required("msg_id", msg_id)?;
+    let result = connection.query_row(
+        r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
+       direction,
+       sender_did,
+       group_id,
+       group_did,
+       content_type,
+       content,
+       is_read,
+       sender_name,
+       mentions_current_user,
+       COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at
+FROM messages
+WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
+        (&owner_identity_id, &msg_id),
+        |row| {
+            Ok(SummaryMessageProjection {
+                owner_identity_id: row
+                    .get::<_, Option<String>>("owner_identity_id")?
+                    .unwrap_or_default(),
+                conversation_id: row
+                    .get::<_, Option<String>>("conversation_id")?
+                    .unwrap_or_default(),
+                row: summary_message_row(row)?,
+            })
+        },
+    );
+    match result {
+        Ok(projection) => Ok(Some(projection)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(super::local_state_unavailable(err)),
+    }
+}
+
+pub(crate) fn apply_message_delta_or_rebuild(
+    connection: &Connection,
+    previous: Option<&SummaryMessageProjection>,
+    next: &SummaryMessageProjection,
+) -> crate::ImResult<usize> {
+    if let Some(previous) = previous {
+        if previous.owner_identity_id != next.owner_identity_id
+            || previous.conversation_id != next.conversation_id
+        {
+            let mut touched = BTreeSet::new();
+            touched.insert((
+                previous.owner_identity_id.clone(),
+                previous.conversation_id.clone(),
+            ));
+            touched.insert((next.owner_identity_id.clone(), next.conversation_id.clone()));
+            return rebuild_touched(connection, &touched);
+        }
+        if previous.row.is_unread_mention() || next.row.is_unread_mention() {
+            return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
+        }
+    }
+
+    let Some(summary) = summary_state(connection, &next.owner_identity_id, &next.conversation_id)?
+    else {
+        let message_count = message_count_for_conversation(
+            connection,
+            &next.owner_identity_id,
+            &next.conversation_id,
+        )?;
+        if previous.is_none() && message_count == 1 {
+            upsert_summary_from_last(
+                connection,
+                &next.owner_identity_id,
+                &next.conversation_id,
+                1,
+                next.row.unread_count_delta(),
+                next.row.unread_mention_count_delta(),
+                first_unread_mention_for_new_summary(&next.row),
+                &next.row,
+            )?;
+            return Ok(1);
+        }
+        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
+    };
+
+    if previous.is_none() && next.row.is_unread_mention() {
+        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
+    }
+
+    match previous {
+        None => apply_insert_delta(connection, &summary, next),
+        Some(previous) => apply_update_delta(connection, &summary, previous, next),
+    }
+}
+
+pub(crate) fn mark_read_summary_rows_for_message_ids(
+    connection: &Connection,
+    owner_identity_id: &str,
+    message_ids: &[&str],
+) -> crate::ImResult<Vec<MarkReadSummaryRow>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; message_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT owner_identity_id,
+       COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
+       mentions_current_user
+FROM messages
+WHERE owner_identity_id = ?
+  AND direction = 0
+  AND is_read = 0
+  AND msg_id IN ({placeholders})"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+    params.push(&owner_identity_id);
+    for message_id in message_ids {
+        params.push(message_id);
+    }
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(params.as_slice(), |row| {
+            Ok(MarkReadSummaryRow {
+                owner_identity_id: row
+                    .get::<_, Option<String>>("owner_identity_id")?
+                    .unwrap_or_default(),
+                conversation_id: row
+                    .get::<_, Option<String>>("conversation_id")?
+                    .unwrap_or_default(),
+                mentions_current_user: row
+                    .get::<_, Option<i64>>("mentions_current_user")?
+                    .unwrap_or_default()
+                    != 0,
+            })
+        })
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    for row in rows {
+        let row = row.map_err(super::local_state_unavailable)?;
+        if !row.owner_identity_id.trim().is_empty() && !row.conversation_id.trim().is_empty() {
+            result.push(row);
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn apply_mark_read_delta_or_rebuild(
+    connection: &Connection,
+    rows: &[MarkReadSummaryRow],
+) -> crate::ImResult<usize> {
+    let mut by_conversation = BTreeMap::<(String, String), (i64, i64, bool)>::new();
+    for row in rows {
+        let entry = by_conversation
+            .entry((row.owner_identity_id.clone(), row.conversation_id.clone()))
+            .or_insert((0, 0, false));
+        entry.0 += 1;
+        if row.mentions_current_user {
+            entry.1 += 1;
+            entry.2 = true;
+        }
+    }
+
+    let mut changed = 0;
+    let mut rebuild = BTreeSet::new();
+    for ((owner_identity_id, conversation_id), (unread_delta, mention_delta, needs_rebuild)) in
+        by_conversation
+    {
+        if needs_rebuild {
+            rebuild.insert((owner_identity_id, conversation_id));
+            continue;
+        }
+        if let Some(summary) = summary_state(connection, &owner_identity_id, &conversation_id)? {
+            update_summary_counts(
+                connection,
+                &owner_identity_id,
+                &conversation_id,
+                0,
+                -unread_delta,
+                -mention_delta,
+                &summary.first_unread_mention_message_id,
+            )?;
+            changed += 1;
+        } else {
+            rebuild.insert((owner_identity_id, conversation_id));
+        }
+    }
+    changed += rebuild_touched(connection, &rebuild)?;
+    Ok(changed)
 }
 
 pub(crate) fn rebuild_conversation(
@@ -260,6 +509,274 @@ ON CONFLICT(owner_identity_id, conversation_id) DO UPDATE SET
         )
         .map_err(super::local_state_unavailable)?;
     Ok(true)
+}
+
+fn rebuild_single(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> crate::ImResult<usize> {
+    Ok(
+        if rebuild_conversation(connection, owner_identity_id, conversation_id)? {
+            1
+        } else {
+            0
+        },
+    )
+}
+
+fn apply_insert_delta(
+    connection: &Connection,
+    summary: &SummaryStateRow,
+    next: &SummaryMessageProjection,
+) -> crate::ImResult<usize> {
+    let message_count = summary.message_count.saturating_add(1);
+    let unread_count = summary
+        .unread_count
+        .saturating_add(next.row.unread_count_delta());
+    let unread_mention_count = summary
+        .unread_mention_count
+        .saturating_add(next.row.unread_mention_count_delta());
+    let first_unread_mention_message_id =
+        if summary.first_unread_mention_message_id.is_empty() && next.row.is_unread_mention() {
+            next.row.msg_id.as_str()
+        } else {
+            summary.first_unread_mention_message_id.as_str()
+        };
+
+    if message_is_later_than_summary(&next.row, summary) {
+        upsert_summary_from_last(
+            connection,
+            &next.owner_identity_id,
+            &next.conversation_id,
+            message_count,
+            unread_count,
+            unread_mention_count,
+            first_unread_mention_message_id,
+            &next.row,
+        )?;
+    } else {
+        update_summary_counts(
+            connection,
+            &next.owner_identity_id,
+            &next.conversation_id,
+            1,
+            next.row.unread_count_delta(),
+            next.row.unread_mention_count_delta(),
+            first_unread_mention_message_id,
+        )?;
+    }
+    Ok(1)
+}
+
+fn apply_update_delta(
+    connection: &Connection,
+    summary: &SummaryStateRow,
+    previous: &SummaryMessageProjection,
+    next: &SummaryMessageProjection,
+) -> crate::ImResult<usize> {
+    let unread_delta = next
+        .row
+        .unread_count_delta()
+        .saturating_sub(previous.row.unread_count_delta());
+    let mention_delta = next
+        .row
+        .unread_mention_count_delta()
+        .saturating_sub(previous.row.unread_mention_count_delta());
+    if summary.last_message_id == previous.row.msg_id
+        || message_is_later_than_summary(&next.row, summary)
+    {
+        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
+    }
+    update_summary_counts(
+        connection,
+        &next.owner_identity_id,
+        &next.conversation_id,
+        0,
+        unread_delta,
+        mention_delta,
+        &summary.first_unread_mention_message_id,
+    )?;
+    Ok(1)
+}
+
+fn summary_state(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> crate::ImResult<Option<SummaryStateRow>> {
+    let result = connection.query_row(
+        r#"
+SELECT message_count,
+       unread_count,
+       unread_mention_count,
+       first_unread_mention_message_id,
+       last_message_id,
+       last_message_at
+FROM conversation_summaries
+WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
+        (owner_identity_id, conversation_id),
+        |row| {
+            Ok(SummaryStateRow {
+                message_count: row.get::<_, Option<i64>>("message_count")?.unwrap_or(0),
+                unread_count: row.get::<_, Option<i64>>("unread_count")?.unwrap_or(0),
+                unread_mention_count: row
+                    .get::<_, Option<i64>>("unread_mention_count")?
+                    .unwrap_or(0),
+                first_unread_mention_message_id: row
+                    .get::<_, Option<String>>("first_unread_mention_message_id")?
+                    .unwrap_or_default(),
+                last_message_id: row
+                    .get::<_, Option<String>>("last_message_id")?
+                    .unwrap_or_default(),
+                last_message_at: row
+                    .get::<_, Option<String>>("last_message_at")?
+                    .unwrap_or_default(),
+            })
+        },
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(err) => Err(super::local_state_unavailable(err)),
+    }
+}
+
+fn message_count_for_conversation(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+) -> crate::ImResult<i64> {
+    connection
+        .query_row(
+            r#"
+SELECT COUNT(*)
+FROM messages
+WHERE owner_identity_id = ?1
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2"#,
+            (owner_identity_id, conversation_id),
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(super::local_state_unavailable)
+}
+
+fn update_summary_counts(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    message_delta: i64,
+    unread_delta: i64,
+    unread_mention_delta: i64,
+    first_unread_mention_message_id: &str,
+) -> crate::ImResult<()> {
+    connection
+        .execute(
+            r#"
+UPDATE conversation_summaries
+SET message_count = MAX(0, message_count + ?3),
+    unread_count = MAX(0, unread_count + ?4),
+    unread_mention_count = MAX(0, unread_mention_count + ?5),
+    first_unread_mention_message_id = ?6,
+    updated_at = ?7
+WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
+            rusqlite::params![
+                owner_identity_id,
+                conversation_id,
+                message_delta,
+                unread_delta,
+                unread_mention_delta,
+                nullable_text(first_unread_mention_message_id),
+                now_utc_like(),
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn upsert_summary_from_last(
+    connection: &Connection,
+    owner_identity_id: &str,
+    conversation_id: &str,
+    message_count: i64,
+    unread_count: i64,
+    unread_mention_count: i64,
+    first_unread_mention_message_id: &str,
+    last: &SummaryMessageRow,
+) -> crate::ImResult<()> {
+    let owner_did = default_string(&last.owner_did, "");
+    let updated_at = now_utc_like();
+    let last_payload_json = if last.content_type.trim() == "application/json" {
+        nullable_text(&last.content)
+    } else {
+        None
+    };
+    connection
+        .execute(
+            r#"
+INSERT INTO conversation_summaries
+    (owner_identity_id, owner_did, conversation_id, thread_id,
+     message_count, unread_count, unread_mention_count, first_unread_mention_message_id,
+     last_message_id, last_message_at, last_content, last_content_type, last_sender_did,
+     last_sender_name, last_payload_json, group_id, group_did, updated_at)
+VALUES (?1, ?2, ?3, ?3,
+        ?4, ?5, ?6, ?7,
+        ?8, ?9, ?10, ?11, ?12,
+        ?13, ?14, ?15, ?16, ?17)
+ON CONFLICT(owner_identity_id, conversation_id) DO UPDATE SET
+    owner_did = excluded.owner_did,
+    thread_id = excluded.thread_id,
+    message_count = excluded.message_count,
+    unread_count = excluded.unread_count,
+    unread_mention_count = excluded.unread_mention_count,
+    first_unread_mention_message_id = excluded.first_unread_mention_message_id,
+    last_message_id = excluded.last_message_id,
+    last_message_at = excluded.last_message_at,
+    last_content = excluded.last_content,
+    last_content_type = excluded.last_content_type,
+    last_sender_did = excluded.last_sender_did,
+    last_sender_name = excluded.last_sender_name,
+    last_payload_json = excluded.last_payload_json,
+    group_id = excluded.group_id,
+    group_did = excluded.group_did,
+    updated_at = excluded.updated_at"#,
+            rusqlite::params![
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                message_count,
+                unread_count,
+                unread_mention_count,
+                nullable_text(first_unread_mention_message_id),
+                last.msg_id,
+                last.sort_at,
+                nullable_text(&last.content),
+                nullable_text(&last.content_type),
+                nullable_text(&last.sender_did),
+                nullable_text(&last.sender_name),
+                last_payload_json,
+                nullable_text(&last.group_id),
+                nullable_text(&last.group_did),
+                updated_at,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn first_unread_mention_for_new_summary(row: &SummaryMessageRow) -> &str {
+    if row.is_unread_mention() {
+        row.msg_id.as_str()
+    } else {
+        ""
+    }
+}
+
+fn message_is_later_than_summary(row: &SummaryMessageRow, summary: &SummaryStateRow) -> bool {
+    (row.sort_at.as_str(), row.msg_id.as_str())
+        > (
+            summary.last_message_at.as_str(),
+            summary.last_message_id.as_str(),
+        )
 }
 
 fn distinct_owner_identity_ids(connection: &Connection) -> crate::ImResult<Vec<String>> {

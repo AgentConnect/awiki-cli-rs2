@@ -32,8 +32,7 @@ pub(crate) fn upsert_message(
     record: &MessageRecord,
 ) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
-    let touched = upsert_message_record(connection, record)?;
-    super::conversation_summaries::rebuild_touched(connection, &touched)?;
+    let _ = upsert_message_record(connection, record)?;
     Ok(())
 }
 
@@ -45,6 +44,11 @@ fn upsert_message_record(
     let msg_id = required("msg_id", &record.msg_id)?;
     let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
     let owner_did = required("owner_did", &record.owner_did)?;
+    let previous_projection = super::conversation_summaries::message_projection_for_id(
+        connection,
+        &owner_identity_id,
+        &msg_id,
+    )?;
     let stable_conversation_id = required("conversation_id", &stable_conversation_id(record))?;
     // Once a rotated DID direct thread has been folded into a peer-scope thread,
     // late legacy projections should use the same canonical conversation without
@@ -62,8 +66,6 @@ fn upsert_message_record(
     };
     let thread_id = conversation_id.clone();
     let stored_at = default_string(&record.stored_at, &now_utc_like());
-    let previous_conversation_id =
-        existing_message_conversation_id(connection, &owner_identity_id, &msg_id)?;
     let mentions_current_user = mentions_current_user_for_projection(
         &owner_did,
         record.direction,
@@ -129,17 +131,37 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
         )
         .map_err(super::local_state_unavailable)?;
     let mut touched = BTreeSet::new();
-    if let Some(previous_conversation_id) = previous_conversation_id {
-        touched.insert((owner_identity_id.clone(), previous_conversation_id));
+    if let Some(previous_projection) = previous_projection.as_ref() {
+        touched.insert((
+            owner_identity_id.clone(),
+            previous_projection.conversation_id.clone(),
+        ));
     }
     touched.insert((owner_identity_id.clone(), conversation_id.clone()));
+    let mut merged_legacy = false;
     for legacy_id in merge_legacy_direct_did_conversation(
         connection,
         &owner_identity_id,
         &conversation_id,
         record,
     )? {
+        merged_legacy = true;
         touched.insert((owner_identity_id.clone(), legacy_id));
+    }
+    if merged_legacy {
+        super::conversation_summaries::rebuild_touched(connection, &touched)?;
+    } else if let Some(next_projection) = super::conversation_summaries::message_projection_for_id(
+        connection,
+        &owner_identity_id,
+        &msg_id,
+    )? {
+        super::conversation_summaries::apply_message_delta_or_rebuild(
+            connection,
+            previous_projection.as_ref(),
+            &next_projection,
+        )?;
+    } else {
+        super::conversation_summaries::rebuild_touched(connection, &touched)?;
     }
     touched.insert((owner_identity_id, conversation_id));
     Ok(touched)
@@ -214,7 +236,6 @@ pub(crate) fn upsert_messages_with_touched(
     for record in records {
         touched.extend(upsert_message_record(connection, record)?);
     }
-    super::conversation_summaries::rebuild_touched(connection, &touched)?;
     Ok(touched)
 }
 
@@ -702,7 +723,11 @@ fn mark_messages_read_for_owner(
     );
     let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     required("owner_identity_id", &owner_identity_id)?;
-    let touched = conversation_ids_for_message_ids(connection, &owner_identity_id, &ids)?;
+    let summary_rows = super::conversation_summaries::mark_read_summary_rows_for_message_ids(
+        connection,
+        &owner_identity_id,
+        &ids,
+    )?;
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
     params.push(&owner_identity_id);
     for id in &ids {
@@ -711,73 +736,8 @@ fn mark_messages_read_for_owner(
     let rows = connection
         .execute(&statement, params.as_slice())
         .map_err(super::local_state_unavailable)?;
-    super::conversation_summaries::rebuild_touched(connection, &touched)?;
+    super::conversation_summaries::apply_mark_read_delta_or_rebuild(connection, &summary_rows)?;
     Ok(i64::try_from(rows).unwrap_or(i64::MAX))
-}
-
-#[cfg(feature = "sqlite")]
-fn existing_message_conversation_id(
-    connection: &rusqlite::Connection,
-    owner_identity_id: &str,
-    msg_id: &str,
-) -> crate::ImResult<Option<String>> {
-    let result = connection.query_row(
-        r#"
-SELECT COALESCE(NULLIF(conversation_id, ''), thread_id)
-FROM messages
-WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
-        (owner_identity_id, msg_id),
-        |row| row.get::<_, Option<String>>(0),
-    );
-    match result {
-        Ok(value) => Ok(value.filter(|value| !value.trim().is_empty())),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(err) => Err(super::local_state_unavailable(err)),
-    }
-}
-
-#[cfg(feature = "sqlite")]
-fn conversation_ids_for_message_ids(
-    connection: &rusqlite::Connection,
-    owner_identity_id: &str,
-    message_ids: &[&str],
-) -> crate::ImResult<BTreeSet<(String, String)>> {
-    if message_ids.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    let placeholders = vec!["?"; message_ids.len()].join(",");
-    let statement = format!(
-        r#"
-SELECT DISTINCT COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id
-FROM messages
-WHERE owner_identity_id = ?
-  AND msg_id IN ({placeholders})"#
-    );
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
-    params.push(&owner_identity_id);
-    for id in message_ids {
-        params.push(id);
-    }
-    let mut statement = connection
-        .prepare(&statement)
-        .map_err(super::local_state_unavailable)?;
-    let rows = statement
-        .query_map(params.as_slice(), |row| {
-            row.get::<_, Option<String>>("conversation_id")
-                .map(|value| value.unwrap_or_default())
-        })
-        .map_err(super::local_state_unavailable)?;
-    let mut touched = BTreeSet::new();
-    for row in rows {
-        let conversation_id = row.map_err(super::local_state_unavailable)?;
-        if !conversation_id.trim().is_empty() {
-            touched.insert((
-                owner_identity_id.to_owned(),
-                conversation_id.trim().to_owned(),
-            ));
-        }
-    }
-    Ok(touched)
 }
 
 #[cfg(feature = "sqlite")]
@@ -2212,6 +2172,222 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
     }
 
     #[test]
+    fn local_state_messages_incremental_summary_matches_rebuild_for_insert_update() {
+        let db = Connection::open_in_memory().unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:owner";
+        let conversation_id = "dm:did:peer";
+
+        upsert_message(
+            &db,
+            &summary_test_message(
+                "msg-unread",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                0,
+                "first unread",
+                "2026-06-27T00:00:01Z",
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
+            1
+        );
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+
+        upsert_message(
+            &db,
+            &summary_test_message(
+                "msg-older",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                0,
+                "older read",
+                "2026-06-27T00:00:00Z",
+                true,
+            ),
+        )
+        .unwrap();
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.message_count, 2);
+        assert_eq!(summary.unread_count, 1);
+        assert_eq!(summary.last_message_id, "msg-unread");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+
+        upsert_message(
+            &db,
+            &summary_test_message(
+                "msg-newer",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                1,
+                "newer outgoing",
+                "2026-06-27T00:00:02Z",
+                true,
+            ),
+        )
+        .unwrap();
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.message_count, 3);
+        assert_eq!(summary.unread_count, 1);
+        assert_eq!(summary.last_message_id, "msg-newer");
+        assert_eq!(summary.last_content, "newer outgoing");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+
+        upsert_message(
+            &db,
+            &summary_test_message(
+                "msg-unread",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                0,
+                "first now read",
+                "2026-06-27T00:00:01Z",
+                true,
+            ),
+        )
+        .unwrap();
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.message_count, 3);
+        assert_eq!(summary.unread_count, 0);
+        assert_eq!(summary.last_message_id, "msg-newer");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+    }
+
+    #[test]
+    fn local_state_messages_mark_read_delta_matches_rebuild() {
+        let db = Connection::open_in_memory().unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:owner";
+        let conversation_id = "dm:did:peer";
+        for (msg_id, sent_at) in [
+            ("msg-unread-1", "2026-06-27T00:00:01Z"),
+            ("msg-unread-2", "2026-06-27T00:00:02Z"),
+        ] {
+            upsert_message(
+                &db,
+                &summary_test_message(
+                    msg_id,
+                    owner_identity_id,
+                    owner_did,
+                    conversation_id,
+                    0,
+                    msg_id,
+                    sent_at,
+                    false,
+                ),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
+            2
+        );
+
+        let rows = mark_messages_read_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            &["msg-unread-1".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(
+            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
+            1
+        );
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+
+        let rows = mark_messages_read_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            &["msg-unread-2".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(
+            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
+            0
+        );
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+    }
+
+    #[test]
+    fn local_state_messages_unread_mention_fallback_preserves_first_mention() {
+        let db = Connection::open_in_memory().unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:owner";
+        let conversation_id = "group:mentions";
+
+        upsert_message(
+            &db,
+            &summary_test_message(
+                "plain-newer",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                0,
+                "plain unread",
+                "2026-06-27T00:00:03Z",
+                false,
+            ),
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &mention_test_message(
+                "mention-later",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                "2026-06-27T00:00:02Z",
+            ),
+        )
+        .unwrap();
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.unread_count, 2);
+        assert_eq!(summary.unread_mention_count, 1);
+        assert_eq!(summary.first_unread_mention_message_id, "mention-later");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+
+        upsert_message(
+            &db,
+            &mention_test_message(
+                "mention-earlier",
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                "2026-06-27T00:00:01Z",
+            ),
+        )
+        .unwrap();
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.message_count, 3);
+        assert_eq!(summary.unread_mention_count, 2);
+        assert_eq!(summary.first_unread_mention_message_id, "mention-earlier");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+
+        mark_messages_read_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            &["mention-earlier".to_owned()],
+        )
+        .unwrap();
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.unread_mention_count, 1);
+        assert_eq!(summary.first_unread_mention_message_id, "mention-later");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+    }
+
+    #[test]
     fn local_state_messages_upsert_normalizes_legacy_direct_thread_alias() {
         let db = Connection::open_in_memory().unwrap();
         upsert_message(
@@ -2713,6 +2889,146 @@ WHERE owner_identity_id = ?1 AND legacy_conversation_id = ?2"#,
             |row| row.get(0),
         )
         .unwrap()
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SummarySnapshot {
+        message_count: i64,
+        unread_count: i64,
+        unread_mention_count: i64,
+        first_unread_mention_message_id: String,
+        last_message_id: String,
+        last_content: String,
+        last_message_at: String,
+    }
+
+    fn summary_snapshot(
+        db: &Connection,
+        owner_identity_id: &str,
+        conversation_id: &str,
+    ) -> SummarySnapshot {
+        db.query_row(
+            r#"
+SELECT message_count,
+       unread_count,
+       unread_mention_count,
+       COALESCE(first_unread_mention_message_id, ''),
+       COALESCE(last_message_id, ''),
+       COALESCE(last_content, ''),
+       last_message_at
+FROM conversation_summaries
+WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
+            (owner_identity_id, conversation_id),
+            |row| {
+                Ok(SummarySnapshot {
+                    message_count: row.get(0)?,
+                    unread_count: row.get(1)?,
+                    unread_mention_count: row.get(2)?,
+                    first_unread_mention_message_id: row.get(3)?,
+                    last_message_id: row.get(4)?,
+                    last_content: row.get(5)?,
+                    last_message_at: row.get(6)?,
+                })
+            },
+        )
+        .unwrap()
+    }
+
+    fn assert_summary_matches_rebuild(
+        db: &Connection,
+        owner_identity_id: &str,
+        conversation_id: &str,
+    ) {
+        let incremental = summary_snapshot(db, owner_identity_id, conversation_id);
+        super::super::conversation_summaries::rebuild_owner(db, owner_identity_id).unwrap();
+        let rebuilt = summary_snapshot(db, owner_identity_id, conversation_id);
+        assert_eq!(incremental, rebuilt);
+    }
+
+    fn summary_test_message(
+        msg_id: &str,
+        owner_identity_id: &str,
+        owner_did: &str,
+        conversation_id: &str,
+        direction: i64,
+        content: &str,
+        stored_at: &str,
+        is_read: bool,
+    ) -> MessageRecord {
+        let peer_did = "did:peer";
+        MessageRecord {
+            msg_id: msg_id.to_owned(),
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            thread_id: conversation_id.to_owned(),
+            direction,
+            sender_did: if direction == 0 {
+                peer_did.to_owned()
+            } else {
+                owner_did.to_owned()
+            },
+            receiver_did: if direction == 0 {
+                owner_did.to_owned()
+            } else {
+                peer_did.to_owned()
+            },
+            group_id: if conversation_id.starts_with("group:") {
+                conversation_id.to_owned()
+            } else {
+                String::new()
+            },
+            group_did: if conversation_id.starts_with("group:") {
+                "did:group".to_owned()
+            } else {
+                String::new()
+            },
+            content_type: "text/plain".to_owned(),
+            content: content.to_owned(),
+            stored_at: stored_at.to_owned(),
+            is_read,
+            ..MessageRecord::default()
+        }
+    }
+
+    fn mention_test_message(
+        msg_id: &str,
+        owner_identity_id: &str,
+        owner_did: &str,
+        conversation_id: &str,
+        stored_at: &str,
+    ) -> MessageRecord {
+        MessageRecord {
+            content_type: "application/json".to_owned(),
+            content: serde_json::json!({
+                "text": "@owner 请看",
+                "mentions": [{
+                    "id": format!("mention-{msg_id}"),
+                    "range": {
+                        "start": 0,
+                        "end": 6,
+                        "unit": "unicode_code_point"
+                    },
+                    "target": {
+                        "kind": "human",
+                        "did": owner_did,
+                        "display_name": "Owner"
+                    },
+                    "mention_role": "addressee"
+                }]
+            })
+            .to_string(),
+            ..summary_test_message(
+                msg_id,
+                owner_identity_id,
+                owner_did,
+                conversation_id,
+                0,
+                "",
+                stored_at,
+                false,
+            )
+        }
     }
 
     fn is_read(db: &Connection, owner_identity_id: &str) -> i64 {
