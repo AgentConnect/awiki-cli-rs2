@@ -355,6 +355,10 @@ P3+ API：
 ```rust
 impl MessageService<'_> {
     pub fn mark_read(&self, ids: Vec<MessageId>) -> ImResult<MarkReadResult>;
+    pub fn mark_thread_read(
+        &self,
+        request: MarkThreadReadRequest,
+    ) -> ImResult<MarkThreadReadResult>;
     pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
 }
 ```
@@ -365,6 +369,9 @@ Reliable sync 补充：
   checkpoint 注入，调用方不能传入或推进。
 - `sync_thread_after` 是 thread-local 补新入口，使用 `after_server_seq`，不读写账号级
   checkpoint。
+- `mark_thread_read` 是 thread-level read watermark API。SDK 优先使用服务端
+  `read_state.mark_read`；旧服务端 fallback 到本地 unread ids + `inbox.mark_read(message_ids)`
+  或本地 group pending ack。`mark_read(ids)` 仅保留 legacy/explicit message-id compatibility。
 - Public API 不得暴露 `loadGlobalCheckpoint`、`storeGlobalCheckpoint`、SQLite helper、
   raw `sync.delta` wire params 或手动 checkpoint advance。
 - Realtime sync hint 只作为只读事件元数据进入 event stream，用于调度 `sync_delta`，

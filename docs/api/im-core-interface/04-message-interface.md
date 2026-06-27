@@ -388,18 +388,26 @@ pub struct MarkReadResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkThreadReadRequest {
     pub thread: ThreadRef,
-    pub max_message_ids: Option<u32>,
+    pub watermark: Option<ReadWatermark>,
+    pub fallback_max_message_ids: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadWatermark {
+    pub last_read_message_id: Option<crate::ids::MessageId>,
+    pub last_read_thread_seq: Option<String>,
+    pub read_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkThreadReadResult {
     pub updated_count: u32,
-    pub message_ids: Vec<crate::ids::MessageId>,
-    pub local_candidate_count: u32,
-    pub local_updated_count: u32,
-    pub remote_updated_count: u32,
     pub remote_acknowledged: bool,
     pub partial: bool,
+    pub fallback_used: bool,
+    pub pending_remote_ack: bool,
+    pub effective_watermark: Option<ReadWatermark>,
+    pub legacy_message_ids: Vec<crate::ids::MessageId>,
     pub warnings: Vec<String>,
 }
 ```
@@ -429,23 +437,30 @@ P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 
 ### 5.1 Mark Read / Thread Mark Read 当前补充
 
-`mark_read(ids)` 保留按消息 id 确认已读的兼容语义。`mark_thread_read(request)`
-用于会话打开后的性能敏感路径，行为是：
+`mark_read(ids)` 保留按消息 id 确认已读的 legacy compatibility 语义。聊天页打开、
+会话列表清 unread 和 App normal path 应使用 `mark_thread_read(request)`。
 
-1. SDK 先在本地 `messages` projection 中按 `owner_identity_id` 和 `ThreadRef`
-   查询 unread incoming `msg_id`，默认最多 500 条；`max_message_ids` 可调但硬上限
-   仍为 500。
-2. 该查询只读本地状态，不调用 `inbox()`、`history()`、`direct.get_history`、
-   `group.list_messages` 或其他历史分页 RPC。
-3. 查询到的本地候选 ids 会先调用本地 mark-read，把 `messages.is_read` 更新为
-   `1`；direct 消息再通过 `inbox.mark_read` 做远端 best-effort ack。
-4. group 和本地 mail notification 当前只做本地 mark-read；后续如果服务端提供
-   thread-level read watermark，可以隐藏在同一个 public method 后面。
-5. 远端 ack 失败不回滚本地已读，返回 `partial = true` 并在 `warnings` 中带失败原因；
-   空 unread 会返回 `updated_count = 0` 且不访问远端。
-6. `message_ids` 是本地查询到并尝试处理的候选 ids；`local_candidate_count`、
-   `local_updated_count`、`remote_updated_count` 和 `remote_acknowledged` 用于上层记录
-   best-effort 状态。
+`mark_thread_read(request)` 是 watermark-first API：
+
+1. `request.thread` 使用现有 `ThreadRef::Direct` / `ThreadRef::Group`。
+2. `request.watermark` 可选。调用方不传时，SDK 从本地 committed
+   `messages` projection / MessageStore thread window 计算当前 thread 可见的最高已读水位。
+3. `ReadWatermark.last_read_thread_seq` 是 thread-local sequence：direct 使用 direct
+   message `server_seq`；group 使用 group thread view 中的 `server_seq`，该值可由
+   `group_event_seq` 投影而来。两者都不是账号级 reliable sync `event_seq`。
+4. `ReadWatermark.last_read_message_id` 只是诊断、幂等和 mismatch 检查辅助，不是排序事实来源。
+5. `ReadWatermark.read_at` 是客户端已读动作时间，用于审计/展示，不参与授权或 checkpoint。
+6. SDK 优先调用服务端 `read_state.mark_read`。wire contract 以
+   `message-service/docs/api/ANP-client-server-api-read-state.md` 为准。
+7. 旧服务端、endpoint unsupported 或 transport unavailable 时，SDK fallback 到当前
+   本地 unread ids 查询；direct 尝试 `inbox.mark_read(message_ids)`，group 在旧服务端下只能
+   保持 local-read / pending-remote-ack 语义。
+8. `fallback_max_message_ids` 只限制 legacy message-id fallback 的候选数量，默认和硬上限仍为 500；
+   watermark path 不受该 message id 数量限制。
+9. 远端 ack 失败不回滚本地已读，返回 `partial = true`、`pending_remote_ack = true`
+   或在 `warnings` 中带失败原因；空 unread 会返回 `updated_count = 0`。
+10. `legacy_message_ids` 只作为 fallback diagnostics；App 不应依赖它作为 thread
+    mark-read 的核心结果。
 
 Step 04 引入 `conversation_summaries` 后，thread mark-read 还需要同步维护 summary
 unread 字段；本方法的 public 契约不需要因此变化。

@@ -23,16 +23,24 @@ Realtime is exposed as transport-agnostic Dart streams:
 
 Apps should not depend on WebSocket URLs, raw frames, bearer headers, ping/pong, or reconnect internals.
 
-Thread-level mark-read is exposed through the message API:
+Thread-level mark-read is exposed through a watermark-first message API:
 
 ```dart
 final result = await client.messages.markThreadRead(
   const ThreadRef.direct('did:example:bob'),
-  maxMessageIds: 100,
+  watermark: const ReadWatermark(lastReadThreadSeq: '991'),
+  fallbackMaxMessageIds: 100,
 );
 ```
 
-`markThreadRead` delegates unread-id lookup to `im-core` local state. App code
+`watermark` is optional. If omitted, `im-core` computes the highest visible
+committed thread watermark from local projection. Direct uses thread-local
+`server_seq`; group uses the group thread-local `server_seq` projection backed by
+`group_event_seq`. Neither is the global reliable sync `event_seq`.
+
+`markThreadRead` first uses the service `read_state.mark_read` contract. Old
+services fall back to local unread-id lookup and legacy direct
+`inbox.mark_read(message_ids)`; group fallback is local/pending only. App code
 must not page through `history()` just to discover unread message ids.
 
 Local-first message history is exposed separately from remote history:

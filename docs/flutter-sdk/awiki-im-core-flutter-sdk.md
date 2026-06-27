@@ -87,6 +87,46 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 Both APIs are async `Future<MessagePage>` methods. Apps must not bypass the SDK or read SQLite directly.
 
+## Thread read watermark
+
+Thread-level mark-read is exposed as a watermark-first message API:
+
+```dart
+final result = await client.messages.markThreadRead(
+  const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+  watermark: const ReadWatermark(
+    lastReadThreadSeq: '991',
+    lastReadMessageId: 'msg_direct_991',
+  ),
+  fallbackMaxMessageIds: 500,
+);
+```
+
+`watermark` is optional. When the App omits it, the SDK computes the highest
+visible committed thread watermark from `im-core` local projection / thread
+store. App code must not page through `history()`, read SQLite, or collect
+unread message ids just to clear unread state.
+
+Watermark semantics:
+
+- direct threads use direct message `server_seq`;
+- group threads use the group thread-local `server_seq` projection, which may be
+  backed by `group_event_seq` on the service side;
+- neither value is the account-level reliable sync `event_seq`;
+- `lastReadMessageId` is for idempotency and diagnostics, not the ordering source;
+- `readAt` is an audit/display timestamp and does not participate in
+  authorization or checkpoint logic.
+
+The SDK first uses the service `read_state.mark_read` contract. When the service
+does not support the endpoint, the SDK falls back to local unread-id lookup and
+legacy direct `inbox.mark_read(message_ids)`. Group fallback on an old service is
+local/pending only. Results must expose `updatedCount`, `remoteAcknowledged`,
+`partial`, `fallbackUsed`, `pendingRemoteAck`, and `warnings`; any returned
+message ids are legacy fallback diagnostics only.
+
+`markThreadRead` does not expose or advance the reliable sync checkpoint.
+`remoteAcknowledged` and `pendingRemoteAck` describe only read-ack state.
+
 ## Reliable message sync
 
 Reliable sync is exposed as high-level async message APIs. The Dart SDK must not expose
