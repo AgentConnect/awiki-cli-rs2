@@ -99,13 +99,13 @@ Expected public shape:
 final delta = await client.messages.syncDelta(
   const SyncDeltaRequest(
     limit: 100,
-    reason: SyncReason.appResumed,
+    reason: 'app_resumed',
   ),
 );
 
 final page = await client.messages.syncThreadAfter(
   SyncThreadAfterRequest(
-    thread: const MessageThreadRef.direct('did:wba:example.com:user:e1_bob'),
+    thread: const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
     afterServerSeq: '991',
     limit: 100,
   ),

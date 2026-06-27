@@ -59,6 +59,22 @@ class RealtimeConnectionState {
   final String? reason;
 }
 
+class RealtimeSyncHint {
+  const RealtimeSyncHint({
+    this.eventId,
+    this.eventSeq,
+    this.eventType,
+    required this.syncDirty,
+    required this.gapDetected,
+  });
+
+  final String? eventId;
+  final String? eventSeq;
+  final String? eventType;
+  final bool syncDirty;
+  final bool gapDetected;
+}
+
 class RealtimeEvent {
   const RealtimeEvent({
     required this.kind,
@@ -77,6 +93,7 @@ class RealtimeEvent {
     this.hostKind,
     this.contentType,
     this.notificationType,
+    this.sync,
   });
 
   final String kind;
@@ -95,6 +112,7 @@ class RealtimeEvent {
   final String? hostKind;
   final String? contentType;
   final String? notificationType;
+  final RealtimeSyncHint? sync;
 
   bool get isConnectionState => kind == 'connection_state_changed';
 }

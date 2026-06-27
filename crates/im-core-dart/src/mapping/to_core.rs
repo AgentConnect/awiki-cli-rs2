@@ -15,7 +15,7 @@ use crate::dto::{
     message::{
         DartDelegatedSigningOptions, DartInboxAuth, DartInboxHistoryOptions,
         DartMessageSecurityMode, DartMessageTarget, DartScopedInboxToken, DartSendPayloadRequest,
-        DartSendTextRequest, DartThreadRef,
+        DartSendTextRequest, DartSyncDeltaRequest, DartSyncThreadAfterRequest, DartThreadRef,
     },
     profile::DartProfilePatch,
     realtime::DartRealtimeOptions,
@@ -420,6 +420,28 @@ impl From<DartInboxAuth> for im_core::messages::InboxAuth {
 impl From<DartScopedInboxToken> for im_core::messages::ScopedInboxToken {
     fn from(value: DartScopedInboxToken) -> Self {
         Self { token: value.token }
+    }
+}
+
+impl From<DartSyncDeltaRequest> for im_core::messages::SyncDeltaRequest {
+    fn from(value: DartSyncDeltaRequest) -> Self {
+        Self {
+            limit: value.limit,
+            device_id: value.device_id,
+            reason: value.reason,
+        }
+    }
+}
+
+impl TryFrom<DartSyncThreadAfterRequest> for im_core::messages::SyncThreadAfterRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSyncThreadAfterRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread: value.thread.try_into()?,
+            after_server_seq: value.after_server_seq,
+            limit: value.limit,
+        })
     }
 }
 

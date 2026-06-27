@@ -591,6 +591,30 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<SyncDeltaResult> syncDelta(SyncDeltaRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncDelta(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<SyncThreadAfterResult> syncThreadAfter(
+    SyncThreadAfterRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncThreadAfter(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<ConversationPage> conversations({
     required int limit,
     bool includeGroups = true,
@@ -1022,6 +1046,17 @@ extension on gen_realtime_dto.DartRealtimeEvent {
     hostKind: hostKind,
     contentType: contentType,
     notificationType: notificationType,
+    sync: sync_?._toModel(),
+  );
+}
+
+extension on gen_realtime_dto.DartRealtimeSyncHint {
+  RealtimeSyncHint _toModel() => RealtimeSyncHint(
+    eventId: eventId,
+    eventSeq: eventSeq,
+    eventType: eventType,
+    syncDirty: syncDirty,
+    gapDetected: gapDetected,
   );
 }
 
@@ -1515,6 +1550,23 @@ extension on ScopedInboxToken {
       gen_message.DartScopedInboxToken(token: token);
 }
 
+extension on SyncDeltaRequest {
+  gen_message.DartSyncDeltaRequest _toGen() => gen_message.DartSyncDeltaRequest(
+    limit: limit,
+    deviceId: deviceId,
+    reason: reason,
+  );
+}
+
+extension on SyncThreadAfterRequest {
+  gen_message.DartSyncThreadAfterRequest _toGen() =>
+      gen_message.DartSyncThreadAfterRequest(
+        thread: thread._toGen(),
+        afterServerSeq: afterServerSeq,
+        limit: limit,
+      );
+}
+
 extension on AttachmentInput {
   gen_attachment.DartAttachmentInput _toGen() => switch (this) {
     LocalFileAttachmentInput(:final path) =>
@@ -1828,6 +1880,27 @@ extension on gen_message.DartMarkThreadReadResult {
     remoteUpdatedCount: remoteUpdatedCount,
     remoteAcknowledged: remoteAcknowledged,
     partial: partial,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartSyncDeltaResult {
+  SyncDeltaResult _toModel() => SyncDeltaResult(
+    eventsApplied: eventsApplied,
+    pagesFetched: pagesFetched,
+    lastAppliedEventSeq: lastAppliedEventSeq,
+    hasMore: hasMore,
+    snapshotRequired: snapshotRequired,
+    retentionFloorEventSeq: retentionFloorEventSeq,
+    warnings: warnings,
+  );
+}
+
+extension on gen_message.DartSyncThreadAfterResult {
+  SyncThreadAfterResult _toModel() => SyncThreadAfterResult(
+    messages: messages.map((message) => message._toModel()).toList(),
+    nextAfterServerSeq: nextAfterServerSeq,
+    hasMore: hasMore,
     warnings: warnings,
   );
 }

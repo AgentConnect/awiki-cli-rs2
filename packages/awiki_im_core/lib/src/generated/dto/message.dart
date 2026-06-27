@@ -560,6 +560,125 @@ class DartSendTextRequest {
           delegatedSigning == other.delegatedSigning;
 }
 
+class DartSyncDeltaRequest {
+  final int? limit;
+  final String? deviceId;
+  final String? reason;
+
+  const DartSyncDeltaRequest({this.limit, this.deviceId, this.reason});
+
+  @override
+  int get hashCode => limit.hashCode ^ deviceId.hashCode ^ reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncDeltaRequest &&
+          runtimeType == other.runtimeType &&
+          limit == other.limit &&
+          deviceId == other.deviceId &&
+          reason == other.reason;
+}
+
+class DartSyncDeltaResult {
+  final int eventsApplied;
+  final int pagesFetched;
+  final String? lastAppliedEventSeq;
+  final bool hasMore;
+  final bool snapshotRequired;
+  final String? retentionFloorEventSeq;
+  final List<String> warnings;
+
+  const DartSyncDeltaResult({
+    required this.eventsApplied,
+    required this.pagesFetched,
+    this.lastAppliedEventSeq,
+    required this.hasMore,
+    required this.snapshotRequired,
+    this.retentionFloorEventSeq,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      eventsApplied.hashCode ^
+      pagesFetched.hashCode ^
+      lastAppliedEventSeq.hashCode ^
+      hasMore.hashCode ^
+      snapshotRequired.hashCode ^
+      retentionFloorEventSeq.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncDeltaResult &&
+          runtimeType == other.runtimeType &&
+          eventsApplied == other.eventsApplied &&
+          pagesFetched == other.pagesFetched &&
+          lastAppliedEventSeq == other.lastAppliedEventSeq &&
+          hasMore == other.hasMore &&
+          snapshotRequired == other.snapshotRequired &&
+          retentionFloorEventSeq == other.retentionFloorEventSeq &&
+          warnings == other.warnings;
+}
+
+class DartSyncThreadAfterRequest {
+  final DartThreadRef thread;
+  final String? afterServerSeq;
+  final int? limit;
+
+  const DartSyncThreadAfterRequest({
+    required this.thread,
+    this.afterServerSeq,
+    this.limit,
+  });
+
+  @override
+  int get hashCode =>
+      thread.hashCode ^ afterServerSeq.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncThreadAfterRequest &&
+          runtimeType == other.runtimeType &&
+          thread == other.thread &&
+          afterServerSeq == other.afterServerSeq &&
+          limit == other.limit;
+}
+
+class DartSyncThreadAfterResult {
+  final List<DartMessage> messages;
+  final String? nextAfterServerSeq;
+  final bool hasMore;
+  final List<String> warnings;
+
+  const DartSyncThreadAfterResult({
+    required this.messages,
+    this.nextAfterServerSeq,
+    required this.hasMore,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      messages.hashCode ^
+      nextAfterServerSeq.hashCode ^
+      hasMore.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncThreadAfterResult &&
+          runtimeType == other.runtimeType &&
+          messages == other.messages &&
+          nextAfterServerSeq == other.nextAfterServerSeq &&
+          hasMore == other.hasMore &&
+          warnings == other.warnings;
+}
+
 @freezed
 sealed class DartThreadRef with _$DartThreadRef {
   const DartThreadRef._();

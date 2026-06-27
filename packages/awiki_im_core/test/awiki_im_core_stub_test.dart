@@ -52,6 +52,47 @@ void main() {
     expect(_localHistoryApiShape, isA<Function>());
   });
 
+  test('sync API models expose no global checkpoint controls', () {
+    const deltaRequest = SyncDeltaRequest(
+      limit: 100,
+      deviceId: 'device-main',
+      reason: 'app_resumed',
+    );
+    expect(deltaRequest.limit, 100);
+    expect(deltaRequest.reason, 'app_resumed');
+
+    const deltaResult = SyncDeltaResult(
+      eventsApplied: 3,
+      pagesFetched: 1,
+      lastAppliedEventSeq: '42',
+      hasMore: false,
+      snapshotRequired: false,
+      retentionFloorEventSeq: '10',
+      warnings: ['ok'],
+    );
+    expect(deltaResult.lastAppliedEventSeq, '42');
+    expect(deltaResult.snapshotRequired, isFalse);
+
+    const threadRequest = SyncThreadAfterRequest(
+      thread: ThreadRef.direct('did:example:bob'),
+      afterServerSeq: '991',
+      limit: 50,
+    );
+    expect(threadRequest.afterServerSeq, '991');
+
+    const threadResult = SyncThreadAfterResult(
+      messages: [],
+      nextAfterServerSeq: '992',
+      hasMore: false,
+    );
+    expect(threadResult.nextAfterServerSeq, '992');
+  });
+
+  test('sync API shape remains app-usable', () {
+    expect(_syncDeltaApiShape, isA<Function>());
+    expect(_syncThreadAfterApiShape, isA<Function>());
+  });
+
   test('realtime options and event models stay transport agnostic', () {
     const options = RealtimeOptions();
     expect(options.reconnect, RealtimeReconnectMode.disabled);
@@ -60,8 +101,17 @@ void main() {
     const event = RealtimeEvent(
       kind: 'connection_state_changed',
       state: 'connected',
+      sync: RealtimeSyncHint(
+        eventId: 'sev-1',
+        eventSeq: '42',
+        eventType: 'message.created',
+        syncDirty: true,
+        gapDetected: false,
+      ),
     );
     expect(event.isConnectionState, isTrue);
+    expect(event.sync?.eventSeq, '42');
+    expect(event.sync?.syncDirty, isTrue);
   });
 
   test('email models can be constructed without CLI-only fields', () {
@@ -180,5 +230,21 @@ Future<MessagePage> _localHistoryApiShape(MessageApi api) {
   return api.localHistory(
     const ThreadRef.direct('did:example:bob'),
     limit: 100,
+  );
+}
+
+Future<SyncDeltaResult> _syncDeltaApiShape(MessageApi api) {
+  return api.syncDelta(
+    const SyncDeltaRequest(limit: 100, reason: 'app_resumed'),
+  );
+}
+
+Future<SyncThreadAfterResult> _syncThreadAfterApiShape(MessageApi api) {
+  return api.syncThreadAfter(
+    const SyncThreadAfterRequest(
+      thread: ThreadRef.direct('did:example:bob'),
+      afterServerSeq: '42',
+      limit: 100,
+    ),
   );
 }

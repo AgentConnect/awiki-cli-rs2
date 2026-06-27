@@ -77,6 +77,16 @@ class MessageApi {
   }) async {
     throw _unsupported();
   }
+
+  Future<SyncDeltaResult> syncDelta(SyncDeltaRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<SyncThreadAfterResult> syncThreadAfter(
+    SyncThreadAfterRequest request,
+  ) async {
+    throw _unsupported();
+  }
 }
 
 class SecureApi {

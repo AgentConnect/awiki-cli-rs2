@@ -41,6 +41,102 @@ fn thread_mark_read_result_preserves_best_effort_state_for_dart() {
 }
 
 #[test]
+fn sync_delta_request_exposes_only_app_safe_controls() {
+    let request = awiki_im_core::dto::message::DartSyncDeltaRequest {
+        limit: Some(100),
+        device_id: Some("device-main".to_string()),
+        reason: Some("app_resumed".to_string()),
+    };
+
+    let core: im_core::messages::SyncDeltaRequest = request.into();
+    assert_eq!(core.limit, Some(100));
+    assert_eq!(core.device_id.as_deref(), Some("device-main"));
+    assert_eq!(core.reason.as_deref(), Some("app_resumed"));
+}
+
+#[test]
+fn sync_delta_result_preserves_diagnostics_without_next_checkpoint_setter() {
+    let core = im_core::messages::SyncDeltaResult {
+        events_applied: 3,
+        pages_fetched: 2,
+        last_applied_event_seq: Some("42".to_string()),
+        has_more: false,
+        snapshot_required: true,
+        retention_floor_event_seq: Some("10".to_string()),
+        warnings: vec!["snapshot required".to_string()],
+    };
+
+    let dart: awiki_im_core::dto::message::DartSyncDeltaResult = core.into();
+    assert_eq!(dart.events_applied, 3);
+    assert_eq!(dart.pages_fetched, 2);
+    assert_eq!(dart.last_applied_event_seq.as_deref(), Some("42"));
+    assert!(!dart.has_more);
+    assert!(dart.snapshot_required);
+    assert_eq!(dart.retention_floor_event_seq.as_deref(), Some("10"));
+    assert_eq!(dart.warnings, vec!["snapshot required"]);
+}
+
+#[test]
+fn sync_thread_after_request_uses_thread_local_sequence_only() {
+    let request = awiki_im_core::dto::message::DartSyncThreadAfterRequest {
+        thread: awiki_im_core::dto::message::DartThreadRef::Direct {
+            peer: "did:example:bob".to_string(),
+        },
+        after_server_seq: Some("991".to_string()),
+        limit: Some(50),
+    };
+
+    let core: im_core::messages::SyncThreadAfterRequest =
+        request.try_into().expect("sync thread-after maps");
+    assert!(matches!(
+        core.thread,
+        im_core::messages::ThreadRef::Direct(peer) if peer.as_str() == "did:example:bob"
+    ));
+    assert_eq!(core.after_server_seq.as_deref(), Some("991"));
+    assert_eq!(core.limit, Some(50));
+}
+
+#[test]
+fn sync_thread_after_result_preserves_ordered_message_page_metadata() {
+    let core = im_core::messages::SyncThreadAfterResult {
+        messages: vec![im_core::messages::Message {
+            id: im_core::ids::MessageId::parse("msg-1").expect("message id"),
+            thread: im_core::messages::ThreadRef::Direct(
+                im_core::ids::PeerRef::parse("did:example:bob", "example.com").expect("peer ref"),
+            ),
+            direction: im_core::messages::MessageDirection::Incoming,
+            sender: im_core::ids::PeerRef::parse("did:example:bob", "example.com")
+                .expect("sender ref"),
+            receiver: Some(
+                im_core::ids::PeerRef::parse("did:example:alice", "example.com")
+                    .expect("receiver ref"),
+            ),
+            group: None,
+            body: im_core::messages::MessageBodyView::Text {
+                text: "hello".to_string(),
+                kind: im_core::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata {
+                server_sequence: Some(992),
+                ..Default::default()
+            },
+        }],
+        next_after_server_seq: Some("992".to_string()),
+        has_more: false,
+        warnings: vec![],
+    };
+
+    let dart: awiki_im_core::dto::message::DartSyncThreadAfterResult = core.into();
+    assert_eq!(dart.messages.len(), 1);
+    assert_eq!(dart.messages[0].id, "msg-1");
+    assert_eq!(dart.messages[0].metadata.server_sequence, Some(992));
+    assert_eq!(dart.next_after_server_seq.as_deref(), Some("992"));
+    assert!(!dart.has_more);
+}
+
+#[test]
 fn local_history_query_is_public_core_contract_for_dart_facade() {
     let query = im_core::messages::LocalHistoryQuery {
         limit: im_core::ids::PageLimit::new(50).expect("limit"),

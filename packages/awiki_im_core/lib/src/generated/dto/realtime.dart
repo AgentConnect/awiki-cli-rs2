@@ -55,6 +55,7 @@ class DartRealtimeEvent {
   final String? hostKind;
   final String? contentType;
   final String? notificationType;
+  final DartRealtimeSyncHint? sync_;
 
   const DartRealtimeEvent({
     required this.kind,
@@ -73,6 +74,7 @@ class DartRealtimeEvent {
     this.hostKind,
     this.contentType,
     this.notificationType,
+    this.sync_,
   });
 
   @override
@@ -92,7 +94,8 @@ class DartRealtimeEvent {
       source.hashCode ^
       hostKind.hashCode ^
       contentType.hashCode ^
-      notificationType.hashCode;
+      notificationType.hashCode ^
+      sync_.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -114,7 +117,8 @@ class DartRealtimeEvent {
           source == other.source &&
           hostKind == other.hostKind &&
           contentType == other.contentType &&
-          notificationType == other.notificationType;
+          notificationType == other.notificationType &&
+          sync_ == other.sync_;
 }
 
 class DartRealtimeOptions {
@@ -193,4 +197,39 @@ class DartRealtimeStatus {
           subscriptions == other.subscriptions &&
           lastError == other.lastError &&
           warnings == other.warnings;
+}
+
+class DartRealtimeSyncHint {
+  final String? eventId;
+  final String? eventSeq;
+  final String? eventType;
+  final bool syncDirty;
+  final bool gapDetected;
+
+  const DartRealtimeSyncHint({
+    this.eventId,
+    this.eventSeq,
+    this.eventType,
+    required this.syncDirty,
+    required this.gapDetected,
+  });
+
+  @override
+  int get hashCode =>
+      eventId.hashCode ^
+      eventSeq.hashCode ^
+      eventType.hashCode ^
+      syncDirty.hashCode ^
+      gapDetected.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRealtimeSyncHint &&
+          runtimeType == other.runtimeType &&
+          eventId == other.eventId &&
+          eventSeq == other.eventSeq &&
+          eventType == other.eventType &&
+          syncDirty == other.syncDirty &&
+          gapDetected == other.gapDetected;
 }

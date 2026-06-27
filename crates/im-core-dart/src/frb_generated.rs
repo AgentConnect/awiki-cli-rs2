@@ -43,7 +43,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -13850945;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1424466498;
 
 // Section: executor
 
@@ -4464,6 +4464,130 @@ fn wire__crate__api__messages__send_text_impl(
         },
     )
 }
+fn wire__crate__api__messages__sync_delta_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "sync_delta",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::dto::message::DartSyncDeltaRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_client_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_client,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_client_guard =
+                                        Some(api_client.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_client_guard = api_client_guard.unwrap();
+                        let output_ok =
+                            crate::api::messages::sync_delta(&*api_client_guard, api_request)
+                                .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__messages__sync_thread_after_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "sync_thread_after",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::dto::message::DartSyncThreadAfterRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_client_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_client,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_client_guard =
+                                        Some(api_client.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_client_guard = api_client_guard.unwrap();
+                        let output_ok = crate::api::messages::sync_thread_after(
+                            &*api_client_guard,
+                            api_request,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__directory__unfollow_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -6112,6 +6236,8 @@ impl SseDecode for crate::dto::realtime::DartRealtimeEvent {
         let mut var_hostKind = <Option<String>>::sse_decode(deserializer);
         let mut var_contentType = <Option<String>>::sse_decode(deserializer);
         let mut var_notificationType = <Option<String>>::sse_decode(deserializer);
+        let mut var_sync_ =
+            <Option<crate::dto::realtime::DartRealtimeSyncHint>>::sse_decode(deserializer);
         return crate::dto::realtime::DartRealtimeEvent {
             kind: var_kind,
             state: var_state,
@@ -6129,6 +6255,7 @@ impl SseDecode for crate::dto::realtime::DartRealtimeEvent {
             host_kind: var_hostKind,
             content_type: var_contentType,
             notification_type: var_notificationType,
+            sync: var_sync_,
         };
     }
 }
@@ -6169,6 +6296,24 @@ impl SseDecode for crate::dto::realtime::DartRealtimeStatus {
             subscriptions: var_subscriptions,
             last_error: var_lastError,
             warnings: var_warnings,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::realtime::DartRealtimeSyncHint {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_eventId = <Option<String>>::sse_decode(deserializer);
+        let mut var_eventSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_eventType = <Option<String>>::sse_decode(deserializer);
+        let mut var_syncDirty = <bool>::sse_decode(deserializer);
+        let mut var_gapDetected = <bool>::sse_decode(deserializer);
+        return crate::dto::realtime::DartRealtimeSyncHint {
+            event_id: var_eventId,
+            event_seq: var_eventSeq,
+            event_type: var_eventType,
+            sync_dirty: var_syncDirty,
+            gap_detected: var_gapDetected,
         };
     }
 }
@@ -6491,6 +6636,72 @@ impl SseDecode for crate::dto::auth::DartSessionUpdate {
             new_expires_at: var_newExpiresAt,
             refreshed: var_refreshed,
             bearer_token: var_bearerToken,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartSyncDeltaRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_limit = <Option<u32>>::sse_decode(deserializer);
+        let mut var_deviceId = <Option<String>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartSyncDeltaRequest {
+            limit: var_limit,
+            device_id: var_deviceId,
+            reason: var_reason,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartSyncDeltaResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_eventsApplied = <u32>::sse_decode(deserializer);
+        let mut var_pagesFetched = <u32>::sse_decode(deserializer);
+        let mut var_lastAppliedEventSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_hasMore = <bool>::sse_decode(deserializer);
+        let mut var_snapshotRequired = <bool>::sse_decode(deserializer);
+        let mut var_retentionFloorEventSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartSyncDeltaResult {
+            events_applied: var_eventsApplied,
+            pages_fetched: var_pagesFetched,
+            last_applied_event_seq: var_lastAppliedEventSeq,
+            has_more: var_hasMore,
+            snapshot_required: var_snapshotRequired,
+            retention_floor_event_seq: var_retentionFloorEventSeq,
+            warnings: var_warnings,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartSyncThreadAfterRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_thread = <crate::dto::message::DartThreadRef>::sse_decode(deserializer);
+        let mut var_afterServerSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_limit = <Option<u32>>::sse_decode(deserializer);
+        return crate::dto::message::DartSyncThreadAfterRequest {
+            thread: var_thread,
+            after_server_seq: var_afterServerSeq,
+            limit: var_limit,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::message::DartSyncThreadAfterResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_messages = <Vec<crate::dto::message::DartMessage>>::sse_decode(deserializer);
+        let mut var_nextAfterServerSeq = <Option<String>>::sse_decode(deserializer);
+        let mut var_hasMore = <bool>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::message::DartSyncThreadAfterResult {
+            messages: var_messages,
+            next_after_server_seq: var_nextAfterServerSeq,
+            has_more: var_hasMore,
+            warnings: var_warnings,
         };
     }
 }
@@ -6910,6 +7121,19 @@ impl SseDecode for Option<crate::dto::message::DartMessage> {
     }
 }
 
+impl SseDecode for Option<crate::dto::realtime::DartRealtimeSyncHint> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::dto::realtime::DartRealtimeSyncHint>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::secure::DartSecureDelivery> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -7200,10 +7424,12 @@ fn pde_ffi_dispatcher_primary_impl(
         }
         72 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
         73 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        75 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        76 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        77 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
+        75 => wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len),
+        76 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        77 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        78 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        79 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -8956,6 +9182,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartRealtimeEvent {
             self.host_kind.into_into_dart().into_dart(),
             self.content_type.into_into_dart().into_dart(),
             self.notification_type.into_into_dart().into_dart(),
+            self.sync.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -9018,6 +9245,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeStatus>
     for crate::dto::realtime::DartRealtimeStatus
 {
     fn into_into_dart(self) -> crate::dto::realtime::DartRealtimeStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartRealtimeSyncHint {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.event_id.into_into_dart().into_dart(),
+            self.event_seq.into_into_dart().into_dart(),
+            self.event_type.into_into_dart().into_dart(),
+            self.sync_dirty.into_into_dart().into_dart(),
+            self.gap_detected.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::realtime::DartRealtimeSyncHint
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeSyncHint>
+    for crate::dto::realtime::DartRealtimeSyncHint
+{
+    fn into_into_dart(self) -> crate::dto::realtime::DartRealtimeSyncHint {
         self
     }
 }
@@ -9448,6 +9699,99 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::auth::DartSessionUpdate>
     for crate::dto::auth::DartSessionUpdate
 {
     fn into_into_dart(self) -> crate::dto::auth::DartSessionUpdate {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSyncDeltaRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.limit.into_into_dart().into_dart(),
+            self.device_id.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartSyncDeltaRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSyncDeltaRequest>
+    for crate::dto::message::DartSyncDeltaRequest
+{
+    fn into_into_dart(self) -> crate::dto::message::DartSyncDeltaRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSyncDeltaResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.events_applied.into_into_dart().into_dart(),
+            self.pages_fetched.into_into_dart().into_dart(),
+            self.last_applied_event_seq.into_into_dart().into_dart(),
+            self.has_more.into_into_dart().into_dart(),
+            self.snapshot_required.into_into_dart().into_dart(),
+            self.retention_floor_event_seq.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartSyncDeltaResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSyncDeltaResult>
+    for crate::dto::message::DartSyncDeltaResult
+{
+    fn into_into_dart(self) -> crate::dto::message::DartSyncDeltaResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSyncThreadAfterRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.thread.into_into_dart().into_dart(),
+            self.after_server_seq.into_into_dart().into_dart(),
+            self.limit.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartSyncThreadAfterRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSyncThreadAfterRequest>
+    for crate::dto::message::DartSyncThreadAfterRequest
+{
+    fn into_into_dart(self) -> crate::dto::message::DartSyncThreadAfterRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSyncThreadAfterResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.messages.into_into_dart().into_dart(),
+            self.next_after_server_seq.into_into_dart().into_dart(),
+            self.has_more.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::message::DartSyncThreadAfterResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartSyncThreadAfterResult>
+    for crate::dto::message::DartSyncThreadAfterResult
+{
+    fn into_into_dart(self) -> crate::dto::message::DartSyncThreadAfterResult {
         self
     }
 }
@@ -10562,6 +10906,7 @@ impl SseEncode for crate::dto::realtime::DartRealtimeEvent {
         <Option<String>>::sse_encode(self.host_kind, serializer);
         <Option<String>>::sse_encode(self.content_type, serializer);
         <Option<String>>::sse_encode(self.notification_type, serializer);
+        <Option<crate::dto::realtime::DartRealtimeSyncHint>>::sse_encode(self.sync, serializer);
     }
 }
 
@@ -10586,6 +10931,17 @@ impl SseEncode for crate::dto::realtime::DartRealtimeStatus {
         <Vec<String>>::sse_encode(self.subscriptions, serializer);
         <Option<String>>::sse_encode(self.last_error, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::realtime::DartRealtimeSyncHint {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.event_id, serializer);
+        <Option<String>>::sse_encode(self.event_seq, serializer);
+        <Option<String>>::sse_encode(self.event_type, serializer);
+        <bool>::sse_encode(self.sync_dirty, serializer);
+        <bool>::sse_encode(self.gap_detected, serializer);
     }
 }
 
@@ -10810,6 +11166,47 @@ impl SseEncode for crate::dto::auth::DartSessionUpdate {
         <Option<String>>::sse_encode(self.new_expires_at, serializer);
         <bool>::sse_encode(self.refreshed, serializer);
         <Option<String>>::sse_encode(self.bearer_token, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartSyncDeltaRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<u32>>::sse_encode(self.limit, serializer);
+        <Option<String>>::sse_encode(self.device_id, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartSyncDeltaResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.events_applied, serializer);
+        <u32>::sse_encode(self.pages_fetched, serializer);
+        <Option<String>>::sse_encode(self.last_applied_event_seq, serializer);
+        <bool>::sse_encode(self.has_more, serializer);
+        <bool>::sse_encode(self.snapshot_required, serializer);
+        <Option<String>>::sse_encode(self.retention_floor_event_seq, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartSyncThreadAfterRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartThreadRef>::sse_encode(self.thread, serializer);
+        <Option<String>>::sse_encode(self.after_server_seq, serializer);
+        <Option<u32>>::sse_encode(self.limit, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::message::DartSyncThreadAfterResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::dto::message::DartMessage>>::sse_encode(self.messages, serializer);
+        <Option<String>>::sse_encode(self.next_after_server_seq, serializer);
+        <bool>::sse_encode(self.has_more, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }
 
@@ -11122,6 +11519,16 @@ impl SseEncode for Option<crate::dto::message::DartMessage> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::dto::message::DartMessage>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::realtime::DartRealtimeSyncHint> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::realtime::DartRealtimeSyncHint>::sse_encode(value, serializer);
         }
     }
 }

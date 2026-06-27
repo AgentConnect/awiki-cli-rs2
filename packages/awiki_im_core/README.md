@@ -47,3 +47,29 @@ final page = await client.messages.localHistory(
 `localHistory` only reads the local `im-core` projection and is intended for
 fast first paint. Use `history()` afterwards only when the app wants remote
 reconcile/freshness.
+
+Reliable message sync is exposed through high-level message APIs:
+
+```dart
+final delta = await client.messages.syncDelta(
+  const SyncDeltaRequest(limit: 100, reason: 'app_resumed'),
+);
+
+final page = await client.messages.syncThreadAfter(
+  const SyncThreadAfterRequest(
+    thread: ThreadRef.direct('did:example:bob'),
+    afterServerSeq: '991',
+    limit: 100,
+  ),
+);
+```
+
+`syncDelta` lets Rust `im-core` read and advance the global reliable checkpoint
+inside SQLite after events are applied. Dart callers can choose diagnostics such
+as `limit`, `deviceId`, and `reason`, but cannot pass `since_event_seq` or store
+the checkpoint. `syncThreadAfter` is thread-local and uses `afterServerSeq`; it
+does not read or advance the global checkpoint.
+
+Realtime events may include a readonly `RealtimeSyncHint`. Apps may use it to
+schedule `syncDelta` after dirty/gap detection, but receiving realtime metadata
+does not advance the reliable checkpoint.

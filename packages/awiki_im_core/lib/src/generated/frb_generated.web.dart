@@ -190,6 +190,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
 
   @protected
+  DartRealtimeSyncHint dco_decode_box_autoadd_dart_realtime_sync_hint(
+    dynamic raw,
+  );
+
+  @protected
   DartScopedInboxToken dco_decode_box_autoadd_dart_scoped_inbox_token(
     dynamic raw,
   );
@@ -214,6 +219,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
     dynamic raw,
   );
+
+  @protected
+  DartSyncDeltaRequest dco_decode_box_autoadd_dart_sync_delta_request(
+    dynamic raw,
+  );
+
+  @protected
+  DartSyncThreadAfterRequest
+  dco_decode_box_autoadd_dart_sync_thread_after_request(dynamic raw);
 
   @protected
   DartThreadRef dco_decode_box_autoadd_dart_thread_ref(dynamic raw);
@@ -481,6 +495,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw);
 
   @protected
+  DartRealtimeSyncHint dco_decode_dart_realtime_sync_hint(dynamic raw);
+
+  @protected
   DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw);
 
   @protected
@@ -533,6 +550,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSessionUpdate dco_decode_dart_session_update(dynamic raw);
+
+  @protected
+  DartSyncDeltaRequest dco_decode_dart_sync_delta_request(dynamic raw);
+
+  @protected
+  DartSyncDeltaResult dco_decode_dart_sync_delta_result(dynamic raw);
+
+  @protected
+  DartSyncThreadAfterRequest dco_decode_dart_sync_thread_after_request(
+    dynamic raw,
+  );
+
+  @protected
+  DartSyncThreadAfterResult dco_decode_dart_sync_thread_after_result(
+    dynamic raw,
+  );
 
   @protected
   DartThreadRef dco_decode_dart_thread_ref(dynamic raw);
@@ -637,6 +670,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
+
+  @protected
+  DartRealtimeSyncHint? dco_decode_opt_box_autoadd_dart_realtime_sync_hint(
+    dynamic raw,
+  );
 
   @protected
   DartSecureDelivery? dco_decode_opt_box_autoadd_dart_secure_delivery(
@@ -840,6 +878,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartRealtimeSyncHint sse_decode_box_autoadd_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartScopedInboxToken sse_decode_box_autoadd_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   );
@@ -866,6 +909,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncDeltaRequest sse_decode_box_autoadd_dart_sync_delta_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncThreadAfterRequest
+  sse_decode_box_autoadd_dart_sync_thread_after_request(
     SseDeserializer deserializer,
   );
 
@@ -1211,6 +1265,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartRealtimeSyncHint sse_decode_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartRecoverHandleResult sse_decode_dart_recover_handle_result(
     SseDeserializer deserializer,
   );
@@ -1297,6 +1356,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSessionUpdate sse_decode_dart_session_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncDeltaRequest sse_decode_dart_sync_delta_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncDeltaResult sse_decode_dart_sync_delta_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncThreadAfterRequest sse_decode_dart_sync_thread_after_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncThreadAfterResult sse_decode_dart_sync_thread_after_result(
     SseDeserializer deserializer,
   );
 
@@ -1425,6 +1504,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartMessage? sse_decode_opt_box_autoadd_dart_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRealtimeSyncHint? sse_decode_opt_box_autoadd_dart_realtime_sync_hint(
     SseDeserializer deserializer,
   );
 
@@ -1663,6 +1747,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_realtime_sync_hint(
+    DartRealtimeSyncHint self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_scoped_inbox_token(
     DartScopedInboxToken self,
     SseSerializer serializer,
@@ -1695,6 +1785,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_send_text_request(
     DartSendTextRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_delta_request(
+    DartSyncDeltaRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_thread_after_request(
+    DartSyncThreadAfterRequest self,
     SseSerializer serializer,
   );
 
@@ -2128,6 +2230,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_realtime_sync_hint(
+    DartRealtimeSyncHint self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_recover_handle_result(
     DartRecoverHandleResult self,
     SseSerializer serializer,
@@ -2232,6 +2340,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_session_update(
     DartSessionUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_delta_request(
+    DartSyncDeltaRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_delta_result(
+    DartSyncDeltaResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_thread_after_request(
+    DartSyncThreadAfterRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_thread_after_result(
+    DartSyncThreadAfterResult self,
     SseSerializer serializer,
   );
 
@@ -2388,6 +2520,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_message(
     DartMessage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_realtime_sync_hint(
+    DartRealtimeSyncHint? self,
     SseSerializer serializer,
   );
 

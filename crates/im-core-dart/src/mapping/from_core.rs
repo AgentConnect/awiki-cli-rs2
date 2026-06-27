@@ -20,10 +20,11 @@ use crate::dto::{
     message::{
         DartConversation, DartConversationPage, DartMarkReadResult, DartMarkThreadReadResult,
         DartMessage, DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
-        DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
+        DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult, DartSyncDeltaResult,
+        DartSyncThreadAfterResult,
     },
     profile::DartUserProfile,
-    realtime::{DartRealtimeEvent, DartRealtimeStatus},
+    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
     secure::{
         DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
         DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
@@ -925,6 +926,31 @@ impl From<im_core::messages::MarkThreadReadResult> for DartMarkThreadReadResult 
     }
 }
 
+impl From<im_core::messages::SyncDeltaResult> for DartSyncDeltaResult {
+    fn from(value: im_core::messages::SyncDeltaResult) -> Self {
+        Self {
+            events_applied: value.events_applied,
+            pages_fetched: value.pages_fetched,
+            last_applied_event_seq: value.last_applied_event_seq,
+            has_more: value.has_more,
+            snapshot_required: value.snapshot_required,
+            retention_floor_event_seq: value.retention_floor_event_seq,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResult {
+    fn from(value: im_core::messages::SyncThreadAfterResult) -> Self {
+        Self {
+            messages: value.messages.into_iter().map(Into::into).collect(),
+            next_after_server_seq: value.next_after_server_seq,
+            has_more: value.has_more,
+            warnings: value.warnings,
+        }
+    }
+}
+
 impl From<im_core::groups::GroupSummary> for DartGroupSummary {
     fn from(value: im_core::groups::GroupSummary) -> Self {
         Self {
@@ -1021,6 +1047,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
         host_kind: None,
         content_type: None,
         notification_type: None,
+        sync: None,
     };
 
     match value {
@@ -1035,6 +1062,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             let mut out = empty();
             out.kind = "message_received".to_string();
             out.message = Some(event.message.into());
+            out.sync = event.sync.map(Into::into);
             out
         }
         ImEvent::MessageUpdated(event) => {
@@ -1052,6 +1080,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
                 }
                 .to_string(),
             );
+            out.sync = event.sync.map(Into::into);
             out
         }
         ImEvent::GroupUpdated(event) => {
@@ -1069,6 +1098,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
                 }
                 .to_string(),
             );
+            out.sync = event.sync.map(Into::into);
             out
         }
         ImEvent::LocalNotification(event) => {
@@ -1108,7 +1138,20 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             out.reason = Some(event.reason);
             out.content_type = event.content_type;
             out.notification_type = event.notification_type;
+            out.sync = event.sync.map(Into::into);
             out
+        }
+    }
+}
+
+impl From<im_core::realtime::RealtimeSyncHint> for DartRealtimeSyncHint {
+    fn from(value: im_core::realtime::RealtimeSyncHint) -> Self {
+        Self {
+            event_id: value.event_id,
+            event_seq: value.event_seq,
+            event_type: value.event_type,
+            sync_dirty: value.sync_dirty,
+            gap_detected: value.gap_detected,
         }
     }
 }
@@ -1147,7 +1190,7 @@ mod tests {
         realtime::{
             ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
             HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent,
-            MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState,
+            MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState, RealtimeSyncHint,
             UnknownNotificationEvent,
         },
     };
@@ -1181,6 +1224,7 @@ mod tests {
             },
             attachment_summary: None,
             download_action: None,
+            sync: None,
             warnings: Vec::new(),
         }));
         assert_eq!(event.kind, "message_received");
@@ -1195,6 +1239,7 @@ mod tests {
         let group = realtime_event_to_dart(ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:example:group").unwrap(),
             update_kind: GroupUpdateKind::MessageAdded,
+            sync: None,
         }));
         assert_eq!(group.kind, "group_updated");
         assert_eq!(group.group.as_deref(), Some("did:example:group"));
@@ -1204,6 +1249,7 @@ mod tests {
             message_id: MessageId::parse("msg-dart-map-2").unwrap(),
             thread: ThreadRef::Thread(ThreadId::parse("thread-1").unwrap()),
             update_kind: MessageUpdateKind::DeliveryStateChanged,
+            sync: None,
         }));
         assert_eq!(message_update.kind, "message_updated");
         assert_eq!(message_update.message_id.as_deref(), Some("msg-dart-map-2"));
@@ -1241,10 +1287,37 @@ mod tests {
                 content_type: Some("application/json".to_string()),
                 notification_type: Some("custom.event".to_string()),
                 reason: "unsupported notification".to_string(),
+                sync: None,
             }));
         assert_eq!(unknown.kind, "unknown_notification");
         assert_eq!(unknown.content_type.as_deref(), Some("application/json"));
         assert_eq!(unknown.notification_type.as_deref(), Some("custom.event"));
         assert_eq!(unknown.reason.as_deref(), Some("unsupported notification"));
+    }
+
+    #[test]
+    fn realtime_event_mapping_preserves_sync_hint_without_checkpoint_control() {
+        let sync = RealtimeSyncHint {
+            event_id: Some("sev-1".to_string()),
+            event_seq: Some("42".to_string()),
+            event_type: Some("message.created".to_string()),
+            sync_dirty: true,
+            gap_detected: true,
+        };
+
+        let event =
+            realtime_event_to_dart(ImEvent::UnknownNotification(UnknownNotificationEvent {
+                content_type: Some("application/json".to_string()),
+                notification_type: Some("direct.incoming".to_string()),
+                reason: "unsupported notification".to_string(),
+                sync: Some(sync),
+            }));
+
+        let hint = event.sync.expect("sync hint is preserved");
+        assert_eq!(hint.event_id.as_deref(), Some("sev-1"));
+        assert_eq!(hint.event_seq.as_deref(), Some("42"));
+        assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+        assert!(hint.sync_dirty);
+        assert!(hint.gap_detected);
     }
 }

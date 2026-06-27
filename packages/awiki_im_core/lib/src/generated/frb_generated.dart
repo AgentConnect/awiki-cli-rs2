@@ -88,7 +88,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -13850945;
+  int get rustContentHash => 1424466498;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -486,6 +486,16 @@ abstract class RustLibApi extends BaseApi {
   Future<DartSendMessageResult> crateApiMessagesSendText({
     required ArcDartImClient client,
     required DartSendTextRequest request,
+  });
+
+  Future<DartSyncDeltaResult> crateApiMessagesSyncDelta({
+    required ArcDartImClient client,
+    required DartSyncDeltaRequest request,
+  });
+
+  Future<DartSyncThreadAfterResult> crateApiMessagesSyncThreadAfter({
+    required ArcDartImClient client,
+    required DartSyncThreadAfterRequest request,
   });
 
   Future<void> crateApiDirectoryUnfollow({
@@ -3367,6 +3377,84 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<DartSyncDeltaResult> crateApiMessagesSyncDelta({
+    required ArcDartImClient client,
+    required DartSyncDeltaRequest request,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_sync_delta_request(request, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 74,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_sync_delta_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiMessagesSyncDeltaConstMeta,
+        argValues: [client, request],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMessagesSyncDeltaConstMeta => const TaskConstMeta(
+    debugName: "sync_delta",
+    argNames: ["client", "request"],
+  );
+
+  @override
+  Future<DartSyncThreadAfterResult> crateApiMessagesSyncThreadAfter({
+    required ArcDartImClient client,
+    required DartSyncThreadAfterRequest request,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_sync_thread_after_request(
+            request,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 75,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_sync_thread_after_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiMessagesSyncThreadAfterConstMeta,
+        argValues: [client, request],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMessagesSyncThreadAfterConstMeta =>
+      const TaskConstMeta(
+        debugName: "sync_thread_after",
+        argNames: ["client", "request"],
+      );
+
+  @override
   Future<void> crateApiDirectoryUnfollow({
     required ArcDartImClient client,
     required String peer,
@@ -3383,7 +3471,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 74,
+            funcId: 76,
             port: port_,
           );
         },
@@ -3411,7 +3499,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 77,
             port: port_,
           );
         },
@@ -3446,7 +3534,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 78,
             port: port_,
           );
         },
@@ -3482,7 +3570,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 77,
+            funcId: 79,
             port: port_,
           );
         },
@@ -3763,6 +3851,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartRealtimeSyncHint dco_decode_box_autoadd_dart_realtime_sync_hint(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_realtime_sync_hint(raw);
+  }
+
+  @protected
   DartScopedInboxToken dco_decode_box_autoadd_dart_scoped_inbox_token(
     dynamic raw,
   ) {
@@ -3804,6 +3900,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_dart_send_text_request(raw);
+  }
+
+  @protected
+  DartSyncDeltaRequest dco_decode_box_autoadd_dart_sync_delta_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_sync_delta_request(raw);
+  }
+
+  @protected
+  DartSyncThreadAfterRequest
+  dco_decode_box_autoadd_dart_sync_thread_after_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_sync_thread_after_request(raw);
   }
 
   @protected
@@ -4869,8 +4980,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartRealtimeEvent dco_decode_dart_realtime_event(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return DartRealtimeEvent(
       kind: dco_decode_String(arr[0]),
       state: dco_decode_opt_String(arr[1]),
@@ -4888,6 +4999,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hostKind: dco_decode_opt_String(arr[13]),
       contentType: dco_decode_opt_String(arr[14]),
       notificationType: dco_decode_opt_String(arr[15]),
+      sync_: dco_decode_opt_box_autoadd_dart_realtime_sync_hint(arr[16]),
     );
   }
 
@@ -4920,6 +5032,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       subscriptions: dco_decode_list_String(arr[2]),
       lastError: dco_decode_opt_String(arr[3]),
       warnings: dco_decode_list_String(arr[4]),
+    );
+  }
+
+  @protected
+  DartRealtimeSyncHint dco_decode_dart_realtime_sync_hint(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return DartRealtimeSyncHint(
+      eventId: dco_decode_opt_String(arr[0]),
+      eventSeq: dco_decode_opt_String(arr[1]),
+      eventType: dco_decode_opt_String(arr[2]),
+      syncDirty: dco_decode_bool(arr[3]),
+      gapDetected: dco_decode_bool(arr[4]),
     );
   }
 
@@ -5175,6 +5302,67 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSyncDeltaRequest dco_decode_dart_sync_delta_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartSyncDeltaRequest(
+      limit: dco_decode_opt_box_autoadd_u_32(arr[0]),
+      deviceId: dco_decode_opt_String(arr[1]),
+      reason: dco_decode_opt_String(arr[2]),
+    );
+  }
+
+  @protected
+  DartSyncDeltaResult dco_decode_dart_sync_delta_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return DartSyncDeltaResult(
+      eventsApplied: dco_decode_u_32(arr[0]),
+      pagesFetched: dco_decode_u_32(arr[1]),
+      lastAppliedEventSeq: dco_decode_opt_String(arr[2]),
+      hasMore: dco_decode_bool(arr[3]),
+      snapshotRequired: dco_decode_bool(arr[4]),
+      retentionFloorEventSeq: dco_decode_opt_String(arr[5]),
+      warnings: dco_decode_list_String(arr[6]),
+    );
+  }
+
+  @protected
+  DartSyncThreadAfterRequest dco_decode_dart_sync_thread_after_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartSyncThreadAfterRequest(
+      thread: dco_decode_dart_thread_ref(arr[0]),
+      afterServerSeq: dco_decode_opt_String(arr[1]),
+      limit: dco_decode_opt_box_autoadd_u_32(arr[2]),
+    );
+  }
+
+  @protected
+  DartSyncThreadAfterResult dco_decode_dart_sync_thread_after_result(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartSyncThreadAfterResult(
+      messages: dco_decode_list_dart_message(arr[0]),
+      nextAfterServerSeq: dco_decode_opt_String(arr[1]),
+      hasMore: dco_decode_bool(arr[2]),
+      warnings: dco_decode_list_String(arr[3]),
+    );
+  }
+
+  @protected
   DartThreadRef dco_decode_dart_thread_ref(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
@@ -5426,6 +5614,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_dart_message(raw);
+  }
+
+  @protected
+  DartRealtimeSyncHint? dco_decode_opt_box_autoadd_dart_realtime_sync_hint(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_realtime_sync_hint(raw);
   }
 
   @protected
@@ -5798,6 +5996,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartRealtimeSyncHint sse_decode_box_autoadd_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_realtime_sync_hint(deserializer));
+  }
+
+  @protected
   DartScopedInboxToken sse_decode_box_autoadd_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   ) {
@@ -5843,6 +6049,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_send_text_request(deserializer));
+  }
+
+  @protected
+  DartSyncDeltaRequest sse_decode_box_autoadd_dart_sync_delta_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_sync_delta_request(deserializer));
+  }
+
+  @protected
+  DartSyncThreadAfterRequest
+  sse_decode_box_autoadd_dart_sync_thread_after_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_sync_thread_after_request(deserializer));
   }
 
   @protected
@@ -7192,6 +7415,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_hostKind = sse_decode_opt_String(deserializer);
     var var_contentType = sse_decode_opt_String(deserializer);
     var var_notificationType = sse_decode_opt_String(deserializer);
+    var var_sync_ = sse_decode_opt_box_autoadd_dart_realtime_sync_hint(
+      deserializer,
+    );
     return DartRealtimeEvent(
       kind: var_kind,
       state: var_state,
@@ -7209,6 +7435,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       hostKind: var_hostKind,
       contentType: var_contentType,
       notificationType: var_notificationType,
+      sync_: var_sync_,
     );
   }
 
@@ -7255,6 +7482,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       subscriptions: var_subscriptions,
       lastError: var_lastError,
       warnings: var_warnings,
+    );
+  }
+
+  @protected
+  DartRealtimeSyncHint sse_decode_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_eventId = sse_decode_opt_String(deserializer);
+    var var_eventSeq = sse_decode_opt_String(deserializer);
+    var var_eventType = sse_decode_opt_String(deserializer);
+    var var_syncDirty = sse_decode_bool(deserializer);
+    var var_gapDetected = sse_decode_bool(deserializer);
+    return DartRealtimeSyncHint(
+      eventId: var_eventId,
+      eventSeq: var_eventSeq,
+      eventType: var_eventType,
+      syncDirty: var_syncDirty,
+      gapDetected: var_gapDetected,
     );
   }
 
@@ -7573,6 +7819,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       newExpiresAt: var_newExpiresAt,
       refreshed: var_refreshed,
       bearerToken: var_bearerToken,
+    );
+  }
+
+  @protected
+  DartSyncDeltaRequest sse_decode_dart_sync_delta_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_limit = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_deviceId = sse_decode_opt_String(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    return DartSyncDeltaRequest(
+      limit: var_limit,
+      deviceId: var_deviceId,
+      reason: var_reason,
+    );
+  }
+
+  @protected
+  DartSyncDeltaResult sse_decode_dart_sync_delta_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_eventsApplied = sse_decode_u_32(deserializer);
+    var var_pagesFetched = sse_decode_u_32(deserializer);
+    var var_lastAppliedEventSeq = sse_decode_opt_String(deserializer);
+    var var_hasMore = sse_decode_bool(deserializer);
+    var var_snapshotRequired = sse_decode_bool(deserializer);
+    var var_retentionFloorEventSeq = sse_decode_opt_String(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    return DartSyncDeltaResult(
+      eventsApplied: var_eventsApplied,
+      pagesFetched: var_pagesFetched,
+      lastAppliedEventSeq: var_lastAppliedEventSeq,
+      hasMore: var_hasMore,
+      snapshotRequired: var_snapshotRequired,
+      retentionFloorEventSeq: var_retentionFloorEventSeq,
+      warnings: var_warnings,
+    );
+  }
+
+  @protected
+  DartSyncThreadAfterRequest sse_decode_dart_sync_thread_after_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_thread = sse_decode_dart_thread_ref(deserializer);
+    var var_afterServerSeq = sse_decode_opt_String(deserializer);
+    var var_limit = sse_decode_opt_box_autoadd_u_32(deserializer);
+    return DartSyncThreadAfterRequest(
+      thread: var_thread,
+      afterServerSeq: var_afterServerSeq,
+      limit: var_limit,
+    );
+  }
+
+  @protected
+  DartSyncThreadAfterResult sse_decode_dart_sync_thread_after_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_messages = sse_decode_list_dart_message(deserializer);
+    var var_nextAfterServerSeq = sse_decode_opt_String(deserializer);
+    var var_hasMore = sse_decode_bool(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    return DartSyncThreadAfterResult(
+      messages: var_messages,
+      nextAfterServerSeq: var_nextAfterServerSeq,
+      hasMore: var_hasMore,
+      warnings: var_warnings,
     );
   }
 
@@ -7986,6 +8302,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_dart_message(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  DartRealtimeSyncHint? sse_decode_opt_box_autoadd_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_realtime_sync_hint(deserializer));
     } else {
       return null;
     }
@@ -8435,6 +8764,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_realtime_sync_hint(
+    DartRealtimeSyncHint self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_realtime_sync_hint(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_scoped_inbox_token(
     DartScopedInboxToken self,
     SseSerializer serializer,
@@ -8486,6 +8824,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_send_text_request(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_delta_request(
+    DartSyncDeltaRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_sync_delta_request(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_thread_after_request(
+    DartSyncThreadAfterRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_sync_thread_after_request(self, serializer);
   }
 
   @protected
@@ -9473,6 +9829,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.hostKind, serializer);
     sse_encode_opt_String(self.contentType, serializer);
     sse_encode_opt_String(self.notificationType, serializer);
+    sse_encode_opt_box_autoadd_dart_realtime_sync_hint(self.sync_, serializer);
   }
 
   @protected
@@ -9501,6 +9858,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_String(self.subscriptions, serializer);
     sse_encode_opt_String(self.lastError, serializer);
     sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_realtime_sync_hint(
+    DartRealtimeSyncHint self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.eventId, serializer);
+    sse_encode_opt_String(self.eventSeq, serializer);
+    sse_encode_opt_String(self.eventType, serializer);
+    sse_encode_bool(self.syncDirty, serializer);
+    sse_encode_bool(self.gapDetected, serializer);
   }
 
   @protected
@@ -9733,6 +10103,55 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.newExpiresAt, serializer);
     sse_encode_bool(self.refreshed, serializer);
     sse_encode_opt_String(self.bearerToken, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_sync_delta_request(
+    DartSyncDeltaRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_box_autoadd_u_32(self.limit, serializer);
+    sse_encode_opt_String(self.deviceId, serializer);
+    sse_encode_opt_String(self.reason, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_sync_delta_result(
+    DartSyncDeltaResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.eventsApplied, serializer);
+    sse_encode_u_32(self.pagesFetched, serializer);
+    sse_encode_opt_String(self.lastAppliedEventSeq, serializer);
+    sse_encode_bool(self.hasMore, serializer);
+    sse_encode_bool(self.snapshotRequired, serializer);
+    sse_encode_opt_String(self.retentionFloorEventSeq, serializer);
+    sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_sync_thread_after_request(
+    DartSyncThreadAfterRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_thread_ref(self.thread, serializer);
+    sse_encode_opt_String(self.afterServerSeq, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.limit, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_sync_thread_after_result(
+    DartSyncThreadAfterResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_dart_message(self.messages, serializer);
+    sse_encode_opt_String(self.nextAfterServerSeq, serializer);
+    sse_encode_bool(self.hasMore, serializer);
+    sse_encode_list_String(self.warnings, serializer);
   }
 
   @protected
@@ -10089,6 +10508,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_message(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_realtime_sync_hint(
+    DartRealtimeSyncHint? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_realtime_sync_hint(self, serializer);
     }
   }
 

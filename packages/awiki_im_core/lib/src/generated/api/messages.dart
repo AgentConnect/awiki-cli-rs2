@@ -85,6 +85,22 @@ Future<DartMarkThreadReadResult> markThreadRead({
   maxMessageIds: maxMessageIds,
 );
 
+Future<DartSyncDeltaResult> syncDelta({
+  required ArcDartImClient client,
+  required DartSyncDeltaRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncDelta(
+  client: client,
+  request: request,
+);
+
+Future<DartSyncThreadAfterResult> syncThreadAfter({
+  required ArcDartImClient client,
+  required DartSyncThreadAfterRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncThreadAfter(
+  client: client,
+  request: request,
+);
+
 Future<DartConversationPage> conversations({
   required ArcDartImClient client,
   required int limit,

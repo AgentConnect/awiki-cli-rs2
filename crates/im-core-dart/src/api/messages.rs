@@ -5,7 +5,8 @@ use crate::dto::{
     message::{
         DartConversationPage, DartInboxHistoryOptions, DartMarkReadResult,
         DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult, DartSendPayloadRequest,
-        DartSendTextRequest, DartThreadRef,
+        DartSendTextRequest, DartSyncDeltaRequest, DartSyncDeltaResult, DartSyncThreadAfterRequest,
+        DartSyncThreadAfterResult, DartThreadRef,
     },
 };
 
@@ -142,6 +143,32 @@ pub async fn mark_thread_read(
     inner
         .messages()
         .mark_thread_read_async(request)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn sync_delta(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSyncDeltaRequest,
+) -> Result<DartSyncDeltaResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .sync_delta_async(request.into())
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn sync_thread_after(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSyncThreadAfterRequest,
+) -> Result<DartSyncThreadAfterResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .sync_thread_after_async(request.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

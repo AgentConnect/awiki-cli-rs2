@@ -220,6 +220,60 @@ class MessagePage {
   final bool hasMore;
 }
 
+class SyncDeltaRequest {
+  const SyncDeltaRequest({this.limit, this.deviceId, this.reason});
+
+  final int? limit;
+  final String? deviceId;
+  final String? reason;
+}
+
+class SyncDeltaResult {
+  const SyncDeltaResult({
+    required this.eventsApplied,
+    required this.pagesFetched,
+    this.lastAppliedEventSeq,
+    required this.hasMore,
+    required this.snapshotRequired,
+    this.retentionFloorEventSeq,
+    this.warnings = const [],
+  });
+
+  final int eventsApplied;
+  final int pagesFetched;
+  final String? lastAppliedEventSeq;
+  final bool hasMore;
+  final bool snapshotRequired;
+  final String? retentionFloorEventSeq;
+  final List<String> warnings;
+}
+
+class SyncThreadAfterRequest {
+  const SyncThreadAfterRequest({
+    required this.thread,
+    this.afterServerSeq,
+    this.limit,
+  });
+
+  final ThreadRef thread;
+  final String? afterServerSeq;
+  final int? limit;
+}
+
+class SyncThreadAfterResult {
+  const SyncThreadAfterResult({
+    required this.messages,
+    this.nextAfterServerSeq,
+    required this.hasMore,
+    this.warnings = const [],
+  });
+
+  final List<Message> messages;
+  final String? nextAfterServerSeq;
+  final bool hasMore;
+  final List<String> warnings;
+}
+
 class Conversation {
   const Conversation({
     required this.threadKind,

@@ -170,3 +170,36 @@ pub struct DartMarkThreadReadResult {
     pub partial: bool,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSyncDeltaRequest {
+    pub limit: Option<u32>,
+    pub device_id: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSyncDeltaResult {
+    pub events_applied: u32,
+    pub pages_fetched: u32,
+    pub last_applied_event_seq: Option<String>,
+    pub has_more: bool,
+    pub snapshot_required: bool,
+    pub retention_floor_event_seq: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSyncThreadAfterRequest {
+    pub thread: DartThreadRef,
+    pub after_server_seq: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSyncThreadAfterResult {
+    pub messages: Vec<DartMessage>,
+    pub next_after_server_seq: Option<String>,
+    pub has_more: bool,
+    pub warnings: Vec<String>,
+}
