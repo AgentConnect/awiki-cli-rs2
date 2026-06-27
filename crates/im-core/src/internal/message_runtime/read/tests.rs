@@ -1025,6 +1025,72 @@ fn messages_read_runtime_uses_remote_created_at_as_sent_at() {
     );
 }
 
+#[tokio::test]
+async fn messages_read_runtime_emits_conversation_patch_after_history_projection_commit() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let mut session = client
+        .messages()
+        .watch_conversation_patches()
+        .expect("conversation patch session");
+    assert!(matches!(
+        session.next_patch().await,
+        Some(crate::messages::ConversationStorePatch::Reset { .. })
+    ));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({
+                "messages": [{
+                    "id": "msg-history-patch",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": "did:example:alice",
+                    "content": "history patch text",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-05-21T03:04:05Z",
+                    "server_seq": 42
+                }],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    );
+
+    runtime
+        .history(HistoryRead {
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            query: crate::messages::HistoryQuery {
+                limit: crate::ids::PageLimit(5),
+                cursor: None,
+                inbox_history_options: None,
+            },
+            resolved_peer_did: None,
+            peer_scope: None,
+        })
+        .unwrap();
+
+    let patch = tokio::time::timeout(std::time::Duration::from_secs(1), session.next_patch())
+        .await
+        .expect("history projection should emit a conversation patch")
+        .expect("conversation patch");
+    let item = match patch {
+        crate::messages::ConversationStorePatch::Upsert { item, .. } => item,
+        crate::messages::ConversationStorePatch::Reset { mut items, .. } => {
+            assert_eq!(items.len(), 1);
+            items.remove(0)
+        }
+        other => panic!("unexpected patch: {other:?}"),
+    };
+    assert_eq!(
+        item.last_message.as_ref().unwrap().body.text.as_deref(),
+        Some("history patch text")
+    );
+}
+
 #[test]
 fn messages_read_runtime_maps_application_json_content_to_payload_body() {
     let fixture = Fixture::new();

@@ -45,6 +45,7 @@ struct SummaryMessageRow {
     sender_name: String,
     mentions_current_user: bool,
     sort_at: String,
+    server_seq: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,7 @@ struct SummaryStateRow {
     first_unread_mention_message_id: String,
     last_message_id: String,
     last_message_at: String,
+    last_server_seq: Option<i64>,
 }
 
 impl SummaryMessageRow {
@@ -208,7 +210,8 @@ SELECT msg_id,
        is_read,
        sender_name,
        mentions_current_user,
-       COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at
+       COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at,
+       server_seq
 FROM messages
 WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
         (&owner_identity_id, &msg_id),
@@ -406,11 +409,15 @@ SELECT msg_id,
        is_read,
        sender_name,
        mentions_current_user,
-       COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at
+       COALESCE(NULLIF(sent_at, ''), stored_at) AS sort_at,
+       server_seq
 FROM messages
 WHERE owner_identity_id = ?1
   AND COALESCE(NULLIF(conversation_id, ''), thread_id) = ?2
-ORDER BY sort_at ASC, msg_id ASC"#,
+ORDER BY sort_at ASC,
+         CASE WHEN server_seq IS NULL THEN 0 ELSE 1 END ASC,
+         server_seq ASC,
+         msg_id ASC"#,
         )
         .map_err(super::local_state_unavailable)?;
     let rows = statement
@@ -607,14 +614,18 @@ fn summary_state(
 ) -> crate::ImResult<Option<SummaryStateRow>> {
     let result = connection.query_row(
         r#"
-SELECT message_count,
-       unread_count,
-       unread_mention_count,
-       first_unread_mention_message_id,
-       last_message_id,
-       last_message_at
-FROM conversation_summaries
-WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
+SELECT t.message_count,
+       t.unread_count,
+       t.unread_mention_count,
+       t.first_unread_mention_message_id,
+       t.last_message_id,
+       t.last_message_at,
+       m.server_seq AS last_server_seq
+FROM conversation_summaries t
+LEFT JOIN messages m
+  ON m.owner_identity_id = t.owner_identity_id
+ AND m.msg_id = t.last_message_id
+WHERE t.owner_identity_id = ?1 AND t.conversation_id = ?2"#,
         (owner_identity_id, conversation_id),
         |row| {
             Ok(SummaryStateRow {
@@ -632,6 +643,7 @@ WHERE owner_identity_id = ?1 AND conversation_id = ?2"#,
                 last_message_at: row
                     .get::<_, Option<String>>("last_message_at")?
                     .unwrap_or_default(),
+                last_server_seq: row.get::<_, Option<i64>>("last_server_seq")?,
             })
         },
     );
@@ -772,11 +784,18 @@ fn first_unread_mention_for_new_summary(row: &SummaryMessageRow) -> &str {
 }
 
 fn message_is_later_than_summary(row: &SummaryMessageRow, summary: &SummaryStateRow) -> bool {
-    (row.sort_at.as_str(), row.msg_id.as_str())
-        > (
-            summary.last_message_at.as_str(),
-            summary.last_message_id.as_str(),
-        )
+    if row.sort_at.as_str() != summary.last_message_at.as_str() {
+        return row.sort_at.as_str() > summary.last_message_at.as_str();
+    }
+    match (row.server_seq, summary.last_server_seq) {
+        (Some(server_seq), Some(last_server_seq)) if server_seq != last_server_seq => {
+            return server_seq > last_server_seq;
+        }
+        (Some(_), None) => return true,
+        (None, Some(_)) => return false,
+        _ => {}
+    }
+    row.msg_id.as_str() > summary.last_message_id.as_str()
 }
 
 fn distinct_owner_identity_ids(connection: &Connection) -> crate::ImResult<Vec<String>> {
@@ -860,6 +879,7 @@ fn summary_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryMessa
             .unwrap_or_default()
             != 0,
         sort_at: row.get::<_, Option<String>>("sort_at")?.unwrap_or_default(),
+        server_seq: row.get::<_, Option<i64>>("server_seq")?,
     })
 }
 

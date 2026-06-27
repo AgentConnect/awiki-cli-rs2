@@ -576,17 +576,29 @@ pub(crate) fn persist_projection_best_effort(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
 ) {
-    let _ = crate::internal::message_runtime::local_projection::persist_messages(client, messages);
+    if messages.is_empty() {
+        return;
+    }
+    if crate::internal::message_runtime::local_projection::persist_messages(client, messages)
+        .is_ok()
+    {
+        client.emit_committed_local_message_projection("remote_history");
+    }
 }
 
 pub(crate) async fn persist_projection_best_effort_async(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
 ) {
-    let _ = crate::internal::message_runtime::local_projection::persist_messages_async(
-        client, messages,
-    )
-    .await;
+    if messages.is_empty() {
+        return;
+    }
+    if crate::internal::message_runtime::local_projection::persist_messages_async(client, messages)
+        .await
+        .is_ok()
+    {
+        client.emit_committed_local_message_projection("remote_history");
+    }
 }
 
 fn delegated_message_service_did(client: &crate::core::ImClient) -> String {

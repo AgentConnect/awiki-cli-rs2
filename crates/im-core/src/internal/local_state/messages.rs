@@ -2261,6 +2261,51 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
     }
 
     #[test]
+    fn local_state_messages_summary_uses_server_seq_for_same_second_last_message() {
+        let db = Connection::open_in_memory().unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:owner";
+        let conversation_id = "dm:did:peer";
+        let timestamp = "2026-06-27T19:58:58Z";
+        let mut outgoing = summary_test_message(
+            "msg-z-outgoing",
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            1,
+            "app to cli",
+            timestamp,
+            true,
+        );
+        outgoing.server_seq = Some(14233);
+        upsert_message(&db, &outgoing).unwrap();
+        assert_eq!(
+            summary_snapshot(&db, owner_identity_id, conversation_id).last_message_id,
+            "msg-z-outgoing"
+        );
+
+        let mut incoming = summary_test_message(
+            "msg-a-incoming",
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            0,
+            "cli to app",
+            timestamp,
+            false,
+        );
+        incoming.server_seq = Some(14234);
+        upsert_message(&db, &incoming).unwrap();
+
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.message_count, 2);
+        assert_eq!(summary.unread_count, 1);
+        assert_eq!(summary.last_message_id, "msg-a-incoming");
+        assert_eq!(summary.last_content, "cli to app");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
+    }
+
+    #[test]
     fn local_state_messages_mark_read_delta_matches_rebuild() {
         let db = Connection::open_in_memory().unwrap();
         let owner_identity_id = "owner-id";
