@@ -508,6 +508,40 @@ LIMIT ?"#,
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn max_server_seq_for_thread_ref_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+) -> crate::ImResult<Option<i64>> {
+    let owner_identity_id = required("owner_identity_id", owner_identity_id)?;
+    let conversation_ids =
+        conversation_ids_for_thread_ref(connection, &owner_identity_id, owner_did, thread)?;
+    if conversation_ids.is_empty() {
+        return Ok(None);
+    }
+    let placeholders = vec!["?"; conversation_ids.len()].join(",");
+    let statement = format!(
+        r#"
+SELECT MAX(server_seq)
+FROM messages
+WHERE owner_identity_id = ?
+  AND server_seq IS NOT NULL
+  AND COALESCE(NULLIF(conversation_id, ''), thread_id) IN ({placeholders})"#
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(conversation_ids.len() + 1);
+    params.push(&owner_identity_id);
+    for conversation_id in &conversation_ids {
+        params.push(conversation_id);
+    }
+    connection
+        .query_row(&statement, params.as_slice(), |row| {
+            row.get::<_, Option<i64>>(0)
+        })
+        .map_err(super::local_state_unavailable)
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn list_unread_incoming_message_ids_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
@@ -1931,6 +1965,91 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
 
         assert_eq!(result.message_ids, vec!["group-new"]);
         assert!(result.truncated);
+    }
+
+    #[test]
+    fn local_state_thread_after_max_server_seq_is_owner_and_thread_scoped() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        for (msg_id, owner_identity_id, conversation_id, group_did, server_seq) in [
+            ("direct-old", "alice-id", "dm:did:example:bob", "", Some(7)),
+            ("direct-new", "alice-id", "dm:did:example:bob", "", Some(42)),
+            (
+                "direct-other-thread",
+                "alice-id",
+                "dm:did:example:carol",
+                "",
+                Some(100),
+            ),
+            (
+                "direct-other-owner",
+                "mallory-id",
+                "dm:did:example:bob",
+                "",
+                Some(99),
+            ),
+            (
+                "group-new",
+                "alice-id",
+                "group:did:example:group",
+                "did:example:group",
+                Some(55),
+            ),
+        ] {
+            upsert_message(
+                &db,
+                &MessageRecord {
+                    msg_id: msg_id.to_owned(),
+                    owner_identity_id: owner_identity_id.to_owned(),
+                    owner_did: "did:example:alice".to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: "did:example:bob".to_owned(),
+                    receiver_did: "did:example:alice".to_owned(),
+                    group_id: group_did.to_owned(),
+                    group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: "hello".to_owned(),
+                    server_seq,
+                    stored_at: "2026-06-27T00:00:00Z".to_owned(),
+                    ..MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let direct = max_server_seq_for_thread_ref_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+        )
+        .unwrap();
+        let group = max_server_seq_for_thread_ref_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+        )
+        .unwrap();
+        let missing = max_server_seq_for_thread_ref_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:missing", "").unwrap(),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(direct, Some(42));
+        assert_eq!(group, Some(55));
+        assert_eq!(missing, None);
     }
 
     #[test]

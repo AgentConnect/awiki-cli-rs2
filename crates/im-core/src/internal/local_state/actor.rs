@@ -126,6 +126,12 @@ enum LocalStateCommand {
         cursor: Option<String>,
         reply: oneshot::Sender<crate::ImResult<super::messages::ThreadLocalHistoryRecords>>,
     },
+    MaxServerSeqForThreadRef {
+        owner_identity_id: String,
+        owner_did: String,
+        thread: crate::messages::ThreadRef,
+        reply: oneshot::Sender<crate::ImResult<Option<i64>>>,
+    },
     ListActiveGroupRefs {
         owner_identity_id: String,
         owner_did: String,
@@ -608,6 +614,23 @@ impl LocalStateDb {
             thread,
             limit,
             cursor,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn max_server_seq_for_thread_ref(
+        &self,
+        owner_identity_id: impl Into<String>,
+        owner_did: impl Into<String>,
+        thread: crate::messages::ThreadRef,
+    ) -> crate::ImResult<Option<i64>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::MaxServerSeqForThreadRef {
+            owner_identity_id: owner_identity_id.into(),
+            owner_did: owner_did.into(),
+            thread,
             reply,
         })
         .await?;
@@ -1241,6 +1264,20 @@ fn run_actor(
                     &thread,
                     limit,
                     cursor.as_deref(),
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::MaxServerSeqForThreadRef {
+                owner_identity_id,
+                owner_did,
+                thread,
+                reply,
+            } => {
+                let result = super::messages::max_server_seq_for_thread_ref_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &owner_did,
+                    &thread,
                 );
                 let _ = reply.send(result);
             }

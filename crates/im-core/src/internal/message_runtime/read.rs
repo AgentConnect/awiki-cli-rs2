@@ -572,14 +572,14 @@ where
     }
 }
 
-fn persist_projection_best_effort(
+pub(crate) fn persist_projection_best_effort(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
 ) {
     let _ = crate::internal::message_runtime::local_projection::persist_messages(client, messages);
 }
 
-async fn persist_projection_best_effort_async(
+pub(crate) async fn persist_projection_best_effort_async(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
 ) {
@@ -604,11 +604,11 @@ fn delegated_message_service_did(client: &crate::core::ImClient) -> String {
         })
 }
 
-struct DirectThread {
-    resolved_did: String,
+pub(crate) struct DirectThread {
+    pub(crate) resolved_did: String,
 }
 
-fn direct_thread(
+pub(crate) fn direct_thread(
     peer: crate::ids::PeerRef,
     resolved_peer_did: Option<String>,
 ) -> crate::ImResult<DirectThread> {
@@ -627,7 +627,7 @@ fn direct_thread(
     })
 }
 
-fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
+pub(crate) fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
     if limit.0 == 0 {
         fallback
     } else {
@@ -756,7 +756,7 @@ fn direct_local_history_conversation_ids(
     ids
 }
 
-fn sort_dedupe_and_truncate_messages(
+pub(crate) fn sort_dedupe_and_truncate_messages(
     messages: &mut Vec<crate::messages::Message>,
     requested_limit: crate::ids::PageLimit,
 ) -> bool {
@@ -933,7 +933,7 @@ fn attach_inbox_origin_proof(
     Ok(())
 }
 
-fn page_from_raw(
+pub(crate) fn page_from_raw(
     client: &crate::core::ImClient,
     raw: &Value,
     requested_limit: crate::ids::PageLimit,
@@ -941,7 +941,7 @@ fn page_from_raw(
     page_from_raw_with_group(client, raw, requested_limit, None)
 }
 
-fn page_from_raw_with_group(
+pub(crate) fn page_from_raw_with_group(
     client: &crate::core::ImClient,
     raw: &Value,
     requested_limit: crate::ids::PageLimit,
@@ -1147,7 +1147,7 @@ fn dedupe_and_truncate_messages(
     true
 }
 
-fn annotate_direct_peer_scopes(
+pub(crate) fn annotate_direct_peer_scopes(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
@@ -1196,7 +1196,7 @@ fn annotate_direct_peer_scope(
     }
 }
 
-async fn annotate_direct_peer_scopes_async(
+pub(crate) async fn annotate_direct_peer_scopes_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
@@ -1406,7 +1406,7 @@ fn annotate_object_with_peer_scope(
     }
 }
 
-fn project_secure_direct_messages(
+pub(crate) fn project_secure_direct_messages(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl RpcTransport,
@@ -1486,7 +1486,7 @@ pub(crate) fn project_secure_direct_messages_for_attachment_download(
     project_secure_direct_messages_impl(client, raw, directory_transport, false);
 }
 
-async fn project_secure_direct_messages_async(
+pub(crate) async fn project_secure_direct_messages_async(
     client: &crate::core::ImClient,
     raw: &mut Value,
     directory_transport: &mut impl AsyncRpcTransport,
@@ -1872,7 +1872,7 @@ fn append_secure_direct_warnings(raw: &mut Value, warnings: Vec<String>) {
 }
 
 #[cfg(feature = "group-e2ee")]
-fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
+pub(crate) fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
     project_group_e2ee_messages_impl(client, raw, true);
 }
 
@@ -1900,7 +1900,7 @@ fn project_group_e2ee_messages_impl(
 }
 
 #[cfg(not(feature = "group-e2ee"))]
-fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
+pub(crate) fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
 
 pub(crate) fn project_group_e2ee_messages_for_attachment_download(
     client: &crate::core::ImClient,
@@ -1913,7 +1913,10 @@ pub(crate) fn project_group_e2ee_messages_for_attachment_download(
 }
 
 #[cfg(feature = "group-e2ee")]
-async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: &mut Value) {
+pub(crate) async fn project_group_e2ee_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+) {
     project_group_e2ee_messages_async_impl(client, raw, true).await;
 }
 
@@ -1942,7 +1945,11 @@ async fn project_group_e2ee_messages_async_impl(
 }
 
 #[cfg(not(feature = "group-e2ee"))]
-async fn project_group_e2ee_messages_async(_client: &crate::core::ImClient, _raw: &mut Value) {}
+pub(crate) async fn project_group_e2ee_messages_async(
+    _client: &crate::core::ImClient,
+    _raw: &mut Value,
+) {
+}
 
 pub(crate) async fn project_group_e2ee_messages_for_attachment_download_async(
     client: &crate::core::ImClient,

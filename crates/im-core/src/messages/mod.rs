@@ -9,7 +9,8 @@ pub use self::dto::{
     MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
     MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
-    MessageTarget, ScopedInboxToken, SendMessageRequest, SendMessageResult, ThreadRef,
+    MessageTarget, ScopedInboxToken, SendMessageRequest, SendMessageResult, SyncThreadAfterRequest,
+    SyncThreadAfterResult, ThreadRef,
 };
 
 pub use self::mention::{

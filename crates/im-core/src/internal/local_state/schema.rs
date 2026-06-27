@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 19;
+pub(crate) const SCHEMA_VERSION: i64 = 20;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
@@ -250,6 +250,22 @@ CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
 );
 "#;
 
+const SYNC_STATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS sync_state (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_state_owner_kind
+ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IdentityOwnedSchemaTableMode {
     Final,
@@ -453,6 +469,7 @@ const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
 
 const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
     "conversation_summaries",
+    "sync_state",
     "contacts",
     "contact_handle_bindings",
     "messages",
@@ -879,6 +896,9 @@ fn create_schema(
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(SYNC_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;

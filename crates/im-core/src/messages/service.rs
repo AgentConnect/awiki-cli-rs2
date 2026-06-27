@@ -1094,6 +1094,61 @@ impl<'a> MessageService<'a> {
         .map(|result| result.sdk_result)
     }
 
+    pub fn sync_thread_after(
+        &self,
+        request: super::SyncThreadAfterRequest,
+    ) -> crate::ImResult<super::SyncThreadAfterResult> {
+        #[cfg(feature = "blocking")]
+        {
+            let resolved = resolve_history_thread(self.client, request.thread.clone())?;
+            crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .sync_thread_after(
+                crate::internal::message_runtime::sync::SyncThreadAfterInput {
+                    request: super::SyncThreadAfterRequest {
+                        thread: resolved.thread,
+                        ..request
+                    },
+                    resolved_peer_did: resolved.resolved_did,
+                    peer_scope: resolved.peer_scope,
+                },
+            )
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-thread-after"))
+        }
+    }
+
+    pub async fn sync_thread_after_async(
+        &self,
+        request: super::SyncThreadAfterRequest,
+    ) -> crate::ImResult<super::SyncThreadAfterResult> {
+        let resolved = resolve_history_thread_async(self.client, request.thread.clone()).await?;
+        crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .sync_thread_after_async(
+            crate::internal::message_runtime::sync::SyncThreadAfterInput {
+                request: super::SyncThreadAfterRequest {
+                    thread: resolved.thread,
+                    ..request
+                },
+                resolved_peer_did: resolved.resolved_did,
+                peer_scope: resolved.peer_scope,
+            },
+        )
+        .await
+    }
+
     pub fn conversations(
         &self,
         query: super::ConversationQuery,

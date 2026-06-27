@@ -10,6 +10,7 @@ pub(crate) mod email;
 pub(crate) mod groups;
 pub(crate) mod messages;
 pub(crate) mod owner_scope;
+pub(crate) mod sync_state;
 
 #[cfg(feature = "sqlite")]
 pub(crate) mod schema;

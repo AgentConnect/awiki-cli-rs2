@@ -296,6 +296,23 @@ pub struct MarkThreadReadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncThreadAfterRequest {
+    pub thread: ThreadRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_server_seq: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncThreadAfterResult {
+    pub messages: Vec<Message>,
+    pub next_after_server_seq: Option<String>,
+    pub has_more: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub thread: ThreadRef,
     pub title: Option<String>,
