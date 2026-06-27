@@ -265,6 +265,10 @@ impl DartAttachmentSendRequest {
             im_core::attachments::AttachmentSendRequest {
                 input: self.input.try_into()?,
                 caption: self.caption,
+                mention_payload: parse_optional_json(
+                    "mention_payload_json",
+                    self.mention_payload_json,
+                )?,
                 mime_type: self.mime_type,
                 filename: self.filename,
                 delivery: im_core::messages::MessageDeliveryOptions {
@@ -275,6 +279,19 @@ impl DartAttachmentSendRequest {
             },
         ))
     }
+}
+
+fn parse_optional_json(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<serde_json::Value>, DartImError> {
+    value
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(&text).map_err(|err| {
+                im_core::ImError::invalid_input(Some(field.to_string()), err.to_string()).into()
+            })
+        })
+        .transpose()
 }
 
 impl TryFrom<DartDownloadAttachmentRequest> for im_core::attachments::DownloadAttachmentRequest {

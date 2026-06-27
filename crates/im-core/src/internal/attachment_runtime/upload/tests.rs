@@ -141,6 +141,7 @@ fn attachments_upload_runtime_local_file_reads_only_explicit_path() {
         request: crate::attachments::AttachmentSendRequest {
             input: crate::attachments::AttachmentInput::LocalFile(file.clone()),
             caption: None,
+            mention_payload: None,
             mime_type: None,
             filename: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
@@ -188,6 +189,7 @@ async fn attachments_upload_runtime_local_file_async_streams_explicit_path() {
         request: crate::attachments::AttachmentSendRequest {
             input: crate::attachments::AttachmentInput::LocalFile(file.clone()),
             caption: None,
+            mention_payload: None,
             mime_type: None,
             filename: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
@@ -859,6 +861,7 @@ fn bytes_request(
             bytes,
         },
         caption: caption.map(ToOwned::to_owned),
+        mention_payload: None,
         mime_type: request_mime.map(ToOwned::to_owned),
         filename: request_filename.map(ToOwned::to_owned),
         delivery: crate::messages::MessageDeliveryOptions::default(),

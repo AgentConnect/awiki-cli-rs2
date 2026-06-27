@@ -180,6 +180,7 @@ fn message_request_from_attachment(
         body: crate::messages::MessageBody::Attachment {
             input: request.input,
             caption: request.caption,
+            mention_payload: request.mention_payload,
             mime_type: request.mime_type,
             filename: request.filename,
         },

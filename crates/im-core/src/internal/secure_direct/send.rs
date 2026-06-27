@@ -1387,6 +1387,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                     bytes: b"direct attachment secret".to_vec(),
                 },
                 caption: Some("direct caption".to_owned()),
+                mention_payload: None,
                 mime_type: Some("application/pdf".to_owned()),
                 filename: None,
             },
@@ -1426,13 +1427,15 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
             slot.object_uri.clone(),
         );
         let redacted_manifest =
-            crate::attachments::manifest::build_attachment_manifest(&descriptor, caption);
+            crate::attachments::manifest::build_attachment_manifest(&descriptor, caption)
+                .expect("redacted manifest");
         let full_manifest =
             crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
                 &descriptor,
                 caption,
                 &e2ee.secrets,
-            );
+            )
+            .expect("full manifest");
         let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)
             .expect("grant ref");
         crate::internal::attachment_runtime::upload::PreparedCommittedAttachment {

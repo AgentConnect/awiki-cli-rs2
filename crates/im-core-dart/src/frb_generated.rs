@@ -4837,6 +4837,7 @@ impl SseDecode for crate::dto::attachment::DartAttachmentSendRequest {
         let mut var_target = <crate::dto::message::DartMessageTarget>::sse_decode(deserializer);
         let mut var_input = <crate::dto::attachment::DartAttachmentInput>::sse_decode(deserializer);
         let mut var_caption = <Option<String>>::sse_decode(deserializer);
+        let mut var_mentionPayloadJson = <Option<String>>::sse_decode(deserializer);
         let mut var_mimeType = <Option<String>>::sse_decode(deserializer);
         let mut var_filename = <Option<String>>::sse_decode(deserializer);
         let mut var_security =
@@ -4847,6 +4848,7 @@ impl SseDecode for crate::dto::attachment::DartAttachmentSendRequest {
             target: var_target,
             input: var_input,
             caption: var_caption,
+            mention_payload_json: var_mentionPayloadJson,
             mime_type: var_mimeType,
             filename: var_filename,
             security: var_security,
@@ -7339,6 +7341,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::attachment::DartAttachmentSen
             self.target.into_into_dart().into_dart(),
             self.input.into_into_dart().into_dart(),
             self.caption.into_into_dart().into_dart(),
+            self.mention_payload_json.into_into_dart().into_dart(),
             self.mime_type.into_into_dart().into_dart(),
             self.filename.into_into_dart().into_dart(),
             self.security.into_into_dart().into_dart(),
@@ -9684,6 +9687,7 @@ impl SseEncode for crate::dto::attachment::DartAttachmentSendRequest {
         <crate::dto::message::DartMessageTarget>::sse_encode(self.target, serializer);
         <crate::dto::attachment::DartAttachmentInput>::sse_encode(self.input, serializer);
         <Option<String>>::sse_encode(self.caption, serializer);
+        <Option<String>>::sse_encode(self.mention_payload_json, serializer);
         <Option<String>>::sse_encode(self.mime_type, serializer);
         <Option<String>>::sse_encode(self.filename, serializer);
         <crate::dto::message::DartMessageSecurityMode>::sse_encode(self.security, serializer);

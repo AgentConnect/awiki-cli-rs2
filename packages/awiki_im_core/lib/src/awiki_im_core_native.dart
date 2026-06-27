@@ -1534,6 +1534,7 @@ extension on AttachmentSendRequest {
         target: target._toGen(),
         input: input._toGen(),
         caption: caption,
+        mentionPayloadJson: mentionPayloadJson,
         mimeType: mimeType,
         filename: filename,
         security: security._toGen(),

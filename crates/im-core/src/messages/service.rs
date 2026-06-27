@@ -1487,11 +1487,13 @@ fn attachment_request_from_message_request(
         super::MessageBody::Attachment {
             input,
             caption,
+            mention_payload,
             mime_type,
             filename,
         } => Ok(crate::attachments::AttachmentSendRequest {
             input,
             caption,
+            mention_payload,
             mime_type,
             filename,
             delivery: request.delivery,

@@ -72,6 +72,7 @@ pub fn send_attachment_request(
         AttachmentSendRequest {
             input: AttachmentInput::LocalFile(file_path),
             caption: Some(text).filter(|value| !value.trim().is_empty()),
+            mention_payload: None,
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
             filename: None,
@@ -859,6 +860,7 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
         return Ok(MessageBody::Attachment {
             input: AttachmentInput::LocalFile(PathBuf::from(file_path.trim())),
             caption: Some(text).filter(|value| !value.trim().is_empty()),
+            mention_payload: None,
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
             filename: None,

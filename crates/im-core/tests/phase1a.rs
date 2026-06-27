@@ -84,6 +84,7 @@ fn message_security_mode_mismatches_fail_closed() {
         body: MessageBody::Attachment {
             input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
             caption: None,
+            mention_payload: None,
             mime_type: None,
             filename: None,
         },
@@ -111,6 +112,7 @@ fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
         body: MessageBody::Attachment {
             input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
             caption: None,
+            mention_payload: None,
             mime_type: None,
             filename: None,
         },

@@ -36,6 +36,7 @@ class DartAttachmentSendRequest {
   final DartMessageTarget target;
   final DartAttachmentInput input;
   final String? caption;
+  final String? mentionPayloadJson;
   final String? mimeType;
   final String? filename;
   final DartMessageSecurityMode security;
@@ -46,6 +47,7 @@ class DartAttachmentSendRequest {
     required this.target,
     required this.input,
     this.caption,
+    this.mentionPayloadJson,
     this.mimeType,
     this.filename,
     required this.security,
@@ -58,6 +60,7 @@ class DartAttachmentSendRequest {
       target.hashCode ^
       input.hashCode ^
       caption.hashCode ^
+      mentionPayloadJson.hashCode ^
       mimeType.hashCode ^
       filename.hashCode ^
       security.hashCode ^
@@ -72,6 +75,7 @@ class DartAttachmentSendRequest {
           target == other.target &&
           input == other.input &&
           caption == other.caption &&
+          mentionPayloadJson == other.mentionPayloadJson &&
           mimeType == other.mimeType &&
           filename == other.filename &&
           security == other.security &&

@@ -62,6 +62,7 @@ pub fn prepare_attachment_payload(
 #[doc(hidden)]
 pub fn build_attachment_manifest(descriptor: &AttachmentDescriptor, caption: &str) -> Value {
     crate::attachments::manifest::build_attachment_manifest(descriptor, caption)
+        .expect("attachment manifest without mention payload should be valid")
 }
 
 #[doc(hidden)]
@@ -70,6 +71,7 @@ pub fn build_attachment_manifest_internal(
     caption: &str,
 ) -> Value {
     crate::attachments::manifest::build_attachment_manifest_internal(descriptor, caption)
+        .expect("attachment manifest without mention payload should be valid")
 }
 
 #[doc(hidden)]

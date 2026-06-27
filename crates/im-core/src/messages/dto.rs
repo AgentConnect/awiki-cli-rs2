@@ -41,6 +41,8 @@ pub enum MessageBody {
     Attachment {
         input: crate::attachments::AttachmentInput,
         caption: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mention_payload: Option<serde_json::Value>,
         mime_type: Option<String>,
         filename: Option<String>,
     },

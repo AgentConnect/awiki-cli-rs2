@@ -164,6 +164,7 @@ impl ImCoreAgentOutbox {
                 AttachmentSendRequest {
                     input: AttachmentInput::LocalFile(attachment.file_path.clone()),
                     caption: attachment.caption.clone(),
+                    mention_payload: None,
                     mime_type: None,
                     filename: attachment.display_filename.clone(),
                     delivery: MessageDeliveryOptions::default(),
@@ -726,6 +727,7 @@ impl RuntimeMessageSend {
             MessageBody::Attachment {
                 input: AttachmentInput::LocalFile(file_path),
                 caption: Some(self.text).filter(|value| !value.trim().is_empty()),
+                mention_payload: None,
                 mime_type: self.mime_type,
                 filename: self.display_filename,
             }

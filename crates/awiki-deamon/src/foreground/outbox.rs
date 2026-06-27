@@ -1,4 +1,8 @@
 use super::*;
+use crate::outbox::RuntimeMessageTarget;
+use crate::runtime::reply_payload::{
+    group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
+};
 
 #[derive(Clone)]
 pub(super) struct ControllerRuntimeOutbox {
@@ -99,6 +103,44 @@ impl ControllerRuntimeOutbox {
             return None;
         }
         Some(controller_did)
+    }
+
+    fn group_final_message(
+        &self,
+        context: &crate::state::AuthorizedRuntimeContext,
+        text: Option<&str>,
+    ) -> Option<RuntimeMessageSend> {
+        if self.trigger_kind.as_deref() != Some("group_mention") {
+            return None;
+        }
+        let group_did = self
+            .conversation_id
+            .as_deref()
+            .and_then(group_did_from_conversation_id)?;
+        let requester_did = self.requester_did.as_deref()?;
+        let reply = structured_group_reply(StructuredGroupReplyInput {
+            run_id: &context.run_id,
+            agent_did: &context.agent_did,
+            requester_did,
+            requester_full_handle: self.requester_full_handle.as_deref(),
+            source_message_id: self.status_source_message_id.as_deref(),
+            reply_text: text.unwrap_or_default(),
+        })?;
+        Some(RuntimeMessageSend {
+            target: RuntimeMessageTarget::Group {
+                group: group_did.to_string(),
+            },
+            text: reply.text,
+            payload: Some(reply.payload),
+            file_path: None,
+            display_filename: None,
+            mime_type: None,
+            idempotency_key: Some(format!(
+                "runtime-final-callback:{}:{}",
+                context.agent_did, context.run_id
+            )),
+            security: RuntimeMessageSecurity::DefaultPlain,
+        })
     }
 
     fn send_controller_activity_payload_best_effort(
@@ -294,7 +336,7 @@ impl ControllerOutboxRecorder {
             None,
             Some(message.text.clone()),
             Some(message.security),
-            None,
+            message.payload.clone(),
         )
     }
 
@@ -517,6 +559,14 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
         let sent_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        if let Some(message) = self.group_final_message(context, text) {
+            let message_id = self.message_sender.send_runtime_message(&message)?;
+            self.sent_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut ids) = self.sent_message_ids.lock() {
+                ids.push(message_id);
+            }
+        }
         self.send_status_payload(
             &self.recipient_did,
             json!({

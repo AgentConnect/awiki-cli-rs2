@@ -61,6 +61,7 @@ pub(crate) struct PreparedCommittedAttachment {
 struct PreparedAttachmentUpload {
     prepared: crate::attachments::manifest::PreparedAttachment,
     caption: String,
+    mention_payload: Option<Value>,
     body: PreparedAttachmentBody,
     object_e2ee_secrets: Option<crate::attachments::manifest::ObjectE2eeAttachmentSecrets>,
 }
@@ -125,7 +126,11 @@ where
             slot.object_uri.clone(),
         );
         let manifest =
-            crate::attachments::manifest::build_attachment_manifest(&descriptor, &upload.caption);
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials(self.client)?,
@@ -179,7 +184,11 @@ where
             slot.object_uri.clone(),
         );
         let redacted_manifest =
-            crate::attachments::manifest::build_attachment_manifest(&descriptor, &upload.caption);
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
         let secrets =
             upload
                 .object_e2ee_secrets
@@ -187,12 +196,12 @@ where
                 .ok_or_else(|| crate::ImError::Internal {
                     message: "object-e2ee attachment secrets missing after encryption".to_owned(),
                 })?;
-        let full_manifest =
-            crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
-                &descriptor,
-                &upload.caption,
-                secrets,
-            );
+        let full_manifest = crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets_and_mention_payload(
+            &descriptor,
+            &upload.caption,
+            secrets,
+            upload.mention_payload.as_ref(),
+        )?;
         let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)?;
 
         Ok(PreparedCommittedAttachment {
@@ -342,7 +351,11 @@ where
             slot.object_uri.clone(),
         );
         let manifest =
-            crate::attachments::manifest::build_attachment_manifest(&descriptor, &upload.caption);
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials_async(self.client).await?,
@@ -406,7 +419,11 @@ where
             slot.object_uri.clone(),
         );
         let redacted_manifest =
-            crate::attachments::manifest::build_attachment_manifest(&descriptor, &upload.caption);
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
         let secrets =
             upload
                 .object_e2ee_secrets
@@ -414,12 +431,12 @@ where
                 .ok_or_else(|| crate::ImError::Internal {
                     message: "object-e2ee attachment secrets missing after encryption".to_owned(),
                 })?;
-        let full_manifest =
-            crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets(
-                &descriptor,
-                &upload.caption,
-                secrets,
-            );
+        let full_manifest = crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets_and_mention_payload(
+            &descriptor,
+            &upload.caption,
+            secrets,
+            upload.mention_payload.as_ref(),
+        )?;
         let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)?;
 
         Ok(PreparedCommittedAttachment {
@@ -584,6 +601,7 @@ fn prepare_request(
     request: crate::attachments::AttachmentSendRequest,
 ) -> crate::ImResult<PreparedAttachmentUpload> {
     let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
     let request_filename = request.filename;
     let request_mime = request.mime_type;
     let source = crate::internal::blob::source::attachment_input_to_blob_source(request.input)?;
@@ -636,6 +654,7 @@ fn prepare_request(
     Ok(PreparedAttachmentUpload {
         prepared,
         caption,
+        mention_payload,
         body,
         object_e2ee_secrets: None,
     })
@@ -645,6 +664,7 @@ fn prepare_request_object_e2ee(
     request: crate::attachments::AttachmentSendRequest,
 ) -> crate::ImResult<PreparedAttachmentUpload> {
     let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
     let request_filename = request.filename;
     let request_mime = request.mime_type;
     let source = crate::internal::blob::source::attachment_input_to_blob_source(request.input)?;
@@ -702,6 +722,7 @@ fn prepare_request_object_e2ee(
     Ok(PreparedAttachmentUpload {
         prepared: e2ee.prepared,
         caption,
+        mention_payload,
         body,
         object_e2ee_secrets: Some(e2ee.secrets),
     })
@@ -711,6 +732,7 @@ async fn prepare_request_async(
     request: crate::attachments::AttachmentSendRequest,
 ) -> crate::ImResult<PreparedAttachmentUpload> {
     let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
     let request_filename = request.filename;
     let request_mime = request.mime_type;
     let source =
@@ -759,6 +781,7 @@ async fn prepare_request_async(
             PreparedAttachmentUpload {
                 prepared,
                 caption,
+                mention_payload: mention_payload.clone(),
                 body,
                 object_e2ee_secrets: None,
             }
@@ -785,6 +808,7 @@ async fn prepare_request_async(
             PreparedAttachmentUpload {
                 prepared,
                 caption,
+                mention_payload: mention_payload.clone(),
                 body: PreparedAttachmentBody::File(path),
                 object_e2ee_secrets: None,
             }
@@ -797,6 +821,7 @@ async fn prepare_request_object_e2ee_async(
     request: crate::attachments::AttachmentSendRequest,
 ) -> crate::ImResult<PreparedAttachmentUpload> {
     let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
     let request_filename = request.filename;
     let request_mime = request.mime_type;
     let source =
@@ -869,9 +894,17 @@ async fn prepare_request_object_e2ee_async(
     Ok(PreparedAttachmentUpload {
         prepared: e2ee.prepared,
         caption,
+        mention_payload,
         body,
         object_e2ee_secrets: Some(e2ee.secrets),
     })
+}
+
+fn validated_mention_payload(payload: Option<Value>) -> crate::ImResult<Option<Value>> {
+    if let Some(payload) = payload.as_ref() {
+        crate::messages::validate_message_mention_payload(payload)?;
+    }
+    Ok(payload)
 }
 
 fn async_object_body(

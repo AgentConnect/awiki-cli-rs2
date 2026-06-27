@@ -1287,7 +1287,9 @@ async fn route_message(
             target_agent_did,
             message,
             group_history.unwrap_or(&[]),
-        )? {
+        )
+        .await?
+        {
             return Ok(routed);
         }
         return Ok(false);
@@ -1445,7 +1447,7 @@ fn is_opaque_group_e2ee_message(message: &Message) -> bool {
         ))
 }
 
-fn try_route_group_agent_mention<C>(
+async fn try_route_group_agent_mention<C>(
     config: &DaemonConfig,
     state: &DaemonState,
     im_core: &ImCoreAdapter,
@@ -1508,10 +1510,20 @@ where
         return Ok(Some(true));
     }
 
+    let task_text = group_agent_mention_content_text(
+        config,
+        target_client,
+        target_agent_did,
+        message,
+        message.sender.as_str(),
+        &mention_payload,
+        payload,
+    )
+    .await?;
     let task_payload = group_agent_mention_task_payload(
         message,
-        &mention_payload,
         &mention_context,
+        task_text,
         authorization.sender_full_handle.as_deref(),
         Some(build_recent_group_context(message, group_history)),
     );
@@ -1735,14 +1747,42 @@ fn mention_surface_from_payload(text: &str, mention: &MessageMention) -> String 
         .collect()
 }
 
+async fn group_agent_mention_content_text(
+    config: &DaemonConfig,
+    target_client: &im_core::ImClient,
+    target_agent_did: &str,
+    message: &Message,
+    sender_did: &str,
+    mention_payload: &MessageMentionPayload,
+    raw_payload: &Value,
+) -> Result<String> {
+    let content_type = message
+        .metadata
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/json".to_string());
+    if is_attachment_manifest_message(message, &content_type, raw_payload) {
+        return attachment_runtime_prompt_text(
+            config,
+            target_client,
+            target_agent_did,
+            message,
+            sender_did,
+            raw_payload,
+        )
+        .await;
+    }
+    Ok(mention_payload.text.clone())
+}
+
 fn group_agent_mention_task_payload(
     message: &Message,
-    payload: &MessageMentionPayload,
     mention_context: &GroupAgentMentionContext,
+    content_text: String,
     sender_full_handle: Option<&str>,
     recent_group_context: Option<Value>,
 ) -> Value {
-    let content_hash = foreground_content_hash(&payload.text);
+    let content_hash = foreground_content_hash(&content_text);
     let mut task_payload = json!({
         "schema": "awiki.runtime.user_message_task.v1",
         "content_role": "user_message_untrusted",
@@ -1753,7 +1793,7 @@ fn group_agent_mention_task_payload(
         "inbox_owner_did": message.sender.as_str(),
         "message_kind": "group_mention",
         "received_at": message.received_at.clone().or_else(|| message.sent_at.clone()),
-        "content_text": payload.text,
+        "content_text": content_text,
         "content_hash": content_hash,
         "allowed_actions": ["reply-in-current-group-via-final"],
         "mention_context": {
