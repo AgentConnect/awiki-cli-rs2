@@ -88,6 +88,7 @@ where
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_events).unwrap_or(u32::MAX));
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
+            emit_committed_sync_invalidation(&outcome.invalidation);
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -247,6 +248,7 @@ where
                 .events_applied
                 .saturating_add(u32::try_from(outcome.applied_events).unwrap_or(u32::MAX));
             result.last_applied_event_seq = Some(outcome.last_applied_event_seq);
+            emit_committed_sync_invalidation(&outcome.invalidation);
             result.retention_floor_event_seq = page.retention_floor_event_seq;
             result.has_more = page.has_more;
             reject_has_more_without_checkpoint_progress(
@@ -417,6 +419,48 @@ fn reject_has_more_without_checkpoint_progress(
         ));
     }
     Ok(())
+}
+
+fn emit_committed_sync_invalidation(
+    invalidation: &crate::internal::local_state::sync_state::SyncDeltaInvalidation,
+) {
+    if !invalidation.has_changes() {
+        return;
+    }
+    #[cfg(test)]
+    record_committed_sync_invalidation_for_test(invalidation.clone());
+    // Step 02 establishes the committed boundary. Later store/snapshot steps
+    // replace this no-op with fan-out to runtime stores, but callers must keep
+    // invoking it only after the local apply transaction has committed.
+}
+
+#[cfg(test)]
+fn record_committed_sync_invalidation_for_test(
+    invalidation: crate::internal::local_state::sync_state::SyncDeltaInvalidation,
+) {
+    committed_sync_invalidation_log_for_test()
+        .lock()
+        .expect("committed sync invalidation test log poisoned")
+        .push(invalidation);
+}
+
+#[cfg(test)]
+fn committed_sync_invalidations_for_test(
+) -> Vec<crate::internal::local_state::sync_state::SyncDeltaInvalidation> {
+    committed_sync_invalidation_log_for_test()
+        .lock()
+        .expect("committed sync invalidation test log poisoned")
+        .clone()
+}
+
+#[cfg(test)]
+fn committed_sync_invalidation_log_for_test(
+) -> &'static std::sync::Mutex<Vec<crate::internal::local_state::sync_state::SyncDeltaInvalidation>>
+{
+    static LOG: std::sync::OnceLock<
+        std::sync::Mutex<Vec<crate::internal::local_state::sync_state::SyncDeltaInvalidation>>,
+    > = std::sync::OnceLock::new();
+    LOG.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]

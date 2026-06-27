@@ -56,6 +56,57 @@ async fn sync_delta_reads_checkpoint_calls_wire_and_advances_checkpoint() {
 }
 
 #[tokio::test]
+async fn sync_delta_success_emits_committed_invalidation_after_apply() {
+    let fixture = Fixture::new("sync-delta-invalidation");
+    let client = fixture.client();
+    fixture.store_checkpoint("776");
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event(
+                    "sev-777",
+                    "777",
+                    "msg-delta-777",
+                    777,
+                )],
+                "777",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.last_applied_event_seq.as_deref(), Some("777"));
+    assert_eq!(fixture.checkpoint(), Some("777".to_owned()));
+    let invalidations = committed_sync_invalidations_for_test();
+    let invalidation = invalidations
+        .iter()
+        .find(|item| item.checkpoint_event_seq == "777")
+        .expect("committed invalidation for checkpoint 777");
+    assert_eq!(invalidation.owner_identity_id, "alice-id");
+    assert_eq!(invalidation.owner_did, "did:example:alice");
+    assert_eq!(invalidation.reason, "sync_delta");
+    assert_eq!(
+        invalidation.conversation_ids,
+        vec!["dm:did:example:bob".to_owned()]
+    );
+    assert_eq!(
+        invalidation.thread_ids,
+        vec!["dm:did:example:bob".to_owned()]
+    );
+}
+
+#[tokio::test]
 async fn sync_delta_has_more_reads_committed_checkpoint_for_next_page() {
     let fixture = Fixture::new("sync-delta-has-more");
     let client = fixture.client();
@@ -137,6 +188,9 @@ async fn sync_delta_snapshot_required_is_fail_closed() {
     assert_eq!(result.events_applied, 0);
     assert_eq!(fixture.checkpoint(), Some("7".to_owned()));
     assert_eq!(fixture.message_server_seq("msg-delta-8"), None);
+    assert!(!committed_sync_invalidations_for_test()
+        .iter()
+        .any(|item| item.checkpoint_event_seq == "8"));
 }
 
 #[tokio::test]
@@ -171,6 +225,9 @@ async fn sync_delta_invalid_page_rolls_back_message_and_checkpoint() {
     assert_eq!(fixture.checkpoint(), None);
     assert_eq!(fixture.message_server_seq("msg-before-gap"), None);
     assert_eq!(fixture.message_server_seq("msg-after-gap"), None);
+    assert!(!committed_sync_invalidations_for_test()
+        .iter()
+        .any(|item| item.checkpoint_event_seq == "3"));
 }
 
 #[tokio::test]

@@ -200,13 +200,22 @@ pub(crate) fn upsert_messages(
     connection: &rusqlite::Connection,
     records: &[MessageRecord],
 ) -> crate::ImResult<()> {
+    let _ = upsert_messages_with_touched(connection, records)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn upsert_messages_with_touched(
+    connection: &rusqlite::Connection,
+    records: &[MessageRecord],
+) -> crate::ImResult<BTreeSet<(String, String)>> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
     let mut touched = BTreeSet::new();
     for record in records {
         touched.extend(upsert_message_record(connection, record)?);
     }
     super::conversation_summaries::rebuild_touched(connection, &touched)?;
-    Ok(())
+    Ok(touched)
 }
 
 #[cfg(feature = "sqlite")]
