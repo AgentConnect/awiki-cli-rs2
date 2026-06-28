@@ -12,7 +12,7 @@ Step index：02
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T14:28:19+08:00 |
 | Completed | 2026-06-28T14:40:45+08:00 |
-| Commit | 待提交后回填 |
+| Commit | `6f5097b` |
 | Review evidence | 只修改 `im_core_adapter.rs`；新增 crate-private `write_if_changed` helper；无 `crates/im-core` diff；无 `foreground.rs` / queue scheduler 修改；无新增日志或 secret 输出。 |
 | Verification evidence | `cargo test -p awiki-deamon --locked im_core_adapter -j1` 通过，3 passed；`cargo test -p awiki-deamon --locked -j1` 通过，473 passed / 0 failed / 3 ignored。 |
 | Next action | 等 Step 03 / Step 04；Wave A 合并后运行 group verification。 |
@@ -102,7 +102,7 @@ Step index：02
 - [x] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
 - [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入 Step 05 之前已经创建聚焦 commit。
+- [x] 本步骤在进入 Step 05 之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
