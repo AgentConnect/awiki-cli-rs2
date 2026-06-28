@@ -1042,7 +1042,7 @@ curl -fsSL https://example.com/daemon/install.sh | sh -s -- \
 4. user-service 校验 token 未过期、未使用、scope 正确
 5. user-service 创建 daemon DID / handle / controller binding
 6. daemon 保存 DID key 与本地配置
-7. daemon 启动 message-service WebSocket
+7. daemon 为 active agent 启动 per-agent message-service WebSocket realtime session
 8. App 自动看到 @alice-mac-daemon online
 ```
 
@@ -1413,10 +1413,14 @@ high risk task             → task-scoped + worktree/container
 6. daemon 生成 DID keypair
 7. daemon 使用 token + handle + DID document 调 user-service 注册
 8. user-service 创建 daemon DID / handle / controller binding
-9. daemon 启动 local RPC / message-service WS
+9. daemon 启动 local RPC / per-agent message-service WebSocket realtime session
 10. App 显示 daemon agent online
 11. 用户可以在 App 中向 daemon agent 发送管理命令
 ```
+
+foreground 接收远端消息采用事件驱动模型。每个 active agent DID 由 daemon 创建并长期持有一个 `im-core` client 与 realtime session；session reader 只在 daemon 内部消费，然后把事件包装为带 `agent_did`、generation 和 endpoint source 的 daemon event，fan-in 到统一队列。`im-core::ImEvent` 保持 SDK 语义，不承载 daemon source metadata。
+
+WebSocket notification 只作为唤醒与 dirty hint。daemon 不读取或写入 reliable checkpoint，也不把 `sync.event_seq` 当 checkpoint。可靠同步由 `im-core` 内部 `sync_delta_async` / `sync_thread_after_async` 事务完成；group 消息缺少 recent context 时，daemon 只对 dirty group 调用 targeted `groups().messages_async` 补上下文，不全量扫描所有 group。disconnect、reconnect、gap、unknown notification、session ended 和 channel pressure 会进入 dirty set，并按 reason、backoff 和 jitter 调度低频 fallback。`snapshot_required` 表示本地 checkpoint 不可信，daemon fail-closed 并记录 audit，等待更高层恢复策略。
 
 ### 9.2 创建 Runtime Agent 流程
 
@@ -2179,7 +2183,7 @@ flowchart TB
 
 1. daemon registration token。
 2. daemon DID / handle 注册。
-3. Daemon Agent DID 连接 message-service WS。
+3. Daemon Agent DID 和 active Runtime Agent DID 由 daemon 建立 per-agent message-service WebSocket realtime session。
 4. runtime agent registration token。
 5. `runtime.agent.create` 结构化 JSON command。
 6. `agent_definition`。

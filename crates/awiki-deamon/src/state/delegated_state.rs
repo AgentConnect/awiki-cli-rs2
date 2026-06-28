@@ -1012,6 +1012,21 @@ LIMIT ?2
         Ok(records)
     }
 
+    pub fn next_pending_message_sync_outbox_due_ms(&self) -> Result<Option<i64>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT MIN(next_attempt_at_ms)
+FROM message_sync_outbox
+WHERE status = 'pending'
+"#,
+                [],
+                |row| row.get(0),
+            )
+            .context("load next pending message sync outbox due time")
+    }
+
     pub fn mark_message_sync_outbox_sending(&self, idempotency_key: &str) -> Result<bool> {
         let connection = self.connection()?;
         let updated = connection.execute(

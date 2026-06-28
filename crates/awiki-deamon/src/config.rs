@@ -381,7 +381,7 @@ impl DaemonConfig {
         config.mail_service_endpoint = Some(ServiceEndpoint::parse(&self.mail_service_base_url)?);
         config.anp_service_endpoint = Some(ServiceEndpoint::parse(&self.anp_service_endpoint)?);
         config.anp_service_did = Some(im_core::ids::Did::parse(&self.anp_service_did)?);
-        config.transport_policy = MessageTransportPolicy::HttpOnly;
+        config.transport_policy = MessageTransportPolicy::RealtimePreferred;
         Ok(config)
     }
 
@@ -836,6 +836,10 @@ mod tests {
         assert_eq!(
             im_core_config.anp_service_did.unwrap().as_str(),
             "did:wba:awiki.ai"
+        );
+        assert_eq!(
+            im_core_config.transport_policy,
+            MessageTransportPolicy::RealtimePreferred
         );
     }
 

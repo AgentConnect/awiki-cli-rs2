@@ -2775,6 +2775,87 @@ fn conversation_id_projects_group_peer_without_message_content() {
 }
 
 #[test]
+fn daemon_im_core_config_allows_realtime_sessions_without_changing_shared_defaults() {
+    let (_root, config, _state) = fixture();
+    let im_core_config = config.im_core_config().unwrap();
+
+    assert_eq!(
+        im_core_config.transport_policy,
+        im_core::MessageTransportPolicy::RealtimePreferred
+    );
+}
+
+#[test]
+fn runtime_inbox_reconciliation_interval_is_low_frequency_floor() {
+    let mut options = ForegroundOptions::new(PathBuf::from("/tmp/awiki-test"));
+    options.poll_interval_ms = 250;
+
+    assert_eq!(
+        runtime_inbox_reconciliation_interval(&options),
+        RUNTIME_INBOX_RECONCILIATION_INTERVAL
+    );
+
+    options.poll_interval_ms = 45_000;
+    assert_eq!(
+        runtime_inbox_reconciliation_interval(&options),
+        Duration::from_millis(45_000)
+    );
+}
+
+#[test]
+fn foreground_control_tick_respects_remaining_runtime_limit() {
+    let started_at = Instant::now() - Duration::from_millis(750);
+    let remaining = foreground_control_tick_duration(started_at, Some(1000));
+
+    assert!(remaining <= Duration::from_millis(250));
+    assert!(remaining >= Duration::from_millis(200));
+    assert_eq!(
+        foreground_control_tick_duration(Instant::now(), None),
+        FOREGROUND_CONTROL_TICK_INTERVAL
+    );
+}
+
+#[tokio::test]
+async fn realtime_message_event_uses_runtime_processed_dedupe() {
+    let (root, config, state) = fixture();
+    let created = create_hermes_runtime(root.path(), &config, &state);
+    state
+        .store_agent_auth_token(&created.agent_did, "jwt-runtime-secret")
+        .unwrap();
+    let im_core = ImCoreAdapter::open(&config).unwrap();
+    let registration = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)
+        .expect("registration client");
+    let identity = state.load_agent_identity(&created.agent_did).unwrap();
+    let jwt_token = state.load_agent_auth_token(&created.agent_did).unwrap();
+    let client = im_core
+        .client_for_agent_identity(&config, &identity, jwt_token.as_deref())
+        .unwrap();
+    let hermes_gateway = StdioHermesGateway::default();
+    let mut processed = HashSet::new();
+    let message = plain_direct_message("msg_realtime_dedupe");
+
+    record_runtime_processed_message(&state, &created.agent_did, "msg_realtime_dedupe", true)
+        .unwrap();
+
+    let processed_count = process_realtime_message_for_test(
+        &config,
+        &state,
+        &im_core,
+        &hermes_gateway,
+        &registration,
+        &client,
+        &created.agent_did,
+        &mut processed,
+        message,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(processed_count, 0);
+    assert!(processed.is_empty());
+}
+
+#[test]
 fn daemon_bootstrap_payload_is_system_control_and_persists_state() {
     let (_root, config, state) = fixture();
     let registration = MockRegistrationClient;

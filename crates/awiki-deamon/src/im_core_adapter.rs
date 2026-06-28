@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::path::Path;
+
+use anyhow::{Context, Result};
 use im_core::{
     core::{CoreBootstrap, LocalStateStatus},
     identity::{IdentityMissingItem, IdentityReadiness, IdentitySummary},
@@ -71,27 +73,29 @@ pub fn sync_agent_identity_to_im_core(
     let alias = identity_alias(&identity.agent_did);
     let identity_dir = config.identity_root_dir.join(&alias);
     std::fs::create_dir_all(&identity_dir)?;
-    std::fs::write(
-        identity_dir.join("did.json"),
-        serde_json::to_vec_pretty(&identity.did_document)?,
+    write_if_changed(
+        &identity_dir.join("did.json"),
+        &serde_json::to_vec_pretty(&identity.did_document)?,
     )?;
-    std::fs::write(
-        identity_dir.join("private.key"),
-        &identity.auth_private_key_pem,
+    write_if_changed(
+        &identity_dir.join("private.key"),
+        identity.auth_private_key_pem.as_bytes(),
     )?;
     if !identity.e2ee_agreement_private_key_pem.trim().is_empty() {
-        std::fs::write(
-            identity_dir.join("e2ee-agreement-private.pem"),
-            &identity.e2ee_agreement_private_key_pem,
+        write_if_changed(
+            &identity_dir.join("e2ee-agreement-private.pem"),
+            identity.e2ee_agreement_private_key_pem.as_bytes(),
         )?;
     }
     if let Some(token) = jwt_token.map(str::trim).filter(|value| !value.is_empty()) {
-        std::fs::write(
-            identity_dir.join("auth.json"),
-            serde_json::json!({ "jwt_token": token }).to_string(),
+        write_if_changed(
+            &identity_dir.join("auth.json"),
+            serde_json::json!({ "jwt_token": token })
+                .to_string()
+                .as_bytes(),
         )?;
     } else if !identity_dir.join("auth.json").exists() {
-        std::fs::write(identity_dir.join("auth.json"), "{}")?;
+        write_if_changed(&identity_dir.join("auth.json"), b"{}")?;
     }
     let mut identities = identity_summaries_from_registry(config)?;
     identities.retain(|entry| entry.did.as_str() != identity.agent_did);
@@ -113,14 +117,31 @@ pub fn sync_agent_identity_to_im_core(
         "default_identity": alias,
         "identities": identities.into_iter().map(identity_summary_json).collect::<Vec<_>>(),
     });
-    std::fs::write(
+    write_if_changed(
         &config.identity_registry_path,
-        serde_json::to_vec_pretty(&registry)?,
+        &serde_json::to_vec_pretty(&registry)?,
     )?;
     if let Some(default_path) = config.default_identity_path.as_ref() {
-        std::fs::write(default_path, format!("{alias}\n"))?;
+        write_if_changed(default_path, format!("{alias}\n").as_bytes())?;
     }
     Ok(())
+}
+
+fn write_if_changed(path: &Path, content: &[u8]) -> Result<bool> {
+    match std::fs::read(path) {
+        Ok(existing) if existing == content => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("read {}", path.display()));
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create directory {}", parent.display()))?;
+    }
+    std::fs::write(path, content).with_context(|| format!("write {}", path.display()))?;
+    Ok(true)
 }
 
 pub fn agent_identity_auth_paths(
@@ -186,6 +207,8 @@ fn missing_item(item: IdentityMissingItem) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{generate_agent_identity, AgentKind};
+    use std::time::Duration;
 
     #[tokio::test]
     async fn adapter_initializes_im_core_state() {
@@ -199,5 +222,92 @@ mod tests {
 
         assert!(config.im_core_sqlite_path.exists());
         assert!(status.schema_version.is_some());
+    }
+
+    #[test]
+    fn write_if_changed_skips_identical_content() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("identity").join("did.json");
+
+        assert!(write_if_changed(&path, b"{\"id\":\"did:example:agent\"}").unwrap());
+        assert!(!write_if_changed(&path, b"{\"id\":\"did:example:agent\"}").unwrap());
+        assert!(write_if_changed(&path, b"{\"id\":\"did:example:other\"}").unwrap());
+
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "{\"id\":\"did:example:other\"}"
+        );
+    }
+
+    #[test]
+    fn sync_agent_identity_skips_unchanged_files() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let identity = generate_agent_identity(&config, AgentKind::Runtime, "runtime-sync-test")
+            .unwrap()
+            .into_record("runtime-sync-test".to_string(), AgentKind::Runtime);
+
+        sync_agent_identity_to_im_core(&config, &identity, Some("jwt-one")).unwrap();
+        let paths = synced_identity_paths(&config, &identity);
+        let first_modified = modified_times(&paths);
+
+        std::thread::sleep(Duration::from_millis(20));
+        sync_agent_identity_to_im_core(&config, &identity, Some("jwt-one")).unwrap();
+        assert_eq!(first_modified, modified_times(&paths));
+
+        std::thread::sleep(Duration::from_millis(20));
+        sync_agent_identity_to_im_core(&config, &identity, Some("jwt-two")).unwrap();
+        let after_token_change = modified_times(&paths);
+        for ((path, first), (_, after)) in first_modified.iter().zip(after_token_change.iter()) {
+            let changed = after != first;
+            if path.ends_with("auth.json") {
+                assert!(changed, "auth.json should change when token changes");
+            } else {
+                assert!(
+                    !changed,
+                    "{} should not change when only token changes",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    fn synced_identity_paths(
+        config: &DaemonConfig,
+        identity: &AgentIdentityRecord,
+    ) -> Vec<std::path::PathBuf> {
+        let identity_dir = config
+            .identity_root_dir
+            .join(identity_alias(&identity.agent_did));
+        let mut paths = vec![
+            identity_dir.join("did.json"),
+            identity_dir.join("private.key"),
+            identity_dir.join("auth.json"),
+            config.identity_registry_path.clone(),
+        ];
+        if !identity.e2ee_agreement_private_key_pem.trim().is_empty() {
+            paths.push(identity_dir.join("e2ee-agreement-private.pem"));
+        }
+        if let Some(default_path) = config.default_identity_path.as_ref() {
+            paths.push(default_path.clone());
+        }
+        paths
+    }
+
+    fn modified_times(
+        paths: &[std::path::PathBuf],
+    ) -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
+        paths
+            .iter()
+            .map(|path| {
+                (
+                    path.clone(),
+                    std::fs::metadata(path)
+                        .unwrap_or_else(|error| panic!("metadata {}: {error}", path.display()))
+                        .modified()
+                        .unwrap_or_else(|error| panic!("mtime {}: {error}", path.display())),
+                )
+            })
+            .collect()
     }
 }
