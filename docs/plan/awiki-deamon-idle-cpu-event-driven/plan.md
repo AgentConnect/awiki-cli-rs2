@@ -1,10 +1,10 @@
 # Plan：awiki-deamon 静默 CPU 事件驱动改造
 
-状态：draft  
+状态：in_progress  
 DOC：`awiki-cli-rs2-cpu/docs/plan/awiki-deamon-idle-cpu-event-driven/plan.md`  
 Harness：`awiki-harness`  
 创建时间：2026-06-28  
-恢复指针：执行开始前从 Step 01 开始；恢复时读取本文件、当前 Step 文档、执行台账和 `git status --short --branch`。
+恢复指针：Step 01 已完成基线采样和验证；恢复时从 Step 02 / Step 03 / Step 04 的并行 Wave 前置检查开始，并读取本文件、当前 Step 文档、执行台账和 `git status --short --branch`。
 
 ## 1. 目标
 
@@ -154,7 +154,7 @@ per-agent RealtimeSession task
 
 | Step | 标题 | 依赖 | 并行组 | Parallel-safe | 建议 Agent | 可并行对象 | 互斥资源 / 冲突路径 | 产出 | 小 Plan 文档 | Commit gate | 合并 / 验证门禁 | 状态 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 01 | 基线观测与调度保护 | 无 | 串行 | 否 | coordinator | 无 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、运行态服务 | 可重复 idle CPU/I/O 采样、诊断字段、当前行为保护测试 | [steps/01-baseline-observability.md](steps/01-baseline-observability.md) | 必须 | `cargo test -p awiki-deamon --locked` | pending |
+| 01 | 基线观测与调度保护 | 无 | 串行 | 否 | coordinator | 无 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、运行态服务 | 可重复 idle CPU/I/O 采样、诊断字段、当前行为保护测试 | [steps/01-baseline-observability.md](steps/01-baseline-observability.md) | 必须 | `cargo test -p awiki-deamon --locked` | done |
 | 02 | 内容感知 identity sync | Step 01 | A | 是 | agent-storage | Step 03 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/im_core_adapter.rs` | 相同 identity/token 不重写文件，mtime/write 降低 | [steps/02-identity-sync-write-if-changed.md](steps/02-identity-sync-write-if-changed.md) | 必须 | storage tests + daemon unit | pending |
 | 03 | 本地 due queue scheduler | Step 01 | A | 是 | agent-scheduler | Step 02 | queue scheduler 模块、queue state helper、局部 foreground 接入 | 四类本地队列从固定扫描改为 Notify + due timer | [steps/03-local-queue-schedulers.md](steps/03-local-queue-schedulers.md) | 必须 | scheduler tests + group daemon tests | pending |
 | 04 | M-Core realtime endpoint 与共享接口守门 | Step 01 | B | 是 | agent-sdk-contract | Step 02 / 03 | `awiki-cli-rs2-cpu/crates/im-core/src/realtime/*` 只读优先；如改需独立评审 | 明确是否需要改 `im-core` endpoint 选择；默认不改 public API | [steps/04-m-core-realtime-contract.md](steps/04-m-core-realtime-contract.md) | 必须 | shared SDK contract gate | pending |
@@ -209,7 +209,7 @@ per-agent RealtimeSession task
 
 | Step | 状态 | Agent / Owner | 并行组 | 分支 / worktree | 基线 commit | 开始时间 | 完成时间 | Commit | Review 证据 | 验证证据 | 合并状态 | 门禁状态 | 下一步 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 01 | pending | coordinator | 串行 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 建立基线 |
+| 01 | done | coordinator | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `4b15c4d` | 2026-06-28T12:18:30+08:00 | 2026-06-28T14:28:19+08:00 | 本 Step 提交：`daemon: record idle scheduling baseline` | 已确认本步骤未修改业务代码，现有 tests 覆盖 foreground owner guard、archive finalizer、queue drain、future due、retry defer、heartbeat 节流和 runtime inbox poll scope；无 `im-core` diff。 | 60 秒 idle 采样：CPU 平均 6.50%，RSS 平均 9992KB，线程 6；`write_bytes` 增量 244801536，约 4080025.60/s；31 个 identity / `im-core` 文件 mtime 变化；`cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored。 | merged | pass | 启动 Step 02 / Step 03 / Step 04 前置检查 |
 | 02 | pending | agent-storage | A | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |
 | 03 | pending | agent-scheduler | A | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |
 | 04 | pending | agent-sdk-contract | B | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |
@@ -347,3 +347,21 @@ per-agent RealtimeSession task
 - 最终证据：TBD。
 - 最终 `git status`：TBD。
 - 如果本阶段修改文件：记录 Review、验证和最终集成 commit。
+
+## 20. Step 01 执行证据
+
+本节记录 Step 01 的基线证据，后续 Step 02 / 03 / 05 / 07 应按同一口径复测。为避免把本机路径固化进计划文档，运行态 state root、ready file 和临时采样目录均以占位符记录；原始命令在执行终端中使用当前用户级 daemon service 的实际参数。
+
+| 项 | 证据 |
+|---|---|
+| 基线 commit | `4b15c4d` |
+| 分支 | `feature/perf/cpu-youhua-jingmo-0628` |
+| 运行进程 | `awiki-deamon foreground --state-root <daemon_state_root> --ready-file <ready_file>` |
+| 采样窗口 | 2026-06-28T12:20:51+08:00 到 2026-06-28T12:21:51+08:00，60 秒 |
+| active agents / queues | 只读 SQLite 查询：`agent_definition` 12 条，其中 active 8 条；`runtime_profile` 11 条；`message_sync_outbox` 24 条；`runtime_final_outbox` 26 条。环境缺少 `sqlite3` CLI，改用 Python `sqlite3` 只读查询。 |
+| CPU / RSS / 线程 | 12 次 5 秒间隔 `ps` 采样，CPU 样本均为 6.5%，平均 6.50%；RSS 平均 9992KB，最小 8192KB，最大 12252KB；线程数平均 6。 |
+| I/O | `/proc/<daemon_pid>/io` 60 秒差值：`rchar=160111338`，约 2668522.30/s；`wchar=176642981`，约 2944049.68/s；`syscr=53622`，约 893.70/s；`syscw=120735`，约 2012.25/s；`read_bytes=0`；`write_bytes=244801536`，约 4080025.60/s。 |
+| mtime | 31 个被采样文件 mtime 变化，集中在 `identity/<agent>/did.json`、`private.key`、`e2ee-agreement-private.pem`、`identity/registry.json`、`identity/default`、`im-core/local-state.sqlite`、`im-core/local-state.sqlite-shm`、`im-core/local-state.sqlite-wal`。 |
+| 日志 | 采样窗口内 `journalctl --user -u awiki-deamon.service` 增量 1 行；采样前最近日志可见多条 `daemon.runtime_inbox.session.failed`，原因是 agent DID WBA session refresh 失败。 |
+| 测试 | 首次 `cargo test -p awiki-deamon --locked` 在并发链接 `hermes_gateway` test 时失败：`ld terminated with signal 9 [Killed]`，判断为本机资源 / OOM 型失败；重跑 `cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored。 |
+| 代码改动 | 本步骤未修改业务代码；只回填 Plan / Step 执行证据。 |

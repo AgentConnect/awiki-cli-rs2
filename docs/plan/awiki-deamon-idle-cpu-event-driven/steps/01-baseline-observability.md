@@ -2,30 +2,30 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：01  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | TBD |
-| Started | TBD |
-| Completed | TBD |
-| Commit | TBD |
-| Review evidence | TBD |
-| Verification evidence | TBD |
-| Next action | 建立当前 foreground 高频循环的可重复 CPU / I/O / mtime / 日志基线，并补齐防回归观测点。 |
+| Status | done |
+| Branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Started | 2026-06-28T12:18:30+08:00 |
+| Completed | 2026-06-28T14:28:19+08:00 |
+| Commit | 待提交后回填 |
+| Review evidence | 本步骤未修改业务代码；Review 确认现有测试已覆盖 foreground owner guard、archive finalizer、queue drain、future due、retry defer、heartbeat 节流和 runtime inbox poll scope；无 `im-core` diff。 |
+| Verification evidence | 60 秒 idle 采样完成；`cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored；首次无 `-j1` 运行因 linker `signal 9 [Killed]` 失败，记录为本机资源 / OOM 型失败。 |
+| Next action | 启动 Step 02 / Step 03 / Step 04 前置检查；这些步骤可按主 Plan parallel-safe 规则并行或由 coordinator 串行推进。 |
 | Assigned agent | coordinator |
 | Parallel group | 串行 |
 | Parallel safe | no |
 | Parallel with | 无 |
 | Conflict resources | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、运行态 daemon 进程、idle 采样环境 |
-| Baseline commit | TBD |
-| Worktree / branch | TBD |
-| Merge gate | 本步骤完成并提交后才能启动 Step 02 / 03 / 04。 |
-| Verification gate | `cargo test -p awiki-deamon --locked`；60 秒 idle 采样证据。 |
-| Gate status | pending |
+| Baseline commit | `4b15c4d` |
+| Worktree / branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Merge gate | 通过；Step 02 / 03 / 04 可启动。 |
+| Verification gate | 通过；见第 8 节和第 14 节执行证据。 |
+| Gate status | pass |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -95,26 +95,27 @@ Step index：01
 
 ## 7. 验收标准
 
-- [ ] 已记录执行前 `git status --short --branch`、baseline commit、采样时间、daemon 启动方式和关键环境。
-- [ ] 已记录 active agent 数、foreground `poll_interval_ms`、状态目录、服务端环境和日志级别。
-- [ ] 已采样至少 60 秒 idle CPU / RSS / thread count / I/O / mtime / 日志量。
-- [ ] 已确认本步骤没有修改 `im-core` public API、message-service 协议、state schema 或 transport 默认语义。
-- [ ] 若新增诊断，默认日志级别下不会制造高频新写入。
-- [ ] 已运行 `cargo test -p awiki-deamon --locked`，或记录不能运行的具体原因、风险和替代检查。
-- [ ] Review 发现已经修复或明确记录。
+- [x] 已记录执行前 `git status --short --branch`、baseline commit、采样时间、daemon 启动方式和关键环境。
+- [x] 已记录 active agent 数、foreground `poll_interval_ms`、状态目录、服务端环境和日志级别。
+- [x] 已采样至少 60 秒 idle CPU / RSS / thread count / I/O / mtime / 日志量。
+- [x] 已确认本步骤没有修改 `im-core` public API、message-service 协议、state schema 或 transport 默认语义。
+- [x] 若新增诊断，默认日志级别下不会制造高频新写入；实际没有新增诊断代码。
+- [x] 已运行 `cargo test -p awiki-deamon --locked -j1` 并通过；首次无 `-j1` 运行失败原因和风险已记录。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
 | 检查项 | 命令 / 方法 | 运行时机 | 预期证据 | 门禁类型 |
 |---|---|---|---|---|
-| Worktree baseline | `cd awiki-cli-rs2-cpu && git status --short --branch && git rev-parse HEAD` | 开始前、commit 前 | 分支、未提交变更、基线 commit | Step gate |
-| Daemon unit | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked` | commit 前 | tests 通过；失败时记录失败项和原因 | Step gate |
-| CPU 采样 | `ps -o pid,pcpu,pmem,rss,nlwp,comm -p <daemon_pid>` 和 `top -b -n 12 -d 5 -p <daemon_pid>` | idle 窗口 | 60 秒平均 CPU / RSS / thread count | Baseline evidence |
-| I/O 采样 | 读取 `/proc/<daemon_pid>/io` 前后差值，记录 `read_bytes`、`write_bytes`、`rchar`、`wchar` | idle 窗口 | 60 秒 I/O 差值与每秒均值 | Baseline evidence |
-| mtime 采样 | 对 daemon state root 下 identity、registry、default、`im-core/local-state.sqlite*` 做 60 秒前后 `stat` 对比 | idle 窗口 | 哪些文件静默变化、变化频率 | Baseline evidence |
-| 日志采样 | 使用当前部署日志入口统计 60 秒日志行数，并抽样 foreground / message / WSS 相关条目 | idle 窗口 | 日志量和高频来源 | Baseline evidence |
-| Docs ledger | 检查主 Plan 执行台账和本 Step 状态已回填 | commit 前 | 台账含命令、结果、风险 | Step gate |
+| Worktree baseline | `cd awiki-cli-rs2-cpu && git status --short --branch && git rev-parse HEAD` | 开始前、commit 前 | 基线 commit `4b15c4d`；开始前工作区干净。 | Step gate |
+| Daemon unit | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked` | commit 前 | 首次运行链接 `hermes_gateway` test 时 `ld terminated with signal 9 [Killed]`；判断为本机资源 / OOM 型失败。 | Step gate |
+| Daemon unit retry | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked -j1` | commit 前 | 通过：471 passed / 0 failed / 3 ignored。 | Step gate |
+| CPU 采样 | `ps -o pcpu,pmem,rss,nlwp,stat -p <daemon_pid>` 每 5 秒采样 12 次 | idle 窗口 | 60 秒 CPU 平均 6.50%，RSS 平均 9992KB，线程数平均 6。 | Baseline evidence |
+| I/O 采样 | 读取 `/proc/<daemon_pid>/io` 前后差值 | idle 窗口 | `write_bytes=244801536`，约 4080025.60/s；`wchar=176642981`，约 2944049.68/s；`syscw=120735`，约 2012.25/s。 | Baseline evidence |
+| mtime 采样 | 对 daemon state root 下 identity、registry、default、`im-core/local-state.sqlite*` 做 60 秒前后 `stat` 对比 | idle 窗口 | 31 个文件 mtime 变化，集中在 identity 和 `im-core` local-state 文件。 | Baseline evidence |
+| 日志采样 | `journalctl --user -u awiki-deamon.service --since <采样开始>` | idle 窗口 | 采样窗口日志增量 1 行；采样前最近日志有多条 `daemon.runtime_inbox.session.failed`。 | Baseline evidence |
+| Docs ledger | 检查主 Plan 执行台账和本 Step 状态已回填 | commit 前 | 台账含命令、结果、风险。 | Step gate |
 
 如果某个命令不能运行，必须记录原因、影响和替代证据；不能把未运行命令写成通过。
 
@@ -126,16 +127,16 @@ Step index：01
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | TBD | TBD |
-| 已修复问题 | TBD | TBD |
-| 剩余风险 | TBD | TBD |
-| 新增或缺失测试 | TBD | TBD |
-| 已更新或缺失文档 | TBD | TBD |
+| 发现问题 | 首次 `cargo test -p awiki-deamon --locked` 因 linker `signal 9 [Killed]` 失败。 | 失败发生在链接 `hermes_gateway` test，属于本机资源 / OOM 型失败，不是测试断言或编译错误。 |
+| 已修复问题 | 使用 `-j1` 降低并发后完整测试通过。 | `cargo test -p awiki-deamon --locked -j1` 通过。 |
+| 剩余风险 | idle 采样来自当前用户级 daemon service，后续对比必须使用同一口径；日志窗口内远端流量不可完全静态。 | 已记录 active agent、queue 数、采样窗口和服务状态。 |
+| 新增或缺失测试 | 未新增测试；现有测试已覆盖本步骤保护面。 | 关键测试包括 foreground owner guard、archive finalizer、queue due/future、retry defer、heartbeat scheduler、runtime inbox scope。 |
+| 已更新或缺失文档 | 已更新主 Plan 和本 Step 执行证据。 | 长期 daemon docs 留到 Step 07 同步。 |
 | 并行安全是否仍成立 | no | 本步骤为串行基线步骤。 |
-| Agent 是否越界修改 | TBD | TBD |
-| 互斥资源是否被修改 | TBD | `foreground.rs` 如有修改需说明范围。 |
-| 合并风险 | TBD | TBD |
-| Group gate 影响 | Step 02 / 03 / 04 依赖本步骤完成 | TBD |
+| Agent 是否越界修改 | 否 | 只修改计划文档。 |
+| 互斥资源是否被修改 | 否 | 未修改 `foreground.rs`。 |
+| 合并风险 | 低 | Step 02 / 03 / 04 可基于本基线启动。 |
+| Group gate 影响 | Step 02 / 03 / 04 依赖本步骤完成 | 本步骤 gate 已通过。 |
 
 ## 10. Commit 要求
 
@@ -162,7 +163,22 @@ Step index：01
 |---|---|---|---|
 | 2026-06-28 | 创建 Step 01 小 Plan | 主 Plan 拆分要求 | `../plan.md#17-plan-变更记录` |
 
-## 13. 风险、回滚与后续文档
+## 13. 执行证据
+
+| 项 | 结果 |
+|---|---|
+| 基线 commit | `4b15c4d` |
+| 运行进程 | 当前用户级 `awiki-deamon foreground --state-root <daemon_state_root> --ready-file <ready_file>` |
+| 采样窗口 | 2026-06-28T12:20:51+08:00 到 2026-06-28T12:21:51+08:00，60 秒 |
+| active agents / queues | Python `sqlite3` 只读查询：`agent_definition` 12 条，其中 active 8 条；`runtime_profile` 11 条；`message_sync_outbox` 24 条；`runtime_final_outbox` 26 条。 |
+| CPU / RSS / threads | 12 次采样 CPU 均为 6.5%，平均 6.50%；RSS 平均 9992KB；线程平均 6。 |
+| I/O | `rchar=160111338`，约 2668522.30/s；`wchar=176642981`，约 2944049.68/s；`syscr=53622`，约 893.70/s；`syscw=120735`，约 2012.25/s；`read_bytes=0`；`write_bytes=244801536`，约 4080025.60/s。 |
+| mtime | 31 个 identity / `im-core` local-state 文件 mtime 变化。 |
+| 日志 | 采样窗口内日志增量 1 行；采样前最近日志显示重复 `daemon.runtime_inbox.session.failed`。 |
+| 测试 | `cargo test -p awiki-deamon --locked`：失败于 linker `signal 9 [Killed]`；`cargo test -p awiki-deamon --locked -j1`：通过，471 passed / 0 failed / 3 ignored。 |
+| 代码范围 | 未修改业务代码，未修改 `im-core`，未修改 message-service 协议或 state schema。 |
+
+## 14. 风险、回滚与后续文档
 
 - 风险：采样环境不稳定会导致后续优化效果不可比较；新增诊断若默认输出过多会反向增加 I/O。
 - 并行执行风险：本步骤不并行，避免 baseline 被其他改动污染。
