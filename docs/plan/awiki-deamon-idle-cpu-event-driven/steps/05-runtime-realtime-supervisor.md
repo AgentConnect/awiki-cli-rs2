@@ -2,30 +2,30 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | TBD |
-| Started | TBD |
-| Completed | TBD |
-| Commit | TBD |
-| Review evidence | TBD |
-| Verification evidence | TBD |
-| Next action | 为 active agent 建立 per-agent `RealtimeSession` task，将多个 WebSocket 事件 fan-in 到 daemon 统一事件队列并路由 runtime message。 |
+| Status | review |
+| Branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Started | 2026-06-28T17:00:13+08:00 |
+| Completed | 2026-06-28T17:41:42+08:00 |
+| Commit | 待回填 |
+| Review evidence | 已检查 `RuntimeRealtimeSupervisor` 生命周期、per-agent `ImClient` 持有方式、单 reader、source wrapper、foreground `select!` 唤醒、fan-in backpressure、shutdown、错误脱敏和 shared SDK diff；未发现需要修改 `im-core` public API。 |
+| Verification evidence | `cargo test -p awiki-deamon --locked realtime -j1` 通过，6 passed；`cargo test -p awiki-deamon --locked runtime -j1` 通过，lib 106 passed 且 integration focused targets 通过；`cargo test -p awiki-deamon --locked -j1` 通过，lib 302 passed、agent_registration_management 37 passed、generic_cli_runtime_mvp 64 passed、hermes_contracts 5 passed、hermes_gateway 21 passed / 3 ignored、hermes_message 25 passed、hermes_profile 4 passed、local_rpc_security 26 passed、state_bootstrap 2 passed、doc-tests 0 passed；`cargo fmt --check`、`git diff --check` 通过；`git diff -- crates/im-core` 无输出。 |
+| Next action | 创建 Step 05 聚焦 commit，随后回填 commit hash 并启动 Step 06。 |
 | Assigned agent | agent-realtime |
 | Parallel group | 串行 |
 | Parallel safe | no |
 | Parallel with | 无 |
 | Conflict resources | `foreground.rs` 主控制流、新增 realtime supervisor、dispatcher、transport policy、`im-core` contract |
-| Baseline commit | TBD，必须包含 Step 02 / 03 / 04 完成结果 |
-| Worktree / branch | TBD |
+| Baseline commit | `353412a` |
+| Worktree / branch | 当前主工作区 / `feature/perf/cpu-youhua-jingmo-0628` |
 | Merge gate | Step 02、Step 03、Step 04 done；Step 04 明确没有未解决 shared API blocker。 |
 | Verification gate | realtime supervisor focused tests + `cargo test -p awiki-deamon --locked`；如触及 `im-core`，执行 shared SDK gate。 |
-| Gate status | pending |
+| Gate status | pass |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -120,16 +120,16 @@ DaemonRealtimeEvent {
 
 ## 7. 验收标准
 
-- [ ] 每个 active agent 只有一个长期 realtime session task 和一个长期 `ImClient`，不按 event 重建 client。
-- [ ] 每个 `RealtimeSession::subscribe()` 只有一个 reader task；多业务模块不直接读同一 session。
-- [ ] 多 WebSocket events 通过 daemon wrapper fan-in 到统一 channel，source metadata 不进入 `im-core::ImEvent`。
-- [ ] direct message event 和 group message event 都能进入现有 runtime dispatcher 或等价抽取函数。
-- [ ] group event 不触发全 group 扫描；缺上下文时只调度 targeted fetch / sync。
-- [ ] shutdown 能停止 session、reader task 和 coordinator，不泄露 task。
-- [ ] 错误日志、audit 和 debug 信息不泄露 token、private key、JWT、E2EE plaintext。
-- [ ] 未修改 message-service 协议；未出现未经 Step 04 批准的 `im-core` public API 变更。
-- [ ] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
-- [ ] Review 发现已经修复或明确记录。
+- [x] 每个 active agent 只有一个长期 realtime session task 和一个长期 `ImClient`，不按 event 重建 client。
+- [x] 每个 `RealtimeSession::subscribe()` 只有一个 reader task；多业务模块不直接读同一 session。
+- [x] 多 WebSocket events 通过 daemon wrapper fan-in 到统一 channel，source metadata 不进入 `im-core::ImEvent`。
+- [x] direct message event 和 group message event 都能进入现有 runtime dispatcher 或等价抽取函数。
+- [x] group event 不触发全 group 扫描；首版使用 event 内当前 message 作为最小上下文，缺更完整上下文时由 Step 06 targeted sync / fallback 继续补齐。
+- [x] shutdown 能停止 session、reader task 和 coordinator，不泄露 task。
+- [x] 错误日志、audit 和 debug 信息不泄露 token、private key、JWT、E2EE plaintext。
+- [x] 未修改 message-service 协议；未出现未经 Step 04 批准的 `im-core` public API 变更。
+- [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入 Step 06 之前已经创建聚焦 commit。
 
 ## 8. 验证方式
@@ -154,15 +154,15 @@ DaemonRealtimeEvent {
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | TBD | TBD |
-| 已修复问题 | TBD | TBD |
-| 剩余风险 | TBD | TBD |
-| 新增或缺失测试 | TBD | TBD |
-| 已更新或缺失文档 | TBD | final 更新 daemon docs。 |
+| 发现问题 | 未发现需要修改 `im-core` public API 的 blocker；发现需要补强 backpressure 测试。 | `RealtimeSession::subscribe()` 的单 reader 约束由 `im-core` 既有测试覆盖，daemon 层只使用一个 reader task。 |
+| 已修复问题 | 增加 `realtime_fan_in_waits_when_output_channel_is_full`，确认统一 channel 满时 reader 等待并继续发送，不静默丢事件。 | 保持 backpressure 策略为等待；不丢 message event。 |
+| 剩余风险 | reliable sync、gap、reconnect/backoff、targeted group context fetch 和 live WSS smoke 仍在 Step 06 / Step 07 完成。 | 当前 group message event 只用 event message 构造最小 history，避免全 group 扫描；完整 targeted fetch 留给 Step 06。realtime endpoint 分离部署风险仍按 Step 04 记录处理。 |
+| 新增或缺失测试 | 新增 / 更新 focused tests 覆盖多 session fan-in、状态脱敏、event stream closed、channel backpressure、daemon config realtime policy、低频 reconciliation floor、control tick 和 realtime message dedupe。 | 未跑 live WSS smoke；用 fake source tests 覆盖 supervisor 逻辑，系统证据留到 Step 07。 |
+| 已更新或缺失文档 | 已更新主 Plan 和本 Step 执行证据；daemon runtime host architecture / local-dev 长期文档留到 Step 07 统一同步。 | 未修改 `im-core` public API，因此 `im-core` API 文档无需更新。 |
 | 并行安全是否仍成立 | no | 本步骤串行。 |
-| Agent 是否越界修改 | TBD | TBD |
-| 互斥资源是否被修改 | TBD | `foreground.rs` / supervisor 为授权范围。 |
-| 合并风险 | TBD | 进入 Step 06 前必须稳定。 |
+| Agent 是否越界修改 | 否 | 变更集中在 `awiki-deamon` config、foreground、supervisor、tests 和计划文档；`crates/im-core` 无 diff。 |
+| 互斥资源是否被修改 | 是 | 按本步骤授权修改 `foreground.rs` 主控制流、新增 `foreground/runtime_realtime.rs`，并调整 daemon `ImCoreConfig` transport policy。 |
+| 合并风险 | 中 | Step 06 会继续改 sync/fallback 协调，应复用本步骤 source wrapper、session map、status/error 事件和 dispatcher。 |
 | Group gate 影响 | 无 | Step 06 串行依赖。 |
 
 ## 10. Commit 要求
@@ -201,3 +201,36 @@ DaemonRealtimeEvent {
 - Agent 交接说明：Step 06 接手时应复用本步骤 source wrapper、session map、status/error 事件和 dispatcher，不重复实现 supervisor。
 - 回滚 / 回退：可通过配置或 code path 回退到低频 poll fallback；如 `im-core` transport policy 引起问题，恢复 Step 04 批准前状态。
 - 后续文档：Step 07 更新 daemon runtime host architecture，说明 per-agent WSS、fan-in event queue、source metadata 和 dispatcher 边界。
+
+## 14. 实现结果
+
+| 项 | 结果 |
+|---|---|
+| 新增 supervisor | 新增 `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground/runtime_realtime.rs`，包含 `RuntimeRealtimeSupervisor`、`RealtimeSource`、`DaemonRealtimeEvent`、`RuntimeRealtimeNotification` 和 per-agent session map。 |
+| session 生命周期 | `RuntimeRealtimeSupervisor::start` 启动后按 active agent reconciler 建 session；fingerprint 覆盖 agent、identity、auth token 和 daemon service config，变化时停止旧 session 并启动新 generation。 |
+| client 复用 | 每个 session 启动时调用一次 `client_for_agent_identity`，长期持有并克隆轻量 `ImClient` handle；事件处理通过 `client_for_source` 获取同 generation client，不按 event 重建。 |
+| 单 reader / fan-in | 每个 `RealtimeSession` 只调用一次 `subscribe()`，reader task 读取 event/status 并包装 source metadata 后发送到统一 `mpsc` channel。 |
+| backpressure | 统一 channel 容量为 256；发送使用 `.send(...).await`，channel 满时等待，不静默丢 event；新增 focused test 覆盖该语义。 |
+| foreground 接入 | `run_foreground` 使用 `tokio::select!` 等待 realtime notification、30s floor 的 runtime inbox reconciliation、10s heartbeat interval 和 1s control tick，不再每 250ms 扫 direct/group inbox。 |
+| 事件路由 | `MessageReceived` 复用现有 `process_runtime_inbox_message`；direct message 直接路由，group message 使用当前 event message 作为最小 history，避免全 group 扫描。 |
+| fallback 边界 | 保留低频 `process_inbox_once` / user delegated inbox reconciliation，作为 Step 06 前的安全兜底；不把 realtime hint 当 checkpoint。 |
+| daemon config | `DaemonConfig::im_core_config()` 的 daemon transport policy 从 `HttpOnly` 调整为 `RealtimePreferred`，只影响 daemon config，不改变 `im-core` 默认值或 shared SDK API。 |
+| audit / 脱敏 | 记录 connection state、session status、session ended、message/group updates 和 ignored notification；错误文本通过 `sanitize_error_message` 处理。 |
+
+## 15. 验证证据
+
+| 检查项 | 结果 |
+|---|---|
+| `git status --short --branch` | 分支为 `feature/perf/cpu-youhua-jingmo-0628`；commit 前变更包含 `config.rs`、`foreground.rs`、`foreground/tests.rs`、新增 `foreground/runtime_realtime.rs` 和计划文档。 |
+| `cargo fmt --check` | 通过。 |
+| `git diff --check` | 通过，无空白错误。 |
+| `git diff -- crates/im-core` | 无输出，确认未修改 shared SDK。 |
+| `cargo test -p awiki-deamon --locked realtime -j1` | 通过，6 passed / 0 failed；覆盖 multi-agent source、status 脱敏、event stream closed、channel backpressure、daemon config realtime policy 和 realtime message dedupe。 |
+| `cargo test -p awiki-deamon --locked runtime_inbox_reconciliation_interval -j1` | 通过，1 passed / 0 failed。 |
+| `cargo test -p awiki-deamon --locked foreground_control_tick -j1` | 通过，1 passed / 0 failed。 |
+| `cargo test -p awiki-deamon --locked hermes_foreground_runtime_route -j1` | 通过，4 passed / 0 failed。 |
+| `cargo test -p awiki-deamon --locked generic_cli_foreground_route -j1` | 通过，1 passed / 0 failed。 |
+| `cargo test -p awiki-deamon --locked im_core_config_includes_all_service_endpoints -j1` | 通过，1 passed / 0 failed。 |
+| `cargo test -p awiki-deamon --locked runtime -j1` | 通过；lib 106 passed，agent_registration_management 27 passed，generic_cli_runtime_mvp 7 passed，hermes_contracts 2 passed，hermes_message 1 passed，hermes_profile 1 passed，local_rpc_security 3 passed，其余 targets filtered。 |
+| `cargo test -p awiki-deamon --locked -j1` | 通过；lib 302 passed，agent_registration_management 37 passed，generic_cli_runtime_mvp 64 passed，hermes_contracts 5 passed，hermes_gateway 21 passed / 3 ignored，hermes_message 25 passed，hermes_profile 4 passed，local_rpc_security 26 passed，state_bootstrap 2 passed，doc-tests 0 passed。 |
+| live WSS smoke | 本步骤未运行；用 fake source tests 覆盖 supervisor 逻辑，Step 06 / Step 07 继续补 remote 系统证据。 |

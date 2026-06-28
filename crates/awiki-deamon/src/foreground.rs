@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
 
-use crate::agent_status::HeartbeatScheduler;
+use crate::agent_status::{HeartbeatScheduler, LATEST_STATUS_CHECK_MS};
 use crate::app_bridge::message_control::{
     handle_app_control_payload, is_app_control_payload, IncomingAppControlPayload,
 };
@@ -66,6 +66,7 @@ mod group_context;
 mod lifecycle_support;
 mod outbox;
 mod queue_scheduler;
+mod runtime_realtime;
 mod runtime_support;
 mod state_root_owner;
 
@@ -87,10 +88,16 @@ use outbox::{
 #[cfg(test)]
 use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
 use queue_scheduler::{QueueKind, QueueScheduler, QueueSchedulerNotifier};
+use runtime_realtime::{
+    realtime_exit_reason_name, realtime_status_detail, DaemonRealtimeEvent,
+    RuntimeRealtimeNotification, RuntimeRealtimeSupervisor,
+};
 use runtime_support::UdsTestRuntimePlugin;
 use state_root_owner::StateRootOwnerGuard;
 
 const GENERIC_CLI_ROUTE_RUNNING_STALE_MS: i64 = 10 * 60 * 1000;
+const RUNTIME_INBOX_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
+const FOREGROUND_CONTROL_TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
@@ -271,16 +278,20 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         status.local_socket_path.display()
     );
 
+    let registration = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
+    let mut realtime_supervisor =
+        RuntimeRealtimeSupervisor::start(config.clone(), state.clone(), im_core.clone()).await?;
+    let mut runtime_inbox_reconciliation =
+        tokio::time::interval(runtime_inbox_reconciliation_interval(&options));
+    runtime_inbox_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut heartbeat_interval =
+        tokio::time::interval(Duration::from_millis(LATEST_STATUS_CHECK_MS as u64));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     let mut processed = HashSet::new();
     let mut processed_messages = 0usize;
     let mut heartbeat = HeartbeatScheduler::new();
     let exit_reason = loop {
-        let newly_processed =
-            process_inbox_once(&config, &state, &im_core, &hermes_gateway, &mut processed).await?;
-        processed_messages += newly_processed;
-        if newly_processed > 0 {
-            queue_notifier.notify_all();
-        }
         if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
             let report = crate::archive::finalize_daemon_archive_for_foreground_shutdown(
                 &config,
@@ -288,23 +299,6 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             )?;
             break format!("daemon_archived:{}", report.archive_id);
         }
-        let delegated_processed =
-            process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
-        if delegated_processed > 0 {
-            queue_notifier.notify_all();
-        }
-        {
-            let outbox = rpc_outbox
-                .lock()
-                .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-            match heartbeat.tick(&config, &state, &im_core, &*outbox) {
-                Err(error) => {
-                    let _ = record_foreground_status_error(&state, &error.to_string());
-                }
-                Ok(_) => {}
-            }
-        };
-        processed_messages += delegated_processed;
         if let Some(limit) = options.max_processed_messages {
             if processed_messages >= limit {
                 break "max_processed_messages".to_string();
@@ -315,8 +309,54 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 break "max_runtime_ms".to_string();
             }
         }
-        tokio::time::sleep(Duration::from_millis(options.poll_interval_ms)).await;
+        tokio::select! {
+            notification = realtime_supervisor.recv() => {
+                if let Some(notification) = notification {
+                    let newly_processed = handle_realtime_notification(
+                        &config,
+                        &state,
+                        &im_core,
+                        &hermes_gateway,
+                        &registration,
+                        &mut realtime_supervisor,
+                        &mut processed,
+                        notification,
+                    )
+                    .await?;
+                    processed_messages += newly_processed;
+                    if newly_processed > 0 {
+                        queue_notifier.notify_all();
+                    }
+                }
+            }
+            _ = runtime_inbox_reconciliation.tick() => {
+                realtime_supervisor.reconcile_active_agents().await?;
+                let newly_processed =
+                    process_inbox_once(&config, &state, &im_core, &hermes_gateway, &mut processed).await?;
+                let delegated_processed =
+                    process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
+                processed_messages += newly_processed + delegated_processed;
+                if newly_processed + delegated_processed > 0 {
+                    queue_notifier.notify_all();
+                }
+            }
+            _ = heartbeat_interval.tick() => {
+                {
+                    let outbox = rpc_outbox
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
+                    match heartbeat.tick(&config, &state, &im_core, &*outbox) {
+                        Err(error) => {
+                            let _ = record_foreground_status_error(&state, &error.to_string());
+                        }
+                        Ok(_) => {}
+                    }
+                };
+            }
+            _ = tokio::time::sleep(foreground_control_tick_duration(started_at, options.max_runtime_ms)) => {}
+        }
     };
+    realtime_supervisor.stop().await;
     rpc_worker.stop();
     queue_scheduler.stop().await;
     let _ = std::fs::remove_file(&config.local_socket_path);
@@ -334,6 +374,224 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         runtime_ms: started_at.elapsed().as_millis(),
         exit_reason,
     })
+}
+
+fn runtime_inbox_reconciliation_interval(options: &ForegroundOptions) -> Duration {
+    Duration::from_millis(options.poll_interval_ms).max(RUNTIME_INBOX_RECONCILIATION_INTERVAL)
+}
+
+fn foreground_control_tick_duration(started_at: Instant, max_runtime_ms: Option<u64>) -> Duration {
+    let Some(max_runtime_ms) = max_runtime_ms else {
+        return FOREGROUND_CONTROL_TICK_INTERVAL;
+    };
+    let limit = Duration::from_millis(max_runtime_ms);
+    let elapsed = started_at.elapsed();
+    if elapsed >= limit {
+        Duration::from_millis(0)
+    } else {
+        (limit - elapsed).min(FOREGROUND_CONTROL_TICK_INTERVAL)
+    }
+}
+
+async fn handle_realtime_notification(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    realtime_supervisor: &mut RuntimeRealtimeSupervisor,
+    processed: &mut HashSet<String>,
+    notification: RuntimeRealtimeNotification,
+) -> Result<usize> {
+    match notification {
+        RuntimeRealtimeNotification::Event(event) => {
+            process_realtime_event(
+                config,
+                state,
+                im_core,
+                hermes_gateway,
+                registration,
+                realtime_supervisor,
+                processed,
+                event,
+            )
+            .await
+        }
+        RuntimeRealtimeNotification::SessionStatus { source, status } => {
+            state.insert_audit_event_json(
+                "daemon.realtime.session.status",
+                Some(&source.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "source": source.detail_json(),
+                    "status": realtime_status_detail(&status),
+                }),
+            )?;
+            Ok(0)
+        }
+        RuntimeRealtimeNotification::SessionEnded {
+            source,
+            reason,
+            warnings,
+        } => {
+            realtime_supervisor.remove_ended_session(&source).await;
+            state.insert_audit_event_json(
+                "daemon.realtime.session.ended",
+                Some(&source.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "source": source.detail_json(),
+                    "reason": realtime_exit_reason_name(&reason),
+                    "warnings": warnings,
+                }),
+            )?;
+            Ok(0)
+        }
+    }
+}
+
+async fn process_realtime_event(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    realtime_supervisor: &RuntimeRealtimeSupervisor,
+    processed: &mut HashSet<String>,
+    event: DaemonRealtimeEvent,
+) -> Result<usize> {
+    match event.event {
+        im_core::realtime::ImEvent::MessageReceived(message_event) => {
+            let Some(client) = realtime_supervisor.client_for_source(&event.source) else {
+                state.insert_audit_event_json(
+                    "daemon.realtime.message.stale_source",
+                    Some(&event.source.agent_did),
+                    None,
+                    None,
+                    None,
+                    json!({ "source": event.source.detail_json() }),
+                )?;
+                return Ok(0);
+            };
+            let message = message_event.message;
+            let group_history = if is_group_message(&message) {
+                Some(vec![message.clone()])
+            } else {
+                None
+            };
+            let routed = process_runtime_inbox_message(
+                config,
+                state,
+                im_core,
+                hermes_gateway,
+                registration,
+                &client,
+                &event.source.agent_did,
+                &message,
+                processed,
+                group_history.as_deref(),
+            )
+            .await?
+            .unwrap_or(false);
+            Ok(usize::from(routed))
+        }
+        im_core::realtime::ImEvent::ConnectionStateChanged(changed) => {
+            state.insert_audit_event_json(
+                "daemon.realtime.connection_state",
+                Some(&event.source.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "source": event.source.detail_json(),
+                    "state": runtime_realtime::realtime_connection_state_name(changed.state),
+                    "reason": changed.reason.as_deref().map(sanitize_error_message),
+                }),
+            )?;
+            Ok(0)
+        }
+        im_core::realtime::ImEvent::MessageUpdated(updated) => {
+            state.insert_audit_event_json(
+                "daemon.realtime.message.updated",
+                Some(&event.source.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "source": event.source.detail_json(),
+                    "message_id": updated.message_id.as_str(),
+                    "has_sync_hint": updated.sync.is_some(),
+                }),
+            )?;
+            Ok(0)
+        }
+        im_core::realtime::ImEvent::GroupUpdated(updated) => {
+            state.insert_audit_event_json(
+                "daemon.realtime.group.updated",
+                Some(&event.source.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "source": event.source.detail_json(),
+                    "group": updated.group.as_str(),
+                    "has_sync_hint": updated.sync.is_some(),
+                }),
+            )?;
+            Ok(0)
+        }
+        im_core::realtime::ImEvent::LocalNotification(_)
+        | im_core::realtime::ImEvent::HostNotification(_)
+        | im_core::realtime::ImEvent::UnknownNotification(_) => {
+            state.insert_audit_event_json(
+                "daemon.realtime.notification.ignored",
+                Some(&event.source.agent_did),
+                None,
+                None,
+                None,
+                json!({ "source": event.source.detail_json() }),
+            )?;
+            Ok(0)
+        }
+    }
+}
+
+#[cfg(test)]
+async fn process_realtime_message_for_test(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    client: &im_core::ImClient,
+    agent_did: &str,
+    processed: &mut HashSet<String>,
+    message: Message,
+) -> Result<usize> {
+    let group_history = if is_group_message(&message) {
+        Some(vec![message.clone()])
+    } else {
+        None
+    };
+    let routed = process_runtime_inbox_message(
+        config,
+        state,
+        im_core,
+        hermes_gateway,
+        registration,
+        client,
+        agent_did,
+        &message,
+        processed,
+        group_history.as_deref(),
+    )
+    .await?
+    .unwrap_or(false);
+    Ok(usize::from(routed))
 }
 
 async fn process_inbox_once(
