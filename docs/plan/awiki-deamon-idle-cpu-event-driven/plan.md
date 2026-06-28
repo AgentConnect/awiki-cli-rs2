@@ -209,7 +209,7 @@ per-agent RealtimeSession task
 
 | Step | 状态 | Agent / Owner | 并行组 | 分支 / worktree | 基线 commit | 开始时间 | 完成时间 | Commit | Review 证据 | 验证证据 | 合并状态 | 门禁状态 | 下一步 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 01 | done | coordinator | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `4b15c4d` | 2026-06-28T12:18:30+08:00 | 2026-06-28T14:28:19+08:00 | 本 Step 提交：`daemon: record idle scheduling baseline` | 已确认本步骤未修改业务代码，现有 tests 覆盖 foreground owner guard、archive finalizer、queue drain、future due、retry defer、heartbeat 节流和 runtime inbox poll scope；无 `im-core` diff。 | 60 秒 idle 采样：CPU 平均 6.50%，RSS 平均 9992KB，线程 6；`write_bytes` 增量 244801536，约 4080025.60/s；31 个 identity / `im-core` 文件 mtime 变化；`cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored。 | merged | pass | 启动 Step 02 / Step 03 / Step 04 前置检查 |
+| 01 | done | coordinator | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `4b15c4d` | 2026-06-28T12:18:30+08:00 | 2026-06-28T14:28:19+08:00 | `d0d01e9` | 已确认本步骤未修改业务代码，现有 tests 覆盖 foreground owner guard、archive finalizer、queue drain、future due、retry defer、heartbeat 节流和 runtime inbox poll scope；无 `im-core` diff。 | 60 秒 idle 采样：CPU 平均 6.50%，RSS 平均 9992KB，线程 6；`write_bytes` 增量 244801536，约 4080025.60/s；31 个 identity / `im-core` 文件 mtime 变化；`cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored。 | merged | pass | 启动 Step 02 / Step 03 / Step 04 前置检查 |
 | 02 | pending | agent-storage | A | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |
 | 03 | pending | agent-scheduler | A | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |
 | 04 | pending | agent-sdk-contract | B | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |

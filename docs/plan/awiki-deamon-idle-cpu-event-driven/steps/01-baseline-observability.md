@@ -12,7 +12,7 @@ Step index：01
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T12:18:30+08:00 |
 | Completed | 2026-06-28T14:28:19+08:00 |
-| Commit | 待提交后回填 |
+| Commit | `d0d01e9` |
 | Review evidence | 本步骤未修改业务代码；Review 确认现有测试已覆盖 foreground owner guard、archive finalizer、queue drain、future due、retry defer、heartbeat 节流和 runtime inbox poll scope；无 `im-core` diff。 |
 | Verification evidence | 60 秒 idle 采样完成；`cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored；首次无 `-j1` 运行因 linker `signal 9 [Killed]` 失败，记录为本机资源 / OOM 型失败。 |
 | Next action | 启动 Step 02 / Step 03 / Step 04 前置检查；这些步骤可按主 Plan parallel-safe 规则并行或由 coordinator 串行推进。 |
@@ -102,7 +102,7 @@ Step index：01
 - [x] 若新增诊断，默认日志级别下不会制造高频新写入；实际没有新增诊断代码。
 - [x] 已运行 `cargo test -p awiki-deamon --locked -j1` 并通过；首次无 `-j1` 运行失败原因和风险已记录。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入下一步之前已经创建聚焦 commit。
+- [x] 本步骤在进入下一步之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
