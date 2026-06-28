@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | review |
+| Status | done |
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T14:49:06+08:00 |
 | Completed | 2026-06-28T16:20:03+08:00 |
-| Commit | TBD |
+| Commit | `90658c9` |
 | Review evidence | 已检查 diff 仅涉及 `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、`foreground/lifecycle_support.rs`、新增 `foreground/queue_scheduler.rs`、state due helper、state tests 和本 Step 文档；无 `crates/im-core` diff；保留 queue 状态机、retry/backoff、local RPC payload 和 runtime backend contract；发现并修复 due 已过但 drain 未处理项时可能 0ms 重试的问题，改为 50ms recheck；确认 runtime/host 深层入队点未在本步骤扩大改造，由本地 RPC notify、foreground 处理后 notify、启动 notify 和 30s reconciliation 覆盖。 |
 | Verification evidence | `cargo test -p awiki-deamon --locked queue_scheduler -j1` 通过，5 passed；`cargo test -p awiki-deamon --locked queue -j1` 通过，30 passed；`cargo test -p awiki-deamon --locked -j1` 最终通过，lib 294 passed，agent_registration_management 37 passed，generic_cli_runtime_mvp 64 passed，hermes_contracts 5 passed，hermes_gateway 21 passed / 3 ignored，hermes_message 25 passed，hermes_profile 4 passed，local_rpc_security 26 passed，state_bootstrap 2 passed，doc-tests 0 passed。一次全量重跑中既有 `repeated_agent_status_query_is_throttled_by_daemon_and_controller` 在运行超过 60 秒后因 10 秒节流窗口过期失败；随后 exact 重跑通过，最终全量重跑通过。 |
-| Next action | 创建 Step 03 聚焦 commit，然后回填 commit hash 并进入 Step 04。 |
+| Next action | Step 03 已提交并回填；进入 Step 04 的 M-Core realtime endpoint 与共享接口守门。 |
 | Assigned agent | agent-scheduler |
 | Parallel group | A |
 | Parallel safe | yes |
@@ -117,7 +117,7 @@ Step index：03
 - [x] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
 - [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入 Step 05 之前已经创建聚焦 commit。
+- [x] 本步骤在进入 Step 05 之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
@@ -195,6 +195,8 @@ Step index：03
 | 项 | 结果 |
 |---|---|
 | 基线 commit | `fd1cfe5` |
+| Step commit | `90658c9`，`daemon: schedule local queues by notify and due time`。 |
+| Commit 后状态 | `git status --short --branch` 仅显示 `## feature/perf/cpu-youhua-jingmo-0628`，工作区干净。 |
 | 变更路径 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground/lifecycle_support.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground/queue_scheduler.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/state/delegated_state.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/state/runtime_tasks.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/state/tests.rs`、本 Step 文档和主 Plan 台账。 |
 | 实现摘要 | 新增四类 foreground-local queue scheduler，使用 `tokio::sync::Notify`、最近 due helper、30s reconciliation 和 stop notify；foreground 250ms 主循环不再每轮 drain 四类本地队列；本地 RPC 成功处理请求后 notify all；远端 / 委托 inbox 处理到消息后 notify all。 |
 | focused tests | `cargo test -p awiki-deamon --locked queue_scheduler -j1`：5 passed / 0 failed；`cargo test -p awiki-deamon --locked queue -j1`：30 passed / 0 failed。 |
