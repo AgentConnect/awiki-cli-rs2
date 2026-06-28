@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：06  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | review |
+| Status | done |
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T17:45:54+08:00 |
-| Completed | TBD |
-| Commit | TBD |
+| Completed | 2026-06-28T18:29:17+08:00 |
+| Commit | `cffca78` |
 | Review evidence | 已完成代码 Review：确认 realtime hint 只调度 `sync_delta_async` / `sync_thread_after_async`，不推进 checkpoint；dirty set 按 agent/thread/group 合并；reconnect、gap、unknown、channel pressure 和 session ended 均进入 dirty work；degraded fallback 使用 30s floor、指数 backoff 和确定性 jitter；snapshot_required fail-closed；group event 不直接用缺上下文消息路由，改由 targeted group fetch 补齐上下文；未修改 `crates/im-core`。 |
 | Verification evidence | `cargo fmt --check` 通过；`git diff --check` 通过；`git diff -- crates/im-core` 无输出；`cargo test -p awiki-deamon --locked realtime -j1` 通过，15 passed；`cargo test -p awiki-deamon --locked fallback -j1` 通过，lib 2 passed，generic_cli_runtime_mvp 3 passed；`cargo test -p awiki-deamon --locked runtime -j1` 通过，lib 115 passed，agent_registration_management 27 passed，generic_cli_runtime_mvp 7 passed，hermes_contracts 2 passed，hermes_message 1 passed，hermes_profile 1 passed，local_rpc_security 3 passed；`cargo test -p awiki-deamon --locked -j1` 通过，lib 311 passed，agent_registration_management 37 passed，generic_cli_runtime_mvp 64 passed，hermes_contracts 5 passed，hermes_gateway 21 passed / 3 ignored，hermes_message 25 passed，hermes_profile 4 passed，local_rpc_security 26 passed，state_bootstrap 2 passed，doc-tests 0 passed。 |
-| Next action | 创建 Step 06 聚焦 commit，回填 commit hash 后进入 Step 07。 |
+| Next action | Step 06 已完成；进入 Step 07 最终集成、文档同步、remote 系统测试。 |
 | Assigned agent | coordinator |
 | Parallel group | 串行 |
 | Parallel safe | no |
@@ -25,7 +25,7 @@ Step index：06
 | Worktree / branch | 当前主工作区 / `feature/perf/cpu-youhua-jingmo-0628` |
 | Merge gate | Step 05 done；realtime fan-in 和 dispatcher 稳定。 |
 | Verification gate | reconnect/gap/fallback focused tests + `cargo test -p awiki-deamon --locked`；必要时 `cargo test -p im-core --locked realtime sync`。 |
-| Gate status | pass，待 commit hash 回填 |
+| Gate status | pass |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
