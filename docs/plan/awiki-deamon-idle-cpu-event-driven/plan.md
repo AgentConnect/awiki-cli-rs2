@@ -4,7 +4,7 @@
 DOC：`awiki-cli-rs2-cpu/docs/plan/awiki-deamon-idle-cpu-event-driven/plan.md`  
 Harness：`awiki-harness`  
 创建时间：2026-06-28  
-恢复指针：Step 01、Step 02、Step 03 已完成；恢复时从 Step 04 的 M-Core realtime endpoint 与共享接口守门开始，并读取本文件、当前 Step 文档、执行台账和 `git status --short --branch`。
+恢复指针：Step 01、Step 02、Step 03、Step 04 已完成；恢复时从 Step 05 的多 WebSocket 统一事件 supervisor 开始，并读取本文件、当前 Step 文档、执行台账和 `git status --short --branch`。
 
 ## 1. 目标
 
@@ -155,9 +155,9 @@ per-agent RealtimeSession task
 | Step | 标题 | 依赖 | 并行组 | Parallel-safe | 建议 Agent | 可并行对象 | 互斥资源 / 冲突路径 | 产出 | 小 Plan 文档 | Commit gate | 合并 / 验证门禁 | 状态 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 01 | 基线观测与调度保护 | 无 | 串行 | 否 | coordinator | 无 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、运行态服务 | 可重复 idle CPU/I/O 采样、诊断字段、当前行为保护测试 | [steps/01-baseline-observability.md](steps/01-baseline-observability.md) | 必须 | `cargo test -p awiki-deamon --locked` | done |
-| 02 | 内容感知 identity sync | Step 01 | A | 是 | agent-storage | Step 03 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/im_core_adapter.rs` | 相同 identity/token 不重写文件，mtime/write 降低 | [steps/02-identity-sync-write-if-changed.md](steps/02-identity-sync-write-if-changed.md) | 必须 | storage tests + daemon unit | pending |
+| 02 | 内容感知 identity sync | Step 01 | A | 是 | agent-storage | Step 03 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/im_core_adapter.rs` | 相同 identity/token 不重写文件，mtime/write 降低 | [steps/02-identity-sync-write-if-changed.md](steps/02-identity-sync-write-if-changed.md) | 必须 | storage tests + daemon unit | done |
 | 03 | 本地 due queue scheduler | Step 01 | A | 是 | agent-scheduler | Step 02 | queue scheduler 模块、queue state helper、局部 foreground 接入 | 四类本地队列从固定扫描改为 Notify + due timer | [steps/03-local-queue-schedulers.md](steps/03-local-queue-schedulers.md) | 必须 | scheduler tests + group daemon tests | done |
-| 04 | M-Core realtime endpoint 与共享接口守门 | Step 01 | B | 是 | agent-sdk-contract | Step 02 / 03 | `awiki-cli-rs2-cpu/crates/im-core/src/realtime/*` 只读优先；如改需独立评审 | 明确是否需要改 `im-core` endpoint 选择；默认不改 public API | [steps/04-m-core-realtime-contract.md](steps/04-m-core-realtime-contract.md) | 必须 | shared SDK contract gate | pending |
+| 04 | M-Core realtime endpoint 与共享接口守门 | Step 01 | B | 是 | agent-sdk-contract | Step 02 / 03 | `awiki-cli-rs2-cpu/crates/im-core/src/realtime/*` 只读优先；如改需独立评审 | 已确认首版不需要修改 `im-core` public API；endpoint 差异作为 Step 05/06 配置风险处理 | [steps/04-m-core-realtime-contract.md](steps/04-m-core-realtime-contract.md) | 必须 | shared SDK contract gate | done |
 | 05 | 多 WebSocket 统一事件 supervisor | Step 02, Step 03, Step 04 | 串行 | 否 | agent-realtime | 无 | `foreground.rs` 主控制流、新增 realtime supervisor、dispatcher | per-agent WSS session、统一事件队列、direct/group 事件路由 | [steps/05-runtime-realtime-supervisor.md](steps/05-runtime-realtime-supervisor.md) | 必须 | realtime unit + daemon unit | pending |
 | 06 | reliable sync、gap 与 fallback 协调 | Step 05 | 串行 | 否 | coordinator | 无 | realtime supervisor、sync/fallback coordinator | WSS hint 触发 sync delta/thread-after，断线重连和低频兜底 | [steps/06-sync-gap-fallback.md](steps/06-sync-gap-fallback.md) | 必须 | reconnect/gap tests | pending |
 | 07 | 最终集成、文档同步、remote 系统测试 | Step 02-06 | 串行 | 否 | coordinator | 无 | 全部已改模块、docs、Harness 摘要、`awiki-system-test` 环境 | 全局 Review、idle 对比、remote `awiki.info` 完整系统测试 | [steps/07-final-integration-system-test.md](steps/07-final-integration-system-test.md) | 必须 | final full gate | pending |
@@ -212,7 +212,7 @@ per-agent RealtimeSession task
 | 01 | done | coordinator | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `4b15c4d` | 2026-06-28T12:18:30+08:00 | 2026-06-28T14:28:19+08:00 | `d0d01e9` | 已确认本步骤未修改业务代码，现有 tests 覆盖 foreground owner guard、archive finalizer、queue drain、future due、retry defer、heartbeat 节流和 runtime inbox poll scope；无 `im-core` diff。 | 60 秒 idle 采样：CPU 平均 6.50%，RSS 平均 9992KB，线程 6；`write_bytes` 增量 244801536，约 4080025.60/s；31 个 identity / `im-core` 文件 mtime 变化；`cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored。 | merged | pass | 启动 Step 02 / Step 03 / Step 04 前置检查 |
 | 02 | done | agent-storage | A | `feature/perf/cpu-youhua-jingmo-0628` | `91322dc` | 2026-06-28T14:28:19+08:00 | 2026-06-28T14:40:45+08:00 | `6f5097b` | 只修改 `awiki-cli-rs2-cpu/crates/awiki-deamon/src/im_core_adapter.rs`；未修改 `foreground.rs`、queue scheduler 或 `crates/im-core`；无新增日志，不输出 token / private key / E2EE key。 | `cargo test -p awiki-deamon --locked im_core_adapter -j1` 通过，3 passed；`cargo test -p awiki-deamon --locked -j1` 通过，473 passed / 0 failed / 3 ignored。 | ready_for_group_merge | pass | 等 Step 03 / Step 04 或由 coordinator 串行推进 Step 03 |
 | 03 | done | agent-scheduler | A | `feature/perf/cpu-youhua-jingmo-0628` | `fd1cfe5` | 2026-06-28T14:49:06+08:00 | 2026-06-28T16:20:03+08:00 | `90658c9` | 已检查 diff 仅涉及 `foreground.rs`、`foreground/lifecycle_support.rs`、新增 `foreground/queue_scheduler.rs`、state due helper、state tests 和计划文档；无 `crates/im-core` diff；发现并修复 due 已过但 drain 未处理项时可能 0ms 重试的问题，改为 50ms recheck；为 scheduler 增加 `Drop` 兜底，异常返回路径不会遗留 task；runtime/host 深层入队点由即时 flush、foreground/local RPC notify 和 30s reconciliation 覆盖。 | `cargo test -p awiki-deamon --locked queue_scheduler -j1` 通过，5 passed；`cargo test -p awiki-deamon --locked queue -j1` 通过，30 passed；`cargo test -p awiki-deamon --locked -j1` 最终通过，lib 294 passed，agent_registration_management 37 passed，generic_cli_runtime_mvp 64 passed，hermes_contracts 5 passed，hermes_gateway 21 passed / 3 ignored，hermes_message 25 passed，hermes_profile 4 passed，local_rpc_security 26 passed，state_bootstrap 2 passed，doc-tests 0 passed。一次全量重跑中既有节流测试因运行超过 60 秒失败，exact 重跑和最终全量重跑通过。 | committed | pass | 进入 Step 04 |
-| 04 | pending | agent-sdk-contract | B | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 01 |
+| 04 | done | agent-sdk-contract | B | `feature/perf/cpu-youhua-jingmo-0628` | `db30f77` | 2026-06-28T16:49:00+08:00 | 2026-06-28T16:54:56+08:00 | TBD | 已确认 `RealtimeService::start_async`、`RealtimeSession::subscribe`、`status_updates`、`stop`、`join`、`ImEvent`、`RealtimeSyncHint`、`sync_delta_async`、`sync_thread_after_async`、`groups().messages_async` 满足首版 daemon fan-in；多 WebSocket source metadata 保持在 daemon wrapper；未修改 `im-core` public API / DTO / transport 默认语义。剩余风险：realtime WSS endpoint 当前从 `service_base_url` 推导 `/im/ws`，而 daemon config 已配置 `message_service_endpoint` 但仍是 `HttpOnly`；Step 05/06 必须在 daemon 配置层启用 realtime，并在发现 endpoint 分离部署时优先做向后兼容内部选择而非 public API 变更。 | `git diff -- crates/im-core` 无输出；计划中的 `cargo test -p im-core --locked realtime sync -j1` 被 Cargo 判定为非法多过滤参数，已更正为两条命令；`cargo test -p im-core --locked realtime -j1` 通过，lib 23 passed，并包含 realtime_api 6、realtime_connect 5、realtime_frame 9、realtime_loop 16、realtime_projection 16 passed；`cargo test -p im-core --locked sync -j1` 通过，lib 62 passed，并包含 sync delta/thread-after 与 realtime sync hint 相关测试；无需运行 shared caller regression，因为未修改 `crates/im-core`。 | ready_for_group_merge | pass | 进入 Step 05 |
 | 05 | pending | agent-realtime | 串行 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 02-04 |
 | 06 | pending | coordinator | 串行 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 05 |
 | 07 | pending | coordinator | 串行 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 02-06 |
@@ -275,7 +275,7 @@ per-agent RealtimeSession task
 | Step Unit | Step 01-07 | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked` | 每步 commit 前 | 通过或记录原因 | pending |
 | Storage Focus | Step 02 | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked im_core_adapter` 或 focused identity sync tests | Step 02 commit 前 | 相同内容不重写 | pending |
 | Queue Focus | Step 03 | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked queue` 和新增 scheduler tests | Step 03 commit 前 | due/notify/shutdown 通过 | pending |
-| SDK Unit | Step 04-06 | `cd awiki-cli-rs2-cpu && cargo test -p im-core --locked realtime sync` | realtime/sync 改动后 | 通过或记录原因 | pending |
+| SDK Unit | Step 04-06 | `cd awiki-cli-rs2-cpu && cargo test -p im-core --locked realtime -j1` 和 `cd awiki-cli-rs2-cpu && cargo test -p im-core --locked sync -j1` | realtime/sync 改动后或 Step 04 contract gate | 通过或记录原因 | Step 04 pass；Step 05/06 pending |
 | Shared SDK Contract | Step 04-06 | 检查 `awiki-cli-rs2-cpu/crates/im-core/src` diff；若无改动，记录“未改共享 SDK”；若有改动，必须先完成兼容性评审 | Step 04 / 05 / 06 Review 前 | 没有未授权共享接口改动 | pending |
 | Shared SDK Regression | Step 04-06 | `cd awiki-cli-rs2-cpu && cargo test -p awiki-cli --locked && cargo test -p im-core-dart --locked` | 仅当独立评审批准修改 `crates/im-core` 后 | 共享调用方通过或记录环境失败原因 | pending |
 | Group Integration | Wave A / B | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked` | 并行组合并后 | 通过或记录原因 | pending |
@@ -319,6 +319,7 @@ per-agent RealtimeSession task
 |---|---|---|---|---|
 | 2026-06-28 | 创建初版 Plan | 沉淀 idle CPU 调查和事件驱动优化方向 | 全部 | 是 |
 | 2026-06-28 | 升级为主 Plan + 小 Plan 文档，增加多 WebSocket 统一事件 supervisor、M-Core API 守门和 7 步执行设计 | 用户要求基于现有文档设计全面、详细、可落地的修改方案 | 全部 | 是 |
+| 2026-06-28 | 修正 Step 04 SDK 验证命令，把非法的单条 `cargo test -p im-core --locked realtime sync` 拆成 `realtime` 与 `sync` 两条 focused test；记录无需修改 M-Code public API 的 contract 结论 | Cargo 只接受一个测试过滤参数；Step 04 复核确认现有 `im-core` API 足够 daemon 首版多 WebSocket fan-in | Step 04-06 | 是 |
 
 ## 18. 风险与回滚
 
@@ -365,3 +366,22 @@ per-agent RealtimeSession task
 | 日志 | 采样窗口内 `journalctl --user -u awiki-deamon.service` 增量 1 行；采样前最近日志可见多条 `daemon.runtime_inbox.session.failed`，原因是 agent DID WBA session refresh 失败。 |
 | 测试 | 首次 `cargo test -p awiki-deamon --locked` 在并发链接 `hermes_gateway` test 时失败：`ld terminated with signal 9 [Killed]`，判断为本机资源 / OOM 型失败；重跑 `cargo test -p awiki-deamon --locked -j1` 通过，471 passed / 0 failed / 3 ignored。 |
 | 代码改动 | 本步骤未修改业务代码；只回填 Plan / Step 执行证据。 |
+
+## 21. Step 04 执行证据
+
+本节记录 M-Core realtime contract gate 的结论。该步骤只做共享 SDK 能力复核和计划台账回填，不修改 `awiki-cli-rs2-cpu/crates/im-core` 代码。
+
+| 项 | 证据 |
+|---|---|
+| 基线 commit | `db30f77` |
+| 分支 | `feature/perf/cpu-youhua-jingmo-0628` |
+| 结论 | 当前 `im-core` public API 满足首版 daemon 事件驱动需要，不需要修改 M-Code / `im-core` public API、DTO、feature gate 或 transport 默认语义。 |
+| API 能力 | `RealtimeService::start_async(RealtimeOptions) -> RealtimeSession` 可启动 per-agent realtime session；`RealtimeSession::subscribe()` 返回单 reader `RealtimeEventStream`；`status_updates()`、`stop()`、`join()` 支持 daemon 生命周期管理；`ImEvent` 已覆盖 connection、message、group、local/host/unknown notification；`RealtimeSyncHint` 可作为 dirty/gap 调度信号。 |
+| 多 WebSocket 处理 | `im-core` 不需要内置 multiplexer；daemon 后续使用 per-agent session task 读取唯一 `RealtimeEventStream`，包装为 `DaemonRealtimeEvent { source, event }` 后 fan-in 到统一 channel。`source` metadata 不进入 `im_core::ImEvent`。 |
+| reliable sync 边界 | realtime hint 不推进 checkpoint；可靠同步继续由 `messages().sync_delta_async(...)` 和 `messages().sync_thread_after_async(...)` 完成，group context 可由 `groups().messages_async(...)` 补齐。 |
+| endpoint 风险 | `im-core` realtime WSS 当前从 `sdk_config().service_base_url` 推导 `/im/ws`；daemon `im_core_config()` 已设置 `message_service_endpoint = message_service_base_url`，但当前 `transport_policy = MessageTransportPolicy::HttpOnly` 会拒绝 realtime runner。Step 05 必须在 daemon 配置层启用 realtime；如果部署中 `service_base_url` 与 `message_service_base_url` 分离，优先考虑兼容的内部 endpoint 选择或 daemon 配置策略，不先新增 public API。 |
+| Shared SDK diff | `git diff -- crates/im-core` 无输出。 |
+| 验证命令修正 | 原计划命令 `cargo test -p im-core --locked realtime sync -j1` 不是合法 Cargo 命令形状，已拆成两条 focused test 并更新验证策略。 |
+| focused tests | `cargo test -p im-core --locked realtime -j1` 通过：lib 23 passed，并包含 `realtime_api` 6 passed、`realtime_connect` 5 passed、`realtime_frame` 9 passed、`realtime_loop` 16 passed、`realtime_projection` 16 passed；`cargo test -p im-core --locked sync -j1` 通过：lib 62 passed，并包含 sync delta/thread-after 与 realtime sync hint 相关测试。 |
+| shared caller regression | 未运行；本步骤未修改 `crates/im-core`，因此不触发 `awiki-cli` / `im-core-dart` 共享调用方回归门禁。 |
+| Review 结论 | Step 05 可以继续；禁止在 Step 05 中顺手修改 `im-core` public API 或把 daemon source metadata 加入 `ImEvent`。 |
