@@ -2,30 +2,30 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：02  
-状态：draft
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | TBD |
-| Started | TBD |
-| Completed | TBD |
-| Commit | TBD |
-| Review evidence | TBD |
-| Verification evidence | TBD |
-| Next action | 将 `sync_agent_identity_to_im_core` 改为内容感知写入，避免静默状态反复重写相同 identity 文件。 |
+| Status | done |
+| Branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Started | 2026-06-28T14:28:19+08:00 |
+| Completed | 2026-06-28T14:40:45+08:00 |
+| Commit | 待提交后回填 |
+| Review evidence | 只修改 `im_core_adapter.rs`；新增 crate-private `write_if_changed` helper；无 `crates/im-core` diff；无 `foreground.rs` / queue scheduler 修改；无新增日志或 secret 输出。 |
+| Verification evidence | `cargo test -p awiki-deamon --locked im_core_adapter -j1` 通过，3 passed；`cargo test -p awiki-deamon --locked -j1` 通过，473 passed / 0 failed / 3 ignored。 |
+| Next action | 等 Step 03 / Step 04；Wave A 合并后运行 group verification。 |
 | Assigned agent | agent-storage |
 | Parallel group | A |
 | Parallel safe | yes |
 | Parallel with | Step 03；Step 04 默认只读时也可并行 |
 | Conflict resources | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/im_core_adapter.rs`、identity 文件权限和 token 写入语义 |
-| Baseline commit | TBD，必须来自 Step 01 完成后的 commit |
-| Worktree / branch | TBD |
-| Merge gate | Step 01 done；合并前确认未修改 foreground 主循环和 queue scheduler。 |
-| Verification gate | focused identity tests + `cargo test -p awiki-deamon --locked`。 |
-| Gate status | pending |
+| Baseline commit | `91322dc` |
+| Worktree / branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Merge gate | 通过；本步骤 `ready_for_group_merge`，等待 Wave A / B 其他步骤。 |
+| Verification gate | 通过；focused identity tests + daemon full tests 均通过。 |
+| Gate status | pass |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -93,26 +93,26 @@ Step index：02
 
 ## 7. 验收标准
 
-- [ ] 相同 identity/token 内容重复 sync 不重写目标文件，mtime 或 helper changed 证据稳定。
-- [ ] DID、private key、E2EE key、token、registry/default 任一内容变化会触发正确写入。
-- [ ] 首次同步、目录缺失、文件缺失、权限修正场景仍正常。
-- [ ] 不记录 private key、token、JWT、E2EE key 等敏感值。
-- [ ] 未修改 `im-core` public API / DTO / feature gate / transport 默认语义。
-- [ ] 如果本步骤标记为 parallel-safe，已确认没有修改互斥资源或超出授权路径。
-- [ ] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
-- [ ] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
-- [ ] Review 发现已经修复或明确记录。
+- [x] 相同 identity/token 内容重复 sync 不重写目标文件，mtime 或 helper changed 证据稳定。
+- [x] DID、private key、E2EE key、token、registry/default 任一内容变化会触发正确写入。
+- [x] 首次同步、目录缺失、文件缺失场景正常；本步骤未引入权限语义变更。
+- [x] 不记录 private key、token、JWT、E2EE key 等敏感值。
+- [x] 未修改 `im-core` public API / DTO / feature gate / transport 默认语义。
+- [x] 如果本步骤标记为 parallel-safe，已确认没有修改互斥资源或超出授权路径。
+- [x] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
+- [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入 Step 05 之前已经创建聚焦 commit。
 
 ## 8. 验证方式
 
 | 检查项 | 命令 / 方法 | 运行时机 | 预期证据 | 门禁类型 |
 |---|---|---|---|---|
-| Focused identity tests | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked im_core_adapter` | commit 前 | 首次写入、重复不写、内容变化写入 tests 通过 | Step gate |
-| Daemon unit | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked` | commit 前 | crate tests 通过或记录原因 | Step gate |
-| mtime 手动证据 | 在临时 state root 连续调用相同 sync，比较 identity / registry / default / auth 文件 mtime | Review 前 | 相同内容 mtime 不变；变化内容 mtime 改变 | Step evidence |
-| Sensitive logging check | `cd awiki-cli-rs2-cpu && git diff -- crates/awiki-deamon/src/im_core_adapter.rs` 并人工 Review 日志 | Review 前 | diff 中无 secret 打印 | Review gate |
-| Parallel scope check | `cd awiki-cli-rs2-cpu && git diff --name-only` | commit 前 | 只包含授权路径和 tests / docs 台账 | Group gate |
+| Focused identity tests | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked im_core_adapter -j1` | commit 前 | 通过：3 passed / 0 failed / 0 ignored。 | Step gate |
+| Daemon unit | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked -j1` | commit 前 | 通过：473 passed / 0 failed / 3 ignored。 | Step gate |
+| mtime 手动证据 | focused test `sync_agent_identity_skips_unchanged_files` 在临时 state root 连续 sync 并比较 mtime | Review 前 | 相同内容 mtime 不变；token 变化只更新 `auth.json`。 | Step evidence |
+| Sensitive logging check | `cd awiki-cli-rs2-cpu && git diff -- crates/awiki-deamon/src/im_core_adapter.rs` 并人工 Review 日志 | Review 前 | diff 中没有新增日志输出；secret 只作为文件内容写入和比较。 | Review gate |
+| Parallel scope check | `cd awiki-cli-rs2-cpu && git diff --name-only` | commit 前 | 仅 `crates/awiki-deamon/src/im_core_adapter.rs` 和计划文档。 | Group gate |
 | Group Verification | `cd awiki-cli-rs2-cpu && cargo test -p awiki-deamon --locked` | Wave A 合并后 | Step 02 + Step 03 组合后通过 | Group gate |
 
 如果 mtime 精度受文件系统影响，测试可以优先断言 helper `changed=false`、文件内容哈希不变和无写入路径被调用；必须在证据中说明。
@@ -125,16 +125,16 @@ Step index：02
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | TBD | TBD |
-| 已修复问题 | TBD | TBD |
-| 剩余风险 | TBD | TBD |
-| 新增或缺失测试 | TBD | TBD |
-| 已更新或缺失文档 | TBD | 通常无需长期文档；final 记录即可。 |
-| 并行安全是否仍成立 | TBD | 不应修改 foreground / queue / realtime 路径。 |
-| Agent 是否越界修改 | TBD | TBD |
-| 互斥资源是否被修改 | TBD | `im_core_adapter.rs` 为本步骤授权路径。 |
-| 合并风险 | TBD | 与 Step 03 理论低冲突。 |
-| Group gate 影响 | Wave A | 合并后跑 daemon tests。 |
+| 发现问题 | 无功能性问题。 | 首轮 focused tests 即通过；全量 daemon tests 通过。 |
+| 已修复问题 | 修正测试中的 mtime 对比实现。 | 最终测试稳定通过。 |
+| 剩余风险 | 未做真实运行中 daemon state mtime 复测；后续 Step 07 会做最终 idle 对比。 | 本步骤已有临时 state root mtime 证据。 |
+| 新增或缺失测试 | 新增 `write_if_changed_skips_identical_content` 和 `sync_agent_identity_skips_unchanged_files`。 | 覆盖首次写、重复不写、内容变化写。 |
+| 已更新或缺失文档 | 已更新主 Plan 和本 Step 执行证据；长期 docs 不需要立即更新。 | final 记录无需长期 docs 或统一更新。 |
+| 并行安全是否仍成立 | 是 | 未修改 foreground / queue / realtime / `crates/im-core`。 |
+| Agent 是否越界修改 | 否 | 代码只改 `im_core_adapter.rs`。 |
+| 互斥资源是否被修改 | 是 | `im_core_adapter.rs` 为本步骤授权路径。 |
+| 合并风险 | 低 | 与 Step 03 写集不重叠。 |
+| Group gate 影响 | Wave A | 合并后跑 daemon tests；当前本步骤已通过 daemon tests。 |
 
 ## 10. Commit 要求
 
@@ -162,6 +162,18 @@ Step index：02
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-28 | 创建 Step 02 小 Plan | 主 Plan 拆分要求 | `../plan.md#17-plan-变更记录` |
+
+## 14. 执行证据
+
+| 项 | 结果 |
+|---|---|
+| 基线 commit | `91322dc` |
+| 变更路径 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/im_core_adapter.rs`、本 Step 文档和主 Plan 台账。 |
+| 实现摘要 | 新增 crate-private `write_if_changed(path, content)`；`sync_agent_identity_to_im_core` 对 `did.json`、`private.key`、`e2ee-agreement-private.pem`、`auth.json`、`registry.json`、`default` 使用内容感知写入。 |
+| focused tests | `cargo test -p awiki-deamon --locked im_core_adapter -j1`：3 passed / 0 failed / 0 ignored。 |
+| daemon tests | `cargo test -p awiki-deamon --locked -j1`：473 passed / 0 failed / 3 ignored。 |
+| shared SDK | `git diff -- crates/im-core` 无输出；未修改 `im-core` public API / DTO / feature gate / transport 默认语义。 |
+| secret logging | 未新增日志；diff 中没有输出 token、private key、JWT 或 E2EE key。 |
 
 ## 13. 风险、回滚与后续文档
 
