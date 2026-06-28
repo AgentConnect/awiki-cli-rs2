@@ -13,9 +13,9 @@ Step index：07
 | Started | 2026-06-28T18:30:46+08:00 |
 | Completed | TBD |
 | Commit | TBD |
-| Review evidence | 已完成 Step 01-06 台账、shared SDK diff、安全/隐私、docs drift 和 daemon docs Review；未发现需要回到 Step 02-06 的代码问题。阻塞项为 remote full system test 未通过。 |
-| Verification evidence | `cargo fmt --check`、`git diff --check`、`cargo test -p awiki-deamon --locked -j1`、`cargo test --workspace --locked -j1` 通过；idle 采样显示 I/O / mtime 下降但 CPU 受启动期影响不可直接证明下降；指定 remote full gate 在 Linux 上因 macOS-only local orchestration 失败，direct remote pytest 进入执行后出现大量 F/E 且受磁盘满影响未产出完整 summary。 |
-| Next action | 释放磁盘空间；在 macOS 或修复 `manage_local_test_env.py` remote-only 路径后重跑指定 remote full gate；确认 `awiki.info` message-service `/im/healthz` 500 和 direct remote suite 大量失败是否为远端环境 / 部署问题。 |
+| Review evidence | 已完成 Step 01-06 台账、shared SDK diff、安全/隐私、docs drift 和 daemon docs Review；未发现需要回到 Step 02-06 的代码问题。为满足 AGENTS 指定命令，已在 sibling `awiki-system-test` 提交 `5280bb5` 修复 remote `run-tests` 入口；阻塞项更新为 remote full system test 完整执行但失败。 |
+| Verification evidence | `cargo fmt --check`、`git diff --check`、`cargo test -p awiki-deamon --locked -j1`、`cargo test --workspace --locked -j1` 通过；idle 采样显示 I/O / mtime 下降但 CPU 受启动期影响不可直接证明下降；`awiki-system-test` focused helper tests 39 passed；指定 remote full gate 完整进入 pytest，结果 50 failed / 143 passed / 47 skipped / 1 warning in 2793.81s。 |
+| Next action | 保持 Step 07 blocked；先确认 `awiki.info` message-service / PostgreSQL pool timeout、CLI `transport_unavailable`、registration token `controller_handle` 契约、remote cleanup 仍连本地 PostgreSQL、以及本次严格命令默认使用 sibling `awiki-cli-rs2` 而非当前 `awiki-cli-rs2-cpu` 的影响。 |
 | Assigned agent | coordinator |
 | Parallel group | 串行 |
 | Parallel safe | no |
@@ -97,7 +97,7 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 | `awiki-harness/context/nodes/agent-runtime-host.node.md` | 如 runtime host 节点描述需要同步则更新。 | 否则记录无需更新理由。 |
 | `awiki-harness/context/nodes/message-flow.node.md` | 如 message flow / realtime / sync 边界描述变化则更新。 | 否则记录无需更新理由。 |
 | `awiki-harness/context/repo-profiles/awiki-cli-rs2.md` | 如验证入口或 repo profile 变化则更新。 | 否则记录无需更新理由。 |
-| `awiki-system-test` | 运行 remote `awiki.info` 系统测试；不默认改代码。 | 若测试 fixture 需修复，先更新 Plan。 |
+| `awiki-system-test` | 运行 remote `awiki.info` 系统测试；已为 remote `run-tests` 入口做最小修复并提交 `5280bb5`。 | 该跨仓库修复只让 `AWIKI_SYSTEM_TEST_MODE=remote` 跳过本地 install/start/stop 并直接执行 pytest，不修改 daemon 业务逻辑。 |
 | `awiki-cli-rs2-cpu/docs/plan/awiki-deamon-idle-cpu-event-driven/plan.md` | 回填最终 Review、验证结果、最终状态。 | 必须更新。 |
 
 ## 6. 依赖与并行约束
@@ -120,11 +120,12 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 - [x] `awiki-cli-rs2-cpu` workspace tests 已运行并记录结果，或记录不可运行原因。
 - [x] 如修改 `im-core`，已运行 shared SDK gate 或记录用户接受的风险。本步骤未修改 `im-core`，`git diff -- crates/im-core` 无输出。
 - [x] idle CPU / I/O / mtime / 日志对比使用 Step 01 同一口径，并记录 active agent 数和 session 数；CPU 采样受启动期影响，记录为证据限制。
-- [ ] 已在 `awiki-system-test` 使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `AWIKI_BASE_URL=https://awiki.info` 执行完整系统测试，并记录通过 / 失败 / 跳过数量、原因和关键环境配置。指定命令在当前 Linux 环境未进入 pytest，硬门禁未通过。
+- [x] 已在 `awiki-system-test` 使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `AWIKI_BASE_URL=https://awiki.info` 执行完整系统测试，并记录通过 / 失败 / 跳过数量、原因和关键环境配置。
+- [ ] remote full gate 必须通过。当前结果为 50 failed / 143 passed / 47 skipped / 1 warning，硬门禁未通过。
 - [x] 子仓库 docs 和 Harness docs 已更新，或记录检查过且无需更新的理由。
 - [x] 没有未授权 `im-core` public API、message-service 协议、state schema 或 secret handling 变更。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 如果 final 阶段修改文件，已创建聚焦 final integration commit；否则记录无需 commit。当前只回填 blocked 证据，尚未创建 Step 07 done commit。
+- [ ] 如果 final 阶段修改文件，已创建聚焦 final integration commit；否则记录无需 commit。当前回填 blocked 证据，尚未创建 Step 07 done commit。
 
 ## 8. 验证方式
 
@@ -151,13 +152,13 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | blocked | AGENTS 指定 remote full gate `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` 在当前 Linux 环境触发 `Local system-test orchestration currently supports macOS only.`；direct remote full pytest 出现大量 F/E，且磁盘满导致无法稳定产出完整 summary。 |
-| 已修复问题 | done | daemon docs 已同步事件驱动 foreground、per-agent realtime、dirty/fallback、checkpoint 和 runtime secret 边界；本次运行产生的临时 idle state 与 pytest 临时目录已清理。 |
-| 剩余风险 | blocked | 未获得 remote full system test 通过证据；`https://awiki.info/im/healthz` 返回 500；当前磁盘空间不足，继续跑完整 suite 可能再次无法落盘 summary。 |
-| 新增或缺失测试 | partial | 本仓库 daemon / workspace tests 已通过；remote daemon smoke 1 passed / 1 deselected；完整 remote system test 未通过。 |
+| 发现问题 | blocked | AGENTS 指定 remote full gate 已完整进入 pytest，但结果 50 failed / 143 passed / 47 skipped / 1 warning in 2793.81s，门禁失败。失败集中在 CLI direct/group/host notify/runtime listener、daemon message-agent、message-service direct/group/sync/ws/read-state、user-service agent-registration。 |
+| 已修复问题 | done | daemon docs 已同步事件驱动 foreground、per-agent realtime、dirty/fallback、checkpoint 和 runtime secret 边界；`awiki-system-test` remote `run-tests` 入口已提交 `5280bb5`，`uv run --no-sync pytest tests/non_did/test_manage_local_test_env.py -q` 39 passed；磁盘空间已恢复。 |
+| 剩余风险 | blocked | 未获得 remote full system test 通过证据；根因信号包括 `transport_unavailable`、message-service PostgreSQL pool timeout、cleanup 连接本地 PostgreSQL 被拒绝、registration token 缺 `controller_handle`；本次严格命令未显式设置 `AWIKI_CLI_RUST_REPO` / `AWIKI_DAEMON_RUST_REPO`，默认使用 sibling `awiki-cli-rs2`。 |
+| 新增或缺失测试 | partial | 本仓库 daemon / workspace tests 已通过；`awiki-system-test` remote-mode helper tests 已通过；完整 remote system test 已运行但失败。严格命令未带 `-rs`，跳过项只有总数 47，没有 skip reason 明细。 |
 | 已更新或缺失文档 | done | 已更新 `crates/awiki-deamon/docs/local-dev.md` 和 `crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md`；Harness 关键文档已检查，无需修改。 |
 | 并行安全是否仍成立 | no | final 串行。 |
-| Agent 是否越界修改 | no | Step 07 未修改其他仓库；`awiki-harness` 和 `awiki-system-test` 工作区状态干净。 |
+| Agent 是否越界修改 | reviewed | Step 07 为满足 AGENTS 指定命令修改了 sibling `awiki-system-test` 的测试入口并提交 `5280bb5`；该变更已记录到主 Plan 变更记录，不涉及 daemon、`im-core` 或 message-service 业务代码。 |
 | 互斥资源是否被修改 | no | `crates/im-core` 无 diff；message-service protocol/state schema 未修改；foreground 代码未在 Step 07 修改。 |
 | 合并风险 | blocked | 当前 docs/plan 记录的是 blocked 状态，不应作为 final pass 合并；remote gate 通过后需要补充最终证据。 |
 | Group gate 影响 | failed | Final remote full gate 未通过，Step 07 不可标记 done。 |
@@ -177,9 +178,9 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 是否影响并行组 | 是否影响合并门禁 | 下一步决策 |
 |---|---|---|---|---|---|---|
-| remote `awiki.info` system test 失败 | system test 输出、失败 case、环境配置 | 重试、检查服务可用性、定位是否本次改动 | 整体计划 | 是 | 是 | 修复本次改动或记录环境 blocker；未获用户接受前不能标记 final pass。 |
-| 当前 Linux 环境无法执行指定 `manage_local_test_env.py run-tests` full gate | `Local prerequisites are incomplete; running install automatically.` 后 `Error: Local system-test orchestration currently supports macOS only.` | 检查 `manage_local_test_env.py`，确认 `run_tests()` 无 remote-only 分支，仍会 install/start 本地环境；补跑 direct remote pytest 与 daemon remote smoke | 整体计划 | 是 | 是 | 需要 macOS 环境执行指定命令，或先修复 `awiki-system-test` 的 remote-only full gate 入口。 |
-| 当前磁盘空间不足 | `df -h` 显示根分区 100%，一度只剩 0，清理本次临时目录后仍仅约 228MB | 清理本次 Step 07 临时 idle state、`/tmp/pytest-of-ecs-user` 和浅层 pytest cache | 整体计划 | 是 | 是 | 释放构建产物或扩大磁盘后再跑完整 suite。 |
+| remote `awiki.info` system test 失败 | 指定命令完整输出：50 failed / 143 passed / 47 skipped / 1 warning in 2793.81s | 修复 remote run-tests 入口、释放磁盘、完整重跑严格命令、按失败域归类 | 整体计划 | 是 | 是 | 先确认 message-service PostgreSQL pool timeout / CLI transport / registration token 契约是否为远端环境或默认 checkout 问题；未获通过或用户接受前不能标记 final pass。 |
+| 当前 Linux 环境原本无法执行指定 `manage_local_test_env.py run-tests` full gate | 旧输出：`Local prerequisites are incomplete; running install automatically.` 后 `Local system-test orchestration currently supports macOS only.` | 已在 `awiki-system-test` 提交 `5280bb5`：remote mode 直接运行 `uv run --no-sync pytest ... -q`，跳过本地 install/start/stop；helper tests 39 passed | 整体计划 | 是 | 已解决入口 blocker，但 full gate 仍失败 | 保留 `5280bb5`，后续继续解决 suite 失败。 |
+| 当前磁盘空间不足 | 曾因 `No space left on device` 导致 direct pytest summary 不完整 | 删除可再生 Rust target 目录，`df -h` 显示约 128G 可用；严格命令已完整产出 summary | 整体计划 | 是 | 已解决当前运行 blocker | 后续若重跑会再次冷构建，应预留时间和空间。 |
 | workspace tests 编译失败 | cargo 输出 | 定位失败 crate、回到对应 Step 修复 | 整体计划 | 是 | 是 | 修复并重跑。 |
 | idle 指标未下降或 I/O 仍高 | Step 01 / Step 07 对比表 | 检查 identity mtime、queue drain、fallback busy loop、日志 storm | 整体计划 | 是 | 是 | 回到对应 Step 修复或记录未达成目标。 |
 | docs drift | Review 发现 docs 与实现不一致 | 更新 daemon docs / Harness docs | final docs | 否 | 是 | 补文档后重新 docs Review。 |
@@ -190,10 +191,11 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 | 日期 | 变更 | 原因 | 主 Plan 变更记录链接 |
 |---|---|---|---|
 | 2026-06-28 | 创建 Step 07 小 Plan | 主 Plan 拆分要求 | `../plan.md#17-plan-变更记录` |
+| 2026-06-28 | 记录 sibling `awiki-system-test` remote `run-tests` 入口修复和完整 remote suite 失败统计 | AGENTS 指定命令原先无法在 Linux remote mode 下进入 pytest；修复后严格命令完成但门禁失败 | `../plan.md#17-plan-变更记录` |
 
 ## 13. 风险、回滚与后续文档
 
-- 风险：remote system test 环境不稳定可能掩盖真实回归；final 阶段发现大问题会需要回到前面 Step。
+- 风险：remote system test 环境不稳定或默认 Rust checkout 不一致可能掩盖真实回归；final 阶段发现大问题会需要回到前面 Step 或补充指定 `AWIKI_CLI_RUST_REPO` / `AWIKI_DAEMON_RUST_REPO` 的验证。
 - 并行执行风险：final 串行，避免 docs 和台账冲突。
 - 合并冲突风险：中；docs 和主 Plan 可能有并行更新残留，必须 coordinator 统一处理。
 - Group gate 失败回退：不标记计划完成；按失败来源回到 Step 02-06 修复，或记录用户接受的 blocker。
@@ -213,13 +215,16 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 | Idle final evidence | 60 秒临时复制 state foreground 采样 | partial | active agents 8；CPU 平均 8.258%，受启动期影响；`write_bytes` 81825792，低于 Step 01 的 244801536；mtime 7，低于 Step 01 的 31。 |
 | Harness link check | `python3 scripts/validate-docs.py` | pass | `OK: validated Markdown links under .../awiki-harness`。 |
 | Harness drift check | `python3 scripts/check-drift.py` | fail-existing | 失败为既有 `machine/inventory.yaml` unresolved references：`../awiki-me/CLAUDE.md`、`../awiki-cli/CLAUDE.md`、`../awiki-cli/README.md`、`../awiki-cli/docs/architecture/awiki-v2-architecture.md`。 |
-| 指定 remote full gate | `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` | fail | 当前 Linux 环境未进入 pytest，错误为 `Local system-test orchestration currently supports macOS only.`；pass/fail/skip 数不可得。 |
+| `awiki-system-test` remote 入口修复 | `uv run --no-sync pytest tests/non_did/test_manage_local_test_env.py -q`；`python3 -m py_compile manage_local_test_env.py tests/non_did/test_manage_local_test_env.py`；`git diff --check` | pass | sibling `awiki-system-test` commit `5280bb5`；focused tests 39 passed，语法编译和空白检查通过。 |
+| 指定 remote full gate | `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` | fail | 完整进入 pytest，实际分发命令为 `uv run --no-sync pytest tests_v2 -q`；结果 50 failed / 143 passed / 47 skipped / 1 warning in 2793.81s。关键配置：`AWIKI_SYSTEM_TEST_MODE=remote`、`AWIKI_BASE_URL=https://awiki.info`、默认 DID domain `awiki.info`、user-service `https://awiki.info`、message-service `https://awiki.info`、WebSocket `wss://awiki.info/im/ws`；未显式设置 `AWIKI_CLI_RUST_REPO` / `AWIKI_DAEMON_RUST_REPO`，awiki-cli subprocess 默认使用 sibling `awiki-cli-rs2`。 |
 | daemon remote smoke | `AWIKI_ENABLE_DAEMON_REMOTE_SMOKE=1 AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info E2E_DID_DOMAIN=awiki.info E2E_USER_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws AWIKI_CLI_RUST_REPO=../awiki-cli-rs2-cpu AWIKI_DAEMON_RUST_REPO=../awiki-cli-rs2-cpu uv run --no-sync pytest tests_v2/daemon/test_daemon_gated_smoke.py -q -rs -k 'remote' -p no:cacheprovider` | pass | 1 passed / 0 failed / 0 skipped / 1 deselected。 |
 | remote health | `curl https://awiki.info/healthz`；`curl https://awiki.info/im/healthz` | mixed | user-service health HTTP 200；message-service `/im/healthz` HTTP 500。 |
-| direct remote full pytest | `AWIKI_SYSTEM_TEST_MODE=remote ... uv run --no-sync pytest tests_v2 -q -rs` 与 `--tb=no -p no:cacheprovider` 重跑 | fail/incomplete | 进入真实测试并出现大量 F/E；第一次 100% 后磁盘满无法写 cache summary；第二次 60% 后磁盘再次满，被中断。该命令不是指定 full gate，不能替代 AGENTS 门禁。 |
+| 失败域归类 | pytest short summary / `.pytest_cache/v/cache/lastfailed` | fail | CLI direct 6、CLI group 12、CLI host notify / runtime listener 7、CLI secure init/repair/retry 3、daemon message-agent 2、message-service attachment/direct/group/payload/read-watermark/sync/ws 19、user-service agent-registration 1。主要错误信号：CLI `message transport is unavailable: error sending request for url (https://awiki.info/im/rpc)`；message-service `failed to acquire postgres connection: pool timed out while waiting for an open connection`；cleanup 连接 `127.0.0.1:5432` 被拒绝；registration token `controller_handle is required for daemon registration tokens`。 |
+| 跳过项 | 指定命令输出 | partial | 严格命令只带 `-q`，没有 `-rs`，因此只有 skip 总数 47，未输出逐项 skip reason；后续诊断性重跑应额外带 `-rs`，但不替代 AGENTS 指定命令。 |
 
 ## 15. 恢复说明
 
-- 继续执行时先释放磁盘空间；当前根分区约 100% 使用，完整 pytest 会再次失败。
-- 优先在支持 `manage_local_test_env.py` 本地编排的 macOS 环境执行指定 remote full gate，或先修改 `awiki-system-test` 为 `AWIKI_SYSTEM_TEST_MODE=remote` 提供不 install/start 本地环境的 full gate 入口。
-- 如果 remote full gate 仍失败，先确认 `https://awiki.info/im/healthz` HTTP 500 是否为远端部署问题；不要把 Step 07 标记 done，直到 AGENTS 要求的完整 remote gate 有明确 pass 或用户接受 blocker。
+- 继续执行时直接从 remote full gate 失败定位开始；磁盘当前约 128G 可用，但因 `awiki-cli-rs2` target 被清理后已发生冷构建，后续重跑仍要预留时间。
+- 严格命令已可运行；不要回到 macOS-only 入口问题。优先检查 `awiki.info` message-service PostgreSQL pool、`/im/rpc` 可用性、registration token `controller_handle` 契约和 remote cleanup DB 配置。
+- 如果要验证当前 `awiki-cli-rs2-cpu` 分支，需要额外设置 `AWIKI_CLI_RUST_REPO=../awiki-cli-rs2-cpu` 和 `AWIKI_DAEMON_RUST_REPO=../awiki-cli-rs2-cpu` 做补充 run，并明确记录它不是原始 AGENTS 指定命令。
+- 不要把 Step 07 标记 done，直到 AGENTS 要求的完整 remote gate 通过，或用户明确接受当前 blocker。
