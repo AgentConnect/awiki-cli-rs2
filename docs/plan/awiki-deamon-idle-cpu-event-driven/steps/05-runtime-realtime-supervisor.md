@@ -2,20 +2,20 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：05  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | review |
+| Status | done |
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T17:00:13+08:00 |
 | Completed | 2026-06-28T17:41:42+08:00 |
-| Commit | 待回填 |
+| Commit | `fc40ba7` |
 | Review evidence | 已检查 `RuntimeRealtimeSupervisor` 生命周期、per-agent `ImClient` 持有方式、单 reader、source wrapper、foreground `select!` 唤醒、fan-in backpressure、shutdown、错误脱敏和 shared SDK diff；未发现需要修改 `im-core` public API。 |
 | Verification evidence | `cargo test -p awiki-deamon --locked realtime -j1` 通过，6 passed；`cargo test -p awiki-deamon --locked runtime -j1` 通过，lib 106 passed 且 integration focused targets 通过；`cargo test -p awiki-deamon --locked -j1` 通过，lib 302 passed、agent_registration_management 37 passed、generic_cli_runtime_mvp 64 passed、hermes_contracts 5 passed、hermes_gateway 21 passed / 3 ignored、hermes_message 25 passed、hermes_profile 4 passed、local_rpc_security 26 passed、state_bootstrap 2 passed、doc-tests 0 passed；`cargo fmt --check`、`git diff --check` 通过；`git diff -- crates/im-core` 无输出。 |
-| Next action | 创建 Step 05 聚焦 commit，随后回填 commit hash 并启动 Step 06。 |
+| Next action | Step 05 已完成；进入 Step 06 reliable sync、gap 与 fallback 协调。 |
 | Assigned agent | agent-realtime |
 | Parallel group | 串行 |
 | Parallel safe | no |
@@ -130,7 +130,7 @@ DaemonRealtimeEvent {
 - [x] 未修改 message-service 协议；未出现未经 Step 04 批准的 `im-core` public API 变更。
 - [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
 - [x] Review 发现已经修复或明确记录。
-- [ ] 本步骤在进入 Step 06 之前已经创建聚焦 commit。
+- [x] 本步骤在进入 Step 06 之前已经创建聚焦 commit：`fc40ba7`。
 
 ## 8. 验证方式
 
@@ -221,7 +221,7 @@ DaemonRealtimeEvent {
 
 | 检查项 | 结果 |
 |---|---|
-| `git status --short --branch` | 分支为 `feature/perf/cpu-youhua-jingmo-0628`；commit 前变更包含 `config.rs`、`foreground.rs`、`foreground/tests.rs`、新增 `foreground/runtime_realtime.rs` 和计划文档。 |
+| `git status --short --branch` | Step 05 实现提交前变更包含 `config.rs`、`foreground.rs`、`foreground/tests.rs`、新增 `foreground/runtime_realtime.rs` 和计划文档；提交 `fc40ba7` 后工作区干净。 |
 | `cargo fmt --check` | 通过。 |
 | `git diff --check` | 通过，无空白错误。 |
 | `git diff -- crates/im-core` | 无输出，确认未修改 shared SDK。 |
