@@ -76,7 +76,7 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 ## Local-first message reads
 
-`client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view.
+`client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`, so large conversation lists such as 500 or 1000 rows must be loaded by cursor pagination. The cursor is opaque and follows the local sort order `last_message_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
 
 Conversation list startup and realtime updates use snapshot / patch helpers under
 the same `client.messages` namespace:

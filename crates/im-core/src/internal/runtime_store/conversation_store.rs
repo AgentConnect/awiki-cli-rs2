@@ -253,6 +253,7 @@ fn committed_items(
         crate::internal::message_runtime::conversations::MessageConversationRuntime::new(client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(DEFAULT_LIMIT),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,

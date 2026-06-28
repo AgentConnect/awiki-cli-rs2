@@ -26,6 +26,13 @@ Apps should not depend on WebSocket URLs, raw frames, bearer headers, ping/pong,
 Conversation list startup and updates are exposed as local projection helpers:
 
 ```dart
+final firstPage = await client.messages.conversations(limit: 100);
+final secondPage = firstPage.hasMore && firstPage.nextCursor != null
+    ? await client.messages.conversations(
+        limit: 100,
+        cursor: firstPage.nextCursor,
+      )
+    : null;
 final snapshot = await client.messages.loadConversationSnapshot();
 await client.messages.clearConversationSnapshot();
 final patches = client.messages.watchConversationPatches();
@@ -41,9 +48,14 @@ final threadRepair = await client.messages.repairThreadStore(
 ```
 
 These APIs currently live under `client.messages` for SDK compatibility. The
-snapshot is a non-authoritative redb cache generated from committed
-`conversation_summaries`; `clearConversationSnapshot` only clears that
-discardable cache for the current owner. Conversation and thread patch streams
+conversation page is backed by committed local `conversation_summaries` and is
+ordered newest-first by `last_message_at DESC, conversation_id DESC`. A single
+page is capped at 100 items; load 500/1000 conversation lists by passing the
+opaque `nextCursor` back as `cursor` until `hasMore` is false or `nextCursor` is
+null. Do not parse the cursor or treat it as an offset. The snapshot is a
+non-authoritative redb cache generated from committed `conversation_summaries`;
+`clearConversationSnapshot` only clears that discardable cache for the current
+owner. Conversation and thread patch streams
 emit versioned reset/upsert/remove/reorder/repair events only after the local
 projection commit succeeds, and `repairConversationStore` / `repairThreadStore`
 provide reset/repair baselines after lag, stream close, or version gaps. DTOs

@@ -19,6 +19,11 @@ impl<'a> MessageConversationRuntime<'a> {
         let mut records = list_conversation_records(self.client, &query)?;
         let has_more = records.len() > requested_limit;
         records.truncate(requested_limit);
+        let next_cursor = if has_more {
+            records.last().and_then(conversation_cursor_from_record)
+        } else {
+            None
+        };
         let items = records
             .into_iter()
             .map(|record| conversation_from_record(self.client.did().as_str(), record))
@@ -26,7 +31,7 @@ impl<'a> MessageConversationRuntime<'a> {
         save_snapshot_best_effort(self.client, &query, &items);
         Ok(crate::ids::Page {
             items,
-            next_cursor: None,
+            next_cursor,
             has_more,
         })
     }
@@ -39,6 +44,11 @@ impl<'a> MessageConversationRuntime<'a> {
         let mut records = list_conversation_records_async(self.client, &query).await?;
         let has_more = records.len() > requested_limit;
         records.truncate(requested_limit);
+        let next_cursor = if has_more {
+            records.last().and_then(conversation_cursor_from_record)
+        } else {
+            None
+        };
         let items = records
             .into_iter()
             .map(|record| conversation_from_record(self.client.did().as_str(), record))
@@ -46,7 +56,7 @@ impl<'a> MessageConversationRuntime<'a> {
         save_snapshot_best_effort(self.client, &query, &items);
         Ok(crate::ids::Page {
             items,
-            next_cursor: None,
+            next_cursor,
             has_more,
         })
     }
@@ -84,7 +94,7 @@ fn save_snapshot_best_effort(
 }
 
 fn should_update_conversation_snapshot(query: &crate::messages::ConversationQuery) -> bool {
-    query.include_groups && query.include_direct && !query.unread_only
+    query.cursor.is_none() && query.include_groups && query.include_direct && !query.unread_only
 }
 
 pub(crate) fn snapshot_item_from_conversation(
@@ -271,6 +281,10 @@ fn conversation_from_record(
     })
 }
 
+fn conversation_cursor_from_record(record: &ConversationRecordLike) -> Option<crate::ids::Cursor> {
+    encode_conversation_cursor(record).and_then(|cursor| crate::ids::Cursor::parse(cursor).ok())
+}
+
 #[cfg(feature = "sqlite")]
 type ConversationRecordLike = crate::internal::local_state::conversations::ConversationRecord;
 
@@ -284,6 +298,10 @@ struct NoSqliteConversationRecord;
 impl ConversationRecordExt for crate::internal::local_state::conversations::ConversationRecord {
     fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    fn conversation_id(&self) -> &str {
+        &self.conversation_id
     }
 
     fn message_count(&self) -> i64 {
@@ -317,6 +335,10 @@ impl ConversationRecordExt for NoSqliteConversationRecord {
         ""
     }
 
+    fn conversation_id(&self) -> &str {
+        ""
+    }
+
     fn message_count(&self) -> i64 {
         0
     }
@@ -344,12 +366,22 @@ impl ConversationRecordExt for NoSqliteConversationRecord {
 
 trait ConversationRecordExt {
     fn thread_id(&self) -> &str;
+    fn conversation_id(&self) -> &str;
     fn message_count(&self) -> i64;
     fn unread_count(&self) -> i64;
     fn unread_mention_count(&self) -> i64;
     fn first_unread_mention_message_id(&self) -> Option<&str>;
     fn last_message_at(&self) -> &str;
     fn last_message(&self) -> Option<&crate::internal::local_state::messages::MessageRecord>;
+}
+
+fn encode_conversation_cursor(record: &impl ConversationRecordExt) -> Option<String> {
+    let conversation_id = non_empty_string(record.conversation_id())?;
+    Some(format!(
+        "conversation-list:v1:{}:{}",
+        base64_url_encode(record.last_message_at()),
+        base64_url_encode(&conversation_id)
+    ))
 }
 
 fn conversation_thread(
@@ -642,6 +674,12 @@ fn non_empty_string(value: &str) -> Option<String> {
     }
 }
 
+fn base64_url_encode(value: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
 fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.trim().is_empty() {
         fallback
@@ -691,6 +729,7 @@ mod tests {
         let page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -761,6 +800,7 @@ mod tests {
         let page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(1),
+                cursor: None,
                 include_groups: true,
                 include_direct: false,
                 unread_only: true,
@@ -780,6 +820,88 @@ mod tests {
     }
 
     #[test]
+    fn message_conversation_runtime_pages_with_next_cursor() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_direct_message(
+            &client,
+            "direct-a",
+            "dm:did:example:a",
+            "did:example:a",
+            "a",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        fixture.seed_direct_message(
+            &client,
+            "direct-b",
+            "dm:did:example:b",
+            "did:example:b",
+            "b",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        fixture.seed_direct_message(
+            &client,
+            "direct-c",
+            "dm:did:example:c",
+            "did:example:c",
+            "c",
+            "2026-05-21T00:00:02Z",
+            0,
+        );
+
+        let first_page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(1),
+                cursor: None,
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+        assert!(first_page.has_more);
+        assert_eq!(first_page.items.len(), 1);
+        assert_eq!(
+            first_page.items[0].participants[0].as_str(),
+            "did:example:b"
+        );
+        assert!(first_page.next_cursor.is_some());
+
+        let snapshot = crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.items.len(), 1);
+
+        let second_page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(2),
+                cursor: first_page.next_cursor,
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert!(!second_page.has_more);
+        assert_eq!(second_page.items.len(), 2);
+        assert_eq!(
+            second_page.items[0].participants[0].as_str(),
+            "did:example:a"
+        );
+        assert_eq!(
+            second_page.items[1].participants[0].as_str(),
+            "did:example:c"
+        );
+        assert!(second_page.next_cursor.is_none());
+
+        let snapshot = crate::internal::snapshot::conversation_snapshot::load_for_client(&client)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.items.len(), 1);
+    }
+
+    #[test]
     fn message_state_conversation_projection_reads_local_metadata_retry_plan() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -796,6 +918,7 @@ mod tests {
         let page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: true,
                 unread_only: false,
@@ -848,6 +971,7 @@ mod tests {
         let page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -899,6 +1023,7 @@ mod tests {
         let page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -952,6 +1077,7 @@ mod tests {
         let page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -1028,6 +1154,7 @@ mod tests {
         let full_page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -1043,6 +1170,7 @@ mod tests {
         let unread_groups_page = MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: false,
                 unread_only: true,
@@ -1169,6 +1297,42 @@ mod tests {
                     receiver_did: receiver_did.to_owned(),
                     group_id: group_did.to_owned(),
                     group_did: group_did.to_owned(),
+                    content_type: "text/plain".to_owned(),
+                    content: content.to_owned(),
+                    sent_at: sent_at.to_owned(),
+                    stored_at: sent_at.to_owned(),
+                    is_read: is_read != 0,
+                    ..crate::internal::local_state::messages::MessageRecord::default()
+                },
+            )
+            .unwrap();
+        }
+
+        fn seed_direct_message(
+            &self,
+            client: &crate::core::ImClient,
+            message_id: &str,
+            conversation_id: &str,
+            peer_did: &str,
+            content: &str,
+            sent_at: &str,
+            is_read: i64,
+        ) {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            crate::internal::local_state::messages::upsert_message(
+                &connection,
+                &crate::internal::local_state::messages::MessageRecord {
+                    msg_id: message_id.to_owned(),
+                    owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                    owner_did: client.did().as_str().to_owned(),
+                    conversation_id: conversation_id.to_owned(),
+                    thread_id: conversation_id.to_owned(),
+                    direction: 0,
+                    sender_did: peer_did.to_owned(),
+                    receiver_did: client.did().as_str().to_owned(),
                     content_type: "text/plain".to_owned(),
                     content: content.to_owned(),
                     sent_at: sent_at.to_owned(),

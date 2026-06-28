@@ -95,9 +95,12 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     receiver_did = excluded.receiver_did,
     group_id = excluded.group_id,
     group_did = excluded.group_did,
-    content_type = excluded.content_type,
-    content = excluded.content,
-    title = excluded.title,
+    content_type = CASE
+        WHEN excluded.content IS NULL THEN messages.content_type
+        ELSE excluded.content_type
+    END,
+    content = COALESCE(excluded.content, messages.content),
+    title = COALESCE(excluded.title, messages.title),
     server_seq = COALESCE(excluded.server_seq, messages.server_seq),
     sent_at = excluded.sent_at,
     stored_at = excluded.stored_at,
@@ -105,7 +108,10 @@ ON CONFLICT(owner_identity_id, msg_id) DO UPDATE SET
     is_read = CASE WHEN excluded.is_read = 1 OR messages.is_read = 1 THEN 1 ELSE 0 END,
     sender_name = excluded.sender_name,
     metadata = excluded.metadata,
-    mentions_current_user = excluded.mentions_current_user,
+    mentions_current_user = CASE
+        WHEN excluded.content IS NULL THEN messages.mentions_current_user
+        ELSE excluded.mentions_current_user
+    END,
     credential_name = excluded.credential_name"#,
             rusqlite::params![
                 msg_id,
@@ -2971,6 +2977,52 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
             .unwrap();
         assert_eq!(is_e2ee, 1);
         assert_eq!(is_read, 1);
+    }
+
+    #[test]
+    fn local_state_messages_upsert_empty_projection_preserves_existing_content() {
+        let db = Connection::open_in_memory().unwrap();
+        let owner_identity_id = "owner-id";
+        let owner_did = "did:owner";
+        let conversation_id = "dm:did:peer";
+        let mut full = summary_test_message(
+            "msg-body",
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            0,
+            "history body",
+            "2026-06-27T00:00:01Z",
+            false,
+        );
+        full.server_seq = Some(10);
+        upsert_message(&db, &full).unwrap();
+
+        let mut metadata_only = summary_test_message(
+            "msg-body",
+            owner_identity_id,
+            owner_did,
+            conversation_id,
+            0,
+            "",
+            "2026-06-27T00:00:02Z",
+            false,
+        );
+        metadata_only.server_seq = Some(11);
+        upsert_message(&db, &metadata_only).unwrap();
+
+        let content = db
+            .query_row(
+                "SELECT content FROM messages WHERE owner_identity_id = ?1 AND msg_id = 'msg-body'",
+                [owner_identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(content, "history body");
+        let summary = summary_snapshot(&db, owner_identity_id, conversation_id);
+        assert_eq!(summary.last_message_id, "msg-body");
+        assert_eq!(summary.last_content, "history body");
+        assert_summary_matches_rebuild(&db, owner_identity_id, conversation_id);
     }
 
     #[test]

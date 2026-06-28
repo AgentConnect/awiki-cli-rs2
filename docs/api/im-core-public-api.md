@@ -379,6 +379,15 @@ impl MessageService<'_> {
 
 Reliable sync 补充：
 
+- `conversations(ConversationQuery)` 返回本地 committed `conversation_summaries`
+  projection 的 `Page<Conversation>`，`ConversationQuery` 包含 `limit`、`cursor`、
+  `include_groups`、`include_direct` 和 `unread_only`。`PageLimit::new` 仍把单页最大值
+  截到 100；调用方必须通过 `next_cursor` 循环翻页，不能假设传入 500/1000 会一次性返回完整列表。
+  `next_cursor` 是 SDK 生成的不透明 keyset cursor，只能原样传回下一次
+  `conversations` 调用。
+- Conversation list 排序固定为 `last_message_at DESC, conversation_id DESC`。cursor 内部保存上一页最后一条
+  `last_message_at` 与 `conversation_id` 排序键，比 offset 更能抵抗新增消息或排序变化。
+  调用方不得解析、修改或复用到其他 API。
 - `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
   checkpoint 注入，调用方不能传入或推进。
 - `sync_thread_after` 是 thread-local 补新入口，使用 `after_server_seq`，不读写账号级

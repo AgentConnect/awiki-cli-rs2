@@ -538,6 +538,7 @@ fn messages_read_runtime_persists_inbox_projection_for_conversations() {
         crate::internal::message_runtime::conversations::MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -610,6 +611,7 @@ fn messages_read_runtime_projects_direct_inbox_by_peer_scope() {
         crate::internal::message_runtime::conversations::MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: true,
                 unread_only: false,
@@ -679,6 +681,7 @@ fn messages_read_runtime_preserves_remote_read_state_in_projection() {
         crate::internal::message_runtime::conversations::MessageConversationRuntime::new(&client)
             .conversations(crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,

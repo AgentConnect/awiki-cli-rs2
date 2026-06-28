@@ -32,6 +32,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_messages_owner_identity_thread");
     assert_index_exists(&db, "idx_messages_owner_identity_conversation");
     assert_index_exists(&db, "idx_conversation_summaries_owner_last");
+    assert_index_exists(&db, "idx_conversation_summaries_owner_last_desc");
     assert_index_exists(&db, "idx_conversation_summaries_owner_unread_last");
     assert_index_exists(&db, "idx_groups_owner_identity_status_last_message");
     assert_index_exists(&db, "idx_identity_did_history_current");

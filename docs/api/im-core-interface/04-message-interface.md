@@ -577,6 +577,20 @@ checkpoint 边界：
 `client.messages.*`。尚未引入独立 `client.conversations` namespace；文档、示例和 App
 代码不得同时描述两套当前 API。
 
+`conversations(ConversationQuery)` / Dart `conversations(limit: ..., cursor: ...)`
+读取当前 owner 的 SQLite committed `conversation_summaries` projection，返回
+`Page<Conversation>` / `ConversationPage`。API 设计要求：
+
+- `ConversationQuery` 字段为 `limit`、`cursor`、`include_groups`、`include_direct`、
+  `unread_only`。
+- `limit` 单页最大值由 `PageLimit::new` 保护为 100；500/1000 会话必须循环
+  `next_cursor` 翻页，直到 `has_more=false` 或 `next_cursor=null`。
+- 排序为 `last_message_at DESC, conversation_id DESC`，cursor 内部保存上一页最后一条
+  `last_message_at` 和 `conversation_id`，属于不透明 keyset cursor，不是 offset。
+- 只有第一页、未过滤的 full conversation query 可以刷新 redb snapshot；带 cursor 的后续页、
+  unread-only 或 direct/group 过滤查询不得覆盖冷启动 snapshot。
+- App/Dart 层必须暴露分页参数和分页返回值，旧的 list API 只能作为第一页兼容包装。
+
 `load_conversation_snapshot()` / Dart `loadConversationSnapshot()` 从 Rust `im-core`
 redb snapshot cache 读取非权威、可丢弃的 core-only conversation snapshot。调用方不传
 owner、schema、checkpoint 或 raw storage 参数；owner 来自当前 `ImClient` identity。

@@ -319,6 +319,58 @@ async fn sync_delta_duplicate_page_is_idempotent() {
 }
 
 #[tokio::test]
+async fn sync_delta_metadata_only_event_preserves_existing_message_body() {
+    let fixture = Fixture::new("sync-delta-metadata-only");
+    let client = fixture.client();
+    fixture.seed_message(
+        "msg-delta-body",
+        "dm:did:example:bob",
+        "",
+        Some(10),
+        "did:example:bob",
+        "did:example:alice",
+    );
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![message_created_event_without_content(
+                    "sev-1",
+                    "1",
+                    "msg-delta-body",
+                    11,
+                )],
+                "1",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(fixture.checkpoint(), Some("1".to_owned()));
+    assert_eq!(
+        fixture.message_content("msg-delta-body").as_deref(),
+        Some("local")
+    );
+    assert_eq!(
+        fixture
+            .conversation_last_content("dm:did:example:bob")
+            .as_deref(),
+        Some("local")
+    );
+}
+
+#[tokio::test]
 async fn sync_delta_has_more_duplicate_page_without_progress_is_invalid() {
     let fixture = Fixture::new("sync-delta-has-more-no-progress");
     let client = fixture.client();
@@ -866,6 +918,28 @@ impl Fixture {
         .flatten()
     }
 
+    fn message_content(&self, msg_id: &str) -> Option<String> {
+        let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
+        db.query_row(
+            "SELECT content FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    fn conversation_last_content(&self, conversation_id: &str) -> Option<String> {
+        let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
+        db.query_row(
+            "SELECT last_content FROM conversation_summaries WHERE owner_identity_id = 'alice-id' AND conversation_id = ?1",
+            rusqlite::params![conversation_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
     fn message_count(&self, msg_id: &str) -> i64 {
         let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
         db.query_row(
@@ -898,6 +972,38 @@ fn delta_page(events: Vec<Value>, next_event_seq: &str, has_more: bool) -> Value
         "snapshot_required": false,
         "retention_floor_event_seq": "1",
         "warnings": [],
+    })
+}
+
+fn message_created_event_without_content(
+    event_id: &str,
+    event_seq: &str,
+    message_id: &str,
+    server_seq: i64,
+) -> Value {
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": "message.created",
+        "aggregate_kind": "direct_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-06-27T00:00:00Z",
+        "payload": {
+            "thread_kind": "direct",
+            "thread": {
+                "kind": "direct",
+                "peer_did": "did:example:bob"
+            },
+            "message": {
+                "id": message_id,
+                "server_seq": server_seq.to_string(),
+                "sender_did": "did:example:bob",
+                "receiver_did": "did:example:alice",
+                "content_type": "text/plain",
+                "sent_at": "2026-06-27T00:00:00Z"
+            }
+        }
     })
 }
 

@@ -111,6 +111,7 @@ async fn db_actor_stores_classifies_marks_and_lists_messages() {
             "did:example:alice",
             crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -425,6 +426,7 @@ async fn db_actor_merge_recovered_handle_local_state_uses_actor_connection() {
             old_did,
             crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: true,
                 unread_only: false,

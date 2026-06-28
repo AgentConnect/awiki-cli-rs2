@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS conversation_summaries (
 
 pub(crate) const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_conversation_summaries_owner_last ON conversation_summaries(owner_identity_id, last_message_at DESC, conversation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_summaries_owner_last_desc ON conversation_summaries(owner_identity_id, last_message_at DESC, conversation_id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_conversation_summaries_owner_unread_last ON conversation_summaries(owner_identity_id, unread_count, last_message_at DESC)",
 ];
 

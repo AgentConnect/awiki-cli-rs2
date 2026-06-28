@@ -107,12 +107,14 @@ Future<DartSyncThreadAfterResult> syncThreadAfter({
 Future<DartConversationPage> conversations({
   required ArcDartImClient client,
   required int limit,
+  String? cursor,
   required bool includeGroups,
   required bool includeDirect,
   required bool unreadOnly,
 }) => RustLib.instance.api.crateApiMessagesConversations(
   client: client,
   limit: limit,
+  cursor: cursor,
   includeGroups: includeGroups,
   includeDirect: includeDirect,
   unreadOnly: unreadOnly,

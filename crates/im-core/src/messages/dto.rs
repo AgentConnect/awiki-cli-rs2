@@ -652,6 +652,8 @@ pub struct Conversation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationQuery {
     pub limit: crate::ids::PageLimit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::ids::Cursor>,
     pub include_groups: bool,
     pub include_direct: bool,
     pub unread_only: bool,

@@ -32,6 +32,7 @@ pub(crate) fn list_conversations_for_owner_identity(
     let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
     super::conversation_summaries::ensure_owner_backfilled(connection, &owner_identity_id)?;
     let limit = page_limit(query.limit, 50) + 1;
+    let cursor = decode_conversation_cursor(query.cursor.as_ref().map(crate::ids::Cursor::as_str))?;
     let mut statement = String::from(
         r#"
 SELECT
@@ -69,6 +70,12 @@ LEFT JOIN messages m
  AND m.msg_id = t.last_message_id
 WHERE t.owner_identity_id = ?1"#,
     );
+    if cursor.is_some() {
+        statement.push_str(
+            r#"
+ AND (t.last_message_at < ?3 OR (t.last_message_at = ?3 AND t.conversation_id < ?4))"#,
+        );
+    }
     if query.unread_only {
         statement.push_str(" AND t.unread_count > 0");
     }
@@ -80,109 +87,198 @@ WHERE t.owner_identity_id = ?1"#,
     }
     statement.push_str(
         r#"
-ORDER BY t.last_message_at DESC, t.conversation_id ASC
+ORDER BY t.last_message_at DESC, t.conversation_id DESC
 LIMIT ?2"#,
     );
     let _owner = normalize_owner_did(owner_did);
     let mut statement = connection
         .prepare(&statement)
         .map_err(super::local_state_unavailable)?;
-    let rows = statement
-        .query_map((&owner_identity_id, limit), |row| {
-            let msg_id = row.get::<_, Option<String>>("msg_id")?.unwrap_or_default();
-            let owner_identity_id = row
-                .get::<_, Option<String>>("owner_identity_id")?
-                .unwrap_or_default();
-            let owner_did = row
-                .get::<_, Option<String>>("owner_did")?
-                .unwrap_or_default();
-            let conversation_id = row
-                .get::<_, Option<String>>("conversation_id")?
-                .unwrap_or_default();
-            let thread_id = row
-                .get::<_, Option<String>>("thread_id")?
-                .unwrap_or_default();
-            let last_message = if msg_id.trim().is_empty() {
-                None
-            } else {
-                Some(super::messages::MessageRecord {
-                    msg_id,
-                    owner_identity_id: owner_identity_id.clone(),
-                    owner_did: owner_did.clone(),
-                    conversation_id: conversation_id.clone(),
-                    thread_id: thread_id.clone(),
-                    direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
-                    sender_did: row
-                        .get::<_, Option<String>>("sender_did")?
-                        .unwrap_or_default(),
-                    receiver_did: row
-                        .get::<_, Option<String>>("receiver_did")?
-                        .unwrap_or_default(),
-                    group_id: row
-                        .get::<_, Option<String>>("group_id")?
-                        .unwrap_or_default(),
-                    group_did: row
-                        .get::<_, Option<String>>("group_did")?
-                        .unwrap_or_default(),
-                    content_type: row
-                        .get::<_, Option<String>>("content_type")?
-                        .unwrap_or_default(),
-                    content: row.get::<_, Option<String>>("content")?.unwrap_or_default(),
-                    title: row.get::<_, Option<String>>("title")?.unwrap_or_default(),
-                    server_seq: row.get::<_, Option<i64>>("server_seq")?,
-                    sent_at: row.get::<_, Option<String>>("sent_at")?.unwrap_or_default(),
-                    stored_at: row
-                        .get::<_, Option<String>>("stored_at")?
-                        .unwrap_or_default(),
-                    is_e2ee: row.get::<_, Option<i64>>("is_e2ee")?.unwrap_or_default() != 0,
-                    is_read: row.get::<_, Option<i64>>("is_read")?.unwrap_or_default() != 0,
-                    sender_name: row
-                        .get::<_, Option<String>>("sender_name")?
-                        .unwrap_or_default(),
-                    metadata: row
-                        .get::<_, Option<String>>("metadata")?
-                        .unwrap_or_default(),
-                    mentions_current_user: row
-                        .get::<_, Option<i64>>("mentions_current_user")?
-                        .unwrap_or_default()
-                        != 0,
-                    credential_name: row
-                        .get::<_, Option<String>>("credential_name")?
-                        .unwrap_or_default(),
-                })
-            };
-            Ok(ConversationRecord {
-                owner_identity_id,
-                owner_did,
-                conversation_id,
-                thread_id,
-                message_count: row
-                    .get::<_, Option<i64>>("message_count")?
-                    .unwrap_or_default(),
-                unread_count: row
-                    .get::<_, Option<i64>>("unread_count")?
-                    .unwrap_or_default(),
-                unread_mention_count: row
-                    .get::<_, Option<i64>>("unread_mention_count")?
-                    .unwrap_or_default(),
-                first_unread_mention_message_id: row
-                    .get::<_, Option<String>>("first_unread_mention_message_id")?
-                    .filter(|value| !value.trim().is_empty()),
-                last_message_at: row
-                    .get::<_, Option<String>>("last_message_at")?
-                    .unwrap_or_default(),
-                last_content: row
-                    .get::<_, Option<String>>("last_content")?
-                    .unwrap_or_default(),
-                last_message,
-            })
-        })
-        .map_err(super::local_state_unavailable)?;
+    let mut rows = if let Some((cursor_last_message_at, cursor_conversation_id)) = cursor {
+        statement
+            .query_map(
+                (
+                    &owner_identity_id,
+                    limit,
+                    cursor_last_message_at,
+                    cursor_conversation_id,
+                ),
+                conversation_record_from_row,
+            )
+            .map_err(super::local_state_unavailable)?
+    } else {
+        statement
+            .query_map((&owner_identity_id, limit), conversation_record_from_row)
+            .map_err(super::local_state_unavailable)?
+    };
     let mut result = Vec::new();
-    for row in rows {
+    for row in &mut rows {
         result.push(row.map_err(super::local_state_unavailable)?);
     }
     Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
+fn conversation_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
+    let msg_id = row.get::<_, Option<String>>("msg_id")?.unwrap_or_default();
+    let owner_identity_id = row
+        .get::<_, Option<String>>("owner_identity_id")?
+        .unwrap_or_default();
+    let owner_did = row
+        .get::<_, Option<String>>("owner_did")?
+        .unwrap_or_default();
+    let conversation_id = row
+        .get::<_, Option<String>>("conversation_id")?
+        .unwrap_or_default();
+    let thread_id = row
+        .get::<_, Option<String>>("thread_id")?
+        .unwrap_or_default();
+    let last_message = if msg_id.trim().is_empty() {
+        None
+    } else {
+        Some(super::messages::MessageRecord {
+            msg_id,
+            owner_identity_id: owner_identity_id.clone(),
+            owner_did: owner_did.clone(),
+            conversation_id: conversation_id.clone(),
+            thread_id: thread_id.clone(),
+            direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
+            sender_did: row
+                .get::<_, Option<String>>("sender_did")?
+                .unwrap_or_default(),
+            receiver_did: row
+                .get::<_, Option<String>>("receiver_did")?
+                .unwrap_or_default(),
+            group_id: row
+                .get::<_, Option<String>>("group_id")?
+                .unwrap_or_default(),
+            group_did: row
+                .get::<_, Option<String>>("group_did")?
+                .unwrap_or_default(),
+            content_type: row
+                .get::<_, Option<String>>("content_type")?
+                .unwrap_or_default(),
+            content: row.get::<_, Option<String>>("content")?.unwrap_or_default(),
+            title: row.get::<_, Option<String>>("title")?.unwrap_or_default(),
+            server_seq: row.get::<_, Option<i64>>("server_seq")?,
+            sent_at: row.get::<_, Option<String>>("sent_at")?.unwrap_or_default(),
+            stored_at: row
+                .get::<_, Option<String>>("stored_at")?
+                .unwrap_or_default(),
+            is_e2ee: row.get::<_, Option<i64>>("is_e2ee")?.unwrap_or_default() != 0,
+            is_read: row.get::<_, Option<i64>>("is_read")?.unwrap_or_default() != 0,
+            sender_name: row
+                .get::<_, Option<String>>("sender_name")?
+                .unwrap_or_default(),
+            metadata: row
+                .get::<_, Option<String>>("metadata")?
+                .unwrap_or_default(),
+            mentions_current_user: row
+                .get::<_, Option<i64>>("mentions_current_user")?
+                .unwrap_or_default()
+                != 0,
+            credential_name: row
+                .get::<_, Option<String>>("credential_name")?
+                .unwrap_or_default(),
+        })
+    };
+    Ok(ConversationRecord {
+        owner_identity_id,
+        owner_did,
+        conversation_id,
+        thread_id,
+        message_count: row
+            .get::<_, Option<i64>>("message_count")?
+            .unwrap_or_default(),
+        unread_count: row
+            .get::<_, Option<i64>>("unread_count")?
+            .unwrap_or_default(),
+        unread_mention_count: row
+            .get::<_, Option<i64>>("unread_mention_count")?
+            .unwrap_or_default(),
+        first_unread_mention_message_id: row
+            .get::<_, Option<String>>("first_unread_mention_message_id")?
+            .filter(|value| !value.trim().is_empty()),
+        last_message_at: row
+            .get::<_, Option<String>>("last_message_at")?
+            .unwrap_or_default(),
+        last_content: row
+            .get::<_, Option<String>>("last_content")?
+            .unwrap_or_default(),
+        last_message,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn encode_conversation_cursor(record: &ConversationRecord) -> Option<String> {
+    let conversation_id = non_empty(&record.conversation_id)?;
+    Some(format!(
+        "conversation-list:v1:{}:{}",
+        base64_url_encode(record.last_message_at.as_str()),
+        base64_url_encode(conversation_id)
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+fn decode_conversation_cursor(cursor: Option<&str>) -> crate::ImResult<Option<(String, String)>> {
+    let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(rest) = cursor.strip_prefix("conversation-list:v1:") else {
+        return Err(crate::ImError::invalid_input(
+            Some("cursor".to_owned()),
+            "conversation cursor must be produced by conversations",
+        ));
+    };
+    let Some((last_message_at, conversation_id)) = rest.split_once(':') else {
+        return Err(crate::ImError::invalid_input(
+            Some("cursor".to_owned()),
+            "conversation cursor is malformed",
+        ));
+    };
+    let last_message_at = base64_url_decode(last_message_at, "cursor")?;
+    let conversation_id = base64_url_decode(conversation_id, "cursor")?;
+    required("cursor.conversation_id", &conversation_id)?;
+    Ok(Some((last_message_at, conversation_id)))
+}
+
+#[cfg(feature = "sqlite")]
+fn non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn required(field: &'static str, value: &str) -> crate::ImResult<()> {
+    if value.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_owned()),
+            format!("{field} is required"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn base64_url_encode(value: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
+#[cfg(feature = "sqlite")]
+fn base64_url_decode(value: &str, field: &'static str) -> crate::ImResult<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value.as_bytes())
+        .map_err(|err| crate::ImError::invalid_input(Some(field.to_owned()), err.to_string()))?;
+    String::from_utf8(bytes)
+        .map_err(|err| crate::ImError::invalid_input(Some(field.to_owned()), err.to_string()))
 }
 
 #[cfg(feature = "sqlite")]
@@ -288,6 +384,7 @@ mod tests {
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -314,6 +411,7 @@ mod tests {
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: true,
                 unread_only: true,
@@ -329,6 +427,7 @@ mod tests {
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: false,
                 unread_only: false,
@@ -403,6 +502,7 @@ mod tests {
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: false,
                 unread_only: false,
@@ -416,6 +516,100 @@ mod tests {
         assert_eq!(
             conversations[0].first_unread_mention_message_id.as_deref(),
             Some("alice-mention")
+        );
+    }
+
+    #[test]
+    fn local_state_conversations_pages_with_stable_sort_cursor() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "conv-b",
+            "dm:did:example:b",
+            0,
+            "did:example:b",
+            "did:example:alice",
+            "",
+            "b",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "conv-a",
+            "dm:did:example:a",
+            0,
+            "did:example:a",
+            "did:example:alice",
+            "",
+            "a",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "conv-c",
+            "dm:did:example:c",
+            0,
+            "did:example:c",
+            "did:example:alice",
+            "",
+            "c",
+            "2026-05-21T00:00:02Z",
+            0,
+        );
+
+        let first_page = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(1),
+                cursor: None,
+                include_groups: false,
+                include_direct: true,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|record| record.conversation_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dm:did:example:b", "dm:did:example:a"]
+        );
+
+        let cursor =
+            crate::ids::Cursor::parse(encode_conversation_cursor(&first_page[0]).unwrap()).unwrap();
+        let second_page = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(1),
+                cursor: Some(cursor),
+                include_groups: false,
+                include_direct: true,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|record| record.conversation_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dm:did:example:a", "dm:did:example:c"]
         );
     }
 
@@ -574,6 +768,7 @@ VALUES (?1, 'alice-id', ?2, ?3, ?3, 0, ?4, 'did:example:mentions', 'did:example:
             "did:alice-new",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: true,
                 include_direct: true,
                 unread_only: false,
@@ -629,6 +824,7 @@ VALUES (?1, 'alice-id', ?2, ?3, ?3, 0, ?4, 'did:example:mentions', 'did:example:
             "did:example:alice-new",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: true,
                 unread_only: false,
@@ -692,6 +888,7 @@ VALUES (?1, ?2, ?3, ?4, ?4, 1, ?3, ?5,
             "did:wba:anpclaw.com:zhuocheng:e1_owner",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
+                cursor: None,
                 include_groups: false,
                 include_direct: true,
                 unread_only: false,
@@ -745,7 +942,7 @@ EXPLAIN QUERY PLAN
 SELECT t.owner_identity_id, t.conversation_id
 FROM conversation_summaries t
 WHERE t.owner_identity_id = ?1
-ORDER BY t.last_message_at DESC, t.conversation_id ASC
+ORDER BY t.last_message_at DESC, t.conversation_id DESC
 LIMIT ?2"#,
             )
             .unwrap()
@@ -757,7 +954,7 @@ LIMIT ?2"#,
 
         assert!(plan.contains("conversation_summaries"), "{plan}");
         assert!(
-            plan.contains("idx_conversation_summaries_owner_last"),
+            plan.contains("idx_conversation_summaries_owner_last_desc"),
             "{plan}"
         );
         assert!(!plan.contains("threads"), "{plan}");

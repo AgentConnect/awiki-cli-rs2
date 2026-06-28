@@ -143,6 +143,7 @@ abstract class RustLibApi extends BaseApi {
   Future<DartConversationPage> crateApiMessagesConversations({
     required ArcDartImClient client,
     required int limit,
+    String? cursor,
     required bool includeGroups,
     required bool includeDirect,
     required bool unreadOnly,
@@ -970,6 +971,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<DartConversationPage> crateApiMessagesConversations({
     required ArcDartImClient client,
     required int limit,
+    String? cursor,
     required bool includeGroups,
     required bool includeDirect,
     required bool unreadOnly,
@@ -983,6 +985,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_u_32(limit, serializer);
+          sse_encode_opt_String(cursor, serializer);
           sse_encode_bool(includeGroups, serializer);
           sse_encode_bool(includeDirect, serializer);
           sse_encode_bool(unreadOnly, serializer);
@@ -998,7 +1001,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_dart_im_error,
         ),
         constMeta: kCrateApiMessagesConversationsConstMeta,
-        argValues: [client, limit, includeGroups, includeDirect, unreadOnly],
+        argValues: [
+          client,
+          limit,
+          cursor,
+          includeGroups,
+          includeDirect,
+          unreadOnly,
+        ],
         apiImpl: this,
       ),
     );
@@ -1010,6 +1020,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "client",
           "limit",
+          "cursor",
           "includeGroups",
           "includeDirect",
           "unreadOnly",

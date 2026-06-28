@@ -319,13 +319,19 @@ pub async fn sync_thread_after(
 pub async fn conversations(
     client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
+    cursor: Option<String>,
     include_groups: bool,
     include_direct: bool,
     unread_only: bool,
 ) -> Result<DartConversationPage, DartImError> {
     let inner = client.clone_inner()?;
+    let cursor = cursor
+        .filter(|value| !value.trim().is_empty())
+        .map(im_core::ids::Cursor::parse)
+        .transpose()?;
     let query = im_core::messages::ConversationQuery {
         limit: page_limit(limit)?,
+        cursor,
         include_groups,
         include_direct,
         unread_only,

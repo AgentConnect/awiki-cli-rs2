@@ -619,6 +619,7 @@ class MessageApi {
 
   Future<ConversationPage> conversations({
     required int limit,
+    String? cursor,
     bool includeGroups = true,
     bool includeDirect = true,
     bool unreadOnly = false,
@@ -628,6 +629,7 @@ class MessageApi {
       () => gen_messages.conversations(
         client: _client._inner,
         limit: limit,
+        cursor: cursor,
         includeGroups: includeGroups,
         includeDirect: includeDirect,
         unreadOnly: unreadOnly,

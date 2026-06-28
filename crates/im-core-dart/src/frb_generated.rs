@@ -659,6 +659,7 @@ fn wire__crate__api__messages__conversations_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
             >>::sse_decode(&mut deserializer);
             let api_limit = <u32>::sse_decode(&mut deserializer);
+            let api_cursor = <Option<String>>::sse_decode(&mut deserializer);
             let api_include_groups = <bool>::sse_decode(&mut deserializer);
             let api_include_direct = <bool>::sse_decode(&mut deserializer);
             let api_unread_only = <bool>::sse_decode(&mut deserializer);
@@ -688,6 +689,7 @@ fn wire__crate__api__messages__conversations_impl(
                         let output_ok = crate::api::messages::conversations(
                             &*api_client_guard,
                             api_limit,
+                            api_cursor,
                             api_include_groups,
                             api_include_direct,
                             api_unread_only,
