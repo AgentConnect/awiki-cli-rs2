@@ -2,30 +2,30 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：07  
-状态：draft
+状态：blocked
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | TBD |
-| Started | TBD |
+| Status | blocked |
+| Branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Started | 2026-06-28T18:30:46+08:00 |
 | Completed | TBD |
 | Commit | TBD |
-| Review evidence | TBD |
-| Verification evidence | TBD |
-| Next action | 执行全局 Review、整体验证、idle 对比、文档同步和 `awiki-system-test` remote `awiki.info` 完整系统测试。 |
+| Review evidence | 已完成 Step 01-06 台账、shared SDK diff、安全/隐私、docs drift 和 daemon docs Review；未发现需要回到 Step 02-06 的代码问题。阻塞项为 remote full system test 未通过。 |
+| Verification evidence | `cargo fmt --check`、`git diff --check`、`cargo test -p awiki-deamon --locked -j1`、`cargo test --workspace --locked -j1` 通过；idle 采样显示 I/O / mtime 下降但 CPU 受启动期影响不可直接证明下降；指定 remote full gate 在 Linux 上因 macOS-only local orchestration 失败，direct remote pytest 进入执行后出现大量 F/E 且受磁盘满影响未产出完整 summary。 |
+| Next action | 释放磁盘空间；在 macOS 或修复 `manage_local_test_env.py` remote-only 路径后重跑指定 remote full gate；确认 `awiki.info` message-service `/im/healthz` 500 和 direct remote suite 大量失败是否为远端环境 / 部署问题。 |
 | Assigned agent | coordinator |
 | Parallel group | 串行 |
 | Parallel safe | no |
 | Parallel with | 无 |
 | Conflict resources | 全部已改模块、docs、Harness 摘要、remote `awiki.info` 测试环境 |
-| Baseline commit | TBD，必须包含 Step 02-06 完成结果 |
-| Worktree / branch | TBD |
+| Baseline commit | `f756d1b` |
+| Worktree / branch | 当前主工作区 / `feature/perf/cpu-youhua-jingmo-0628` |
 | Merge gate | Step 02-06 均 done，所有 step commit 已记录。 |
 | Verification gate | workspace tests、idle final evidence、remote system test、global Review。 |
-| Gate status | pending |
+| Gate status | blocked |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -114,17 +114,17 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 
 ## 7. 验收标准
 
-- [ ] 主 Plan 执行台账中 Step 01-06 均有状态、commit、Review 证据、验证证据和剩余风险。
-- [ ] 全局 Review 已检查 correctness、回归、shared API、security/privacy、docs drift、parallel wave 合并和未提交变更。
-- [ ] `awiki-cli-rs2-cpu` daemon crate tests 已运行并记录结果。
-- [ ] `awiki-cli-rs2-cpu` workspace tests 已运行并记录结果，或记录不可运行原因。
-- [ ] 如修改 `im-core`，已运行 shared SDK gate 或记录用户接受的风险。
-- [ ] idle CPU / I/O / mtime / 日志对比使用 Step 01 同一口径，并记录 active agent 数和 session 数。
-- [ ] 已在 `awiki-system-test` 使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `AWIKI_BASE_URL=https://awiki.info` 执行完整系统测试，并记录通过 / 失败 / 跳过数量、原因和关键环境配置。
-- [ ] 子仓库 docs 和 Harness docs 已更新，或记录检查过且无需更新的理由。
-- [ ] 没有未授权 `im-core` public API、message-service 协议、state schema 或 secret handling 变更。
-- [ ] Review 发现已经修复或明确记录。
-- [ ] 如果 final 阶段修改文件，已创建聚焦 final integration commit；否则记录无需 commit。
+- [x] 主 Plan 执行台账中 Step 01-06 均有状态、commit、Review 证据、验证证据和剩余风险。
+- [x] 全局 Review 已检查 correctness、回归、shared API、security/privacy、docs drift、parallel wave 合并和未提交变更。
+- [x] `awiki-cli-rs2-cpu` daemon crate tests 已运行并记录结果。
+- [x] `awiki-cli-rs2-cpu` workspace tests 已运行并记录结果，或记录不可运行原因。
+- [x] 如修改 `im-core`，已运行 shared SDK gate 或记录用户接受的风险。本步骤未修改 `im-core`，`git diff -- crates/im-core` 无输出。
+- [x] idle CPU / I/O / mtime / 日志对比使用 Step 01 同一口径，并记录 active agent 数和 session 数；CPU 采样受启动期影响，记录为证据限制。
+- [ ] 已在 `awiki-system-test` 使用 `AWIKI_SYSTEM_TEST_MODE=remote` 和 `AWIKI_BASE_URL=https://awiki.info` 执行完整系统测试，并记录通过 / 失败 / 跳过数量、原因和关键环境配置。指定命令在当前 Linux 环境未进入 pytest，硬门禁未通过。
+- [x] 子仓库 docs 和 Harness docs 已更新，或记录检查过且无需更新的理由。
+- [x] 没有未授权 `im-core` public API、message-service 协议、state schema 或 secret handling 变更。
+- [x] Review 发现已经修复或明确记录。
+- [ ] 如果 final 阶段修改文件，已创建聚焦 final integration commit；否则记录无需 commit。当前只回填 blocked 证据，尚未创建 Step 07 done commit。
 
 ## 8. 验证方式
 
@@ -151,16 +151,16 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | TBD | TBD |
-| 已修复问题 | TBD | TBD |
-| 剩余风险 | TBD | TBD |
-| 新增或缺失测试 | TBD | TBD |
-| 已更新或缺失文档 | TBD | TBD |
+| 发现问题 | blocked | AGENTS 指定 remote full gate `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` 在当前 Linux 环境触发 `Local system-test orchestration currently supports macOS only.`；direct remote full pytest 出现大量 F/E，且磁盘满导致无法稳定产出完整 summary。 |
+| 已修复问题 | done | daemon docs 已同步事件驱动 foreground、per-agent realtime、dirty/fallback、checkpoint 和 runtime secret 边界；本次运行产生的临时 idle state 与 pytest 临时目录已清理。 |
+| 剩余风险 | blocked | 未获得 remote full system test 通过证据；`https://awiki.info/im/healthz` 返回 500；当前磁盘空间不足，继续跑完整 suite 可能再次无法落盘 summary。 |
+| 新增或缺失测试 | partial | 本仓库 daemon / workspace tests 已通过；remote daemon smoke 1 passed / 1 deselected；完整 remote system test 未通过。 |
+| 已更新或缺失文档 | done | 已更新 `crates/awiki-deamon/docs/local-dev.md` 和 `crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md`；Harness 关键文档已检查，无需修改。 |
 | 并行安全是否仍成立 | no | final 串行。 |
-| Agent 是否越界修改 | TBD | 审计 Wave A / B。 |
-| 互斥资源是否被修改 | TBD | 审计 `im-core`、foreground、docs。 |
-| 合并风险 | TBD | final 后应清零或记录。 |
-| Group gate 影响 | Final gate | 必须记录全部验证结果。 |
+| Agent 是否越界修改 | no | Step 07 未修改其他仓库；`awiki-harness` 和 `awiki-system-test` 工作区状态干净。 |
+| 互斥资源是否被修改 | no | `crates/im-core` 无 diff；message-service protocol/state schema 未修改；foreground 代码未在 Step 07 修改。 |
+| 合并风险 | blocked | 当前 docs/plan 记录的是 blocked 状态，不应作为 final pass 合并；remote gate 通过后需要补充最终证据。 |
+| Group gate 影响 | failed | Final remote full gate 未通过，Step 07 不可标记 done。 |
 
 ## 10. Commit 要求
 
@@ -178,6 +178,8 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 | Blocker | 证据 | 已尝试方案 | 影响范围 | 是否影响并行组 | 是否影响合并门禁 | 下一步决策 |
 |---|---|---|---|---|---|---|
 | remote `awiki.info` system test 失败 | system test 输出、失败 case、环境配置 | 重试、检查服务可用性、定位是否本次改动 | 整体计划 | 是 | 是 | 修复本次改动或记录环境 blocker；未获用户接受前不能标记 final pass。 |
+| 当前 Linux 环境无法执行指定 `manage_local_test_env.py run-tests` full gate | `Local prerequisites are incomplete; running install automatically.` 后 `Error: Local system-test orchestration currently supports macOS only.` | 检查 `manage_local_test_env.py`，确认 `run_tests()` 无 remote-only 分支，仍会 install/start 本地环境；补跑 direct remote pytest 与 daemon remote smoke | 整体计划 | 是 | 是 | 需要 macOS 环境执行指定命令，或先修复 `awiki-system-test` 的 remote-only full gate 入口。 |
+| 当前磁盘空间不足 | `df -h` 显示根分区 100%，一度只剩 0，清理本次临时目录后仍仅约 228MB | 清理本次 Step 07 临时 idle state、`/tmp/pytest-of-ecs-user` 和浅层 pytest cache | 整体计划 | 是 | 是 | 释放构建产物或扩大磁盘后再跑完整 suite。 |
 | workspace tests 编译失败 | cargo 输出 | 定位失败 crate、回到对应 Step 修复 | 整体计划 | 是 | 是 | 修复并重跑。 |
 | idle 指标未下降或 I/O 仍高 | Step 01 / Step 07 对比表 | 检查 identity mtime、queue drain、fallback busy loop、日志 storm | 整体计划 | 是 | 是 | 回到对应 Step 修复或记录未达成目标。 |
 | docs drift | Review 发现 docs 与实现不一致 | 更新 daemon docs / Harness docs | final docs | 否 | 是 | 补文档后重新 docs Review。 |
@@ -198,3 +200,26 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 - Agent 交接说明：最终回复必须说明实际写入 docs、运行命令、通过 / 失败 / 跳过数量、未运行项和剩余风险。
 - 回滚 / 回退：如果 final 小修引入回归，回退小修；如果架构改造整体不稳定，可配置降级到低频 fallback 并记录性能风险。
 - 后续文档：最终必须同步 daemon docs；Harness docs 如未变更也要记录检查项和无需更新理由。
+
+## 14. 当前验证证据
+
+| 检查项 | 实际命令 / 方法 | 结果 | 备注 |
+|---|---|---|---|
+| 静态检查 | `cargo fmt --check` | pass | 无输出。 |
+| diff 空白检查 | `git diff --check` | pass | 无输出。 |
+| Shared SDK diff | `git diff -- crates/im-core` | pass | 无输出，未修改 M-Code / `im-core` public API。 |
+| Daemon crate | `cargo test -p awiki-deamon --locked -j1` | pass | lib 311 passed；agent_registration_management 37 passed；generic_cli_runtime_mvp 64 passed；hermes_contracts 5 passed；hermes_gateway 21 passed / 3 ignored；hermes_message 25 passed；hermes_profile 4 passed；local_rpc_security 26 passed；state_bootstrap 2 passed；doc-tests 0 passed。 |
+| Workspace | `cargo test --workspace --locked -j1` | pass | 覆盖 `awiki-cli`、`awiki-deamon`、`im-core`、`awiki_im_core` 和 doc-tests；`im-core` lib 420 passed，`awiki_im_core` 7 passed，`facade_contract` 19 passed。 |
+| Idle final evidence | 60 秒临时复制 state foreground 采样 | partial | active agents 8；CPU 平均 8.258%，受启动期影响；`write_bytes` 81825792，低于 Step 01 的 244801536；mtime 7，低于 Step 01 的 31。 |
+| Harness link check | `python3 scripts/validate-docs.py` | pass | `OK: validated Markdown links under .../awiki-harness`。 |
+| Harness drift check | `python3 scripts/check-drift.py` | fail-existing | 失败为既有 `machine/inventory.yaml` unresolved references：`../awiki-me/CLAUDE.md`、`../awiki-cli/CLAUDE.md`、`../awiki-cli/README.md`、`../awiki-cli/docs/architecture/awiki-v2-architecture.md`。 |
+| 指定 remote full gate | `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` | fail | 当前 Linux 环境未进入 pytest，错误为 `Local system-test orchestration currently supports macOS only.`；pass/fail/skip 数不可得。 |
+| daemon remote smoke | `AWIKI_ENABLE_DAEMON_REMOTE_SMOKE=1 AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info E2E_DID_DOMAIN=awiki.info E2E_USER_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws AWIKI_CLI_RUST_REPO=../awiki-cli-rs2-cpu AWIKI_DAEMON_RUST_REPO=../awiki-cli-rs2-cpu uv run --no-sync pytest tests_v2/daemon/test_daemon_gated_smoke.py -q -rs -k 'remote' -p no:cacheprovider` | pass | 1 passed / 0 failed / 0 skipped / 1 deselected。 |
+| remote health | `curl https://awiki.info/healthz`；`curl https://awiki.info/im/healthz` | mixed | user-service health HTTP 200；message-service `/im/healthz` HTTP 500。 |
+| direct remote full pytest | `AWIKI_SYSTEM_TEST_MODE=remote ... uv run --no-sync pytest tests_v2 -q -rs` 与 `--tb=no -p no:cacheprovider` 重跑 | fail/incomplete | 进入真实测试并出现大量 F/E；第一次 100% 后磁盘满无法写 cache summary；第二次 60% 后磁盘再次满，被中断。该命令不是指定 full gate，不能替代 AGENTS 门禁。 |
+
+## 15. 恢复说明
+
+- 继续执行时先释放磁盘空间；当前根分区约 100% 使用，完整 pytest 会再次失败。
+- 优先在支持 `manage_local_test_env.py` 本地编排的 macOS 环境执行指定 remote full gate，或先修改 `awiki-system-test` 为 `AWIKI_SYSTEM_TEST_MODE=remote` 提供不 install/start 本地环境的 full gate 入口。
+- 如果 remote full gate 仍失败，先确认 `https://awiki.info/im/healthz` HTTP 500 是否为远端部署问题；不要把 Step 07 标记 done，直到 AGENTS 要求的完整 remote gate 有明确 pass 或用户接受 blocker。

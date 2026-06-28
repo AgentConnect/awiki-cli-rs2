@@ -4,7 +4,7 @@
 DOC：`awiki-cli-rs2-cpu/docs/plan/awiki-deamon-idle-cpu-event-driven/plan.md`  
 Harness：`awiki-harness`  
 创建时间：2026-06-28  
-恢复指针：Step 01、Step 02、Step 03、Step 04、Step 05、Step 06 已完成；恢复时从 Step 07 最终集成、文档同步、remote 系统测试开始，并读取本文件、当前 Step 文档、执行台账和 `git status --short --branch`。
+恢复指针：Step 01、Step 02、Step 03、Step 04、Step 05、Step 06 已完成；Step 07 当前被 remote 系统测试门禁阻塞。恢复时继续 Step 07，优先处理 `awiki-system-test` 指定命令在 Linux 本地编排上失败、remote `awiki.info` 完整 suite 未通过、当前磁盘空间不足这三个问题，并读取本文件、当前 Step 文档、执行台账和 `git status --short --branch`。
 
 ## 1. 目标
 
@@ -160,7 +160,7 @@ per-agent RealtimeSession task
 | 04 | M-Core realtime endpoint 与共享接口守门 | Step 01 | B | 是 | agent-sdk-contract | Step 02 / 03 | `awiki-cli-rs2-cpu/crates/im-core/src/realtime/*` 只读优先；如改需独立评审 | 已确认首版不需要修改 `im-core` public API；endpoint 差异作为 Step 05/06 配置风险处理 | [steps/04-m-core-realtime-contract.md](steps/04-m-core-realtime-contract.md) | 必须 | shared SDK contract gate | done |
 | 05 | 多 WebSocket 统一事件 supervisor | Step 02, Step 03, Step 04 | 串行 | 否 | agent-realtime | 无 | `foreground.rs` 主控制流、新增 realtime supervisor、dispatcher | per-agent WSS session、统一事件队列、direct/group 事件路由 | [steps/05-runtime-realtime-supervisor.md](steps/05-runtime-realtime-supervisor.md) | 必须 | realtime unit + daemon unit | done |
 | 06 | reliable sync、gap 与 fallback 协调 | Step 05 | 串行 | 否 | coordinator | 无 | realtime supervisor、sync/fallback coordinator | WSS hint 触发 sync delta/thread-after，断线重连和低频兜底 | [steps/06-sync-gap-fallback.md](steps/06-sync-gap-fallback.md) | 必须 | reconnect/gap tests | done |
-| 07 | 最终集成、文档同步、remote 系统测试 | Step 02-06 | 串行 | 否 | coordinator | 无 | 全部已改模块、docs、Harness 摘要、`awiki-system-test` 环境 | 全局 Review、idle 对比、remote `awiki.info` 完整系统测试 | [steps/07-final-integration-system-test.md](steps/07-final-integration-system-test.md) | 必须 | final full gate | pending |
+| 07 | 最终集成、文档同步、remote 系统测试 | Step 02-06 | 串行 | 否 | coordinator | 无 | 全部已改模块、docs、Harness 摘要、`awiki-system-test` 环境 | 全局 Review、idle 对比、remote `awiki.info` 完整系统测试 | [steps/07-final-integration-system-test.md](steps/07-final-integration-system-test.md) | 必须 | final full gate | blocked |
 
 ## 8. 并行执行与多智能体分工
 
@@ -215,7 +215,7 @@ per-agent RealtimeSession task
 | 04 | done | agent-sdk-contract | B | `feature/perf/cpu-youhua-jingmo-0628` | `db30f77` | 2026-06-28T16:49:00+08:00 | 2026-06-28T16:54:56+08:00 | `6e750ff` | 已确认 `RealtimeService::start_async`、`RealtimeSession::subscribe`、`status_updates`、`stop`、`join`、`ImEvent`、`RealtimeSyncHint`、`sync_delta_async`、`sync_thread_after_async`、`groups().messages_async` 满足首版 daemon fan-in；多 WebSocket source metadata 保持在 daemon wrapper；未修改 `im-core` public API / DTO / transport 默认语义。剩余风险：realtime WSS endpoint 当前从 `service_base_url` 推导 `/im/ws`，而 daemon config 已配置 `message_service_endpoint` 但仍是 `HttpOnly`；Step 05/06 必须在 daemon 配置层启用 realtime，并在发现 endpoint 分离部署时优先做向后兼容内部选择而非 public API 变更。 | `git diff -- crates/im-core` 无输出；计划中的 `cargo test -p im-core --locked realtime sync -j1` 被 Cargo 判定为非法多过滤参数，已更正为两条命令；`cargo test -p im-core --locked realtime -j1` 通过，lib 23 passed，并包含 realtime_api 6、realtime_connect 5、realtime_frame 9、realtime_loop 16、realtime_projection 16 passed；`cargo test -p im-core --locked sync -j1` 通过，lib 62 passed，并包含 sync delta/thread-after 与 realtime sync hint 相关测试；无需运行 shared caller regression，因为未修改 `crates/im-core`。 | ready_for_group_merge | pass | 进入 Step 05 |
 | 05 | done | agent-realtime | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `353412a` | 2026-06-28T17:00:13+08:00 | 2026-06-28T17:41:42+08:00 | `fc40ba7` | 新增 daemon 层 per-agent realtime supervisor、source wrapper 和统一 fan-in channel；foreground 改为 `select!` 等待 realtime event、30s floor 低频 reconciliation、heartbeat interval 和 control tick；daemon config 启用 `RealtimePreferred`；遵守 Step 04 结论，未修改 `im-core` public API，不把 daemon source metadata 放入 `ImEvent`。Review 已检查 client 生命周期、单 reader、backpressure、shutdown、错误脱敏、group 不全量扫描和 shared SDK diff；剩余 reliable sync/gap/reconnect/live WSS 证据留给 Step 06 / 07。 | `cargo fmt --check` 通过；`git diff --check` 通过；`git diff -- crates/im-core` 无输出；`cargo test -p awiki-deamon --locked realtime -j1` 通过，6 passed；`cargo test -p awiki-deamon --locked runtime_inbox_reconciliation_interval -j1` 通过；`cargo test -p awiki-deamon --locked foreground_control_tick -j1` 通过；`cargo test -p awiki-deamon --locked hermes_foreground_runtime_route -j1` 通过，4 passed；`cargo test -p awiki-deamon --locked generic_cli_foreground_route -j1` 通过；`cargo test -p awiki-deamon --locked im_core_config_includes_all_service_endpoints -j1` 通过；`cargo test -p awiki-deamon --locked runtime -j1` 通过；`cargo test -p awiki-deamon --locked -j1` 通过，lib 302 passed、agent_registration_management 37 passed、generic_cli_runtime_mvp 64 passed、hermes_contracts 5 passed、hermes_gateway 21 passed / 3 ignored、hermes_message 25 passed、hermes_profile 4 passed、local_rpc_security 26 passed、state_bootstrap 2 passed、doc-tests 0 passed。 | committed | pass | 进入 Step 06 |
 | 06 | done | coordinator | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `58722d0` | 2026-06-28T17:45:54+08:00 | 2026-06-28T18:29:17+08:00 | `cffca78` | 已完成 daemon 层 reliable sync/gap/fallback Review：`RealtimeSyncHint` 只转 dirty work 并调度 `sync_delta_async` / `sync_thread_after_async`，不推进 checkpoint；dirty set 按 agent/thread/group 合并；disconnect、reconnect、gap、unknown notification、session ended 和 channel pressure 均进入 backoff/fallback；group realtime event 改由 targeted group fetch 补上下文，避免缺上下文路由后被 dedupe；snapshot_required fail-closed；未修改 `im-core` public API、DTO、message-service protocol 或 state schema。 | `cargo fmt --check` 通过；`git diff --check` 通过；`git diff -- crates/im-core` 无输出；`cargo test -p awiki-deamon --locked realtime -j1` 通过，15 passed；`cargo test -p awiki-deamon --locked fallback -j1` 通过，lib 2 passed，generic_cli_runtime_mvp 3 passed；`cargo test -p awiki-deamon --locked runtime -j1` 通过，lib 115 passed，agent_registration_management 27 passed，generic_cli_runtime_mvp 7 passed，hermes_contracts 2 passed，hermes_message 1 passed，hermes_profile 1 passed，local_rpc_security 3 passed；`cargo test -p awiki-deamon --locked -j1` 通过，lib 311 passed、agent_registration_management 37 passed、generic_cli_runtime_mvp 64 passed、hermes_contracts 5 passed、hermes_gateway 21 passed / 3 ignored、hermes_message 25 passed、hermes_profile 4 passed、local_rpc_security 26 passed、state_bootstrap 2 passed、doc-tests 0 passed。 | committed | pass | 进入 Step 07 |
-| 07 | pending | coordinator | 串行 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | not_started | pending | 等 Step 02-06 |
+| 07 | blocked | coordinator | 串行 | `feature/perf/cpu-youhua-jingmo-0628` | `f756d1b` | 2026-06-28T18:30:46+08:00 | TBD | TBD | final global Review 已完成到可审计状态：Step 01-06 均 done 且 commit 记录完整；Step 07 未改业务代码；`git diff -- crates/im-core` 无输出；未修改 message-service protocol、state schema 或 runtime secret 边界；daemon docs 已同步事件驱动 foreground、per-agent realtime、dirty/fallback 和 checkpoint 边界；Harness 关键文档已复核，现有边界仍准确。阻塞项是 remote full system test 未通过。 | `cargo fmt --check` 通过；`git diff --check` 通过；`cargo test -p awiki-deamon --locked -j1` 通过，lib 311 passed、agent_registration_management 37 passed、generic_cli_runtime_mvp 64 passed、hermes_contracts 5 passed、hermes_gateway 21 passed / 3 ignored、hermes_message 25 passed、hermes_profile 4 passed、local_rpc_security 26 passed、state_bootstrap 2 passed、doc-tests 0 passed；`cargo test --workspace --locked -j1` 通过，覆盖 `awiki-cli`、`awiki-deamon`、`im-core`、`awiki_im_core` 和 doc-tests；60 秒临时 state idle 采样完成，write_bytes 从 Step 01 的 244801536 降到 81825792，mtime 变化从 31 降到 7，但 CPU 混入启动期不可直接证明下降；`python3 scripts/validate-docs.py` 通过；`python3 scripts/check-drift.py` 因 Harness 既有 `machine/inventory.yaml` 引用旧 `awiki-cli` / `awiki-me` 路径失败；指定 remote 命令 `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` 在 Linux 上失败，错误为 `Local system-test orchestration currently supports macOS only`，未进入 pytest，pass/fail/skip 数不可得；补充 remote daemon smoke 1 passed / 0 failed / 0 skipped / 1 deselected；`https://awiki.info/healthz` 返回 200，`https://awiki.info/im/healthz` 返回 500；直接 remote `pytest tests_v2` 进入执行后出现大量 F/E，第一次跑到 100% 但因磁盘满无法写 `.pytest_cache` summary，第二次禁用 cache 跑到 60% 后磁盘再次满，被中断。 | blocked | fail | 释放磁盘空间；在支持该脚本的 macOS 或修复 `manage_local_test_env.py` remote-only 路径后重跑指定 remote full gate；同时确认 `awiki.info` message-service `/im/healthz` 500 是否为远端环境问题。 |
 
 ## 10. Codex Goal 执行协议
 
@@ -342,12 +342,12 @@ per-agent RealtimeSession task
 - 共享 SDK 审计：确认没有未经独立评审的 `im-core` public API / DTO / feature gate / transport 默认语义变更；若 `crates/im-core` 有任何 diff，必须记录批准依据、兼容性验证和 `awiki-cli` / `im-core-dart` 回归证据。
 - 并行执行审计：确认 Wave A / B 每个 worker 只修改授权路径；所有越界变更均已更新 Plan；group verification gate 已通过。
 - 整体验证命令 / 检查：见第 13 节。
-- Review 发现：TBD。
-- 已修复问题：TBD。
-- 剩余风险：TBD。
-- 最终证据：TBD。
-- 最终 `git status`：TBD。
-- 如果本阶段修改文件：记录 Review、验证和最终集成 commit。
+- Review 发现：本仓库代码与文档侧未发现需要回到 Step 02-06 的问题；阻塞在 remote full system test 门禁。指定 `awiki-system-test` 命令会无条件走本地环境编排，当前 Linux 环境触发 macOS-only 断言；补充 direct remote pytest 进入测试后出现大量失败 / error，且当前磁盘空间不足导致无法稳定产出完整 summary。
+- 已修复问题：Step 07 文档同步已补充 daemon event-driven foreground、per-agent realtime session、dirty/fallback、checkpoint 只归 `im-core`、group targeted fetch 和 runtime secret 边界；清理了本次运行生成的临时 idle state 与 pytest 临时目录。
+- 剩余风险：未获得 AGENTS 要求的 remote full system test 通过证据；`awiki.info` user-service health 200 但 message-service `/im/healthz` 500；direct remote full suite 失败数量未能稳定统计；最终 idle 采样使用临时复制 state 且包含启动期 CPU，I/O / mtime 有改善证据但 CPU 改善证据不强。
+- 最终证据：见第 22 节 Step 07 当前执行证据；Step 07 状态保持 `blocked`，不得标记整体完成。
+- 最终 `git status`：当前 `awiki-cli-rs2-cpu` 有 Step 07 docs / plan 未提交改动；`awiki-harness`、`awiki-system-test` 工作区无源码改动。
+- 如果本阶段修改文件：仅提交 docs / plan blocked 证据，不创建表示 final pass 的 commit；remote full gate 通过后再完成 Step 07 done commit 或补充最终证据 commit。
 
 ## 20. Step 01 执行证据
 
@@ -386,3 +386,25 @@ per-agent RealtimeSession task
 | focused tests | `cargo test -p im-core --locked realtime -j1` 通过：lib 23 passed，并包含 `realtime_api` 6 passed、`realtime_connect` 5 passed、`realtime_frame` 9 passed、`realtime_loop` 16 passed、`realtime_projection` 16 passed；`cargo test -p im-core --locked sync -j1` 通过：lib 62 passed，并包含 sync delta/thread-after 与 realtime sync hint 相关测试。 |
 | shared caller regression | 未运行；本步骤未修改 `crates/im-core`，因此不触发 `awiki-cli` / `im-core-dart` 共享调用方回归门禁。 |
 | Review 结论 | Step 05 可以继续；禁止在 Step 05 中顺手修改 `im-core` public API 或把 daemon source metadata 加入 `ImEvent`。 |
+
+## 22. Step 07 当前执行证据
+
+本节记录 Step 07 已完成的验证和当前 blocker。所有路径均相对 AWiki workspace 根目录；涉及临时目录的原始路径不写入计划文档。
+
+| 项 | 证据 |
+|---|---|
+| 基线 commit | `f756d1b` |
+| 分支 | `feature/perf/cpu-youhua-jingmo-0628` |
+| 改动范围 | `awiki-cli-rs2-cpu/crates/awiki-deamon/docs/local-dev.md`、`awiki-cli-rs2-cpu/crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md`、本 Plan 与 Step 07 文档；未修改业务代码。 |
+| Shared SDK 审计 | `git diff -- crates/im-core` 无输出；未修改 `im-core` public API、DTO、feature gate、transport 默认语义或 checkpoint 语义。 |
+| 静态检查 | `cargo fmt --check` 通过；`git diff --check` 通过。 |
+| daemon crate gate | `cargo test -p awiki-deamon --locked -j1` 通过：lib 311 passed；agent_registration_management 37 passed；generic_cli_runtime_mvp 64 passed；hermes_contracts 5 passed；hermes_gateway 21 passed / 3 ignored；hermes_message 25 passed；hermes_profile 4 passed；local_rpc_security 26 passed；state_bootstrap 2 passed；doc-tests 0 passed。 |
+| workspace gate | `cargo test --workspace --locked -j1` 通过：`awiki-cli` lib 123 passed，CLI contract/live tests 通过；`awiki-deamon` 同上；`im-core` lib 420 passed，并包含 realtime / sync / secure / site / wire tests；`awiki_im_core` lib 7 passed；`facade_contract` 19 passed；doc-tests 0 passed。 |
+| idle 采样 | 使用当前分支 `target/debug/awiki-deamon foreground` 和临时复制的 daemon state 采样 60 秒。active agents 8、`runtime_profile` 11、`message_sync_outbox` 24、`runtime_final_outbox` 26；CPU 平均 8.258%，最小 3.9%，最大 28.0%，该值混入启动期，不能直接对比 Step 01 证明下降；`write_bytes` 增量 81825792，低于 Step 01 的 244801536；mtime 变化 7 个，低于 Step 01 的 31 个；日志尾部只见 foreground ready。 |
+| Harness 文档检查 | 已读 `awiki-harness/context/03-cross-repo-architecture.md`、`awiki-harness/context/nodes/agent-runtime-host.node.md`、`awiki-harness/context/nodes/message-flow.node.md`、`awiki-harness/context/repo-profiles/awiki-cli-rs2.md`；这些文档已表达 runtime backend 不持有 DID 私钥、不直连 message-service、checkpoint 归 `im-core`、sync hint 只作调度提示，故无需修改。`python3 scripts/validate-docs.py` 通过；`python3 scripts/check-drift.py` 因既有 `machine/inventory.yaml` 引用 `../awiki-me/CLAUDE.md`、`../awiki-cli/CLAUDE.md`、`../awiki-cli/README.md`、`../awiki-cli/docs/architecture/awiki-v2-architecture.md` 失败，非本次改动引入。 |
+| 指定 remote full gate | 在 `awiki-system-test` 执行 `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests`，失败输出为 `Local prerequisites are incomplete; running install automatically.` 后 `Error: Local system-test orchestration currently supports macOS only.` 当前 Linux 环境未进入 pytest，pass/fail/skip 数不可得；该硬门禁未通过。 |
+| remote 补充 smoke | 在 `awiki-system-test` 执行 `AWIKI_ENABLE_DAEMON_REMOTE_SMOKE=1 AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info E2E_DID_DOMAIN=awiki.info E2E_USER_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws AWIKI_CLI_RUST_REPO=../awiki-cli-rs2-cpu AWIKI_DAEMON_RUST_REPO=../awiki-cli-rs2-cpu uv run --no-sync pytest tests_v2/daemon/test_daemon_gated_smoke.py -q -rs -k 'remote' -p no:cacheprovider`，结果 1 passed / 0 failed / 0 skipped / 1 deselected。 |
+| remote health | `curl https://awiki.info/healthz` 返回 HTTP 200；`curl https://awiki.info/im/healthz` 返回 HTTP 500。 |
+| direct remote full pytest 尝试 | 第一次执行 `AWIKI_SYSTEM_TEST_MODE=remote ... uv run --no-sync pytest tests_v2 -q -rs` 进入真实测试并跑到 100%，过程中已出现大量 `F` / `E`，但 session finish 写 `.pytest_cache` 时因 `No space left on device` 失败，未产生完整 summary；第二次执行 `AWIKI_SYSTEM_TEST_MODE=remote ... uv run --no-sync pytest tests_v2 -q -rs --tb=no -p no:cacheprovider` 跑到 60% 后仍有大量 `F` / `E`，磁盘再次满，被中断以避免扩大临时产物。该补充命令不是 AGENTS 指定 full gate，且未通过。 |
+| sibling repo 状态 | `awiki-harness`：`git status --short --branch` 干净；`awiki-system-test`：`git status --short --branch` 干净。 |
+| 当前 blocker | Step 07 blocked：需要释放磁盘空间，并在支持 `manage_local_test_env.py run-tests` 的环境或修复 remote-only 执行路径后重跑 AGENTS 指定 remote full gate；同时需要确认 `awiki.info` message-service `/im/healthz` 500 与 direct remote suite 大量失败是否为远端环境 / 部署问题。 |

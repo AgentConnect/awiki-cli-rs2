@@ -384,12 +384,24 @@ Runtime Agent 收件箱查询是 App <-> Daemon 控制链路，不是 Hermes Ski
 1. 初始化 `daemon.db` 和 `im-core` 本地状态。
 2. 将本地 daemon/runtime agent identity 同步到 `im-core` identity registry。
 3. 启动 Unix domain socket local RPC worker。
-4. 周期轮询 message-service inbox。
-5. 消费 `application/json + body.payload` command。
-6. 对 `runtime.agent.create` 复用 daemon agent 管理逻辑。
-7. 对 `runtime.task.submit` 创建 runtime task/run，并启动 `test-runtime-uds`。
-8. 测试 runtime 通过 UDS local RPC 回传 `task.status` 和 `task.finish`。
-9. daemon 通过 `im-core` 发回 `awiki.agent.status.v1` payload。
+4. 为 active runtime agent 启动 per-agent `im-core` realtime session。
+5. 将多条 WebSocket session 的事件 fan-in 到 daemon 内部统一队列。
+6. 消费 `application/json + body.payload` command。
+7. 对 `runtime.agent.create` 复用 daemon agent 管理逻辑。
+8. 对 `runtime.task.submit` 创建 runtime task/run，并启动 `test-runtime-uds`。
+9. 测试 runtime 通过 UDS local RPC 回传 `task.status` 和 `task.finish`。
+10. daemon 通过 `im-core` 发回 `awiki.agent.status.v1` payload。
+
+foreground 的调度模型是事件驱动，而不是固定 250ms 扫描所有 agent 和所有队列：
+
+- 远端消息通过 per-agent WebSocket realtime session 触发，daemon 层包装 `agent_did`、session generation 和 endpoint source 后统一 fan-in。
+- WebSocket `sync` hint、gap、disconnect、reconnect、unknown notification、session ended 和 channel pressure 只会标记 dirty work，不会被当成 reliable checkpoint。
+- reliable checkpoint 仍由 `im-core` 的 `sync_delta_async` 事务推进；daemon 只调度 `sync_delta_async`、`sync_thread_after_async` 和 targeted group fetch。
+- direct message event 可以直接进入 runtime dispatcher；group message event 默认先进入 targeted group fetch，避免缺少 recent group context 时提前写入 processed-message dedupe。
+- message sync outbox、runtime final outbox、CLI route queue 和 runtime retry queue 使用 `Notify + due timer + low-frequency reconciliation`，不会依赖 250ms 固定循环。
+- WebSocket 不可用或发生未知事件时进入 degraded fallback。fallback 间隔明显大于 250ms，按 reason 记录 audit，并用 backoff/jitter 防止 event storm。
+- `snapshot_required` 表示本地 checkpoint 不可信，daemon fail-closed 并记录 audit，不自行写 checkpoint 或盲目继续处理旧 projection。
+- Runtime backend 仍只能通过 Skill / daemon CLI wrapper / local RPC 回传；runtime 不持有 DID 私钥，也不直接连接 message-service。
 
 系统测试使用这些控制参数让长驻进程稳定退出。`--max-processed-messages` 只统计真实处理的 inbox command 和 retry queue 工作项，心跳/status latest 同步不计入这个退出条件：
 
@@ -400,6 +412,15 @@ awiki-deamon foreground \
   --max-runtime-ms 30000 \
   --max-processed-messages 2 \
   --poll-interval-ms 100
+```
+
+`--poll-interval-ms` 只保留为测试兼容和低频 floor 计算输入。正常 foreground 主循环主要等待 WebSocket 事件、local RPC/outbox notify、queue due timer、heartbeat timer、shutdown 信号和低频 reconciliation。验证事件驱动相关行为时优先使用：
+
+```bash
+cargo test -p awiki-deamon --locked realtime -j1
+cargo test -p awiki-deamon --locked queue_scheduler -j1
+cargo test -p awiki-deamon --locked runtime_inbox_reconciliation_interval -j1
+cargo test -p awiki-deamon --locked -j1
 ```
 
 本地同域 E2E 需要 message-service 能通过公开 DID 地址解析刚注册的 agent DID。运行 `tests_v2/daemon/test_awiki_daemon_long_running_e2e.py` 前，确认 `E2E_DID_DOMAIN` 及 message-service 节点域名能按当前环境解析到 user-service 公开 DID 文档；本地不再依赖 message-service 内部旁路配置。
