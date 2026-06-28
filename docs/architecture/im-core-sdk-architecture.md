@@ -167,19 +167,38 @@ The SQLite local state keeps `messages` as the durable message projection truth.
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
 - unread index: `idx_conversation_summaries_owner_unread_last(owner_identity_id, unread_count, last_message_at DESC)`.
 
-`list_conversations_for_owner_identity()` reads `conversation_summaries` by owner and joins only the stored `last_message_id` back to `messages`. The legacy `threads` SQLite view remains available for debugging and compatibility, but it is no longer the chat-list hot path.
+`list_conversations_for_owner_identity()` reads `conversation_summaries` by owner and joins only the stored `last_message_id` back to `messages`. The legacy `threads` SQLite view remains available for debugging and compatibility, but it is no longer the chat-list hot path. Incremental writes update touched summaries inside the same SQLite transaction as message/read-state projection; rebuild/repair paths remain available when a gap, migration, or debug check requires recomputing owner summaries from durable `messages` and `thread_read_state`.
 
-Summary rows are derived state and may be rebuilt from `messages`:
+Summary rows are derived state and may be rebuilt from `messages`, but hot writes are incremental after the performance work:
 
 - schema open creates the table/indexes and backfills v17 stores when summaries are absent;
-- message upsert batches collect touched `(owner_identity_id, conversation_id)` keys and rebuild each touched summary once;
-- mark-read collects affected conversations before updating `messages.is_read`, then rebuilds their unread counters;
-- legacy DID-to-peer-scope direct merges rebuild both old and new conversation keys;
+- ordinary message insert/update updates `conversation_summaries` by delta in the same SQLite write transaction;
+- bounded mark-read and `mark_thread_read` update unread / unread mention counters by delta where the previous state is known;
+- fallback rebuild remains for message conversation moves, legacy DID-to-peer-scope direct merges, last-message ambiguity, missing/corrupt summary rows, first unread mention ambiguity, and explicit owner repair;
+- committed invalidation and runtime store patches are emitted only after the local projection transaction commits;
 - peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
-## 12. Local-first Message History
+## 12. Conversation Snapshot And Runtime Store
+
+Conversation snapshot and patch APIs are non-authoritative acceleration layers on top of committed local projection:
+
+- `messages.load_conversation_snapshot()` / Dart `client.messages.loadConversationSnapshot()` reads a redb snapshot generated from `conversation_summaries`.
+- Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, participants, last message projection, unread counts, message count, and last message time.
+- `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store seeded by snapshot/local projection.
+- `messages.repair_conversation_store()` / Dart `client.messages.repairConversationStore()` returns a reset/repair patch and the current runtime store version after lag, overflow, stream close, or version gaps.
+- `messages.watch_thread_patches(thread, limit)` / Dart `client.messages.watchThreadPatches(thread, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened thread.
+- `messages.repair_thread_store(thread, limit)` / Dart `client.messages.repairThreadStore(thread, limit: ...)` returns a reset/repair patch for the thread message runtime store.
+- Patch notifications are emitted only after the underlying local projection commit succeeds; `snapshot_required=true` or failed sync apply must not emit an authoritative patch.
+
+The public APIs currently live under `messages()` / `client.messages` for compatibility with the existing SDK grouping. A future `conversations()` / `client.conversations` namespace may wrap the same core store, but both names must not expose divergent DTOs or ownership semantics.
+
+`ConversationSnapshotItem` and `ConversationStorePatch` must remain SDK/core DTOs. They must not include `awiki-me` App-only presentation fields such as `hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`. AWiki Me composes those fields in its own application layer; see `awiki-me/docs/conversation-presentation-ownership.md`.
+
+Because snapshots and patches contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
+
+## 13. Local-first Message History
 
 `messages.history()` keeps its remote history + projection/reconcile semantics. Hot UI paths that only need already-projected local messages should use `messages.local_history()` / Dart `client.messages.localHistory(...)` instead.
 
@@ -192,7 +211,7 @@ Local history:
 
 The API is for fast first paint. Apps should show local history immediately, then run remote `history()` as a background reconcile when freshness is needed.
 
-## 13. Reliable Message Sync
+## 14. Reliable Message Sync
 
 Reliable message sync is split between service-owned event logs and
 `im-core`-owned local recovery state. The service API is documented in
@@ -234,3 +253,15 @@ Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 `sync_state` is private local recovery state. Diagnostics should report counts,
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
+
+## 15. Thread Read State
+
+Thread-level read state is separate from reliable sync checkpoints:
+
+- `messages.mark_thread_read()` / Dart `client.messages.markThreadRead(...)` accepts an optional `ReadWatermark`.
+- If no watermark is provided, `im-core` computes the highest visible committed thread-local sequence from local projection / thread store.
+- Direct read watermarks use direct thread-local `server_seq`.
+- Group read watermarks use the group thread view `server_seq`; the service may map it from group host `group_event_seq`, but public SDK/API callers do not submit `read_up_to_group_event_seq`.
+- Local truth lives in `thread_read_state`; `conversation_summaries` caches unread/read display projection but is not the only source of truth.
+- Remote ack uses `message-service` `read_state.mark_read` with profile `anp.read_state.local.v1`; legacy direct `inbox.mark_read(message_ids)` remains only as fallback for unsupported services.
+- `message.read_state_updated` sync events are not emitted by the current service-compatible phase. Adding that event requires first making stable clients treat the type as known or explicitly ignore-safe, because unknown required `sync.delta` events fail closed.

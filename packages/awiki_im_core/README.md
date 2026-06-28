@@ -23,6 +23,34 @@ Realtime is exposed as transport-agnostic Dart streams:
 
 Apps should not depend on WebSocket URLs, raw frames, bearer headers, ping/pong, or reconnect internals.
 
+Conversation list startup and updates are exposed as local projection helpers:
+
+```dart
+final snapshot = await client.messages.loadConversationSnapshot();
+await client.messages.clearConversationSnapshot();
+final patches = client.messages.watchConversationPatches();
+final repair = await client.messages.repairConversationStore();
+final threadPatches = client.messages.watchThreadPatches(
+  const ThreadRef.direct('did:example:bob'),
+  limit: 100,
+);
+final threadRepair = await client.messages.repairThreadStore(
+  const ThreadRef.direct('did:example:bob'),
+  limit: 100,
+);
+```
+
+These APIs currently live under `client.messages` for SDK compatibility. The
+snapshot is a non-authoritative redb cache generated from committed
+`conversation_summaries`; `clearConversationSnapshot` only clears that
+discardable cache for the current owner. Conversation and thread patch streams
+emit versioned reset/upsert/remove/reorder/repair events only after the local
+projection commit succeeds, and `repairConversationStore` / `repairThreadStore`
+provide reset/repair baselines after lag, stream close, or version gaps. DTOs
+are core-only and must not include `awiki-me` App presentation fields such as
+`hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`,
+`ConversationSummary`, or `ChatMessage`.
+
 Thread-level mark-read is exposed through a watermark-first message API:
 
 ```dart

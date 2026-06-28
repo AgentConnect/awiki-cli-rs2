@@ -44,6 +44,28 @@ impl MessageService<'_> {
         &self,
         request: SyncThreadAfterRequest,
     ) -> crate::ImResult<SyncThreadAfterResult>;
+
+    pub fn load_conversation_snapshot(
+        &self,
+    ) -> crate::ImResult<Option<ConversationListSnapshot>>;
+
+    pub fn clear_conversation_snapshot(&self) -> crate::ImResult<()>;
+
+    pub fn watch_conversation_patches(&self) -> crate::ImResult<ConversationPatchSession>;
+
+    pub fn repair_conversation_store(&self) -> crate::ImResult<ConversationStorePatch>;
+
+    pub fn watch_thread_patches(
+        &self,
+        thread: ThreadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<ThreadMessagePatchSession>;
+
+    pub fn repair_thread_store(
+        &self,
+        thread: ThreadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<ThreadMessageStorePatch>;
 }
 ```
 
@@ -462,8 +484,9 @@ P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 10. `legacy_message_ids` 只作为 fallback diagnostics；App 不应依赖它作为 thread
     mark-read 的核心结果。
 
-Step 04 引入 `conversation_summaries` 后，thread mark-read 还需要同步维护 summary
-unread 字段；本方法的 public 契约不需要因此变化。
+`conversation_summaries` 是 rebuildable projection；当前热路径对普通 message upsert、
+bounded mark-read 和 `mark_thread_read` 使用增量维护，只有无法安全增量判断的场景才回退
+rebuild。thread mark-read 同步维护 summary unread 字段；public 契约不因此变化。
 
 ### 5.2 Reliable Sync API
 
@@ -547,7 +570,39 @@ checkpoint 边界：
 - Realtime `RealtimeSyncHint` 只用于 duplicate/gap/dirty 判断和调度 `sync_delta`；即使
   realtime projection 成功，也不得推进 checkpoint。
 
-### 5.3 Delegated Inbox / History Optional 扩展
+### 5.3 Conversation / Thread Snapshot And Patch API
+
+当前实现把 conversation snapshot、conversation patch stream 和 thread message patch stream
+短期保留在 `messages` namespace 下：Rust 为 `client.messages()`，Dart/Flutter 为
+`client.messages.*`。尚未引入独立 `client.conversations` namespace；文档、示例和 App
+代码不得同时描述两套当前 API。
+
+`load_conversation_snapshot()` / Dart `loadConversationSnapshot()` 从 Rust `im-core`
+redb snapshot cache 读取非权威、可丢弃的 core-only conversation snapshot。调用方不传
+owner、schema、checkpoint 或 raw storage 参数；owner 来自当前 `ImClient` identity。
+snapshot 只用于冷启动 first paint，随后仍必须用 SQLite local projection、sync 和 patch
+校正，不代表可靠同步已追平。
+
+`clear_conversation_snapshot()` / Dart `clearConversationSnapshot()` 只清除当前 owner 的
+非权威 redb snapshot cache，不清除 SQLite committed projection、runtime store、read state
+或 reliable checkpoint。它用于 logout、owner switch 或 corruption recovery 场景。
+
+`watch_conversation_patches()` / Dart `watchConversationPatches()` 返回 versioned
+`ConversationStorePatch` stream。patch kind 当前包括 `reset`、`upsert`、`remove`、
+`reorder`、`repairRequired`。subscriber lag、stream drop、session switch 或 version gap
+必须走 `repair_conversation_store()` / Dart `repairConversationStore()`，repair 返回的
+patch version 是后续 patch 连续性判断的基线。
+
+`watch_thread_patches(thread, limit)` / Dart `watchThreadPatches(thread, limit: ...)`
+返回当前 thread 的 versioned `ThreadMessageStorePatch` stream。patch kind 当前包括
+`reset`、`upsert`、`remove`、`repairRequired`。它只消费 committed local projection；
+`sync_thread_after` persistence 失败、remote history best-effort page 或 realtime hint
+不得直接生成 authoritative thread patch。
+
+Conversation snapshot、conversation store patch 和 thread message patch DTO 都必须保持
+core-only，不包含 `awiki-me` presentation overlay 字段或 App domain DTO。
+
+### 5.4 Delegated Inbox / History Optional 扩展
 
 `InboxHistoryOptions` 是 Step 02 新增的 optional 参数，供 Daemon 使用 `user_did#daemon-key-1` 证明自己有权读取用户普通 inbox/history。调用方不传 `inbox_history_options` 时，SDK 继续走当前 identity/session 默认 inbox/history 读取逻辑，老调用行为不变。
 

@@ -78,6 +78,46 @@ These display fields are UI metadata only. They must not be used for routing, au
 
 `client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view.
 
+Conversation list startup and realtime updates use snapshot / patch helpers under
+the same `client.messages` namespace:
+
+```dart
+final snapshot = await client.messages.loadConversationSnapshot();
+await client.messages.clearConversationSnapshot();
+final patches = client.messages.watchConversationPatches();
+final repair = await client.messages.repairConversationStore();
+final threadPatches = client.messages.watchThreadPatches(
+  const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+  limit: 100,
+);
+final threadRepair = await client.messages.repairThreadStore(
+  const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+  limit: 100,
+);
+```
+
+`loadConversationSnapshot` reads a non-authoritative redb snapshot generated from
+committed `conversation_summaries`. `clearConversationSnapshot` only clears that
+discardable snapshot cache for the current owner; it does not clear SQLite local
+projection, runtime store, read state, or reliable checkpoint. `watchConversationPatches` streams versioned
+`ConversationStorePatch` values (`reset`, `upsert`, `remove`, `reorder`,
+`repairRequired`) emitted only after the underlying local projection commit
+succeeds. `repairConversationStore` returns a reset/repair patch after lag,
+overflow, stream close, or version gaps. `watchThreadPatches` and
+`repairThreadStore` expose the same committed-projection rule for an opened
+thread message window; remote history best-effort pages or realtime hints must
+not become authoritative thread patches before persistence succeeds.
+
+These APIs currently live under `client.messages` for SDK compatibility. If a
+future `client.conversations` namespace is added, it must wrap the same core
+store and DTOs rather than introducing another source of truth.
+
+Conversation snapshot / store DTOs are core-only. They must not carry
+`awiki-me` App-only fields such as `hidden`, `pinned`, `muted`, `customTitle`,
+`avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`.
+AWiki Me applies those presentation fields in its own application layer; see
+`awiki-me/docs/conversation-presentation-ownership.md`.
+
 `client.messages.localHistory(thread, limit: ..., cursor: ...)` is distinct from `client.messages.history(...)`:
 
 - `localHistory` reads only the local SQLite projection and returns an opaque local cursor;

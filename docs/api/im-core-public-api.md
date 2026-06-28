@@ -360,6 +360,20 @@ impl MessageService<'_> {
         request: MarkThreadReadRequest,
     ) -> ImResult<MarkThreadReadResult>;
     pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
+    pub fn load_conversation_snapshot(&self) -> ImResult<Option<ConversationListSnapshot>>;
+    pub fn clear_conversation_snapshot(&self) -> ImResult<()>;
+    pub fn watch_conversation_patches(&self) -> ImResult<ConversationPatchSession>;
+    pub fn repair_conversation_store(&self) -> ImResult<ConversationStorePatch>;
+    pub fn watch_thread_patches(
+        &self,
+        thread: ThreadRef,
+        limit: Option<u32>,
+    ) -> ImResult<ThreadMessagePatchSession>;
+    pub fn repair_thread_store(
+        &self,
+        thread: ThreadRef,
+        limit: Option<u32>,
+    ) -> ImResult<ThreadMessageStorePatch>;
 }
 ```
 
@@ -372,6 +386,12 @@ Reliable sync 补充：
 - `mark_thread_read` 是 thread-level read watermark API。SDK 优先使用服务端
   `read_state.mark_read`；旧服务端 fallback 到本地 unread ids + `inbox.mark_read(message_ids)`
   或本地 group pending ack。`mark_read(ids)` 仅保留 legacy/explicit message-id compatibility。
+- `load_conversation_snapshot`、`clear_conversation_snapshot`、
+  `watch_conversation_patches`、`repair_conversation_store` 和
+  `watch_thread_patches`、`repair_thread_store` 是 conversation/thread snapshot / patch
+  runtime store API，当前仍挂在 message service namespace 下；
+  DTO 必须保持 core-only，不引用 `awiki-me` 的 `ConversationSummary`、`ChatMessage`
+  或 presentation overlay 字段。
 - Public API 不得暴露 `loadGlobalCheckpoint`、`storeGlobalCheckpoint`、SQLite helper、
   raw `sync.delta` wire params 或手动 checkpoint advance。
 - Realtime sync hint 只作为只读事件元数据进入 event stream，用于调度 `sync_delta`，
