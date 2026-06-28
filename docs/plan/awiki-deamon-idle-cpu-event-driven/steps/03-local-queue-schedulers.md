@@ -2,30 +2,30 @@
 
 主 Plan：[../plan.md](../plan.md)  
 Step index：03  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| Status | pending |
-| Branch | TBD |
-| Started | TBD |
-| Completed | TBD |
+| Status | review |
+| Branch | `feature/perf/cpu-youhua-jingmo-0628` |
+| Started | 2026-06-28T14:49:06+08:00 |
+| Completed | 2026-06-28T16:20:03+08:00 |
 | Commit | TBD |
-| Review evidence | TBD |
-| Verification evidence | TBD |
-| Next action | 将本地队列从 250ms 固定扫描改为 Notify + next due timer + 启动恢复 + 低频 reconciliation。 |
+| Review evidence | 已检查 diff 仅涉及 `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、`foreground/lifecycle_support.rs`、新增 `foreground/queue_scheduler.rs`、state due helper、state tests 和本 Step 文档；无 `crates/im-core` diff；保留 queue 状态机、retry/backoff、local RPC payload 和 runtime backend contract；发现并修复 due 已过但 drain 未处理项时可能 0ms 重试的问题，改为 50ms recheck；确认 runtime/host 深层入队点未在本步骤扩大改造，由本地 RPC notify、foreground 处理后 notify、启动 notify 和 30s reconciliation 覆盖。 |
+| Verification evidence | `cargo test -p awiki-deamon --locked queue_scheduler -j1` 通过，5 passed；`cargo test -p awiki-deamon --locked queue -j1` 通过，30 passed；`cargo test -p awiki-deamon --locked -j1` 最终通过，lib 294 passed，agent_registration_management 37 passed，generic_cli_runtime_mvp 64 passed，hermes_contracts 5 passed，hermes_gateway 21 passed / 3 ignored，hermes_message 25 passed，hermes_profile 4 passed，local_rpc_security 26 passed，state_bootstrap 2 passed，doc-tests 0 passed。一次全量重跑中既有 `repeated_agent_status_query_is_throttled_by_daemon_and_controller` 在运行超过 60 秒后因 10 秒节流窗口过期失败；随后 exact 重跑通过，最终全量重跑通过。 |
+| Next action | 创建 Step 03 聚焦 commit，然后回填 commit hash 并进入 Step 04。 |
 | Assigned agent | agent-scheduler |
 | Parallel group | A |
 | Parallel safe | yes |
 | Parallel with | Step 02；Step 04 默认只读时也可并行 |
 | Conflict resources | queue scheduler 模块、queue state helper、`foreground.rs` 局部接入、enqueue notify hook |
-| Baseline commit | TBD，必须来自 Step 01 完成后的 commit |
-| Worktree / branch | TBD |
+| Baseline commit | `fd1cfe5` |
+| Worktree / branch | 当前主工作区 / `feature/perf/cpu-youhua-jingmo-0628` |
 | Merge gate | Step 01 done；合并前确认与 Step 02 路径无冲突；Step 05 前必须完成。 |
 | Verification gate | scheduler focused tests + `cargo test -p awiki-deamon --locked`。 |
-| Gate status | pending |
+| Gate status | pass |
 
 状态取值：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -107,16 +107,16 @@ Step index：03
 
 ## 7. 验收标准
 
-- [ ] 四类本地队列都有明确 notify 入口和 due timer 驱动。
-- [ ] 未来 due item 不提前执行，到期后不依赖 250ms 轮询即可执行。
-- [ ] daemon 启动时能发现已有 pending/due item。
-- [ ] 漏 notify 时能通过低频 reconciliation 恢复，且间隔不是 250ms 级别。
-- [ ] scheduler shutdown 可控，不留下悬挂 task。
-- [ ] 不改变 queue item 状态机、retry/backoff、processed 幂等、local RPC payload 或 runtime backend contract。
-- [ ] 如果本步骤标记为 parallel-safe，已确认没有修改 identity sync 或 `im-core` 互斥资源。
-- [ ] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
-- [ ] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
-- [ ] Review 发现已经修复或明确记录。
+- [x] 四类本地队列都有明确 notify 入口和 due timer 驱动。
+- [x] 未来 due item 不提前执行，到期后不依赖 250ms 轮询即可执行。
+- [x] daemon 启动时能发现已有 pending/due item。
+- [x] 漏 notify 时能通过低频 reconciliation 恢复，且间隔不是 250ms 级别。
+- [x] scheduler shutdown 可控，不留下悬挂 task。
+- [x] 不改变 queue item 状态机、retry/backoff、processed 幂等、local RPC payload 或 runtime backend contract。
+- [x] 如果本步骤标记为 parallel-safe，已确认没有修改 identity sync 或 `im-core` 互斥资源。
+- [x] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
+- [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
+- [x] Review 发现已经修复或明确记录。
 - [ ] 本步骤在进入 Step 05 之前已经创建聚焦 commit。
 
 ## 8. 验证方式
@@ -141,15 +141,15 @@ Step index：03
 
 | Review 项 | 结果 | 备注 |
 |---|---|---|
-| 发现问题 | TBD | TBD |
-| 已修复问题 | TBD | TBD |
-| 剩余风险 | TBD | TBD |
-| 新增或缺失测试 | TBD | TBD |
-| 已更新或缺失文档 | TBD | 通常 final 更新 daemon docs。 |
-| 并行安全是否仍成立 | TBD | 不应修改 identity sync 或 `im-core`。 |
-| Agent 是否越界修改 | TBD | TBD |
-| 互斥资源是否被修改 | TBD | `foreground.rs` 修改需限定在本地 queue scheduler 接入。 |
-| 合并风险 | TBD | 与 Step 05 前后衔接风险较高，需记录接口。 |
+| 发现问题 | due 已过但 drain 没有处理 item 时，直接按 0ms due timer 重试会形成快速循环。 | 该路径可能来自并发 claim、状态刚被其他 worker 更新、或 due helper 仍看到已过期 pending/queued item。 |
+| 已修复问题 | `duration_until_ms` 对已到期或过期 due 返回 50ms `DUE_RECHECK_INTERVAL`，避免 0ms busy loop；新增对应测试。`QueueScheduler` 增加 `Drop` 兜底，异常返回路径会设置 stop、notify 并 abort 剩余 task；正常路径仍通过 `stop().await` 等待退出。 | 仍保持到期任务快速重查，不回到 250ms 主循环扫描。 |
+| 剩余风险 | `runtime/host.rs` 深层 final outbox / retry queue 入队点仍保留原有即时 flush 或由 foreground / local RPC / reconciliation 间接唤醒，未在本步骤引入统一 queue facade。 | 当前实现用启动 notify、foreground 处理后 notify、本地 RPC notify all 和 30s reconciliation 覆盖；Step 05 / 06 集成 realtime supervisor 时应继续复核入队唤醒。 |
+| 新增或缺失测试 | 新增 queue scheduler notify、future due、reconciliation、due-now recheck、notifier wake-all tests；扩展 state tests 覆盖四类 next due helper。 | 本步骤未新增真实 idle CPU/I/O 复测，留到 Wave A / Step 07 对比。 |
+| 已更新或缺失文档 | 已更新主 Plan 和本 Step 执行证据；长期 daemon docs 延后到 Step 07 统一同步。 | 本步骤为 daemon 内部调度改造，不修改 public API 文档。 |
+| 并行安全是否仍成立 | 是 | `git diff -- crates/im-core` 无输出；未修改 Step 02 的 `im_core_adapter.rs`。 |
+| Agent 是否越界修改 | 否 | 变更集中在 scheduler、foreground 局部接入、state due helper、测试和计划文档。 |
+| 互斥资源是否被修改 | 是 | 按本步骤授权修改 `foreground.rs` 的本地 queue scheduler 接入段，未改 realtime supervisor 或 shared SDK。 |
+| 合并风险 | 中 | Step 05 会继续重构 foreground/realtime 控制流，需复用 `QueueSchedulerNotifier` 和 stop 生命周期。 |
 | Group gate 影响 | Wave A | 合并后跑 daemon tests 和 idle 对比。 |
 
 ## 10. Commit 要求
@@ -189,3 +189,16 @@ Step index：03
 - Agent 交接说明：Step 05 远端 realtime supervisor 启动时，应复用本步骤的本地 queue scheduler 生命周期和 shutdown 机制。
 - 回滚 / 回退：可按 queue 类型逐个回退到低频 timer；若某队列风险高，可暂时只事件化其他队列并更新 Plan。
 - 后续文档：Step 07 更新 daemon docs 中本地队列调度模型、reconciliation 作用和 troubleshooting。
+
+## 14. 执行证据
+
+| 项 | 结果 |
+|---|---|
+| 基线 commit | `fd1cfe5` |
+| 变更路径 | `awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground/lifecycle_support.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/foreground/queue_scheduler.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/state/delegated_state.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/state/runtime_tasks.rs`、`awiki-cli-rs2-cpu/crates/awiki-deamon/src/state/tests.rs`、本 Step 文档和主 Plan 台账。 |
+| 实现摘要 | 新增四类 foreground-local queue scheduler，使用 `tokio::sync::Notify`、最近 due helper、30s reconciliation 和 stop notify；foreground 250ms 主循环不再每轮 drain 四类本地队列；本地 RPC 成功处理请求后 notify all；远端 / 委托 inbox 处理到消息后 notify all。 |
+| focused tests | `cargo test -p awiki-deamon --locked queue_scheduler -j1`：5 passed / 0 failed；`cargo test -p awiki-deamon --locked queue -j1`：30 passed / 0 failed。 |
+| daemon tests | `cargo test -p awiki-deamon --locked -j1`：最终通过，lib 294 passed，agent_registration_management 37 passed，generic_cli_runtime_mvp 64 passed，hermes_contracts 5 passed，hermes_gateway 21 passed / 3 ignored，hermes_message 25 passed，hermes_profile 4 passed，local_rpc_security 26 passed，state_bootstrap 2 passed，doc-tests 0 passed。 |
+| flaky / 重跑记录 | 一次全量重跑中既有 `repeated_agent_status_query_is_throttled_by_daemon_and_controller` 因测试运行超过 60 秒导致 10 秒节流窗口过期失败；exact 重跑通过，最终全量重跑通过。 |
+| shared SDK | `git diff -- crates/im-core` 无输出；未修改 `im-core` public API / DTO / feature gate / transport 默认语义。 |
+| 状态机兼容 | queue item 状态机、retry/backoff、processed message 幂等、local RPC payload 和 runtime backend contract 未改变；新增 helper 仅查询最小 due 时间。 |

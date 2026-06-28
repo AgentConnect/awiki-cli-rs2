@@ -152,6 +152,10 @@ fn cli_route_message_queue_enqueues_minimal_reference_and_is_idempotent() {
     assert_eq!(first.route_key, route.route_key);
     assert_eq!(first.route_key_hash, route.route_key_hash);
     assert_eq!(
+        state.next_queued_cli_route_message_queue_due_ms().unwrap(),
+        Some(now)
+    );
+    assert_eq!(
         state
             .list_cli_route_message_queue_for_route(&route.runtime_profile_id, &route.route_key)
             .unwrap()
@@ -205,6 +209,10 @@ fn cli_route_message_queue_orders_due_items_by_route_sequence() {
             .collect::<Vec<_>>(),
         vec!["msg_queue_first", "msg_queue_second"]
     );
+    assert_eq!(
+        state.next_queued_cli_route_message_queue_due_ms().unwrap(),
+        Some(now)
+    );
     state
         .mark_cli_route_message_queue_running(&first.queue_id, "run_replay_first")
         .unwrap();
@@ -223,6 +231,10 @@ fn cli_route_message_queue_orders_due_items_by_route_sequence() {
         .unwrap()
         .unwrap();
     assert_eq!(succeeded.status, "succeeded");
+    assert_eq!(
+        state.next_queued_cli_route_message_queue_due_ms().unwrap(),
+        Some(now)
+    );
 }
 
 #[test]
@@ -1513,6 +1525,10 @@ fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
     assert_eq!(loaded_sync.payload_json["message_id"], "msg_1");
     let due = state.list_due_message_sync_outbox(i64::MAX, 10).unwrap();
     assert_eq!(due.len(), 1);
+    assert_eq!(
+        state.next_pending_message_sync_outbox_due_ms().unwrap(),
+        Some(0)
+    );
     assert!(state
         .mark_message_sync_outbox_sending(&sync.idempotency_key)
         .unwrap());
@@ -1523,6 +1539,10 @@ fn delegated_inbox_sync_state_roundtrips_and_deduplicates_messages() {
         .list_due_message_sync_outbox(0, 10)
         .unwrap()
         .is_empty());
+    assert_eq!(
+        state.next_pending_message_sync_outbox_due_ms().unwrap(),
+        Some(i64::MAX - 1)
+    );
     state
         .recover_stale_message_sync_outbox_sending(i64::MAX, 0)
         .unwrap();
@@ -2173,6 +2193,7 @@ fn runtime_retry_queue_records_due_time_and_filters_future_retries() {
     let queued = state.list_queued_runtime_retries_due(now, 10).unwrap();
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].retry_id, due.retry_id);
+    assert_eq!(state.next_queued_runtime_retry_due_ms().unwrap(), Some(now));
 
     let queued = state
         .list_queued_runtime_retries_due(now + 60_000, 10)
@@ -2397,6 +2418,10 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
     assert_eq!(due[0].final_text, "final text");
     assert_eq!(due[0].final_source, "hermes_final_text");
     assert_eq!(due[0].final_body_hash, test_final_body_hash("final text"));
+    assert_eq!(
+        state.next_pending_runtime_final_outbox_due_ms().unwrap(),
+        Some(now)
+    );
     assert!(state
         .mark_runtime_final_outbox_sending(&record.idempotency_key)
         .unwrap());
@@ -2422,6 +2447,10 @@ fn runtime_final_outbox_roundtrips_retry_and_sent_state() {
         .list_due_runtime_final_outbox(now + 9_999, 10)
         .unwrap()
         .is_empty());
+    assert_eq!(
+        state.next_pending_runtime_final_outbox_due_ms().unwrap(),
+        Some(now + 10_000)
+    );
 
     assert!(state
         .mark_runtime_final_outbox_sending(&record.idempotency_key)

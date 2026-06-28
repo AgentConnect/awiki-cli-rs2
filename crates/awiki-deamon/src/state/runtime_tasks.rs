@@ -373,6 +373,21 @@ LIMIT ?2
         self.list_queued_runtime_retries_due(current_time_millis()?, limit)
     }
 
+    pub fn next_queued_runtime_retry_due_ms(&self) -> Result<Option<i64>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT MIN(next_attempt_at_ms)
+FROM runtime_retry_queue
+WHERE status = 'queued'
+"#,
+                [],
+                |row| row.get(0),
+            )
+            .context("load next queued runtime retry due time")
+    }
+
     pub fn mark_runtime_retry_status(&self, retry_id: &str, status: &str) -> Result<()> {
         if retry_id.trim().is_empty() {
             bail!("retry_id must not be empty");
@@ -740,6 +755,21 @@ LIMIT ?2
             records.push(row?);
         }
         Ok(records)
+    }
+
+    pub fn next_pending_runtime_final_outbox_due_ms(&self) -> Result<Option<i64>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT MIN(next_attempt_at_ms)
+FROM runtime_final_outbox
+WHERE status = 'pending'
+"#,
+                [],
+                |row| row.get(0),
+            )
+            .context("load next pending runtime final outbox due time")
     }
 
     pub fn mark_runtime_final_outbox_sending(&self, idempotency_key: &str) -> Result<bool> {
@@ -1472,6 +1502,21 @@ INSERT INTO cli_route_message_queue (
             )
             .optional()
             .context("load cli route message queue item")
+    }
+
+    pub fn next_queued_cli_route_message_queue_due_ms(&self) -> Result<Option<i64>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT MIN(next_attempt_at_ms)
+FROM cli_route_message_queue
+WHERE status = 'queued'
+"#,
+                [],
+                |row| row.get(0),
+            )
+            .context("load next queued cli route message queue due time")
     }
 
     pub fn list_due_cli_route_message_queue(

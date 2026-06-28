@@ -65,6 +65,7 @@ mod attachments;
 mod group_context;
 mod lifecycle_support;
 mod outbox;
+mod queue_scheduler;
 mod runtime_support;
 mod state_root_owner;
 
@@ -85,6 +86,7 @@ use outbox::{
 };
 #[cfg(test)]
 use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
+use queue_scheduler::{QueueKind, QueueScheduler, QueueSchedulerNotifier};
 use runtime_support::UdsTestRuntimePlugin;
 use state_root_owner::StateRootOwnerGuard;
 
@@ -213,11 +215,22 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
 
     let rpc_outbox =
         runtime_callback_outbox(&config, &state, &im_core, options.mock_status_outbox)?;
+    let queue_notifier = QueueSchedulerNotifier::new();
+    let hermes_gateway = StdioHermesGateway::from_config(&config);
     let rpc_worker = start_runtime_rpc_worker(
         config.local_socket_path.clone(),
         state.clone(),
         rpc_outbox.clone(),
+        queue_notifier.clone(),
     )?;
+    let queue_scheduler = QueueScheduler::start(
+        config.clone(),
+        state.clone(),
+        im_core.clone(),
+        rpc_outbox.clone(),
+        hermes_gateway.clone(),
+        queue_notifier.clone(),
+    );
     {
         let outbox = rpc_outbox
             .lock()
@@ -235,6 +248,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             )?;
         }
     }
+    queue_notifier.notify_ref(QueueKind::RuntimeFinalOutbox);
     if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
         state.insert_audit_event_json(
             "message_sync_outbox.flush.failed",
@@ -247,10 +261,10 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
             }),
         )?;
     }
+    queue_notifier.notify_ref(QueueKind::MessageSyncOutbox);
     if let Some(path) = options.ready_file.as_ref() {
         write_ready_file(path, &status)?;
     }
-    let hermes_gateway = StdioHermesGateway::from_config(&config);
     println!(
         "awiki-deamon foreground ready state_root={} socket={}",
         status.state_root.display(),
@@ -264,6 +278,9 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         let newly_processed =
             process_inbox_once(&config, &state, &im_core, &hermes_gateway, &mut processed).await?;
         processed_messages += newly_processed;
+        if newly_processed > 0 {
+            queue_notifier.notify_all();
+        }
         if let Some(archive_id) = crate::archive::pending_daemon_archive_finalizer(&config)? {
             let report = crate::archive::finalize_daemon_archive_for_foreground_shutdown(
                 &config,
@@ -273,58 +290,8 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         }
         let delegated_processed =
             process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
-        if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
-            state.insert_audit_event_json(
-                "message_sync_outbox.flush.failed",
-                None,
-                None,
-                None,
-                None,
-                json!({
-                    "error": sanitize_error_message(&error.to_string()),
-                }),
-            )?;
-        }
-        let queue_processed = {
-            let outbox = rpc_outbox
-                .lock()
-                .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-            drain_cli_route_message_queue_once(&config, &state, &*outbox)?
-        };
-        let retry_processed = {
-            let outbox = rpc_outbox
-                .lock()
-                .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-            drain_runtime_retry_queue_once(&config, &state, &*outbox, &hermes_gateway)?
-        };
-        {
-            let outbox = rpc_outbox
-                .lock()
-                .map_err(|_| anyhow::anyhow!("runtime callback outbox lock poisoned"))?;
-            if let Err(error) = flush_runtime_final_outbox(&state, &*outbox, 20) {
-                state.insert_audit_event_json(
-                    "runtime.final_outbox.flush.failed",
-                    None,
-                    None,
-                    None,
-                    None,
-                    json!({
-                        "error": sanitize_error_message(&error.to_string()),
-                    }),
-                )?;
-            }
-        }
-        if let Err(error) = flush_message_sync_outbox(&config, &state, &im_core, 20) {
-            state.insert_audit_event_json(
-                "message_sync_outbox.flush.failed",
-                None,
-                None,
-                None,
-                None,
-                json!({
-                    "error": sanitize_error_message(&error.to_string()),
-                }),
-            )?;
+        if delegated_processed > 0 {
+            queue_notifier.notify_all();
         }
         {
             let outbox = rpc_outbox
@@ -337,8 +304,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                 Ok(_) => {}
             }
         };
-        let newly_processed = delegated_processed + queue_processed + retry_processed;
-        processed_messages += newly_processed;
+        processed_messages += delegated_processed;
         if let Some(limit) = options.max_processed_messages {
             if processed_messages >= limit {
                 break "max_processed_messages".to_string();
@@ -352,6 +318,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
         tokio::time::sleep(Duration::from_millis(options.poll_interval_ms)).await;
     };
     rpc_worker.stop();
+    queue_scheduler.stop().await;
     let _ = std::fs::remove_file(&config.local_socket_path);
     Ok(ForegroundRunSummary {
         status,
@@ -784,13 +751,24 @@ fn runtime_processed_message_id(message: &Message) -> String {
     }
 }
 
+#[cfg(test)]
 fn drain_runtime_retry_queue_once(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
     hermes_gateway: &StdioHermesGateway,
 ) -> Result<usize> {
-    let retries = state.list_queued_runtime_retries_due(current_time_millis()?, 10)?;
+    drain_runtime_retry_queue_once_limited(config, state, outbox, hermes_gateway, 10)
+}
+
+fn drain_runtime_retry_queue_once_limited(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    hermes_gateway: &StdioHermesGateway,
+    limit: usize,
+) -> Result<usize> {
+    let retries = state.list_queued_runtime_retries_due(current_time_millis()?, limit)?;
     let mut processed = 0usize;
     for retry in retries {
         if retry.requested_by_command_id == "runtime.busy.auto-deferred"
@@ -880,16 +858,26 @@ fn drain_runtime_retry_queue_once(
     Ok(processed)
 }
 
+#[cfg(test)]
 fn drain_cli_route_message_queue_once(
     config: &DaemonConfig,
     state: &DaemonState,
     outbox: &impl RuntimeOutbox,
 ) -> Result<usize> {
+    drain_cli_route_message_queue_once_limited(config, state, outbox, 10)
+}
+
+fn drain_cli_route_message_queue_once_limited(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    limit: usize,
+) -> Result<usize> {
     let now = current_time_millis()?;
     state.recover_stale_cli_route_runtime_state(
         now.saturating_sub(GENERIC_CLI_ROUTE_RUNNING_STALE_MS),
     )?;
-    let items = state.list_due_cli_route_message_queue_fair(now, 10)?;
+    let items = state.list_due_cli_route_message_queue_fair(now, limit)?;
     let mut processed = 0usize;
     for item in items {
         let replay_run_id = format!("run_replay_{}_{}", item.queue_id, item.attempts + 1);

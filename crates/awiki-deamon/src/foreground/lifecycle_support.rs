@@ -74,6 +74,7 @@ pub(super) fn start_runtime_rpc_worker(
     socket_path: PathBuf,
     state: DaemonState,
     outbox: Arc<Mutex<RuntimeCallbackOutbox>>,
+    queue_notifier: QueueSchedulerNotifier,
 ) -> Result<RuntimeRpcWorker> {
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let listener = bind_uds_listener(&socket_path)?;
@@ -86,7 +87,9 @@ pub(super) fn start_runtime_rpc_worker(
                 match listener.accept() {
                     Ok((stream, _)) => {
                         if let Ok(outbox) = outbox.lock() {
-                            let _ = handle_uds_stream_with_outbox(&state, &*outbox, stream);
+                            if handle_uds_stream_with_outbox(&state, &*outbox, stream).is_ok() {
+                                queue_notifier.notify_all();
+                            }
                         }
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -108,6 +111,7 @@ pub(super) fn start_runtime_rpc_worker(
     _socket_path: PathBuf,
     _state: DaemonState,
     _outbox: Arc<Mutex<RuntimeCallbackOutbox>>,
+    _queue_notifier: QueueSchedulerNotifier,
 ) -> Result<RuntimeRpcWorker> {
     bail!("daemon long-running local RPC requires Unix domain sockets")
 }
