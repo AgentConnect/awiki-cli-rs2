@@ -612,6 +612,9 @@ patch version 是后续 patch 连续性判断的基线。
 `reset`、`upsert`、`remove`、`repairRequired`。它只消费 committed local projection；
 `sync_thread_after` persistence 失败、remote history best-effort page 或 realtime hint
 不得直接生成 authoritative thread patch。
+realtime incoming 消息如果成功写入 SQLite local projection，则按同一规则触发
+conversation patch 和对应 thread patch；如果 projection 不存在或写入失败，不得发
+authoritative patch。
 
 Conversation snapshot、conversation store patch 和 thread message patch DTO 都必须保持
 core-only，不包含 `awiki-me` presentation overlay 字段或 App domain DTO。

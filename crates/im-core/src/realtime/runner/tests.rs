@@ -284,6 +284,65 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
 }
 
 #[tokio::test]
+async fn realtime_async_local_state_projector_emits_committed_message_patches() {
+    let fixture = TestClientFixture::new("async-local-state-patches");
+    let client = fixture.client();
+    let (conversation_patches, thread_patches) = watch_direct_realtime_patches(&client).await;
+
+    project_realtime_message_received_async(&client, &direct_message_event(client.did().as_str()))
+        .await
+        .unwrap();
+
+    assert_realtime_direct_patches(conversation_patches, thread_patches).await;
+}
+
+#[tokio::test]
+async fn realtime_async_local_state_projector_does_not_emit_patch_without_projection() {
+    let fixture = TestClientFixture::new("async-local-state-no-projection");
+    let client = fixture.client();
+    let (mut conversation_patches, mut thread_patches) =
+        watch_direct_realtime_patches(&client).await;
+    let mut event = direct_message_event(client.did().as_str());
+    event.message.id = serde_json::from_value(json!("")).unwrap();
+
+    project_realtime_message_received_async(&client, &event)
+        .await
+        .unwrap();
+
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            conversation_patches.next_patch(),
+        )
+        .await
+        .is_err(),
+        "no projection must not emit conversation patch"
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            thread_patches.next_patch(),
+        )
+        .await
+        .is_err(),
+        "no projection must not emit thread patch"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "blocking")]
+async fn realtime_blocking_local_state_projector_emits_committed_message_patches() {
+    let fixture = TestClientFixture::new("blocking-local-state-patches");
+    let client = fixture.client();
+    let (conversation_patches, thread_patches) = watch_direct_realtime_patches(&client).await;
+
+    project_realtime_message_received(&client, &direct_message_event(client.did().as_str()))
+        .unwrap();
+
+    assert_realtime_direct_patches(conversation_patches, thread_patches).await;
+}
+
+#[tokio::test]
 async fn realtime_async_projector_uses_actor_cas_for_direct_cipher() {
     let fixture = TestClientFixture::new("async-direct-cipher");
     fixture.write_identity("did:example:alice", "test-key", "test-key");
@@ -711,6 +770,101 @@ impl RealtimeNotificationProjector for FixedProjector {
             additional_events: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+}
+
+async fn watch_direct_realtime_patches(
+    client: &crate::core::ImClient,
+) -> (
+    crate::messages::ConversationPatchSession,
+    crate::messages::ThreadMessagePatchSession,
+) {
+    let mut conversation_patches = client.messages().watch_conversation_patches().unwrap();
+    let mut thread_patches = client
+        .messages()
+        .watch_thread_patches(
+            crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "awiki.info").unwrap(),
+            ),
+            Some(100),
+        )
+        .unwrap();
+    assert!(matches!(
+        conversation_patches.next_patch().await,
+        Some(crate::messages::ConversationStorePatch::Reset { .. })
+    ));
+    assert!(matches!(
+        thread_patches.next_patch().await,
+        Some(crate::messages::ThreadMessageStorePatch::Reset { .. })
+    ));
+    (conversation_patches, thread_patches)
+}
+
+async fn assert_realtime_direct_patches(
+    mut conversation_patches: crate::messages::ConversationPatchSession,
+    mut thread_patches: crate::messages::ThreadMessagePatchSession,
+) {
+    let conversation_patch = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        conversation_patches.next_patch(),
+    )
+    .await
+    .expect("conversation patch emitted")
+    .expect("conversation patch stream open");
+    match conversation_patch {
+        crate::messages::ConversationStorePatch::Upsert {
+            owner_identity_id,
+            owner_did,
+            item,
+            ..
+        } => {
+            assert_eq!(owner_identity_id, "alice");
+            assert_eq!(owner_did, "did:example:alice");
+            assert_eq!(item.thread_kind, "direct");
+            assert_eq!(item.thread_id, "did:example:bob");
+            let last_message = item.last_message.expect("last message projected");
+            assert_eq!(last_message.id, "msg-direct-1");
+            assert_eq!(
+                last_message.body.text.as_deref(),
+                Some("hello from realtime")
+            );
+            assert_eq!(item.unread_count, 1);
+        }
+        other => panic!("expected realtime conversation upsert patch, got {other:?}"),
+    }
+
+    let thread_patch = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        thread_patches.next_patch(),
+    )
+    .await
+    .expect("thread patch emitted")
+    .expect("thread patch stream open");
+    match thread_patch {
+        crate::messages::ThreadMessageStorePatch::Upsert {
+            owner_identity_id,
+            owner_did,
+            thread_kind,
+            thread_id,
+            message,
+            index,
+            ..
+        } => {
+            assert_eq!(owner_identity_id, "alice");
+            assert_eq!(owner_did, "did:example:alice");
+            assert_eq!(thread_kind, "direct");
+            assert_eq!(thread_id, "did:example:bob");
+            assert_eq!(index, 0);
+            assert_eq!(message.id.as_str(), "msg-direct-1");
+            assert_eq!(
+                message.body,
+                crate::messages::MessageBodyView::Text {
+                    text: "hello from realtime".to_owned(),
+                    kind: crate::messages::MessageKind::Text,
+                }
+            );
+        }
+        other => panic!("expected realtime thread upsert patch, got {other:?}"),
     }
 }
 

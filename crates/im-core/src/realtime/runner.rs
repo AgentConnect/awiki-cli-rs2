@@ -683,6 +683,7 @@ fn project_realtime_message_received(
         },
         &group_did,
     )?;
+    client.emit_committed_local_message_projection("realtime_incoming");
     Ok(())
 }
 
@@ -733,6 +734,7 @@ async fn project_realtime_message_received_async(
     ) {
         db.upsert_contact(record).await?;
     }
+    client.emit_committed_local_message_projection("realtime_incoming");
     Ok(())
 }
 

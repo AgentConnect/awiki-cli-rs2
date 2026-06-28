@@ -191,6 +191,7 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 - `messages.watch_thread_patches(thread, limit)` / Dart `client.messages.watchThreadPatches(thread, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened thread.
 - `messages.repair_thread_store(thread, limit)` / Dart `client.messages.repairThreadStore(thread, limit: ...)` returns a reset/repair patch for the thread message runtime store.
 - Patch notifications are emitted only after the underlying local projection commit succeeds; `snapshot_required=true` or failed sync apply must not emit an authoritative patch.
+- Realtime incoming messages follow the same committed-projection rule: a WebSocket hint or decoded event is not authoritative by itself, but once its message projection is committed to SQLite, `im-core` emits conversation and thread patches for active subscribers.
 
 The public APIs currently live under `messages()` / `client.messages` for compatibility with the existing SDK grouping. A future `conversations()` / `client.conversations` namespace may wrap the same core store, but both names must not expose divergent DTOs or ownership semantics.
 
@@ -241,6 +242,9 @@ top-level WebSocket `sync` member. The hint is scheduling metadata for
 duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
 Realtime projection is allowed to keep the UI fresh, but receiving a realtime
 hint or applying a realtime projection does not advance the reliable checkpoint.
+If a realtime incoming message cannot be projected or its local SQLite write
+fails, it must not emit an authoritative conversation/thread patch; the next
+reliable sync or repair path remains responsible for convergence.
 
 Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 

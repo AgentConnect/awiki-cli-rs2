@@ -106,7 +106,10 @@ succeeds. `repairConversationStore` returns a reset/repair patch after lag,
 overflow, stream close, or version gaps. `watchThreadPatches` and
 `repairThreadStore` expose the same committed-projection rule for an opened
 thread message window; remote history best-effort pages or realtime hints must
-not become authoritative thread patches before persistence succeeds.
+not become authoritative thread patches before persistence succeeds. A
+realtime incoming message becomes patch-visible only after `im-core` has
+committed its SQLite local projection; failed or skipped realtime projection
+does not emit an authoritative conversation/thread patch.
 
 These APIs currently live under `client.messages` for SDK compatibility. If a
 future `client.conversations` namespace is added, it must wrap the same core
@@ -222,6 +225,9 @@ Realtime integration:
   detection.
 - Receiving a realtime hint or successfully projecting a realtime notification must
   not advance the reliable checkpoint.
+- Successfully projecting a realtime incoming message to local SQLite does emit
+  committed conversation/thread patches for active subscribers; the hint alone
+  is never an authoritative patch source.
 
 The SDK must not add public APIs named `loadGlobalCheckpoint`, `storeGlobalCheckpoint`,
 `setGlobalCheckpoint`, or equivalents. Any checkpoint inspection needed for debugging
