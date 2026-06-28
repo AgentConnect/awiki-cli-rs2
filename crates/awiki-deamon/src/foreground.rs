@@ -13,7 +13,7 @@ use im_core::ids::{MessageId, ThreadId};
 use im_core::messages::{
     parse_message_mention_payload, InboxQuery, InboxScope, Message, MessageBodyView,
     MessageDeliveryOptions, MessageDirection, MessageMention, MessageMentionPayload,
-    MessageMentionRole, MessageMentionTarget, ThreadRef,
+    MessageMentionRole, MessageMentionTarget, SyncThreadAfterRequest, ThreadRef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -89,8 +89,9 @@ use outbox::{
 use outbox::{ControllerOutboxCall, ControllerOutboxRecorder};
 use queue_scheduler::{QueueKind, QueueScheduler, QueueSchedulerNotifier};
 use runtime_realtime::{
-    realtime_exit_reason_name, realtime_status_detail, DaemonRealtimeEvent,
-    RuntimeRealtimeNotification, RuntimeRealtimeSupervisor,
+    realtime_exit_reason_name, realtime_status_detail, run_realtime_sync_delta,
+    DaemonRealtimeEvent, RuntimeRealtimeNotification, RuntimeRealtimeSupervisor,
+    RuntimeRealtimeSyncCoordinator, RuntimeRealtimeSyncWork,
 };
 use runtime_support::UdsTestRuntimePlugin;
 use state_root_owner::StateRootOwnerGuard;
@@ -281,6 +282,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
     let registration = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
     let mut realtime_supervisor =
         RuntimeRealtimeSupervisor::start(config.clone(), state.clone(), im_core.clone()).await?;
+    let mut realtime_sync = RuntimeRealtimeSyncCoordinator::new();
     let mut runtime_inbox_reconciliation =
         tokio::time::interval(runtime_inbox_reconciliation_interval(&options));
     runtime_inbox_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -319,6 +321,7 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                         &hermes_gateway,
                         &registration,
                         &mut realtime_supervisor,
+                        &mut realtime_sync,
                         &mut processed,
                         notification,
                     )
@@ -337,6 +340,23 @@ pub async fn run_foreground(options: ForegroundOptions) -> Result<ForegroundRunS
                     process_user_delegated_inbox_once(&config, &state, &im_core, hermes_gateway.clone())?;
                 processed_messages += newly_processed + delegated_processed;
                 if newly_processed + delegated_processed > 0 {
+                    queue_notifier.notify_all();
+                }
+            }
+            _ = tokio::time::sleep(realtime_sync.next_due_delay()) => {
+                let newly_processed = process_due_realtime_sync_work(
+                    &config,
+                    &state,
+                    &im_core,
+                    &hermes_gateway,
+                    &registration,
+                    &realtime_supervisor,
+                    &mut realtime_sync,
+                    &mut processed,
+                )
+                .await?;
+                processed_messages += newly_processed;
+                if newly_processed > 0 {
                     queue_notifier.notify_all();
                 }
             }
@@ -400,6 +420,7 @@ async fn handle_realtime_notification(
     hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     realtime_supervisor: &mut RuntimeRealtimeSupervisor,
+    realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
     processed: &mut HashSet<String>,
     notification: RuntimeRealtimeNotification,
 ) -> Result<usize> {
@@ -412,12 +433,14 @@ async fn handle_realtime_notification(
                 hermes_gateway,
                 registration,
                 realtime_supervisor,
+                realtime_sync,
                 processed,
                 event,
             )
             .await
         }
         RuntimeRealtimeNotification::SessionStatus { source, status } => {
+            realtime_sync.mark_connection_state(&source, status.state.clone());
             state.insert_audit_event_json(
                 "daemon.realtime.session.status",
                 Some(&source.agent_did),
@@ -436,6 +459,7 @@ async fn handle_realtime_notification(
             reason,
             warnings,
         } => {
+            realtime_sync.mark_session_ended(&source);
             realtime_supervisor.remove_ended_session(&source).await;
             state.insert_audit_event_json(
                 "daemon.realtime.session.ended",
@@ -461,11 +485,43 @@ async fn process_realtime_event(
     hermes_gateway: &StdioHermesGateway,
     registration: &UserServiceAgentRegistrationClient,
     realtime_supervisor: &RuntimeRealtimeSupervisor,
+    realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
     processed: &mut HashSet<String>,
     event: DaemonRealtimeEvent,
 ) -> Result<usize> {
+    if event.channel_pressure {
+        realtime_sync.mark_channel_pressure(&event.source);
+    }
     match event.event {
         im_core::realtime::ImEvent::MessageReceived(message_event) => {
+            let is_group_event = is_group_message(&message_event.message);
+            let thread_hint = Some(message_event.message.thread.clone());
+            let group_hint = if is_group_event {
+                message_event.message.group.clone().or_else(|| {
+                    match &message_event.message.thread {
+                        ThreadRef::Group(group) => Some(group.clone()),
+                        _ => None,
+                    }
+                })
+            } else {
+                None
+            };
+            realtime_sync.mark_sync_hint(
+                &event.source,
+                message_event.sync.as_ref(),
+                thread_hint,
+                group_hint.clone(),
+            );
+            if is_group_event {
+                if let Some(group) = group_hint {
+                    realtime_sync.mark_targeted_context(
+                        &event.source,
+                        ThreadRef::Group(group.clone()),
+                        Some(group),
+                    );
+                }
+                return Ok(0);
+            }
             let Some(client) = realtime_supervisor.client_for_source(&event.source) else {
                 state.insert_audit_event_json(
                     "daemon.realtime.message.stale_source",
@@ -478,11 +534,6 @@ async fn process_realtime_event(
                 return Ok(0);
             };
             let message = message_event.message;
-            let group_history = if is_group_message(&message) {
-                Some(vec![message.clone()])
-            } else {
-                None
-            };
             let routed = process_runtime_inbox_message(
                 config,
                 state,
@@ -493,13 +544,14 @@ async fn process_realtime_event(
                 &event.source.agent_did,
                 &message,
                 processed,
-                group_history.as_deref(),
+                None,
             )
             .await?
             .unwrap_or(false);
             Ok(usize::from(routed))
         }
         im_core::realtime::ImEvent::ConnectionStateChanged(changed) => {
+            realtime_sync.mark_connection_state(&event.source, changed.state.clone());
             state.insert_audit_event_json(
                 "daemon.realtime.connection_state",
                 Some(&event.source.agent_did),
@@ -515,6 +567,16 @@ async fn process_realtime_event(
             Ok(0)
         }
         im_core::realtime::ImEvent::MessageUpdated(updated) => {
+            let group_hint = match &updated.thread {
+                ThreadRef::Group(group) => Some(group.clone()),
+                _ => None,
+            };
+            realtime_sync.mark_sync_hint(
+                &event.source,
+                updated.sync.as_ref(),
+                Some(updated.thread.clone()),
+                group_hint,
+            );
             state.insert_audit_event_json(
                 "daemon.realtime.message.updated",
                 Some(&event.source.agent_did),
@@ -530,6 +592,12 @@ async fn process_realtime_event(
             Ok(0)
         }
         im_core::realtime::ImEvent::GroupUpdated(updated) => {
+            realtime_sync.mark_sync_hint(
+                &event.source,
+                updated.sync.as_ref(),
+                Some(ThreadRef::Group(updated.group.clone())),
+                Some(updated.group.clone()),
+            );
             state.insert_audit_event_json(
                 "daemon.realtime.group.updated",
                 Some(&event.source.agent_did),
@@ -544,9 +612,25 @@ async fn process_realtime_event(
             )?;
             Ok(0)
         }
+        im_core::realtime::ImEvent::UnknownNotification(notification) => {
+            realtime_sync.mark_unknown_notification(&event.source, notification.sync.as_ref());
+            state.insert_audit_event_json(
+                "daemon.realtime.notification.ignored",
+                Some(&event.source.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "source": event.source.detail_json(),
+                    "notification_type": notification.notification_type,
+                    "reason": sanitize_error_message(&notification.reason),
+                    "has_sync_hint": notification.sync.is_some(),
+                }),
+            )?;
+            Ok(0)
+        }
         im_core::realtime::ImEvent::LocalNotification(_)
-        | im_core::realtime::ImEvent::HostNotification(_)
-        | im_core::realtime::ImEvent::UnknownNotification(_) => {
+        | im_core::realtime::ImEvent::HostNotification(_) => {
             state.insert_audit_event_json(
                 "daemon.realtime.notification.ignored",
                 Some(&event.source.agent_did),
@@ -558,6 +642,271 @@ async fn process_realtime_event(
             Ok(0)
         }
     }
+}
+
+async fn process_due_realtime_sync_work(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    realtime_supervisor: &RuntimeRealtimeSupervisor,
+    realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
+    processed: &mut HashSet<String>,
+) -> Result<usize> {
+    let mut processed_count = 0usize;
+    let due_work = realtime_sync.take_due_work();
+    for work in due_work {
+        processed_count += process_realtime_sync_work(
+            config,
+            state,
+            im_core,
+            hermes_gateway,
+            registration,
+            realtime_supervisor,
+            realtime_sync,
+            processed,
+            work,
+        )
+        .await?;
+    }
+    Ok(processed_count)
+}
+
+async fn process_realtime_sync_work(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    realtime_supervisor: &RuntimeRealtimeSupervisor,
+    realtime_sync: &mut RuntimeRealtimeSyncCoordinator,
+    processed: &mut HashSet<String>,
+    work: RuntimeRealtimeSyncWork,
+) -> Result<usize> {
+    let client = match realtime_work_client(config, state, im_core, realtime_supervisor, &work) {
+        Ok(Some(client)) => client,
+        Ok(None) => {
+            state.insert_audit_event_json(
+                "daemon.realtime.sync.client_missing",
+                Some(&work.agent_did),
+                None,
+                None,
+                None,
+                json!({ "reasons": work.reasons }),
+            )?;
+            realtime_sync.mark_work_retry(&work);
+            return Ok(0);
+        }
+        Err(error) => {
+            record_realtime_sync_error(state, "daemon.realtime.sync.client_failed", &work, &error)?;
+            realtime_sync.mark_work_retry(&work);
+            return Ok(0);
+        }
+    };
+
+    state.insert_audit_event_json(
+        "daemon.realtime.sync.started",
+        Some(&work.agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "source": work.source.as_ref().map(|source| source.detail_json()),
+            "reasons": work.reasons,
+            "degraded_poll": work.degraded_poll,
+            "group_count": work.groups.len(),
+        }),
+    )?;
+
+    match run_realtime_sync_delta(&client, &work).await {
+        Ok(result) if result.snapshot_required => {
+            realtime_sync.mark_snapshot_required(&work);
+            state.insert_audit_event_json(
+                "daemon.realtime.sync.snapshot_required",
+                Some(&work.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "reasons": work.reasons,
+                    "pages_fetched": result.pages_fetched,
+                    "events_applied": result.events_applied,
+                    "retention_floor_event_seq": result.retention_floor_event_seq,
+                    "warnings": sanitize_warning_list(&result.warnings),
+                }),
+            )?;
+            Ok(0)
+        }
+        Ok(result) => {
+            state.insert_audit_event_json(
+                "daemon.realtime.sync.completed",
+                Some(&work.agent_did),
+                None,
+                None,
+                None,
+                json!({
+                    "reasons": work.reasons,
+                    "pages_fetched": result.pages_fetched,
+                    "events_applied": result.events_applied,
+                    "last_applied_event_seq": result.last_applied_event_seq,
+                    "has_more": result.has_more,
+                    "warnings": sanitize_warning_list(&result.warnings),
+                    "dirty_agent_count": realtime_sync.dirty_agent_count(),
+                }),
+            )?;
+            let mut processed_count = 0usize;
+            for thread in &work.threads {
+                match process_targeted_thread_after_once(
+                    config,
+                    state,
+                    im_core,
+                    hermes_gateway,
+                    registration,
+                    &client,
+                    &work.agent_did,
+                    thread,
+                    processed,
+                )
+                .await
+                {
+                    Ok(count) => processed_count += count,
+                    Err(error) => {
+                        record_realtime_sync_error(
+                            state,
+                            "daemon.realtime.thread_after.failed",
+                            &work,
+                            &error,
+                        )?;
+                        realtime_sync.mark_work_retry(&work);
+                    }
+                }
+            }
+            for group in &work.groups {
+                match process_targeted_group_inbox_once(
+                    config,
+                    state,
+                    im_core,
+                    hermes_gateway,
+                    registration,
+                    &client,
+                    &work.agent_did,
+                    group,
+                    processed,
+                )
+                .await
+                {
+                    Ok(count) => processed_count += count,
+                    Err(error) => {
+                        record_realtime_sync_error(
+                            state,
+                            "daemon.realtime.group_fallback.failed",
+                            &work,
+                            &error,
+                        )?;
+                    }
+                }
+            }
+            if work.degraded_poll {
+                match state
+                    .load_agent_definition(&work.agent_did)
+                    .with_context(|| format!("load degraded fallback agent {}", work.agent_did))
+                {
+                    Ok(agent) => {
+                        match process_agent_runtime_inbox_once(
+                            config,
+                            state,
+                            im_core,
+                            hermes_gateway,
+                            registration,
+                            &agent,
+                            processed,
+                        )
+                        .await
+                        {
+                            Ok(count) => processed_count += count,
+                            Err(error) => {
+                                record_realtime_sync_error(
+                                    state,
+                                    "daemon.realtime.degraded_poll.failed",
+                                    &work,
+                                    &error,
+                                )?;
+                                realtime_sync.mark_work_retry(&work);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        record_realtime_sync_error(
+                            state,
+                            "daemon.realtime.degraded_poll.agent_failed",
+                            &work,
+                            &error,
+                        )?;
+                        realtime_sync.mark_work_retry(&work);
+                    }
+                }
+            }
+            Ok(processed_count)
+        }
+        Err(error) => {
+            record_realtime_sync_error(state, "daemon.realtime.sync.failed", &work, &error)?;
+            realtime_sync.mark_work_retry(&work);
+            Ok(0)
+        }
+    }
+}
+
+fn realtime_work_client(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    realtime_supervisor: &RuntimeRealtimeSupervisor,
+    work: &RuntimeRealtimeSyncWork,
+) -> Result<Option<im_core::ImClient>> {
+    if let Some(client) = work
+        .source
+        .as_ref()
+        .and_then(|source| realtime_supervisor.client_for_source(source))
+    {
+        return Ok(Some(client));
+    }
+    let agent = state.load_agent_definition(&work.agent_did)?;
+    if agent.status != "active" {
+        return Ok(None);
+    }
+    let identity = state.load_agent_identity(&work.agent_did)?;
+    let jwt_token = state.load_agent_auth_token(&work.agent_did)?;
+    im_core
+        .client_for_agent_identity(config, &identity, jwt_token.as_deref())
+        .map(Some)
+}
+
+fn record_realtime_sync_error(
+    state: &DaemonState,
+    event_type: &str,
+    work: &RuntimeRealtimeSyncWork,
+    error: &dyn std::fmt::Display,
+) -> Result<()> {
+    state.insert_audit_event_json(
+        event_type,
+        Some(&work.agent_did),
+        None,
+        None,
+        None,
+        json!({
+            "reasons": work.reasons,
+            "degraded_poll": work.degraded_poll,
+            "error": sanitize_error_message(&error.to_string()),
+        }),
+    )
+}
+
+fn sanitize_warning_list(warnings: &[String]) -> Vec<String> {
+    warnings
+        .iter()
+        .map(|warning| sanitize_error_message(warning))
+        .collect()
 }
 
 #[cfg(test)]
@@ -605,98 +954,85 @@ async fn process_inbox_once(
     let registration = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
     let mut processed_count = 0usize;
     for agent in agents {
-        let identity = match state.load_agent_identity(&agent.agent_did) {
-            Ok(identity) => identity,
+        match process_agent_runtime_inbox_once(
+            config,
+            state,
+            im_core,
+            hermes_gateway,
+            &registration,
+            &agent,
+            processed,
+        )
+        .await
+        {
+            Ok(count) => processed_count += count,
             Err(error) => {
                 record_runtime_inbox_poll_error(
                     state,
-                    "daemon.runtime_inbox.agent_identity.failed",
+                    "daemon.runtime_inbox.agent_poll.failed",
                     &agent.agent_did,
                     error,
                 );
-                continue;
             }
-        };
-        let jwt_token = match state.load_agent_auth_token(&agent.agent_did) {
-            Ok(token) => token,
-            Err(error) => {
-                record_runtime_inbox_poll_error(
-                    state,
-                    "daemon.runtime_inbox.agent_token.failed",
-                    &agent.agent_did,
-                    error,
-                );
-                continue;
-            }
-        };
-        let client =
-            match im_core.client_for_agent_identity(config, &identity, jwt_token.as_deref()) {
-                Ok(client) => client,
-                Err(error) => {
-                    record_runtime_inbox_poll_error(
-                        state,
-                        "daemon.runtime_inbox.client.failed",
-                        &agent.agent_did,
-                        error,
-                    );
-                    continue;
-                }
-            };
-        if let Err(error) = ensure_agent_messaging_session(&client, &agent.agent_did).await {
-            record_runtime_inbox_poll_error(
-                state,
-                "daemon.runtime_inbox.session.failed",
-                &agent.agent_did,
-                error,
-            );
-            continue;
         }
-        for poll_scope in runtime_agent_inbox_poll_scopes() {
-            match poll_scope {
-                RuntimeInboxPollScope::Direct => {
-                    match process_agent_direct_inbox_once(
-                        config,
-                        state,
-                        im_core,
-                        hermes_gateway,
-                        &registration,
-                        &client,
-                        &agent.agent_did,
-                        processed,
-                    )
-                    .await
-                    {
-                        Ok(count) => processed_count += count,
-                        Err(error) => record_runtime_inbox_poll_error(
-                            state,
-                            "daemon.direct_inbox.poll.failed",
-                            &agent.agent_did,
-                            error,
-                        ),
-                    }
-                }
-                RuntimeInboxPollScope::Group => {
-                    match process_agent_group_inbox_once(
-                        config,
-                        state,
-                        im_core,
-                        hermes_gateway,
-                        &registration,
-                        &client,
-                        &agent.agent_did,
-                        processed,
-                    )
-                    .await
-                    {
-                        Ok(count) => processed_count += count,
-                        Err(error) => record_runtime_inbox_poll_error(
-                            state,
-                            "daemon.group_inbox.poll.failed",
-                            &agent.agent_did,
-                            error,
-                        ),
-                    }
-                }
+    }
+    Ok(processed_count)
+}
+
+async fn process_agent_runtime_inbox_once(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    agent: &crate::agent::AgentDefinition,
+    processed: &mut HashSet<String>,
+) -> Result<usize> {
+    let identity = state
+        .load_agent_identity(&agent.agent_did)
+        .with_context(|| format!("load runtime inbox identity for agent {}", agent.agent_did))?;
+    let jwt_token = state
+        .load_agent_auth_token(&agent.agent_did)
+        .with_context(|| {
+            format!(
+                "load runtime inbox auth token for agent {}",
+                agent.agent_did
+            )
+        })?;
+    let client = im_core
+        .client_for_agent_identity(config, &identity, jwt_token.as_deref())
+        .with_context(|| format!("create runtime inbox client for agent {}", agent.agent_did))?;
+    ensure_agent_messaging_session(&client, &agent.agent_did)
+        .await
+        .with_context(|| format!("ensure messaging session for agent {}", agent.agent_did))?;
+    let mut processed_count = 0usize;
+    for poll_scope in runtime_agent_inbox_poll_scopes() {
+        match poll_scope {
+            RuntimeInboxPollScope::Direct => {
+                processed_count += process_agent_direct_inbox_once(
+                    config,
+                    state,
+                    im_core,
+                    hermes_gateway,
+                    registration,
+                    &client,
+                    &agent.agent_did,
+                    processed,
+                )
+                .await?;
+            }
+            RuntimeInboxPollScope::Group => {
+                processed_count += process_agent_group_inbox_once(
+                    config,
+                    state,
+                    im_core,
+                    hermes_gateway,
+                    registration,
+                    &client,
+                    &agent.agent_did,
+                    processed,
+                )
+                .await?;
             }
         }
     }
@@ -814,6 +1150,114 @@ async fn process_agent_group_inbox_once(
         }
     }
     Ok(processed_count)
+}
+
+async fn process_targeted_group_inbox_once(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    client: &im_core::ImClient,
+    agent_did: &str,
+    group: &im_core::ids::GroupRef,
+    processed: &mut HashSet<String>,
+) -> Result<usize> {
+    let messages = client
+        .groups()
+        .messages_async(im_core::groups::GroupMessagesRequest {
+            group: group.clone(),
+            limit: im_core::ids::PageLimit::new(GROUP_CONTEXT_FETCH_LIMIT)?,
+            cursor: None,
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "targeted realtime group fallback for agent {agent_did} group {}",
+                group.as_str()
+            )
+        })?;
+    let group_history = messages.messages.items;
+    let mut processed_count = 0usize;
+    for message in group_history.iter().rev() {
+        if process_runtime_inbox_message(
+            config,
+            state,
+            im_core,
+            hermes_gateway,
+            registration,
+            client,
+            agent_did,
+            message,
+            processed,
+            Some(group_history.as_slice()),
+        )
+        .await?
+        .unwrap_or(false)
+        {
+            processed_count += 1;
+        }
+    }
+    Ok(processed_count)
+}
+
+async fn process_targeted_thread_after_once(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    im_core: &ImCoreAdapter,
+    hermes_gateway: &StdioHermesGateway,
+    registration: &UserServiceAgentRegistrationClient,
+    client: &im_core::ImClient,
+    agent_did: &str,
+    thread: &ThreadRef,
+    processed: &mut HashSet<String>,
+) -> Result<usize> {
+    let result = client
+        .messages()
+        .sync_thread_after_async(SyncThreadAfterRequest {
+            thread: thread.clone(),
+            after_server_seq: None,
+            limit: Some(GROUP_CONTEXT_FETCH_LIMIT),
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "targeted realtime thread-after for agent {agent_did} thread {}",
+                thread_ref_audit_label(thread)
+            )
+        })?;
+    if matches!(thread, ThreadRef::Group(_)) {
+        return Ok(0);
+    }
+    let mut processed_count = 0usize;
+    for message in &result.messages {
+        if process_runtime_inbox_message(
+            config,
+            state,
+            im_core,
+            hermes_gateway,
+            registration,
+            client,
+            agent_did,
+            message,
+            processed,
+            None,
+        )
+        .await?
+        .unwrap_or(false)
+        {
+            processed_count += 1;
+        }
+    }
+    Ok(processed_count)
+}
+
+fn thread_ref_audit_label(thread: &ThreadRef) -> String {
+    match thread {
+        ThreadRef::Direct(peer) => format!("direct:{}", peer.as_str()),
+        ThreadRef::Group(group) => format!("group:{}", group.as_str()),
+        ThreadRef::Thread(thread_id) => format!("thread:{}", thread_id.as_str()),
+    }
 }
 
 async fn process_runtime_inbox_message(

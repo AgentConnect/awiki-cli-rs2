@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use im_core::messages::SyncDeltaRequest;
 use im_core::realtime::{
     ImEvent, RealtimeConnectionState, RealtimeEventStream, RealtimeExitReason, RealtimeOptions,
-    RealtimeSession, RealtimeStatus,
+    RealtimeSession, RealtimeStatus, RealtimeSyncHint,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -17,6 +18,10 @@ use crate::{DaemonConfig, DaemonState, ImCoreAdapter};
 
 const REALTIME_EVENT_CHANNEL_CAPACITY: usize = 256;
 const SESSION_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+const RELIABLE_SYNC_DEBOUNCE: Duration = Duration::from_millis(250);
+const RELIABLE_SYNC_RETRY_BASE: Duration = Duration::from_secs(5);
+const RELIABLE_SYNC_RETRY_MAX: Duration = Duration::from_secs(60);
+pub(super) const DEGRADED_POLL_FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RealtimeEndpointKind {
@@ -53,6 +58,7 @@ impl RealtimeSource {
 pub(super) struct DaemonRealtimeEvent {
     pub(super) source: RealtimeSource,
     pub(super) event: ImEvent,
+    pub(super) channel_pressure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +285,336 @@ impl RuntimeRealtimeSupervisor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RealtimeDirtyReason {
+    SyncHint,
+    GapDetected,
+    TargetedContext,
+    Reconnected,
+    Disconnected,
+    UnknownNotification,
+    SessionEnded,
+    ChannelPressure,
+}
+
+impl RealtimeDirtyReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SyncHint => "sync_hint",
+            Self::GapDetected => "gap_detected",
+            Self::TargetedContext => "targeted_context",
+            Self::Reconnected => "reconnected",
+            Self::Disconnected => "disconnected",
+            Self::UnknownNotification => "unknown_notification",
+            Self::SessionEnded => "session_ended",
+            Self::ChannelPressure => "channel_pressure",
+        }
+    }
+
+    fn requires_degraded_poll(self) -> bool {
+        matches!(
+            self,
+            Self::Disconnected
+                | Self::UnknownNotification
+                | Self::SessionEnded
+                | Self::ChannelPressure
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RuntimeRealtimeSyncWork {
+    pub(super) agent_did: String,
+    pub(super) source: Option<RealtimeSource>,
+    pub(super) reasons: Vec<&'static str>,
+    pub(super) degraded_poll: bool,
+    pub(super) threads: Vec<im_core::messages::ThreadRef>,
+    pub(super) groups: Vec<im_core::ids::GroupRef>,
+}
+
+#[derive(Debug, Clone)]
+struct DirtyAgentSync {
+    source: Option<RealtimeSource>,
+    reasons: HashSet<&'static str>,
+    threads: HashMap<String, im_core::messages::ThreadRef>,
+    groups: HashSet<im_core::ids::GroupRef>,
+    due_at: Instant,
+    attempt_count: u32,
+    degraded_poll: bool,
+    snapshot_required: bool,
+}
+
+impl DirtyAgentSync {
+    fn new(now: Instant, source: Option<RealtimeSource>) -> Self {
+        Self {
+            source,
+            reasons: HashSet::new(),
+            threads: HashMap::new(),
+            groups: HashSet::new(),
+            due_at: now + RELIABLE_SYNC_DEBOUNCE,
+            attempt_count: 0,
+            degraded_poll: false,
+            snapshot_required: false,
+        }
+    }
+}
+
+pub(super) struct RuntimeRealtimeSyncCoordinator {
+    dirty: HashMap<String, DirtyAgentSync>,
+}
+
+impl RuntimeRealtimeSyncCoordinator {
+    pub(super) fn new() -> Self {
+        Self {
+            dirty: HashMap::new(),
+        }
+    }
+
+    pub(super) fn mark_sync_hint(
+        &mut self,
+        source: &RealtimeSource,
+        hint: Option<&RealtimeSyncHint>,
+        thread: Option<im_core::messages::ThreadRef>,
+        group: Option<im_core::ids::GroupRef>,
+    ) {
+        let Some(hint) = hint else {
+            return;
+        };
+        if !hint.sync_dirty && !hint.gap_detected {
+            return;
+        }
+        self.mark_dirty(
+            source,
+            RealtimeDirtyReason::SyncHint,
+            thread.clone(),
+            group.clone(),
+        );
+        if hint.gap_detected {
+            self.mark_dirty(source, RealtimeDirtyReason::GapDetected, thread, group);
+        }
+    }
+
+    pub(super) fn mark_targeted_context(
+        &mut self,
+        source: &RealtimeSource,
+        thread: im_core::messages::ThreadRef,
+        group: Option<im_core::ids::GroupRef>,
+    ) {
+        self.mark_dirty(
+            source,
+            RealtimeDirtyReason::TargetedContext,
+            Some(thread),
+            group,
+        );
+    }
+
+    pub(super) fn mark_connection_state(
+        &mut self,
+        source: &RealtimeSource,
+        state: RealtimeConnectionState,
+    ) {
+        match state {
+            RealtimeConnectionState::Connected => {
+                self.mark_dirty(source, RealtimeDirtyReason::Reconnected, None, None);
+            }
+            RealtimeConnectionState::Disconnected | RealtimeConnectionState::Closed => {
+                self.mark_dirty(source, RealtimeDirtyReason::Disconnected, None, None);
+            }
+            RealtimeConnectionState::Connecting | RealtimeConnectionState::Reconnecting => {}
+        }
+    }
+
+    pub(super) fn mark_unknown_notification(
+        &mut self,
+        source: &RealtimeSource,
+        hint: Option<&RealtimeSyncHint>,
+    ) {
+        self.mark_dirty(source, RealtimeDirtyReason::UnknownNotification, None, None);
+        self.mark_sync_hint(source, hint, None, None);
+    }
+
+    pub(super) fn mark_session_ended(&mut self, source: &RealtimeSource) {
+        self.mark_dirty(source, RealtimeDirtyReason::SessionEnded, None, None);
+    }
+
+    pub(super) fn mark_channel_pressure(&mut self, source: &RealtimeSource) {
+        self.mark_dirty(source, RealtimeDirtyReason::ChannelPressure, None, None);
+    }
+
+    fn mark_dirty(
+        &mut self,
+        source: &RealtimeSource,
+        reason: RealtimeDirtyReason,
+        thread: Option<im_core::messages::ThreadRef>,
+        group: Option<im_core::ids::GroupRef>,
+    ) {
+        let now = Instant::now();
+        let entry = self
+            .dirty
+            .entry(source.agent_did.clone())
+            .or_insert_with(|| DirtyAgentSync::new(now, Some(source.clone())));
+        if entry.snapshot_required {
+            return;
+        }
+        entry.source = Some(source.clone());
+        let was_empty = entry.reasons.is_empty();
+        entry.reasons.insert(reason.as_str());
+        if let Some(thread) = thread {
+            entry.threads.insert(thread_ref_key(&thread), thread);
+        }
+        if let Some(group) = group {
+            entry.groups.insert(group);
+        }
+        if reason.requires_degraded_poll() {
+            entry.degraded_poll = true;
+        }
+        let retry_delay = sync_retry_delay_with_jitter(&source.agent_did, entry.attempt_count);
+        let next_due = now + RELIABLE_SYNC_DEBOUNCE.max(retry_delay);
+        if next_due < entry.due_at || was_empty {
+            entry.due_at = next_due;
+        }
+    }
+
+    pub(super) fn next_due_delay(&self) -> Duration {
+        let now = Instant::now();
+        self.dirty
+            .values()
+            .filter(|entry| !entry.snapshot_required)
+            .map(|entry| entry.due_at.saturating_duration_since(now))
+            .min()
+            .unwrap_or(DEGRADED_POLL_FALLBACK_INTERVAL)
+            .min(DEGRADED_POLL_FALLBACK_INTERVAL)
+    }
+
+    pub(super) fn take_due_work(&mut self) -> Vec<RuntimeRealtimeSyncWork> {
+        let now = Instant::now();
+        let due_agent_dids = self
+            .dirty
+            .iter()
+            .filter(|(_, entry)| !entry.snapshot_required && entry.due_at <= now)
+            .map(|(agent_did, _)| agent_did.clone())
+            .collect::<Vec<_>>();
+        due_agent_dids
+            .into_iter()
+            .filter_map(|agent_did| {
+                self.dirty
+                    .remove(&agent_did)
+                    .map(|entry| RuntimeRealtimeSyncWork {
+                        agent_did,
+                        source: entry.source,
+                        reasons: sorted_reasons(entry.reasons),
+                        degraded_poll: entry.degraded_poll,
+                        threads: sorted_threads(entry.threads),
+                        groups: entry.groups.into_iter().collect(),
+                    })
+            })
+            .collect()
+    }
+
+    pub(super) fn mark_work_retry(&mut self, work: &RuntimeRealtimeSyncWork) {
+        let now = Instant::now();
+        let entry = self
+            .dirty
+            .entry(work.agent_did.clone())
+            .or_insert_with(|| DirtyAgentSync::new(now, work.source.clone()));
+        entry.source = work.source.clone().or_else(|| entry.source.clone());
+        entry.attempt_count = entry.attempt_count.saturating_add(1);
+        entry.due_at = now + sync_retry_delay_with_jitter(&work.agent_did, entry.attempt_count);
+        entry.degraded_poll |= work.degraded_poll;
+        for reason in &work.reasons {
+            entry.reasons.insert(*reason);
+        }
+        for thread in &work.threads {
+            entry.threads.insert(thread_ref_key(thread), thread.clone());
+        }
+        for group in &work.groups {
+            entry.groups.insert(group.clone());
+        }
+    }
+
+    pub(super) fn mark_snapshot_required(&mut self, work: &RuntimeRealtimeSyncWork) {
+        let now = Instant::now();
+        let entry = self
+            .dirty
+            .entry(work.agent_did.clone())
+            .or_insert_with(|| DirtyAgentSync::new(now, work.source.clone()));
+        entry.snapshot_required = true;
+        entry.reasons.insert("snapshot_required");
+        entry.degraded_poll = false;
+    }
+
+    pub(super) fn dirty_agent_count(&self) -> usize {
+        self.dirty
+            .values()
+            .filter(|entry| !entry.snapshot_required)
+            .count()
+    }
+}
+
+pub(super) async fn run_realtime_sync_delta(
+    client: &im_core::ImClient,
+    work: &RuntimeRealtimeSyncWork,
+) -> im_core::ImResult<im_core::messages::SyncDeltaResult> {
+    client
+        .messages()
+        .sync_delta_async(SyncDeltaRequest {
+            limit: Some(100),
+            device_id: None,
+            reason: Some(format!("daemon_realtime:{}", work.reasons.join(","))),
+        })
+        .await
+}
+
+fn sync_retry_delay(attempt_count: u32) -> Duration {
+    if attempt_count == 0 {
+        return Duration::from_millis(0);
+    }
+    let shift = attempt_count.saturating_sub(1).min(4);
+    let multiplier = 1_u32.checked_shl(shift).unwrap_or(16);
+    (RELIABLE_SYNC_RETRY_BASE * multiplier).min(RELIABLE_SYNC_RETRY_MAX)
+}
+
+fn sync_retry_delay_with_jitter(agent_did: &str, attempt_count: u32) -> Duration {
+    let base = sync_retry_delay(attempt_count);
+    if attempt_count == 0 || base >= RELIABLE_SYNC_RETRY_MAX {
+        return base;
+    }
+    base + deterministic_retry_jitter(agent_did, attempt_count)
+}
+
+fn deterministic_retry_jitter(agent_did: &str, attempt_count: u32) -> Duration {
+    let mut hasher = Sha256::new();
+    hasher.update(agent_did.as_bytes());
+    hasher.update(attempt_count.to_le_bytes());
+    let digest = hasher.finalize();
+    let jitter_ms = u16::from_le_bytes([digest[0], digest[1]]) % 1_000;
+    Duration::from_millis(u64::from(jitter_ms))
+}
+
+fn sorted_reasons(reasons: HashSet<&'static str>) -> Vec<&'static str> {
+    let mut reasons = reasons.into_iter().collect::<Vec<_>>();
+    reasons.sort_unstable();
+    reasons
+}
+
+fn sorted_threads(
+    threads: HashMap<String, im_core::messages::ThreadRef>,
+) -> Vec<im_core::messages::ThreadRef> {
+    let mut threads = threads.into_iter().collect::<Vec<_>>();
+    threads.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    threads.into_iter().map(|(_, thread)| thread).collect()
+}
+
+fn thread_ref_key(thread: &im_core::messages::ThreadRef) -> String {
+    match thread {
+        im_core::messages::ThreadRef::Direct(peer) => format!("direct:{}", peer.as_str()),
+        im_core::messages::ThreadRef::Group(group) => format!("group:{}", group.as_str()),
+        im_core::messages::ThreadRef::Thread(thread_id) => {
+            format!("thread:{}", thread_id.as_str())
+        }
+    }
+}
+
 impl Drop for RuntimeRealtimeSupervisor {
     fn drop(&mut self) {
         for (_, session) in self.sessions.drain() {
@@ -401,10 +737,12 @@ async fn run_realtime_fan_in_loop(
                 let Some(event) = event else {
                     return RealtimeReaderExit::EventStreamClosed;
                 };
+                let channel_pressure = output.capacity() == 0;
                 if output
                     .send(RuntimeRealtimeNotification::Event(DaemonRealtimeEvent {
                         source: source.clone(),
                         event,
+                        channel_pressure,
                     }))
                     .await
                     .is_err()
@@ -560,6 +898,16 @@ mod tests {
         })
     }
 
+    fn sync_hint(gap_detected: bool) -> RealtimeSyncHint {
+        RealtimeSyncHint {
+            event_id: Some("evt-1".to_string()),
+            event_seq: Some("42".to_string()),
+            event_type: Some("message.created".to_string()),
+            sync_dirty: true,
+            gap_detected,
+        }
+    }
+
     fn status_receiver() -> watch::Receiver<RealtimeStatus> {
         let (_sender, receiver) = watch::channel(RealtimeStatus {
             connected: false,
@@ -568,6 +916,177 @@ mod tests {
             last_error: None,
         });
         receiver
+    }
+
+    #[test]
+    fn sync_coordinator_coalesces_sync_hint_and_gap_by_agent() {
+        let source = source("did:agent:a", 1);
+        let group = im_core::ids::GroupRef::parse("did:group:team").unwrap();
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_sync_hint(&source, Some(&sync_hint(false)), None, None);
+        coordinator.mark_sync_hint(
+            &source,
+            Some(&sync_hint(true)),
+            Some(im_core::messages::ThreadRef::Group(group.clone())),
+            Some(group.clone()),
+        );
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].agent_did, "did:agent:a");
+        assert_eq!(work[0].groups, vec![group]);
+        assert_eq!(work[0].reasons, vec!["gap_detected", "sync_hint"]);
+        assert!(!work[0].degraded_poll);
+    }
+
+    #[test]
+    fn sync_coordinator_marks_unknown_notification_for_degraded_fallback() {
+        let source = source("did:agent:a", 1);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_unknown_notification(&source, Some(&sync_hint(false)));
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reasons, vec!["sync_hint", "unknown_notification"]);
+        assert!(work[0].degraded_poll);
+    }
+
+    #[test]
+    fn sync_coordinator_marks_reconnect_without_degraded_poll() {
+        let source = source("did:agent:a", 1);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_connection_state(&source, RealtimeConnectionState::Connected);
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reasons, vec!["reconnected"]);
+        assert!(!work[0].degraded_poll);
+    }
+
+    #[test]
+    fn sync_coordinator_keeps_original_due_for_repeated_same_reason() {
+        let source = source("did:agent:a", 1);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_sync_hint(&source, Some(&sync_hint(false)), None, None);
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE / 2);
+        coordinator.mark_sync_hint(&source, Some(&sync_hint(false)), None, None);
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE / 2 + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reasons, vec!["sync_hint"]);
+    }
+
+    #[test]
+    fn sync_coordinator_tracks_targeted_threads_and_groups() {
+        let source = source("did:agent:a", 1);
+        let group = im_core::ids::GroupRef::parse("did:group:team").unwrap();
+        let direct = im_core::ids::PeerRef::parse("did:peer:alice", "").unwrap();
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_sync_hint(
+            &source,
+            Some(&sync_hint(false)),
+            Some(im_core::messages::ThreadRef::Direct(direct.clone())),
+            None,
+        );
+        coordinator.mark_sync_hint(
+            &source,
+            Some(&sync_hint(false)),
+            Some(im_core::messages::ThreadRef::Group(group.clone())),
+            Some(group.clone()),
+        );
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(
+            work[0].threads,
+            vec![
+                im_core::messages::ThreadRef::Direct(direct),
+                im_core::messages::ThreadRef::Group(group.clone()),
+            ]
+        );
+        assert_eq!(work[0].groups, vec![group]);
+    }
+
+    #[test]
+    fn sync_coordinator_tracks_targeted_context_without_sync_hint() {
+        let source = source("did:agent:a", 1);
+        let group = im_core::ids::GroupRef::parse("did:group:team").unwrap();
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+
+        coordinator.mark_targeted_context(
+            &source,
+            im_core::messages::ThreadRef::Group(group.clone()),
+            Some(group.clone()),
+        );
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work();
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reasons, vec!["targeted_context"]);
+        assert_eq!(
+            work[0].threads,
+            vec![im_core::messages::ThreadRef::Group(group.clone())]
+        );
+        assert_eq!(work[0].groups, vec![group]);
+        assert!(!work[0].degraded_poll);
+    }
+
+    #[test]
+    fn sync_coordinator_snapshot_required_blocks_future_due_work() {
+        let source = source("did:agent:a", 1);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+        coordinator.mark_session_ended(&source);
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work().pop().unwrap();
+        coordinator.mark_snapshot_required(&work);
+        coordinator.mark_sync_hint(&source, Some(&sync_hint(true)), None, None);
+
+        assert!(coordinator.take_due_work().is_empty());
+        assert_eq!(coordinator.dirty_agent_count(), 0);
+    }
+
+    #[test]
+    fn sync_coordinator_retry_uses_backoff_and_keeps_reasons() {
+        let source = source("did:agent:a", 1);
+        let mut coordinator = RuntimeRealtimeSyncCoordinator::new();
+        coordinator.mark_session_ended(&source);
+
+        std::thread::sleep(RELIABLE_SYNC_DEBOUNCE + Duration::from_millis(20));
+        let work = coordinator.take_due_work().pop().unwrap();
+        coordinator.mark_work_retry(&work);
+
+        assert!(coordinator.take_due_work().is_empty());
+        assert!(coordinator.next_due_delay() >= Duration::from_secs(4));
+        assert_eq!(coordinator.dirty_agent_count(), 1);
+    }
+
+    #[test]
+    fn sync_retry_delay_uses_deterministic_jitter() {
+        let retry_a = sync_retry_delay_with_jitter("did:agent:a", 1);
+        let retry_a_again = sync_retry_delay_with_jitter("did:agent:a", 1);
+        let retry_b = sync_retry_delay_with_jitter("did:agent:b", 1);
+
+        assert_eq!(retry_a, retry_a_again);
+        assert!(retry_a >= RELIABLE_SYNC_RETRY_BASE);
+        assert!(retry_a < RELIABLE_SYNC_RETRY_BASE + Duration::from_secs(1));
+        assert_ne!(retry_a, retry_b);
     }
 
     #[tokio::test]
@@ -681,6 +1200,7 @@ mod tests {
         let first = output_rx.recv().await.unwrap();
         match first {
             RuntimeRealtimeNotification::Event(event) => {
+                assert!(!event.channel_pressure);
                 assert_eq!(event.source.agent_did, "did:agent:a");
                 assert_eq!(event.source.generation, 1);
             }
@@ -689,6 +1209,7 @@ mod tests {
         let second = output_rx.recv().await.unwrap();
         match second {
             RuntimeRealtimeNotification::Event(event) => {
+                assert!(event.channel_pressure);
                 let im_core::realtime::ImEvent::MessageReceived(message) = event.event else {
                     panic!("expected message event");
                 };
