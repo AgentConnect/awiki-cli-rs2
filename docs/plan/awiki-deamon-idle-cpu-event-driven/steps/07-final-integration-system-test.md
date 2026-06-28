@@ -12,7 +12,7 @@ Step index：07
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T18:30:46+08:00 |
 | Completed | 2026-06-28T21:41:01+08:00 |
-| Commit | `adfa5f7` |
+| Commit | `3b11b7b` |
 | Review evidence | 已完成 Step 01-06 台账、shared SDK diff、安全/隐私、docs drift 和 daemon docs Review；未发现需要回到 Step 02-06 的代码问题。为满足 AGENTS 指定命令，已在 sibling `awiki-system-test` 提交 `5280bb5` 修复 remote `run-tests` 入口，并提交 `94a33a3` 适配远端 user-service `controller_handle` 契约与 read watermark 测试隔离；两个跨仓库提交均只影响系统测试仓库，不改 daemon、`im-core`、M-Code 或 message-service 业务代码。 |
 | Verification evidence | `cargo fmt --check`、`git diff --check`、`cargo test -p awiki-deamon --locked -j1`、`cargo test --workspace --locked -j1` 通过；idle 采样显示 I/O / mtime 下降但 CPU 受启动期影响不可直接证明下降；`awiki-system-test` focused helper tests 39 passed；agent-registration/read-watermark focused tests 11 passed；PostgreSQL 恢复后 `--last-failed -q -rs` 197 passed / 47 skipped；AGENTS 指定 remote full gate `AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awiki.info uv run python manage_local_test_env.py run-tests` 通过，197 passed / 47 skipped / 0 failed in 295.11s。 |
 | Next action | Step 07 已完成；提交 final docs commit 并回填 commit hash。 |
@@ -125,7 +125,7 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 - [x] 子仓库 docs 和 Harness docs 已更新，或记录检查过且无需更新的理由。
 - [x] 没有未授权 `im-core` public API、message-service 协议、state schema 或 secret handling 变更。
 - [x] Review 发现已经修复或明确记录。
-- [x] 如果 final 阶段修改文件，已创建聚焦 final integration commit：`adfa5f7`。
+- [x] 如果 final 阶段修改文件，已创建聚焦 final integration commit：`3b11b7b`。
 
 ## 8. 验证方式
 
@@ -160,7 +160,7 @@ cd awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote AWIKI_BASE_URL=https://awi
 | 并行安全是否仍成立 | no | final 串行。 |
 | Agent 是否越界修改 | reviewed | Step 07 为满足 AGENTS 指定命令修改了 sibling `awiki-system-test` 的测试入口并提交 `5280bb5`；为适配远端契约和隔离测试又提交 `94a33a3`。两个变更已记录到主 Plan 变更记录，不涉及 daemon、`im-core`、M-Code 或 message-service 业务代码。 |
 | 互斥资源是否被修改 | no | `crates/im-core` 无 diff；message-service protocol/state schema 未修改；foreground 代码未在 Step 07 修改。 |
-| 合并风险 | done | 当前 docs/plan 已记录 final pass，final docs commit 为 `adfa5f7`。 |
+| 合并风险 | done | 当前 docs/plan 已记录 final pass，final docs commit 为 `3b11b7b`。 |
 | Group gate 影响 | pass | Final remote full gate 已通过，Step 07 可标记 done。 |
 
 ## 10. Commit 要求
