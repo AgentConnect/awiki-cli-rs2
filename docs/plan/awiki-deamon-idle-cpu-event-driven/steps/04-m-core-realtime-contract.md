@@ -12,7 +12,7 @@ Step index：04
 | Branch | `feature/perf/cpu-youhua-jingmo-0628` |
 | Started | 2026-06-28T16:49:00+08:00 |
 | Completed | 2026-06-28T16:54:56+08:00 |
-| Commit | TBD |
+| Commit | `6e750ff` |
 | Review evidence | 当前 `im-core` public API 足够首版 daemon 多 WebSocket fan-in：daemon 使用 per-agent `RealtimeSession`，每个 session 只有一个 reader，source metadata 放在 daemon wrapper；不修改 `ImEvent`、DTO、feature gate 或 transport 默认语义。 |
 | Verification evidence | `git diff -- crates/im-core` 无输出；`cargo test -p im-core --locked realtime -j1` 通过；`cargo test -p im-core --locked sync -j1` 通过；原计划单命令 `cargo test -p im-core --locked realtime sync -j1` 已确认是非法 Cargo 命令形状并修正。 |
 | Next action | Step 05 可以启动：在 daemon 层实现 per-agent realtime supervisor 和统一事件 fan-in，不修改 `im-core` public API。 |
@@ -117,7 +117,7 @@ Step index：04
 - [x] 如果本步骤属于并行组，已记录 Agent、基线 commit、分支 / worktree 和合并门禁状态。
 - [x] 本步骤合并前的 Step gate 已通过，或已记录不能运行的具体原因和风险。
 - [x] Review 发现已经修复或明确记录。
-- [x] 本步骤在进入 Step 05 之前已经创建聚焦 commit；当前先完成文档 / 台账结论，commit hash 待提交后回填。
+- [x] 本步骤在进入 Step 05 之前已经创建聚焦 commit：`6e750ff`。
 
 ## 8. 验证方式
 
