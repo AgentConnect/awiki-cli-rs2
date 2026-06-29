@@ -847,7 +847,10 @@ fn direct_outgoing_result_record(
     peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
-    let (content_type, content) = body_projection(&sdk_result.message.body);
+    let (content_type, content) = body_projection(
+        &sdk_result.message.body,
+        sdk_result.message.metadata.content_type.as_deref(),
+    );
     let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
@@ -972,7 +975,10 @@ fn group_outgoing_result_record(
     group_did: &str,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
-    let (content_type, content) = body_projection(&sdk_result.message.body);
+    let (content_type, content) = body_projection(
+        &sdk_result.message.body,
+        sdk_result.message.metadata.content_type.as_deref(),
+    );
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -1350,7 +1356,8 @@ pub(crate) fn message_record_from_message(
     client: &crate::core::ImClient,
     message: &crate::messages::Message,
 ) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
-    let (content_type, content) = body_projection(&message.body);
+    let (content_type, content) =
+        body_projection(&message.body, message.metadata.content_type.as_deref());
     let direction = direction_value_for_message(client.did().as_str(), message);
     let conversation_id = conversation_id_for_message(client.did().as_str(), message);
     Ok(crate::internal::local_state::messages::MessageRecord {
@@ -1490,19 +1497,36 @@ fn metadata_bool_attribute(metadata: &crate::messages::MessageMetadata, key: &st
 }
 
 #[cfg(feature = "sqlite")]
-fn body_projection(body: &crate::messages::MessageBodyView) -> (String, String) {
+fn body_projection(
+    body: &crate::messages::MessageBodyView,
+    metadata_content_type: Option<&str>,
+) -> (String, String) {
     match body {
         crate::messages::MessageBodyView::Text { text, kind } => {
             (content_type_for_kind(kind).to_owned(), text.to_owned())
         }
         crate::messages::MessageBodyView::Payload { payload } => (
-            "application/json".to_owned(),
+            payload_content_type(metadata_content_type),
             serde_json::to_string(payload).unwrap_or_default(),
         ),
         crate::messages::MessageBodyView::Unsupported { content_type } => {
             (content_type.clone().unwrap_or_default(), String::new())
         }
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn payload_content_type(metadata_content_type: Option<&str>) -> String {
+    let Some(content_type) = metadata_content_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return "application/json".to_owned();
+    };
+    if content_type == crate::attachments::manifest::attachment_manifest_content_type() {
+        return content_type.to_owned();
+    }
+    "application/json".to_owned()
 }
 
 #[cfg(feature = "sqlite")]
@@ -1678,11 +1702,40 @@ mod tests {
             "schema": "awiki.agent.status.v1",
             "state": "running"
         });
-        let (content_type, content) = body_projection(&crate::messages::MessageBodyView::Payload {
-            payload: payload.clone(),
-        });
+        let (content_type, content) = body_projection(
+            &crate::messages::MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+            None,
+        );
 
         assert_eq!(content_type, "application/json");
+        let stored: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(stored, payload);
+    }
+
+    #[test]
+    fn payload_body_projection_preserves_attachment_manifest_content_type() {
+        let payload = serde_json::json!({
+            "attachments": [{
+                "attachment_id": "att-1",
+                "filename": "report.md",
+                "mime_type": "text/markdown",
+                "size": "12"
+            }],
+            "primary_attachment_id": "att-1"
+        });
+        let (content_type, content) = body_projection(
+            &crate::messages::MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+            Some(crate::attachments::manifest::attachment_manifest_content_type()),
+        );
+
+        assert_eq!(
+            content_type,
+            crate::attachments::manifest::attachment_manifest_content_type()
+        );
         let stored: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(stored, payload);
     }

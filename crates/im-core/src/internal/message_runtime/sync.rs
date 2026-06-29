@@ -757,12 +757,12 @@ fn sync_delta_message_body(
                 kind: crate::messages::MessageKind::Text,
             }
         }
-        Some(value) if content_type == "application/json" && value.is_object() => {
+        Some(value) if is_payload_content_type(content_type) && value.is_object() => {
             crate::messages::MessageBodyView::Payload {
                 payload: value.clone(),
             }
         }
-        Some(Value::String(text)) if content_type == "application/json" => {
+        Some(Value::String(text)) if is_payload_content_type(content_type) => {
             serde_json::from_str::<Value>(text)
                 .ok()
                 .filter(Value::is_object)
@@ -775,6 +775,12 @@ fn sync_delta_message_body(
             content_type: Some(content_type.to_owned()),
         },
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn is_payload_content_type(content_type: &str) -> bool {
+    content_type == "application/json"
+        || content_type == crate::attachments::manifest::attachment_manifest_content_type()
 }
 
 #[cfg(feature = "sqlite")]

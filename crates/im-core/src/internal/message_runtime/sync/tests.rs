@@ -156,6 +156,48 @@ async fn sync_delta_success_emits_conversation_store_patch_after_commit() {
 }
 
 #[tokio::test]
+async fn sync_delta_preserves_attachment_manifest_content_type() {
+    let fixture = Fixture::new("sync-delta-attachment-manifest");
+    let client = fixture.client();
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![attachment_manifest_message_created_event(
+                    "sev-attachment-1",
+                    "1",
+                    "msg-attachment-1",
+                    1,
+                )],
+                "1",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest::default(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    assert_eq!(
+        fixture.message_content_type("msg-attachment-1").as_deref(),
+        Some(crate::attachments::manifest::attachment_manifest_content_type())
+    );
+    let content = fixture
+        .message_content("msg-attachment-1")
+        .expect("stored attachment manifest");
+    let stored: Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(stored["attachments"][0]["attachment_id"], "att-sync-1");
+}
+
+#[tokio::test]
 async fn sync_delta_has_more_reads_committed_checkpoint_for_next_page() {
     let fixture = Fixture::new("sync-delta-has-more");
     let client = fixture.client();
@@ -929,6 +971,17 @@ impl Fixture {
         .flatten()
     }
 
+    fn message_content_type(&self, msg_id: &str) -> Option<String> {
+        let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
+        db.query_row(
+            "SELECT content_type FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
     fn conversation_last_content(&self, conversation_id: &str) -> Option<String> {
         let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
         db.query_row(
@@ -1034,6 +1087,49 @@ fn message_created_event(
                 "receiver_did": "did:example:alice",
                 "content_type": "text/plain",
                 "content": "hello from sync.delta",
+                "sent_at": "2026-06-27T00:00:00Z"
+            }
+        }
+    })
+}
+
+fn attachment_manifest_message_created_event(
+    event_id: &str,
+    event_seq: &str,
+    message_id: &str,
+    server_seq: i64,
+) -> Value {
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": "message.created",
+        "aggregate_kind": "group_message",
+        "aggregate_id": message_id,
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-06-27T00:00:00Z",
+        "payload": {
+            "thread_kind": "group",
+            "thread": {
+                "kind": "group",
+                "group_did": "did:example:group"
+            },
+            "message": {
+                "id": message_id,
+                "server_seq": server_seq.to_string(),
+                "group_event_seq": server_seq.to_string(),
+                "sender_did": "did:example:bob",
+                "group_did": "did:example:group",
+                "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                "content": {
+                    "attachments": [{
+                        "attachment_id": "att-sync-1",
+                        "filename": "sync.md",
+                        "mime_type": "text/markdown",
+                        "size": "12"
+                    }],
+                    "caption": "sync attachment",
+                    "primary_attachment_id": "att-sync-1"
+                },
                 "sent_at": "2026-06-27T00:00:00Z"
             }
         }

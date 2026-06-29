@@ -880,6 +880,87 @@ fn messages_read_runtime_local_history_reads_projection_without_rpc() {
 }
 
 #[test]
+fn messages_read_runtime_local_history_restores_legacy_attachment_manifest_projection() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let manifest = json!({
+        "attachments": [{
+            "attachment_id": "att-legacy-1",
+            "filename": "report.md",
+            "mime_type": "text/markdown",
+            "size": "24",
+            "access_info": {
+                "object_uri": "https://objects.example/att-legacy-1"
+            }
+        }],
+        "caption": "@codex 看看这个文件",
+        "primary_attachment_id": "att-legacy-1"
+    });
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-local-attachment".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "group:did:example:group".to_owned(),
+            thread_id: "group:did:example:group".to_owned(),
+            direction: 0,
+            sender_did: "did:example:bob".to_owned(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            content_type: "application/json".to_owned(),
+            content: manifest.to_string(),
+            metadata: json!({
+                "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                "group_event_seq": "44",
+                "server_sequence": 44
+            })
+            .to_string(),
+            server_seq: Some(44),
+            sent_at: "2026-05-21T00:00:02Z".to_owned(),
+            stored_at: "2026-05-21T00:00:02Z".to_owned(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [{"id": "remote-should-not-be-used"}]}),
+        },
+        NoopDirectoryTransport,
+    );
+    let result = runtime
+        .local_history(LocalHistoryRead {
+            thread: crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+            query: crate::messages::LocalHistoryQuery {
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+            },
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let message = &result.page.items[0];
+    assert_eq!(
+        message.metadata.content_type.as_deref(),
+        Some(crate::attachments::manifest::attachment_manifest_content_type())
+    );
+    assert!(matches!(
+        &message.body,
+        crate::messages::MessageBodyView::Payload { payload }
+            if payload["attachments"][0]["attachment_id"] == "att-legacy-1"
+                && payload["caption"] == "@codex 看看这个文件"
+    ));
+}
+
+#[test]
 fn messages_read_runtime_merges_local_direct_projection_into_history() {
     let fixture = Fixture::new();
     let client = fixture.client();

@@ -465,6 +465,7 @@ pub(crate) fn message_from_record(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::ImResult<crate::messages::Message> {
     let thread = message_thread(record)?;
+    let content_type = effective_content_type(record);
     let retry_target = retry_target_from_record(record);
     let send_state = crate::internal::message_runtime::state::send_state_from_metadata(
         &record.metadata,
@@ -487,7 +488,7 @@ pub(crate) fn message_from_record(
             .map(|value| crate::ids::PeerRef::parse(value, ""))
             .transpose()?,
         group: group_ref_from_record(record)?,
-        body: message_body(record),
+        body: message_body(record, content_type.as_deref()),
         sent_at: non_empty_string(&record.sent_at),
         received_at: None,
         metadata: crate::messages::MessageMetadata {
@@ -496,7 +497,7 @@ pub(crate) fn message_from_record(
             send_state,
             retry_plan,
             server_sequence: record.server_seq,
-            content_type: non_empty_string(&record.content_type),
+            content_type,
             attributes: metadata_attributes(&record.metadata),
         },
     })
@@ -574,9 +575,13 @@ fn message_direction(direction: i64) -> crate::messages::MessageDirection {
 
 fn message_body(
     record: &crate::internal::local_state::messages::MessageRecord,
+    content_type: Option<&str>,
 ) -> crate::messages::MessageBodyView {
-    let content_type = non_empty_string(&record.content_type);
-    if content_type.as_deref() == Some("application/json") {
+    let content_type = content_type.map(str::to_owned);
+    if content_type.as_deref() == Some("application/json")
+        || content_type.as_deref()
+            == Some(crate::attachments::manifest::attachment_manifest_content_type())
+    {
         return serde_json::from_str::<serde_json::Value>(&record.content)
             .ok()
             .filter(serde_json::Value::is_object)
@@ -592,6 +597,20 @@ fn message_body(
         text: record.content.clone(),
         kind,
     }
+}
+
+fn effective_content_type(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Option<String> {
+    let stored = non_empty_string(&record.content_type);
+    let metadata = metadata_string(&record.metadata, "content_type");
+    if stored.as_deref() == Some("application/json")
+        && metadata.as_deref()
+            == Some(crate::attachments::manifest::attachment_manifest_content_type())
+    {
+        return metadata;
+    }
+    stored.or(metadata)
 }
 
 fn metadata_string(metadata: &str, key: &str) -> Option<String> {
