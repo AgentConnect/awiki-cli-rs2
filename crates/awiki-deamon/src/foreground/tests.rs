@@ -1235,6 +1235,10 @@ fn register_generic_cli_runtime(root: &Path, state: &DaemonState) -> RuntimeAgen
     profile
 }
 
+fn controller_private_cli_conversation_id(profile: &RuntimeAgentProfile) -> String {
+    format!("direct:controller:{}", profile.controller_scope_key)
+}
+
 fn enqueue_generic_cli_route_message(
     state: &DaemonState,
     profile: &RuntimeAgentProfile,
@@ -1242,11 +1246,11 @@ fn enqueue_generic_cli_route_message(
     text: &str,
     next_attempt_at_ms: i64,
 ) -> crate::state::CliRouteMessageQueueRecord {
-    let conversation_id = "direct:did:human:bob";
+    let conversation_id = controller_private_cli_conversation_id(profile);
     let route_key = crate::state::cli_route_session_key(
         &profile.agent_did,
         &profile.controller_scope_key,
-        conversation_id,
+        &conversation_id,
     )
     .unwrap();
     let route_hash = state.cli_route_key_hash(&route_key).unwrap();
@@ -1268,7 +1272,7 @@ fn enqueue_generic_cli_route_message(
             controller_full_handle: profile.controller_full_handle.clone(),
             controller_scope_key: profile.controller_scope_key.clone(),
             controller_did: profile.controller_did.clone(),
-            conversation_id: conversation_id.to_string(),
+            conversation_id: conversation_id.clone(),
             workspace_path: paths.workspace_path,
             session_dir: paths.session_dir,
         })
@@ -1292,7 +1296,7 @@ fn enqueue_generic_cli_route_message(
         ),
         invocation_authority: RuntimeInvocationAuthority::Controller,
         reply_recipient_did: profile.controller_did.clone(),
-        conversation_id: Some(conversation_id.to_string()),
+        conversation_id: Some(conversation_id.clone()),
         text: text.to_string(),
     };
     state.insert_runtime_task(&task).unwrap();
@@ -1315,7 +1319,7 @@ fn enqueue_generic_cli_route_message(
             controller_full_handle: profile.controller_full_handle.clone(),
             controller_scope_key: profile.controller_scope_key.clone(),
             controller_did: profile.controller_did.clone(),
-            conversation_id: conversation_id.to_string(),
+            conversation_id,
             source_message_id: message_id.to_string(),
             task_id: Some(task.task_id),
             run_id: Some(failed_run.run_id),
@@ -2458,10 +2462,11 @@ fn foreground_retry_queue_defers_again_when_generic_cli_route_is_busy() {
         .insert_runtime_retry_request_due_at(&original_run, "runtime.busy.auto-deferred", now)
         .unwrap();
 
+    let canonical_conversation_id = controller_private_cli_conversation_id(&profile);
     let route_key = crate::state::cli_route_session_key(
         &profile.agent_did,
         &profile.controller_scope_key,
-        "direct:did:human:bob",
+        &canonical_conversation_id,
     )
     .unwrap();
     let route_hash = state.cli_route_key_hash(&route_key).unwrap();
@@ -2483,7 +2488,7 @@ fn foreground_retry_queue_defers_again_when_generic_cli_route_is_busy() {
             controller_full_handle: profile.controller_full_handle.clone(),
             controller_scope_key: profile.controller_scope_key.clone(),
             controller_did: profile.controller_did.clone(),
-            conversation_id: "direct:did:human:bob".to_string(),
+            conversation_id: canonical_conversation_id,
             workspace_path: paths.workspace_path,
             session_dir: paths.session_dir,
         })

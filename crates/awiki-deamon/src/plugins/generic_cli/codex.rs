@@ -12,8 +12,8 @@ use crate::state::CliRuntimeProfileRecord;
 use super::{
     apply_runtime_env_passthrough,
     process::{
-        ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
-        DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
+        ManagedChild, ManagedChildOutput, ManagedChildTimeoutError,
+        DEFAULT_GENERIC_CLI_PROBE_TIMEOUT, DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
     render_invocation_context_prompt, sanitize_cli_output_file, validate_native_session_id,
     write_sanitized_cli_output, GenericCliDriver, GenericCliExit, GenericCliInvocation,
@@ -24,7 +24,6 @@ const DEFAULT_SANDBOX: &str = "danger-full-access";
 const DEFAULT_CLI_WRAPPER: &str = "library:awiki_deamon::cli_wrapper";
 const NATIVE_SESSION_SOURCE_JSON_EVENT: &str = "json_event";
 const NATIVE_SESSION_SOURCE_RESUME_ID: &str = "resume_id";
-const NATIVE_SESSION_SOURCE_RESUME_LAST: &str = "resume_last";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexDriverConfig {
@@ -59,7 +58,6 @@ pub struct CodexRunPaths {
 pub enum CodexResumeMode {
     Fresh,
     ResumeId(String),
-    ResumeLast,
 }
 
 impl CodexResumeMode {
@@ -67,7 +65,6 @@ impl CodexResumeMode {
         match self {
             Self::Fresh => "fresh",
             Self::ResumeId(_) => "resume_id",
-            Self::ResumeLast => "resume_last",
         }
     }
 
@@ -75,9 +72,14 @@ impl CodexResumeMode {
         match self {
             Self::Fresh => None,
             Self::ResumeId(id) => Some(id.as_str()),
-            Self::ResumeLast => None,
         }
     }
+}
+
+struct CodexCommandAttempt {
+    resume_mode: CodexResumeMode,
+    args: Vec<String>,
+    managed_output: ManagedChildOutput,
 }
 
 impl CodexDriver {
@@ -252,52 +254,52 @@ impl GenericCliDriver for CodexDriver {
         let prompt = build_prompt_envelope(&invocation, &workspace_root, &self.config);
         ensure_prompt_does_not_contain_token(&prompt, &invocation.runtime_rpc_token)?;
 
-        let resume_mode = codex_resume_mode(&invocation);
-        let args = self.command_args_for_mode(
+        let mut resume_fallback = None;
+        let initial_resume_mode = codex_resume_mode(&invocation);
+        let mut attempt = match self.run_command_attempt(
+            &invocation,
             &workspace_root,
+            &socket_path,
+            &prompt,
             &paths.final_output_path,
-            resume_mode.clone(),
-        );
-        let mut command = Command::new(&self.config.binary_path);
-        command
-            .args(&args)
-            .current_dir(&workspace_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_codex_env(&mut command, &invocation, &socket_path, &self.config);
-
-        let managed = ManagedChild::spawn(&mut command, "spawn codex exec")?;
-        let managed_output = match managed.write_stdin_and_wait_timeout(
-            prompt.as_bytes(),
-            "write codex prompt envelope to stdin",
-            "wait for codex exec",
-            self.config.run_timeout,
+            initial_resume_mode,
         ) {
-            Ok(output) => output,
-            Err(error) => {
-                if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
-                    return Ok(GenericCliExit {
-                        exit_code: 124,
-                        status: RuntimeRunStatus::Failed,
-                        callbacks: Vec::new(),
-                        metadata: serde_json::json!({
-                            "driver_id": "codex",
-                            "config_home": "configured",
-                            "error_code": "codex_cli_timeout",
-                            "error_summary": timeout.to_string(),
-                            "next_action": "manual_review_required",
-                            "process": {
-                                "timed_out": true,
-                                "timeout_ms": timeout.timeout_ms(),
-                                "management": timeout.metadata_json(),
-                            },
-                        }),
-                    });
-                }
-                return Err(error);
-            }
+            Ok(Ok(attempt)) => attempt,
+            Ok(Err(exit)) => return Ok(exit),
+            Err(error) => return Err(error),
         };
+        if !attempt.managed_output.output.status.success()
+            && matches!(attempt.resume_mode, CodexResumeMode::ResumeId(_))
+            && looks_like_codex_resume_missing(
+                &attempt.managed_output.output.stdout,
+                &attempt.managed_output.output.stderr,
+            )
+        {
+            let previous_native_session_id =
+                attempt.resume_mode.native_session_id().map(str::to_string);
+            resume_fallback = Some(serde_json::json!({
+                "reason": "native_session_missing",
+                "previous_native_session_id_present": previous_native_session_id.is_some(),
+                "strategy": "fresh_session_same_route",
+            }));
+            attempt = match self.run_command_attempt(
+                &invocation,
+                &workspace_root,
+                &socket_path,
+                &prompt,
+                &paths.final_output_path,
+                CodexResumeMode::Fresh,
+            ) {
+                Ok(Ok(attempt)) => attempt,
+                Ok(Err(exit)) => return Ok(exit),
+                Err(error) => return Err(error),
+            }
+        }
+        let CodexCommandAttempt {
+            resume_mode,
+            args,
+            managed_output,
+        } = attempt;
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
         let stdout_sanitizer = write_sanitized_cli_output(
@@ -320,8 +322,6 @@ impl GenericCliDriver for CodexDriver {
             Some(NATIVE_SESSION_SOURCE_JSON_EVENT)
         } else if resume_mode.native_session_id().is_some() && output.status.success() {
             Some(NATIVE_SESSION_SOURCE_RESUME_ID)
-        } else if resume_mode == CodexResumeMode::ResumeLast && output.status.success() {
-            Some(NATIVE_SESSION_SOURCE_RESUME_LAST)
         } else {
             None
         };
@@ -360,6 +360,7 @@ impl GenericCliDriver for CodexDriver {
                 "resume": {
                     "mode": resume_mode.as_str(),
                     "native_session_id_present": resume_mode.native_session_id().is_some(),
+                    "fallback": resume_fallback.unwrap_or(serde_json::Value::Null),
                 },
                 "route_session": invocation.route_session.as_ref().map(|session| serde_json::json!({
                     "route_key_hash": session.route_key_hash,
@@ -402,6 +403,64 @@ impl GenericCliDriver for CodexDriver {
 }
 
 impl CodexDriver {
+    fn run_command_attempt(
+        &self,
+        invocation: &GenericCliInvocation,
+        workspace_root: &std::path::Path,
+        socket_path: &std::path::Path,
+        prompt: &str,
+        final_output_path: &std::path::Path,
+        resume_mode: CodexResumeMode,
+    ) -> Result<std::result::Result<CodexCommandAttempt, GenericCliExit>> {
+        let args =
+            self.command_args_for_mode(workspace_root, final_output_path, resume_mode.clone());
+        let mut command = Command::new(&self.config.binary_path);
+        command
+            .args(&args)
+            .current_dir(workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_codex_env(&mut command, invocation, socket_path, &self.config);
+
+        let managed = ManagedChild::spawn(&mut command, "spawn codex exec")?;
+        let managed_output = match managed.write_stdin_and_wait_timeout(
+            prompt.as_bytes(),
+            "write codex prompt envelope to stdin",
+            "wait for codex exec",
+            self.config.run_timeout,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
+                    return Ok(Err(GenericCliExit {
+                        exit_code: 124,
+                        status: RuntimeRunStatus::Failed,
+                        callbacks: Vec::new(),
+                        metadata: serde_json::json!({
+                            "driver_id": "codex",
+                            "config_home": "configured",
+                            "error_code": "codex_cli_timeout",
+                            "error_summary": timeout.to_string(),
+                            "next_action": "manual_review_required",
+                            "process": {
+                                "timed_out": true,
+                                "timeout_ms": timeout.timeout_ms(),
+                                "management": timeout.metadata_json(),
+                            },
+                        }),
+                    }));
+                }
+                return Err(error);
+            }
+        };
+        Ok(Ok(CodexCommandAttempt {
+            resume_mode,
+            args,
+            managed_output,
+        }))
+    }
+
     pub fn command_args(
         &self,
         workspace_root: &std::path::Path,
@@ -456,11 +515,6 @@ impl CodexDriver {
                 args.push(native_session_id);
                 args.push("-".to_string());
             }
-            CodexResumeMode::ResumeLast => {
-                args.push("resume".to_string());
-                args.push("--last".to_string());
-                args.push("-".to_string());
-            }
         }
         args
     }
@@ -513,10 +567,26 @@ fn codex_resume_mode(invocation: &GenericCliInvocation) -> CodexResumeMode {
     {
         return CodexResumeMode::ResumeId(id.to_string());
     }
-    if session.last_message_id.is_some() {
-        return CodexResumeMode::ResumeLast;
-    }
     CodexResumeMode::Fresh
+}
+
+fn looks_like_codex_resume_missing(stdout: &[u8], stderr: &[u8]) -> bool {
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    )
+    .to_ascii_lowercase();
+    let mentions_resume_or_session =
+        combined.contains("resume") || combined.contains("session") || combined.contains("thread");
+    mentions_resume_or_session
+        && (combined.contains("not found")
+            || combined.contains("no such")
+            || combined.contains("does not exist")
+            || combined.contains("unknown session")
+            || combined.contains("unknown thread")
+            || combined.contains("invalid session")
+            || combined.contains("invalid thread"))
 }
 
 fn codex_profile_auth_ready(config_home: &Path) -> bool {

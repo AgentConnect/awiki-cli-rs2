@@ -1,7 +1,7 @@
 # Generic CLI Runtime Plugin 设计与首版就绪说明
 
-版本：v0.7 implementation readiness
-日期：2026-06-20
+版本：v0.8 route-session continuity
+日期：2026-06-29
 适用范围：`awiki-deamon` / ANP Agent Runtime Host / Codex CLI / Claude Code CLI
 定位：记录当前 `generic-cli` 实现、消息 session 流转、目录关系、发布边界和首版未实现项。
 
@@ -33,7 +33,7 @@ incoming message
   -> 明确的 target_runtime_agent_did / binding
   -> load Runtime Agent + Runtime Profile
   -> verify controller scope / recipient policy
-  -> canonical conversation_id(direct/group/thread)
+  -> canonical route conversation_id(from structured RuntimeConversationScope)
   -> route_key = cli:<runtime_agent_did>:<controller_scope_key>:<conversation_id>:message-run
   -> route_key_hash = daemon-local keyed hash(route_key)
   -> get_or_create cli_route_sessions
@@ -45,7 +45,8 @@ incoming message
 
 不同 session 的区分规则：
 
-- 私聊使用 direct conversation，例如 `direct:<peer>` 的 canonical 形式。实际实现必须从结构化消息上下文生成，不依赖字符串拼接反解析。
+- Controller 与自己 Agent 的私聊使用 controller-private route，例如 `direct:controller:<controller_scope_key>`；它不能随 Controller DID 轮换而变化。
+- 外部直聊使用 requester scope route，例如 `direct:user:<requester_user_id>:handle:<requester_full_handle>`；它不能随 requester DID 轮换而变化。
 - 群聊使用 group conversation；群聊非 mention、未授权群消息或 binding 缺失时不创建 route session。
 - thread 使用 thread conversation；不能规范化时 fail closed 或 one-shot，不写长期 route。
 - 同一个 peer 发给不同 Runtime Agent 时，因 route key 包含 `runtime_agent_did`，并且目录按 `runtime_profile_id + route_key_hash` 分区，所以会落到不同 route。
@@ -126,7 +127,7 @@ DB 是 SSOT。`profile.json`、`session.json`、`native-session.json` 如果存�
 | `WorkspaceMode::RouteRoot` | 已实现 | 默认按消息 route 创建 cwd；它是上下文目录隔离，不是安全边界。 |
 | `cli_route_sessions` | 已实现 | 长期 route session 表，保存 route hash、workspace/session path、active native session id、lock、last message/run、错误摘要。 |
 | keyed route hash/salt | 已实现 | 新 route 使用 daemon-local keyed hash，降低路径可枚举风险；hash 不是授权凭据。 |
-| Codex driver | 已实现 | `codex exec` fresh/resume/resume-last gated fallback，`CODEX_HOME` profile home，create 时种子复制 `config.toml` / `auth.json`，auth 缺失 fail fast，stdout/stderr/final output sanitizer，native id parser。 |
+| Codex driver | 已实现 | `codex exec` fresh / explicit `resume <native_session_id>`，不使用 `resume --last`；`CODEX_HOME` profile home，create 时种子复制 `config.toml` / `auth.json`，auth 缺失 fail fast，stdout/stderr/final output sanitizer，native id parser。 |
 | Claude Code driver | 已实现 | `claude -p --verbose --output-format stream-json --session-id/--resume`，cwd 固定 route workspace，native id parser，settings/MCP 来源默认收紧；Claude Code 2.1.x 在 `stream-json` 输出下要求显式 `--verbose`。 |
 | Gemini driver | 未实现 | create alias 可解析，但 registry 对 `gemini` fail closed。 |
 | route list/status/reset | 已实现 | 只返回脱敏 route 摘要；Hermes 对 generic-cli list/status 返回 unsupported。 |
@@ -170,10 +171,13 @@ cli:<runtime_agent_did>:<controller_scope_key>:<conversation_id>:message-run
 
 要求：
 
-- `conversation_id` 必须在进入 generic-cli 前规范化。direct/group/thread 都应有稳定 canonical form。
+- `conversation_id` 必须由结构化 `RuntimeConversationScope` 规范化生成，不能直接使用消息里的 raw DID/thread 字符串作为长期 route identity。
+- controller-private route 使用 `direct:controller:<controller_scope_key>`，因此同一 Controller 轮换 DID 后仍会命中同一条 Codex / Claude Code 原生 session。
+- external/delegated direct route 使用 requester 的稳定 user/handle scope，避免 requester DID 轮换造成 session 分裂。
 - direct message 不能因为缺失 conversation id 全部落到 `no-conversation`；不能规范化时应 fail closed 或 one-shot。
 - controller 手工 one-shot task 可不写长期 route session；它不能污染长期 direct/group/thread route。
 - `route_key_hash` 使用 daemon-local keyed hash，格式是 `route_<24 hex>`；它只用于路径和诊断。
+- 为修复历史版本中由 raw DID / peer-scope 生成的 split route，新 canonical route 首次创建时会尝试从同 profile、同 controller scope、同 driver 的 legacy alias route 继承可信 `native_session_id`。继承只复制 active native session 指针与少量诊断字段，不移动旧 workspace、不扫描目录、不把旧 route 重新解释成授权事实源。
 
 ### 2.3 last message 水位
 
@@ -232,22 +236,12 @@ codex exec \
   -
 ```
 
-严格 fallback：只有 route 已有上一轮运行证据但没有捕获 native session id，且 workspace 是独立 route workspace 时，才允许：
-
-```bash
-codex exec \
-  --cd <route-workspace> \
-  --sandbox <read-only|workspace-write> \
-  --json \
-  --output-last-message <session-dir>/last-output.md \
-  resume --last \
-  -
-```
-
 禁止事项：
 
 - 新 route 不使用 `resume --last`。
-- 禁止 `resume --last --all`。
+- 旧 route 没有可信 native id 时也不使用 `resume --last`；直接 fresh，同一 route 成功后写回新的 native session id。
+- 禁止 `resume --last` / `resume --last --all` 作为产品路径 fallback，因为它可能选中 profile 下最近一次非本 route 的原生 session。
+- 显式 `resume <native_session_id>` 如果明确失败为 native session 不存在、无效或不可恢复，daemon 会在同一 route 内静默 fresh 创建新 session；认证、网络、模型配置、超时等错误不被这个 fallback 吞掉。
 - fallback 成功但仍没有可信 native id 时，不能把 synthetic id 写入 `native_session_id`。
 - Codex stdout/final 不能修改 reply target、route、recipient、workspace、policy 或 native id 写回逻辑。
 - Codex fallback final 不能只作为 daemon status payload 上报；必须写入 `runtime_final_outbox`，由 daemon 以 Runtime Agent DID 发送普通消息，确保 App 聊天 UI 能看到回复。
@@ -290,6 +284,7 @@ claude -p \
 - `--strict-mcp-config` 默认启用。
 - route session 下禁止 `no_session_persistence=true`，否则 fail closed，不启动 Claude、不写 native id、不发 final。
 - `--session-id` 是 proposed native id；只有 run 被接受，并通过 route lease、trusted parser/outcome、id/source 校验后，才能成为 active native id。
+- 显式 `--resume <native_session_id>` 如果明确失败为 native session 不存在、无效或不可恢复，daemon 会在同一 route 内静默改用新的 `--session-id <generated_uuid>` 重试一次；新 run 成功后写回新的 native session id。
 - 显式 `--resume` 不能替代 cwd/project directory scope；cwd 缺失、越界或无法设置时 fail closed，不能回落到 daemon cwd、profile home 或宿主 shell cwd。
 
 ### 3.3 `command` 与 `gemini`
@@ -476,7 +471,7 @@ cleanup/delete/support bundle/backup/restore 首版 unsupported/future。未来�
 | Hermes create/run | 已有 | 必须保持兼容。 |
 | Codex Runtime Agent create | 已实现 | 可按 daemon capability 向 App 开放；setup 仍单独诊断。 |
 | Claude Code Runtime Agent create | 已实现 | 可按 daemon capability 向 App 开放；setup 仍单独诊断。 |
-| Codex RouteRoot native resume | 已实现 | route workspace + active native id 优先；`resume --last` 是严格 fallback。 |
+| Codex RouteRoot native resume | 已实现 | route workspace + active native id 优先；不使用 `resume --last`，native session 真丢失时同 route 静默 fresh。 |
 | Claude Code RouteRoot native resume | 已实现 | `--session-id` / `--resume` + route cwd；host HOME 隔离风险需如实展示。 |
 | Fake CLI command-template tests | 已实现 | 证明 argv/env/parser/route isolation 的核心契约。 |
 | Real CLI canary | optional local-only / future | 不是首版发布必需门禁；执行时必须 synthetic profile/route/workspace，记录成本和污染风险。 |
@@ -501,7 +496,7 @@ cleanup/delete/support bundle/backup/restore 首版 unsupported/future。未来�
 | CLI stdout/final 伪造控制面 | stdout/final 只作为 output；native id 需 parser + id/source 校验；reply target 由 daemon route binding 决定。 | provider send ledger 和完整 parser schema evolution 仍是 future。 |
 | reset 后旧 run callback 污染新 route | local RPC side effect、fallback final、native id writeback、lease release 都检查当前 route lock。 | 完整 generation/tombstone 和 daemon crash orphan recovery 仍是 future。 |
 | stale queue item 绕过撤权 | queue foundation 保存最小 reference；docs 标明完整 rehydrate/authorization replay 未实现。 | 首版 drain 不能宣称完整撤回/retention/附件/group revision 重校验。 |
-| provider account 变化后误 resume | `home_isolation` 和 setup 状态能表达部分风险。 | provider account fingerprint/scope provenance 尚未完整实现。 |
+| provider account 变化后误 resume | route identity 与 explicit native id 绑定；`resume --last` 已从产品路径移除，降低跨 route 误恢复。`home_isolation` 和 setup 状态能表达部分风险。 | provider account fingerprint/scope provenance 尚未完整实现。 |
 | 同一 state root 多活 split-brain | state-root owner guard foundation。 | stale owner 接管、clone/restore split-brain 仍需运维 runbook 和后续 hardening。 |
 | support bundle 泄露 route workspace 或 native transcript | 首版不实现 support bundle；文档要求默认不导出敏感内容。 | 未来实现必须做数据分级、dry-run、二次确认和遍历安全。 |
 
@@ -596,8 +591,8 @@ dart run tests/e2e/runner.dart --case smoke
 
 | 项 | 记录 |
 |---|---|
-| `checked_at` | 2026-06-20 |
-| Codex command builder schema | fresh/resume/resume-last 由 fake CLI / Rust command builder tests 覆盖；禁止 `resume --last --all`。 |
+| `checked_at` | 2026-06-29 |
+| Codex command builder schema | fresh / explicit resume / resume-missing fresh fallback 由 fake CLI / Rust command builder tests 覆盖；产品路径禁止 `resume --last`。 |
 | Claude Code command builder schema | first/resume 由 fake CLI / Rust command builder tests 覆盖；默认 `--setting-sources user` 与 `--strict-mcp-config`。 |
 | Real CLI canary | 首版 optional local-only / future；未作为必需发布 gate。 |
 | 本机 binary evidence | Step 04/05 已记录 Codex / Claude Code `--help` 摘要；最终 Review 如重跑失败或未安装，需要记录跳过原因。 |

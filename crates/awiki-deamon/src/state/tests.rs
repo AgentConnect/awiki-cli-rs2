@@ -831,6 +831,60 @@ INSERT INTO cli_route_sessions (
 }
 
 #[test]
+fn cli_route_session_adopts_native_pointer_from_legacy_alias() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+
+    let legacy = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:peer-scope:v1:test-alice",
+        ))
+        .unwrap();
+    state
+        .update_cli_route_session_native_id(
+            &legacy.route_key,
+            Some("019f0333-4385-7ec3-bf0e-61b0b7d15f48"),
+            Some("json_event"),
+            Some(&legacy.route_key),
+        )
+        .unwrap();
+
+    let canonical = state
+        .get_or_create_cli_route_session(cli_route_create(
+            root.path().to_path_buf(),
+            "direct:controller:controller-scope:v1:test-alice",
+        ))
+        .unwrap();
+    assert_ne!(canonical.route_key, legacy.route_key);
+    assert_eq!(canonical.native_session_id, None);
+
+    assert!(state
+        .adopt_cli_route_session_native_pointer_from_aliases(
+            &canonical.route_key,
+            &[legacy.route_key.clone()]
+        )
+        .unwrap());
+    let adopted = state
+        .load_cli_route_session(&canonical.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        adopted.native_session_id.as_deref(),
+        Some("019f0333-4385-7ec3-bf0e-61b0b7d15f48")
+    );
+    assert_eq!(adopted.native_session_source.as_deref(), Some("json_event"));
+    assert!(!state
+        .adopt_cli_route_session_native_pointer_from_aliases(
+            &canonical.route_key,
+            &[legacy.route_key.clone()]
+        )
+        .unwrap());
+}
+
+#[test]
 fn cli_route_session_rejects_no_conversation_and_lease_is_exclusive() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();

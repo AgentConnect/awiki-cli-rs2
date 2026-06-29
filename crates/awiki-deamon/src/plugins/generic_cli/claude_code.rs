@@ -13,8 +13,8 @@ use crate::state::CliRuntimeProfileRecord;
 use super::{
     apply_runtime_env_passthrough,
     process::{
-        ManagedChild, ManagedChildTimeoutError, DEFAULT_GENERIC_CLI_PROBE_TIMEOUT,
-        DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
+        ManagedChild, ManagedChildOutput, ManagedChildTimeoutError,
+        DEFAULT_GENERIC_CLI_PROBE_TIMEOUT, DEFAULT_GENERIC_CLI_RUN_TIMEOUT,
     },
     render_invocation_context_prompt, sanitize_cli_output_text, validate_native_session_id,
     write_sanitized_cli_output, GenericCliDriver, GenericCliExit, GenericCliInvocation,
@@ -65,6 +65,12 @@ pub struct ClaudeCodeRunPaths {
 pub enum ClaudeCodeSessionMode {
     New { session_id: String },
     ResumeId(String),
+}
+
+struct ClaudeCodeCommandAttempt {
+    session_mode: ClaudeCodeSessionMode,
+    args: Vec<String>,
+    managed_output: ManagedChildOutput,
 }
 
 impl ClaudeCodeSessionMode {
@@ -322,47 +328,50 @@ impl GenericCliDriver for ClaudeCodeDriver {
                 }),
             });
         }
-        let args = self.command_args_for_mode(session_mode.clone());
-        let mut command = Command::new(&self.config.binary_path);
-        command
-            .args(&args)
-            .current_dir(&workspace_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_claude_code_env(&mut command, &invocation, &socket_path, &self.config);
-
-        let managed = ManagedChild::spawn(&mut command, "spawn claude-code print")?;
-        let managed_output = match managed.write_stdin_and_wait_timeout(
-            prompt.as_bytes(),
-            "write Claude Code prompt envelope to stdin",
-            "wait for claude-code",
-            self.config.run_timeout,
+        let mut session_fallback = None;
+        let mut attempt = match self.run_command_attempt(
+            &invocation,
+            &workspace_root,
+            &socket_path,
+            &prompt,
+            session_mode,
         ) {
-            Ok(output) => output,
-            Err(error) => {
-                if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
-                    return Ok(GenericCliExit {
-                        exit_code: 124,
-                        status: RuntimeRunStatus::Failed,
-                        callbacks: Vec::new(),
-                        metadata: serde_json::json!({
-                            "driver_id": "claude-code",
-                            "home_isolation": home_isolation(),
-                            "error_code": "claude_code_cli_timeout",
-                            "error_summary": timeout.to_string(),
-                            "next_action": "manual_review_required",
-                            "process": {
-                                "timed_out": true,
-                                "timeout_ms": timeout.timeout_ms(),
-                                "management": timeout.metadata_json(),
-                            },
-                        }),
-                    });
-                }
-                return Err(error);
-            }
+            Ok(Ok(attempt)) => attempt,
+            Ok(Err(exit)) => return Ok(exit),
+            Err(error) => return Err(error),
         };
+        if !attempt.managed_output.output.status.success()
+            && matches!(attempt.session_mode, ClaudeCodeSessionMode::ResumeId(_))
+            && looks_like_claude_code_resume_missing(
+                &attempt.managed_output.output.stdout,
+                &attempt.managed_output.output.stderr,
+            )
+        {
+            session_fallback = Some(serde_json::json!({
+                "reason": "native_session_missing",
+                "previous_native_session_id_present": true,
+                "strategy": "fresh_session_same_route",
+            }));
+            let fresh_session_mode = ClaudeCodeSessionMode::New {
+                session_id: generate_uuid_v4(),
+            };
+            attempt = match self.run_command_attempt(
+                &invocation,
+                &workspace_root,
+                &socket_path,
+                &prompt,
+                fresh_session_mode,
+            ) {
+                Ok(Ok(attempt)) => attempt,
+                Ok(Err(exit)) => return Ok(exit),
+                Err(error) => return Err(error),
+            }
+        }
+        let ClaudeCodeCommandAttempt {
+            session_mode,
+            args,
+            managed_output,
+        } = attempt;
         let process_metadata = managed_output.process_metadata();
         let output = managed_output.output;
         let stdout_sanitizer = write_sanitized_cli_output(
@@ -446,6 +455,7 @@ impl GenericCliDriver for ClaudeCodeDriver {
                 "session": {
                     "mode": session_mode.as_str(),
                     "native_session_id_present": native_session_id.is_some(),
+                    "fallback": session_fallback.unwrap_or(serde_json::Value::Null),
                 },
                 "route_session": invocation.route_session.as_ref().map(|session| serde_json::json!({
                     "route_key_hash": session.route_key_hash,
@@ -488,6 +498,62 @@ impl GenericCliDriver for ClaudeCodeDriver {
 }
 
 impl ClaudeCodeDriver {
+    fn run_command_attempt(
+        &self,
+        invocation: &GenericCliInvocation,
+        workspace_root: &std::path::Path,
+        socket_path: &std::path::Path,
+        prompt: &str,
+        session_mode: ClaudeCodeSessionMode,
+    ) -> Result<std::result::Result<ClaudeCodeCommandAttempt, GenericCliExit>> {
+        let args = self.command_args_for_mode(session_mode.clone());
+        let mut command = Command::new(&self.config.binary_path);
+        command
+            .args(&args)
+            .current_dir(workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_claude_code_env(&mut command, invocation, socket_path, &self.config);
+
+        let managed = ManagedChild::spawn(&mut command, "spawn claude-code print")?;
+        let managed_output = match managed.write_stdin_and_wait_timeout(
+            prompt.as_bytes(),
+            "write Claude Code prompt envelope to stdin",
+            "wait for claude-code",
+            self.config.run_timeout,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(timeout) = error.downcast_ref::<ManagedChildTimeoutError>() {
+                    return Ok(Err(GenericCliExit {
+                        exit_code: 124,
+                        status: RuntimeRunStatus::Failed,
+                        callbacks: Vec::new(),
+                        metadata: serde_json::json!({
+                            "driver_id": "claude-code",
+                            "home_isolation": home_isolation(),
+                            "error_code": "claude_code_cli_timeout",
+                            "error_summary": timeout.to_string(),
+                            "next_action": "manual_review_required",
+                            "process": {
+                                "timed_out": true,
+                                "timeout_ms": timeout.timeout_ms(),
+                                "management": timeout.metadata_json(),
+                            },
+                        }),
+                    }));
+                }
+                return Err(error);
+            }
+        };
+        Ok(Ok(ClaudeCodeCommandAttempt {
+            session_mode,
+            args,
+            managed_output,
+        }))
+    }
+
     pub fn command_args_for_mode(&self, session_mode: ClaudeCodeSessionMode) -> Vec<String> {
         let mut args = vec![
             "-p".to_string(),
@@ -859,6 +925,25 @@ fn home_isolation() -> &'static str {
     } else {
         "unknown"
     }
+}
+
+fn looks_like_claude_code_resume_missing(stdout: &[u8], stderr: &[u8]) -> bool {
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    )
+    .to_ascii_lowercase();
+    let mentions_resume_or_session = combined.contains("resume")
+        || combined.contains("session")
+        || combined.contains("conversation");
+    mentions_resume_or_session
+        && (combined.contains("not found")
+            || combined.contains("no such")
+            || combined.contains("does not exist")
+            || combined.contains("unknown session")
+            || combined.contains("invalid session")
+            || combined.contains("cannot resume"))
 }
 
 fn generate_uuid_v4() -> String {

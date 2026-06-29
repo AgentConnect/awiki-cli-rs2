@@ -458,6 +458,15 @@ impl RuntimeConversationScope {
     pub fn kind_str(&self) -> &'static str {
         self.kind().as_str()
     }
+
+    pub fn generic_cli_route_conversation_id(&self) -> Result<String> {
+        self.validate()?;
+        match self {
+            Self::ControllerPrivate { .. } => Ok(format!("direct:{}", self.scope_key())),
+            Self::Direct { .. } => Ok(format!("direct:{}", self.scope_key())),
+            Self::GroupVisible { .. } => Ok(self.scope_key()),
+        }
+    }
 }
 
 impl RuntimeConversationScopeKind {
@@ -516,9 +525,6 @@ pub fn runtime_task_matches_profile_controller_scope(
         || task.controller_full_handle != profile.controller_full_handle
         || task.controller_scope_key != profile.controller_scope_key
     {
-        return false;
-    }
-    if task.controller_did != profile.controller_did {
         return false;
     }
     task.validate().is_ok()

@@ -25,7 +25,7 @@ use crate::runtime::reply_payload::{
 use crate::runtime::{
     runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeInvocationAuthority,
     RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus,
-    RuntimeTask,
+    RuntimeTask, RuntimeTaskTriggerKind,
 };
 use crate::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
@@ -1184,21 +1184,13 @@ fn maybe_enqueue_generic_cli_busy_retry(
         next_attempt_at_ms,
     )?;
     if error_code != "route_busy" {
-        if let Some(conversation_id) = task.conversation_id.as_deref() {
-            if let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) {
-                if let Ok(route_key) = cli_route_session_key(
-                    &profile.agent_did,
-                    &profile.controller_scope_key,
-                    &conversation_id,
-                ) {
-                    let _ = state.mark_cli_route_session_deferred(
-                        &route_key,
-                        Some(&run.run_id),
-                        error_code,
-                        error_summary,
-                    );
-                }
-            }
+        if let Ok(route_key) = generic_cli_route_key_for_task(profile, task) {
+            let _ = state.mark_cli_route_session_deferred(
+                &route_key,
+                Some(&run.run_id),
+                error_code,
+                error_summary,
+            );
         }
     }
     state.insert_audit_event_json(
@@ -1227,10 +1219,7 @@ fn maybe_enqueue_cli_route_message_reference(
     error_summary: &str,
     next_attempt_at_ms: i64,
 ) -> Result<Option<crate::state::CliRouteMessageQueueRecord>> {
-    let Some(conversation_id) = task.conversation_id.as_deref() else {
-        return Ok(None);
-    };
-    let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) else {
+    let Ok(conversation_id) = generic_cli_route_conversation_id_for_task(task) else {
         return Ok(None);
     };
     let route_key = cli_route_session_key(
@@ -1321,11 +1310,10 @@ fn prepare_generic_cli_route_session(
     if profile.workspace_mode != Some(WorkspaceMode::RouteRoot) {
         return Ok(None);
     }
-    let conversation_id = task
-        .conversation_id
-        .as_deref()
-        .context("generic-cli RouteRoot requires conversation_id")?;
-    let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+    if task.conversation_id.is_none() {
+        return Err(anyhow::anyhow!("generic-cli RouteRoot requires conversation_id").into());
+    }
+    let conversation_id = generic_cli_route_conversation_id_for_task(task)?;
     let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
     let workspace_root = profile
         .workspace_root
@@ -1354,7 +1342,7 @@ fn prepare_generic_cli_route_session(
             let paths = route_workspace_paths(workspace_root, &session_root, &route_key_hash)?;
             (paths.workspace_path, paths.session_dir)
         };
-    let session = state.get_or_create_cli_route_session(CreateCliRouteSession {
+    let mut session = state.get_or_create_cli_route_session(CreateCliRouteSession {
         agent_did: profile.agent_did.clone(),
         runtime_profile_id: profile.runtime_profile_id.clone(),
         driver_id: cli_profile.driver_id,
@@ -1366,6 +1354,15 @@ fn prepare_generic_cli_route_session(
         workspace_path,
         session_dir,
     })?;
+    let legacy_route_keys = generic_cli_legacy_route_keys_for_task(profile, task)?;
+    if state.adopt_cli_route_session_native_pointer_from_aliases(
+        &session.route_key,
+        &legacy_route_keys,
+    )? {
+        session = state
+            .load_cli_route_session(&session.route_key)?
+            .context("load adopted generic-cli route session")?;
+    }
     if let Err(error) = std::fs::create_dir_all(&session.workspace_path).with_context(|| {
         format!(
             "create generic-cli route workspace {}",
@@ -2109,16 +2106,7 @@ fn persist_cli_driver_run(
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     let route_key = if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
-        let conversation_id = task
-            .conversation_id
-            .as_deref()
-            .context("generic-cli RouteRoot run record requires conversation_id")?;
-        let conversation_id = canonical_cli_conversation_id(conversation_id)?;
-        cli_route_session_key(
-            &run.agent_did,
-            &profile.controller_scope_key,
-            &conversation_id,
-        )?
+        generic_cli_route_key_for_task(profile, &task)?
     } else {
         generic_cli_route_key(
             &run.agent_did,
@@ -2207,6 +2195,86 @@ fn generic_cli_route_key(
         "cli:{agent_did}:{controller_scope_key}:{}:message-run",
         conversation_id.unwrap_or("no-conversation")
     )
+}
+
+fn generic_cli_route_conversation_id_for_task(task: &RuntimeTask) -> Result<String> {
+    task.conversation_scope.generic_cli_route_conversation_id()
+}
+
+fn generic_cli_route_key_for_task(
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+) -> Result<String> {
+    let conversation_id = generic_cli_route_conversation_id_for_task(task)?;
+    cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )
+}
+
+fn generic_cli_legacy_route_keys_for_task(
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+) -> Result<Vec<String>> {
+    let mut aliases = Vec::new();
+    let canonical_conversation_id = generic_cli_route_conversation_id_for_task(task)?;
+    push_legacy_cli_route_key(
+        &mut aliases,
+        profile,
+        Some(canonical_conversation_id.as_str()),
+    )?;
+    push_legacy_cli_route_key(&mut aliases, profile, task.conversation_id.as_deref())?;
+    if task.trigger_kind == RuntimeTaskTriggerKind::ControllerDirect {
+        push_legacy_cli_route_key(
+            &mut aliases,
+            profile,
+            Some(format!("direct:{}", task.controller_did).as_str()),
+        )?;
+        push_legacy_cli_route_key(
+            &mut aliases,
+            profile,
+            Some(format!("direct:{}", task.controller_scope_key).as_str()),
+        )?;
+        if let Some(peer_scope_key) =
+            controller_scope_to_legacy_peer_scope(&task.controller_scope_key)
+        {
+            push_legacy_cli_route_key(
+                &mut aliases,
+                profile,
+                Some(format!("direct:{peer_scope_key}").as_str()),
+            )?;
+        }
+    }
+    Ok(aliases)
+}
+
+fn controller_scope_to_legacy_peer_scope(controller_scope_key: &str) -> Option<String> {
+    controller_scope_key
+        .strip_prefix("controller-scope:")
+        .map(|suffix| format!("peer-scope:{suffix}"))
+}
+
+fn push_legacy_cli_route_key(
+    aliases: &mut Vec<String>,
+    profile: &RuntimeAgentProfile,
+    conversation_id: Option<&str>,
+) -> Result<()> {
+    let Some(conversation_id) = conversation_id else {
+        return Ok(());
+    };
+    let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) else {
+        return Ok(());
+    };
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    if !aliases.contains(&route_key) {
+        aliases.push(route_key);
+    }
+    Ok(())
 }
 
 struct FallbackFinalText {

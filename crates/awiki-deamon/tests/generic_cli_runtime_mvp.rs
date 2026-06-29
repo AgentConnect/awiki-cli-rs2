@@ -15,7 +15,10 @@ use awiki_deamon::plugins::generic_cli::{
     CommandGenericCliDriver, GenericCliDriver, GenericCliDriverRegistry,
     GenericCliInvocationContext, GenericCliRuntimePlugin, TestGenericCliDriver,
 };
-use awiki_deamon::runtime::host::{run_controller_text_task, run_controller_text_task_with_config};
+use awiki_deamon::runtime::host::{
+    run_controller_text_task, run_controller_text_task_with_config,
+    run_controller_text_task_with_verified_sender_config, run_existing_runtime_task_with_config,
+};
 use awiki_deamon::runtime::{
     RuntimeAgentProfile, RuntimeConversationScope, RuntimeInstallStatus,
     RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
@@ -190,6 +193,15 @@ fn generic_cli_invocation_from_task(
     }
 }
 
+fn controller_private_route_key(profile: &RuntimeAgentProfile) -> String {
+    awiki_deamon::state::cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &format!("direct:controller:{}", profile.controller_scope_key),
+    )
+    .unwrap()
+}
+
 struct EnvVarGuard {
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
@@ -350,7 +362,7 @@ fn failed_generic_cli_marks_run_failed_without_final_callback() {
 }
 
 #[test]
-fn route_root_creates_distinct_route_sessions_and_workspaces() {
+fn route_root_controller_private_uses_stable_route_across_controller_did_rotation() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
@@ -389,16 +401,24 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
         },
     )
     .unwrap();
-    let second = run_controller_text_task_with_config(
+    let rotated_sender = VerifiedControllerSender {
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: "did:human:alice:rotated".to_string(),
+        sender_did: "did:human:alice:rotated".to_string(),
+    };
+    let second = run_controller_text_task_with_verified_sender_config(
         &config,
         &state,
         &profile,
+        &rotated_sender,
         &plugin,
         &outbox,
         ControllerTextMessage {
             message_id: "msg_route_carol".to_string(),
             conversation_id: Some("direct:did:human:carol".to_string()),
-            sender_did: "did:human:alice".to_string(),
+            sender_did: "did:human:alice:rotated".to_string(),
             requester_user_id: None,
             requester_full_handle: None,
             trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
@@ -415,8 +435,8 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
     let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
     assert_eq!(first_run.workspace_mode, Some(WorkspaceMode::RouteRoot));
     assert_eq!(second_run.workspace_mode, Some(WorkspaceMode::RouteRoot));
-    assert_ne!(first_run.route_key, second_run.route_key);
-    assert_ne!(
+    assert_eq!(first_run.route_key, second_run.route_key);
+    assert_eq!(
         first_run.workspace_instance_path,
         second_run.workspace_instance_path
     );
@@ -436,8 +456,11 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
         first_route.route_key_hash,
         awiki_deamon::state::cli_route_key_hash(&first_route.route_key).unwrap()
     );
-    assert_eq!(first_route.conversation_id, "direct:did:human:bob");
-    assert_eq!(second_route.conversation_id, "direct:did:human:carol");
+    assert_eq!(
+        first_route.conversation_id,
+        "direct:controller:controller-scope:v1:test-alice-anpclaw-com"
+    );
+    assert_eq!(second_route.conversation_id, first_route.conversation_id);
     assert!(first_route.workspace_path.exists());
     assert!(first_route.session_dir.exists());
     assert_eq!(first_route.status, "active");
@@ -463,7 +486,115 @@ fn route_root_creates_distinct_route_sessions_and_workspaces() {
                 Some("active"),
             )
             .unwrap(),
-        2
+        1
+    );
+}
+
+#[test]
+fn route_root_external_direct_uses_requester_scope_route() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+    let plugin = GenericCliRuntimePlugin::new(TestGenericCliDriver::default());
+    let mut profile = profile(
+        config
+            .state_root
+            .join("runtime")
+            .join("workspaces")
+            .join("profile_generic_cli_1"),
+    );
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    let cli_profile =
+        CliRuntimeProfileRecord::for_driver(&profile.runtime_profile_id, "codex").unwrap();
+    state.upsert_cli_runtime_profile(&cli_profile).unwrap();
+
+    let bob_first = runtime_task_for_invocation(
+        RuntimeTaskTriggerKind::ExternalDirect,
+        RuntimeConversationScope::direct("user-bob", "bob.anpclaw.com").unwrap(),
+        RuntimeInvocationAuthority::Requester,
+        "did:human:bob:first",
+        Some("user-bob"),
+        Some("bob.anpclaw.com"),
+        Some("direct:did:human:bob:first"),
+    );
+    let mut bob_second = runtime_task_for_invocation(
+        RuntimeTaskTriggerKind::ExternalDirect,
+        RuntimeConversationScope::direct("user-bob", "bob.anpclaw.com").unwrap(),
+        RuntimeInvocationAuthority::Requester,
+        "did:human:bob:second",
+        Some("user-bob"),
+        Some("bob.anpclaw.com"),
+        Some("direct:did:human:bob:second"),
+    );
+    bob_second.task_id = "task_prompt_context_bob_second".to_string();
+    let mut carol = runtime_task_for_invocation(
+        RuntimeTaskTriggerKind::ExternalDirect,
+        RuntimeConversationScope::direct("user-carol", "carol.anpclaw.com").unwrap(),
+        RuntimeInvocationAuthority::Requester,
+        "did:human:carol",
+        Some("user-carol"),
+        Some("carol.anpclaw.com"),
+        Some("direct:did:human:carol"),
+    );
+    carol.task_id = "task_prompt_context_carol".to_string();
+
+    let first = run_existing_runtime_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        bob_first,
+        "run_bob_first",
+    )
+    .unwrap();
+    let second = run_existing_runtime_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        bob_second,
+        "run_bob_second",
+    )
+    .unwrap();
+    let third = run_existing_runtime_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        carol,
+        "run_carol",
+    )
+    .unwrap();
+
+    assert_eq!(first.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(second.run.status, RuntimeRunStatus::Finished);
+    assert_eq!(third.run.status, RuntimeRunStatus::Finished);
+    let first_run = state.load_cli_driver_run(&first.run.run_id).unwrap();
+    let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    let third_run = state.load_cli_driver_run(&third.run.run_id).unwrap();
+    assert_eq!(first_run.route_key, second_run.route_key);
+    assert_ne!(first_run.route_key, third_run.route_key);
+    let first_route = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    let third_route = state
+        .load_cli_route_session(&third_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first_route.conversation_id,
+        "direct:user:user-bob:handle:bob.anpclaw.com"
+    );
+    assert_eq!(
+        third_route.conversation_id,
+        "direct:user:user-carol:handle:carol.anpclaw.com"
     );
 }
 
@@ -594,12 +725,7 @@ fn route_root_profile_busy_releases_route_lease_without_launching_driver() {
     assert!(error_text.contains("runtime profile is busy"));
     let run = state.load_runtime_run("run_task_msg_profile_busy").unwrap();
     assert_eq!(run.status, RuntimeRunStatus::Failed);
-    let route_key = awiki_deamon::state::cli_route_session_key(
-        &profile.agent_did,
-        &profile.controller_scope_key,
-        "direct:did:human:bob",
-    )
-    .unwrap();
+    let route_key = controller_private_route_key(&profile);
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
     assert_eq!(route.status, "queued");
     assert_eq!(route.lock_run_id, None);
@@ -675,12 +801,7 @@ fn route_root_route_busy_does_not_launch_driver_or_release_existing_lease() {
     state.upsert_cli_runtime_profile(&cli_profile).unwrap();
 
     let conversation_id = "direct:did:human:bob";
-    let route_key = awiki_deamon::state::cli_route_session_key(
-        &profile.agent_did,
-        &profile.controller_scope_key,
-        conversation_id,
-    )
-    .unwrap();
+    let route_key = controller_private_route_key(&profile);
     let route_hash = state.cli_route_key_hash(&route_key).unwrap();
     let workspace_root = profile.workspace_root.as_ref().unwrap();
     let session_root = workspace_root
@@ -701,7 +822,7 @@ fn route_root_route_busy_does_not_launch_driver_or_release_existing_lease() {
             controller_full_handle: profile.controller_full_handle.clone(),
             controller_scope_key: profile.controller_scope_key.clone(),
             controller_did: profile.controller_did.clone(),
-            conversation_id: conversation_id.to_string(),
+            conversation_id: format!("direct:controller:{}", profile.controller_scope_key),
             workspace_path: paths.workspace_path,
             session_dir: paths.session_dir,
         })
@@ -829,12 +950,7 @@ fn route_root_claude_host_home_busy_releases_profile_and_route_lease() {
         .load_runtime_run("run_task_msg_host_home_busy")
         .unwrap();
     assert_eq!(run.status, RuntimeRunStatus::Failed);
-    let route_key = awiki_deamon::state::cli_route_session_key(
-        &profile.agent_did,
-        &profile.controller_scope_key,
-        "direct:did:human:bob",
-    )
-    .unwrap();
+    let route_key = controller_private_route_key(&profile);
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
     assert_eq!(route.status, "queued");
     assert_eq!(route.lock_run_id, None);
@@ -951,12 +1067,7 @@ fn route_root_session_dir_failure_marks_run_and_route_failed_before_launch() {
     assert!(run_record_missing
         .to_string()
         .contains("load cli driver run"));
-    let route_key = awiki_deamon::state::cli_route_session_key(
-        &profile.agent_did,
-        &profile.controller_scope_key,
-        "direct:did:human:bob",
-    )
-    .unwrap();
+    let route_key = controller_private_route_key(&profile);
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
     assert_eq!(route.status, "failed");
     assert_eq!(route.last_run_id.as_deref(), Some(run.run_id.as_str()));
@@ -1133,12 +1244,7 @@ fn generic_cli_launch_error_emits_failed_status_and_does_not_advance_message_wat
 
     let run = state.load_runtime_run("run_task_msg_launch_error").unwrap();
     assert_eq!(run.status, RuntimeRunStatus::Failed);
-    let route_key = awiki_deamon::state::cli_route_session_key(
-        &profile.agent_did,
-        &profile.controller_scope_key,
-        "direct:did:human:bob",
-    )
-    .unwrap();
+    let route_key = controller_private_route_key(&profile);
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
     assert_eq!(route.status, "failed");
     assert_eq!(route.lock_run_id, None);
@@ -1573,12 +1679,7 @@ fn reset_rejects_late_task_finish_callback_without_polluting_new_route_lock() {
         .load_runtime_run("run_task_msg_late_finish_after_reset")
         .unwrap();
     assert_eq!(run.status, RuntimeRunStatus::Failed);
-    let route_key = awiki_deamon::state::cli_route_session_key(
-        &profile.agent_did,
-        &profile.controller_scope_key,
-        "direct:did:human:bob",
-    )
-    .unwrap();
+    let route_key = controller_private_route_key(&profile);
     let route = state.load_cli_route_session(&route_key).unwrap().unwrap();
     assert_eq!(route.status, "running");
     assert_eq!(route.lock_run_id.as_deref(), Some("run_after_reset"));
@@ -2620,23 +2721,21 @@ fn codex_driver_command_builder_uses_explicit_resume_id_and_never_all() {
 }
 
 #[test]
-fn codex_driver_command_builder_supports_route_scoped_resume_last_without_all() {
+fn codex_driver_command_builder_uses_fresh_when_route_has_no_native_session() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let final_output = root.path().join("final.txt");
     let driver = CodexDriver::new(codex_config(root.path().join("codex"))).unwrap();
 
-    let args = driver.command_args_for_mode(&workspace, &final_output, CodexResumeMode::ResumeLast);
+    let args = driver.command_args_for_mode(&workspace, &final_output, CodexResumeMode::Fresh);
 
     assert_eq!(args[0], "exec");
-    let resume_index = args.iter().position(|arg| arg == "resume").unwrap();
-    let cd_index = args.iter().position(|arg| arg == "--cd").unwrap();
-    assert!(cd_index < resume_index);
-    assert_eq!(args[resume_index + 1], "--last");
     assert_eq!(args.last().map(String::as_str), Some("-"));
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--cd", workspace.to_str().unwrap()]));
+    assert!(!args.contains(&"resume".to_string()));
+    assert!(!args.contains(&"--last".to_string()));
     assert!(!args.contains(&"--all".to_string()));
 }
 
@@ -3769,8 +3868,15 @@ if [ "${{1-}}" = "--version" ]; then
   exit 0
 fi
 RUN="${{AWIKI_DAEMON_RUN_ID}}"
-printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
-cat >/dev/null
+	printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
+	COUNT_FILE="{args_capture_dir}/$RUN.count"
+	COUNT=0
+	if [ -f "$COUNT_FILE" ]; then
+	  COUNT="$(cat "$COUNT_FILE")"
+	fi
+	COUNT="$((COUNT + 1))"
+	printf '%s\n' "$COUNT" > "$COUNT_FILE"
+	cat >/dev/null
 FINAL_OUTPUT=""
 PREV=""
 for ARG in "$@"; do
@@ -3784,9 +3890,13 @@ case "$RUN" in
   run_task_msg_route_resume_1)
     printf '{{"session_id":"codex-native-bob"}}\n'
     ;;
-  run_task_msg_route_resume_2)
-    printf '{{"session_id":"codex-native-bob"}}\n'
-    ;;
+	  run_task_msg_route_resume_2)
+	    if [ "$COUNT" = "1" ]; then
+	      printf 'session not found: codex-native-bob\n' >&2
+	      exit 1
+	    fi
+	    printf '{{"session_id":"codex-native-bob-recreated"}}\n'
+	    ;;
   run_task_msg_route_resume_3)
     printf '{{"session_id":"codex-native-bob-after-reset"}}\n'
     ;;
@@ -3880,26 +3990,32 @@ esac
     let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
     assert_eq!(
         second_run.native_session_id.as_deref(),
-        Some("codex-native-bob")
+        Some("codex-native-bob-recreated")
+    );
+    assert_eq!(
+        second.launch_outcome.metadata["resume"]["fallback"]["reason"].as_str(),
+        Some("native_session_missing")
     );
     let second_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_resume_2.args")).unwrap();
     let second_arg_lines = second_args.lines().collect::<Vec<_>>();
-    let second_resume_index = second_arg_lines
-        .iter()
-        .position(|arg| *arg == "resume")
-        .unwrap();
-    let second_cd_index = second_arg_lines
-        .iter()
-        .position(|arg| *arg == "--cd")
-        .unwrap();
-    assert!(second_cd_index < second_resume_index);
-    assert_eq!(
-        second_arg_lines.get(second_resume_index + 1).copied(),
-        Some("codex-native-bob")
-    );
+    assert!(!second_arg_lines.iter().any(|arg| *arg == "resume"));
     assert!(!second_args.contains("--last"));
     assert!(!second_args.contains("--all"));
+    assert_eq!(
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_resume_2.count"))
+            .unwrap()
+            .trim(),
+        "2"
+    );
+    let route_after_fallback = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        route_after_fallback.native_session_id.as_deref(),
+        Some("codex-native-bob-recreated")
+    );
 
     state
         .reset_cli_route_session_by_route(&first_run.route_key)
@@ -3943,7 +4059,7 @@ esac
 
 #[cfg(unix)]
 #[test]
-fn codex_route_root_existing_route_without_native_id_uses_route_scoped_resume_last() {
+fn codex_route_root_existing_route_without_native_id_starts_fresh_session() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -3988,7 +4104,7 @@ printf 'route final %s\n' "$RUN" > "$FINAL_OUTPUT"
 if [ "$RUN" = "run_task_msg_route_last_1" ]; then
   printf '{{"type":"missing-session-id"}}\n'
 else
-  printf '{{"session_id":"codex-native-from-last"}}\n'
+  printf '{{"session_id":"codex-native-from-fresh"}}\n'
 fi
 "#,
             args_capture_dir = args_capture_dir.display(),
@@ -4064,32 +4180,18 @@ fi
     );
     assert_eq!(
         second.launch_outcome.metadata["resume"]["mode"].as_str(),
-        Some("resume_last")
+        Some("fresh")
     );
     let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
     assert_eq!(
         second_run.native_session_id.as_deref(),
-        Some("codex-native-from-last")
+        Some("codex-native-from-fresh")
     );
     let second_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_route_last_2.args")).unwrap();
     let second_arg_lines = second_args.lines().collect::<Vec<_>>();
-    let resume_index = second_arg_lines
-        .iter()
-        .position(|arg| *arg == "resume")
-        .unwrap();
-    let cd_index = second_arg_lines
-        .iter()
-        .position(|arg| *arg == "--cd")
-        .unwrap();
-    assert!(
-        cd_index < resume_index,
-        "unexpected second args:\n{second_args}"
-    );
-    assert_eq!(
-        second_arg_lines.get(resume_index + 1).copied(),
-        Some("--last")
-    );
+    assert!(!second_arg_lines.iter().any(|arg| *arg == "resume"));
+    assert!(!second_arg_lines.iter().any(|arg| *arg == "--last"));
     assert!(!second_args.contains("--all"));
 }
 
@@ -4129,9 +4231,16 @@ if [ "${{1-}}" = "--version" ]; then
   echo "1.2.3 (Claude Code)"
   exit 0
 fi
-RUN="${{AWIKI_DAEMON_RUN_ID}}"
-printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
-cat > "{prompt_capture_dir}/$RUN.prompt"
+	RUN="${{AWIKI_DAEMON_RUN_ID}}"
+	printf '%s\n' "$@" > "{args_capture_dir}/$RUN.args"
+	COUNT_FILE="{args_capture_dir}/$RUN.count"
+	COUNT=0
+	if [ -f "$COUNT_FILE" ]; then
+	  COUNT="$(cat "$COUNT_FILE")"
+	fi
+	COUNT="$((COUNT + 1))"
+	printf '%s\n' "$COUNT" > "$COUNT_FILE"
+	cat > "{prompt_capture_dir}/$RUN.prompt"
 cat > "{env_capture_dir}/$RUN.env" <<ENV
 SOCKET=${{AWIKI_DAEMON_SOCKET-}}
 RUN_ID=${{AWIKI_DAEMON_RUN_ID-}}
@@ -4147,13 +4256,17 @@ NPM_TOKEN=${{NPM_TOKEN-}}
 ENV
 SESSION=""
 PREV=""
-for ARG in "$@"; do
-  if [ "$PREV" = "--session-id" ] || [ "$PREV" = "--resume" ]; then
-    SESSION="$ARG"
-  fi
-  PREV="$ARG"
-done
-printf '{{"type":"system","session_id":"%s"}}\n' "$SESSION"
+	for ARG in "$@"; do
+	  if [ "$PREV" = "--session-id" ] || [ "$PREV" = "--resume" ]; then
+	    SESSION="$ARG"
+	  fi
+	  PREV="$ARG"
+	done
+	if [ "$RUN" = "run_task_msg_claude_route_2" ] && [ "$COUNT" = "1" ]; then
+	  printf 'cannot resume session %s: not found\n' "$SESSION" >&2
+	  exit 1
+	fi
+	printf '{{"type":"system","session_id":"%s"}}\n' "$SESSION"
 printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
 "#,
             args_capture_dir = args_capture_dir.display(),
@@ -4284,17 +4397,33 @@ printf '{{"type":"result","result":"claude final %s"}}\n' "$RUN"
     )
     .unwrap();
     let second_run = state.load_cli_driver_run(&second.run.run_id).unwrap();
+    let second_native_id = second_run.native_session_id.clone().unwrap();
+    assert_ne!(second_native_id, first_native_id);
     assert_eq!(
-        second_run.native_session_id.as_deref(),
-        Some(first_native_id.as_str())
+        second.launch_outcome.metadata["session"]["fallback"]["reason"].as_str(),
+        Some("native_session_missing")
     );
     let second_args =
         std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_2.args")).unwrap();
-    assert!(second_args.contains("--resume\n"));
-    assert!(second_args.contains(&format!("{first_native_id}\n")));
-    assert!(!second_args.contains("--session-id\n"));
+    assert!(second_args.contains("--session-id\n"));
+    assert!(second_args.contains(&format!("{second_native_id}\n")));
+    assert!(!second_args.contains("--resume\n"));
     assert!(!second_args.contains("--continue"));
     assert!(!second_args.contains("--no-session-persistence"));
+    assert_eq!(
+        std::fs::read_to_string(args_capture_dir.join("run_task_msg_claude_route_2.count"))
+            .unwrap()
+            .trim(),
+        "2"
+    );
+    let route_after_fallback = state
+        .load_cli_route_session(&first_run.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        route_after_fallback.native_session_id.as_deref(),
+        Some(second_native_id.as_str())
+    );
 
     state
         .reset_cli_route_session_by_route(&first_run.route_key)

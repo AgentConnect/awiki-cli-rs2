@@ -1197,10 +1197,12 @@ WHERE task_id = ?1
             return Ok(None);
         }
         let task = self.load_runtime_task(&run.task_id)?;
-        let Some(conversation_id) = task.conversation_id.as_deref() else {
+        if task.conversation_id.is_none() {
             return Ok(None);
-        };
-        let conversation_id = canonical_cli_conversation_id(conversation_id)?;
+        }
+        let conversation_id = task
+            .conversation_scope
+            .generic_cli_route_conversation_id()?;
         let route_key =
             cli_route_session_key(&run.agent_did, &task.controller_scope_key, &conversation_id)?;
         self.load_cli_route_session(&route_key)
@@ -2299,6 +2301,77 @@ WHERE route_key = ?3
                 .with_context(|| format!("load cli route session {}", record.route_key))?;
         }
         Ok(loaded)
+    }
+
+    pub fn adopt_cli_route_session_native_pointer_from_aliases(
+        &self,
+        route_key: &str,
+        alias_route_keys: &[String],
+    ) -> Result<bool> {
+        validate_cli_route_key(route_key)?;
+        let canonical = self
+            .load_cli_route_session(route_key)?
+            .with_context(|| format!("cli route session does not exist: {route_key}"))?;
+        if canonical.native_session_id.is_some() {
+            return Ok(false);
+        }
+
+        let mut candidates = Vec::new();
+        for alias_route_key in alias_route_keys {
+            if alias_route_key == route_key {
+                continue;
+            }
+            validate_cli_route_key(alias_route_key)?;
+            let Some(alias) = self.load_cli_route_session(alias_route_key)? else {
+                continue;
+            };
+            if alias.agent_did != canonical.agent_did
+                || alias.runtime_profile_id != canonical.runtime_profile_id
+                || alias.driver_id != canonical.driver_id
+                || alias.controller_user_id != canonical.controller_user_id
+                || alias.controller_full_handle != canonical.controller_full_handle
+                || alias.controller_scope_key != canonical.controller_scope_key
+                || alias.native_session_id.is_none()
+            {
+                continue;
+            }
+            candidates.push(alias);
+        }
+        candidates.sort_by_key(|candidate| {
+            (
+                candidate.created_at_ms,
+                candidate.updated_at_ms,
+                candidate.route_key.clone(),
+            )
+        });
+        let Some(source) = candidates.into_iter().next() else {
+            return Ok(false);
+        };
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE cli_route_sessions
+SET native_session_id = ?1,
+    native_session_source = ?2,
+    last_run_id = COALESCE(last_run_id, ?3),
+    last_message_id = COALESCE(last_message_id, ?4),
+    last_error_code = NULL,
+    last_error_summary = NULL,
+    version = version + 1,
+    updated_at_ms = ?5
+WHERE route_key = ?6
+  AND native_session_id IS NULL
+"#,
+            rusqlite::params![
+                source.native_session_id,
+                source.native_session_source,
+                source.last_run_id,
+                source.last_message_id,
+                current_time_millis()?,
+                route_key,
+            ],
+        )?;
+        Ok(updated > 0)
     }
 
     pub fn load_cli_route_session(&self, route_key: &str) -> Result<Option<CliRouteSessionRecord>> {
