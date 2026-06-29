@@ -939,6 +939,7 @@ fn looks_like_claude_code_resume_missing(stdout: &[u8], stderr: &[u8]) -> bool {
         || combined.contains("conversation");
     mentions_resume_or_session
         && (combined.contains("not found")
+            || combined.contains("no conversation found")
             || combined.contains("no such")
             || combined.contains("does not exist")
             || combined.contains("unknown session")

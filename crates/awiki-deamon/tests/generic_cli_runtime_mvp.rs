@@ -4263,7 +4263,7 @@ PREV=""
 	  PREV="$ARG"
 	done
 	if [ "$RUN" = "run_task_msg_claude_route_2" ] && [ "$COUNT" = "1" ]; then
-	  printf 'cannot resume session %s: not found\n' "$SESSION" >&2
+	  printf 'No conversation found with session ID: %s\n' "$SESSION" >&2
 	  exit 1
 	fi
 	printf '{{"type":"system","session_id":"%s"}}\n' "$SESSION"
