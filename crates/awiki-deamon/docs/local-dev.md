@@ -174,6 +174,34 @@ App Message Agent 的 delegated inbox 还有以下产品级安全契约：
 - runtime final/status/action recovery 只通过 `awiki.message.sync.v1` / `awiki.app.action.v1` / `awiki.app.action.result.v1` 控制 payload 与 App 闭环；App 回传 action result 必须来自 daemon controller DID，audit 只记录 action id/state/error，不记录 draft/result body。
 - Message Agent runtime 默认拒绝 `msg.send` 和 `attachment.send`；唯一例外是 daemon host 内部 `host-runtime-final-outbox` token，可把 runtime final 转成发给 owner DID 的 message sync。拒绝 audit 不记录消息正文、附件路径、token 或本地 secret。
 
+产品级 full UI gate 由 `awiki-system-test` 调用 `awiki-me` E2E runner 完成：
+
+```bash
+cd awiki-system-test
+AWIKI_DAEMON_RUST_REPO=../awiki-cli-rs2 \
+AWIKI_ME_REPO=../awiki-me \
+AWIKI_SYSTEM_TEST_MODE=local \
+CARGO_BUILD_JOBS=1 \
+uv run --no-sync pytest \
+  tests_v2/daemon/test_message_agent_full_ui_real_backend_e2e.py \
+  -q -rs --tb=short
+```
+
+该 gate 会构建当前 checkout 的 `awiki-cli` 和 `awiki-deamon`，启动 foreground daemon，
+用 fake Hermes TUI Gateway 触发 `message.create_draft`，再由真实 App UI 完成
+Message Agent 启用、CLI peer direct text、daemon `runtime_final`、App 草稿确认、
+redacted `awiki.app.action.result.v1` 回传和撤销 Daemon 消息授权。报告必须包含
+`MSGAGENT-E2E-001..005` 以及 `uiEnabled`、`runtimeFinalReceived`、
+`draftConfirmed`、`actionResultReturned`、`authorizationRevoked`。
+
+该 gate 不等同于 real Hermes smoke。P0 使用 deterministic fake Hermes gateway 验证
+daemon contract 与产品 UI 链路；`AWIKI_ENABLE_DAEMON_HERMES_SMOKE=1` 才运行真实
+Hermes gateway smoke。选择 full UI gate 后，缺少 Rust checkout、App runner、
+backend/OTP、fake Hermes command 或本地 cleanup 后端都必须 fail-fast，不能用 skip
+表示通过。2026-07-01 remote 运行已到达 delegated inbox runtime launch，但当前阻塞在
+Hermes session 创建（daemon 本地状态 `last_error_summary=create Hermes session`），
+修复后需要重跑该 gate 作为 release evidence。
+
 步骤 01 不启动真实 runtime，也不连接远端 message-service。
 
 本地模拟安装脚本可使用 `file://` 下载根，不需要公网 CDN：
