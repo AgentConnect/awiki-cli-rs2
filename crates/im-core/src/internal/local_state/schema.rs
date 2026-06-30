@@ -926,8 +926,10 @@ fn create_schema(
     connection
         .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
+    let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
+        should_rebuild_conversation_summaries = true;
     }
     super::conversation_summaries::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
@@ -940,7 +942,13 @@ fn create_schema(
             .execute(statement, [])
             .map_err(super::local_state_unavailable)?;
     }
-    if backfill_conversation_summaries {
+    if super::messages::repair_control_payload_read_projection(connection)? > 0 {
+        should_rebuild_conversation_summaries = true;
+    }
+    if super::messages::repair_thread_read_state_alias_projection(connection)? > 0 {
+        should_rebuild_conversation_summaries = true;
+    }
+    if should_rebuild_conversation_summaries {
         super::conversation_summaries::rebuild_all(connection)?;
     }
     Ok(())

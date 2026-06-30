@@ -75,8 +75,16 @@ struct SummaryStateRow {
 }
 
 impl SummaryMessageRow {
+    fn is_control_payload(&self) -> bool {
+        super::messages::is_control_payload_for_projection(
+            &self.content_type,
+            &self.content,
+            &self.sender_did,
+        )
+    }
+
     fn is_unread_incoming(&self) -> bool {
-        self.direction == 0 && !self.is_read
+        self.direction == 0 && !self.is_read && !self.is_control_payload()
     }
 
     fn is_unread_mention(&self) -> bool {
@@ -434,7 +442,7 @@ ORDER BY sort_at ASC,
     for row in rows {
         let row = row.map_err(super::local_state_unavailable)?;
         message_count += 1;
-        if row.direction == 0 && !row.is_read {
+        if row.is_unread_incoming() {
             unread_count += 1;
             if row.mentions_current_user {
                 unread_mention_count += 1;

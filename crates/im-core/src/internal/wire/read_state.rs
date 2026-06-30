@@ -97,8 +97,12 @@ fn thread_to_wire(thread: crate::messages::ThreadRef) -> crate::ImResult<Value> 
                 "group_did": group_did,
             }))
         }
-        crate::messages::ThreadRef::Thread(_) => {
-            Err(crate::ImError::unsupported("read-state-raw-thread-ref"))
+        crate::messages::ThreadRef::Thread(thread) => {
+            let thread_id = required_string("thread.thread_id", thread.as_str())?;
+            Ok(json!({
+                "kind": "thread",
+                "thread_id": thread_id,
+            }))
         }
     }
 }
@@ -124,4 +128,38 @@ fn invalid_decimal(field: &str, value: &str) -> crate::ImError {
         Some(field.to_owned()),
         format!("{field} must be a non-negative decimal string, got {value:?}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_read_state_supports_raw_thread_id_wire_shape() {
+        let identity = WireIdentity {
+            did: "did:example:alice".to_owned(),
+        };
+
+        let params = build_mark_read_state_rpc_params(
+            &identity,
+            MarkReadStateWireRequest {
+                thread: crate::messages::ThreadRef::Thread(
+                    crate::ids::ThreadId::parse("dm:peer-scope:v1:abc").unwrap(),
+                ),
+                read_up_to_server_seq: Some("42".to_owned()),
+                read_up_to_message_id: None,
+                client_observed_at: None,
+                fallback_max_message_ids: None,
+                device_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(params["body"]["thread"]["kind"], "thread");
+        assert_eq!(
+            params["body"]["thread"]["thread_id"],
+            "dm:peer-scope:v1:abc"
+        );
+        assert_eq!(params["body"]["read_up_to_server_seq"], "42");
+    }
 }
