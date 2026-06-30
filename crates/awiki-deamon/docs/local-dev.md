@@ -167,6 +167,13 @@ cargo test -p awiki-deamon --locked user_delegated -- --nocapture
 
 该路径验证 daemon 会拉取 direct + group inbox；只有合法 P9 `text + mentions` 群 payload 中的 `target.kind = agent` 精确命中 runtime agent DID 时才创建 RuntimeTask。`target.kind = group_selector`（包括 `@agents` / `@all` / `@humans`）、`target.kind = human`、纯文本 `@AgentName`、invalid range 和 E2EE opaque 都不能触发 runtime。mention 只是注意力信号，不是授权；daemon 仍会通过 user-service invocation policy 做硬权限判断，并且 task 只携带群内回复 allowlist。
 
+App Message Agent 的 delegated inbox 还有以下产品级安全契约：
+
+- 只有 `message_agent_ready`、`message_agent_active`、`message_agent_ensuring` 且未 revoked 的 binding 才会被拉取和处理；`message_agent_disabled`、`message_agent_revoked` 或存在 `revoked_at_ms` 的 binding 会直接跳过，并写入 `user_delegated_inbox.sync.skipped_inactive_binding` audit。
+- E2EE / cipher / secure-direct 消息只记录 opaque 事件，不写 plaintext excerpt，不进入 Hermes prompt。
+- runtime final/status/action recovery 只通过 `awiki.message.sync.v1` / `awiki.app.action.v1` / `awiki.app.action.result.v1` 控制 payload 与 App 闭环；App 回传 action result 必须来自 daemon controller DID，audit 只记录 action id/state/error，不记录 draft/result body。
+- Message Agent runtime 默认拒绝 `msg.send` 和 `attachment.send`；唯一例外是 daemon host 内部 `host-runtime-final-outbox` token，可把 runtime final 转成发给 owner DID 的 message sync。拒绝 audit 不记录消息正文、附件路径、token 或本地 secret。
+
 步骤 01 不启动真实 runtime，也不连接远端 message-service。
 
 本地模拟安装脚本可使用 `file://` 下载根，不需要公网 CDN：
