@@ -19,14 +19,13 @@ use crate::registration::{
     AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
     AgentRegistrationExchangeResult, DidAuthMaterial, RegistrationToken,
 };
-use crate::runtime::{RuntimeAgentProfile, RuntimeRunStatus};
+use crate::runtime::RuntimeAgentProfile;
 use crate::runtime_inbox::{
     clamp_limit, query_runtime_inbox, query_runtime_inbox_thread, RuntimeInboxQuery,
     RuntimeInboxScope, RuntimeInboxThreadKind, RuntimeInboxThreadQuery,
 };
 use crate::state::{
-    controller_scope_key, CliRuntimeProfileRecord, DaemonState, HermesSessionRoute,
-    RuntimeAgentCreateRequestRecord,
+    controller_scope_key, CliRuntimeProfileRecord, DaemonState, RuntimeAgentCreateRequestRecord,
 };
 use crate::upgrade::{
     upgrade_daemon_with_progress_and_cancel, DaemonUpgradeCancelToken, DaemonUpgradeProgress,
@@ -39,10 +38,8 @@ const AGENT_COMMAND_SCHEMA: &str = "awiki.agent.command.v1";
 const AGENT_STATUS_SCHEMA: &str = "awiki.agent.status.v1";
 const RUNTIME_AGENT_CREATE: &str = "runtime.agent.create";
 const AGENT_STATUS_QUERY: &str = "agent.status.query";
-const RUNTIME_SESSION_RESET: &str = "runtime.session.reset";
 const RUNTIME_SESSION_LIST: &str = "runtime.session.list";
 const RUNTIME_SESSION_STATUS: &str = "runtime.session.status";
-const RUNTIME_RUN_RETRY: &str = "runtime.run.retry";
 const DAEMON_UPGRADE: &str = "daemon.upgrade";
 const DAEMON_UPGRADE_CANCEL: &str = "daemon.upgrade.cancel";
 const RUNTIME_AGENT_REBUILD: &str = "runtime.agent.rebuild";
@@ -356,20 +353,8 @@ where
                 command_id: envelope.command_id,
             })
         }
-        RUNTIME_SESSION_RESET => {
-            handle_runtime_session_reset(outbox, state, &daemon_agent, &message, &envelope)?;
-            Ok(AgentCommandOutcome::StatusReported {
-                command_id: envelope.command_id,
-            })
-        }
         RUNTIME_SESSION_LIST | RUNTIME_SESSION_STATUS => {
             handle_runtime_session_list(outbox, state, &daemon_agent, &message, &envelope)?;
-            Ok(AgentCommandOutcome::StatusReported {
-                command_id: envelope.command_id,
-            })
-        }
-        RUNTIME_RUN_RETRY => {
-            handle_runtime_run_retry(outbox, state, &daemon_agent, &message, &envelope)?;
             Ok(AgentCommandOutcome::StatusReported {
                 command_id: envelope.command_id,
             })
@@ -1177,162 +1162,6 @@ where
     )
 }
 
-fn handle_runtime_session_reset<O>(
-    outbox: &O,
-    state: &DaemonState,
-    daemon_agent: &AgentDefinition,
-    message: &IncomingAgentPayloadMessage,
-    payload: &AgentCommandEnvelope,
-) -> Result<()>
-where
-    O: AgentManagementOutbox + Clone + Send + 'static,
-{
-    let runtime_agent_did = required_arg_string(&payload.args, "runtime_agent_did")?;
-    let conversation_id = optional_arg_string(&payload.args, "conversation_id");
-    let runtime_agent = match load_owned_runtime_agent(state, daemon_agent, &runtime_agent_did) {
-        Ok(runtime_agent) => runtime_agent,
-        Err(_) => {
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("runtime agent does not belong to this daemon".to_string()),
-                json!({
-                    "command": RUNTIME_SESSION_RESET,
-                    "runtime_agent_did": runtime_agent_did,
-                    "error_code": "runtime_not_owned",
-                }),
-            );
-        }
-    };
-    let Some(runtime_profile_id) = runtime_agent.runtime_profile_id.as_deref() else {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("runtime agent profile is missing".to_string()),
-            json!({
-                "command": RUNTIME_SESSION_RESET,
-                "runtime_agent_did": runtime_agent_did,
-                "error_code": "runtime_profile_missing",
-            }),
-        );
-    };
-    let runtime_plugin_id = runtime_agent
-        .runtime_plugin_id
-        .as_deref()
-        .unwrap_or("unknown");
-    let driver_id = if runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
-        let profile = match state.load_cli_runtime_profile(runtime_profile_id) {
-            Ok(profile) => profile,
-            Err(_) => {
-                return send_command_status(
-                    outbox,
-                    daemon_agent,
-                    message,
-                    &payload.command_id,
-                    "failed",
-                    Some("generic-cli runtime profile is unavailable".to_string()),
-                    json!({
-                        "command": RUNTIME_SESSION_RESET,
-                        "runtime_agent_did": runtime_agent_did,
-                        "runtime_plugin_id": runtime_plugin_id,
-                        "error_code": "runtime_profile_unavailable",
-                    }),
-                );
-            }
-        };
-        Some(profile.driver_id)
-    } else {
-        None
-    };
-    let reset_scope = if conversation_id.is_some() {
-        "route"
-    } else {
-        "controller_scope"
-    };
-    let reset_count = if runtime_plugin_id == GENERIC_CLI_RUNTIME_PLUGIN_ID {
-        if let Some(conversation_id) = conversation_id.as_deref() {
-            let conversation_id = crate::state::canonical_cli_conversation_id(conversation_id)?;
-            let route_key = crate::state::cli_route_session_key(
-                &runtime_agent.agent_did,
-                &daemon_agent.controller_scope_key,
-                &conversation_id,
-            )?;
-            state.reset_cli_route_session_by_route(&route_key)?
-        } else {
-            state.reset_cli_route_sessions_for_runtime_controller_scope(
-                &runtime_agent.agent_did,
-                runtime_profile_id,
-                &daemon_agent.controller_scope_key,
-            )?
-        }
-    } else if let Some(conversation_id) = conversation_id.as_deref() {
-        let route = HermesSessionRoute::new(
-            runtime_agent.agent_did.clone(),
-            runtime_agent.handle.clone(),
-            runtime_profile_id.to_string(),
-            daemon_agent.controller_scope_key.clone(),
-            if conversation_id.starts_with("group:") {
-                "group_visible"
-            } else {
-                "controller_private"
-            },
-            if let Some(group_key) = conversation_id.strip_prefix("group:") {
-                format!("group:{group_key}")
-            } else {
-                format!("controller:{}", daemon_agent.controller_scope_key)
-            },
-            Some(conversation_id.to_string()),
-            "conversation",
-        );
-        state.reset_active_hermes_session_by_route(&route)?
-    } else {
-        state.reset_active_hermes_sessions_for_runtime_controller_scope(
-            &runtime_agent.agent_did,
-            runtime_profile_id,
-            &daemon_agent.controller_scope_key,
-        )?
-    };
-    state.insert_audit_event_json(
-        "runtime.session.reset",
-        Some(&runtime_agent.agent_did),
-        Some(runtime_profile_id),
-        None,
-        None,
-        json!({
-            "command_id": payload.command_id,
-            "runtime_plugin_id": runtime_plugin_id,
-            "driver_id": driver_id,
-            "reset_scope": reset_scope,
-            "conversation_id_present": conversation_id.is_some(),
-            "reset_count": reset_count,
-        }),
-    )?;
-    send_command_status(
-        outbox,
-        daemon_agent,
-        message,
-        &payload.command_id,
-        "ready",
-        Some("runtime session mapping reset".to_string()),
-        json!({
-            "command": RUNTIME_SESSION_RESET,
-            "runtime_agent_did": runtime_agent.agent_did,
-            "daemon_agent_did": daemon_agent.agent_did,
-            "runtime_plugin_id": runtime_plugin_id,
-            "driver_id": driver_id,
-            "reset_scope": reset_scope,
-            "conversation_id_present": conversation_id.is_some(),
-            "reset_count": reset_count,
-        }),
-    )
-}
-
 fn handle_runtime_session_list<O>(
     outbox: &O,
     state: &DaemonState,
@@ -1587,125 +1416,6 @@ where
                 "limit": limit,
                 "next_cursor": Value::Null,
             },
-        }),
-    )
-}
-
-fn handle_runtime_run_retry<O>(
-    outbox: &O,
-    state: &DaemonState,
-    daemon_agent: &AgentDefinition,
-    message: &IncomingAgentPayloadMessage,
-    payload: &AgentCommandEnvelope,
-) -> Result<()>
-where
-    O: AgentManagementOutbox + Clone + Send + 'static,
-{
-    let runtime_agent_did = required_arg_string(&payload.args, "runtime_agent_did")?;
-    let run_id = required_arg_string(&payload.args, "run_id")?;
-    if load_owned_runtime_agent(state, daemon_agent, &runtime_agent_did).is_err() {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("runtime agent does not belong to this daemon".to_string()),
-            json!({
-                "command": RUNTIME_RUN_RETRY,
-                "runtime_agent_did": runtime_agent_did,
-                "run_id": run_id,
-                "error_code": "runtime_not_owned",
-            }),
-        );
-    }
-    let run = match state.load_runtime_run(&run_id) {
-        Ok(run) => run,
-        Err(_) => {
-            return send_command_status(
-                outbox,
-                daemon_agent,
-                message,
-                &payload.command_id,
-                "failed",
-                Some("run_id is not in the local recent run cache".to_string()),
-                json!({
-                    "command": RUNTIME_RUN_RETRY,
-                    "runtime_agent_did": runtime_agent_did,
-                    "run_id": run_id,
-                    "error_code": "run_not_found",
-                }),
-            );
-        }
-    };
-    if run.agent_did != runtime_agent_did {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("run does not belong to runtime agent".to_string()),
-            json!({
-                "command": RUNTIME_RUN_RETRY,
-                "runtime_agent_did": runtime_agent_did,
-                "run_id": run_id,
-                "error_code": "run_runtime_mismatch",
-            }),
-        );
-    }
-    if run.status != RuntimeRunStatus::Failed {
-        return send_command_status(
-            outbox,
-            daemon_agent,
-            message,
-            &payload.command_id,
-            "failed",
-            Some("only failed runs can be retried".to_string()),
-            json!({
-                "command": RUNTIME_RUN_RETRY,
-                "runtime_agent_did": runtime_agent_did,
-                "run_id": run_id,
-                "error_code": "invalid_run_state",
-                "run_state": run.status.as_str(),
-            }),
-        );
-    }
-    let retry = state.insert_runtime_retry_request(&run, &payload.command_id)?;
-    let task = state.load_runtime_task(&run.task_id)?;
-    let retry_run_id = format!("run_{}", retry.retry_id);
-    state.insert_audit_event_json(
-        "runtime.run.retry.requested",
-        Some(&run.agent_did),
-        Some(&run.runtime_profile_id),
-        Some(&run.run_id),
-        None,
-        json!({
-            "command_id": payload.command_id,
-            "task_id": run.task_id,
-            "retry_id": retry.retry_id,
-        }),
-    )?;
-    send_command_status(
-        outbox,
-        daemon_agent,
-        message,
-        &payload.command_id,
-        "queued",
-        Some("runtime run retry queued".to_string()),
-        json!({
-            "command": RUNTIME_RUN_RETRY,
-            "runtime_agent_did": runtime_agent_did,
-            "daemon_agent_did": daemon_agent.agent_did,
-            "run_id": run_id,
-            "retry_run_id": retry_run_id,
-            "message_id": task.task_id,
-            "conversation_id": task.conversation_id,
-            "retry_id": retry.retry_id,
-            "retry_status": retry.status,
-            "next_attempt_at_ms": retry.next_attempt_at_ms,
-            "next_attempt_at": rfc3339_from_millis(retry.next_attempt_at_ms),
-            "updated_at": rfc3339_from_millis(retry.updated_at_ms),
         }),
     )
 }
@@ -3020,20 +2730,6 @@ fn rfc3339_now() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-fn rfc3339_from_millis(ms: i64) -> String {
-    let seconds = ms.div_euclid(1000);
-    let nanos = (ms.rem_euclid(1000) * 1_000_000) as i32;
-    let Ok(value) = time::OffsetDateTime::from_unix_timestamp(seconds) else {
-        return rfc3339_now();
-    };
-    let Ok(value) = value.replace_nanosecond(nanos as u32) else {
-        return rfc3339_now();
-    };
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| rfc3339_now())
 }
 
 fn default_true() -> bool {

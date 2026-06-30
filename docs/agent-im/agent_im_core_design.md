@@ -1132,7 +1132,7 @@ ForegroundRuntime
 
 ```text
 agent management commands: runtime.agent.create / agent.status.query / daemon.upgrade
-runtime commands: runtime.task.submit / runtime.run.retry / runtime.session.reset
+runtime commands: runtime.task.submit
 app bridge commands: app.capabilities.update / app.action.result
 message bridge commands: message.forward / message.sync.ack
 ```

@@ -440,9 +440,13 @@ Codex CLI 和 Claude Code CLI 是外部 provider 路径，不是本地模型。�
 
 ---
 
-## 7. Reset、Cleanup、Backup
+## 7. Cleanup、Backup、Local Diagnostics
 
-`runtime.session.reset` 首版只清 AWiki active route/native pointer 和 route 状态。它不删除：
+远端 `runtime.session.reset` 和手动 `runtime.run.retry` 不作为产品控制面开放。App 不展示重置 Session 或输入 `run_id` 的重试入口；daemon 收到这类旧命令时按 unsupported command 处理。
+
+底层实现仍可以保留内部 route/session 恢复和 busy 自动退避队列，用于 Codex / Claude Code 运行稳定性。内部恢复不等于用户可调用的远端 cleanup/reset 能力，也不应该暴露 provider/native transcript 或本机路径。
+
+未来如果重新设计本地诊断 reset，它最多只能清 AWiki active route/native pointer 和 route 状态。它不应删除：
 
 - Codex `CODEX_HOME`
 - Claude Code 自身保存的 native transcript/session/history
@@ -451,7 +455,7 @@ Codex CLI 和 Claude Code CLI 是外部 provider 路径，不是本地模型。�
 - run history
 - provider-side retained content
 
-cleanup/delete/support bundle/backup/restore 首版 unsupported/future。未来实现必须至少具备：
+cleanup/support bundle/backup/restore 首版 unsupported/future。未来实现必须至少具备：
 
 - local-only/admin-only 命令面。
 - dry-run。
@@ -475,7 +479,7 @@ cleanup/delete/support bundle/backup/restore 首版 unsupported/future。未来�
 | Claude Code RouteRoot native resume | 已实现 | `--session-id` / `--resume` + route cwd；host HOME 隔离风险需如实展示。 |
 | Fake CLI command-template tests | 已实现 | 证明 argv/env/parser/route isolation 的核心契约。 |
 | Real CLI canary | optional local-only / future | 不是首版发布必需门禁；执行时必须 synthetic profile/route/workspace，记录成本和污染风险。 |
-| Route list/status/reset | 已实现 | 只作为脱敏诊断面。 |
+| Route list/status | 已实现 | 只作为脱敏诊断面；远端手动 reset 不开放。 |
 | Runtime card / App visual mapping | foundation | 可展示 created/needs_setup/queued/running/failed 等低敏状态；不是完整 remediation UI。 |
 | Queue/deferred/drain | foundation only | 不能承诺完整 durable FIFO、完整授权重校验、失败消息自动恢复或 manual replay。 |
 | Failed status | 已实现首版 | 脱敏 error code + next_action；不发 final，不推进水位。 |
@@ -494,7 +498,7 @@ cleanup/delete/support bundle/backup/restore 首版 unsupported/future。未来�
 |---|---|---|
 | 用户消息试图覆盖 route、recipient、sandbox、model 或 cleanup 控制面 | 控制面来自 DB/profile/lease/trusted parser；prompt 只是任务内容。 | prompt injection 仍可能影响模型自然语言输出，需要后续更强 policy/review。 |
 | CLI stdout/final 伪造控制面 | stdout/final 只作为 output；native id 需 parser + id/source 校验；reply target 由 daemon route binding 决定。 | provider send ledger 和完整 parser schema evolution 仍是 future。 |
-| reset 后旧 run callback 污染新 route | local RPC side effect、fallback final、native id writeback、lease release 都检查当前 route lock。 | 完整 generation/tombstone 和 daemon crash orphan recovery 仍是 future。 |
+| route 重建后旧 run callback 污染新 route | local RPC side effect、fallback final、native id writeback、lease release 都检查当前 route lock。 | 完整 generation/tombstone 和 daemon crash orphan recovery 仍是 future。 |
 | stale queue item 绕过撤权 | queue foundation 保存最小 reference；docs 标明完整 rehydrate/authorization replay 未实现。 | 首版 drain 不能宣称完整撤回/retention/附件/group revision 重校验。 |
 | provider account 变化后误 resume | route identity 与 explicit native id 绑定；`resume --last` 已从产品路径移除，降低跨 route 误恢复。`home_isolation` 和 setup 状态能表达部分风险。 | provider account fingerprint/scope provenance 尚未完整实现。 |
 | 同一 state root 多活 split-brain | state-root owner guard foundation。 | stale owner 接管、clone/restore split-brain 仍需运维 runbook 和后续 hardening。 |
@@ -518,11 +522,7 @@ App/remote status 只能展示低敏 `setup_state`、`next_action`、binary/auth
 | `failed` | 单条消息失败。 | 查看脱敏 `error_code` / `next_action`；首版不自动恢复旧消息。 |
 | `manual_review_required` | 需要本机人工确认。 | 不能由普通远端消息触发 cleanup/replay/support bundle。 |
 
-### 10.2 reset
-
-reset 适合清掉当前 route 的 AWiki active native pointer，让下一条消息重新创建或重新捕获 native session。reset 不删除 provider/native 历史，不等于 cleanup、disable、archive 或 DID/key revocation。
-
-### 10.3 system-test gate
+### 10.2 system-test gate
 
 最终集成 gate 使用 sibling system-test repo：
 
