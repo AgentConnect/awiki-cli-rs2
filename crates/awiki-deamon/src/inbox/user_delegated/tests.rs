@@ -942,6 +942,7 @@ fn fixture() -> TestFixture {
             runtime_profile_id: "profile_hermes".to_string(),
             runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
             display_name: Some("Hermes".to_string()),
+            preferred_language: "zh-Hans".to_string(),
             workspace_id: None,
             workspace_root: None,
             workspace_mode: None,

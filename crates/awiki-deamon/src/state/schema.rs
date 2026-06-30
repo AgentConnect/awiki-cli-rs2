@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 30;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 31;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -49,6 +49,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             agent_did TEXT,
             runtime_plugin_id TEXT NOT NULL,
             display_name TEXT,
+            preferred_language TEXT NOT NULL DEFAULT 'zh-Hans',
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -605,6 +606,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_final_outbox_provenance_v28(connection)?;
     migrate_runtime_scope_authority_v29(connection)?;
     migrate_hermes_native_session_stored_ids_v30(connection)?;
+    migrate_runtime_profile_preferred_language_v31(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -612,6 +614,23 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_profile_preferred_language_v31(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "runtime_profile",
+        "preferred_language",
+        "TEXT NOT NULL DEFAULT 'zh-Hans'",
+    )?;
+    connection.execute_batch(
+        r#"
+        UPDATE runtime_profile
+        SET preferred_language = 'zh-Hans'
+        WHERE preferred_language IS NULL OR preferred_language = '';
+        "#,
     )?;
     Ok(())
 }

@@ -128,6 +128,7 @@ fn profile(workspace_root: std::path::PathBuf) -> RuntimeAgentProfile {
         runtime_profile_id: "profile_hermes_alice".to_string(),
         runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
         display_name: Some("Alice Hermes".to_string()),
+        preferred_language: "zh-Hans".to_string(),
         workspace_id: Some("workspace_hermes".to_string()),
         workspace_root: Some(workspace_root),
         workspace_mode: Some(WorkspaceMode::SharedRoot),
@@ -1023,7 +1024,7 @@ fn hermes_message_prompt_wrapper_debug_redacts_user_message() {
         conversation_id: None,
         text: "secret rtok_debug_secret_value_123456789 jwt_token auth_private_key".to_string(),
     };
-    let wrapper = HermesPromptWrapper::new(&hermes, &run, &task);
+    let wrapper = HermesPromptWrapper::new(&hermes, &run, &task, "zh-Hans");
     let debug = format!("{wrapper:?}");
 
     assert!(debug.contains("<redacted>"));
@@ -1209,7 +1210,7 @@ fn hermes_group_mention_prompt_explains_group_context_and_visible_text() {
         .to_string(),
     };
 
-    let prompt = HermesPromptWrapper::new(&hermes, &run, &task).to_prompt_text();
+    let prompt = HermesPromptWrapper::new(&hermes, &run, &task, "zh-Hans").to_prompt_text();
 
     assert!(prompt.contains("conversation_kind: group"));
     assert!(prompt.contains("runtime_task_context:"));
@@ -1270,7 +1271,7 @@ fn hermes_external_direct_prompt_is_separate_from_controller_and_group_prompt() 
         .to_string(),
     };
 
-    let prompt = HermesPromptWrapper::new(&hermes, &run, &task).to_prompt_text();
+    let prompt = HermesPromptWrapper::new(&hermes, &run, &task, "zh-Hans").to_prompt_text();
 
     assert!(prompt.contains("trigger_kind: external_direct"));
     assert!(prompt.contains("sender_trust_level: authorized_external_direct_requester"));
@@ -1330,7 +1331,7 @@ fn hermes_delegated_direct_prompt_is_separate_from_external_controller_and_group
         .to_string(),
     };
 
-    let prompt = HermesPromptWrapper::new(&hermes, &run, &task).to_prompt_text();
+    let prompt = HermesPromptWrapper::new(&hermes, &run, &task, "zh-Hans").to_prompt_text();
 
     assert!(prompt.contains("trigger_kind: delegated_direct"));
     assert!(prompt.contains("sender_trust_level: authorized_delegated_direct_requester"));

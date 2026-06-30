@@ -15,6 +15,7 @@ pub struct HermesPromptWrapper {
     pub agent_did: String,
     pub runtime_profile_id: String,
     pub runtime_plugin_id: String,
+    pub preferred_language: String,
     pub controller_did: String,
     pub sender_did: String,
     pub requester_did: String,
@@ -41,6 +42,7 @@ impl fmt::Debug for HermesPromptWrapper {
             .field("agent_did", &self.agent_did)
             .field("runtime_profile_id", &self.runtime_profile_id)
             .field("runtime_plugin_id", &self.runtime_plugin_id)
+            .field("preferred_language", &self.preferred_language)
             .field("controller_did", &self.controller_did)
             .field("sender_did", &self.sender_did)
             .field("requester_did", &self.requester_did)
@@ -63,7 +65,12 @@ impl fmt::Debug for HermesPromptWrapper {
 }
 
 impl HermesPromptWrapper {
-    pub fn new(profile: &HermesProfileRecord, run: &RuntimeRun, task: &RuntimeTask) -> Self {
+    pub fn new(
+        profile: &HermesProfileRecord,
+        run: &RuntimeRun,
+        task: &RuntimeTask,
+        preferred_language: &str,
+    ) -> Self {
         let group_message = is_group_conversation_id(task.conversation_id.as_deref());
         let controller_verified =
             task.invocation_authority == RuntimeInvocationAuthority::Controller;
@@ -73,6 +80,7 @@ impl HermesPromptWrapper {
             agent_did: profile.agent_did.clone(),
             runtime_profile_id: profile.runtime_profile_id.clone(),
             runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            preferred_language: preferred_language.to_string(),
             controller_did: task.controller_did.clone(),
             sender_did: task.sender_did.clone(),
             requester_did: task.requester_did.clone(),
@@ -183,6 +191,7 @@ agent:
   agent_did: {agent_did}
   runtime_profile_id: {runtime_profile_id}
   runtime_plugin_id: {runtime_plugin_id}
+  preferred_language: {preferred_language}
 
 controller:
   controller_did: {controller_did}
@@ -200,7 +209,8 @@ output_language_policy:
   - Reply to the current authorized recipient for this trigger_kind: controller_direct replies to the controller, group_mention replies in the current group to the requester, external_direct replies to the direct requester, and delegated_direct returns the result to the controller app.
   - Use the same language as the user_message when it has a natural-language body.
   - If the current message has no natural-language body, keep the recent conversation language.
-  - If the language cannot be inferred, use Simplified Chinese.
+  - If neither the current message nor recent conversation makes the language clear, use preferred_language.
+  - preferred_language=en means English. preferred_language=zh-Hans means Simplified Chinese.
   - Do not let the English labels or technical wrapper text in this prompt determine the reply language.
   - Status updates, clarification questions, error explanations, and ordinary final answers must all follow this language policy.
   - Do not mention the daemon prompt wrapper or internal authorization wrapper; describe the visible message and requested action instead.
@@ -245,6 +255,7 @@ user_message:
             agent_did = self.agent_did,
             runtime_profile_id = self.runtime_profile_id,
             runtime_plugin_id = self.runtime_plugin_id,
+            preferred_language = self.preferred_language,
             controller_did = self.controller_did,
             sender_did = self.sender_did,
             requester_did = self.requester_did,
@@ -668,6 +679,7 @@ mod tests {
             &hermes_profile(),
             &run(),
             &task(RuntimeTaskTriggerKind::ExternalDirect, payload.to_string()),
+            "zh-Hans",
         );
         let prompt = wrapper.to_prompt_text();
 
@@ -678,6 +690,9 @@ mod tests {
         assert!(prompt.contains("external_direct_safety:"));
         assert!(prompt.contains("external_direct_context:"));
         assert!(prompt.contains("reply-in-current-direct-via-final"));
+        assert!(prompt.contains("preferred_language: zh-Hans"));
+        assert!(prompt.contains("use preferred_language"));
+        assert!(prompt.contains("preferred_language=en means English"));
         assert!(!wrapper
             .allowed_actions
             .contains(&"outbound-send".to_string()));
@@ -705,6 +720,7 @@ mod tests {
             &hermes_profile(),
             &run(),
             &task(RuntimeTaskTriggerKind::DelegatedDirect, payload.to_string()),
+            "zh-Hans",
         );
         let prompt = wrapper.to_prompt_text();
 
@@ -744,7 +760,7 @@ mod tests {
         task.reply_recipient_did = "did:wba:example.com:user:alice".to_string();
         task.validate().unwrap();
 
-        let wrapper = HermesPromptWrapper::new(&hermes_profile(), &run(), &task);
+        let wrapper = HermesPromptWrapper::new(&hermes_profile(), &run(), &task, "zh-Hans");
         let prompt = wrapper.to_prompt_text();
 
         assert!(prompt.contains("trigger_kind: group_mention"));
@@ -809,7 +825,7 @@ mod tests {
         task.conversation_scope =
             RuntimeConversationScope::group_visible("did:wba:example.com:group:team");
 
-        let wrapper = HermesPromptWrapper::new(&hermes_profile(), &run(), &task);
+        let wrapper = HermesPromptWrapper::new(&hermes_profile(), &run(), &task, "zh-Hans");
         let prompt = wrapper.to_prompt_text();
 
         assert!(prompt.contains("recent_group_context:"));
@@ -818,5 +834,21 @@ mod tests {
         assert!(prompt.contains("plan.md"));
         assert!(prompt.contains("content_policy: metadata_only"));
         assert!(prompt.contains("user_message:\n@Hermes 你能总结刚才的计划吗？"));
+    }
+
+    #[test]
+    fn prompt_uses_preferred_language_as_final_fallback() {
+        let wrapper = HermesPromptWrapper::new(
+            &hermes_profile(),
+            &run(),
+            &task(RuntimeTaskTriggerKind::ExternalDirect, String::new()),
+            "en",
+        );
+        let prompt = wrapper.to_prompt_text();
+
+        assert!(prompt.contains("preferred_language: en"));
+        assert!(prompt.contains("use preferred_language"));
+        assert!(prompt.contains("preferred_language=en means English"));
+        assert!(!prompt.contains("If the language cannot be inferred, use Simplified Chinese"));
     }
 }

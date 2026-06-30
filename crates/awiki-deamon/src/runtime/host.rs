@@ -521,6 +521,7 @@ where
     let launch_context = RuntimeLaunchContext {
         run: run.clone(),
         task,
+        preferred_language: profile.preferred_language.clone(),
         workspace_root: profile.workspace_root.clone(),
         workspace_instance: workspace_instance.clone(),
         cli_route_session: cli_route_session.clone(),

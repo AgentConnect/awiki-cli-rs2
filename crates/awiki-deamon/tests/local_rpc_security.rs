@@ -67,6 +67,7 @@ fn insert_runtime_task_context(
                 runtime_profile_id: "profile_1".to_string(),
                 runtime_plugin_id: "test-runtime".to_string(),
                 display_name: Some("Test Runtime".to_string()),
+                preferred_language: "zh-Hans".to_string(),
                 workspace_id: Some("workspace_test".to_string()),
                 workspace_root: Some(workspace_root.to_path_buf()),
                 workspace_mode: Some(WorkspaceMode::SharedRoot),

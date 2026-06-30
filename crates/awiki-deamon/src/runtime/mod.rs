@@ -34,6 +34,7 @@ pub struct RuntimeAgentProfile {
     pub runtime_profile_id: String,
     pub runtime_plugin_id: String,
     pub display_name: Option<String>,
+    pub preferred_language: String,
     pub workspace_id: Option<String>,
     pub workspace_root: Option<PathBuf>,
     pub workspace_mode: Option<WorkspaceMode>,
@@ -123,6 +124,7 @@ pub enum RuntimeRunStatus {
 pub struct RuntimeLaunchContext {
     pub run: RuntimeRun,
     pub task: RuntimeTask,
+    pub preferred_language: String,
     pub workspace_root: Option<PathBuf>,
     pub workspace_instance: Option<WorkspaceInstance>,
     pub cli_route_session: Option<CliRouteSessionRecord>,
@@ -181,6 +183,9 @@ impl RuntimeAgentProfile {
         if self.runtime_plugin_id.trim().is_empty() {
             bail!("runtime_plugin_id must not be empty");
         }
+        if normalize_preferred_language(&self.preferred_language).is_none() {
+            bail!("preferred_language must be zh-Hans or en");
+        }
         if self.workspace_id.as_deref().is_some_and(str::is_empty) {
             bail!("workspace_id must not be empty when present");
         }
@@ -196,6 +201,18 @@ impl RuntimeAgentProfile {
         }
         Ok(())
     }
+}
+
+pub fn normalize_preferred_language(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "zh" | "zh-cn" | "zh-hans" | "zh_hans" => Some("zh-Hans".to_string()),
+        "en" | "en-us" | "en-gb" => Some("en".to_string()),
+        _ => None,
+    }
+}
+
+pub fn default_preferred_language() -> String {
+    "zh-Hans".to_string()
 }
 
 impl RuntimeTask {

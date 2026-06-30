@@ -153,7 +153,12 @@ where
                 })
                 .context("create Hermes session")?
         };
-        let prompt = HermesPromptWrapper::new(&self.profile, &context.run, &context.task);
+        let prompt = HermesPromptWrapper::new(
+            &self.profile,
+            &context.run,
+            &context.task,
+            &context.preferred_language,
+        );
         let request = HermesPromptSubmitRequest {
             run_id: context.run.run_id.clone(),
             message_id: context.task.task_id.clone(),

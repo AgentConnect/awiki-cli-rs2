@@ -456,6 +456,7 @@ fn hermes_profile_repair_rewrites_stale_outbound_skill_without_changing_identity
         runtime_profile_id: "profile_hermes_stale".to_string(),
         runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
         display_name: Some("Stale Hermes".to_string()),
+        preferred_language: "zh-Hans".to_string(),
         workspace_id: None,
         workspace_root: None,
         workspace_mode: None,

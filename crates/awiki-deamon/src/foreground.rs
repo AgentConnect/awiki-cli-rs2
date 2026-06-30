@@ -2023,10 +2023,12 @@ async fn route_message(
                     target_agent_did,
                     &sender_did,
                 )?;
+                let profile = state.load_runtime_agent_profile(target_agent_did)?;
                 let task_text = attachment_runtime_prompt_text(
                     config,
                     target_client,
                     target_agent_did,
+                    &profile.preferred_language,
                     message,
                     &sender_did,
                     payload,
@@ -2169,7 +2171,7 @@ where
         .load_runtime_daemon_binding(target_agent_did)?
         .with_context(|| format!("runtime daemon binding missing for {target_agent_did}"))?;
     state.load_agent_definition(&binding.daemon_agent_did)?;
-    state.load_agent_definition(target_agent_did)?;
+    let profile = state.load_runtime_agent_profile(target_agent_did)?;
     let conversation_id = conversation_id(message);
     let status_sender = runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
     let auth = daemon_auth_material(
@@ -2204,6 +2206,7 @@ where
         config,
         target_client,
         target_agent_did,
+        &profile.preferred_language,
         message,
         message.sender.as_str(),
         &mention_payload,
@@ -2441,6 +2444,7 @@ async fn group_agent_mention_content_text(
     config: &DaemonConfig,
     target_client: &im_core::ImClient,
     target_agent_did: &str,
+    preferred_language: &str,
     message: &Message,
     sender_did: &str,
     mention_payload: &MessageMentionPayload,
@@ -2456,6 +2460,7 @@ async fn group_agent_mention_content_text(
             config,
             target_client,
             target_agent_did,
+            preferred_language,
             message,
             sender_did,
             raw_payload,

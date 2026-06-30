@@ -72,14 +72,16 @@ INSERT INTO runtime_profile (
     agent_did,
     runtime_plugin_id,
     display_name,
+    preferred_language,
     status,
     created_at,
     updated_at
-) VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?5)
+) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)
 ON CONFLICT(runtime_profile_id) DO UPDATE SET
     agent_did = excluded.agent_did,
     runtime_plugin_id = excluded.runtime_plugin_id,
     display_name = excluded.display_name,
+    preferred_language = excluded.preferred_language,
     status = 'active',
     updated_at = excluded.updated_at
 "#,
@@ -88,6 +90,7 @@ ON CONFLICT(runtime_profile_id) DO UPDATE SET
                 profile.agent_did,
                 profile.runtime_plugin_id,
                 profile.display_name,
+                profile.preferred_language,
                 now,
             ],
         )?;
@@ -1432,7 +1435,8 @@ SELECT
     runtime_profile_id,
     agent_did,
     runtime_plugin_id,
-    display_name
+    display_name,
+    preferred_language
 FROM runtime_profile
 WHERE runtime_profile_id = ?1
 "#,
@@ -1444,6 +1448,7 @@ WHERE runtime_profile_id = ?1
                         agent_handle: definition.handle.clone(),
                         runtime_plugin_id: row.get(2)?,
                         display_name: row.get(3)?,
+                        preferred_language: row.get(4)?,
                         controller_user_id: definition.controller_user_id.clone(),
                         controller_full_handle: definition.controller_full_handle.clone(),
                         controller_scope_key: definition.controller_scope_key.clone(),

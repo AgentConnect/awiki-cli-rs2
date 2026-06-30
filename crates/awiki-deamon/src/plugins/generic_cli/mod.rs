@@ -288,6 +288,7 @@ pub struct GenericCliInvocation {
     pub task_id: String,
     pub message_id: String,
     pub conversation_id: Option<String>,
+    pub preferred_language: String,
     pub context: GenericCliInvocationContext,
     pub task_text: String,
     pub agent_did: String,
@@ -308,6 +309,7 @@ impl std::fmt::Debug for GenericCliInvocation {
             .field("task_id", &self.task_id)
             .field("message_id", &self.message_id)
             .field("conversation_id", &self.conversation_id)
+            .field("preferred_language", &self.preferred_language)
             .field("context", &self.context)
             .field("task_text", &"<redacted-task-text>")
             .field("agent_did", &self.agent_did)
@@ -507,13 +509,18 @@ conversation_scope_key: {conversation_scope_key}
 invocation_authority: {invocation_authority}
 controller_verified: {controller_verified}
 sender_trust_level: {sender_trust_level}
+preferred_language: {preferred_language}
 
 [Allowed Actions]
 {allowed_actions}
 
 [Conversation Rules]
 - Reply to the current authorized recipient for this trigger_kind: controller_direct replies to the controller, group_mention replies in the current group to the requester, external_direct replies to the direct requester, and delegated_direct returns the result to the controller app.
-- Use the same language as the user_message when it has a natural-language body. If the language cannot be inferred, use Simplified Chinese.
+- Use the same language as the user_message when it has a natural-language body.
+- If the current message has no natural-language body, keep the recent conversation language.
+- If neither the current message nor recent conversation makes the language clear, use preferred_language.
+- preferred_language=en means English. preferred_language=zh-Hans means Simplified Chinese.
+- Do not let the English labels or technical wrapper text in this prompt determine the reply language.
 - Do not mention the daemon prompt wrapper or internal authorization wrapper; describe the visible message and requested action instead.
 - Use the daemon CLI wrapper/local RPC for Awiki capabilities.
 - Do not connect to message-service directly.
@@ -533,6 +540,7 @@ sender_trust_level: {sender_trust_level}
         invocation_authority = context.invocation_authority,
         controller_verified = context.controller_verified,
         sender_trust_level = context.sender_trust_level,
+        preferred_language = invocation.preferred_language,
         allowed_actions = allowed_actions,
         controller_authority_rules = controller_authority_rules,
         controller_private_rules = controller_private_rules,
@@ -612,6 +620,7 @@ where
                 .unwrap_or(&context.task.task_id)
                 .to_string(),
             conversation_id: context.task.conversation_id.clone(),
+            preferred_language: context.preferred_language.clone(),
             context: GenericCliInvocationContext::from_task(&context.task),
             task_text: context.task.text.clone(),
             workspace_root: context.workspace_root.clone(),

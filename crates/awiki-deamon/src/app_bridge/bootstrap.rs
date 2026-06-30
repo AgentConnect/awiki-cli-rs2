@@ -1387,6 +1387,7 @@ mod tests {
                 "runtime": "hermes",
                 "runtime_provider": "hermes",
                 "runtime_profile": "message_agent",
+                "preferred_language": "zh-Hans",
                 "e2ee_visible": false
             },
             "sync_policy": {

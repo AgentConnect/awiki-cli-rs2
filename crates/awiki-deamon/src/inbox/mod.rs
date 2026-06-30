@@ -226,6 +226,7 @@ mod tests {
             runtime_profile_id: "rt_hermes".to_string(),
             runtime_plugin_id: "hermes".to_string(),
             display_name: None,
+            preferred_language: "zh-Hans".to_string(),
             workspace_id: None,
             workspace_root: None,
             workspace_mode: None,

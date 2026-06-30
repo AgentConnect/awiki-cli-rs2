@@ -19,7 +19,9 @@ use crate::registration::{
     AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
     AgentRegistrationExchangeResult, DidAuthMaterial, RegistrationToken,
 };
-use crate::runtime::RuntimeAgentProfile;
+use crate::runtime::{
+    default_preferred_language, normalize_preferred_language, RuntimeAgentProfile,
+};
 use crate::runtime_inbox::{
     clamp_limit, query_runtime_inbox, query_runtime_inbox_thread, RuntimeInboxQuery,
     RuntimeInboxScope, RuntimeInboxThreadKind, RuntimeInboxThreadQuery,
@@ -89,6 +91,7 @@ pub struct RuntimeAgentCreateRequest {
     pub workspace_strategy: Option<String>,
     pub default_sandbox: Option<String>,
     pub default_model: Option<String>,
+    pub preferred_language: Option<String>,
     pub controller_did: String,
     pub registration_token: String,
     pub client_request_id: Option<String>,
@@ -115,6 +118,7 @@ impl std::fmt::Debug for RuntimeAgentCreateRequest {
             .field("workspace_strategy", &self.workspace_strategy)
             .field("default_sandbox", &self.default_sandbox)
             .field("default_model", &self.default_model)
+            .field("preferred_language", &self.preferred_language)
             .field("controller_did", &self.controller_did)
             .field("registration_token", &"<redacted-registration-token>")
             .field("client_request_id", &self.client_request_id)
@@ -220,6 +224,8 @@ struct RuntimeAgentCreateArgs {
     default_sandbox: Option<String>,
     #[serde(default)]
     default_model: Option<String>,
+    #[serde(default)]
+    preferred_language: Option<String>,
     controller_did: String,
     registration_token: String,
     #[serde(default)]
@@ -679,6 +685,7 @@ where
                 workspace_strategy: request.workspace_strategy,
                 default_sandbox: request.default_sandbox,
                 default_model: request.default_model,
+                preferred_language: request.preferred_language,
                 controller_did: request.controller_did,
                 registration_token: request.registration_token,
                 client_request_id: request.client_request_id,
@@ -760,6 +767,11 @@ where
         .filter(|value| !value.is_empty())
         .context("runtime.agent.create display_name is required")?
         .to_string();
+    let preferred_language = match payload.args.preferred_language.as_deref() {
+        Some(value) => normalize_preferred_language(value)
+            .with_context(|| format!("unsupported preferred_language: {value}"))?,
+        None => default_preferred_language(),
+    };
     let identity = generate_agent_identity(config, AgentKind::Runtime, &handle)?;
     let exchange = registration_client.exchange_token(AgentRegistrationExchangeRequest {
         token: RegistrationToken::new(payload.args.registration_token.clone())?,
@@ -794,6 +806,7 @@ where
         runtime_profile_id: profile_id.clone(),
         runtime_plugin_id: plugin_id.clone(),
         display_name: Some(display_name.clone()),
+        preferred_language,
         workspace_id: workspace_id.clone(),
         workspace_root,
         workspace_mode: workspace_id.as_ref().map(|_| workspace_mode),

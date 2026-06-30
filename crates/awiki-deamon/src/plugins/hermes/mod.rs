@@ -43,6 +43,7 @@ struct AwikiHermesProfileConfig {
     runtime_profile_id: String,
     controller_did: String,
     runtime_plugin_id: String,
+    preferred_language: String,
     hermes_profile: String,
     local_rpc_socket_path: PathBuf,
     daemon_cli_wrapper: String,
@@ -76,6 +77,7 @@ pub fn initialize_hermes_profile(
         runtime_profile_id: profile.runtime_profile_id.clone(),
         controller_did: profile.controller_did.clone(),
         runtime_plugin_id: profile.runtime_plugin_id.clone(),
+        preferred_language: profile.preferred_language.clone(),
         hermes_profile: hermes_profile.clone(),
         local_rpc_socket_path: config.local_socket_path.clone(),
         daemon_cli_wrapper: "process:awiki-deamon-runtime via daemon-managed Hermes PATH"
@@ -186,6 +188,7 @@ fn rewrite_existing_hermes_profile(
         runtime_profile_id: profile.runtime_profile_id.clone(),
         controller_did: profile.controller_did.clone(),
         runtime_plugin_id: profile.runtime_plugin_id.clone(),
+        preferred_language: profile.preferred_language.clone(),
         hermes_profile: record.hermes_profile.clone(),
         local_rpc_socket_path: config.local_socket_path.clone(),
         daemon_cli_wrapper: "process:awiki-deamon-runtime via daemon-managed Hermes PATH"
@@ -451,6 +454,7 @@ fn soul_content(profile: &RuntimeAgentProfile, hermes_profile: &str) -> String {
 - runtime_plugin_id: {runtime_plugin_id}
 - controller_did: {controller_did}
 - hermes_profile: {hermes_profile}
+- preferred_language: {preferred_language}
 
 边界：
 
@@ -459,13 +463,15 @@ fn soul_content(profile: &RuntimeAgentProfile, hermes_profile: &str) -> String {
 - 不持久化 run capability token。
 - 不安装或依赖 Hermes Python plugin。
 - 对 controller message 使用 message/run 语义，不引入 product task workflow。
-- 回复 controller 时始终跟随 controller 的会话语言；如果当前消息只有附件或无法判断语言，默认使用简体中文，不要因为系统 wrapper 使用英文标签就改用英文。
+- 回复 controller 时始终跟随 controller 的会话语言；如果当前消息只有附件或无法判断语言，使用 preferred_language，不要因为系统 wrapper 使用英文标签就改用英文。
+- preferred_language=en 表示英文；preferred_language=zh-Hans 表示简体中文。
 "#,
         agent_did = profile.agent_did,
         runtime_profile_id = profile.runtime_profile_id,
         runtime_plugin_id = profile.runtime_plugin_id,
         controller_did = profile.controller_did,
         hermes_profile = hermes_profile,
+        preferred_language = profile.preferred_language,
     )
 }
 

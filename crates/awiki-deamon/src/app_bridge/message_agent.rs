@@ -10,6 +10,7 @@ use crate::commands::{
 };
 use crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID;
 use crate::registration::AgentRegistrationClient;
+use crate::runtime::normalize_preferred_language;
 use crate::state::{AppMessageAgentBindingRecord, DaemonState, UserDelegatedIdentityRecord};
 use crate::DaemonConfig;
 
@@ -38,6 +39,7 @@ pub struct DesiredMessageAgent {
     pub runtime_profile: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
+    pub preferred_language: String,
     #[serde(default)]
     pub ensure_once_key: Option<String>,
     #[serde(default)]
@@ -58,6 +60,7 @@ impl std::fmt::Debug for DesiredMessageAgent {
             .field("runtime_provider", &self.runtime_provider)
             .field("runtime_profile", &self.runtime_profile)
             .field("display_name", &self.display_name)
+            .field("preferred_language", &self.preferred_language)
             .field("ensure_once_key", &self.ensure_once_key)
             .field(
                 "runtime_registration_token",
@@ -117,6 +120,13 @@ where
     if runtime_profile != APP_MESSAGE_AGENT_RUNTIME_PROFILE {
         bail!("MVP app message agent runtime_profile must be message_agent");
     }
+    let preferred_language = normalize_preferred_language(&desired.preferred_language)
+        .with_context(|| {
+            format!(
+                "unsupported preferred_language: {}",
+                desired.preferred_language
+            )
+        })?;
     let binding_id = desired
         .ensure_once_key
         .clone()
@@ -179,6 +189,7 @@ where
             workspace_strategy: None,
             default_sandbox: None,
             default_model: None,
+            preferred_language: Some(preferred_language),
             controller_did: daemon_agent.controller_did.clone(),
             registration_token: token.to_string(),
             client_request_id: Some(binding_id.clone()),
@@ -265,24 +276,15 @@ fn revoke_superseded_bindings(
 }
 
 fn parse_desired_message_agent(value: &Value) -> Result<DesiredMessageAgent> {
-    if value.is_null() {
-        return Ok(DesiredMessageAgent {
-            role: Some(APP_MESSAGE_HANDLER_ROLE.to_string()),
-            runtime: Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES.to_string()),
-            runtime_provider: Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES.to_string()),
-            runtime_profile: Some(APP_MESSAGE_AGENT_RUNTIME_PROFILE.to_string()),
-            display_name: Some("Hermes Message Agent".to_string()),
-            ensure_once_key: None,
-            runtime_registration_token: None,
-            auto_create: Some(true),
-            allowed_actions: Vec::new(),
-            extra: serde_json::Map::new(),
-        });
-    }
     if !value.is_object() {
         bail!("desired_message_agent must be a JSON object");
     }
-    serde_json::from_value(value.clone()).context("parse desired_message_agent")
+    let desired: DesiredMessageAgent =
+        serde_json::from_value(value.clone()).context("parse desired_message_agent")?;
+    if desired.preferred_language.trim().is_empty() {
+        bail!("desired_message_agent.preferred_language is required");
+    }
+    Ok(desired)
 }
 
 fn validate_created_runtime(outcome: &RuntimeAgentCreateOutcome) -> Result<()> {
@@ -398,6 +400,7 @@ mod tests {
             "runtime": "hermes",
             "runtime_provider": "hermes",
             "runtime_profile": "message_agent",
+            "preferred_language": "en",
             "runtime_registration_token": "tok_runtime_secret"
         }))
         .unwrap();
@@ -409,9 +412,22 @@ mod tests {
     }
 
     #[test]
-    fn desired_message_agent_defaults_runtime_provider_contract() {
-        let desired = parse_desired_message_agent(&Value::Null).unwrap();
+    fn desired_message_agent_requires_object_and_preferred_language() {
+        assert!(parse_desired_message_agent(&Value::Null).is_err());
+        assert!(parse_desired_message_agent(&json!({
+            "role": "app_message_handler",
+            "runtime": "hermes"
+        }))
+        .is_err());
 
+        let desired = parse_desired_message_agent(&json!({
+            "role": "app_message_handler",
+            "runtime": "hermes",
+            "runtime_provider": "hermes",
+            "runtime_profile": "message_agent",
+            "preferred_language": "zh-Hans"
+        }))
+        .unwrap();
         assert_eq!(
             desired.runtime_provider.as_deref(),
             Some(APP_MESSAGE_AGENT_RUNTIME_PROVIDER_HERMES)
@@ -420,6 +436,7 @@ mod tests {
             desired.runtime_profile.as_deref(),
             Some(APP_MESSAGE_AGENT_RUNTIME_PROFILE)
         );
+        assert_eq!(desired.preferred_language, "zh-Hans");
     }
 
     #[test]
