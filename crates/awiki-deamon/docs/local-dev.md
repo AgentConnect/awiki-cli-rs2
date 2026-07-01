@@ -171,7 +171,7 @@ App Message Agent 的 delegated inbox 还有以下产品级安全契约：
 
 - 只有 `message_agent_ready`、`message_agent_active`、`message_agent_ensuring` 且未 revoked 的 binding 才会被拉取和处理；`message_agent_disabled`、`message_agent_revoked` 或存在 `revoked_at_ms` 的 binding 会直接跳过，并写入 `user_delegated_inbox.sync.skipped_inactive_binding` audit。
 - E2EE / cipher / secure-direct 消息只记录 opaque 事件，不写 plaintext excerpt，不进入 Hermes prompt。
-- runtime final/status/action recovery 只通过 `awiki.message.sync.v1` / `awiki.app.action.v1` / `awiki.app.action.result.v1` 控制 payload 与 App 闭环；App 回传 action result 必须来自 daemon controller DID，audit 只记录 action id/state/error，不记录 draft/result body。
+- runtime final/status/action recovery 只通过 `awiki.message.sync.v1` / `awiki.app.action.v1` / `awiki.app.action.result.v1` 控制 payload 与 App 闭环；daemon 发送给 App 的 `awiki.app.action.v1` 必须携带 `daemon_agent_did` 和 `runtime_agent_did`，让 App 回传 action result 时能稳定定向到 daemon controller DID，而不是依赖异步 agent inventory 兜底；audit 只记录 action id/state/error，不记录 draft/result body。
 - Message Agent runtime 默认拒绝 `msg.send` 和 `attachment.send`；唯一例外是 daemon host 内部 `host-runtime-final-outbox` token，可把 runtime final 转成发给 owner DID 的 message sync。拒绝 audit 不记录消息正文、附件路径、token 或本地 secret。
 
 产品级 full UI gate 由 `awiki-system-test` 调用 `awiki-me` E2E runner 完成：
@@ -198,9 +198,10 @@ redacted `awiki.app.action.result.v1` 回传和撤销 Daemon 消息授权。报�
 daemon contract 与产品 UI 链路；`AWIKI_ENABLE_DAEMON_HERMES_SMOKE=1` 才运行真实
 Hermes gateway smoke。选择 full UI gate 后，缺少 Rust checkout、App runner、
 backend/OTP、fake Hermes command 或本地 cleanup 后端都必须 fail-fast，不能用 skip
-表示通过。2026-07-01 remote 运行已到达 delegated inbox runtime launch，但当前阻塞在
-Hermes session 创建（daemon 本地状态 `last_error_summary=create Hermes session`），
-修复后需要重跑该 gate 作为 release evidence。
+表示通过。daemon status query、latest-status 与 heartbeat 都必须包含公开 bootstrap key diagnostics，
+避免 App cache 被不含 key 的轻量心跳覆盖成 `bootstrap_key_status=missing`。2026-07-01
+直接 App product gate `direct-current-f984467678` 与 system-test remote wrapper `full-ui-real-fc4dadc70a`
+均已绿色通过，证明 daemon 的 bootstrap/final/action/result/revoke 契约可与 App UI 闭环。
 
 步骤 01 不启动真实 runtime，也不连接远端 message-service。
 
