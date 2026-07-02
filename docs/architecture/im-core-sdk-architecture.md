@@ -173,6 +173,7 @@ Process boundaries matter. App, CLI, and daemon run as separate hosts and must e
 Known residual risks after the provider/vault foundation:
 
 - Default `ImCore::client()` still uses the file-backed provider until a real no-prompt platform unlock API is available.
+- Explicit delegated `key_ref` flows can still read caller-provided delegated private key files for compatibility. They are not the default identity runtime and must not be described as vault-migrated.
 - `awiki-deamon` still stores daemon/runtime agent private PEM fields in `daemon.db`; those fields are redacted from Debug/audit output but are not yet vault-migrated.
 - The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
 - Direct E2EE session/prekey SQLite state and group MLS private state are not part of this identity vault migration.
