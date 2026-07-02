@@ -238,9 +238,12 @@ trap cleanup EXIT INT TERM
 
 manifest_stage="${SYNC_TMP_DIR}/stage/releases/manifest.json"
 install_stage="${SYNC_TMP_DIR}/stage/install.sh"
+cleanup_stage="${SYNC_TMP_DIR}/stage/cleanup.sh"
 download_to "$(join_url "${SOURCE_BASE_URL}" "releases/manifest.json")" "${manifest_stage}"
 download_to "$(join_url "${SOURCE_BASE_URL}" "install.sh")" "${install_stage}"
+download_to "$(join_url "${SOURCE_BASE_URL}" "cleanup.sh")" "${cleanup_stage}"
 chmod 0755 "${install_stage}"
+chmod 0755 "${cleanup_stage}"
 
 manifest_rows="${SYNC_TMP_DIR}/manifest-rows.tsv"
 parse_manifest "${manifest_stage}" "${manifest_rows}"
@@ -272,6 +275,8 @@ done < "${manifest_rows}"
 
 run_as_target_writer cp "${publish_tmp}/install.sh" "${TARGET_DIR}/install.sh.tmp"
 run_as_target_writer mv "${TARGET_DIR}/install.sh.tmp" "${TARGET_DIR}/install.sh"
+run_as_target_writer cp "${publish_tmp}/cleanup.sh" "${TARGET_DIR}/cleanup.sh.tmp"
+run_as_target_writer mv "${TARGET_DIR}/cleanup.sh.tmp" "${TARGET_DIR}/cleanup.sh"
 run_as_target_writer cp "${publish_tmp}/releases/manifest.json" "${TARGET_DIR}/releases/manifest.json.tmp"
 run_as_target_writer mv "${TARGET_DIR}/releases/manifest.json.tmp" "${TARGET_DIR}/releases/manifest.json"
 run_as_target_writer rm -rf "${publish_tmp}"

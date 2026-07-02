@@ -168,6 +168,12 @@ class DaemonReleaseContractTests(unittest.TestCase):
             self.assertIn("SELECTED_DOWNLOAD_BASE_URL", install_text)
             self.assertIn("--progress-bar", install_text)
             self.assertIn("--speed-limit \"$CURL_SPEED_LIMIT_BYTES\"", install_text)
+            cleanup_text = (output_dir / "cleanup.sh").read_text(encoding="utf-8")
+            self.assertIn("permanently remove all AWiki daemon data", cleanup_text)
+            self.assertIn("$HOME/.awiki-daemon/deamon", cleanup_text)
+            self.assertIn("Type CLEANUP to continue", cleanup_text)
+            self.assertIn("launchctl bootout", cleanup_text)
+            self.assertIn("systemctl --user stop awiki-deamon.service", cleanup_text)
 
             manifest = json.loads(
                 (output_dir / "releases" / "manifest.json").read_text(encoding="utf-8")
@@ -409,6 +415,55 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 pathlib.Path(readlink(bin_root / "current" / "awiki-deamon-runtime")),
                 pathlib.Path("../1.2.3/awiki-deamon-runtime"),
             )
+
+    def test_cleanup_script_removes_fixed_product_root_and_service_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_dir = pathlib.Path(temp)
+            source_dir = temp_dir / "source"
+            create_all_fake_packages(source_dir)
+            output_dir = temp_dir / "daemon"
+            run_command(
+                [
+                    "scripts/release/daemon/_stage-downloads.sh",
+                    "--version",
+                    "1.2.3",
+                    "--source-dir",
+                    str(source_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--base-url",
+                    "https://example.com",
+                ]
+            )
+
+            home = temp_dir / "home"
+            product_root = home / ".awiki-daemon" / "deamon"
+            (product_root / "state").mkdir(parents=True)
+            (product_root / "state" / "daemon.db").write_text("state", encoding="utf-8")
+            (product_root / "bin" / "current").mkdir(parents=True)
+            (product_root / "env").mkdir(parents=True)
+            launch_agent = home / "Library" / "LaunchAgents" / "ai.awiki.deamon.plist"
+            launch_agent.parent.mkdir(parents=True)
+            launch_agent.write_text("plist", encoding="utf-8")
+            systemd_unit = home / ".config" / "systemd" / "user" / "awiki-deamon.service"
+            systemd_unit.parent.mkdir(parents=True)
+            systemd_unit.write_text("unit", encoding="utf-8")
+
+            result = subprocess.run(
+                ["sh", str(output_dir / "cleanup.sh"), "--yes"],
+                cwd=ROOT,
+                env={**os.environ, "HOME": str(home)},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(product_root.exists())
+            self.assertFalse(launch_agent.exists())
+            self.assertFalse(systemd_unit.exists())
+            self.assertIn("AWiki daemon host cleanup complete", result.stderr)
 
     def test_installer_uses_successful_mirror_when_primary_package_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -658,6 +713,11 @@ class DaemonReleaseContractTests(unittest.TestCase):
                 run_command([str(script_dir / "sync-download-mirror.sh")])
 
             self.assertTrue((target_dir / "install.sh").is_file())
+            self.assertTrue((target_dir / "cleanup.sh").is_file())
+            self.assertEqual(
+                (target_dir / "cleanup.sh").read_text(encoding="utf-8"),
+                (source_daemon / "cleanup.sh").read_text(encoding="utf-8"),
+            )
             self.assertEqual(
                 json.loads((target_dir / "releases" / "manifest.json").read_text(encoding="utf-8")),
                 json.loads((source_daemon / "releases" / "manifest.json").read_text(encoding="utf-8")),

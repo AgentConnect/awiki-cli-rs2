@@ -390,6 +390,7 @@ publish_to_nginx() {
   run_as_nginx_writer rm -rf "${tmp_publish_dir}"
   run_as_nginx_writer mkdir -p "${tmp_publish_dir}/releases"
   run_as_nginx_writer cp "${STAGE_DIR}/install.sh" "${tmp_publish_dir}/install.sh"
+  run_as_nginx_writer cp "${STAGE_DIR}/cleanup.sh" "${tmp_publish_dir}/cleanup.sh"
   run_as_nginx_writer cp "${STAGE_DIR}/releases/manifest.json" "${tmp_publish_dir}/releases/manifest.json"
   run_as_nginx_writer cp -R "${STAGE_DIR}/releases/${VERSION}" "${tmp_publish_dir}/releases/${VERSION}"
 
@@ -399,6 +400,8 @@ publish_to_nginx() {
 
   run_as_nginx_writer cp "${tmp_publish_dir}/install.sh" "${NGINX_DAEMON_DIR}/install.sh.tmp"
   run_as_nginx_writer mv "${NGINX_DAEMON_DIR}/install.sh.tmp" "${NGINX_DAEMON_DIR}/install.sh"
+  run_as_nginx_writer cp "${tmp_publish_dir}/cleanup.sh" "${NGINX_DAEMON_DIR}/cleanup.sh.tmp"
+  run_as_nginx_writer mv "${NGINX_DAEMON_DIR}/cleanup.sh.tmp" "${NGINX_DAEMON_DIR}/cleanup.sh"
 
   run_as_nginx_writer cp "${tmp_publish_dir}/releases/manifest.json" "${NGINX_DAEMON_DIR}/releases/manifest.json.tmp"
   run_as_nginx_writer mv "${NGINX_DAEMON_DIR}/releases/manifest.json.tmp" "${NGINX_DAEMON_DIR}/releases/manifest.json"
@@ -416,6 +419,7 @@ verify_published_http() {
   rm -f "${tmp_manifest}"
 
   curl -fsSIL --max-time 10 "${DOWNLOAD_BASE_URL}/install.sh" >/dev/null
+  curl -fsSIL --max-time 10 "${DOWNLOAD_BASE_URL}/cleanup.sh" >/dev/null
   curl -fsSIL --max-time 10 "${DOWNLOAD_BASE_URL}/releases/${VERSION}/awiki-deamon-linux-amd64.tar.gz" >/dev/null
   curl -fsSIL --max-time 10 "${DOWNLOAD_BASE_URL}/releases/${VERSION}/awiki-deamon-darwin-arm64.tar.gz" >/dev/null
   curl -fsSIL --max-time 10 "${DOWNLOAD_BASE_URL}/releases/${VERSION}/awiki-deamon-darwin-amd64.tar.gz" >/dev/null
@@ -535,6 +539,7 @@ cat <<EOF
 daemon release published
   version: ${VERSION}
   install: ${DOWNLOAD_BASE_URL}/install.sh
+  cleanup: ${DOWNLOAD_BASE_URL}/cleanup.sh
   manifest: ${DOWNLOAD_BASE_URL}/releases/manifest.json
   linux_amd64: ${DOWNLOAD_BASE_URL}/releases/${VERSION}/awiki-deamon-linux-amd64.tar.gz
   darwin_arm64: ${DOWNLOAD_BASE_URL}/releases/${VERSION}/awiki-deamon-darwin-arm64.tar.gz

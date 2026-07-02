@@ -332,7 +332,7 @@ where
     daemon_token_metadata_is_valid(&metadata)?;
 
     if let Some(existing) = existing {
-        ensure_existing_daemon_matches_token_scope(&existing, &metadata)?;
+        ensure_existing_daemon_matches_token_scope(config, &existing, &metadata)?;
         return recover_existing_daemon_agent(state, client, existing, metadata, token);
     }
 
@@ -438,6 +438,7 @@ fn daemon_token_metadata_is_valid(metadata: &RegistrationTokenMetadata) -> Resul
 }
 
 fn ensure_existing_daemon_matches_token_scope(
+    config: &DaemonConfig,
     existing: &AgentDefinition,
     metadata: &RegistrationTokenMetadata,
 ) -> Result<()> {
@@ -454,18 +455,32 @@ fn ensure_existing_daemon_matches_token_scope(
          当前安装命令属于 @{}，因此不能继续安装。\n\n\
          你可以这样处理：\n\
          1. 如果你想继续使用 @{}，请切换到对应账号后重新复制安装命令。\n\
-         2. 如果你确实要改用 @{}，请先卸载或重置本机 Daemon 后再安装。\n\n\
+         2. 如果你确实要改用 @{}，请先清理宿主机上的 AWiki Daemon 数据后再安装。\n\n\
+         清理命令：\n\
+           {}\n\n\
+         注意：清理会删除宿主机上的所有 AWiki Daemon 本地数据，包括身份、数据库、日志、归档、Runtime Profile 和已下载的 Daemon 二进制。此操作不可恢复。\n\n\
          本机账号范围: {} / {}\n\
          安装命令范围: {} / {}",
         existing.controller_full_handle,
         token_controller_full_handle,
         existing.controller_full_handle,
         token_controller_full_handle,
+        daemon_cleanup_command(&config.download_base_url),
         existing.controller_user_id,
         existing.controller_full_handle,
         token_controller_user_id,
         token_controller_full_handle,
     )
+}
+
+fn daemon_cleanup_command(download_base_url: &str) -> String {
+    let base_url = download_base_url.trim().trim_end_matches('/');
+    let base_url = if base_url.is_empty() {
+        "https://awiki.ai/daemon"
+    } else {
+        base_url
+    };
+    format!("curl -fsSL {base_url}/cleanup.sh | sh")
 }
 
 #[cfg(test)]
@@ -882,7 +897,9 @@ mod tests {
         assert!(message.contains("daemon_controller_scope_mismatch"));
         assert!(message.contains("这台电脑已经安装了属于 @alice.anpclaw.com 的 Daemon"));
         assert!(message.contains("当前安装命令属于 @alice-alt.anpclaw.com"));
-        assert!(message.contains("请先卸载或重置本机 Daemon 后再安装"));
+        assert!(message.contains("请先清理宿主机上的 AWiki Daemon 数据后再安装"));
+        assert!(message.contains("curl -fsSL https://awiki.ai/daemon/cleanup.sh | sh"));
+        assert!(message.contains("此操作不可恢复"));
         assert!(message.contains("@alice.anpclaw.com"));
         assert!(message.contains("@alice-alt.anpclaw.com"));
         assert_eq!(client.exchange_count(), 0);

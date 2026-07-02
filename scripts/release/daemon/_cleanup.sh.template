@@ -1,0 +1,169 @@
+#!/bin/sh
+set -eu
+
+YES=0
+DRY_RUN=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  cleanup.sh [--yes] [--dry-run]
+
+Stops the AWiki daemon user service and permanently removes AWiki daemon data
+from this host:
+  $HOME/.awiki-daemon/deamon
+
+This cleanup does not contact the daemon and does not require a healthy daemon
+installation.
+USAGE
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+info() {
+  printf '%s\n' "$*" >&2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes|-y)
+      YES=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "${HOME:-}" ] || die "HOME is required"
+case "$HOME" in
+  /|"") die "refusing to clean up with unsafe HOME: ${HOME:-<empty>}" ;;
+esac
+
+PRODUCT_ROOT="${HOME}/.awiki-daemon/deamon"
+MACOS_PLIST="${HOME}/Library/LaunchAgents/ai.awiki.deamon.plist"
+LINUX_UNIT="${HOME}/.config/systemd/user/awiki-deamon.service"
+
+host_os="$(uname -s 2>/dev/null || printf 'unknown')"
+
+run_or_print() {
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'dry-run: %s\n' "$*" >&2
+    return 0
+  fi
+  "$@"
+}
+
+remove_path() {
+  path="$1"
+  label="$2"
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    info "skip ${label}: not found"
+    return 0
+  fi
+  info "remove ${label}: ${path}"
+  run_or_print rm -rf "$path"
+}
+
+confirm_cleanup() {
+  [ "$YES" = "1" ] && return 0
+  [ "$DRY_RUN" = "1" ] && return 0
+  cat >&2 <<EOF
+This will permanently remove all AWiki daemon data on this host.
+
+The following data will be deleted and cannot be recovered:
+  ${PRODUCT_ROOT}
+
+This includes daemon identity, SQLite state, runtime profiles, logs, archives,
+downloaded daemon binaries, and service environment files.
+EOF
+  if [ ! -r /dev/tty ]; then
+    die "confirmation requires a terminal; rerun with --yes to clean up non-interactively"
+  fi
+  printf 'Type CLEANUP to continue: ' >&2
+  IFS= read -r answer </dev/tty || die "failed to read confirmation"
+  [ "$answer" = "CLEANUP" ] || die "cleanup cancelled"
+}
+
+cleanup_macos_service() {
+  domain="gui/$(id -u)"
+  service="${domain}/ai.awiki.deamon"
+  if command -v launchctl >/dev/null 2>&1; then
+    info "stop AWiki daemon LaunchAgent if loaded"
+    if [ "$DRY_RUN" = "1" ]; then
+      printf 'dry-run: launchctl bootout %s %s\n' "$domain" "$MACOS_PLIST" >&2
+      printf 'dry-run: launchctl disable %s\n' "$service" >&2
+    else
+      launchctl bootout "$domain" "$MACOS_PLIST" >/dev/null 2>&1 || true
+      launchctl disable "$service" >/dev/null 2>&1 || true
+    fi
+  else
+    info "skip LaunchAgent stop: launchctl not found"
+  fi
+}
+
+cleanup_linux_service() {
+  if command -v systemctl >/dev/null 2>&1; then
+    info "stop AWiki daemon systemd user service if loaded"
+    if [ "$DRY_RUN" = "1" ]; then
+      printf 'dry-run: systemctl --user stop awiki-deamon.service\n' >&2
+      printf 'dry-run: systemctl --user disable awiki-deamon.service\n' >&2
+    else
+      systemctl --user stop awiki-deamon.service >/dev/null 2>&1 || true
+      systemctl --user disable awiki-deamon.service >/dev/null 2>&1 || true
+    fi
+  else
+    info "skip systemd user service stop: systemctl not found"
+  fi
+}
+
+reload_linux_service_registration() {
+  [ "$host_os" = "Linux" ] || return 0
+  if command -v systemctl >/dev/null 2>&1; then
+    info "reload systemd user service registration"
+    if [ "$DRY_RUN" = "1" ]; then
+      printf 'dry-run: systemctl --user daemon-reload\n' >&2
+      printf 'dry-run: systemctl --user reset-failed awiki-deamon.service\n' >&2
+    else
+      systemctl --user daemon-reload >/dev/null 2>&1 || true
+      systemctl --user reset-failed awiki-deamon.service >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+confirm_cleanup
+
+case "$host_os" in
+  Darwin)
+    cleanup_macos_service
+    ;;
+  Linux)
+    cleanup_linux_service
+    ;;
+  *)
+    info "service cleanup is unsupported on ${host_os}; file cleanup will continue"
+    ;;
+esac
+
+remove_path "$MACOS_PLIST" "LaunchAgent registration"
+remove_path "$LINUX_UNIT" "systemd user unit"
+remove_path "$PRODUCT_ROOT" "AWiki daemon product data"
+reload_linux_service_registration
+
+if [ "$DRY_RUN" = "1" ]; then
+  info "dry-run complete; no data was removed"
+else
+  info "AWiki daemon host cleanup complete"
+fi

@@ -261,6 +261,8 @@ text = text.replace("__AWIKI_DAEMON_DOWNLOAD_BASE_URLS__", download_base_urls)
 pathlib.Path(output_path).write_text(text, encoding="utf-8")
 PY
 chmod 0755 "${OUTPUT_DIR}/install.sh"
+cp "${ROOT_DIR}/scripts/release/daemon/_cleanup.sh.template" "${OUTPUT_DIR}/cleanup.sh"
+chmod 0755 "${OUTPUT_DIR}/cleanup.sh"
 
 manifest_args=(
   node "${ROOT_DIR}/scripts/release/daemon/_generate-manifest.js"
