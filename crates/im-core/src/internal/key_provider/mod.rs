@@ -1,8 +1,10 @@
 mod did_auth;
 mod file;
+pub(crate) mod vault;
 
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedKeyMaterialProvider;
+pub(crate) use self::vault::VaultKeyMaterialRefs;
 
 pub(crate) trait KeyMaterialProvider: Send + Sync {
     fn did_document(&self) -> crate::ImResult<serde_json::Value>;
