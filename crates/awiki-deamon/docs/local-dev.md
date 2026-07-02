@@ -150,6 +150,17 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 
 首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
 
+## 私钥与 vault 边界
+
+`im-core` 已把 DID-WBA auth、业务签名和 secure direct 静态 key material 的业务读取路径收敛到内部 `KeyMaterialProvider`，并提供显式 root key 的 identity vault migration foundation。这个 foundation 当前不等同于 daemon 状态库已经加密：
+
+- daemon 的 `agent_identity` 表仍保存 `auth_private_key_pem`、`e2ee_signing_private_key_pem` 和 `e2ee_agreement_private_key_pem` 明文字段。
+- `agent_auth_state` 仍保存 daemon/runtime agent bearer token 状态。
+- `im_core_adapter` 为 daemon agent 构造 `im-core` identity 目录时仍会写兼容 PEM/auth.json 文件，供当前 file-backed runtime 使用。
+- App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO；后续应改为端到端加密 bootstrap envelope。
+
+因此，当前安全结论只能表述为：`im-core` 业务读取入口已经 provider 化，identity vault 的 seal/verify/metadata 基础已经落地；daemon DB 私钥字段、App bootstrap 明文 DTO、Direct E2EE session/prekey state 和真实平台 no-prompt vault backend 仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出这些明文字段。
+
 ## 本地验证
 
 ```bash

@@ -150,6 +150,34 @@ Transport is explicit through configuration and capability checks:
 - Host notification payloads must contain approved event summaries, not raw message instructions.
 - Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
 
+## 9.1 Key Material Boundary
+
+Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract.
+
+The current compatibility default is file-backed:
+
+- DID documents are read from the identity directory.
+- DID/default signing keys are read from `private.key` or `key-1-private.pem`.
+- secure direct agreement keys are read from `e2ee-agreement-private.pem` or legacy `key-3-private.pem`.
+- auth/session state remains compatible with `auth.json`.
+
+The vault foundation is explicit and no-prompt by design:
+
+- `PlatformProtector` wraps only the vault root/wrapping key, not business private keys directly.
+- The production default platform protector fails closed when a real Keychain/Keystore/DPAPI/Secret Service backend is not wired. It must not silently fall back to plaintext or a generated test key.
+- `SecretVault` stores per-record AEAD ciphertext and binds workspace, device, identity, DID, kind, key id/version, schema, cipher, KDF, and no-prompt policy into authenticated metadata.
+- Identity vault migration is explicit: callers provide an unlocked vault/root key, the SDK seals records, opens them back for verification, and only then writes optional `vault_migration` metadata. Existing PEM/auth.json compatibility files are retained; migration failure must not delete or quarantine them.
+
+Process boundaries matter. App, CLI, and daemon run as separate hosts and must each unlock or provide their own vault context for their own state root. Do not assume one OS keychain item is readable across all processes.
+
+Known residual risks after the provider/vault foundation:
+
+- Default `ImCore::client()` still uses the file-backed provider until a real no-prompt platform unlock API is available.
+- `awiki-deamon` still stores daemon/runtime agent private PEM fields in `daemon.db`; those fields are redacted from Debug/audit output but are not yet vault-migrated.
+- The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
+- Direct E2EE session/prekey SQLite state and group MLS private state are not part of this identity vault migration.
+- External key-agent IPC, public signing APIs, and DID child-key scope/revocation semantics are outside this boundary.
+
 ## 10. API References
 
 Stable API references live under `docs/api/`:
