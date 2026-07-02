@@ -1,9 +1,13 @@
+mod did_auth;
 mod file;
 
+pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedKeyMaterialProvider;
 
 pub(crate) trait KeyMaterialProvider: Send + Sync {
     fn did_document(&self) -> crate::ImResult<serde_json::Value>;
+
+    fn optional_did_document(&self) -> crate::ImResult<Option<serde_json::Value>>;
 
     fn default_signing_private_pem(&self) -> crate::ImResult<String>;
 

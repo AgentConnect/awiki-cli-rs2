@@ -48,6 +48,10 @@ impl super::KeyMaterialProvider for FileBackedKeyMaterialProvider {
         read_json_file(&self.did_document_path(), "did_document")
     }
 
+    fn optional_did_document(&self) -> crate::ImResult<Option<Value>> {
+        read_optional_json_file(&self.did_document_path(), "did_document")
+    }
+
     fn default_signing_private_pem(&self) -> crate::ImResult<String> {
         read_non_empty_text_file(
             &self.default_signing_private_key_path(),
@@ -91,6 +95,24 @@ fn read_json_file(path: &Path, path_kind: &str) -> crate::ImResult<Value> {
     serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
         detail: err.to_string(),
     })
+}
+
+fn read_optional_json_file(path: &Path, path_kind: &str) -> crate::ImResult<Option<Value>> {
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: path_kind.to_string(),
+                detail: err.to_string(),
+            });
+        }
+    };
+    serde_json::from_slice(&raw)
+        .map(Some)
+        .map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
 }
 
 fn read_non_empty_text_file(path: &Path, path_kind: &str) -> crate::ImResult<String> {
@@ -202,6 +224,17 @@ mod tests {
             provider.e2ee_agreement_private_pem().unwrap(),
             "legacy-agreement"
         );
+    }
+
+    #[test]
+    fn identity_key_provider_optional_did_document_preserves_missing_file_compatibility() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+
+        let provider = FileBackedKeyMaterialProvider::new(identity_dir);
+
+        assert_eq!(provider.optional_did_document().unwrap(), None);
     }
 
     #[test]

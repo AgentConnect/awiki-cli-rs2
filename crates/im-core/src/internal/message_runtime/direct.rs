@@ -173,7 +173,7 @@ fn load_credentials(
     delegated: Option<&crate::messages::DelegatedSigningOptions>,
 ) -> crate::ImResult<DirectTextCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json(&runtime.did_document_path)?;
+    let did_document = runtime.key_provider.optional_did_document()?;
     if let Some(delegated) = delegated {
         return delegated_credentials(client, delegated, did_document);
     }
@@ -192,16 +192,11 @@ async fn load_credentials_async(
     delegated: Option<&crate::messages::DelegatedSigningOptions>,
 ) -> crate::ImResult<DirectTextCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json_async(runtime.did_document_path.clone()).await?;
+    let did_document = runtime.key_provider.optional_did_document()?;
     if let Some(delegated) = delegated {
         return delegated_credentials_async(client, delegated, did_document).await;
     }
-    let key1_private_pem = tokio::fs::read_to_string(&runtime.private_key_path)
-        .await
-        .map_err(|err| crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        })?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -211,49 +206,8 @@ async fn load_credentials_async(
     })
 }
 
-fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
-}
-
-async fn read_optional_json_async(path: std::path::PathBuf) -> crate::ImResult<Option<Value>> {
-    let raw = match tokio::fs::read(path).await {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
-}
-
 fn read_default_private_key(client: &crate::core::ImClient) -> crate::ImResult<String> {
-    std::fs::read_to_string(&client.runtime().private_key_path).map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        }
-    })
+    client.runtime().key_provider.default_signing_private_pem()
 }
 
 fn delegated_credentials(
