@@ -233,7 +233,12 @@ fn hermes_message_controller_text_runs_status_and_final_callbacks() {
         .prompt
         .contains("daemon sends it back automatically as the Runtime Agent"));
     assert!(prompts[0].prompt.contains("output_language_policy:"));
+    assert!(prompts[0].prompt.contains("preferred_language: zh-Hans"));
+    assert!(prompts[0].prompt.contains("use preferred_language"));
     assert!(prompts[0]
+        .prompt
+        .contains("preferred_language=en means English"));
+    assert!(!prompts[0]
         .prompt
         .contains("If the language cannot be inferred, use Simplified Chinese"));
     assert!(prompts[0]

@@ -30,7 +30,9 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn clear(keys: &[&'static str]) -> Self {
-        let lock = ENV_LOCK.lock().unwrap();
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let values = keys
             .iter()
             .map(|key| {
@@ -216,7 +218,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 30);
+    assert_eq!(summary.schema_version, 31);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(
@@ -356,7 +358,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
 
     assert!(soul.contains("Awiki Hermes Runtime Agent"));
     assert!(soul.contains("始终跟随 controller 的会话语言"));
-    assert!(soul.contains("默认使用简体中文"));
+    assert!(soul.contains("使用 preferred_language"));
+    assert!(soul.contains("preferred_language=zh-Hans 表示简体中文"));
     assert!(runtime_model_config.contains("provider: custom"));
     assert!(runtime_model_config.contains("default: gpt-5.2"));
     assert!(profile_json.contains("\"run_capability_token_persisted\": false"));
