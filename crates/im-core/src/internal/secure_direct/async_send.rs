@@ -941,16 +941,10 @@ fn encrypt_init_from_prekey(input: AsyncInitEncryptInput) -> crate::ImResult<Enc
 async fn async_init_local_material(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<AsyncInitLocalMaterial> {
-    let runtime = client.runtime();
-    let agreement_private_pem = tokio::fs::read_to_string(&runtime.e2ee_agreement_private_key_path)
-        .await
-        .map_err(|err| crate::ImError::CredentialFileUnreadable {
-            path_kind: "e2ee_agreement_private_key".to_owned(),
-            detail: err.to_string(),
-        })?;
+    let material = super::identity_material::agreement_material(client)?;
     Ok(AsyncInitLocalMaterial {
-        agreement_key_id: format!("{}#key-3", client.did().as_str()),
-        agreement_private_pem,
+        agreement_key_id: material.agreement_key_id,
+        agreement_private_pem: material.agreement_private_pem,
     })
 }
 
@@ -1054,15 +1048,7 @@ where
     T: AsyncRpcTransport,
 {
     if did == client.did().as_str() {
-        let raw = tokio::fs::read(&client.runtime().did_document_path)
-            .await
-            .map_err(|err| crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_owned(),
-                detail: err.to_string(),
-            })?;
-        return serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        });
+        return super::identity_material::local_did_document(client);
     }
     let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
     match directory_transport
