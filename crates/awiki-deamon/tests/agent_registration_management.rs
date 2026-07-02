@@ -154,6 +154,21 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     (root, config, state)
 }
 
+fn write_release_status_manifest(root: &std::path::Path, latest: &str) {
+    let releases = root.join("releases");
+    std::fs::create_dir_all(&releases).unwrap();
+    std::fs::write(
+        releases.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "latest": latest,
+            "min_supported": "0.1.0",
+            "packages": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 fn expect_created(outcome: AgentCommandOutcome) -> RuntimeAgentCreateOutcome {
     match outcome {
         AgentCommandOutcome::RuntimeAgentCreated(created) => created,
@@ -1542,7 +1557,10 @@ fn daemon_upgrade_cancel_reports_not_running_without_running_download() {
 
 #[test]
 fn daemon_upgrade_cancel_rejects_restart_scheduled_upgrade() {
-    let (_root, config, state) = fixture();
+    let (root, mut config, state) = fixture();
+    let release_root = root.path().join("daemon-release");
+    write_release_status_manifest(&release_root, "9999.0.0");
+    config.download_base_url = format!("file://{}", release_root.display());
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,
