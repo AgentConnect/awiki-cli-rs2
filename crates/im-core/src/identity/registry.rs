@@ -836,6 +836,9 @@ impl IdentityRegistry<'_> {
             .or(summary.local_alias.as_deref())
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
+        let key_provider = std::sync::Arc::new(
+            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir.clone()),
+        );
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
             did_document_path: first_existing_path(
@@ -851,6 +854,7 @@ impl IdentityRegistry<'_> {
                 &["e2ee-agreement-private.pem", "key-3-private.pem"],
             ),
             auth_state_path: identity_dir.join("auth.json"),
+            key_provider,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
@@ -875,6 +879,9 @@ impl IdentityRegistry<'_> {
             .or(summary.local_alias.as_deref())
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
+        let key_provider = std::sync::Arc::new(
+            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir.clone()),
+        );
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
             did_document_path: first_existing_path_async(
@@ -893,6 +900,7 @@ impl IdentityRegistry<'_> {
             )
             .await,
             auth_state_path: identity_dir.join("auth.json"),
+            key_provider,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,

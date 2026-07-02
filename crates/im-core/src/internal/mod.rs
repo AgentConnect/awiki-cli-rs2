@@ -25,6 +25,7 @@ pub(crate) mod identity_runtime;
 pub(crate) mod identity_store;
 pub(crate) mod identity_wire;
 pub(crate) mod json_rpc;
+pub(crate) mod key_provider;
 pub(crate) mod local_state;
 pub(crate) mod message_runtime;
 pub(crate) mod profile_runtime;
