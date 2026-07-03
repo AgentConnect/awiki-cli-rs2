@@ -13,6 +13,7 @@ pub(crate) mod incoming;
 #[cfg(feature = "sqlite")]
 pub(crate) mod outbox;
 pub(crate) mod prepare;
+pub(crate) mod secret_store;
 #[cfg(feature = "sqlite")]
 pub(crate) mod send;
 #[cfg(feature = "sqlite")]

@@ -2,9 +2,14 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::secret_store::{
+    default_direct_secret_vault, direct_secret_key_id, open_direct_secret_blob,
+    seal_direct_secret_blob, DirectSecretSealInput, DirectSecretVault,
+};
+use crate::vault::SecretKind;
+
 const DIRECT_SESSION_METADATA_VERSION: &str = "im-core.direct-session.v1";
 const DIRECT_PREKEY_METADATA_VERSION: &str = "im-core.direct-prekey.v1";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectSessionRecord {
     pub(crate) owner_identity_id: String,
@@ -120,18 +125,57 @@ impl DirectPrekeyStatus {
 
 pub(crate) struct SqliteDirectSecureStateStore<'a> {
     connection: &'a Connection,
+    secret_vault: Option<DirectSecretVault>,
 }
 
 impl<'a> SqliteDirectSecureStateStore<'a> {
     pub(crate) fn new(connection: &'a Connection) -> crate::ImResult<Self> {
         crate::internal::local_state::schema::ensure_schema(connection)?;
-        Ok(Self { connection })
+        let secret_vault =
+            default_direct_secret_vault(direct_secret_vault_dir_for_connection(connection)?)?;
+        Ok(Self {
+            connection,
+            secret_vault,
+        })
+    }
+
+    pub(crate) fn new_with_secret_vault(
+        connection: &'a Connection,
+        secret_vault: DirectSecretVault,
+    ) -> crate::ImResult<Self> {
+        crate::internal::local_state::schema::ensure_schema(connection)?;
+        Ok(Self {
+            connection,
+            secret_vault: Some(secret_vault),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_without_secret_vault_for_legacy(
+        connection: &'a Connection,
+    ) -> crate::ImResult<Self> {
+        crate::internal::local_state::schema::ensure_schema(connection)?;
+        Ok(Self {
+            connection,
+            secret_vault: None,
+        })
     }
 
     pub(crate) fn upsert_session(&self, record: &DirectSessionRecord) -> crate::ImResult<()> {
         let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
         let peer_did = required("peer_did", &record.peer_did)?;
         let session_id = required("session_id", &record.session_id)?;
+        let state_blob = seal_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            DirectSecretSealInput {
+                owner_identity_id: &owner_identity_id,
+                owner_did: record.owner_did.trim(),
+                kind: SecretKind::DirectE2eeSessionState,
+                key_id: direct_secret_key_id(&owner_identity_id, "session", &peer_did, &session_id),
+                plaintext: &record.state_blob,
+                field: "direct E2EE session state",
+            },
+        )?;
         self.connection
             .execute(
                 r#"
@@ -151,7 +195,7 @@ impl<'a> SqliteDirectSecureStateStore<'a> {
                     record.owner_did.trim(),
                     peer_did,
                     session_id,
-                    record.state_blob,
+                    state_blob,
                     nullable_text(&record.metadata_json),
                     required("created_at", &record.created_at)?,
                     required("updated_at", &record.updated_at)?,
@@ -177,6 +221,22 @@ impl<'a> SqliteDirectSecureStateStore<'a> {
                     expected_revision,
                 });
             }
+            let state_blob = seal_direct_secret_blob(
+                self.secret_vault.as_ref(),
+                DirectSecretSealInput {
+                    owner_identity_id: &owner_identity_id,
+                    owner_did: record.owner_did.trim(),
+                    kind: SecretKind::DirectE2eeSessionState,
+                    key_id: direct_secret_key_id(
+                        &owner_identity_id,
+                        "session",
+                        &peer_did,
+                        &format!("{session_id}:rev-0"),
+                    ),
+                    plaintext: &record.state_blob,
+                    field: "direct E2EE session state",
+                },
+            )?;
             self.connection
                 .execute(
                     r#"
@@ -188,7 +248,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)"#,
                         record.owner_did.trim(),
                         peer_did,
                         session_id,
-                        record.state_blob,
+                        state_blob,
                         nullable_text(&record.metadata_json),
                         required("created_at", &record.created_at)?,
                         required("updated_at", &record.updated_at)?,
@@ -208,7 +268,6 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)"#,
                 expected_revision,
             });
         }
-        let next_revision = expected_revision + 1;
         let changed = self
             .connection
             .execute(
@@ -229,9 +288,24 @@ WHERE owner_identity_id = ?1
                     expected_revision,
                     record.owner_did.trim(),
                     session_id,
-                    record.state_blob,
+                    seal_direct_secret_blob(
+                        self.secret_vault.as_ref(),
+                        DirectSecretSealInput {
+                            owner_identity_id: &owner_identity_id,
+                            owner_did: record.owner_did.trim(),
+                            kind: SecretKind::DirectE2eeSessionState,
+                            key_id: direct_secret_key_id(
+                                &owner_identity_id,
+                                "session",
+                                &peer_did,
+                                &format!("{}:rev-{}", session_id, expected_revision + 1),
+                            ),
+                            plaintext: &record.state_blob,
+                            field: "direct E2EE session state",
+                        }
+                    )?,
                     nullable_text(&record.metadata_json),
-                    next_revision,
+                    expected_revision + 1,
                     required("updated_at", &record.updated_at)?,
                 ],
             )
@@ -267,7 +341,9 @@ WHERE owner_identity_id = ?1
                 session_from_row,
             )
             .optional()
-            .map_err(crate::internal::local_state::local_state_unavailable)
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .map(|record| self.open_session_record(record))
+            .transpose()
     }
 
     pub(crate) fn get_session_by_id(
@@ -287,7 +363,9 @@ WHERE owner_identity_id = ?1
                 session_from_row,
             )
             .optional()
-            .map_err(crate::internal::local_state::local_state_unavailable)
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .map(|record| self.open_session_record(record))
+            .transpose()
     }
 
     pub(crate) fn direct_init_session_material(
@@ -366,6 +444,22 @@ WHERE owner_identity_id = ?1 AND peer_did = ?2"#,
     ) -> crate::ImResult<()> {
         let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
         let key_id = required("key_id", &record.key_id)?;
+        let private_key_blob = seal_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            DirectSecretSealInput {
+                owner_identity_id: &owner_identity_id,
+                owner_did: record.owner_did.trim(),
+                kind: SecretKind::DirectE2eeSignedPrekeyPrivate,
+                key_id: direct_secret_key_id(
+                    &owner_identity_id,
+                    "signed-prekey",
+                    &key_id,
+                    "private",
+                ),
+                plaintext: &record.private_key_blob,
+                field: "direct E2EE signed prekey private key",
+            },
+        )?;
         self.connection
             .execute(
                 r#"
@@ -384,7 +478,7 @@ DO UPDATE SET
                     owner_identity_id,
                     record.owner_did.trim(),
                     key_id,
-                    record.private_key_blob,
+                    private_key_blob,
                     record.public_key_blob,
                     record.status.as_str(),
                     nullable_text(&record.metadata_json),
@@ -413,7 +507,9 @@ WHERE owner_identity_id = ?1 AND key_id = ?2"#,
                 signed_prekey_from_row,
             )
             .optional()
-            .map_err(crate::internal::local_state::local_state_unavailable)
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .map(|record| self.open_signed_prekey_record(record))
+            .transpose()
     }
 
     pub(crate) fn active_signed_prekey(
@@ -433,7 +529,9 @@ LIMIT 1"#,
                 signed_prekey_from_row,
             )
             .optional()
-            .map_err(crate::internal::local_state::local_state_unavailable)
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .map(|record| self.open_signed_prekey_record(record))
+            .transpose()
     }
 
     pub(crate) fn load_signed_prekey_material(
@@ -456,6 +554,22 @@ LIMIT 1"#,
     ) -> crate::ImResult<()> {
         let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
         let key_id = required("key_id", &record.key_id)?;
+        let private_key_blob = seal_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            DirectSecretSealInput {
+                owner_identity_id: &owner_identity_id,
+                owner_did: record.owner_did.trim(),
+                kind: SecretKind::DirectE2eeOneTimePrekeyPrivate,
+                key_id: direct_secret_key_id(
+                    &owner_identity_id,
+                    "one-time-prekey",
+                    &key_id,
+                    "private",
+                ),
+                plaintext: &record.private_key_blob,
+                field: "direct E2EE one-time prekey private key",
+            },
+        )?;
         self.connection
             .execute(
                 r#"
@@ -474,7 +588,7 @@ DO UPDATE SET
                     owner_identity_id,
                     record.owner_did.trim(),
                     key_id,
-                    record.private_key_blob,
+                    private_key_blob,
                     record.public_key_blob,
                     record.status.as_str(),
                     nullable_text(&record.metadata_json),
@@ -503,7 +617,9 @@ WHERE owner_identity_id = ?1 AND key_id = ?2"#,
                 one_time_prekey_from_row,
             )
             .optional()
-            .map_err(crate::internal::local_state::local_state_unavailable)
+            .map_err(crate::internal::local_state::local_state_unavailable)?
+            .map(|record| self.open_one_time_prekey_record(record))
+            .transpose()
     }
 
     pub(crate) fn list_available_one_time_prekeys(
@@ -574,6 +690,8 @@ LIMIT 1"#,
             )
             .optional()
             .map_err(crate::internal::local_state::local_state_unavailable)?
+            .map(|record| self.open_one_time_prekey_record(record))
+            .transpose()?
         else {
             return Ok(None);
         };
@@ -610,6 +728,60 @@ WHERE owner_identity_id = ?1 AND key_id = ?2"#,
             .map_err(crate::internal::local_state::local_state_unavailable)?;
         Ok(changed > 0)
     }
+
+    fn open_session_record(
+        &self,
+        mut record: DirectSessionRecord,
+    ) -> crate::ImResult<DirectSessionRecord> {
+        record.state_blob = open_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            record.state_blob,
+            "direct E2EE session state",
+        )?;
+        Ok(record)
+    }
+
+    fn open_signed_prekey_record(
+        &self,
+        mut record: DirectSignedPrekeyRecord,
+    ) -> crate::ImResult<DirectSignedPrekeyRecord> {
+        record.private_key_blob = open_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            record.private_key_blob,
+            "direct E2EE signed prekey private key",
+        )?;
+        Ok(record)
+    }
+
+    fn open_one_time_prekey_record(
+        &self,
+        mut record: DirectOneTimePrekeyRecord,
+    ) -> crate::ImResult<DirectOneTimePrekeyRecord> {
+        record.private_key_blob = open_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            record.private_key_blob,
+            "direct E2EE one-time prekey private key",
+        )?;
+        Ok(record)
+    }
+}
+
+fn direct_secret_vault_dir_for_connection(
+    connection: &Connection,
+) -> crate::ImResult<std::path::PathBuf> {
+    let database_path = connection.path().unwrap_or_default();
+    if database_path.trim().is_empty() || database_path == ":memory:" {
+        return Ok(std::env::temp_dir().join(format!(
+            "awiki-im-core-direct-sqlite-vault-{}",
+            std::process::id()
+        )));
+    }
+    let parent = std::path::Path::new(database_path)
+        .parent()
+        .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+            detail: "direct E2EE local state database path has no parent".to_owned(),
+        })?;
+    Ok(parent.join("secrets").join("vault"))
 }
 
 pub(crate) fn save_incoming_init_session(
@@ -1159,6 +1331,7 @@ fn one_time_prekey_from_row(
 
 #[cfg(test)]
 mod tests {
+    use super::super::secret_store::is_direct_secret_envelope;
     use super::*;
     use anp::direct_e2ee::{SessionStore as _, SignedPrekeyStore as _};
 
@@ -1214,6 +1387,188 @@ mod tests {
                 .peer_did,
             "did:bob"
         );
+    }
+
+    #[test]
+    fn sqlite_store_encrypts_direct_secret_blobs_at_rest() {
+        let db = Connection::open_in_memory().unwrap();
+        let store = SqliteDirectSecureStateStore::new(&db).unwrap();
+        let session_secret = b"session-plaintext-secret".to_vec();
+        let signed_secret = b"signed-prekey-plaintext-secret".to_vec();
+        let one_time_secret = b"one-time-prekey-plaintext-secret".to_vec();
+
+        store
+            .upsert_session(&DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:alice".to_owned(),
+                peer_did: "did:bob".to_owned(),
+                session_id: "session-1".to_owned(),
+                state_blob: session_secret.clone(),
+                metadata_json: "{}".to_owned(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:01Z".to_owned(),
+            })
+            .unwrap();
+        store
+            .upsert_signed_prekey(&DirectSignedPrekeyRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:alice".to_owned(),
+                key_id: "spk-1".to_owned(),
+                private_key_blob: signed_secret.clone(),
+                public_key_blob: b"spk-public".to_vec(),
+                status: DirectPrekeyStatus::Active,
+                metadata_json: "{}".to_owned(),
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:01Z".to_owned(),
+            })
+            .unwrap();
+        store
+            .upsert_one_time_prekey(&DirectOneTimePrekeyRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:alice".to_owned(),
+                key_id: "otk-1".to_owned(),
+                private_key_blob: one_time_secret.clone(),
+                public_key_blob: b"otk-public".to_vec(),
+                status: DirectPrekeyStatus::Available,
+                metadata_json: "{}".to_owned(),
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                consumed_at: String::new(),
+            })
+            .unwrap();
+
+        let raw_session: Vec<u8> = db
+            .query_row(
+                "SELECT state_blob FROM direct_e2ee_sessions WHERE owner_identity_id = 'alice-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let raw_signed: Vec<u8> = db
+            .query_row(
+                "SELECT private_key_blob FROM direct_e2ee_signed_prekeys WHERE owner_identity_id = 'alice-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let raw_one_time: Vec<u8> = db
+            .query_row(
+                "SELECT private_key_blob FROM direct_e2ee_one_time_prekeys WHERE owner_identity_id = 'alice-id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(is_direct_secret_envelope(&raw_session));
+        assert!(is_direct_secret_envelope(&raw_signed));
+        assert!(is_direct_secret_envelope(&raw_one_time));
+        assert_ne!(raw_session, session_secret);
+        assert_ne!(raw_signed, signed_secret);
+        assert_ne!(raw_one_time, one_time_secret);
+        assert!(!String::from_utf8_lossy(&raw_session).contains("session-plaintext-secret"));
+        assert!(!String::from_utf8_lossy(&raw_signed).contains("signed-prekey-plaintext-secret"));
+        assert!(
+            !String::from_utf8_lossy(&raw_one_time).contains("one-time-prekey-plaintext-secret")
+        );
+
+        assert_eq!(
+            store
+                .get_session("alice-id", "did:bob")
+                .unwrap()
+                .expect("session")
+                .state_blob,
+            session_secret
+        );
+        assert_eq!(
+            store
+                .get_signed_prekey("alice-id", "spk-1")
+                .unwrap()
+                .expect("signed prekey")
+                .private_key_blob,
+            signed_secret
+        );
+        assert_eq!(
+            store
+                .get_one_time_prekey("alice-id", "otk-1")
+                .unwrap()
+                .expect("one-time prekey")
+                .private_key_blob,
+            one_time_secret
+        );
+    }
+
+    #[test]
+    fn sqlite_store_without_secret_vault_rejects_new_direct_secret_writes() {
+        let db = Connection::open_in_memory().unwrap();
+        let store = SqliteDirectSecureStateStore::new_without_secret_vault_for_legacy(&db).unwrap();
+
+        let err = store
+            .upsert_session(&DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:alice".to_owned(),
+                peer_did: "did:bob".to_owned(),
+                session_id: "session-1".to_owned(),
+                state_blob: b"session-secret".to_vec(),
+                metadata_json: "{}".to_owned(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:01Z".to_owned(),
+            })
+            .expect_err("new direct secret write must require vault");
+
+        assert!(err.to_string().contains("refusing plaintext fallback"));
+    }
+
+    #[test]
+    fn sqlite_store_without_secret_vault_reads_legacy_plaintext_blobs() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute(
+            r#"
+INSERT INTO direct_e2ee_sessions
+    (owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, revision, created_at, updated_at)
+VALUES ('alice-id', 'did:alice', 'did:bob', 'session-1', ?1, '{}', 0, '2026-05-24T00:00:00Z', '2026-05-24T00:00:01Z')
+"#,
+            params![b"legacy-session-secret".to_vec()],
+        )
+        .unwrap();
+
+        let store = SqliteDirectSecureStateStore::new_without_secret_vault_for_legacy(&db).unwrap();
+        let loaded = store
+            .get_session("alice-id", "did:bob")
+            .unwrap()
+            .expect("legacy session");
+
+        assert_eq!(loaded.state_blob, b"legacy-session-secret");
+    }
+
+    #[test]
+    fn sqlite_store_without_secret_vault_rejects_vault_envelope_reads() {
+        let db = Connection::open_in_memory().unwrap();
+        let vault_store = SqliteDirectSecureStateStore::new(&db).unwrap();
+        vault_store
+            .upsert_session(&DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:alice".to_owned(),
+                peer_did: "did:bob".to_owned(),
+                session_id: "session-1".to_owned(),
+                state_blob: b"session-secret".to_vec(),
+                metadata_json: "{}".to_owned(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:01Z".to_owned(),
+            })
+            .unwrap();
+        let no_vault_store =
+            SqliteDirectSecureStateStore::new_without_secret_vault_for_legacy(&db).unwrap();
+
+        let err = no_vault_store
+            .get_session("alice-id", "did:bob")
+            .expect_err("envelope read must require vault");
+
+        assert!(err
+            .to_string()
+            .contains("requires AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"));
     }
 
     #[test]

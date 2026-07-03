@@ -12,6 +12,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use super::secret_store::{
+    default_direct_secret_vault, direct_secret_key_id, open_direct_secret_blob,
+    seal_direct_secret_blob, DirectSecretSealInput, DirectSecretVault,
+};
+
 pub(crate) type DirectSecureFileRuntimeRpc =
     dyn FnMut(&str, Map<String, Value>) -> crate::ImResult<Map<String, Value>>;
 pub(crate) type DirectSecureFileRuntimeResolver = dyn FnMut(&str) -> crate::ImResult<Value>;
@@ -658,9 +663,12 @@ pub(crate) fn flush_direct_secure_file_outbox(
 pub(crate) fn encrypt_direct_secure_file_ack(
     input: &DirectSecureLocalAckInput,
 ) -> crate::ImResult<Value> {
-    let mut sender_store =
-        FileSessionStore::new(input.sender_identity_dir.join(SECURE_SESSION_DIR_NAME))
-            .map_err(map_direct_error)?;
+    let mut sender_store = FileSessionStore::new(
+        input.sender_identity_dir.join(SECURE_SESSION_DIR_NAME),
+        &input.sender_did,
+        &input.sender_did,
+    )
+    .map_err(map_direct_error)?;
     let mut sender_session = sender_store
         .find_by_peer_did(&input.recipient_did)
         .map_err(map_direct_error)?
@@ -791,6 +799,8 @@ pub(crate) fn can_process_direct_secure_file_ack(
             .identity
             .identity_dir
             .join(SECURE_SESSION_DIR_NAME),
+        &recipient.identity.owner_identity_id,
+        &recipient.identity.owner_did,
     ) {
         Ok(store) => store,
         Err(_) => return false,
@@ -861,6 +871,24 @@ fn prepare_direct_secure_file_runtime_client(
     let local_service_did =
         anp::direct_e2ee::message_service_did_from_document(&local_did_document)
             .map_err(map_direct_error)?;
+    let session_store = FileSessionStore::new(
+        identity.identity_dir.join(SECURE_SESSION_DIR_NAME),
+        &owner_identity_id,
+        &owner_did,
+    )
+    .map_err(map_direct_error)?;
+    let signed_prekey_store = FileSignedPrekeyStore::new(
+        identity.identity_dir.join(SECURE_SIGNED_PREKEY_DIR_NAME),
+        &owner_identity_id,
+        &owner_did,
+    )
+    .map_err(map_direct_error)?;
+    let one_time_prekey_store = FileOneTimePrekeyStore::new(
+        identity.identity_dir.join(SECURE_ONE_TIME_PREKEY_DIR_NAME),
+        &owner_identity_id,
+        &owner_did,
+    )
+    .map_err(map_direct_error)?;
     Ok(PreparedDirectSecureFileRuntimeClient {
         owner_identity_id,
         owner_did,
@@ -870,16 +898,9 @@ fn prepare_direct_secure_file_runtime_client(
         agreement_key_id,
         signing_private,
         agreement_private,
-        session_store: FileSessionStore::new(identity.identity_dir.join(SECURE_SESSION_DIR_NAME))
-            .map_err(map_direct_error)?,
-        signed_prekey_store: FileSignedPrekeyStore::new(
-            identity.identity_dir.join(SECURE_SIGNED_PREKEY_DIR_NAME),
-        )
-        .map_err(map_direct_error)?,
-        one_time_prekey_store: FileOneTimePrekeyStore::new(
-            identity.identity_dir.join(SECURE_ONE_TIME_PREKEY_DIR_NAME),
-        )
-        .map_err(map_direct_error)?,
+        session_store,
+        signed_prekey_store,
+        one_time_prekey_store,
     })
 }
 
@@ -888,23 +909,69 @@ struct VerifiedPrekeyBundle {
     one_time_prekey: Option<OneTimePrekey>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct FileSessionStore {
     root: PathBuf,
+    owner_identity_id: String,
+    owner_did: String,
+    secret_vault: Option<DirectSecretVault>,
 }
 
 impl FileSessionStore {
-    fn new(root: impl AsRef<Path>) -> Result<Self, DirectE2eeError> {
+    fn new(
+        root: impl AsRef<Path>,
+        owner_identity_id: &str,
+        owner_did: &str,
+    ) -> Result<Self, DirectE2eeError> {
         let root = root.as_ref().to_path_buf();
         create_store_dir(&root)?;
-        Ok(Self { root })
+        let secret_vault =
+            default_direct_secret_vault(file_secret_vault_dir(&root)).map_err(vault_store_error)?;
+        Ok(Self {
+            root,
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            secret_vault,
+        })
+    }
+
+    #[cfg(test)]
+    fn new_without_secret_vault_for_legacy(
+        root: impl AsRef<Path>,
+    ) -> Result<Self, DirectE2eeError> {
+        let root = root.as_ref().to_path_buf();
+        create_store_dir(&root)?;
+        Ok(Self {
+            root,
+            owner_identity_id: "legacy-owner".to_owned(),
+            owner_did: String::new(),
+            secret_vault: None,
+        })
     }
 
     fn save_session(
         &mut self,
         session: &anp::direct_e2ee::DirectSessionState,
     ) -> Result<(), DirectE2eeError> {
-        write_private_json(&self.session_path(&session.session_id), session)
+        let raw = serde_json::to_vec_pretty(session).map_err(store_json_error)?;
+        let sealed = seal_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            DirectSecretSealInput {
+                owner_identity_id: &self.owner_identity_id,
+                owner_did: &self.owner_did,
+                kind: crate::vault::SecretKind::DirectE2eeSessionState,
+                key_id: direct_secret_key_id(
+                    &self.owner_identity_id,
+                    "file-session",
+                    &session.session_id,
+                    "state",
+                ),
+                plaintext: &raw,
+                field: "direct E2EE file session state",
+            },
+        )
+        .map_err(vault_store_error)?;
+        write_private_file(&self.session_path(&session.session_id), &sealed)
     }
 
     fn load_session(
@@ -919,6 +986,12 @@ impl FileSessionStore {
             }
             Err(err) => return Err(store_io_error(err)),
         };
+        let raw = open_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            raw,
+            "direct E2EE file session state",
+        )
+        .map_err(vault_store_error)?;
         serde_json::from_slice(&raw).map_err(store_json_error)
     }
 
@@ -930,6 +1003,12 @@ impl FileSessionStore {
         entries.sort();
         for path in entries {
             let raw = fs::read(&path).map_err(store_io_error)?;
+            let raw = open_direct_secret_blob(
+                self.secret_vault.as_ref(),
+                raw,
+                "direct E2EE file session state",
+            )
+            .map_err(vault_store_error)?;
             let session: anp::direct_e2ee::DirectSessionState =
                 serde_json::from_slice(&raw).map_err(store_json_error)?;
             if session.peer_did == peer_did {
@@ -968,16 +1047,44 @@ impl anp::direct_e2ee::SessionStore for FileSessionStore {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct FileSignedPrekeyStore {
     root: PathBuf,
+    owner_identity_id: String,
+    owner_did: String,
+    secret_vault: Option<DirectSecretVault>,
 }
 
 impl FileSignedPrekeyStore {
-    fn new(root: impl AsRef<Path>) -> Result<Self, DirectE2eeError> {
+    fn new(
+        root: impl AsRef<Path>,
+        owner_identity_id: &str,
+        owner_did: &str,
+    ) -> Result<Self, DirectE2eeError> {
         let root = root.as_ref().to_path_buf();
         create_store_dir(&root)?;
-        Ok(Self { root })
+        let secret_vault =
+            default_direct_secret_vault(file_secret_vault_dir(&root)).map_err(vault_store_error)?;
+        Ok(Self {
+            root,
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            secret_vault,
+        })
+    }
+
+    #[cfg(test)]
+    fn new_without_secret_vault_for_legacy(
+        root: impl AsRef<Path>,
+    ) -> Result<Self, DirectE2eeError> {
+        let root = root.as_ref().to_path_buf();
+        create_store_dir(&root)?;
+        Ok(Self {
+            root,
+            owner_identity_id: "legacy-owner".to_owned(),
+            owner_did: String::new(),
+            secret_vault: None,
+        })
     }
 
     fn save_signed_prekey(
@@ -986,7 +1093,25 @@ impl FileSignedPrekeyStore {
         private_key: &PrivateKeyMaterial,
         metadata: &anp::direct_e2ee::SignedPrekey,
     ) -> Result<(), DirectE2eeError> {
-        write_private_file(&self.pem_path(key_id), private_key.to_pem().as_bytes())?;
+        let pem = private_key.to_pem();
+        let sealed = seal_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            DirectSecretSealInput {
+                owner_identity_id: &self.owner_identity_id,
+                owner_did: &self.owner_did,
+                kind: crate::vault::SecretKind::DirectE2eeSignedPrekeyPrivate,
+                key_id: direct_secret_key_id(
+                    &self.owner_identity_id,
+                    "file-signed-prekey",
+                    key_id,
+                    "private",
+                ),
+                plaintext: pem.as_bytes(),
+                field: "direct E2EE file signed prekey private key",
+            },
+        )
+        .map_err(vault_store_error)?;
+        write_private_file(&self.pem_path(key_id), &sealed)?;
         write_public_json(&self.json_path(key_id), metadata)?;
         write_public_file(&self.latest_path(), key_id.as_bytes())
     }
@@ -995,7 +1120,15 @@ impl FileSignedPrekeyStore {
         &self,
         key_id: &str,
     ) -> Result<(PrivateKeyMaterial, anp::direct_e2ee::SignedPrekey), DirectE2eeError> {
-        let raw = fs::read_to_string(self.pem_path(key_id)).map_err(store_io_error)?;
+        let raw = fs::read(self.pem_path(key_id)).map_err(store_io_error)?;
+        let raw = open_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            raw,
+            "direct E2EE file signed prekey private key",
+        )
+        .map_err(vault_store_error)?;
+        let raw = String::from_utf8(raw)
+            .map_err(|err| DirectE2eeError::invalid_field(err.to_string()))?;
         let private_key = PrivateKeyMaterial::from_pem(&raw)
             .map_err(|err| DirectE2eeError::invalid_field(err.to_string()))?;
         let metadata = read_json_file(&self.json_path(key_id))?;
@@ -1041,16 +1174,44 @@ impl anp::direct_e2ee::SignedPrekeyStore for FileSignedPrekeyStore {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct FileOneTimePrekeyStore {
     root: PathBuf,
+    owner_identity_id: String,
+    owner_did: String,
+    secret_vault: Option<DirectSecretVault>,
 }
 
 impl FileOneTimePrekeyStore {
-    fn new(root: impl AsRef<Path>) -> Result<Self, DirectE2eeError> {
+    fn new(
+        root: impl AsRef<Path>,
+        owner_identity_id: &str,
+        owner_did: &str,
+    ) -> Result<Self, DirectE2eeError> {
         let root = root.as_ref().to_path_buf();
         create_store_dir(&root)?;
-        Ok(Self { root })
+        let secret_vault =
+            default_direct_secret_vault(file_secret_vault_dir(&root)).map_err(vault_store_error)?;
+        Ok(Self {
+            root,
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: owner_did.to_owned(),
+            secret_vault,
+        })
+    }
+
+    #[cfg(test)]
+    fn new_without_secret_vault_for_legacy(
+        root: impl AsRef<Path>,
+    ) -> Result<Self, DirectE2eeError> {
+        let root = root.as_ref().to_path_buf();
+        create_store_dir(&root)?;
+        Ok(Self {
+            root,
+            owner_identity_id: "legacy-owner".to_owned(),
+            owner_did: String::new(),
+            secret_vault: None,
+        })
     }
 
     fn save_one_time_prekey(
@@ -1059,7 +1220,25 @@ impl FileOneTimePrekeyStore {
         private_key: &PrivateKeyMaterial,
         metadata: &OneTimePrekey,
     ) -> Result<(), DirectE2eeError> {
-        write_private_file(&self.pem_path(key_id), private_key.to_pem().as_bytes())?;
+        let pem = private_key.to_pem();
+        let sealed = seal_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            DirectSecretSealInput {
+                owner_identity_id: &self.owner_identity_id,
+                owner_did: &self.owner_did,
+                kind: crate::vault::SecretKind::DirectE2eeOneTimePrekeyPrivate,
+                key_id: direct_secret_key_id(
+                    &self.owner_identity_id,
+                    "file-one-time-prekey",
+                    key_id,
+                    "private",
+                ),
+                plaintext: pem.as_bytes(),
+                field: "direct E2EE file one-time prekey private key",
+            },
+        )
+        .map_err(vault_store_error)?;
+        write_private_file(&self.pem_path(key_id), &sealed)?;
         write_public_json(&self.json_path(key_id), metadata)
     }
 
@@ -1067,7 +1246,15 @@ impl FileOneTimePrekeyStore {
         &self,
         key_id: &str,
     ) -> Result<(PrivateKeyMaterial, OneTimePrekey), DirectE2eeError> {
-        let raw = fs::read_to_string(self.pem_path(key_id)).map_err(store_io_error)?;
+        let raw = fs::read(self.pem_path(key_id)).map_err(store_io_error)?;
+        let raw = open_direct_secret_blob(
+            self.secret_vault.as_ref(),
+            raw,
+            "direct E2EE file one-time prekey private key",
+        )
+        .map_err(vault_store_error)?;
+        let raw = String::from_utf8(raw)
+            .map_err(|err| DirectE2eeError::invalid_field(err.to_string()))?;
         let private_key = PrivateKeyMaterial::from_pem(&raw)
             .map_err(|err| DirectE2eeError::invalid_field(err.to_string()))?;
         let metadata = read_json_file(&self.json_path(key_id))?;
@@ -1260,9 +1447,12 @@ fn json_paths(root: &Path) -> Result<Vec<PathBuf>, DirectE2eeError> {
     Ok(paths)
 }
 
-fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), DirectE2eeError> {
-    let raw = serde_json::to_vec_pretty(value).map_err(store_json_error)?;
-    write_private_file(path, &raw)
+fn file_secret_vault_dir(root: &Path) -> PathBuf {
+    root.parent().unwrap_or(root).join("vault")
+}
+
+fn vault_store_error(err: crate::ImError) -> DirectE2eeError {
+    DirectE2eeError::invalid_field(format!("direct E2EE secret vault: {err}"))
 }
 
 fn write_public_json<T: Serialize>(path: &Path, value: &T) -> Result<(), DirectE2eeError> {
@@ -1341,4 +1531,189 @@ fn write_public_file(path: &Path, raw: &[u8]) -> Result<(), DirectE2eeError> {
 #[cfg(not(unix))]
 fn write_public_file(path: &Path, raw: &[u8]) -> Result<(), DirectE2eeError> {
     fs::write(path, raw).map_err(store_io_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::secret_store::is_direct_secret_envelope;
+    use super::*;
+
+    #[test]
+    fn file_runtime_encrypts_direct_secret_files_at_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_root = temp.path().join(SECURE_SESSION_DIR_NAME);
+        let signed_root = temp.path().join(SECURE_SIGNED_PREKEY_DIR_NAME);
+        let one_time_root = temp.path().join(SECURE_ONE_TIME_PREKEY_DIR_NAME);
+        let session = direct_session("session-1", "did:bob");
+        let private_key = generated_x25519_private_key().unwrap();
+        let signed_metadata =
+            signed_prekey_from_private_key("spk-1", &private_key, DEFAULT_SIGNED_PREKEY_EXPIRY)
+                .unwrap();
+        let one_time_metadata = one_time_prekey_from_private_key("otk-1", &private_key).unwrap();
+
+        let mut session_store =
+            FileSessionStore::new(&session_root, "alice-id", "did:alice").unwrap();
+        let mut signed_store =
+            FileSignedPrekeyStore::new(&signed_root, "alice-id", "did:alice").unwrap();
+        let mut one_time_store =
+            FileOneTimePrekeyStore::new(&one_time_root, "alice-id", "did:alice").unwrap();
+
+        session_store.save_session(&session).unwrap();
+        signed_store
+            .save_signed_prekey("spk-1", &private_key, &signed_metadata)
+            .unwrap();
+        one_time_store
+            .save_one_time_prekey("otk-1", &private_key, &one_time_metadata)
+            .unwrap();
+
+        let raw_session = fs::read(session_store.session_path("session-1")).unwrap();
+        let raw_signed = fs::read(signed_store.pem_path("spk-1")).unwrap();
+        let raw_one_time = fs::read(one_time_store.pem_path("otk-1")).unwrap();
+
+        assert!(is_direct_secret_envelope(&raw_session));
+        assert!(is_direct_secret_envelope(&raw_signed));
+        assert!(is_direct_secret_envelope(&raw_one_time));
+        assert!(!String::from_utf8_lossy(&raw_session).contains("root-key-secret"));
+        assert!(!String::from_utf8_lossy(&raw_signed).contains("BEGIN"));
+        assert!(!String::from_utf8_lossy(&raw_one_time).contains("BEGIN"));
+        assert_eq!(session_store.load_session("session-1").unwrap(), session);
+        assert_eq!(
+            session_store
+                .find_by_peer_did("did:bob")
+                .unwrap()
+                .expect("session by peer"),
+            session
+        );
+        assert_eq!(
+            signed_store.load_signed_prekey("spk-1").unwrap().0.to_pem(),
+            private_key.to_pem()
+        );
+        assert_eq!(
+            one_time_store
+                .load_one_time_prekey("otk-1")
+                .unwrap()
+                .0
+                .to_pem(),
+            private_key.to_pem()
+        );
+    }
+
+    #[test]
+    fn file_runtime_without_secret_vault_rejects_new_direct_secret_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = FileSessionStore::new_without_secret_vault_for_legacy(
+            temp.path().join(SECURE_SESSION_DIR_NAME),
+        )
+        .unwrap();
+
+        let err = store
+            .save_session(&direct_session("session-1", "did:bob"))
+            .expect_err("new direct secret write must require vault");
+
+        assert!(err.to_string().contains("refusing plaintext fallback"));
+    }
+
+    #[test]
+    fn file_runtime_without_secret_vault_reads_legacy_plaintext_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_root = temp.path().join(SECURE_SESSION_DIR_NAME);
+        let signed_root = temp.path().join(SECURE_SIGNED_PREKEY_DIR_NAME);
+        let one_time_root = temp.path().join(SECURE_ONE_TIME_PREKEY_DIR_NAME);
+        let session = direct_session("session-1", "did:bob");
+        let private_key = generated_x25519_private_key().unwrap();
+        let signed_metadata =
+            signed_prekey_from_private_key("spk-1", &private_key, DEFAULT_SIGNED_PREKEY_EXPIRY)
+                .unwrap();
+        let one_time_metadata = one_time_prekey_from_private_key("otk-1", &private_key).unwrap();
+
+        create_store_dir(&session_root).unwrap();
+        create_store_dir(&signed_root).unwrap();
+        create_store_dir(&one_time_root).unwrap();
+        write_private_file(
+            &session_root.join("session-1.json"),
+            &serde_json::to_vec_pretty(&session).unwrap(),
+        )
+        .unwrap();
+        write_private_file(
+            &signed_root.join("spk-1.pem"),
+            private_key.to_pem().as_bytes(),
+        )
+        .unwrap();
+        write_public_json(&signed_root.join("spk-1.json"), &signed_metadata).unwrap();
+        write_public_file(&signed_root.join("latest.txt"), b"spk-1").unwrap();
+        write_private_file(
+            &one_time_root.join("otk-1.pem"),
+            private_key.to_pem().as_bytes(),
+        )
+        .unwrap();
+        write_public_json(&one_time_root.join("otk-1.json"), &one_time_metadata).unwrap();
+
+        let session_store =
+            FileSessionStore::new_without_secret_vault_for_legacy(&session_root).unwrap();
+        let signed_store =
+            FileSignedPrekeyStore::new_without_secret_vault_for_legacy(&signed_root).unwrap();
+        let one_time_store =
+            FileOneTimePrekeyStore::new_without_secret_vault_for_legacy(&one_time_root).unwrap();
+
+        assert_eq!(session_store.load_session("session-1").unwrap(), session);
+        assert_eq!(
+            signed_store
+                .load_latest_signed_prekey()
+                .unwrap()
+                .expect("latest signed prekey")
+                .0
+                .to_pem(),
+            private_key.to_pem()
+        );
+        assert_eq!(
+            one_time_store
+                .load_one_time_prekey("otk-1")
+                .unwrap()
+                .0
+                .to_pem(),
+            private_key.to_pem()
+        );
+    }
+
+    #[test]
+    fn file_runtime_without_secret_vault_rejects_vault_envelope_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_root = temp.path().join(SECURE_SESSION_DIR_NAME);
+        let session = direct_session("session-1", "did:bob");
+        let mut vault_store =
+            FileSessionStore::new(&session_root, "alice-id", "did:alice").unwrap();
+        vault_store.save_session(&session).unwrap();
+        let no_vault_store =
+            FileSessionStore::new_without_secret_vault_for_legacy(&session_root).unwrap();
+
+        let err = no_vault_store
+            .load_session("session-1")
+            .expect_err("envelope read must require vault");
+
+        assert!(err
+            .to_string()
+            .contains("requires AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"));
+    }
+
+    fn direct_session(session_id: &str, peer_did: &str) -> anp::direct_e2ee::DirectSessionState {
+        anp::direct_e2ee::DirectSessionState {
+            session_id: session_id.to_owned(),
+            suite: "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1".to_owned(),
+            peer_did: peer_did.to_owned(),
+            local_key_agreement_id: "did:alice#key-3".to_owned(),
+            peer_key_agreement_id: "did:bob#key-3".to_owned(),
+            root_key_b64u: "root-key-secret".to_owned(),
+            send_chain_key_b64u: Some("send-chain-secret".to_owned()),
+            recv_chain_key_b64u: Some("recv-chain-secret".to_owned()),
+            ratchet_private_key_b64u: "ratchet-private-secret".to_owned(),
+            ratchet_public_key_b64u: "ratchet-public".to_owned(),
+            peer_ratchet_public_key_b64u: Some("peer-ratchet".to_owned()),
+            send_n: 1,
+            recv_n: 2,
+            previous_send_chain_length: 0,
+            skipped_message_keys: Vec::new(),
+            is_initiator: true,
+            status: "established".to_owned(),
+        }
+    }
 }
