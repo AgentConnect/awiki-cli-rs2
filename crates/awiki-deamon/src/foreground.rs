@@ -1786,11 +1786,8 @@ fn run_cli_route_message_queue_item(
         .task_id
         .as_deref()
         .context("cli route message queue item is missing task_id")?;
-    let original_run_id = original_item
-        .run_id
-        .as_deref()
-        .context("cli route message queue item is missing original run_id")?;
-    let original_run = state.load_runtime_run(original_run_id)?;
+    let original_run_id = original_runtime_run_id_for_queue_item(original_item)?;
+    let original_run = state.load_runtime_run(&original_run_id)?;
     if original_run.status != RuntimeRunStatus::Failed {
         bail!("cli route message queue original run is no longer failed");
     }
@@ -1828,6 +1825,16 @@ fn run_cli_route_message_queue_item(
         replay_run_id.to_string(),
     )?;
     Ok(replay_run_id.to_string())
+}
+
+fn original_runtime_run_id_for_queue_item(
+    item: &crate::state::CliRouteMessageQueueRecord,
+) -> Result<String> {
+    let task_id = item
+        .task_id
+        .as_deref()
+        .context("cli route message queue item is missing task_id")?;
+    Ok(format!("run_{task_id}"))
 }
 
 fn validate_claimed_cli_route_message_queue_item(
