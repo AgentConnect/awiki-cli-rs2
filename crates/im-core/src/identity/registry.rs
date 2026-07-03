@@ -208,7 +208,13 @@ impl<'a> IdentityRegistry<'a> {
         crate::internal::identity_store::IdentityStore::new(
             &self.core.inner().sdk_paths().identities,
         )
-        .load_daemon_subkey_package(&dir_name)
+        .load_daemon_subkey_package_vault_aware(
+            &dir_name,
+            &entry.summary.did,
+            entry.vault_migration.as_ref(),
+            self.core.inner().identity_vault(),
+            self.core.inner().identity_secret_storage_policy(),
+        )
     }
 
     pub async fn load_daemon_subkey_package_async(
@@ -223,11 +229,25 @@ impl<'a> IdentityRegistry<'a> {
                 .ok_or_else(|| crate::ImError::IdentityNotFound {
                     selector: entry.summary.id.as_str().to_string(),
                 })?;
-        crate::internal::identity_store::IdentityStore::load_daemon_subkey_package_async(
-            self.core.inner().sdk_paths().identities.clone(),
-            dir_name,
-        )
+        let paths = self.core.inner().sdk_paths().identities.clone();
+        let did = entry.summary.did.clone();
+        let metadata = entry.vault_migration.clone();
+        let context = self.core.inner().identity_vault().cloned();
+        let policy = self.core.inner().identity_secret_storage_policy();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_store::IdentityStore::new(&paths)
+                .load_daemon_subkey_package_vault_aware(
+                    &dir_name,
+                    &did,
+                    metadata.as_ref(),
+                    context.as_ref(),
+                    policy,
+                )
+        })
         .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })?
     }
 
     pub fn ensure_daemon_subkey_package(
@@ -241,6 +261,7 @@ impl<'a> IdentityRegistry<'a> {
             EnsureDaemonSubkeyPrepared::Ready { package } => Ok(package),
             EnsureDaemonSubkeyPrepared::UpdateRequired {
                 dir_name,
+                identity_id,
                 did_document,
                 package,
                 selector,
@@ -266,7 +287,14 @@ impl<'a> IdentityRegistry<'a> {
                 crate::internal::identity_store::IdentityStore::new(
                     &self.core.inner().sdk_paths().identities,
                 )
-                .save_daemon_subkey_package(&dir_name, &package)?;
+                .save_daemon_subkey_package_with_secret_storage(
+                    &dir_name,
+                    &identity_id,
+                    &package,
+                    crate::internal::identity_store::SaveIdentitySecretStorage::from_core(
+                        self.core,
+                    )?,
+                )?;
                 Ok(package)
             }
         }
@@ -291,6 +319,7 @@ impl<'a> IdentityRegistry<'a> {
             EnsureDaemonSubkeyPrepared::Ready { package } => Ok(package),
             EnsureDaemonSubkeyPrepared::UpdateRequired {
                 dir_name,
+                identity_id,
                 did_document,
                 package,
                 selector,
@@ -313,10 +342,19 @@ impl<'a> IdentityRegistry<'a> {
                     .await?;
                 let paths = self.core.inner().sdk_paths().identities.clone();
                 let package_to_save = package.clone();
+                let secret_storage =
+                    crate::internal::identity_store::SaveIdentitySecretStorage::from_core(
+                        self.core,
+                    )?;
                 crate::internal::runtime::worker::run_blocking(move || {
                     let store = crate::internal::identity_store::IdentityStore::new(&paths);
                     store.save_did_document(&dir_name, &did_document)?;
-                    store.save_daemon_subkey_package(&dir_name, &package_to_save)?;
+                    store.save_daemon_subkey_package_with_secret_storage(
+                        &dir_name,
+                        &identity_id,
+                        &package_to_save,
+                        secret_storage,
+                    )?;
                     Ok::<(), crate::ImError>(())
                 })
                 .await
@@ -468,9 +506,25 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["did_document_identity_mismatch".to_string()],
             });
         }
-        if let Some(package) =
-            store.load_daemon_subkey_package_or_legacy(&dir_name, &did, &did_document)?
-        {
+        if let Some(package) = match store.load_daemon_subkey_package_vault_aware(
+            &dir_name,
+            &did,
+            entry.vault_migration.as_ref(),
+            self.core.inner().identity_vault(),
+            self.core.inner().identity_secret_storage_policy(),
+        ) {
+            Ok(package) => Some(package),
+            Err(crate::ImError::IdentityNotFound { .. })
+                if !matches!(
+                    self.core.inner().identity_secret_storage_policy(),
+                    crate::core::IdentitySecretStoragePolicy::VaultRequired
+                ) =>
+            {
+                store.load_daemon_subkey_package_or_legacy(&dir_name, &did, &did_document)?
+            }
+            Err(crate::ImError::IdentityNotFound { .. }) => None,
+            Err(err) => return Err(err),
+        } {
             if package.user_did != did {
                 return Err(crate::ImError::IdentityNotReady {
                     identity: did.as_str().to_string(),
@@ -492,17 +546,7 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["daemon_subkey_private_missing".to_string()],
             });
         }
-        let key1_private_pem = store
-            .load_key1_private_pem(&dir_name)
-            .map_err(|err| match err {
-                crate::ImError::CredentialFileUnreadable { .. } => {
-                    crate::ImError::IdentityNotReady {
-                        identity: did.as_str().to_string(),
-                        missing: vec!["key1_private".to_string()],
-                    }
-                }
-                other => other,
-            })?;
+        let key1_private_pem = self.identity_root_private_for_entry(entry, &dir_name, &did)?;
         let subkey = crate::internal::identity_daemon_subkey::generate_for_did(&did);
         crate::internal::identity_daemon_subkey::apply_to_did_document(
             &mut did_document,
@@ -522,6 +566,7 @@ impl<'a> IdentityRegistry<'a> {
         );
         Ok(EnsureDaemonSubkeyPrepared::UpdateRequired {
             dir_name,
+            identity_id: entry.summary.id.as_str().to_string(),
             did_document,
             package,
             selector: super::IdentitySelector::Did(did),
@@ -564,17 +609,7 @@ impl<'a> IdentityRegistry<'a> {
                 verification_method,
             });
         }
-        let key1_private_pem = store
-            .load_key1_private_pem(&dir_name)
-            .map_err(|err| match err {
-                crate::ImError::CredentialFileUnreadable { .. } => {
-                    crate::ImError::IdentityNotReady {
-                        identity: did.as_str().to_string(),
-                        missing: vec!["key1_private".to_string()],
-                    }
-                }
-                other => other,
-            })?;
+        let key1_private_pem = self.identity_root_private_for_entry(entry, &dir_name, &did)?;
         crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
             &mut did_document,
             &did,
@@ -587,6 +622,81 @@ impl<'a> IdentityRegistry<'a> {
             did_document,
             selector: super::IdentitySelector::Did(did),
         })
+    }
+
+    fn identity_root_private_for_entry(
+        &self,
+        entry: &RegistryEntry,
+        dir_name: &str,
+        did: &crate::ids::Did,
+    ) -> crate::ImResult<String> {
+        let store = crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        );
+        let policy = self.core.inner().identity_secret_storage_policy();
+        if let Some(metadata) = entry.vault_migration.as_ref() {
+            if vault_metadata_is_verified(metadata) {
+                if let Some(context) = self.core.inner().identity_vault() {
+                    if vault_context_matches_metadata(context, metadata) {
+                        return store.load_key1_private_pem_from_vault(
+                            dir_name,
+                            did,
+                            metadata,
+                            context.workspace_id(),
+                            context.device_id(),
+                            context.vault().as_ref(),
+                        );
+                    }
+                    if matches!(
+                        policy,
+                        crate::core::IdentitySecretStoragePolicy::VaultRequired
+                    ) || !metadata.plaintext_compat_retained
+                    {
+                        return Err(crate::ImError::IdentityNotReady {
+                            identity: did.as_str().to_string(),
+                            missing: vec!["identity_vault_context_mismatch".to_string()],
+                        });
+                    }
+                } else if matches!(
+                    policy,
+                    crate::core::IdentitySecretStoragePolicy::VaultRequired
+                ) || !metadata.plaintext_compat_retained
+                {
+                    return Err(crate::ImError::LocalStateUnavailable {
+                        detail:
+                            "identity root private key is stored in vault but no identity secret vault was provided"
+                                .to_owned(),
+                    });
+                }
+            } else if matches!(
+                policy,
+                crate::core::IdentitySecretStoragePolicy::VaultRequired
+            ) {
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: did.as_str().to_string(),
+                    missing: vec!["identity_vault_metadata_verified".to_string()],
+                });
+            }
+        } else if matches!(
+            policy,
+            crate::core::IdentitySecretStoragePolicy::VaultRequired
+        ) {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: did.as_str().to_string(),
+                missing: vec!["identity_vault_metadata".to_string()],
+            });
+        }
+        store
+            .load_key1_private_pem(dir_name)
+            .map_err(|err| match err {
+                crate::ImError::CredentialFileUnreadable { .. } => {
+                    crate::ImError::IdentityNotReady {
+                        identity: did.as_str().to_string(),
+                        missing: vec!["key1_private".to_string()],
+                    }
+                }
+                other => other,
+            })
     }
 
     fn resolve_from_snapshot(
@@ -1329,6 +1439,7 @@ enum EnsureDaemonSubkeyPrepared {
     },
     UpdateRequired {
         dir_name: String,
+        identity_id: String,
         did_document: Value,
         package: super::DaemonSubkeyPrivatePackage,
         selector: super::IdentitySelector,

@@ -162,30 +162,35 @@ where
             .transport
             .rpc(call.endpoint, call.method, call.params.clone())?;
         let local_alias = local_alias(&request, &target);
+        let secret_storage =
+            crate::internal::identity_store::SaveIdentitySecretStorage::from_core(self.core)?;
         let stored = crate::internal::identity_store::IdentityStore::new(
             &self.core.inner().sdk_paths().identities,
         )
-        .save_identity(crate::internal::identity_store::SaveIdentityInput {
-            local_alias,
-            did: generated.did.clone(),
-            unique_id: generated.unique_id,
-            user_id: string_value(&raw, "user_id", ""),
-            display_name: request
-                .profile
-                .display_name
-                .clone()
-                .unwrap_or_else(|| target.local_part.clone()),
-            handle: string_value(&raw, "handle", &target.local_part),
-            full_handle: string_value(&raw, "full_handle", target.full_handle.as_str()),
-            jwt_token: string_value(&raw, "access_token", ""),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            daemon_subkey_package: Some(daemon_subkey_package),
-            make_default: request.make_default,
-        })?;
+        .save_identity_with_secret_storage(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias,
+                did: generated.did.clone(),
+                unique_id: generated.unique_id,
+                user_id: string_value(&raw, "user_id", ""),
+                display_name: request
+                    .profile
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| target.local_part.clone()),
+                handle: string_value(&raw, "handle", &target.local_part),
+                full_handle: string_value(&raw, "full_handle", target.full_handle.as_str()),
+                jwt_token: string_value(&raw, "access_token", ""),
+                did_document: Some(generated.did_document),
+                key1_private_pem: generated.key1_private_pem,
+                key1_public_pem: generated.key1_public_pem,
+                e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+                e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+                daemon_subkey_package: Some(daemon_subkey_package),
+                make_default: request.make_default,
+            },
+            secret_storage,
+        )?;
         let identity = identity_summary_from_stored(&stored)?;
         let sdk_result = crate::identity::HandleRegistrationResult {
             identity: Some(identity.clone()),
@@ -371,7 +376,9 @@ where
             .rpc(call.endpoint, call.method, call.params.clone())
             .await?;
         let local_alias = local_alias(&request, &target);
-        let stored = crate::internal::identity_store::IdentityStore::save_identity_async(
+        let secret_storage =
+            crate::internal::identity_store::SaveIdentitySecretStorage::from_core(self.core)?;
+        let stored = crate::internal::identity_store::IdentityStore::save_identity_with_secret_storage_async(
             self.core.inner().sdk_paths().identities.clone(),
             crate::internal::identity_store::SaveIdentityInput {
                 local_alias,
@@ -394,6 +401,7 @@ where
                 daemon_subkey_package: Some(daemon_subkey_package),
                 make_default: request.make_default,
             },
+            secret_storage,
         )
         .await?;
         let identity = identity_summary_from_stored(&stored)?;

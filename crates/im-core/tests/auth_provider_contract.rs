@@ -9,6 +9,10 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use im_core::prelude::*;
+use im_core::vault::{
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
+    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
+};
 use serde_json::Value;
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -222,6 +226,39 @@ async fn async_file_session_provider_refreshes_expired_token_during_ensure_sessi
     assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
 }
 
+#[tokio::test]
+async fn vault_session_provider_refreshes_jwt_without_rewriting_auth_json() {
+    let server = TestServer::new(
+        r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
+    );
+    let fixture = AuthFixture::new().with_service_base_url(server.base_url());
+    fixture.write_vault_runtime("alice", "did:example:alice", "stale-token");
+    let auth_path = fixture.auth_path("alice");
+    assert!(!auth_path.exists());
+    let client = fixture.client_async_vault_required("alice").await;
+
+    let update = client.auth().refresh_session_async().await.unwrap();
+
+    assert!(update.refreshed);
+    assert_eq!(update.bearer_token.as_deref(), Some("fresh-token"));
+    assert!(
+        !auth_path.exists(),
+        "vault-backed refresh must not create auth.json"
+    );
+    let status = client.auth().status_async().await.unwrap();
+    assert!(status.has_session);
+    assert!(!status.needs_refresh);
+    let persisted_text = fixture.collect_identity_text("alice");
+    assert!(!persisted_text.contains("fresh-token"));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !requests[0].contains("Authorization: Bearer stale-token\r\n"),
+        "refresh must force a fresh DID auth signature:\n{}",
+        requests[0]
+    );
+}
+
 #[test]
 fn file_session_provider_reads_legacy_jwt_token_exp_claim_when_metadata_is_missing() {
     let fixture = AuthFixture::new();
@@ -361,12 +398,124 @@ impl AuthFixture {
             .unwrap()
     }
 
+    async fn client_async_vault_required(&self, alias: &str) -> ImClient {
+        self.core_async_vault_required()
+            .await
+            .client_async(IdentitySelector::LocalAlias(alias.to_string()))
+            .await
+            .unwrap()
+    }
+
     fn core(&self) -> ImCore {
         ImCore::new(self.config(), self.paths()).unwrap()
     }
 
     async fn core_async(&self) -> ImCore {
         ImCore::open(self.config(), self.paths()).await.unwrap()
+    }
+
+    async fn core_async_vault_required(&self) -> ImCore {
+        ImCore::open_with_options(
+            self.config(),
+            self.paths(),
+            ImCoreOpenOptions::default().with_identity_secret_vault(
+                IdentitySecretStoragePolicy::VaultRequired,
+                ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([55_u8; 32]),
+                    self.root.join("identity-vault"),
+                    "auth-workspace",
+                    "auth-device",
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn write_vault_runtime(&self, alias: &str, did: &str, token: &str) {
+        let identities = self.root.join("identities");
+        let identity_dir = identities.join(alias);
+        fs::create_dir_all(&identity_dir).unwrap();
+        let bundle = generated_identity_bundle(alias);
+        let did_document = did_document_for_runtime(did, &bundle.did_document);
+        fs::write(
+            identity_dir.join("did.json"),
+            serde_json::to_vec_pretty(&did_document).unwrap(),
+        )
+        .unwrap();
+        let vault = FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([55_u8; 32]),
+            FileSecretVaultStore::new(self.root.join("identity-vault")),
+        );
+        let signing_ref = vault
+            .seal(SealSecretRequest {
+                metadata: vault_metadata(alias, did, SecretKind::IdentityRootPrivate, "key-1"),
+                plaintext: SecretBytes::from_vec(
+                    bundle.private_key_pem("key-1").unwrap().as_bytes().to_vec(),
+                ),
+            })
+            .unwrap();
+        let agreement_ref = vault
+            .seal(SealSecretRequest {
+                metadata: vault_metadata(
+                    alias,
+                    did,
+                    SecretKind::IdentityE2eeAgreementPrivate,
+                    "key-3",
+                ),
+                plaintext: SecretBytes::from_vec(
+                    bundle.private_key_pem("key-3").unwrap().as_bytes().to_vec(),
+                ),
+            })
+            .unwrap();
+        let auth_ref = vault
+            .seal(SealSecretRequest {
+                metadata: vault_metadata(alias, did, SecretKind::AuthJwt, "auth.json"),
+                plaintext: SecretBytes::from_vec(auth_state_json_for_token(token)),
+            })
+            .unwrap();
+        fs::write(
+            identities.join("registry.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "default_credential_name": alias,
+                "credentials": {
+                    alias: {
+                        "credential_name": alias,
+                        "dir_name": alias,
+                        "did": did,
+                        "unique_id": format!("{alias}-id"),
+                        "user_id": "user-1",
+                        "name": "Alice",
+                        "handle": alias,
+                        "full_handle": format!("{alias}.awiki.test"),
+                        "is_default": true,
+                        "vault_migration": {
+                            "schema_version": 1,
+                            "status": "verified",
+                            "backend": "vault",
+                            "unlock_policy": "explicit_root_key",
+                            "migrated_at": "2026-07-03T00:00:00Z",
+                            "workspace_id": "auth-workspace",
+                            "device_id": "auth-device",
+                            "plaintext_compat_retained": false,
+                            "refs": {
+                                "default_signing_private": signing_ref,
+                                "e2ee_agreement_private": agreement_ref,
+                                "auth_jwt": auth_ref
+                            }
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn collect_identity_text(&self, alias: &str) -> String {
+        let mut out = String::new();
+        collect_text_files(&self.root.join("identities").join(alias), &mut out);
+        out
     }
 
     fn config(&self) -> ImCoreConfig {
@@ -583,6 +732,48 @@ fn find_header_end(raw: &[u8]) -> Option<usize> {
     raw.windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map(|index| index + 4)
+}
+
+fn auth_state_json_for_token(token: &str) -> Vec<u8> {
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "jwt_token": token,
+        "token_type": "Bearer"
+    }))
+    .unwrap()
+}
+
+fn vault_metadata(alias: &str, did: &str, kind: SecretKind, key_id: &str) -> SecretMetadata {
+    SecretMetadata {
+        workspace_id: "auth-workspace".to_string(),
+        device_id: "auth-device".to_string(),
+        identity_id: Some(format!("{alias}-id")),
+        did: Some(did.to_string()),
+        kind,
+        key_id: key_id.to_string(),
+        key_version: 1,
+        policy: SecretAccessPolicy::no_prompt_local_secret(),
+    }
+}
+
+fn collect_text_files(root: &std::path::Path, out: &mut String) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_text_files(&path, out);
+        } else if metadata.is_file() {
+            if let Ok(text) = fs::read_to_string(&path) {
+                out.push_str(&text);
+                out.push('\n');
+            }
+        }
+    }
 }
 
 fn request_body(raw: &str) -> &str {
