@@ -63,6 +63,26 @@ pub struct ImCorePaths {
     pub local_state: LocalStatePaths,
     pub runtime: RuntimePaths,
 }
+
+pub struct ImCoreOpenOptions {
+    pub identity_secret_storage_policy: IdentitySecretStoragePolicy,
+    pub identity_secret_vault: Option<ImCoreSecretVaultOptions>,
+}
+
+pub enum IdentitySecretStoragePolicy {
+    FileCompat,
+    VaultPreferred,
+    VaultRequired,
+}
+
+pub struct ImCoreSecretVaultOptions {
+    // Host-provided no-prompt root key. It must be redacted and never persisted
+    // in config, logs, diagnostics, or public DTOs.
+    root_key: DeviceVaultRootKey,
+    vault_dir: PathBuf,
+    workspace_id: String,
+    device_id: String,
+}
 ```
 
 P1 API：
@@ -70,6 +90,18 @@ P1 API：
 ```rust
 impl ImCore {
     pub fn new(config: ImCoreConfig, paths: ImCorePaths) -> ImResult<Self>;
+    pub fn new_with_options(
+        config: ImCoreConfig,
+        paths: ImCorePaths,
+        options: ImCoreOpenOptions,
+    ) -> ImResult<Self>;
+
+    pub async fn open(config: ImCoreConfig, paths: ImCorePaths) -> ImResult<Self>;
+    pub async fn open_with_options(
+        config: ImCoreConfig,
+        paths: ImCorePaths,
+        options: ImCoreOpenOptions,
+    ) -> ImResult<Self>;
 
     pub fn identities(&self) -> IdentityRegistry<'_>;
     pub fn bootstrap(&self) -> CoreBootstrap<'_>;
@@ -195,6 +227,15 @@ impl IdentityRegistry<'_> {
     pub fn list(&self) -> ImResult<Vec<IdentitySummary>>;
     pub fn default_identity(&self) -> ImResult<Option<IdentitySummary>>;
     pub fn resolve(&self, selector: IdentitySelector) -> ImResult<IdentitySummary>;
+    pub fn vault_status(&self, selector: IdentitySelector) -> ImResult<IdentityVaultStatus>;
+    pub fn migrate_identity_vault(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentityVaultMigrationReport>;
+    pub fn verify_identity_vault(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentityVaultVerificationReport>;
 
     pub fn register_handle(
         &self,
@@ -207,6 +248,12 @@ impl IdentityRegistry<'_> {
     ) -> ImResult<DefaultIdentityChange>;
 }
 ```
+
+Identity vault DTOs are redacted status/report surfaces. They report selected
+backend, storage policy, vault availability, metadata verification, workspace /
+device context, warnings, and plaintext compatibility retention, but they must
+not expose root keys, private PEM, JWTs, bearer tokens, raw `SecretRef` JSON, or
+ciphertext internals. `VaultRequired` is fail-closed for new secret persistence.
 
 P2+ API：
 
@@ -265,7 +312,12 @@ impl AuthService<'_> {
 }
 ```
 
-DID auth request、JWT 文件格式、session metadata path 都是内部实现。CLI/App 不应该直接保存或读取 bearer token，除非 Phase 7 明确引入外部 credential/session store。
+DID auth request、JWT 文件格式、session metadata path 都是内部实现。
+`SessionBundle` / `SessionUpdate` may return bearer tokens for existing auth
+flows, so callers must treat those values as sensitive and avoid logging or
+persisting them. CLI/App 不应该直接从本地文件 / private state 读取 bearer
+token，也不应该把返回的 token 再保存到外部 credential/session store，除非
+Phase 7 明确引入该边界。
 
 ## 8. messages
 

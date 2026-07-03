@@ -67,6 +67,32 @@ secure state path
 SQLite owner filter
 ```
 
+## 2.1 Identity Secret Storage
+
+Identity private material is still an internal SDK concern. Hosts that need
+vault-backed persistence open the SDK with `ImCoreOpenOptions`:
+
+```rust
+let options = ImCoreOpenOptions::default().with_identity_secret_vault(
+    IdentitySecretStoragePolicy::VaultRequired,
+    ImCoreSecretVaultOptions::new(root_key, vault_dir, workspace_id, device_id),
+);
+let core = ImCore::open_with_options(config, paths, options).await?;
+```
+
+Policy semantics:
+
+- `FileCompat`: compatibility default when no explicit open options are passed.
+- `VaultPreferred`: migration-period mode; may report legacy/file state and must
+  not be used as final proof that private material is safe.
+- `VaultRequired`: missing root key, missing vault context, corrupt metadata, or
+  wrong workspace/device context fails closed instead of falling back to new
+  plaintext persistence.
+
+The root key is a host-provided no-prompt secret. It is not part of
+`ImCoreConfig`, identity summaries, public auth DTOs, CLI config output, or Dart
+model serialization.
+
 ## 3. Identity Registry
 
 `identity/registry.rs`：
@@ -82,6 +108,21 @@ impl IdentityRegistry<'_> {
     pub fn default_identity(&self) -> crate::ImResult<Option<IdentitySummary>>;
 
     pub fn resolve(&self, selector: IdentitySelector) -> crate::ImResult<IdentitySummary>;
+
+    pub fn vault_status(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<IdentityVaultStatus>;
+
+    pub fn migrate_identity_vault(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<IdentityVaultMigrationReport>;
+
+    pub fn verify_identity_vault(
+        &self,
+        selector: IdentitySelector,
+    ) -> crate::ImResult<IdentityVaultVerificationReport>;
 
     pub fn register_handle(
         &self,
@@ -101,6 +142,24 @@ impl IdentityRegistry<'_> {
 ```
 
 `load_runtime` 只能是 `pub(crate)`，供 `ImCore::client` 使用。
+
+Vault DTO boundary:
+
+- `IdentityVaultStatus` reports the selected backend (`file_compat` or `vault`),
+  storage policy, vault availability, metadata presence/verification,
+  workspace/device summary, plaintext compatibility retention, warnings, and
+  missing items.
+- `IdentityVaultMigrationReport` reports whether migration ran, whether the
+  result verified, and whether plaintext compatibility files remain.
+- `IdentityVaultVerificationReport` verifies that the selected identity can be
+  opened through the vault-backed provider.
+- These DTOs do not expose root keys, JWTs, private PEM, full `SecretRef` JSON,
+  ciphertext internals, or local auth/token file contents.
+
+`VaultRequired` registration, recovery, daemon subkey package persistence, and
+JWT/token refresh must persist secret material through SecretVault. Existing
+legacy PEM/auth.json files are a compatibility bridge until explicit cleanup is
+available; migration failure must not delete them.
 
 ## 4. Register Handle
 
@@ -184,6 +243,7 @@ pub struct SessionBundle {
     pub scope: AuthScope,
     pub expires_at: Option<String>,
     pub refreshed: bool,
+    pub bearer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +252,7 @@ pub struct SessionUpdate {
     pub previous_expires_at: Option<String>,
     pub new_expires_at: Option<String>,
     pub refreshed: bool,
+    pub bearer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +288,13 @@ pub fn did_auth_payload(...)
 pub fn save_jwt(...)
 ```
 
+When the identity runtime is vault-backed, auth/session refresh stores updated
+token state through SecretVault instead of rewriting plaintext auth files.
+`SessionBundle` and `SessionUpdate` may still return `bearer_token` to the
+calling SDK host for existing auth flows; that token is sensitive and must not
+be logged, persisted by callers, or copied into diagnostics. Identity vault
+status/migration/verification DTOs do not expose bearer tokens or vault refs.
+
 ## 6. Internal Runtime
 
 `internal/identity_runtime.rs`：
@@ -247,6 +315,12 @@ pub(crate) struct LocalOwnerContext {
 ```
 
 `owner_identity_id` 是长期 owner key；`current_did` 用于兼容现有 DID owner 字段和远端请求。
+
+`private_key_path` and `auth_state_path` are compatibility/location fields, not a
+business-read contract. DID-WBA proof generation, business signing, secure
+direct static key loading, daemon subkey package persistence, and auth/JWT
+refresh must use the runtime `KeyMaterialProvider`. When verified vault metadata
+and the host workspace/device context match, the provider is vault-backed.
 
 ## 7. Auth Retry Contract
 

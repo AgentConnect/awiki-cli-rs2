@@ -38,6 +38,35 @@ pub fn build_im_core_config(
 
 不在每个 handler 中重复构造 config。
 
+### 2.1 Secret Storage Config
+
+CLI identity SecretVault settings live under workspace `secret_storage`.
+Supported fields:
+
+```yaml
+secret_storage:
+  mode: file_compat        # file_compat | vault_preferred | vault_required
+  vault_dir: .awiki/identity-vault
+  workspace_id: cli-workspace-id
+  device_id: cli-device-id
+```
+
+The vault root key is never written to `config.yaml`. It is read only from
+`AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`, which must contain a base64/base64url
+encoded 32-byte root key. `config show`, diagnostics, JSON output, human output,
+errors, and dry-run plans must report only whether the root key is available and
+which source would be used.
+
+`build_im_core(_async)` resolves `secret_storage` into `ImCoreOpenOptions`:
+
+- `file_compat` opens the SDK without vault options.
+- `vault_preferred` passes vault options when the root key is available and is a
+  migration-period mode.
+- `vault_required` passes `IdentitySecretStoragePolicy::VaultRequired`; normal
+  SDK opens and mutation paths fail closed when the root key is missing or
+  invalid. `id vault status` may use a redacted
+  `checked_without_vault_context` mode for diagnostics.
+
 ## 3. Paths Adapter
 
 ```rust
@@ -133,6 +162,7 @@ pub fn map_im_error(
 | `UnsupportedCapability` | 提示该能力不在 Phase 1。 |
 | `TransportUnavailable` | 提示检查 endpoint/network。 |
 | `PathUnavailable` | 提示检查 workspace/path/permission。 |
+| secret vault local-state errors | 映射到 `vault_root_key_required`、`vault_root_key_invalid` 或 `vault_not_ready`，并提示 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`。 |
 
 `ImError` 不携带 exit code；exit code 是 CLI 产品策略。
 
@@ -233,6 +263,26 @@ group lifecycle commands
 runtime listener service commands
 debug.db.*
 ```
+
+## 10.1 Identity Vault Commands
+
+The CLI exposes identity vault inspection and migration surfaces:
+
+- `id vault status`: shows resolved open options, root-key availability, selected
+  backend, migration metadata state, plaintext compatibility retention,
+  warnings, and missing items. If root key is absent, the status can still run in
+  a redacted `checked_without_vault_context` mode.
+- `id vault migrate`: requires `--migration` and a root key. Dry-run reports the
+  planned mutation. Live migration uses the SDK status/migrate API and must fail
+  before rewriting metadata when the root key is missing.
+- `id vault cleanup-plaintext`: migration-gated/preflight surface. In this build
+  the CLI does not have a CLI-safe live plaintext cleanup API, so it must not be
+  documented or rendered as deleting legacy compatibility files.
+
+Vault command output must never include root key bytes, JWTs, private PEM,
+complete `SecretRef` JSON, ciphertext internals, or bearer tokens. Human output
+can show mode/backend/warnings; JSON output should expose redacted status
+objects only.
 
 ## 11. Name / Avatar 展示字段边界
 

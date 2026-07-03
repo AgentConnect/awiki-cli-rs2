@@ -154,27 +154,40 @@ Transport is explicit through configuration and capability checks:
 
 Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract.
 
-The current compatibility default is file-backed:
+The compatibility default remains file-backed when a host opens `ImCore` without
+explicit vault options:
 
 - DID documents are read from the identity directory.
 - DID/default signing keys are read from `private.key` or `key-1-private.pem`.
 - secure direct agreement keys are read from `e2ee-agreement-private.pem` or legacy `key-3-private.pem`.
 - auth/session state remains compatible with `auth.json`.
 
-The vault foundation is explicit and no-prompt by design:
+Vault-backed identity storage is explicit and no-prompt by design:
 
-- `PlatformProtector` wraps only the vault root/wrapping key, not business private keys directly.
-- The production default platform protector fails closed when a real Keychain/Keystore/DPAPI/Secret Service backend is not wired. It must not silently fall back to plaintext or a generated test key.
+- Hosts pass `ImCoreOpenOptions` with `IdentitySecretStoragePolicy::VaultPreferred` or `VaultRequired` plus `ImCoreSecretVaultOptions`.
+- The vault root key is a host-provided no-prompt secret. It must not be written to `ImCoreConfig`, CLI workspace config, ordinary App JSON state, logs, diagnostics, JSON output, or `Debug` output. Explicit E2E runs may use a private file test provider that remains local and untracked.
 - `SecretVault` stores per-record AEAD ciphertext and binds workspace, device, identity, DID, kind, key id/version, schema, cipher, KDF, and no-prompt policy into authenticated metadata.
-- Identity vault migration is explicit: callers provide an unlocked vault/root key, the SDK seals records, opens them back for verification, and only then writes optional `vault_migration` metadata. Existing PEM/auth.json compatibility files are retained; migration failure must not delete or quarantine them.
+- `VaultRequired` is fail-closed. Missing root key, missing vault context, wrong workspace/device metadata, corrupt metadata, or failed open/verify must not silently fall back to plaintext for new secret persistence.
+- In `VaultRequired`, new registration, recovery, daemon subkey package persistence, and JWT/token refresh use vault-backed persistence and must not write private PEM/JWT material to the legacy identity files.
+- Identity vault migration seals records, opens them back for verification, and only then writes `vault_migration` metadata. Existing PEM/auth.json compatibility files are retained until an explicit cleanup path is available; migration failure must not delete or quarantine them.
+- Status, migration, and verification APIs expose backend/status/warnings summaries only. They must not expose the root key, private key, JWT, full `SecretRef`, or ciphertext internals.
 
 Process boundaries matter. App, CLI, and daemon run as separate hosts and must each unlock or provide their own vault context for their own state root. Do not assume one OS keychain item is readable across all processes.
 
-Known residual risks after the provider/vault foundation:
+Current host integration status:
 
-- Default `ImCore::client()` still uses the file-backed provider until a real no-prompt platform unlock API is available.
-- Explicit delegated `key_ref` flows support `vault:` refs and should use them for new daemon-owned delegated keys. `file:` / `local:` / bare path refs remain compatibility inputs and can still read caller-provided delegated private key files.
+- Plain `ImCore::new` / `open` remains FileCompat for compatibility. Secure callers must pass explicit vault options.
+- `awiki-cli` resolves `secret_storage.mode`, `vault_dir`, `workspace_id`, and `device_id` from workspace config and reads the root key only from `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`. `id vault status`, `id vault migrate`, `id vault cleanup-plaintext`, and doctor output are redacted.
+- `im-core-dart` / `packages/awiki_im_core` expose optional Dart open options plus identity vault status/migrate/verify facade methods. The Dart package does not generate or persist host root keys.
+- `awiki-me` opens `im-core` with `VaultRequired`. Production and custom state-root runs use `SecureAppKeyValueStore` for the App-local root key; only explicit E2E state roots use a private file test provider.
 - `awiki-deamon` stores daemon/runtime `agent_identity` private keys and `user_delegated_identity` private keys as SecretVault refs in `daemon.db`; the legacy PEM columns keep a sentinel for compatibility. Older plaintext rows are read only as a migration bridge and are re-sealed when a daemon vault root key is available.
+
+Known residual risks after the App/CLI/daemon vault integration:
+
+- CLI root keys supplied through `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` are visible to the process environment. A platform wrapping/root-key backend and rotation/backup story remain follow-up work.
+- App root key rotation, backup, recovery UX, and secure deletion of old plaintext compatibility files are not implemented.
+- `id vault cleanup-plaintext` is a migration-gated/preflight surface unless a CLI-safe live cleanup API is added. Do not document it as deleting legacy files in this build.
+- Explicit delegated `key_ref` flows support `vault:` refs and should use them for new daemon-owned delegated keys. `file:` / `local:` / bare path refs remain compatibility inputs and can still read caller-provided delegated private key files.
 - The daemon Message/im-core SDK main path uses hosted in-memory identity material and no longer writes `private.key`, `e2ee-agreement-private.pem`, or `auth.json` for that path. Legacy DID-auth compatibility helpers may still create those files for user-service inventory/auth paths and should be treated as compatibility-only.
 - The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
 - Direct E2EE session/prekey local state is encrypted at rest through SecretVault envelopes. Group MLS private state is outside this hardening pass.
