@@ -1164,6 +1164,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
         daemon_agent_did: "did:agent:daemon".to_string(),
         public_key_multibase: "z-public".to_string(),
         private_key_material: "z-private-secret".to_string(),
+        private_key_ref_json: None,
         allowed_scopes_json: serde_json::json!([
             "message.inbox.read.plain",
             "message.history.read.plain",
@@ -1264,7 +1265,7 @@ fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
 fn user_delegated_identity_roundtrips_and_replays_idempotently() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
     state.initialize().unwrap();
     let (identity, replay) = delegated_identity_fixture();
 
@@ -1286,10 +1287,27 @@ fn user_delegated_identity_roundtrips_and_replays_idempotently() {
     assert_eq!(loaded.status, "paired_key_received");
     assert!(!format!("{loaded:?}").contains("z-private-secret"));
 
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    let (stored_private_key_material, private_key_ref_json): (String, Option<String>) = connection
+        .query_row(
+            r#"
+SELECT private_key_material, private_key_ref_json
+FROM user_delegated_identity
+WHERE verification_method = ?1
+"#,
+            [&identity.verification_method],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_private_key_material, "<awiki-secret-vault-ref>");
+    assert!(private_key_ref_json.is_some());
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    assert!(!String::from_utf8_lossy(&raw_db).contains("z-private-secret"));
+
     let replay_loaded = state.load_bootstrap_replay("boot_1").unwrap().unwrap();
     assert_eq!(replay_loaded.payload_hash, "payload-hash-1");
 
-    let reopened = DaemonState::open(&config).unwrap();
+    let reopened = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
     let recovered = reopened
         .load_user_delegated_identity(&identity.verification_method)
         .unwrap()
@@ -1301,7 +1319,7 @@ fn user_delegated_identity_roundtrips_and_replays_idempotently() {
 fn user_delegated_identity_rejects_conflicting_replay() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [22_u8; 32]);
     state.initialize().unwrap();
     let (identity, mut replay) = delegated_identity_fixture();
     state.store_bootstrap_state(&identity, &replay).unwrap();
@@ -1312,6 +1330,119 @@ fn user_delegated_identity_rejects_conflicting_replay() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("replay conflict"));
+}
+
+#[test]
+fn user_delegated_identity_store_requires_secret_vault_root_key() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    state.initialize().unwrap();
+    let (identity, replay) = delegated_identity_fixture();
+
+    let error = state.store_bootstrap_state(&identity, &replay).unwrap_err();
+
+    assert!(error.to_string().contains("refusing plaintext fallback"));
+}
+
+#[test]
+fn user_delegated_identity_legacy_plaintext_row_loads_and_migrates_when_vault_available() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let legacy_state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    legacy_state.initialize().unwrap();
+    let (identity, replay) = delegated_identity_fixture();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO bootstrap_replay (
+    bootstrap_id,
+    idempotency_key,
+    payload_hash,
+    user_did,
+    verification_method,
+    app_instance_id,
+    daemon_agent_did,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+"#,
+            rusqlite::params![
+                &replay.bootstrap_id,
+                &replay.idempotency_key,
+                &replay.payload_hash,
+                &replay.user_did,
+                &replay.verification_method,
+                &replay.app_instance_id,
+                &replay.daemon_agent_did,
+                &replay.status,
+                1700000000000_i64,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO user_delegated_identity (
+    user_did,
+    verification_method,
+    app_instance_id,
+    controller_did,
+    daemon_agent_did,
+    public_key_multibase,
+    private_key_material,
+    allowed_scopes_json,
+    status,
+    expires_at,
+    bootstrap_id,
+    idempotency_key,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+"#,
+            rusqlite::params![
+                &identity.user_did,
+                &identity.verification_method,
+                &identity.app_instance_id,
+                &identity.controller_did,
+                &identity.daemon_agent_did,
+                &identity.public_key_multibase,
+                "legacy-delegated-private-secret",
+                identity.allowed_scopes_json.to_string(),
+                &identity.status,
+                &identity.expires_at,
+                &identity.bootstrap_id,
+                &identity.idempotency_key,
+                1700000000000_i64,
+            ],
+        )
+        .unwrap();
+
+    let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
+    let loaded = state
+        .load_user_delegated_identity(&identity.verification_method)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        loaded.private_key_material,
+        "legacy-delegated-private-secret"
+    );
+    let (stored_private_key_material, private_key_ref_json): (String, Option<String>) = connection
+        .query_row(
+            r#"
+SELECT private_key_material, private_key_ref_json
+FROM user_delegated_identity
+WHERE verification_method = ?1
+"#,
+            [&identity.verification_method],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_private_key_material, "<awiki-secret-vault-ref>");
+    assert!(private_key_ref_json.is_some());
 }
 
 #[test]

@@ -11,3 +11,7 @@ pub use crate::internal::secret_vault::{
     FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretKind,
     SecretMetadata, SecretRef, SecretVault,
 };
+
+pub fn encode_delegated_key_ref(secret_ref: &SecretRef) -> crate::ImResult<String> {
+    crate::internal::delegated_identity::encode_vault_key_ref_public(secret_ref)
+}

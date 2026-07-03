@@ -1,9 +1,11 @@
 mod did_auth;
 mod file;
+mod hosted;
 pub(crate) mod vault;
 
 pub(crate) use self::did_auth::ProviderBackedDidAuth;
 pub(crate) use self::file::FileBackedKeyMaterialProvider;
+pub(crate) use self::hosted::HostedKeyMaterialProvider;
 pub(crate) use self::vault::VaultKeyMaterialRefs;
 
 pub(crate) trait KeyMaterialProvider: Send + Sync {

@@ -38,11 +38,12 @@ pub use crate::groups::{
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, DaemonSubkeyPrivatePackage,
     DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
-    HandleRegistrationState, IdentityMissingItem, IdentityReadiness, IdentityRegistry,
-    IdentitySelector, IdentityService, IdentitySummary, InitialProfile, Profile, ProfileAttribute,
-    ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
-    RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
-    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
+    HandleRegistrationState, HostedIdentityMaterial, IdentityMissingItem, IdentityReadiness,
+    IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary, InitialProfile, Profile,
+    ProfileAttribute, ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan,
+    RecoverHandlePlanRequest, RecoverHandleRequest, RecoverHandleState,
+    RecoverLocalIdentitySummary, RecoverLocalUserState, RecoveredIdentity, RegisterHandleRequest,
+    RegistrationMethod, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,

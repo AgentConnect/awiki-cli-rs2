@@ -81,11 +81,11 @@ impl RealtimeAuthProvider for FileRealtimeAuthProvider<'_> {
         _did_auth_url: &str,
     ) -> crate::ImResult<RealtimeRefreshOutcome> {
         let update = self.client.auth().refresh_session()?;
-        let token = read_auth_token(&self.client.runtime().auth_state_path)?;
+        let token = self.client.runtime().key_provider.valid_auth_token()?;
         Ok(match token {
             Some(current_jwt) => RealtimeRefreshOutcome::Refreshed { current_jwt },
             None if update.refreshed => RealtimeRefreshOutcome::Failed {
-                error: "did-auth did not persist a websocket bearer token".to_string(),
+                error: "did-auth did not provide a websocket bearer token".to_string(),
             },
             None => RealtimeRefreshOutcome::Failed {
                 error: "did-auth did not return a websocket bearer token".to_string(),
@@ -226,7 +226,10 @@ fn connect_error(
 
 #[cfg(feature = "blocking")]
 pub(crate) fn require_realtime_auth_token(client: &crate::core::ImClient) -> crate::ImResult<()> {
-    read_auth_token(&client.runtime().auth_state_path)?
+    client
+        .runtime()
+        .key_provider
+        .valid_auth_token()?
         .map(|_| ())
         .ok_or(crate::ImError::AuthRequired)
 }
@@ -234,8 +237,10 @@ pub(crate) fn require_realtime_auth_token(client: &crate::core::ImClient) -> cra
 pub(crate) async fn require_realtime_auth_token_async(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<()> {
-    read_auth_token_async(client.runtime().auth_state_path.clone())
-        .await?
+    client
+        .runtime()
+        .key_provider
+        .valid_auth_token()?
         .map(|_| ())
         .ok_or(crate::ImError::AuthRequired)
 }
@@ -245,8 +250,10 @@ pub(crate) async fn connect_async_websocket_session(
 ) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
     let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
     let endpoints = realtime_client_endpoints(service_base_url)?;
-    let current_jwt = read_auth_token_async(client.runtime().auth_state_path.clone())
-        .await?
+    let current_jwt = client
+        .runtime()
+        .key_provider
+        .valid_auth_token()?
         .ok_or(crate::ImError::AuthRequired)?;
     connect_async_websocket_session_with_token(client, &endpoints, current_jwt.trim()).await
 }
@@ -277,12 +284,14 @@ async fn connect_async_websocket_session_with_token(
     }
 
     let update = client.auth().refresh_session_async().await?;
-    let refreshed_token = read_auth_token_async(client.runtime().auth_state_path.clone())
-        .await?
+    let refreshed_token = client
+        .runtime()
+        .key_provider
+        .valid_auth_token()?
         .ok_or_else(|| {
             if update.refreshed {
                 crate::ImError::TransportUnavailable {
-                    detail: "did-auth did not persist a websocket bearer token".to_owned(),
+                    detail: "did-auth did not provide a websocket bearer token".to_owned(),
                 }
             } else {
                 crate::ImError::TransportUnavailable {
@@ -312,8 +321,11 @@ pub(crate) fn connect_native_websocket_session(
 ) -> crate::ImResult<super::ws_transport::WsTransport> {
     let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
     let endpoints = realtime_client_endpoints(service_base_url)?;
-    let current_jwt =
-        read_auth_token(&client.runtime().auth_state_path)?.ok_or(crate::ImError::AuthRequired)?;
+    let current_jwt = client
+        .runtime()
+        .key_provider
+        .valid_auth_token()?
+        .ok_or(crate::ImError::AuthRequired)?;
     connect_native_websocket_session_with_token(client, &endpoints, current_jwt.trim())
 }
 

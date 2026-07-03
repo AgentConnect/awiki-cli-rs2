@@ -1,4 +1,4 @@
-use super::state::{read_auth_state, read_auth_state_async, AuthStateSnapshot};
+use super::state::AuthStateSnapshot;
 
 pub(crate) trait SessionProvider {
     fn ensure_session(
@@ -33,36 +33,21 @@ impl<'a> FileSessionProvider<'a> {
 
     fn snapshot(&self) -> crate::ImResult<SessionSnapshot> {
         let runtime = self.client.runtime();
-        let did_document_exists = runtime.did_document_path.exists();
-        let private_key_exists = runtime.private_key_path.exists();
-        let auth_state = read_auth_state(&runtime.auth_state_path)?;
+        let did_document_available = runtime.key_provider.optional_did_document()?.is_some();
+        let private_key_available = runtime.key_provider.default_signing_private_pem().is_ok();
+        let auth_state = runtime.key_provider.auth_state()?;
         Ok(SessionSnapshot {
             subject: self.client.did().clone(),
             ready_for_auth: self.client.current_identity().readiness.ready_for_auth,
             ready_for_messaging: self.client.current_identity().readiness.ready_for_messaging,
-            did_document_exists,
-            private_key_exists,
+            did_document_available,
+            private_key_available,
             auth_state,
         })
     }
 
     async fn snapshot_async(&self) -> crate::ImResult<SessionSnapshot> {
-        let runtime = self.client.runtime();
-        let did_document_exists = tokio::fs::try_exists(&runtime.did_document_path)
-            .await
-            .unwrap_or(false);
-        let private_key_exists = tokio::fs::try_exists(&runtime.private_key_path)
-            .await
-            .unwrap_or(false);
-        let auth_state = read_auth_state_async(runtime.auth_state_path.clone()).await?;
-        Ok(SessionSnapshot {
-            subject: self.client.did().clone(),
-            ready_for_auth: self.client.current_identity().readiness.ready_for_auth,
-            ready_for_messaging: self.client.current_identity().readiness.ready_for_messaging,
-            did_document_exists,
-            private_key_exists,
-            auth_state,
-        })
+        self.snapshot()
     }
 }
 
@@ -102,13 +87,13 @@ impl SessionProvider for FileSessionProvider<'_> {
         Ok(crate::auth::AuthStatus {
             subject: snapshot.subject.clone(),
             has_session: snapshot.ready_for_auth
-                && snapshot.did_document_exists
-                && snapshot.private_key_exists
+                && snapshot.did_document_available
+                && snapshot.private_key_available
                 && snapshot.auth_state.has_valid_token,
             expires_at: snapshot.auth_state.expires_at.clone(),
             needs_refresh: snapshot.ready_for_auth
-                && snapshot.did_document_exists
-                && snapshot.private_key_exists
+                && snapshot.did_document_available
+                && snapshot.private_key_available
                 && (!snapshot.auth_state.has_token || snapshot.auth_state.needs_refresh),
             warnings: snapshot.warnings(),
         })
@@ -185,13 +170,13 @@ impl AsyncSessionProvider for FileSessionProvider<'_> {
         Ok(crate::auth::AuthStatus {
             subject: snapshot.subject.clone(),
             has_session: snapshot.ready_for_auth
-                && snapshot.did_document_exists
-                && snapshot.private_key_exists
+                && snapshot.did_document_available
+                && snapshot.private_key_available
                 && snapshot.auth_state.has_valid_token,
             expires_at: snapshot.auth_state.expires_at.clone(),
             needs_refresh: snapshot.ready_for_auth
-                && snapshot.did_document_exists
-                && snapshot.private_key_exists
+                && snapshot.did_document_available
+                && snapshot.private_key_available
                 && (!snapshot.auth_state.has_token || snapshot.auth_state.needs_refresh),
             warnings: snapshot.warnings(),
         })
@@ -222,8 +207,8 @@ struct SessionSnapshot {
     subject: crate::ids::Did,
     ready_for_auth: bool,
     ready_for_messaging: bool,
-    did_document_exists: bool,
-    private_key_exists: bool,
+    did_document_available: bool,
+    private_key_available: bool,
     auth_state: AuthStateSnapshot,
 }
 
@@ -253,16 +238,16 @@ impl SessionSnapshot {
                 missing: vec!["messaging_registration".to_string()],
             });
         }
-        if !self.did_document_exists {
+        if !self.did_document_available {
             return Err(crate::ImError::CredentialFileUnreadable {
                 path_kind: "did_document".to_string(),
-                detail: "file is missing".to_string(),
+                detail: "DID document is missing".to_string(),
             });
         }
-        if !self.private_key_exists {
+        if !self.private_key_available {
             return Err(crate::ImError::CredentialFileUnreadable {
                 path_kind: "private_key".to_string(),
-                detail: "file is missing".to_string(),
+                detail: "private key material is missing".to_string(),
             });
         }
         Ok(())
@@ -270,10 +255,10 @@ impl SessionSnapshot {
 
     fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
-        if !self.did_document_exists {
+        if !self.did_document_available {
             warnings.push("did document is missing".to_string());
         }
-        if !self.private_key_exists {
+        if !self.private_key_available {
             warnings.push("private key is missing".to_string());
         }
         if !self.auth_state.has_token {
@@ -290,16 +275,16 @@ impl SessionSnapshot {
         if !self.ready_for_auth {
             return Err(crate::ImError::AuthRequired);
         }
-        if !self.did_document_exists {
+        if !self.did_document_available {
             return Err(crate::ImError::CredentialFileUnreadable {
                 path_kind: "did_document".to_string(),
-                detail: "file is missing".to_string(),
+                detail: "DID document is missing".to_string(),
             });
         }
-        if !self.private_key_exists {
+        if !self.private_key_available {
             return Err(crate::ImError::CredentialFileUnreadable {
                 path_kind: "private_key".to_string(),
-                detail: "file is missing".to_string(),
+                detail: "private key material is missing".to_string(),
             });
         }
         Ok(())

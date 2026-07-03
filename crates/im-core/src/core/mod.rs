@@ -72,6 +72,48 @@ impl ImCore {
         Ok(ImClient::new(self.inner.clone(), runtime))
     }
 
+    pub fn client_with_identity_material(
+        &self,
+        material: crate::identity::HostedIdentityMaterial,
+    ) -> crate::ImResult<ImClient> {
+        let identity_id = crate::ids::IdentityId::parse(&material.identity_id)?;
+        let did = crate::ids::Did::parse(&material.did)?;
+        let handle = material
+            .handle
+            .as_deref()
+            .map(|handle| crate::ids::Handle::parse(handle, &self.inner.sdk_config().did_domain))
+            .transpose()?;
+        let key_provider = std::sync::Arc::new(
+            crate::internal::key_provider::HostedKeyMaterialProvider::new(&material)?,
+        );
+        let runtime = crate::internal::identity_runtime::ClientIdentityRuntime {
+            summary: crate::identity::IdentitySummary {
+                id: identity_id.clone(),
+                did: did.clone(),
+                handle,
+                display_name: material.display_name,
+                local_alias: None,
+                device_id: None,
+                is_default: false,
+                readiness: crate::identity::IdentityReadiness {
+                    ready_for_auth: true,
+                    ready_for_messaging: true,
+                    missing: Vec::new(),
+                },
+            },
+            did_document_path: std::path::PathBuf::new(),
+            private_key_path: std::path::PathBuf::new(),
+            e2ee_agreement_private_key_path: std::path::PathBuf::new(),
+            auth_state_path: std::path::PathBuf::new(),
+            key_provider,
+            owner: crate::internal::identity_runtime::LocalOwnerContext {
+                identity_id,
+                current_did: did,
+            },
+        };
+        Ok(ImClient::new(self.inner.clone(), runtime))
+    }
+
     pub(crate) fn inner(&self) -> &ImCoreInner {
         &self.inner
     }

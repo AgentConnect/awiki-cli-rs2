@@ -73,7 +73,7 @@ pub(crate) fn load_did_document_for_owner(
         if let Some(document) = fallback_current_document {
             return Ok(document);
         }
-        return read_did_document_file(&client.runtime().did_document_path, owner_did);
+        return client.runtime().key_provider.did_document();
     }
     crate::internal::identity_document_cache::load_local_did_document(
         &client.core_inner().sdk_paths().identities,
@@ -95,8 +95,7 @@ pub(crate) async fn load_did_document_for_owner_async(
         if let Some(document) = fallback_current_document {
             return Ok(document);
         }
-        return read_did_document_file_async(client.runtime().did_document_path.clone(), owner_did)
-            .await;
+        return client.runtime().key_provider.did_document();
     }
     crate::internal::identity_document_cache::load_local_did_document_async(
         &client.core_inner().sdk_paths().identities,
@@ -149,6 +148,12 @@ pub(crate) fn encode_vault_key_ref(
         "{VAULT_KEY_REF_PREFIX}{}",
         URL_SAFE_NO_PAD.encode(raw)
     ))
+}
+
+pub fn encode_vault_key_ref_public(
+    secret_ref: &crate::vault::SecretRef,
+) -> crate::ImResult<String> {
+    encode_vault_key_ref(secret_ref)
 }
 
 pub(crate) fn delegated_vault_dir_for_client(client: &crate::core::ImClient) -> PathBuf {

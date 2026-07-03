@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use im_core::ids::{GroupRef, MessageId, PeerRef};
 use im_core::messages::{MessageKind, MessageMetadata, MessageMetadataAttribute, ThreadRef};
 use tempfile::TempDir;
@@ -890,6 +891,40 @@ fn delegated_runtime_host_final_message_is_converted_to_message_sync() {
         .contains("final summary text"));
 }
 
+#[test]
+fn delegated_inbox_key_ref_uses_vault_without_private_key_files() {
+    install_test_im_core_vault_root_key();
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let mut identity = fixture().identity;
+    identity.private_key_material =
+        crate::app_bridge::secret_store::ed25519_private_key_pem_for_test(&[17_u8; 32]);
+
+    let key_ref = ensure_delegated_inbox_key_ref(&config, &identity).unwrap();
+    ensure_delegated_inbox_did_shadow(&config, &identity).unwrap();
+
+    assert!(key_ref.starts_with("vault:"));
+    let legacy_key_path = config
+        .runtime_cache_dir
+        .join("delegated-inbox")
+        .join(stable_id_suffix(&identity.user_did))
+        .join("daemon-key-1.pem");
+    let shadow_private_key_path = config
+        .identity_root_dir
+        .join(delegated_identity_alias(&identity.user_did))
+        .join("private.key");
+    assert!(!legacy_key_path.exists());
+    assert!(!shadow_private_key_path.exists());
+    assert!(config
+        .im_core_sqlite_path
+        .parent()
+        .unwrap()
+        .join("secrets")
+        .join("vault")
+        .join("records")
+        .is_dir());
+}
+
 struct TestFixture {
     _root: TempDir,
     state: DaemonState,
@@ -900,7 +935,7 @@ struct TestFixture {
 fn fixture() -> TestFixture {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [41_u8; 32]);
     state.initialize().unwrap();
     let identity = UserDelegatedIdentityRecord {
         user_did: "did:human:alice".to_string(),
@@ -910,6 +945,7 @@ fn fixture() -> TestFixture {
         daemon_agent_did: "did:agent:daemon".to_string(),
         public_key_multibase: "z-public".to_string(),
         private_key_material: "pem-private".to_string(),
+        private_key_ref_json: None,
         allowed_scopes_json: json!(["message.inbox.read.plain"]),
         status: "paired_key_received".to_string(),
         expires_at: None,
@@ -1076,6 +1112,13 @@ fn system_payload_message(id: &str, sender: &str) -> Message {
             ..MessageMetadata::default()
         },
     }
+}
+
+fn install_test_im_core_vault_root_key() {
+    std::env::set_var(
+        "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64",
+        URL_SAFE_NO_PAD.encode([31_u8; 32]),
+    );
 }
 
 fn mention_payload_message(id: &str, sender: &str, payload: Value) -> Message {

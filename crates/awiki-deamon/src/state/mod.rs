@@ -99,8 +99,15 @@ impl DaemonState {
     }
 
     pub fn connection(&self) -> Result<Connection> {
-        Connection::open(&self.database_path)
-            .with_context(|| format!("open daemon database {}", self.database_path.display()))
+        let connection = Connection::open(&self.database_path)
+            .with_context(|| format!("open daemon database {}", self.database_path.display()))?;
+        connection.execute_batch(
+            r#"
+            PRAGMA foreign_keys = ON;
+            PRAGMA secure_delete = ON;
+            "#,
+        )?;
+        Ok(connection)
     }
 
     pub(crate) fn secret_vault(&self) -> Option<&DaemonSecretVault> {

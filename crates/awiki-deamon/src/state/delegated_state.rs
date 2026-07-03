@@ -151,6 +151,7 @@ WHERE agent_did = ?1
             }
             return Ok(BootstrapStoreOutcome::Duplicate);
         }
+        let private_key_ref_json = self.seal_user_delegated_private_key(identity)?;
         let now = current_time_millis()?;
         transaction.execute(
             r#"
@@ -189,6 +190,7 @@ INSERT INTO user_delegated_identity (
     daemon_agent_did,
     public_key_multibase,
     private_key_material,
+    private_key_ref_json,
     allowed_scopes_json,
     status,
     expires_at,
@@ -196,7 +198,7 @@ INSERT INTO user_delegated_identity (
     idempotency_key,
     created_at_ms,
     updated_at_ms
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
 ON CONFLICT(verification_method) DO UPDATE SET
     user_did = excluded.user_did,
     app_instance_id = excluded.app_instance_id,
@@ -204,6 +206,7 @@ ON CONFLICT(verification_method) DO UPDATE SET
     daemon_agent_did = excluded.daemon_agent_did,
     public_key_multibase = excluded.public_key_multibase,
     private_key_material = excluded.private_key_material,
+    private_key_ref_json = excluded.private_key_ref_json,
     allowed_scopes_json = excluded.allowed_scopes_json,
     status = excluded.status,
     expires_at = excluded.expires_at,
@@ -218,7 +221,8 @@ ON CONFLICT(verification_method) DO UPDATE SET
                 &identity.controller_did,
                 &identity.daemon_agent_did,
                 &identity.public_key_multibase,
-                &identity.private_key_material,
+                VAULT_PRIVATE_KEY_SENTINEL,
+                private_key_ref_json,
                 identity.allowed_scopes_json.to_string(),
                 &identity.status,
                 &identity.expires_at,
@@ -236,7 +240,7 @@ ON CONFLICT(verification_method) DO UPDATE SET
         verification_method: &str,
     ) -> Result<Option<UserDelegatedIdentityRecord>> {
         let connection = self.connection()?;
-        connection
+        let stored = connection
             .query_row(
                 r#"
 SELECT
@@ -247,6 +251,7 @@ SELECT
     daemon_agent_did,
     public_key_multibase,
     private_key_material,
+    private_key_ref_json,
     allowed_scopes_json,
     status,
     expires_at,
@@ -261,7 +266,19 @@ WHERE verification_method = ?1
                 user_delegated_identity_from_row,
             )
             .optional()
-            .context("load user delegated identity")
+            .context("load user delegated identity")?;
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        let (identity, used_legacy_plaintext) =
+            self.user_delegated_identity_from_storage_record(stored)?;
+        if used_legacy_plaintext && self.secret_vault().is_some() {
+            self.update_user_delegated_identity_private_key_ref(&identity)
+                .with_context(|| {
+                    format!("migrate user delegated identity {verification_method} to secret vault")
+                })?;
+        }
+        Ok(Some(identity))
     }
 
     pub fn load_bootstrap_replay(
@@ -1353,6 +1370,94 @@ impl DaemonState {
             used_legacy_plaintext: !legacy_private_key_pem.trim().is_empty()
                 && legacy_private_key_pem != VAULT_PRIVATE_KEY_SENTINEL,
         })
+    }
+
+    fn seal_user_delegated_private_key(
+        &self,
+        identity: &UserDelegatedIdentityRecord,
+    ) -> Result<String> {
+        let vault = self.secret_vault().context(
+            "daemon secret vault root key is required to store user delegated private keys; refusing plaintext fallback",
+        )?;
+        if identity.private_key_material == VAULT_PRIVATE_KEY_SENTINEL {
+            let secret_ref_json = non_empty(identity.private_key_ref_json.as_deref())
+                .context("user delegated private key is missing a daemon secret vault ref")?;
+            let secret_ref: SecretRef =
+                serde_json::from_str(secret_ref_json).context("parse private_key_ref_json")?;
+            vault
+                .open(&secret_ref)
+                .map_err(anyhow::Error::from)
+                .context("open private_key_ref_json")?;
+            return Ok(secret_ref_json.to_owned());
+        }
+        if identity.private_key_material.trim().is_empty() {
+            bail!("user delegated private key must not be empty");
+        }
+        let secret_ref = vault
+            .seal(SealSecretRequest {
+                metadata: SecretMetadata {
+                    workspace_id: "awiki-daemon".to_owned(),
+                    device_id: "local-daemon".to_owned(),
+                    identity_id: Some(identity.daemon_agent_did.clone()),
+                    did: Some(identity.user_did.clone()),
+                    kind: SecretKind::IdentityDaemonPrivate,
+                    key_id: identity.verification_method.clone(),
+                    key_version: 1,
+                    policy: SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: SecretBytes::from_vec(identity.private_key_material.as_bytes().to_vec()),
+            })
+            .map_err(anyhow::Error::from)
+            .context("seal user delegated private key")?;
+        Ok(serde_json::to_string(&secret_ref)?)
+    }
+
+    fn user_delegated_identity_from_storage_record(
+        &self,
+        mut record: UserDelegatedIdentityRecord,
+    ) -> Result<(UserDelegatedIdentityRecord, bool)> {
+        let opened = self.open_user_delegated_private_key(
+            record.private_key_ref_json.as_deref(),
+            &record.private_key_material,
+        )?;
+        record.private_key_material = opened.private_key_pem;
+        Ok((record, opened.used_legacy_plaintext))
+    }
+
+    fn open_user_delegated_private_key(
+        &self,
+        secret_ref_json: Option<&str>,
+        legacy_private_key_pem: &str,
+    ) -> Result<OpenedAgentIdentitySecret> {
+        self.open_agent_identity_secret(
+            secret_ref_json,
+            legacy_private_key_pem,
+            "private_key_ref_json",
+        )
+    }
+
+    fn update_user_delegated_identity_private_key_ref(
+        &self,
+        identity: &UserDelegatedIdentityRecord,
+    ) -> Result<()> {
+        let private_key_ref_json = self.seal_user_delegated_private_key(identity)?;
+        let connection = self.connection()?;
+        connection.execute(
+            r#"
+UPDATE user_delegated_identity
+SET private_key_material = ?1,
+    private_key_ref_json = ?2,
+    updated_at_ms = ?3
+WHERE verification_method = ?4
+"#,
+            rusqlite::params![
+                VAULT_PRIVATE_KEY_SENTINEL,
+                private_key_ref_json,
+                current_time_millis()?,
+                &identity.verification_method,
+            ],
+        )?;
+        Ok(())
     }
 }
 

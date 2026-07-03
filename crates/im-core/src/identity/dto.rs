@@ -30,6 +30,36 @@ pub struct IdentityReadiness {
     pub missing: Vec<IdentityMissingItem>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct HostedIdentityMaterial {
+    pub identity_id: String,
+    pub did: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub did_document: serde_json::Value,
+    pub default_signing_private_key_pem: String,
+    pub e2ee_agreement_private_key_pem: String,
+    pub auth_token: Option<String>,
+}
+
+impl std::fmt::Debug for HostedIdentityMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostedIdentityMaterial")
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("handle", &self.handle)
+            .field("display_name", &self.display_name)
+            .field("did_document", &"<redacted-hosted-did-document>")
+            .field("default_signing_private_key_pem", &"<redacted-private-key>")
+            .field("e2ee_agreement_private_key_pem", &"<redacted-private-key>")
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted-token>"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentityMissingItem {
     DidDocument,

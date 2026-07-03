@@ -48,12 +48,10 @@ impl ImCoreAdapter {
         identity: &AgentIdentityRecord,
         jwt_token: Option<&str>,
     ) -> Result<im_core::ImClient> {
-        sync_agent_identity_to_im_core(config, identity, jwt_token)?;
+        let _ = config;
         Ok(self
             .core
-            .client(im_core::IdentitySelector::Did(im_core::ids::Did::parse(
-                &identity.agent_did,
-            )?))?)
+            .client_with_identity_material(hosted_identity_material(identity, jwt_token)?)?)
     }
 
     pub fn client_for_did(&self, did: &str) -> Result<im_core::ImClient> {
@@ -125,6 +123,25 @@ pub fn sync_agent_identity_to_im_core(
         write_if_changed(default_path, format!("{alias}\n").as_bytes())?;
     }
     Ok(())
+}
+
+pub fn hosted_identity_material(
+    identity: &AgentIdentityRecord,
+    jwt_token: Option<&str>,
+) -> Result<im_core::HostedIdentityMaterial> {
+    Ok(im_core::HostedIdentityMaterial {
+        identity_id: identity_alias(&identity.agent_did),
+        did: identity.agent_did.clone(),
+        handle: Some(identity.handle.clone()),
+        display_name: Some(identity.handle.clone()),
+        did_document: identity.did_document.clone(),
+        default_signing_private_key_pem: identity.auth_private_key_pem.clone(),
+        e2ee_agreement_private_key_pem: identity.e2ee_agreement_private_key_pem.clone(),
+        auth_token: jwt_token
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned),
+    })
 }
 
 fn write_if_changed(path: &Path, content: &[u8]) -> Result<bool> {
@@ -270,6 +287,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn client_for_agent_identity_does_not_write_identity_secret_files() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let identity = generate_agent_identity(&config, AgentKind::Runtime, "runtime-hosted-test")
+            .unwrap()
+            .into_record("runtime-hosted-test".to_string(), AgentKind::Runtime);
+        let adapter = ImCoreAdapter::open(&config).unwrap();
+
+        let client = adapter
+            .client_for_agent_identity(&config, &identity, Some("jwt-hosted"))
+            .unwrap();
+
+        assert_eq!(client.did().as_str(), identity.agent_did);
+        let status = client.auth().status().unwrap();
+        assert!(status.has_session);
+        let identity_dir = config
+            .identity_root_dir
+            .join(identity_alias(&identity.agent_did));
+        assert!(!identity_dir.join("private.key").exists());
+        assert!(!identity_dir.join("e2ee-agreement-private.pem").exists());
+        assert!(!identity_dir.join("auth.json").exists());
     }
 
     fn synced_identity_paths(

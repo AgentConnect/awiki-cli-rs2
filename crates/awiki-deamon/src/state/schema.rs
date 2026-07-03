@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 32;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 33;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -20,6 +20,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
+        PRAGMA secure_delete = ON;
 
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -421,6 +422,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             daemon_agent_did TEXT NOT NULL,
             public_key_multibase TEXT NOT NULL,
             private_key_material TEXT NOT NULL,
+            private_key_ref_json TEXT,
             allowed_scopes_json TEXT NOT NULL,
             status TEXT NOT NULL,
             expires_at TEXT,
@@ -611,6 +613,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_hermes_native_session_stored_ids_v30(connection)?;
     migrate_runtime_profile_preferred_language_v31(connection)?;
     migrate_agent_identity_vault_refs_v32(connection)?;
+    migrate_user_delegated_identity_vault_refs_v33(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -642,6 +645,15 @@ fn migrate_agent_identity_vault_refs_v32(connection: &Connection) -> Result<()> 
         "TEXT",
     )?;
     Ok(())
+}
+
+fn migrate_user_delegated_identity_vault_refs_v33(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "user_delegated_identity",
+        "private_key_ref_json",
+        "TEXT",
+    )
 }
 
 fn migrate_runtime_profile_preferred_language_v31(connection: &Connection) -> Result<()> {

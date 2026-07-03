@@ -1741,8 +1741,7 @@ async fn resolve_direct_sender_document_async(
     did: &str,
 ) -> crate::ImResult<Value> {
     if did == client.did().as_str() {
-        return read_json_file_async(client.runtime().did_document_path.clone(), "did_document")
-            .await;
+        return client.runtime().key_provider.did_document();
     }
     let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
     match directory_transport
