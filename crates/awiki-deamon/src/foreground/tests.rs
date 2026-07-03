@@ -1517,6 +1517,96 @@ fn foreground_cli_route_message_queue_binding_mismatch_dead_letters_without_laun
         .is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn foreground_cli_route_message_queue_retry_keeps_original_run_binding() {
+    let (root, config, state) = fixture();
+    let profile = register_generic_cli_runtime(root.path(), &state);
+    install_fake_codex(root.path(), &state, &profile);
+    let now = crate::security::runtime_token::current_time_millis().unwrap();
+    let item = enqueue_generic_cli_route_message(
+        &state,
+        &profile,
+        "msg_queue_retry_after_busy",
+        "retry after busy",
+        now,
+    );
+    let original_run_id = item.run_id.clone().unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let route = state
+        .load_cli_route_session(&item.route_key)
+        .unwrap()
+        .unwrap();
+    state
+        .try_acquire_cli_route_session_lease(
+            &route.route_key,
+            "run_external_busy_holder",
+            "test",
+            now + 60_000,
+        )
+        .unwrap();
+
+    let first_processed = drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
+    assert_eq!(first_processed, 1);
+    let queued_after_busy = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queued_after_busy.status, "queued");
+    assert_ne!(
+        queued_after_busy.run_id.as_deref(),
+        Some(original_run_id.as_str())
+    );
+    assert!(queued_after_busy
+        .run_id
+        .as_deref()
+        .unwrap()
+        .starts_with("run_replay_"));
+    assert_eq!(
+        queued_after_busy.last_error_code.as_deref(),
+        Some("route_busy")
+    );
+
+    state
+        .release_cli_route_session_lease(
+            &route.route_key,
+            "run_external_busy_holder",
+            "active",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    state
+        .mark_cli_route_message_queue_failed_or_queued(
+            &item.queue_id,
+            "queued",
+            Some(now),
+            "route_busy",
+            "retry immediately",
+        )
+        .unwrap();
+
+    let second_processed = drain_cli_route_message_queue_once(&config, &state, &outbox).unwrap();
+    assert_eq!(second_processed, 1);
+    let succeeded = state
+        .load_cli_route_message_queue_item(&item.queue_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(succeeded.status, "succeeded");
+    let replay_run_id = succeeded.run_id.as_deref().unwrap();
+    assert_ne!(replay_run_id, original_run_id);
+    assert_eq!(
+        state.load_runtime_run(&original_run_id).unwrap().status,
+        RuntimeRunStatus::Failed
+    );
+    assert_eq!(
+        state.load_runtime_run(replay_run_id).unwrap().status,
+        RuntimeRunStatus::Finished
+    );
+}
+
 fn recording_status_sender(
     sender_id: &str,
 ) -> (RuntimeStatusSender, Arc<Mutex<Vec<ControllerOutboxCall>>>) {

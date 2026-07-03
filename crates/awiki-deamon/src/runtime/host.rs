@@ -617,7 +617,15 @@ where
             RuntimeRunStatus::Running,
         )?
     {
-        emit_runtime_status(outbox, &run, "running", Some("Runtime started"), None, None)?;
+        try_emit_runtime_status(
+            state,
+            outbox,
+            &run,
+            "running",
+            Some("Runtime started"),
+            None,
+            None,
+        )?;
     }
 
     if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
@@ -661,7 +669,8 @@ where
                     .load_runtime_final_outbox_by_run(&run.run_id)?
                     .context("Hermes final outbox record missing after flush")?;
                 if refreshed.status != "sent" {
-                    emit_runtime_status(
+                    try_emit_runtime_status(
+                        state,
                         outbox,
                         &run,
                         "running",
@@ -720,7 +729,8 @@ where
                 .load_runtime_final_outbox_by_run(&run.run_id)?
                 .context("generic-cli fallback final outbox record missing after flush")?;
             if refreshed.status != "sent" {
-                emit_runtime_status(
+                try_emit_runtime_status(
+                    state,
                     outbox,
                     &run,
                     "running",
@@ -1600,7 +1610,8 @@ fn mark_runtime_final_delivered(
         .finish_active_runtime_run(&record.run_id)
         .context("mark runtime run finished after final delivery")?;
     if updated {
-        emit_runtime_status(
+        try_emit_runtime_status(
+            state,
             outbox,
             &run,
             "succeeded",
@@ -1803,6 +1814,38 @@ fn emit_runtime_status(
         last_error_summary,
         None,
     )
+}
+
+fn try_emit_runtime_status(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    status: &str,
+    message: Option<&str>,
+    last_error_code: Option<&str>,
+    last_error_summary: Option<&str>,
+) -> Result<()> {
+    if let Err(error) = emit_runtime_status(
+        outbox,
+        run,
+        status,
+        message,
+        last_error_code,
+        last_error_summary,
+    ) {
+        state.insert_audit_event_json(
+            "runtime.status.best_effort.failed",
+            Some(&run.agent_did),
+            Some(&run.runtime_profile_id),
+            Some(&run.run_id),
+            None,
+            json!({
+                "status": status,
+                "error": sanitize_user_visible_error_summary(&error.to_string()),
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 fn emit_runtime_status_with_metadata(

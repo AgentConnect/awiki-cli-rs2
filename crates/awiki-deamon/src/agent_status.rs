@@ -1238,10 +1238,11 @@ fn unsupported_route_message_queue_summary(reason: &str) -> Value {
 fn generic_cli_missing_runtime_card_summary(setup_state: &str, next_action: &str) -> Value {
     json!({
         "supported": false,
-        "status_schema_version": 1,
+        "status_schema_version": 2,
         "runtime_family": "generic-cli",
         "driver_id": null,
         "lifecycle_state": "manual_review_required",
+        "operational_state": "manual_review_required",
         "setup_ready": false,
         "setup_state": setup_state,
         "queue_state": "idle",
@@ -1252,6 +1253,9 @@ fn generic_cli_missing_runtime_card_summary(setup_state: &str, next_action: &str
         "dead_letter_count": 0,
         "failed_count": 0,
         "oldest_queued_age_ms": null,
+        "attention_state": "none",
+        "attention_item_count": 0,
+        "attention_next_action": "none",
         "next_action": next_action,
         "contains_user_content": false,
         "contains_provider_auth_material": false,
@@ -1281,12 +1285,7 @@ fn generic_cli_runtime_card_summary(
         .cloned()
         .unwrap_or(Value::Null);
     let route_session_state = generic_cli_route_session_card_state(route_session_counts);
-    let queue_state = generic_cli_queue_card_state(
-        queue_supported,
-        queued_count,
-        running_count,
-        dead_letter_count,
-    );
+    let queue_state = generic_cli_queue_card_state(queue_supported, queued_count, running_count);
     let active_run_state =
         generic_cli_active_run_card_state(queue_state, queued_count, running_count, failed_count);
     let lifecycle_state = generic_cli_runtime_card_lifecycle_state(
@@ -1295,23 +1294,26 @@ fn generic_cli_runtime_card_summary(
         queue_state,
         queued_count,
         running_count,
-        dead_letter_count,
         route_session_state,
     );
+    let attention_state = generic_cli_runtime_card_attention_state(dead_letter_count);
+    let attention_item_count = generic_cli_runtime_card_attention_item_count(dead_letter_count);
+    let attention_next_action =
+        generic_cli_runtime_card_attention_next_action(attention_item_count);
     let next_action = generic_cli_runtime_card_next_action(
         lifecycle_state,
         setup_next_action,
-        dead_letter_count,
         queued_count,
         running_count,
         driver_status_code,
     );
     json!({
         "supported": true,
-        "status_schema_version": 1,
+        "status_schema_version": 2,
         "runtime_family": "generic-cli",
         "driver_id": driver_id,
         "lifecycle_state": lifecycle_state,
+        "operational_state": lifecycle_state,
         "setup_ready": setup_ready,
         "setup_state": generic_cli_runtime_card_setup_state(setup_status, driver_status_code),
         "queue_state": queue_state,
@@ -1322,6 +1324,9 @@ fn generic_cli_runtime_card_summary(
         "dead_letter_count": dead_letter_count,
         "failed_count": failed_count,
         "oldest_queued_age_ms": oldest_queued_age_ms,
+        "attention_state": attention_state,
+        "attention_item_count": attention_item_count,
+        "attention_next_action": attention_next_action,
         "next_action": next_action,
         "contains_user_content": false,
         "contains_provider_auth_material": false,
@@ -1357,12 +1362,9 @@ fn generic_cli_queue_card_state(
     queue_supported: bool,
     queued_count: i64,
     running_count: i64,
-    dead_letter_count: i64,
 ) -> &'static str {
     if !queue_supported {
         "blocked"
-    } else if dead_letter_count > 0 {
-        "dead_letter"
     } else if running_count > 0 {
         "running"
     } else if queued_count > 0 {
@@ -1395,7 +1397,6 @@ fn generic_cli_runtime_card_lifecycle_state(
     queue_state: &str,
     queued_count: i64,
     running_count: i64,
-    dead_letter_count: i64,
     route_session_state: &str,
 ) -> &'static str {
     if !setup_ready {
@@ -1404,9 +1405,7 @@ fn generic_cli_runtime_card_lifecycle_state(
         }
         return "needs_setup";
     }
-    if dead_letter_count > 0 || queue_state == "dead_letter" {
-        "dead_letter"
-    } else if running_count > 0 || queue_state == "running" {
+    if running_count > 0 || queue_state == "running" {
         "running"
     } else if queued_count > 0 || queue_state == "queued" {
         "queued"
@@ -1417,10 +1416,29 @@ fn generic_cli_runtime_card_lifecycle_state(
     }
 }
 
+fn generic_cli_runtime_card_attention_state(dead_letter_count: i64) -> &'static str {
+    if dead_letter_count > 0 {
+        "needs_review"
+    } else {
+        "none"
+    }
+}
+
+fn generic_cli_runtime_card_attention_item_count(dead_letter_count: i64) -> i64 {
+    dead_letter_count.max(0)
+}
+
+fn generic_cli_runtime_card_attention_next_action(attention_item_count: i64) -> &'static str {
+    if attention_item_count > 0 {
+        "review_dead_letters"
+    } else {
+        "none"
+    }
+}
+
 fn generic_cli_runtime_card_next_action(
     lifecycle_state: &str,
     setup_next_action: &str,
-    dead_letter_count: i64,
     queued_count: i64,
     running_count: i64,
     driver_status_code: &str,
@@ -1436,9 +1454,7 @@ fn generic_cli_runtime_card_next_action(
             _ => "setup_required",
         };
     }
-    if dead_letter_count > 0 {
-        "manual_review_required"
-    } else if queued_count > 0 || running_count > 0 {
+    if queued_count > 0 || running_count > 0 {
         "retry_later"
     } else if setup_next_action == "manual_review_required" {
         "manual_review_required"
@@ -2588,10 +2604,11 @@ mod tests {
         );
         let card = &diagnostics["config_summary"]["runtime_card"];
         assert_eq!(card["supported"], true);
-        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["status_schema_version"], 2);
         assert_eq!(card["runtime_family"], "generic-cli");
         assert_eq!(card["driver_id"], "codex");
         assert_eq!(card["lifecycle_state"], "needs_setup");
+        assert_eq!(card["operational_state"], "needs_setup");
         assert_eq!(card["setup_ready"], false);
         assert_eq!(card["setup_state"], "binary_missing");
         assert_eq!(card["queue_state"], "idle");
@@ -2600,6 +2617,9 @@ mod tests {
         assert_eq!(card["queued_count"], 0);
         assert_eq!(card["running_count"], 0);
         assert_eq!(card["dead_letter_count"], 0);
+        assert_eq!(card["attention_state"], "none");
+        assert_eq!(card["attention_item_count"], 0);
+        assert_eq!(card["attention_next_action"], "none");
         assert_eq!(card["failed_count"], 0);
         assert!(card["oldest_queued_age_ms"].is_null());
         assert_eq!(card["next_action"], "setup_required");
@@ -2728,10 +2748,11 @@ mod tests {
         assert!(status.last_error_code.is_none());
         assert_eq!(diagnostics["config_summary"]["setup_ready"], true);
         assert_eq!(card["supported"], true);
-        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["status_schema_version"], 2);
         assert_eq!(card["runtime_family"], "generic-cli");
         assert_eq!(card["driver_id"], "command");
         assert_eq!(card["lifecycle_state"], "created");
+        assert_eq!(card["operational_state"], "created");
         assert_eq!(card["setup_ready"], true);
         assert_eq!(card["setup_state"], "ready");
         assert_eq!(card["queue_state"], "blocked");
@@ -2740,6 +2761,9 @@ mod tests {
         assert_eq!(card["queued_count"], 0);
         assert_eq!(card["running_count"], 0);
         assert_eq!(card["dead_letter_count"], 0);
+        assert_eq!(card["attention_state"], "none");
+        assert_eq!(card["attention_item_count"], 0);
+        assert_eq!(card["attention_next_action"], "none");
         assert_eq!(card["failed_count"], 0);
         assert!(card["oldest_queued_age_ms"].is_null());
         assert_eq!(card["next_action"], "none");
@@ -2779,10 +2803,11 @@ mod tests {
             "profile_missing"
         );
         assert_eq!(card["supported"], false);
-        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["status_schema_version"], 2);
         assert_eq!(card["runtime_family"], "generic-cli");
         assert!(card["driver_id"].is_null());
         assert_eq!(card["lifecycle_state"], "manual_review_required");
+        assert_eq!(card["operational_state"], "manual_review_required");
         assert_eq!(card["setup_ready"], false);
         assert_eq!(card["setup_state"], "profile_missing");
         assert_eq!(card["queue_state"], "idle");
@@ -2792,6 +2817,9 @@ mod tests {
         assert_eq!(card["running_count"], 0);
         assert_eq!(card["dead_letter_count"], 0);
         assert_eq!(card["failed_count"], 0);
+        assert_eq!(card["attention_state"], "none");
+        assert_eq!(card["attention_item_count"], 0);
+        assert_eq!(card["attention_next_action"], "none");
         assert!(card["oldest_queued_age_ms"].is_null());
         assert_eq!(card["next_action"], "contact_admin");
         assert_eq!(card["contains_user_content"], false);
@@ -2837,9 +2865,10 @@ mod tests {
         assert_eq!(card["supported"], true);
         assert_eq!(card["driver_id"], "codex");
         assert_eq!(card["lifecycle_state"], "needs_setup");
+        assert_eq!(card["operational_state"], "needs_setup");
         assert_eq!(card["setup_ready"], false);
         assert_eq!(card["setup_state"], "binary_missing");
-        assert_eq!(card["queue_state"], "dead_letter");
+        assert_eq!(card["queue_state"], "running");
         assert_eq!(card["active_run_state"], "running");
         assert_eq!(card["route_session_state"], "active");
         assert_eq!(card["queued_count"], 3);
@@ -2847,6 +2876,9 @@ mod tests {
         assert_eq!(card["dead_letter_count"], 1);
         assert_eq!(card["failed_count"], 1);
         assert_eq!(card["oldest_queued_age_ms"], 42);
+        assert_eq!(card["attention_state"], "needs_review");
+        assert_eq!(card["attention_item_count"], 1);
+        assert_eq!(card["attention_next_action"], "review_dead_letters");
         assert_eq!(card["next_action"], "setup_required");
         assert_eq!(card["contains_user_content"], false);
         assert_eq!(card["contains_provider_auth_material"], false);
@@ -2854,9 +2886,9 @@ mod tests {
     }
 
     #[test]
-    fn generic_cli_runtime_card_prioritizes_dead_letter_running_and_queued() {
+    fn generic_cli_runtime_card_keeps_attention_separate_from_operational_state() {
         let no_routes = empty_route_session_counts();
-        let dead = generic_cli_runtime_card_summary(
+        let running_with_dead_letter = generic_cli_runtime_card_summary(
             "codex",
             true,
             "ready",
@@ -2872,10 +2904,17 @@ mod tests {
                 "oldest_queued_age_ms": null,
             }),
         );
-        assert_eq!(dead["lifecycle_state"], "dead_letter");
-        assert_eq!(dead["queue_state"], "dead_letter");
-        assert_eq!(dead["active_run_state"], "running");
-        assert_eq!(dead["next_action"], "manual_review_required");
+        assert_eq!(running_with_dead_letter["lifecycle_state"], "running");
+        assert_eq!(running_with_dead_letter["operational_state"], "running");
+        assert_eq!(running_with_dead_letter["queue_state"], "running");
+        assert_eq!(running_with_dead_letter["active_run_state"], "running");
+        assert_eq!(running_with_dead_letter["attention_state"], "needs_review");
+        assert_eq!(running_with_dead_letter["attention_item_count"], 1);
+        assert_eq!(
+            running_with_dead_letter["attention_next_action"],
+            "review_dead_letters"
+        );
+        assert_eq!(running_with_dead_letter["next_action"], "retry_later");
 
         let running = generic_cli_runtime_card_summary(
             "codex",
@@ -2894,8 +2933,12 @@ mod tests {
             }),
         );
         assert_eq!(running["lifecycle_state"], "running");
+        assert_eq!(running["operational_state"], "running");
         assert_eq!(running["queue_state"], "running");
         assert_eq!(running["active_run_state"], "running");
+        assert_eq!(running["attention_state"], "none");
+        assert_eq!(running["attention_item_count"], 0);
+        assert_eq!(running["attention_next_action"], "none");
         assert_eq!(running["next_action"], "retry_later");
 
         let queued = generic_cli_runtime_card_summary(
@@ -2915,8 +2958,12 @@ mod tests {
             }),
         );
         assert_eq!(queued["lifecycle_state"], "queued");
+        assert_eq!(queued["operational_state"], "queued");
         assert_eq!(queued["queue_state"], "queued");
         assert_eq!(queued["active_run_state"], "queued");
+        assert_eq!(queued["attention_state"], "none");
+        assert_eq!(queued["attention_item_count"], 0);
+        assert_eq!(queued["attention_next_action"], "none");
         assert_eq!(queued["next_action"], "retry_later");
     }
 
@@ -3355,13 +3402,14 @@ mod tests {
         assert_eq!(queue["next_action"], "manual_review_required");
         assert_eq!(queue["last_message_id_watermark_policy"], "final_only");
         assert_eq!(card["supported"], true);
-        assert_eq!(card["status_schema_version"], 1);
+        assert_eq!(card["status_schema_version"], 2);
         assert_eq!(card["runtime_family"], "generic-cli");
         assert_eq!(card["driver_id"], "codex");
         assert_eq!(card["lifecycle_state"], "needs_setup");
+        assert_eq!(card["operational_state"], "needs_setup");
         assert_eq!(card["setup_ready"], false);
         assert_eq!(card["setup_state"], "binary_missing");
-        assert_eq!(card["queue_state"], "dead_letter");
+        assert_eq!(card["queue_state"], "running");
         assert_eq!(card["active_run_state"], "running");
         assert_eq!(card["route_session_state"], "active");
         assert_eq!(card["queued_count"], 4);
@@ -3369,6 +3417,9 @@ mod tests {
         assert_eq!(card["dead_letter_count"], 1);
         assert_eq!(card["failed_count"], 1);
         assert!(card["oldest_queued_age_ms"].as_i64().unwrap() >= 0);
+        assert_eq!(card["attention_state"], "needs_review");
+        assert_eq!(card["attention_item_count"], 1);
+        assert_eq!(card["attention_next_action"], "review_dead_letters");
         assert_eq!(card["next_action"], "setup_required");
         assert_eq!(card["contains_user_content"], false);
         assert_eq!(card["contains_provider_auth_material"], false);
