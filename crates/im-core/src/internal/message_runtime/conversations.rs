@@ -524,6 +524,11 @@ fn message_thread(
     if let Some(group) = group_ref_from_record(record)? {
         return Ok(crate::messages::ThreadRef::Group(group));
     }
+    if let Some(thread_id) = peer_scope_thread_id_from_record(record) {
+        return Ok(crate::messages::ThreadRef::Thread(
+            crate::ids::ThreadId::parse(thread_id)?,
+        ));
+    }
     let metadata = crate::messages::MessageMetadata {
         attributes: metadata_attributes(&record.metadata),
         ..crate::messages::MessageMetadata::default()
@@ -548,6 +553,15 @@ fn message_thread(
     Ok(crate::messages::ThreadRef::Thread(
         crate::ids::ThreadId::parse(&record.thread_id)?,
     ))
+}
+
+fn peer_scope_thread_id_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Option<&str> {
+    [record.conversation_id.as_str(), record.thread_id.as_str()]
+        .into_iter()
+        .map(str::trim)
+        .find(|value| value.starts_with("dm:peer-scope:"))
 }
 
 fn group_ref_from_record(

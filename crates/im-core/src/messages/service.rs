@@ -2,11 +2,121 @@ pub struct MessageService<'a> {
     client: &'a crate::core::ImClient,
 }
 
+#[cfg(test)]
+mod direct_send_result_identity_tests {
+    use crate::internal::local_state::owner_scope::{
+        direct_conversation_id_for_peer_scope, DirectPeerScope,
+    };
+
+    #[test]
+    fn direct_send_result_normalization_uses_peer_scope_thread() {
+        let scope = DirectPeerScope::new("user-bob", "Bob.AWiki.Test").expect("valid peer scope");
+        let expected_thread_id = direct_conversation_id_for_peer_scope(&scope);
+        let mut result = send_result("msg-peer-scope");
+
+        super::normalize_direct_send_result_for_peer_scope(
+            &mut result,
+            Some(&scope),
+            Some("bob.awiki.test"),
+            Some("did:example:bob-current"),
+        )
+        .expect("normalize");
+
+        match &result.message.thread {
+            crate::messages::ThreadRef::Thread(thread) => {
+                assert_eq!(thread.as_str(), expected_thread_id);
+            }
+            other => panic!("expected thread ref, got {other:?}"),
+        }
+        assert_eq!(
+            attribute(&result, "peer_user_id").as_deref(),
+            Some("user-bob")
+        );
+        assert_eq!(
+            attribute(&result, "peer_full_handle").as_deref(),
+            Some("bob.awiki.test")
+        );
+        assert_eq!(
+            attribute(&result, "target_handle").as_deref(),
+            Some("bob.awiki.test")
+        );
+        assert_eq!(
+            attribute(&result, "resolved_target_did").as_deref(),
+            Some("did:example:bob-current")
+        );
+        assert_eq!(
+            attribute(&result, "peer_current_did").as_deref(),
+            Some("did:example:bob-current")
+        );
+        assert_eq!(
+            result.message.receiver.as_ref().map(|peer| peer.as_str()),
+            Some("bob.awiki.test")
+        );
+    }
+
+    #[test]
+    fn direct_send_result_normalization_without_peer_scope_is_noop() {
+        let mut result = send_result("msg-direct-did");
+
+        super::normalize_direct_send_result_for_peer_scope(
+            &mut result,
+            None,
+            Some("bob.awiki.test"),
+            Some("did:example:bob"),
+        )
+        .expect("normalize");
+
+        match &result.message.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob");
+            }
+            other => panic!("expected direct ref, got {other:?}"),
+        }
+        assert!(attribute(&result, "peer_user_id").is_none());
+    }
+
+    fn send_result(message_id: &str) -> crate::messages::SendMessageResult {
+        crate::messages::SendMessageResult {
+            message: crate::messages::Message {
+                id: crate::ids::MessageId::parse(message_id).unwrap(),
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                direction: crate::messages::MessageDirection::Outgoing,
+                sender: crate::ids::PeerRef::parse("did:example:alice", "").unwrap(),
+                receiver: Some(crate::ids::PeerRef::parse("bob.awiki.test", "").unwrap()),
+                group: None,
+                body: crate::messages::MessageBodyView::Text {
+                    text: "hello".to_owned(),
+                    kind: crate::messages::MessageKind::Text,
+                },
+                sent_at: Some("2026-07-04T00:00:00Z".to_owned()),
+                received_at: None,
+                metadata: crate::messages::MessageMetadata::default(),
+            },
+            delivery: crate::messages::DeliveryState::Accepted,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn attribute(result: &crate::messages::SendMessageResult, key: &str) -> Option<String> {
+        result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == key)
+            .map(|attribute| attribute.value.clone())
+    }
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod direct_e2ee_async_persistence_tests {
     use serde_json::json;
 
+    use crate::internal::local_state::owner_scope::DirectPeerScope;
     use crate::internal::secure_direct::send::{
+        DirectSecureAttachmentLocalEffect, DirectSecureAttachmentSendResult,
         DirectSecureLocalEffect, DirectSecureTextSendResult,
     };
 
@@ -22,11 +132,15 @@ mod direct_e2ee_async_persistence_tests {
                 sdk_result,
                 queued_outbox_id: None,
                 target_did: "did:example:bob".to_owned(),
+                target_handle: None,
+                peer_scope: None,
                 text: "actor persisted secret".to_owned(),
                 kind: crate::messages::MessageKind::Text,
                 raw: Some(json!({ "accepted": true })),
                 local_effect: DirectSecureLocalEffect::PersistOutgoing,
             },
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -59,6 +173,130 @@ WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-secure-actor'"#,
     }
 
     #[tokio::test]
+    async fn deferred_direct_e2ee_peer_scope_projection_and_result_use_same_thread() {
+        let fixture = Fixture::new("direct-e2ee-peer-scope");
+        let client = fixture.client();
+        let peer_scope = DirectPeerScope::new("user-bob", "bob.awiki.test").unwrap();
+        let sdk_result = sdk_result("msg-secure-peer-scope", "accepted", Some(18));
+
+        let result = super::persist_deferred_direct_e2ee_effect(
+            &client,
+            DirectSecureTextSendResult {
+                sdk_result,
+                queued_outbox_id: None,
+                target_did: "did:example:bob-current".to_owned(),
+                target_handle: Some("bob.awiki.test".to_owned()),
+                peer_scope: Some(peer_scope),
+                text: "peer scoped secret".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+                raw: Some(json!({ "accepted": true })),
+                local_effect: DirectSecureLocalEffect::PersistOutgoing,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let result_thread = match &result.message.thread {
+            crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
+            other => panic!("expected peer-scope thread result, got {other:?}"),
+        };
+
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let stored = db
+            .query_row(
+                r#"
+SELECT conversation_id, receiver_did, metadata
+FROM messages
+WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-secure-peer-scope'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, result_thread);
+        assert_eq!(stored.1, "did:example:bob-current");
+        let metadata: serde_json::Value = serde_json::from_str(&stored.2).unwrap();
+        assert_eq!(metadata["security"], "direct-e2ee");
+        assert_eq!(metadata["target_handle"], "bob.awiki.test");
+        assert_eq!(metadata["peer_user_id"], "user-bob");
+        assert_eq!(metadata["peer_full_handle"], "bob.awiki.test");
+        assert_eq!(metadata["resolved_target_did"], "did:example:bob-current");
+    }
+
+    #[tokio::test]
+    async fn deferred_direct_e2ee_attachment_peer_scope_projection_and_result_use_same_thread() {
+        let fixture = Fixture::new("direct-e2ee-attachment-peer-scope");
+        let client = fixture.client();
+        let peer_scope = DirectPeerScope::new("user-bob", "bob.awiki.test").unwrap();
+        let sdk_result =
+            sdk_attachment_result("msg-secure-attachment-peer-scope", "accepted", Some(19));
+        let redacted_manifest = json!({
+            "primary_attachment_id": "att-peer",
+            "attachments": [{
+                "attachment_id": "att-peer",
+                "filename": "peer.txt",
+                "mime_type": "text/plain",
+                "size": "4",
+                "object_uri": "awiki://object/peer"
+            }]
+        });
+
+        let result = super::persist_deferred_direct_e2ee_attachment_effect(
+            &client,
+            DirectSecureAttachmentSendResult {
+                sdk_result,
+                target_did: "did:example:bob-current".to_owned(),
+                target_handle: Some("bob.awiki.test".to_owned()),
+                peer_scope: Some(peer_scope),
+                redacted_manifest,
+                raw: Some(json!({ "accepted": true })),
+                local_effect: DirectSecureAttachmentLocalEffect::PersistOutgoing,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let result_thread = match &result.message.thread {
+            crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
+            other => panic!("expected peer-scope thread result, got {other:?}"),
+        };
+
+        let db = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
+        let stored = db
+            .query_row(
+                r#"
+SELECT conversation_id, receiver_did, metadata
+FROM messages
+WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-secure-attachment-peer-scope'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, result_thread);
+        assert_eq!(stored.1, "did:example:bob-current");
+        let metadata: serde_json::Value = serde_json::from_str(&stored.2).unwrap();
+        assert_eq!(metadata["security"], "direct-e2ee");
+        assert_eq!(metadata["target_handle"], "bob.awiki.test");
+        assert_eq!(metadata["peer_user_id"], "user-bob");
+        assert_eq!(metadata["peer_full_handle"], "bob.awiki.test");
+        assert_eq!(metadata["resolved_target_did"], "did:example:bob-current");
+        assert_eq!(metadata["attachment_id"], "att-peer");
+    }
+
+    #[tokio::test]
     async fn deferred_direct_e2ee_pending_outbox_uses_db_actor() {
         let fixture = Fixture::new("direct-e2ee-outbox-actor");
         let client = fixture.client();
@@ -71,6 +309,8 @@ WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-secure-actor'"#,
                 sdk_result,
                 queued_outbox_id: Some("outbox-actor".to_owned()),
                 target_did: "did:example:bob".to_owned(),
+                target_handle: None,
+                peer_scope: None,
                 text: "queued actor secret".to_owned(),
                 kind: crate::messages::MessageKind::Markdown,
                 raw: None,
@@ -90,6 +330,8 @@ WHERE owner_identity_id = 'alice-id' AND msg_id = 'msg-secure-actor'"#,
                     },
                 ),
             },
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -148,6 +390,48 @@ WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-actor'"#,
                     retry_plan: None,
                     server_sequence,
                     content_type: Some("text/plain".to_owned()),
+                    attributes: vec![crate::messages::MessageMetadataAttribute {
+                        key: "security".to_owned(),
+                        value: "direct-e2ee".to_owned(),
+                    }],
+                },
+            },
+            delivery: crate::messages::DeliveryState::Accepted,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn sdk_attachment_result(
+        message_id: &str,
+        delivery_state: &str,
+        server_sequence: Option<i64>,
+    ) -> crate::messages::SendMessageResult {
+        crate::messages::SendMessageResult {
+            message: crate::messages::Message {
+                id: crate::ids::MessageId::parse(message_id).unwrap(),
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                direction: crate::messages::MessageDirection::Outgoing,
+                sender: crate::ids::PeerRef::parse("did:example:alice", "").unwrap(),
+                receiver: Some(crate::ids::PeerRef::parse("did:example:bob", "").unwrap()),
+                group: None,
+                body: crate::messages::MessageBodyView::Unsupported {
+                    content_type: Some(
+                        crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+                    ),
+                },
+                sent_at: Some("2026-05-24T00:00:00Z".to_owned()),
+                received_at: None,
+                metadata: crate::messages::MessageMetadata {
+                    operation_id: Some(message_id.to_owned()),
+                    delivery_state: Some(delivery_state.to_owned()),
+                    send_state: None,
+                    retry_plan: None,
+                    server_sequence,
+                    content_type: Some(
+                        crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+                    ),
                     attributes: vec![crate::messages::MessageMetadataAttribute {
                         key: "security".to_owned(),
                         value: "direct-e2ee".to_owned(),
@@ -273,11 +557,12 @@ impl<'a> MessageService<'a> {
                 )
                 .send(
                     crate::internal::message_runtime::direct::DirectTextSend {
-                        request: resolved.request,
-                        resolved_target_did: resolved.target_did,
+                        request: resolved.request.clone(),
+                        resolved_target_did: resolved.target_did.clone(),
                         credentials: None,
                     },
                 )?;
+                normalize_resolved_direct_send_result(&mut result.sdk_result, &resolved)?;
                 #[cfg(feature = "sqlite")]
                 match
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result(
@@ -395,11 +680,12 @@ impl<'a> MessageService<'a> {
                     crate::internal::transport::CoreHttpTransport::new(self.client),
                 )
                 .send_async(crate::internal::message_runtime::direct::DirectTextSend {
-                    request: resolved.request,
-                    resolved_target_did: resolved.target_did,
+                    request: resolved.request.clone(),
+                    resolved_target_did: resolved.target_did.clone(),
                     credentials: None,
                 })
                 .await?;
+                normalize_resolved_direct_send_result(&mut result.sdk_result, &resolved)?;
                 #[cfg(feature = "sqlite")]
                 match
                     crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
@@ -541,6 +827,8 @@ impl<'a> MessageService<'a> {
         &self,
         resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        let target_handle = resolved.direct_handle().map(str::to_owned);
+        let peer_scope = resolved.peer_scope.clone();
         if matches!(resolved.request.body, super::MessageBody::Attachment { .. }) {
             let committed =
                 crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
@@ -568,6 +856,8 @@ impl<'a> MessageService<'a> {
                     crate::internal::secure_direct::send::DirectSecureAttachmentSend {
                         request: resolved.request.clone(),
                         resolved_target_did: resolved.target_did.clone(),
+                        target_handle: target_handle.clone(),
+                        peer_scope: peer_scope.clone(),
                         committed: committed.clone(),
                         local_persistence:
                             crate::internal::secure_direct::send::DirectSecureLocalPersistence::Deferred,
@@ -575,7 +865,13 @@ impl<'a> MessageService<'a> {
                 )
                 .await?;
             if let Some(result) = async_result {
-                return persist_deferred_direct_e2ee_attachment_effect(self.client, result).await;
+                return persist_deferred_direct_e2ee_attachment_effect(
+                    self.client,
+                    result,
+                    target_handle.as_deref(),
+                    peer_scope.as_ref(),
+                )
+                .await;
             }
             #[cfg(feature = "blocking")]
             {
@@ -592,7 +888,13 @@ impl<'a> MessageService<'a> {
                 .map_err(|err| crate::ImError::Internal {
                     message: err.to_string(),
                 })??;
-                return persist_deferred_direct_e2ee_attachment_effect(self.client, result).await;
+                return persist_deferred_direct_e2ee_attachment_effect(
+                    self.client,
+                    result,
+                    target_handle.as_deref(),
+                    peer_scope.as_ref(),
+                )
+                .await;
             }
             #[cfg(not(feature = "blocking"))]
             {
@@ -605,6 +907,8 @@ impl<'a> MessageService<'a> {
         let async_input = crate::internal::secure_direct::send::DirectSecureTextSend {
             request: resolved.request.clone(),
             resolved_target_did: resolved.target_did.clone(),
+            target_handle: target_handle.clone(),
+            peer_scope: peer_scope.clone(),
             local_persistence:
                 crate::internal::secure_direct::send::DirectSecureLocalPersistence::Deferred,
         };
@@ -619,7 +923,15 @@ impl<'a> MessageService<'a> {
         {
             crate::internal::secure_direct::async_send::AsyncDirectSecureSendOutcome::Sent(
                 result,
-            ) => return persist_deferred_direct_e2ee_effect(self.client, result).await,
+            ) => {
+                return persist_deferred_direct_e2ee_effect(
+                    self.client,
+                    result,
+                    target_handle.as_deref(),
+                    peer_scope.as_ref(),
+                )
+                .await
+            }
             crate::internal::secure_direct::async_send::AsyncDirectSecureSendOutcome::Fallback(
                 crate::internal::secure_direct::async_send::AsyncDirectSecureSendFallback::NoEstablishedSession,
             ) => {}
@@ -639,7 +951,13 @@ impl<'a> MessageService<'a> {
             .map_err(|err| crate::ImError::Internal {
                 message: err.to_string(),
             })??;
-            persist_deferred_direct_e2ee_effect(self.client, result).await
+            persist_deferred_direct_e2ee_effect(
+                self.client,
+                result,
+                target_handle.as_deref(),
+                peer_scope.as_ref(),
+            )
+            .await
         }
         #[cfg(not(feature = "blocking"))]
         {
@@ -1339,7 +1657,9 @@ fn send_direct_e2ee_with_client_and_persistence(
             "direct-e2ee-attachment-text-result",
         ));
     }
-    crate::internal::secure_direct::send::DirectSecureTextSender::new(
+    let target_handle = resolved.direct_handle().map(str::to_owned);
+    let peer_scope = resolved.peer_scope.clone();
+    let mut result = crate::internal::secure_direct::send::DirectSecureTextSender::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
@@ -1348,8 +1668,16 @@ fn send_direct_e2ee_with_client_and_persistence(
     .send(crate::internal::secure_direct::send::DirectSecureTextSend {
         request: resolved.request,
         resolved_target_did: resolved.target_did,
+        target_handle: target_handle.clone(),
+        peer_scope: peer_scope.clone(),
         local_persistence,
-    })
+    })?;
+    apply_peer_scope_to_direct_secure_text_result(
+        &mut result,
+        target_handle.as_deref(),
+        peer_scope.as_ref(),
+    )?;
+    Ok(result)
 }
 
 #[cfg(all(feature = "sqlite", feature = "blocking"))]
@@ -1391,7 +1719,9 @@ fn send_direct_e2ee_attachment_with_client_and_persistence(
     committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
     local_persistence: crate::internal::secure_direct::send::DirectSecureLocalPersistence,
 ) -> crate::ImResult<crate::internal::secure_direct::send::DirectSecureAttachmentSendResult> {
-    crate::internal::secure_direct::send::DirectSecureTextSender::new(
+    let target_handle = resolved.direct_handle().map(str::to_owned);
+    let peer_scope = resolved.peer_scope.clone();
+    let mut result = crate::internal::secure_direct::send::DirectSecureTextSender::new(
         client,
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
@@ -1401,17 +1731,28 @@ fn send_direct_e2ee_attachment_with_client_and_persistence(
         crate::internal::secure_direct::send::DirectSecureAttachmentSend {
             request: resolved.request,
             resolved_target_did: resolved.target_did,
+            target_handle: target_handle.clone(),
+            peer_scope: peer_scope.clone(),
             committed,
             local_persistence,
         },
-    )
+    )?;
+    apply_peer_scope_to_direct_secure_attachment_result(
+        &mut result,
+        target_handle.as_deref(),
+        peer_scope.as_ref(),
+    )?;
+    Ok(result)
 }
 
 #[cfg(feature = "sqlite")]
 async fn persist_deferred_direct_e2ee_effect(
     client: &crate::core::ImClient,
     mut result: crate::internal::secure_direct::send::DirectSecureTextSendResult,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
 ) -> crate::ImResult<super::SendMessageResult> {
+    apply_peer_scope_to_direct_secure_text_result(&mut result, target_handle, peer_scope)?;
     match result.local_effect {
         crate::internal::secure_direct::send::DirectSecureLocalEffect::None => {}
         crate::internal::secure_direct::send::DirectSecureLocalEffect::PersistOutgoing => {
@@ -1419,6 +1760,8 @@ async fn persist_deferred_direct_e2ee_effect(
                 crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing_async(
                     client,
                     &result.target_did,
+                    result.target_handle.as_deref(),
+                    result.peer_scope.as_ref(),
                     &result.text,
                     &result.kind,
                     &result.sdk_result,
@@ -1450,7 +1793,10 @@ async fn persist_deferred_direct_e2ee_effect(
 async fn persist_deferred_direct_e2ee_attachment_effect(
     client: &crate::core::ImClient,
     mut result: crate::internal::secure_direct::send::DirectSecureAttachmentSendResult,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
 ) -> crate::ImResult<super::SendMessageResult> {
+    apply_peer_scope_to_direct_secure_attachment_result(&mut result, target_handle, peer_scope)?;
     match result.local_effect {
         crate::internal::secure_direct::send::DirectSecureAttachmentLocalEffect::None => {}
         crate::internal::secure_direct::send::DirectSecureAttachmentLocalEffect::PersistOutgoing => {
@@ -1458,6 +1804,8 @@ async fn persist_deferred_direct_e2ee_attachment_effect(
                 crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing_async(
                     client,
                     &result.target_did,
+                    result.target_handle.as_deref(),
+                    result.peer_scope.as_ref(),
                     &result.redacted_manifest,
                     &result.sdk_result,
                 )
@@ -1476,6 +1824,50 @@ async fn persist_deferred_direct_e2ee_attachment_effect(
     Ok(result.sdk_result)
 }
 
+fn apply_peer_scope_to_direct_secure_text_result(
+    result: &mut crate::internal::secure_direct::send::DirectSecureTextSendResult,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<()> {
+    let handle = target_handle
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if result.target_handle.is_none() {
+        result.target_handle = handle.map(str::to_owned);
+    }
+    if result.peer_scope.is_none() {
+        result.peer_scope = peer_scope.cloned();
+    }
+    normalize_direct_send_result_for_peer_scope(
+        &mut result.sdk_result,
+        result.peer_scope.as_ref(),
+        result.target_handle.as_deref(),
+        Some(result.target_did.as_str()),
+    )
+}
+
+fn apply_peer_scope_to_direct_secure_attachment_result(
+    result: &mut crate::internal::secure_direct::send::DirectSecureAttachmentSendResult,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<()> {
+    let handle = target_handle
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if result.target_handle.is_none() {
+        result.target_handle = handle.map(str::to_owned);
+    }
+    if result.peer_scope.is_none() {
+        result.peer_scope = peer_scope.cloned();
+    }
+    normalize_direct_send_result_for_peer_scope(
+        &mut result.sdk_result,
+        result.peer_scope.as_ref(),
+        result.target_handle.as_deref(),
+        Some(result.target_did.as_str()),
+    )
+}
+
 #[derive(Clone)]
 struct ResolvedSendRequest {
     request: super::SendMessageRequest,
@@ -1490,6 +1882,86 @@ impl ResolvedSendRequest {
             .map(|scope| scope.full_handle.as_str())
             .or_else(|| direct_handle_from_target(&self.request.target))
     }
+}
+
+pub(crate) fn normalize_direct_send_result_for_peer_scope(
+    result: &mut super::SendMessageResult,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    target_handle: Option<&str>,
+    target_did: Option<&str>,
+) -> crate::ImResult<()> {
+    let Some(scope) = peer_scope else {
+        return Ok(());
+    };
+    let thread_id = crate::messages::direct_peer_scope_thread_id(
+        scope.user_id.as_str(),
+        scope.full_handle.as_str(),
+    )?;
+    result.message.thread = super::ThreadRef::Thread(thread_id);
+    upsert_message_attribute(
+        &mut result.message.metadata.attributes,
+        "peer_user_id",
+        scope.user_id.as_str(),
+    );
+    upsert_message_attribute(
+        &mut result.message.metadata.attributes,
+        "peer_full_handle",
+        scope.full_handle.as_str(),
+    );
+    if let Some(handle) = target_handle
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        upsert_message_attribute(
+            &mut result.message.metadata.attributes,
+            "target_handle",
+            handle,
+        );
+    }
+    if let Some(did) = target_did.map(str::trim).filter(|value| !value.is_empty()) {
+        upsert_message_attribute(
+            &mut result.message.metadata.attributes,
+            "resolved_target_did",
+            did,
+        );
+        upsert_message_attribute(
+            &mut result.message.metadata.attributes,
+            "peer_current_did",
+            did,
+        );
+    }
+    Ok(())
+}
+
+fn normalize_resolved_direct_send_result(
+    result: &mut super::SendMessageResult,
+    resolved: &ResolvedSendRequest,
+) -> crate::ImResult<()> {
+    normalize_direct_send_result_for_peer_scope(
+        result,
+        resolved.peer_scope.as_ref(),
+        resolved.direct_handle(),
+        resolved.target_did.as_deref(),
+    )
+}
+
+fn upsert_message_attribute(
+    attributes: &mut Vec<super::MessageMetadataAttribute>,
+    key: &str,
+    value: &str,
+) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    if let Some(attribute) = attributes.iter_mut().find(|attribute| attribute.key == key) {
+        attribute.value = value.to_owned();
+        return;
+    }
+    attributes.push(super::MessageMetadataAttribute {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    });
 }
 
 fn resolve_send_request(

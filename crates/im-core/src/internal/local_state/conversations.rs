@@ -113,9 +113,26 @@ LIMIT ?2"#,
     };
     let mut result = Vec::new();
     for row in &mut rows {
-        result.push(row.map_err(super::local_state_unavailable)?);
+        let record = row.map_err(super::local_state_unavailable)?;
+        if is_self_direct_record(&record) {
+            continue;
+        }
+        result.push(record);
     }
     Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
+fn is_self_direct_record(record: &ConversationRecord) -> bool {
+    let Some(last_message) = record.last_message.as_ref() else {
+        return false;
+    };
+    let owner = record.owner_did.trim();
+    !owner.is_empty()
+        && last_message.group_id.trim().is_empty()
+        && last_message.group_did.trim().is_empty()
+        && last_message.sender_did.trim() == owner
+        && last_message.receiver_did.trim() == owner
 }
 
 #[cfg(feature = "sqlite")]
@@ -435,6 +452,62 @@ mod tests {
         )
         .unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn local_state_conversations_hide_self_direct_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "self-direct",
+            "dm:did:example:alice",
+            1,
+            "did:example:alice",
+            "did:example:alice",
+            "",
+            "self direct",
+            "2026-05-21T00:00:05Z",
+            1,
+        );
+        seed_message(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            "bob-direct",
+            "dm:did:example:bob",
+            0,
+            "did:example:bob",
+            "did:example:alice",
+            "",
+            "hello",
+            "2026-05-21T00:00:04Z",
+            0,
+        );
+
+        let records = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+                include_groups: false,
+                include_direct: true,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.thread_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dm:did:example:bob"]
+        );
     }
 
     #[test]

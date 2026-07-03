@@ -38,6 +38,7 @@ struct SummaryMessageRow {
     owner_did: String,
     direction: i64,
     sender_did: String,
+    receiver_did: String,
     group_id: String,
     group_did: String,
     content_type: String,
@@ -89,6 +90,15 @@ impl SummaryMessageRow {
 
     fn is_unread_mention(&self) -> bool {
         self.is_unread_incoming() && self.mentions_current_user
+    }
+
+    fn is_self_direct(&self) -> bool {
+        let owner = self.owner_did.trim();
+        !owner.is_empty()
+            && self.group_id.trim().is_empty()
+            && self.group_did.trim().is_empty()
+            && self.sender_did.trim() == owner
+            && self.receiver_did.trim() == owner
     }
 
     fn unread_count_delta(&self) -> i64 {
@@ -212,6 +222,7 @@ SELECT msg_id,
        COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
        direction,
        sender_did,
+       receiver_did,
        group_id,
        group_did,
        content_type,
@@ -263,6 +274,10 @@ pub(crate) fn apply_message_delta_or_rebuild(
         if previous.row.is_unread_mention() || next.row.is_unread_mention() {
             return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
         }
+    }
+
+    if next.row.is_self_direct() {
+        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
     }
 
     let Some(summary) = summary_state(connection, &next.owner_identity_id, &next.conversation_id)?
@@ -411,6 +426,7 @@ SELECT msg_id,
        owner_did,
        direction,
        sender_did,
+       receiver_did,
        group_id,
        group_did,
        content_type,
@@ -441,6 +457,9 @@ ORDER BY sort_at ASC,
 
     for row in rows {
         let row = row.map_err(super::local_state_unavailable)?;
+        if row.is_self_direct() {
+            continue;
+        }
         message_count += 1;
         if row.is_unread_incoming() {
             unread_count += 1;
@@ -546,6 +565,9 @@ fn apply_insert_delta(
     summary: &SummaryStateRow,
     next: &SummaryMessageProjection,
 ) -> crate::ImResult<usize> {
+    if next.row.is_self_direct() {
+        return rebuild_single(connection, &next.owner_identity_id, &next.conversation_id);
+    }
     let message_count = summary.message_count.saturating_add(1);
     let unread_count = summary
         .unread_count
@@ -868,6 +890,9 @@ fn summary_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryMessa
         direction: row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
         sender_did: row
             .get::<_, Option<String>>("sender_did")?
+            .unwrap_or_default(),
+        receiver_did: row
+            .get::<_, Option<String>>("receiver_did")?
             .unwrap_or_default(),
         group_id: row
             .get::<_, Option<String>>("group_id")?
