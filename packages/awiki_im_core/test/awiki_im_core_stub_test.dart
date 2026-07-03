@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:test/test.dart';
 import 'package:awiki_im_core/awiki_im_core.dart';
 
@@ -14,6 +16,125 @@ void main() {
 
   test('web/native API exposes disposable core type', () {
     expect(AwikiImCore, isNotNull);
+  });
+
+  test('identity vault open options remain optional and constructible', () {
+    final rootKey = DeviceVaultRootKey.fromList(List<int>.filled(32, 9));
+    final options = AwikiImCoreOpenOptions.vaultRequired(
+      identitySecretVault: ImCoreSecretVaultOptions(
+        rootKey: rootKey,
+        vaultDir: '/tmp/awiki-vault',
+        workspaceId: 'workspace-a',
+        deviceId: 'device-a',
+      ),
+    );
+
+    expect(
+      options.identitySecretStoragePolicy,
+      IdentitySecretStoragePolicy.vaultRequired,
+    );
+    expect(options.identitySecretVault?.vaultDir, '/tmp/awiki-vault');
+    expect(options.identitySecretVault?.workspaceId, 'workspace-a');
+    expect(options.identitySecretVault?.deviceId, 'device-a');
+
+    const compat = AwikiImCoreOpenOptions.fileCompat();
+    expect(
+      compat.identitySecretStoragePolicy,
+      IdentitySecretStoragePolicy.fileCompat,
+    );
+    expect(compat.identitySecretVault, isNull);
+  });
+
+  test('device vault root key does not leak via toString or mutable input', () {
+    final source = Uint8List.fromList(List<int>.filled(32, 7));
+    final rootKey = DeviceVaultRootKey(source);
+    source[0] = 99;
+
+    expect(rootKey.bytes.first, 7);
+    expect(rootKey.bytes, hasLength(32));
+
+    final copy = rootKey.bytes;
+    copy[1] = 42;
+    expect(rootKey.bytes[1], 7);
+
+    final text = rootKey.toString();
+    expect(text, contains('DeviceVaultRootKey'));
+    expect(text, contains('<redacted>'));
+    expect(text, isNot(contains('7, 7')));
+    expect(text, isNot(contains('99')));
+  });
+
+  test('identity vault status model exposes only safe status fields', () {
+    const status = IdentityVaultStatus(
+      identity: IdentitySummary(
+        id: 'id-alice',
+        did: 'did:example:alice',
+        localAlias: 'alice',
+        isDefault: true,
+        readyForAuth: true,
+        readyForMessaging: true,
+      ),
+      storagePolicy: IdentitySecretStoragePolicy.vaultPreferred,
+      selectedBackend: IdentitySecretStorageBackend.vault,
+      vaultAvailable: true,
+      vaultMetadataPresent: true,
+      vaultMetadataVerified: true,
+      workspaceId: 'workspace-a',
+      deviceId: 'device-a',
+      plaintextCompatRetained: false,
+    );
+
+    expect(status.identity.did, 'did:example:alice');
+    expect(status.storagePolicy, IdentitySecretStoragePolicy.vaultPreferred);
+    expect(status.selectedBackend, IdentitySecretStorageBackend.vault);
+    expect(status.vaultAvailable, isTrue);
+    expect(status.vaultMetadataVerified, isTrue);
+    expect(status.plaintextCompatRetained, isFalse);
+    expect(status.missing, isEmpty);
+    expect(status.warnings, isEmpty);
+  });
+
+  test('identity vault migration and verification reports expose safe fields', () {
+    const status = IdentityVaultStatus(
+      identity: IdentitySummary(
+        id: 'id-alice',
+        did: 'did:example:alice',
+        localAlias: 'alice',
+        isDefault: true,
+        readyForAuth: true,
+        readyForMessaging: true,
+      ),
+      storagePolicy: IdentitySecretStoragePolicy.vaultRequired,
+      selectedBackend: IdentitySecretStorageBackend.vault,
+      vaultAvailable: true,
+      vaultMetadataPresent: true,
+      vaultMetadataVerified: true,
+      workspaceId: 'workspace-a',
+      deviceId: 'device-a',
+      plaintextCompatRetained: true,
+    );
+    final migration = IdentityVaultMigrationReport(
+      identity: status.identity,
+      status: status,
+      migrated: true,
+      verified: true,
+      plaintextCompatRetained: true,
+      warnings: ['plaintext compatibility files are still retained'],
+    );
+    final verification = IdentityVaultVerificationReport(
+      identity: status.identity,
+      status: status,
+      verified: true,
+      warnings: ['plaintext compatibility files are still retained'],
+    );
+
+    expect(migration.migrated, isTrue);
+    expect(migration.verified, isTrue);
+    expect(migration.plaintextCompatRetained, isTrue);
+    expect(verification.verified, isTrue);
+    expect(migration.identity.did, 'did:example:alice');
+    expect(verification.status.selectedBackend, IdentitySecretStorageBackend.vault);
+    expect('$migration $verification', isNot(contains('SecretRef')));
   });
 
   test('unsupported capability error shape is stable', () {

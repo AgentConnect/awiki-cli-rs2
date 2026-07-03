@@ -5,7 +5,8 @@ use crate::dto::{
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentitySelector,
-        DartIdentitySummary, DartInitialProfile, DartRecoverHandleResult,
+        DartIdentitySummary, DartIdentityVaultMigrationReport, DartIdentityVaultStatus,
+        DartIdentityVaultVerificationReport, DartInitialProfile, DartRecoverHandleResult,
     },
 };
 
@@ -41,6 +42,45 @@ pub async fn resolve_identity(
     inner
         .identities()
         .resolve_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn identity_vault_status(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartIdentityVaultStatus, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .vault_status_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn migrate_identity_vault(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartIdentityVaultMigrationReport, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .migrate_identity_vault_async(selector.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn verify_identity_vault(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartIdentityVaultVerificationReport, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .verify_identity_vault_async(selector.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

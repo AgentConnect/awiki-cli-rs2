@@ -6,6 +6,28 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+class DartDeviceVaultRootKey {
+  final Uint8List bytes;
+
+  const DartDeviceVaultRootKey({required this.bytes});
+
+  @override
+  int get hashCode => bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeviceVaultRootKey &&
+          runtimeType == other.runtimeType &&
+          bytes == other.bytes;
+}
+
+enum DartIdentitySecretStoragePolicy {
+  fileCompat,
+  vaultPreferred,
+  vaultRequired,
+}
+
 class DartImCoreConfig {
   final String serviceBaseUrl;
   final String didDomain;
@@ -53,6 +75,28 @@ class DartImCoreConfig {
           transportPolicy == other.transportPolicy;
 }
 
+class DartImCoreOpenOptions {
+  final DartIdentitySecretStoragePolicy identitySecretStoragePolicy;
+  final DartImCoreSecretVaultOptions? identitySecretVault;
+
+  const DartImCoreOpenOptions({
+    required this.identitySecretStoragePolicy,
+    this.identitySecretVault,
+  });
+
+  @override
+  int get hashCode =>
+      identitySecretStoragePolicy.hashCode ^ identitySecretVault.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartImCoreOpenOptions &&
+          runtimeType == other.runtimeType &&
+          identitySecretStoragePolicy == other.identitySecretStoragePolicy &&
+          identitySecretVault == other.identitySecretVault;
+}
+
 class DartImCorePaths {
   final String identityRootDir;
   final String registryPath;
@@ -90,6 +134,37 @@ class DartImCorePaths {
           sqlitePath == other.sqlitePath &&
           cacheDir == other.cacheDir &&
           tempDir == other.tempDir;
+}
+
+class DartImCoreSecretVaultOptions {
+  final DartDeviceVaultRootKey rootKey;
+  final String vaultDir;
+  final String workspaceId;
+  final String deviceId;
+
+  const DartImCoreSecretVaultOptions({
+    required this.rootKey,
+    required this.vaultDir,
+    required this.workspaceId,
+    required this.deviceId,
+  });
+
+  @override
+  int get hashCode =>
+      rootKey.hashCode ^
+      vaultDir.hashCode ^
+      workspaceId.hashCode ^
+      deviceId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartImCoreSecretVaultOptions &&
+          runtimeType == other.runtimeType &&
+          rootKey == other.rootKey &&
+          vaultDir == other.vaultDir &&
+          workspaceId == other.workspaceId &&
+          deviceId == other.deviceId;
 }
 
 enum DartMessageTransportPolicy { auto, httpOnly, realtimePreferred }

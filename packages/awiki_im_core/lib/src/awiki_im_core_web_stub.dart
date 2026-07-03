@@ -11,6 +11,7 @@ class AwikiImCore {
   static Future<AwikiImCore> open({
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,
+    AwikiImCoreOpenOptions? openOptions,
   }) async {
     throw _unsupported();
   }
@@ -24,6 +25,24 @@ class AwikiImCore {
   }
 
   Future<IdentitySummary> resolveIdentity(IdentitySelector selector) async {
+    throw _unsupported();
+  }
+
+  Future<IdentityVaultStatus> identityVaultStatus(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<IdentityVaultMigrationReport> migrateIdentityVault(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<IdentityVaultVerificationReport> verifyIdentityVault(
+    IdentitySelector selector,
+  ) async {
     throw _unsupported();
   }
 

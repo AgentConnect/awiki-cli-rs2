@@ -15,7 +15,8 @@ use crate::dto::{
     identity::{
         DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
         DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
-        DartIdentitySummary, DartRecoverHandleResult,
+        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
     },
     message::{
         DartConversation, DartConversationListSnapshot, DartConversationPage,
@@ -55,6 +56,71 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::IdentitySecretStoragePolicy>
+    for crate::dto::config::DartIdentitySecretStoragePolicy
+{
+    fn from(value: im_core::IdentitySecretStoragePolicy) -> Self {
+        match value {
+            im_core::IdentitySecretStoragePolicy::FileCompat => Self::FileCompat,
+            im_core::IdentitySecretStoragePolicy::VaultPreferred => Self::VaultPreferred,
+            im_core::IdentitySecretStoragePolicy::VaultRequired => Self::VaultRequired,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentitySecretStorageBackend> for DartIdentitySecretStorageBackend {
+    fn from(value: im_core::identity::IdentitySecretStorageBackend) -> Self {
+        match value {
+            im_core::identity::IdentitySecretStorageBackend::FileCompat => Self::FileCompat,
+            im_core::identity::IdentitySecretStorageBackend::Vault => Self::Vault,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityVaultStatus> for DartIdentityVaultStatus {
+    fn from(value: im_core::identity::IdentityVaultStatus) -> Self {
+        Self {
+            identity: value.identity.into(),
+            storage_policy: value.storage_policy.into(),
+            selected_backend: value.selected_backend.into(),
+            vault_available: value.vault_available,
+            vault_metadata_present: value.vault_metadata_present,
+            vault_metadata_verified: value.vault_metadata_verified,
+            workspace_id: value.workspace_id,
+            device_id: value.device_id,
+            plaintext_compat_retained: value.plaintext_compat_retained,
+            missing: value.missing,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityVaultMigrationReport> for DartIdentityVaultMigrationReport {
+    fn from(value: im_core::identity::IdentityVaultMigrationReport) -> Self {
+        Self {
+            identity: value.identity.into(),
+            status: value.status.into(),
+            migrated: value.migrated,
+            verified: value.verified,
+            plaintext_compat_retained: value.plaintext_compat_retained,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityVaultVerificationReport>
+    for DartIdentityVaultVerificationReport
+{
+    fn from(value: im_core::identity::IdentityVaultVerificationReport) -> Self {
+        Self {
+            identity: value.identity.into(),
+            status: value.status.into(),
+            verified: value.verified,
+            warnings: value.warnings,
         }
     }
 }

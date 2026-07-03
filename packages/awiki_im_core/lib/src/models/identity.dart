@@ -1,3 +1,5 @@
+import 'config.dart';
+
 sealed class IdentitySelector {
   const IdentitySelector();
 
@@ -57,6 +59,68 @@ class IdentitySummary {
   final bool readyForAuth;
   final bool readyForMessaging;
   final List<String> missing;
+}
+
+enum IdentitySecretStorageBackend { fileCompat, vault }
+
+class IdentityVaultStatus {
+  const IdentityVaultStatus({
+    required this.identity,
+    required this.storagePolicy,
+    required this.selectedBackend,
+    required this.vaultAvailable,
+    required this.vaultMetadataPresent,
+    required this.vaultMetadataVerified,
+    this.workspaceId,
+    this.deviceId,
+    this.plaintextCompatRetained,
+    this.missing = const [],
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentitySecretStoragePolicy storagePolicy;
+  final IdentitySecretStorageBackend selectedBackend;
+  final bool vaultAvailable;
+  final bool vaultMetadataPresent;
+  final bool vaultMetadataVerified;
+  final String? workspaceId;
+  final String? deviceId;
+  final bool? plaintextCompatRetained;
+  final List<String> missing;
+  final List<String> warnings;
+}
+
+class IdentityVaultMigrationReport {
+  const IdentityVaultMigrationReport({
+    required this.identity,
+    required this.status,
+    required this.migrated,
+    required this.verified,
+    required this.plaintextCompatRetained,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentityVaultStatus status;
+  final bool migrated;
+  final bool verified;
+  final bool plaintextCompatRetained;
+  final List<String> warnings;
+}
+
+class IdentityVaultVerificationReport {
+  const IdentityVaultVerificationReport({
+    required this.identity,
+    required this.status,
+    required this.verified,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentityVaultStatus status;
+  final bool verified;
+  final List<String> warnings;
 }
 
 class InitialProfile {

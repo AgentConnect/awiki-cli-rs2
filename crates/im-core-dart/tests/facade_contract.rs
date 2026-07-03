@@ -479,6 +479,176 @@ fn config_maps_mail_service_endpoint_into_im_core() {
 }
 
 #[test]
+fn vault_open_options_map_to_im_core_without_debug_secret_leak() {
+    let root_key = awiki_im_core::dto::config::DartDeviceVaultRootKey {
+        bytes: vec![7_u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN],
+    };
+    let debug = format!("{root_key:?}");
+    assert!(debug.contains("DartDeviceVaultRootKey"));
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("7, 7"));
+
+    let options = awiki_im_core::dto::config::DartImCoreOpenOptions {
+        identity_secret_storage_policy:
+            awiki_im_core::dto::config::DartIdentitySecretStoragePolicy::VaultRequired,
+        identity_secret_vault: Some(awiki_im_core::dto::config::DartImCoreSecretVaultOptions {
+            root_key,
+            vault_dir: "/tmp/awiki-vault".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            device_id: "device-a".to_string(),
+        }),
+    };
+
+    let mapped: im_core::ImCoreOpenOptions = options.try_into().expect("open options map");
+    assert!(matches!(
+        mapped.identity_secret_storage_policy,
+        im_core::IdentitySecretStoragePolicy::VaultRequired
+    ));
+    let vault = mapped.identity_secret_vault.expect("vault options");
+    assert_eq!(
+        vault.vault_dir,
+        std::path::PathBuf::from("/tmp/awiki-vault")
+    );
+    assert_eq!(vault.workspace_id, "workspace-a");
+    assert_eq!(vault.device_id, "device-a");
+    let vault_debug = format!("{vault:?}");
+    assert!(vault_debug.contains("<redacted-root-key>"));
+    assert!(!vault_debug.contains("7, 7"));
+}
+
+#[test]
+fn vault_root_key_mapping_rejects_wrong_length_without_echoing_secret() {
+    let options = awiki_im_core::dto::config::DartImCoreOpenOptions {
+        identity_secret_storage_policy:
+            awiki_im_core::dto::config::DartIdentitySecretStoragePolicy::VaultPreferred,
+        identity_secret_vault: Some(awiki_im_core::dto::config::DartImCoreSecretVaultOptions {
+            root_key: awiki_im_core::dto::config::DartDeviceVaultRootKey {
+                bytes: b"short-secret".to_vec(),
+            },
+            vault_dir: "/tmp/awiki-vault".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            device_id: "device-a".to_string(),
+        }),
+    };
+
+    let error = im_core::ImCoreOpenOptions::try_from(options).unwrap_err();
+    assert_eq!(error.code, "invalid_input");
+    assert_eq!(error.field.as_deref(), Some("root_key"));
+    assert!(error.message.contains("32 bytes"));
+    assert!(!error.message.contains("short-secret"));
+}
+
+#[test]
+fn identity_vault_status_maps_without_secret_refs() {
+    let core_status = im_core::identity::IdentityVaultStatus {
+        identity: im_core::identity::IdentitySummary {
+            id: im_core::ids::IdentityId::parse("id-alice").expect("identity id"),
+            did: im_core::ids::Did::parse("did:example:alice").expect("did"),
+            handle: None,
+            display_name: Some("Alice".to_string()),
+            local_alias: Some("alice".to_string()),
+            device_id: Some("device-a".to_string()),
+            is_default: true,
+            readiness: im_core::identity::IdentityReadiness {
+                ready_for_auth: true,
+                ready_for_messaging: true,
+                missing: vec![],
+            },
+        },
+        storage_policy: im_core::IdentitySecretStoragePolicy::VaultPreferred,
+        selected_backend: im_core::identity::IdentitySecretStorageBackend::Vault,
+        vault_available: true,
+        vault_metadata_present: true,
+        vault_metadata_verified: true,
+        workspace_id: Some("workspace-a".to_string()),
+        device_id: Some("device-a".to_string()),
+        plaintext_compat_retained: Some(false),
+        missing: vec![],
+        warnings: vec![],
+    };
+
+    let dart: awiki_im_core::dto::identity::DartIdentityVaultStatus = core_status.into();
+    assert_eq!(dart.identity.did, "did:example:alice");
+    assert!(matches!(
+        dart.storage_policy,
+        awiki_im_core::dto::config::DartIdentitySecretStoragePolicy::VaultPreferred
+    ));
+    assert!(matches!(
+        dart.selected_backend,
+        awiki_im_core::dto::identity::DartIdentitySecretStorageBackend::Vault
+    ));
+    assert!(dart.vault_available);
+    assert!(dart.vault_metadata_present);
+    assert!(dart.vault_metadata_verified);
+    assert_eq!(dart.workspace_id.as_deref(), Some("workspace-a"));
+    assert_eq!(dart.device_id.as_deref(), Some("device-a"));
+    assert_eq!(dart.plaintext_compat_retained, Some(false));
+}
+
+#[test]
+fn identity_vault_reports_map_without_secret_refs() {
+    let core_status = im_core::identity::IdentityVaultStatus {
+        identity: im_core::identity::IdentitySummary {
+            id: im_core::ids::IdentityId::parse("id-alice").expect("identity id"),
+            did: im_core::ids::Did::parse("did:example:alice").expect("did"),
+            handle: None,
+            display_name: Some("Alice".to_string()),
+            local_alias: Some("alice".to_string()),
+            device_id: Some("device-a".to_string()),
+            is_default: true,
+            readiness: im_core::identity::IdentityReadiness {
+                ready_for_auth: true,
+                ready_for_messaging: true,
+                missing: vec![],
+            },
+        },
+        storage_policy: im_core::IdentitySecretStoragePolicy::VaultRequired,
+        selected_backend: im_core::identity::IdentitySecretStorageBackend::Vault,
+        vault_available: true,
+        vault_metadata_present: true,
+        vault_metadata_verified: true,
+        workspace_id: Some("workspace-a".to_string()),
+        device_id: Some("device-a".to_string()),
+        plaintext_compat_retained: Some(true),
+        missing: vec![],
+        warnings: vec!["identity plaintext compatibility files are still retained".to_string()],
+    };
+    let migration = im_core::identity::IdentityVaultMigrationReport {
+        identity: core_status.identity.clone(),
+        status: core_status.clone(),
+        migrated: true,
+        verified: true,
+        plaintext_compat_retained: true,
+        warnings: core_status.warnings.clone(),
+    };
+    let verification = im_core::identity::IdentityVaultVerificationReport {
+        identity: core_status.identity.clone(),
+        status: core_status,
+        verified: true,
+        warnings: vec!["identity plaintext compatibility files are still retained".to_string()],
+    };
+
+    let dart_migration: awiki_im_core::dto::identity::DartIdentityVaultMigrationReport =
+        migration.into();
+    let dart_verification: awiki_im_core::dto::identity::DartIdentityVaultVerificationReport =
+        verification.into();
+
+    assert!(dart_migration.migrated);
+    assert!(dart_migration.verified);
+    assert!(dart_migration.plaintext_compat_retained);
+    assert_eq!(dart_migration.identity.did, "did:example:alice");
+    assert!(dart_migration.warnings[0].contains("plaintext compatibility"));
+    assert!(dart_verification.verified);
+    assert_eq!(
+        dart_verification.status.workspace_id.as_deref(),
+        Some("workspace-a")
+    );
+    let debug = format!("{dart_migration:?} {dart_verification:?}");
+    assert!(!debug.contains("SecretRef"));
+    assert!(!debug.contains("private"));
+}
+
+#[test]
 fn email_send_bridge_request_maps_to_typed_core_addresses() {
     let request = awiki_im_core::dto::email::DartSendEmailRequest {
         to: vec!["bob@awiki.ai".to_string()],

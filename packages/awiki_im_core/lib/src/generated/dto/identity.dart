@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+import 'config.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'identity.freezed.dart';
@@ -185,6 +186,8 @@ class DartHandleRegistrationResult {
           warnings == other.warnings;
 }
 
+enum DartIdentitySecretStorageBackend { fileCompat, vault }
+
 @freezed
 sealed class DartIdentitySelector with _$DartIdentitySelector {
   const DartIdentitySelector._();
@@ -253,6 +256,135 @@ class DartIdentitySummary {
           readyForAuth == other.readyForAuth &&
           readyForMessaging == other.readyForMessaging &&
           missing == other.missing;
+}
+
+class DartIdentityVaultMigrationReport {
+  final DartIdentitySummary identity;
+  final DartIdentityVaultStatus status;
+  final bool migrated;
+  final bool verified;
+  final bool plaintextCompatRetained;
+  final List<String> warnings;
+
+  const DartIdentityVaultMigrationReport({
+    required this.identity,
+    required this.status,
+    required this.migrated,
+    required this.verified,
+    required this.plaintextCompatRetained,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      status.hashCode ^
+      migrated.hashCode ^
+      verified.hashCode ^
+      plaintextCompatRetained.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityVaultMigrationReport &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          status == other.status &&
+          migrated == other.migrated &&
+          verified == other.verified &&
+          plaintextCompatRetained == other.plaintextCompatRetained &&
+          warnings == other.warnings;
+}
+
+class DartIdentityVaultStatus {
+  final DartIdentitySummary identity;
+  final DartIdentitySecretStoragePolicy storagePolicy;
+  final DartIdentitySecretStorageBackend selectedBackend;
+  final bool vaultAvailable;
+  final bool vaultMetadataPresent;
+  final bool vaultMetadataVerified;
+  final String? workspaceId;
+  final String? deviceId;
+  final bool? plaintextCompatRetained;
+  final List<String> missing;
+  final List<String> warnings;
+
+  const DartIdentityVaultStatus({
+    required this.identity,
+    required this.storagePolicy,
+    required this.selectedBackend,
+    required this.vaultAvailable,
+    required this.vaultMetadataPresent,
+    required this.vaultMetadataVerified,
+    this.workspaceId,
+    this.deviceId,
+    this.plaintextCompatRetained,
+    required this.missing,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      storagePolicy.hashCode ^
+      selectedBackend.hashCode ^
+      vaultAvailable.hashCode ^
+      vaultMetadataPresent.hashCode ^
+      vaultMetadataVerified.hashCode ^
+      workspaceId.hashCode ^
+      deviceId.hashCode ^
+      plaintextCompatRetained.hashCode ^
+      missing.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityVaultStatus &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          storagePolicy == other.storagePolicy &&
+          selectedBackend == other.selectedBackend &&
+          vaultAvailable == other.vaultAvailable &&
+          vaultMetadataPresent == other.vaultMetadataPresent &&
+          vaultMetadataVerified == other.vaultMetadataVerified &&
+          workspaceId == other.workspaceId &&
+          deviceId == other.deviceId &&
+          plaintextCompatRetained == other.plaintextCompatRetained &&
+          missing == other.missing &&
+          warnings == other.warnings;
+}
+
+class DartIdentityVaultVerificationReport {
+  final DartIdentitySummary identity;
+  final DartIdentityVaultStatus status;
+  final bool verified;
+  final List<String> warnings;
+
+  const DartIdentityVaultVerificationReport({
+    required this.identity,
+    required this.status,
+    required this.verified,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      status.hashCode ^
+      verified.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartIdentityVaultVerificationReport &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          status == other.status &&
+          verified == other.verified &&
+          warnings == other.warnings;
 }
 
 class DartInitialProfile {
