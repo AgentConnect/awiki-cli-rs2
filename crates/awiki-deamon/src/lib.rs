@@ -17,6 +17,7 @@ pub mod plugins;
 pub mod registration;
 pub mod runtime;
 pub mod runtime_inbox;
+pub mod secret_vault;
 pub mod security;
 pub mod service;
 pub mod state;
