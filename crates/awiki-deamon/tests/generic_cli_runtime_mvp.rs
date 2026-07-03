@@ -1,6 +1,9 @@
 use awiki_deamon::controller_scope::VerifiedControllerSender;
 use awiki_deamon::inbox::{route_controller_text_task_with_verified_sender, ControllerTextMessage};
-use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
+use awiki_deamon::outbox::{
+    MemoryRuntimeOutbox, OutboxRecordKind, RuntimeAttachmentSend, RuntimeAttachmentSendResult,
+    RuntimeMessageSend, RuntimeMessageSendResult, RuntimeOutbox,
+};
 use awiki_deamon::plugins::generic_cli::{
     claude_code::{
         build_prompt_envelope as build_claude_code_prompt_envelope,
@@ -24,7 +27,9 @@ use awiki_deamon::runtime::{
     RuntimeInvocationAuthority, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
     RuntimeRunStatus, RuntimeTask, RuntimeTaskTriggerKind,
 };
-use awiki_deamon::state::{CliRuntimeProfileRecord, CreateCliRouteSession};
+use awiki_deamon::state::{
+    AuthorizedRuntimeContext, CliRuntimeProfileRecord, CreateCliRouteSession,
+};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 use rusqlite::Connection;
@@ -62,6 +67,106 @@ fn assert_busy_retry_metadata(record: &awiki_deamon::outbox::OutboxRecord, reaso
     assert_eq!(metadata["retry_after_ms"].as_i64(), Some(10_000));
     assert_eq!(metadata["retry_after_seconds"].as_i64(), Some(10));
     assert_eq!(metadata["busy_reason"].as_str(), Some(reason));
+}
+
+#[derive(Clone)]
+struct FailingStatusOutbox {
+    inner: MemoryRuntimeOutbox,
+}
+
+impl FailingStatusOutbox {
+    fn new(inner: MemoryRuntimeOutbox) -> Self {
+        Self { inner }
+    }
+
+    fn records(&self) -> Vec<awiki_deamon::outbox::OutboxRecord> {
+        self.inner.records()
+    }
+}
+
+impl RuntimeOutbox for FailingStatusOutbox {
+    fn resolve_recipient_did(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        recipient: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.inner.resolve_recipient_did(context, recipient)
+    }
+
+    fn send_status(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.send_status_with_detail(context, state, text, None, None)
+    }
+
+    fn send_status_with_detail(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if matches!(state, "running" | "succeeded") {
+            anyhow::bail!("synthetic status delivery failure: {state}");
+        }
+        self.inner.send_status_with_detail(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+        )
+    }
+
+    fn send_status_with_metadata(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        state: &str,
+        text: Option<&str>,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        metadata: Option<&serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        if matches!(state, "running" | "succeeded") {
+            anyhow::bail!("synthetic status delivery failure: {state}");
+        }
+        self.inner.send_status_with_metadata(
+            context,
+            state,
+            text,
+            last_error_code,
+            last_error_summary,
+            metadata,
+        )
+    }
+
+    fn send_final(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.send_final(context, text)
+    }
+
+    fn send_message(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
+    ) -> anyhow::Result<RuntimeMessageSendResult> {
+        self.inner.send_message(context, message)
+    }
+
+    fn send_attachment(
+        &self,
+        context: &AuthorizedRuntimeContext,
+        attachment: &RuntimeAttachmentSend,
+    ) -> anyhow::Result<RuntimeAttachmentSendResult> {
+        self.inner.send_attachment(context, attachment)
+    }
 }
 
 #[test]
@@ -4928,6 +5033,121 @@ exit 0
         "fallback final from codex <redacted-runtime-rpc-token>"
     );
     assert_eq!(final_outbox.final_source, "codex_output_last_message");
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_fallback_final_survives_status_delivery_failure_and_releases_route() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    config.ensure_state_layout().unwrap();
+    let state = DaemonState::open(&config).unwrap();
+    state.initialize().unwrap();
+    let mut profile = profile(root.path().join("workspace"));
+    profile.workspace_mode = Some(WorkspaceMode::RouteRoot);
+    upsert_test_cli_profile(&state, &profile.runtime_profile_id, "codex");
+    std::fs::create_dir_all(profile.workspace_root.as_ref().unwrap()).unwrap();
+
+    let fake_codex = root.path().join("codex-status-failure");
+    std::fs::write(
+        &fake_codex,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+FINAL_OUTPUT=""
+PREV=""
+for ARG in "$@"; do
+  if [ "$PREV" = "--output-last-message" ]; then
+    FINAL_OUTPUT="$ARG"
+  fi
+  PREV="$ARG"
+done
+cat >/dev/null
+printf 'final survives status failure\n' > "$FINAL_OUTPUT"
+printf '{"session_id":"codex-status-failure-session"}\n'
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+
+    let plugin = GenericCliRuntimePlugin::new(CodexDriver::new(codex_config(fake_codex)).unwrap());
+    let outbox = FailingStatusOutbox::new(MemoryRuntimeOutbox::default());
+    let result = run_controller_text_task_with_config(
+        &config,
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_codex_status_failure".to_string(),
+            conversation_id: Some("conv_codex_status_failure".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            requester_user_id: None,
+            requester_full_handle: None,
+            trigger_kind: awiki_deamon::runtime::RuntimeTaskTriggerKind::ControllerDirect,
+            invocation_authority: awiki_deamon::runtime::RuntimeInvocationAuthority::Controller,
+            target_agent_did: profile.agent_did.clone(),
+            text: "run codex while status delivery fails".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.run.status, RuntimeRunStatus::Finished);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(
+        records[0].text.as_deref(),
+        Some("final survives status failure")
+    );
+
+    let run_record = state.load_cli_driver_run(&result.run.run_id).unwrap();
+    assert_eq!(run_record.status, "finished");
+    assert_eq!(
+        run_record.fallback_final_source.as_deref(),
+        Some("codex_output_last_message")
+    );
+    assert_eq!(
+        run_record.native_session_id.as_deref(),
+        Some("codex-status-failure-session")
+    );
+    let route = state
+        .load_cli_route_session(&run_record.route_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.status, "active");
+    assert_eq!(route.lock_run_id, None);
+    assert_eq!(
+        route.last_message_id.as_deref(),
+        Some("msg_codex_status_failure")
+    );
+    assert_eq!(
+        route.native_session_id.as_deref(),
+        Some("codex-status-failure-session")
+    );
+    let final_outbox = state
+        .load_runtime_final_outbox_by_run(&result.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_outbox.status, "sent");
+    assert_eq!(final_outbox.final_text, "final survives status failure");
+
+    let connection = Connection::open(root.path().join("daemon.db")).unwrap();
+    let best_effort_failures: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'runtime.status.best_effort.failed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(best_effort_failures, 2);
 }
 
 #[cfg(unix)]
