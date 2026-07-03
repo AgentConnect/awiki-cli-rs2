@@ -173,10 +173,12 @@ Process boundaries matter. App, CLI, and daemon run as separate hosts and must e
 Known residual risks after the provider/vault foundation:
 
 - Default `ImCore::client()` still uses the file-backed provider until a real no-prompt platform unlock API is available.
-- Explicit delegated `key_ref` flows can still read caller-provided delegated private key files for compatibility. They are not the default identity runtime and must not be described as vault-migrated.
-- `awiki-deamon` still stores daemon/runtime agent private PEM fields in `daemon.db`; those fields are redacted from Debug/audit output but are not yet vault-migrated.
+- Explicit delegated `key_ref` flows support `vault:` refs and should use them for new daemon-owned delegated keys. `file:` / `local:` / bare path refs remain compatibility inputs and can still read caller-provided delegated private key files.
+- `awiki-deamon` stores daemon/runtime `agent_identity` private keys and `user_delegated_identity` private keys as SecretVault refs in `daemon.db`; the legacy PEM columns keep a sentinel for compatibility. Older plaintext rows are read only as a migration bridge and are re-sealed when a daemon vault root key is available.
+- The daemon Message/im-core SDK main path uses hosted in-memory identity material and no longer writes `private.key`, `e2ee-agreement-private.pem`, or `auth.json` for that path. Legacy DID-auth compatibility helpers may still create those files for user-service inventory/auth paths and should be treated as compatibility-only.
 - The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
-- Direct E2EE session/prekey SQLite state and group MLS private state are not part of this identity vault migration.
+- Direct E2EE session/prekey local state is encrypted at rest through SecretVault envelopes. Group MLS private state is outside this hardening pass.
+- `awiki-deamon` `agent_auth_state` bearer tokens are still persisted as token state; do not log or expose them.
 - External key-agent IPC, public signing APIs, and DID child-key scope/revocation semantics are outside this boundary.
 
 ## 10. API References

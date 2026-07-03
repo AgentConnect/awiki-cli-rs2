@@ -152,15 +152,19 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 
 ## 私钥与 vault 边界
 
-`im-core` 已把 DID-WBA auth、业务签名和 secure direct 静态 key material 的业务读取路径收敛到内部 `KeyMaterialProvider`，并提供显式 root key 的 identity vault migration foundation。这个 foundation 当前不等同于 daemon 状态库已经加密：
+`im-core` 已把 DID-WBA auth、业务签名和 secure direct 静态 key material 的业务读取路径收敛到内部 `KeyMaterialProvider`，并提供显式 root key 的 SecretVault foundation。当前 daemon 的私钥持久化边界如下：
 
-- daemon 的 `agent_identity` 表仍保存 `auth_private_key_pem`、`e2ee_signing_private_key_pem` 和 `e2ee_agreement_private_key_pem` 明文字段。
-- `agent_auth_state` 仍保存 daemon/runtime agent bearer token 状态。
-- `im_core_adapter` 为 daemon agent 构造 `im-core` identity 目录时仍会写兼容 PEM/auth.json 文件，供当前 file-backed runtime 使用。
-- 显式 delegated `key_ref` 兼容流程仍可从调用方指定文件读取 delegated private key；它不属于默认 identity runtime 的 vault migration 已解决范围。
-- App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO；后续应改为端到端加密 bootstrap envelope。
+- 新写入 `agent_identity` 时，`auth_private_key_pem`、`e2ee_signing_private_key_pem` 和 `e2ee_agreement_private_key_pem` 列只保存 `<awiki-secret-vault-ref>` sentinel，真实私钥 seal 到 daemon SecretVault，并在 `*_private_key_ref_json` 列保存 `SecretRef` JSON。
+- 新写入 `user_delegated_identity` 时，`private_key_material` 只保存 `<awiki-secret-vault-ref>` sentinel，真实 delegated private key seal 到 daemon SecretVault，并在 `private_key_ref_json` 保存 `SecretRef` JSON。
+- 旧明文行只作为兼容迁移桥读取；当 `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` 可用时，读取后会重新 seal 并更新为 vault ref。缺少 daemon vault root key 时，新 secret 持久化会 fail-closed，不回退明文。
+- Direct E2EE session/prekey local state 通过 `im-core` SecretVault envelope 密文落盘；历史明文 blob / 文件只在读路径兼容。
+- daemon delegated inbox 的 `inbox_auth_key_ref` 使用 `vault:`，私钥 seal 到 `im-core` file vault。新路径需要 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，不再写 `runtime/cache/delegated-inbox/.../daemon-key-1.pem` 或 shadow identity `private.key`。
+- `agent_auth_state` 仍保存 daemon/runtime agent bearer token 状态。不要把 token 原文写入日志、audit 或 E2E 报告。
+- `im_core_adapter` 的 Message/im-core SDK 主路径使用 hosted in-memory identity material，不写 `private.key`、`e2ee-agreement-private.pem` 或 `auth.json`。`sync_agent_identity_to_im_core` / `agent_identity_auth_paths` 仍是 user-service DID-auth 兼容入口，可能创建兼容 PEM/auth.json 文件，不应被当作推荐新路径。
+- 显式 delegated `key_ref` 仍兼容 `file:`、`local:` 和裸路径读取 caller-provided delegated private key；新 daemon-owned delegated key 应使用 `vault:`。
+- App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO，传输可以暂时明文；daemon 接收后持久化必须按上面的 vault ref 存储。后续应改为端到端加密 bootstrap envelope。
 
-因此，当前安全结论只能表述为：`im-core` 默认身份 runtime 的业务读取入口已经 provider 化，identity vault 的 seal/verify/metadata 基础已经落地；daemon DB 私钥字段、显式 delegated `key_ref` 文件读取、App bootstrap 明文 DTO、Direct E2EE session/prekey state 和真实平台 no-prompt vault backend 仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出这些明文字段。
+因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、legacy file-backed identity provider 下线、user-service DID-auth 兼容文件收敛和 bearer token 加密仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token 或 E2EE 本地 secret。
 
 ## 本地验证
 
