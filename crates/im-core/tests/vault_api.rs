@@ -1,6 +1,8 @@
+use base64::Engine as _;
 use im_core::vault::{
-    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
-    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
+    parse_device_vault_root_key_b64, DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore,
+    SealSecretRequest, SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
+    DEVICE_VAULT_ROOT_KEY_LEN,
 };
 
 #[test]
@@ -36,4 +38,23 @@ fn public_vault_api_seals_opens_lists_and_deletes_secret() {
 
     vault.delete(&secret_ref).unwrap();
     assert!(vault.list().unwrap().is_empty());
+}
+
+#[test]
+fn public_vault_root_key_parser_accepts_base64_and_redacts_errors() {
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([21_u8; 32]);
+    let root_key = parse_device_vault_root_key_b64(&raw, "TEST_VAULT_ROOT_KEY").unwrap();
+    let debug = format!("{root_key:?}");
+
+    assert!(debug.contains("DeviceVaultRootKey"));
+    assert!(debug.contains(&DEVICE_VAULT_ROOT_KEY_LEN.to_string()));
+    assert!(!debug.contains(&raw));
+    assert!(!debug.contains("21"));
+
+    let err = parse_device_vault_root_key_b64("not-base64-secret-value", "TEST_VAULT_ROOT_KEY")
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("TEST_VAULT_ROOT_KEY"));
+    assert!(!err.contains("not-base64-secret-value"));
 }

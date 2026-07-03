@@ -30,6 +30,28 @@ pub struct IdentityReadiness {
     pub missing: Vec<IdentityMissingItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentitySecretStorageBackend {
+    FileCompat,
+    Vault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityVaultStatus {
+    pub identity: IdentitySummary,
+    pub storage_policy: crate::core::IdentitySecretStoragePolicy,
+    pub selected_backend: IdentitySecretStorageBackend,
+    pub vault_available: bool,
+    pub vault_metadata_present: bool,
+    pub vault_metadata_verified: bool,
+    pub workspace_id: Option<String>,
+    pub device_id: Option<String>,
+    pub plaintext_compat_retained: Option<bool>,
+    pub missing: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct HostedIdentityMaterial {
     pub identity_id: String,

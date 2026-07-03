@@ -70,7 +70,7 @@ impl fmt::Debug for VaultBackedKeyMaterialProvider {
         f.debug_struct("VaultBackedKeyMaterialProvider")
             .field("file_provider", &self.file_provider)
             .field("backend", &"vault-backed")
-            .field("refs", &self.refs)
+            .field("refs", &"<redacted-secret-refs>")
             .finish_non_exhaustive()
     }
 }

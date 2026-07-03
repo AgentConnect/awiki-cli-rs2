@@ -1,18 +1,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::vault::{
     DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
     SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretRef, SecretVault,
-    DEVICE_VAULT_ROOT_KEY_LEN,
 };
 
 const DIRECT_SECRET_ENVELOPE_PREFIX: &[u8] = b"awiki-direct-secret-envelope-v1\n";
 const DIRECT_SECRET_ENVELOPE_SCHEMA_VERSION: u32 = 1;
-pub(crate) const IM_CORE_VAULT_ROOT_KEY_ENV: &str = "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64";
+#[cfg(test)]
+use crate::vault::DEVICE_VAULT_ROOT_KEY_LEN;
+pub(crate) use crate::vault::IM_CORE_VAULT_ROOT_KEY_ENV;
 
 pub(crate) type DirectSecretVault = Arc<dyn SecretVault + Send + Sync>;
 
@@ -160,38 +160,7 @@ pub(crate) fn direct_secret_key_id(
 }
 
 pub(crate) fn im_core_vault_root_key_from_env() -> crate::ImResult<DeviceVaultRootKey> {
-    let raw = std::env::var(IM_CORE_VAULT_ROOT_KEY_ENV).map_err(|_| {
-        crate::ImError::LocalStateUnavailable {
-            detail: format!("{IM_CORE_VAULT_ROOT_KEY_ENV} is required for im-core secret vault"),
-        }
-    })?;
-    parse_direct_vault_root_key(&raw)
-}
-
-fn parse_direct_vault_root_key(raw: &str) -> crate::ImResult<DeviceVaultRootKey> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: format!("{IM_CORE_VAULT_ROOT_KEY_ENV} must not be empty"),
-        });
-    }
-    let bytes = general_purpose::URL_SAFE_NO_PAD
-        .decode(trimmed)
-        .or_else(|_| general_purpose::STANDARD.decode(trimmed))
-        .map_err(|_| crate::ImError::Serialization {
-            detail: format!(
-                "{IM_CORE_VAULT_ROOT_KEY_ENV} must be base64url/base64 encoded {DEVICE_VAULT_ROOT_KEY_LEN}-byte key"
-            ),
-        })?;
-    let bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN] =
-        bytes
-            .try_into()
-            .map_err(|_| crate::ImError::Serialization {
-                detail: format!(
-                    "{IM_CORE_VAULT_ROOT_KEY_ENV} must decode to exactly {DEVICE_VAULT_ROOT_KEY_LEN} bytes"
-                ),
-            })?;
-    Ok(DeviceVaultRootKey::from_bytes(bytes))
+    crate::vault::im_core_vault_root_key_from_env()
 }
 
 fn vault_secret_nonce_hex() -> String {

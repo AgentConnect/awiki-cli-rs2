@@ -30,13 +30,17 @@ mod internal;
 pub use self::config::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
 pub use crate::attachments::AttachmentService;
 pub use crate::content::ContentService;
-pub use crate::core::{CoreBootstrap, ImClient, ImCore};
+pub use crate::core::{
+    CoreBootstrap, IdentitySecretStoragePolicy, ImClient, ImCore, ImCoreOpenOptions,
+    ImCoreSecretVaultOptions,
+};
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
-    DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySelector, IdentitySummary,
+    DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
+    IdentitySelector, IdentitySummary, IdentityVaultStatus,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;

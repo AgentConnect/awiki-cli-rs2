@@ -9,8 +9,8 @@ pub use crate::content::{
     PageUpdate, Visibility,
 };
 pub use crate::core::{
-    CoreBootstrap, ImClient, ImCore, LocalStateStatus, MigrationReport, PathCheck,
-    PathValidationReport,
+    CoreBootstrap, IdentitySecretStoragePolicy, ImClient, ImCore, ImCoreOpenOptions,
+    ImCoreSecretVaultOptions, LocalStateStatus, MigrationReport, PathCheck, PathValidationReport,
 };
 pub use crate::directory::{
     Contact, ContactListQuery, DirectoryResolution, DirectoryService, DisplayProfile,
@@ -39,11 +39,11 @@ pub use crate::identity::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, DaemonSubkeyPrivatePackage,
     DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
     HandleRegistrationState, HostedIdentityMaterial, IdentityMissingItem, IdentityReadiness,
-    IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary, InitialProfile, Profile,
-    ProfileAttribute, ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan,
-    RecoverHandlePlanRequest, RecoverHandleRequest, RecoverHandleState,
-    RecoverLocalIdentitySummary, RecoverLocalUserState, RecoveredIdentity, RegisterHandleRequest,
-    RegistrationMethod, VerificationInput,
+    IdentityRegistry, IdentitySecretStorageBackend, IdentitySelector, IdentityService,
+    IdentitySummary, IdentityVaultStatus, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
+    RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
+    RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
+    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
