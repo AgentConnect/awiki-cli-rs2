@@ -37,7 +37,7 @@ pub(crate) fn direct_secret_vault_from_env(
     if std::env::var_os(IM_CORE_VAULT_ROOT_KEY_ENV).is_none() {
         return Ok(None);
     }
-    let root_key = parse_direct_vault_root_key_from_env()?;
+    let root_key = im_core_vault_root_key_from_env()?;
     Ok(Some(Arc::new(FileSecretVault::new(
         root_key,
         FileSecretVaultStore::new(vault_dir),
@@ -159,10 +159,10 @@ pub(crate) fn direct_secret_key_id(
     )
 }
 
-fn parse_direct_vault_root_key_from_env() -> crate::ImResult<DeviceVaultRootKey> {
+pub(crate) fn im_core_vault_root_key_from_env() -> crate::ImResult<DeviceVaultRootKey> {
     let raw = std::env::var(IM_CORE_VAULT_ROOT_KEY_ENV).map_err(|_| {
         crate::ImError::LocalStateUnavailable {
-            detail: format!("{IM_CORE_VAULT_ROOT_KEY_ENV} is required for direct E2EE vault"),
+            detail: format!("{IM_CORE_VAULT_ROOT_KEY_ENV} is required for im-core secret vault"),
         }
     })?;
     parse_direct_vault_root_key(&raw)

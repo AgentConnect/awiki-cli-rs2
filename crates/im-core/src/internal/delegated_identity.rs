@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
+
+const VAULT_KEY_REF_PREFIX: &str = "vault:";
 
 pub(crate) fn did_from_verification_method(method: &str) -> Option<&str> {
     let method = method.trim();
@@ -110,6 +113,9 @@ pub(crate) fn load_private_key_ref(
     client: &crate::core::ImClient,
     key_ref: &str,
 ) -> crate::ImResult<String> {
+    if let Some(secret_ref) = vault_key_ref(key_ref)? {
+        return open_vault_private_key_ref(client, &secret_ref);
+    }
     let path = key_ref_path(client, key_ref)?;
     std::fs::read_to_string(&path).map_err(|err| crate::ImError::CredentialFileUnreadable {
         path_kind: "delegated_private_key".to_owned(),
@@ -121,6 +127,9 @@ pub(crate) async fn load_private_key_ref_async(
     client: &crate::core::ImClient,
     key_ref: &str,
 ) -> crate::ImResult<String> {
+    if let Some(secret_ref) = vault_key_ref(key_ref)? {
+        return open_vault_private_key_ref(client, &secret_ref);
+    }
     let path = key_ref_path(client, key_ref)?;
     tokio::fs::read_to_string(&path)
         .await
@@ -128,6 +137,93 @@ pub(crate) async fn load_private_key_ref_async(
             path_kind: "delegated_private_key".to_owned(),
             detail: format!("{}: {err}", path.display()),
         })
+}
+
+pub(crate) fn encode_vault_key_ref(
+    secret_ref: &crate::vault::SecretRef,
+) -> crate::ImResult<String> {
+    let raw = serde_json::to_vec(secret_ref).map_err(|err| crate::ImError::Serialization {
+        detail: format!("serialize vault key_ref: {err}"),
+    })?;
+    Ok(format!(
+        "{VAULT_KEY_REF_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(raw)
+    ))
+}
+
+pub(crate) fn delegated_vault_dir_for_client(client: &crate::core::ImClient) -> PathBuf {
+    let sqlite_path = &client.core_inner().sdk_paths().local_state.sqlite_path;
+    sqlite_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join("secrets")
+        .join("vault")
+}
+
+fn vault_key_ref(key_ref: &str) -> crate::ImResult<Option<crate::vault::SecretRef>> {
+    let key_ref = key_ref.trim();
+    let Some(encoded) = key_ref.strip_prefix(VAULT_KEY_REF_PREFIX) else {
+        return Ok(None);
+    };
+    if encoded.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("key_ref".to_owned()),
+            "vault key_ref must include an encoded SecretRef",
+        ));
+    }
+    let raw = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+        crate::ImError::invalid_input(
+            Some("key_ref".to_owned()),
+            "vault key_ref must be base64url encoded SecretRef JSON",
+        )
+    })?;
+    let secret_ref: crate::vault::SecretRef =
+        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+            detail: format!("parse vault key_ref: {err}"),
+        })?;
+    validate_delegated_vault_secret_ref(&secret_ref)?;
+    Ok(Some(secret_ref))
+}
+
+fn open_vault_private_key_ref(
+    client: &crate::core::ImClient,
+    secret_ref: &crate::vault::SecretRef,
+) -> crate::ImResult<String> {
+    use crate::vault::{FileSecretVault, FileSecretVaultStore, SecretVault};
+
+    let root_key = crate::internal::secure_direct::secret_store::im_core_vault_root_key_from_env()
+        .map_err(|err| crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "vault delegated key_ref requires {}; {err}",
+                crate::internal::secure_direct::secret_store::IM_CORE_VAULT_ROOT_KEY_ENV
+            ),
+        })?;
+    let vault = FileSecretVault::new(
+        root_key,
+        FileSecretVaultStore::new(delegated_vault_dir_for_client(client)),
+    );
+    let opened = vault.open(secret_ref)?;
+    let pem = String::from_utf8(opened.expose_secret().to_vec()).map_err(|err| {
+        crate::ImError::Serialization {
+            detail: format!("vault delegated private key is not valid UTF-8 PEM: {err}"),
+        }
+    })?;
+    anp::PrivateKeyMaterial::from_pem(&pem).map_err(|err| crate::ImError::Serialization {
+        detail: format!("vault delegated private key is not valid PEM: {err}"),
+    })?;
+    Ok(pem)
+}
+
+fn validate_delegated_vault_secret_ref(
+    secret_ref: &crate::vault::SecretRef,
+) -> crate::ImResult<()> {
+    match &secret_ref.kind {
+        crate::vault::SecretKind::IdentityDaemonPrivate => Ok(()),
+        _ => Err(crate::ImError::invalid_input(
+            Some("key_ref".to_owned()),
+            "vault key_ref must point to a delegated private key secret",
+        )),
+    }
 }
 
 fn key_ref_path(client: &crate::core::ImClient, key_ref: &str) -> crate::ImResult<PathBuf> {
