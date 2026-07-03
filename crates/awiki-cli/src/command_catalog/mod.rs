@@ -460,6 +460,10 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
         &[
             "id",
             "id.status",
+            "id.vault",
+            "id.vault.status",
+            "id.vault.migrate",
+            "id.vault.cleanup-plaintext",
             "id.register",
             "id.bind",
             "id.refresh-token",
@@ -611,7 +615,16 @@ pub fn command_audience(raw: &str) -> CommandAudience {
     {
         return CommandAudience::InternalService;
     }
-    if is_one_of(name, &["id.create", "id.import-v1", "debug.db.import-v1"]) {
+    if is_one_of(
+        name,
+        &[
+            "id.create",
+            "id.import-v1",
+            "id.vault.migrate",
+            "id.vault.cleanup-plaintext",
+            "debug.db.import-v1",
+        ],
+    ) {
         return CommandAudience::MigrationOnly;
     }
     if is_one_of(
@@ -704,7 +717,15 @@ pub fn primary_owner(raw: &str) -> CommandOwner {
     if has_command_prefix(name, "debug") {
         return CommandOwner::CliDiagnostic;
     }
-    if is_one_of(name, &["id.create", "id.import-v1"]) {
+    if is_one_of(
+        name,
+        &[
+            "id.create",
+            "id.import-v1",
+            "id.vault.migrate",
+            "id.vault.cleanup-plaintext",
+        ],
+    ) {
         return CommandOwner::CliMigration;
     }
     if name == "id.refresh-token" {
@@ -780,6 +801,8 @@ pub fn cli_shell_role(raw: &str) -> CliShellRole {
         &[
             "id.register",
             "id.recover",
+            "id.vault.migrate",
+            "id.vault.cleanup-plaintext",
             "id.replace-did",
             "id.create",
             "id.import-v1",
@@ -840,7 +863,16 @@ pub fn direct_invocation_policy(raw: &str) -> DirectInvocationPolicy {
     ) {
         return DirectInvocationPolicy::RequireInternalServiceGate;
     }
-    if is_one_of(name, &["id.create", "id.import-v1", "debug.db.import-v1"]) {
+    if is_one_of(
+        name,
+        &[
+            "id.create",
+            "id.import-v1",
+            "id.vault.migrate",
+            "id.vault.cleanup-plaintext",
+            "debug.db.import-v1",
+        ],
+    ) {
         return DirectInvocationPolicy::RequireMigrationGate;
     }
     if is_one_of(
@@ -1203,6 +1235,10 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "config.set", use_: "set", short: "Update persistent CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "config.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did-domain", "string", "Bare DID provider domain to persist in services.did_domain")] },
         CommandSpec { name: "id", use_: "id", short: "Identity lifecycle commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.status", use_: "status", short: "Show identity status", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.vault", use_: "vault", short: "Inspect or migrate identity secret vault state", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "id.vault.status", use_: "status", short: "Show identity SecretVault status", long: "Show the selected identity's SecretVault open options, root-key availability, selected backend, migration metadata status, and plaintext compatibility retention. This command never prints root key material, JWTs, private PEM, or full SecretRef values.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.vault.migrate", use_: "migrate", short: "Preflight identity migration into SecretVault", long: "Migration-gated SecretVault preflight. In this build, im-core exposes vault-backed register/recover and status but not a CLI-safe standalone migration API, so live execution fails without rewriting identity files.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.migrate", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "id.vault.cleanup-plaintext", use_: "cleanup-plaintext", short: "Preflight plaintext compatibility cleanup", long: "Migration-gated SecretVault cleanup preflight. In this build, im-core exposes status but not a CLI-safe standalone plaintext cleanup API, so live execution fails without deleting identity files.", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.vault.cleanup-plaintext", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.create", use_: "create", short: "Create local DID material for bootstrap or migration", long: "", aliases: &[], phase: "phase2", hidden: true, implemented: true, handler: "id.create", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Identity display name", required), flag!("identity", "string", "Identity alias override")] },
         CommandSpec { name: "id.register", use_: "register", short: "Register a handle-backed user identity", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.register", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("handle", "string", "Handle local part", required), flag!("phone", "string", "Phone number for registration"), flag!("email", "string", "Email address for registration"), flag!("otp", "string", "Verification code"), flag!("invite-code", "string", "Invite code if required"), flag!("wait", "bool", "Wait for email verification before completing registration")] },
         CommandSpec { name: "id.bind", use_: "bind", short: "Bind phone or email to the current identity", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.bind", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("phone", "string", "Phone number to bind"), flag!("email", "string", "Email address to bind"), flag!("otp", "string", "Verification code"), flag!("wait", "bool", "Wait for email verification before completing the bind")] },

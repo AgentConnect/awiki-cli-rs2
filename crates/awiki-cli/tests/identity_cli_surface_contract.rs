@@ -72,6 +72,129 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
 }
 
 #[test]
+fn identity_vault_required_missing_root_key_fails_closed_without_plaintext_migration() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "alice",
+            handle: "alice",
+            display_name: "Alice",
+            jwt_token: "jwt-alice",
+            make_default: true,
+        },
+    );
+    std::fs::write(
+        workspace_home.join("config.yaml"),
+        "secret_storage:\n  mode: vault_required\n",
+    )
+    .expect("write vault config");
+
+    let status = awiki_cmd_with_vault_root(&["id", "vault", "status"], workspace.path(), None);
+    assert_success(&status);
+    let status = success_json(&status);
+    assert_eq!(
+        status["data"]["vault"]["open_options"]["mode"],
+        "vault_required"
+    );
+    assert_eq!(
+        status["data"]["vault"]["open_options"]["root_key"]["available"],
+        false
+    );
+    assert_eq!(
+        status["data"]["vault"]["status_context"]["checked_without_vault_context"],
+        true
+    );
+    assert!(status["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap()
+            .contains("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64")));
+
+    let migrate = awiki_cmd_with_vault_root(
+        &["--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        None,
+    );
+    assert_code(&migrate, 3);
+    let envelope = error_json(&migrate);
+    assert_eq!(envelope["error"]["code"], "vault_root_key_required");
+    assert!(envelope["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"));
+    assert!(
+        workspace_home
+            .join("identities")
+            .join("alice")
+            .join("key-1-private.pem")
+            .exists(),
+        "failed vault open must not delete or rewrite plaintext compatibility files"
+    );
+}
+
+#[test]
+fn identity_vault_status_and_mutation_plans_redact_root_key_material() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "alice",
+            handle: "alice",
+            display_name: "Alice",
+            jwt_token: "jwt-alice",
+            make_default: true,
+        },
+    );
+    std::fs::write(
+        workspace_home.join("config.yaml"),
+        "secret_storage:\n  mode: vault_preferred\n  workspace_id: test-workspace\n  device_id: test-device\n",
+    )
+    .expect("write vault config");
+
+    let status = success_json(&awiki_cmd_with_vault_root(
+        &["id", "vault", "status"],
+        workspace.path(),
+        Some(root_key),
+    ));
+    assert_eq!(
+        status["data"]["vault"]["open_options"]["root_key"]["available"],
+        true
+    );
+    assert_eq!(
+        status["data"]["vault"]["open_options"]["root_key"]["source"],
+        "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
+    );
+    assert_eq!(
+        status["data"]["vault"]["identity"]["selected_backend"],
+        "file_compat"
+    );
+    assert_eq!(
+        status["data"]["vault"]["identity"]["missing"],
+        json!(["identity_vault_metadata"])
+    );
+    assert_redacted_output(&status, root_key);
+
+    let plan = success_json(&awiki_cmd_with_vault_root(
+        &["--dry-run", "--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        Some(root_key),
+    ));
+    assert_eq!(
+        plan["data"]["plan"]["action"],
+        "migrate_identity_secrets_to_vault"
+    );
+    assert_eq!(plan["data"]["plan"]["root_key_material"], "[redacted]");
+    assert_redacted_output(&plan, root_key);
+}
+
+#[test]
 fn identity_current_migrates_legacy_anp_pem_before_im_core_store_read() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
@@ -876,6 +999,26 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     awiki_cmd_with_home(args, workspace, workspace)
 }
 
+fn awiki_cmd_with_vault_root(args: &[&str], workspace: &Path, root_key: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.join(".awiki-cli"))
+        .env("HOME", workspace)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64");
+    if let Some(root_key) = root_key {
+        command.env("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key);
+    }
+    command.output().expect("run awiki-cli")
+}
+
 fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, String) {
     let legacy_config = workspace_home.join("config.json");
     let legacy_text = serde_json::to_string(&payload).expect("serialize legacy config");
@@ -1025,6 +1168,22 @@ fn assert_standard_private_key_pem(path: &Path) {
         value.lines().next().unwrap_or_default()
     );
     anp::PrivateKeyMaterial::from_pem(&value).expect("standard private key parses");
+}
+
+fn assert_redacted_output(value: &Value, forbidden: &str) {
+    let encoded = serde_json::to_string(value).expect("json output");
+    assert!(
+        !encoded.contains(forbidden),
+        "CLI output must not contain secret material {forbidden:?}: {encoded}"
+    );
+    assert!(
+        !encoded.contains("-----BEGIN PRIVATE KEY-----"),
+        "CLI output must not contain private PEM: {encoded}"
+    );
+    assert!(
+        !encoded.contains("jwt-alice"),
+        "CLI output must not contain JWT material: {encoded}"
+    );
 }
 
 fn awiki_cmd_with_home(args: &[&str], workspace: &Path, home: &Path) -> Output {

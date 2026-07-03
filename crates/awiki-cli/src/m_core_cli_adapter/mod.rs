@@ -29,6 +29,7 @@ pub mod realtime;
 pub mod render;
 pub mod site;
 pub mod unsupported;
+pub mod vault;
 
 pub use auth::auth_scope_from_cli;
 pub use core::{build_im_client, build_im_client_async, build_im_core, build_im_core_async};

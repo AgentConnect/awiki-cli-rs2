@@ -164,6 +164,66 @@ fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() 
 }
 
 #[test]
+fn identity_register_vault_required_persists_without_plaintext_secret_files() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    write_service_config_with_secret_storage(&workspace_home, &server.base_url(), "vault_required");
+
+    let register = success_json(&awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key)],
+    ));
+    assert_eq!(register["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(register["data"]["identity"]["has_jwt"], true);
+    assert_eq!(register["data"]["identity"]["has_key1_private"], true);
+
+    let identity_dir = workspace_home.join("identities").join("alice");
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required register must not persist plaintext {file}"
+        );
+    }
+    let status = success_json(&awiki_cmd_with_env(
+        &["id", "vault", "status"],
+        workspace.path(),
+        &[("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key)],
+    ));
+    assert_eq!(
+        status["data"]["vault"]["identity"]["selected_backend"],
+        "vault"
+    );
+    assert_eq!(
+        status["data"]["vault"]["identity"]["plaintext_compat_retained"],
+        false
+    );
+    let encoded = serde_json::to_string(&status).expect("status json");
+    assert!(
+        !encoded.contains(root_key)
+            && !encoded.contains("jwt-register")
+            && !encoded.contains("-----BEGIN PRIVATE KEY-----"),
+        "vault status must be redacted: {encoded}"
+    );
+}
+
+#[test]
 fn identity_default_cutover_profile_set_routes_update_me_through_public_api() {
     let workspace = TempDir::new().expect("workspace");
     let markdown_file = workspace.path().join("profile.md");
@@ -756,7 +816,8 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64");
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -769,6 +830,27 @@ fn write_service_config(workspace: &Path, base_url: &str) {
         workspace.join("config.yaml"),
         format!(
             "services:\n  service_base_url: {base_url}\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn write_service_config_with_secret_storage(workspace: &Path, base_url: &str, mode: &str) {
+    std::fs::create_dir_all(workspace).unwrap();
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!(
+            concat!(
+                "services:\n",
+                "  service_base_url: {}\n",
+                "  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n",
+                "  anp_service_did: did:wba:awiki.ai\n",
+                "secret_storage:\n",
+                "  mode: {}\n",
+                "  workspace_id: test-workspace\n",
+                "  device_id: test-device\n"
+            ),
+            base_url, mode
         ),
     )
     .unwrap();

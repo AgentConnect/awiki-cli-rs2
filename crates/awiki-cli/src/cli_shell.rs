@@ -621,6 +621,81 @@ impl App {
         self.render_identity_result("awiki-cli id status", &resolved, result)
     }
 
+    pub fn run_id_vault_status(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_status_via_im_core(
+            &resolved, selector,
+        )
+        .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?;
+        self.render_identity_result("awiki-cli id vault status", &resolved, result)
+    }
+
+    pub async fn run_id_vault_status_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_status_via_im_core_async(
+            &resolved, selector,
+        )
+        .await
+        .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?;
+        self.render_identity_result("awiki-cli id vault status", &resolved, result)
+    }
+
+    pub fn run_id_vault_migrate(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_migrate_via_im_core(
+            &resolved,
+            selector,
+            self.globals.dry_run,
+        )?;
+        self.render_identity_result("awiki-cli id vault migrate", &resolved, result)
+    }
+
+    pub async fn run_id_vault_migrate_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_migrate_via_im_core_async(
+            &resolved,
+            selector,
+            self.globals.dry_run,
+        )
+        .await?;
+        self.render_identity_result("awiki-cli id vault migrate", &resolved, result)
+    }
+
+    pub fn run_id_vault_cleanup_plaintext(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result =
+            crate::m_core_cli_adapter::vault::identity_vault_cleanup_plaintext_via_im_core(
+                &resolved,
+                selector,
+                self.globals.dry_run,
+            )?;
+        self.render_identity_result("awiki-cli id vault cleanup-plaintext", &resolved, result)
+    }
+
+    pub async fn run_id_vault_cleanup_plaintext_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result =
+            crate::m_core_cli_adapter::vault::identity_vault_cleanup_plaintext_via_im_core_async(
+                &resolved,
+                selector,
+                self.globals.dry_run,
+            )
+            .await?;
+        self.render_identity_result("awiki-cli id vault cleanup-plaintext", &resolved, result)
+    }
+
     pub fn run_id_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let name = command.flags.get("name").cloned().unwrap_or_default();
@@ -1115,28 +1190,38 @@ fn count_identity_dirs(path: &str) -> usize {
 
 fn sanitize_public_value(value: Value) -> Value {
     match value {
-        Value::Object(mut map) => {
-            for key in [
-                "jwt_token",
-                "key1_private_pem",
-                "key1_public_pem",
-                "e2ee_signing_private_pem",
-                "e2ee_agreement_private_pem",
-                "did_document",
-            ] {
-                if map.contains_key(key) {
-                    map.insert(key.to_string(), Value::String("[redacted]".to_string()));
-                }
-            }
-            Value::Object(
-                map.into_iter()
-                    .map(|(key, value)| (key, sanitize_public_value(value)))
-                    .collect(),
-            )
-        }
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    if is_sensitive_public_key(&key) {
+                        (key, Value::String("[redacted]".to_string()))
+                    } else {
+                        (key, sanitize_public_value(value))
+                    }
+                })
+                .collect(),
+        ),
         Value::Array(items) => Value::Array(items.into_iter().map(sanitize_public_value).collect()),
         other => other,
     }
+}
+
+fn is_sensitive_public_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized == "jwt_token"
+        || normalized == "did_document"
+        || normalized == "key1_public_pem"
+        || normalized == "root_key_material"
+        || normalized.ends_with("_private_pem")
+        || normalized.ends_with("_private_key_pem")
+        || normalized.ends_with("_public_pem")
+        || normalized.ends_with("_token")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_secret_ref")
+        || normalized.ends_with("_secret_ref_json")
+        || normalized.ends_with("_ref_json")
+        || normalized == "secret_ref"
+        || normalized == "secretref"
 }
 
 fn legacy_command_result(result: legacy_identity::CommandResult) -> CommandResult {
