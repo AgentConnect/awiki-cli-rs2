@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn mail_inbox_live_posts_mail_rpc_through_im_core() {
     let workspace = TempDir::new("mail-live-inbox").expect("workspace");
@@ -38,6 +42,7 @@ fn mail_inbox_live_posts_mail_rpc_through_im_core() {
     assert_eq!(envelope["summary"], "Loaded 2 messages");
     assert_eq!(envelope["data"]["messages"][0]["id"], "m1");
     assert_eq!(envelope["data"]["messages"][1]["subject"], "Second");
+    assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice-mail");
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -143,6 +148,7 @@ fn register_ready_mail_identity(
     handle: &str,
     jwt_token: &str,
 ) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -185,6 +191,52 @@ fn register_ready_mail_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
+    remove_plaintext_secret_files(&identity_dir);
+}
+
+fn remove_plaintext_secret_files(identity_dir: &Path) {
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        let path = identity_dir.join(file);
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identity_name: &str) {
+    let index_path = workspace.join("identities").join("index.json");
+    let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let vault = &index["credentials"][identity_name]["vault_migration"];
+    assert_eq!(vault["status"], "verified");
+    assert_eq!(vault["backend"], "vault");
+    assert!(
+        vault["refs"]["auth_jwt"].is_object(),
+        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+    );
+    let dir_name = index["credentials"][identity_name]["dir_name"]
+        .as_str()
+        .unwrap();
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault-backed fixture must not persist plaintext {file}"
+        );
+    }
 }
 
 fn write_mail_config(workspace: &Path, base_url: &str) {

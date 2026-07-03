@@ -34,7 +34,7 @@ const DEFAULT_OPENCLAW_AGENT_ID: &str = "main";
 const DEFAULT_OPENCLAW_HOOK_NAME: &str = "AWiki";
 const DEFAULT_HERMES_NOTIFY_URL: &str = "http://127.0.0.1:8765/notify/host-event";
 const DEFAULT_HERMES_DELIVER_TARGET: &str = "feishu";
-const DEFAULT_IDENTITY_SECRET_STORAGE_MODE: &str = "file_compat";
+const DEFAULT_IDENTITY_SECRET_STORAGE_MODE: &str = "vault_required";
 pub const CONFIG_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, Default)]

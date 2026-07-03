@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -87,11 +86,25 @@ pub struct AgentLatestStatusUpdateItem {
     pub diagnostics_summary: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DidAuthMaterial {
-    pub did_document_path: PathBuf,
-    pub private_key_path: PathBuf,
+    pub did_document: Value,
+    pub private_key_pem: String,
     pub bearer_token: Option<String>,
+}
+
+impl fmt::Debug for DidAuthMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DidAuthMaterial")
+            .field("did_document", &self.did_document)
+            .field("private_key_pem", &"<redacted-private-key>")
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "<redacted-token>"),
+            )
+            .finish()
+    }
 }
 
 pub trait AgentRegistrationClient {
@@ -908,25 +921,29 @@ fn did_auth_headers(
 ) -> Result<BTreeMap<String, String>> {
     let mut headers =
         BTreeMap::from([("Content-Type".to_string(), "application/json".to_string())]);
-    let mut helper = anp::authentication::DIDWbaAuthHeader::new(
-        &auth.did_document_path,
-        &auth.private_key_path,
-        anp::authentication::AuthMode::HttpSignatures,
-    );
     if let Some(token) = auth
         .bearer_token
         .as_deref()
         .map(str::trim)
         .filter(|token| !token.is_empty())
     {
-        helper.update_token(
-            url,
-            &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
-        );
+        headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+        return Ok(headers);
     }
-    let auth_headers = helper
-        .get_auth_header(url, false, "POST", Some(&headers), Some(body))
-        .map_err(|error| anyhow::anyhow!("build DID auth headers: {error}"))?;
+    let private_key =
+        anp::PrivateKeyMaterial::from_pem(&auth.private_key_pem).map_err(|error| {
+            anyhow::anyhow!("build DID auth headers: invalid private key material: {error}")
+        })?;
+    let auth_headers = anp::authentication::generate_http_signature_headers(
+        &auth.did_document,
+        url,
+        "POST",
+        &private_key,
+        Some(&headers),
+        Some(body),
+        anp::authentication::HttpSignatureOptions::default(),
+    )
+    .map_err(|error| anyhow::anyhow!("build DID auth headers: {error}"))?;
     headers.extend(auth_headers);
     Ok(headers)
 }

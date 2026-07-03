@@ -8,11 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{write_ready_identity, TestIdentityOptions};
+use support::{set_secret_storage_mode, write_ready_identity, TestIdentityOptions};
 
 #[test]
 fn identity_create_list_current_use_and_status_match_local_contract() {
     let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
 
     let alice = awiki_cmd(
         &[
@@ -72,7 +74,40 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
 }
 
 #[test]
-fn identity_vault_required_missing_root_key_fails_closed_without_plaintext_migration() {
+fn identity_create_refuses_legacy_plaintext_storage_by_default() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+
+    let create = awiki_cmd(
+        &[
+            "--migration",
+            "id",
+            "create",
+            "--name",
+            "Vault Required",
+            "--identity",
+            "vault-required",
+        ],
+        workspace.path(),
+    );
+    assert_code(&create, 3);
+    let create = error_json(&create);
+    assert_eq!(
+        create["error"]["code"],
+        "legacy_plaintext_identity_storage_disabled"
+    );
+    assert!(
+        !workspace_home
+            .join("identities")
+            .join("vault-required")
+            .join("key-1-private.pem")
+            .exists(),
+        "default vault_required mode must not create plaintext identity private key files"
+    );
+}
+
+#[test]
+fn identity_vault_required_creates_local_root_key_without_env() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     write_ready_identity(
@@ -90,6 +125,10 @@ fn identity_vault_required_missing_root_key_fails_closed_without_plaintext_migra
         "secret_storage:\n  mode: vault_required\n",
     )
     .expect("write vault config");
+    let local_root_key_file = workspace_home
+        .join("data")
+        .join("identity-vault")
+        .join("root-key.b64u");
 
     let status = awiki_cmd_with_vault_root(&["id", "vault", "status"], workspace.path(), None);
     assert_success(&status);
@@ -100,40 +139,54 @@ fn identity_vault_required_missing_root_key_fails_closed_without_plaintext_migra
     );
     assert_eq!(
         status["data"]["vault"]["open_options"]["root_key"]["available"],
-        false
+        true
+    );
+    assert_eq!(
+        status["data"]["vault"]["open_options"]["root_key"]["source"],
+        "local_private_file_pending_create"
     );
     assert_eq!(
         status["data"]["vault"]["status_context"]["checked_without_vault_context"],
         true
     );
-    assert!(status["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|warning| warning
-            .as_str()
-            .unwrap()
-            .contains("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64")));
+    assert!(
+        !local_root_key_file.exists(),
+        "vault status must not create the no-prompt local root key file"
+    );
+
+    let plan = awiki_cmd_with_vault_root(
+        &["--dry-run", "--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        None,
+    );
+    assert_success(&plan);
+    let plan = success_json(&plan);
+    assert_eq!(
+        plan["data"]["plan"]["open_options"]["root_key"]["source"],
+        "local_private_file_pending_create"
+    );
+    assert!(
+        !local_root_key_file.exists(),
+        "dry-run vault mutation must not create the no-prompt local root key file"
+    );
 
     let migrate = awiki_cmd_with_vault_root(
         &["--migration", "id", "vault", "migrate"],
         workspace.path(),
         None,
     );
-    assert_code(&migrate, 3);
-    let envelope = error_json(&migrate);
-    assert_eq!(envelope["error"]["code"], "vault_root_key_required");
-    assert!(envelope["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"));
+    assert_success(&migrate);
+    assert!(
+        local_root_key_file.exists(),
+        "vault mutation should create no-prompt local root key file"
+    );
     assert!(
         workspace_home
             .join("identities")
             .join("alice")
             .join("key-1-private.pem")
             .exists(),
-        "failed vault open must not delete or rewrite plaintext compatibility files"
+        "migration currently retains plaintext compatibility files until cleanup API is enabled"
     );
 }
 
@@ -198,6 +251,7 @@ fn identity_vault_status_and_mutation_plans_redact_root_key_material() {
 fn identity_current_migrates_legacy_anp_pem_before_im_core_store_read() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
     let identity = write_ready_identity(
         &workspace_home,
         TestIdentityOptions {
@@ -340,6 +394,52 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
     });
     let (legacy_config, legacy_text) = write_legacy_config_json(&workspace_home, legacy_payload);
 
+    let create = awiki_cmd(
+        &[
+            "--migration",
+            "id",
+            "create",
+            "--name",
+            "Legacy Create",
+            "--identity",
+            "legacy-create",
+        ],
+        workspace.path(),
+    );
+    assert_code(&create, 3);
+    let create = error_json(&create);
+    assert_eq!(
+        create["error"]["code"],
+        "legacy_plaintext_identity_storage_disabled"
+    );
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should still be migrated before the storage policy gate"
+    );
+    assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-create.example",
+        "legacy-id-create.example",
+    );
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert!(
+        !workspace_home
+            .join("identities")
+            .join("legacy-create")
+            .join("key-1-private.pem")
+            .exists(),
+        "vault_required migration gate must not create plaintext private key files"
+    );
+    assert_no_runtime_state(&workspace_home, "id create");
+}
+
+#[test]
+fn identity_create_allows_legacy_plaintext_storage_when_file_compat_is_explicit() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
+
     let create = success_json(&awiki_cmd(
         &[
             "--migration",
@@ -356,25 +456,23 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
     assert!(create["data"]["identity"]["did"]
         .as_str()
         .unwrap()
-        .starts_with("did:wba:legacy-id-create.example:user:"));
+        .starts_with("did:wba:awiki.ai:user:"));
+    let unique_id = create["data"]["identity"]["unique_id"]
+        .as_str()
+        .expect("identity unique_id");
     let current = success_json(&awiki_cmd(&["id", "current"], workspace.path()));
     assert_eq!(
         current["data"]["identity"]["identity_name"],
         "legacy-create"
     );
-
     assert!(
-        !legacy_config.exists(),
-        "legacy config.json should be removed before identity creation"
+        workspace_home
+            .join("identities")
+            .join(unique_id)
+            .join("key-1-private.pem")
+            .exists(),
+        "file_compat is the explicit legacy plaintext identity storage escape hatch"
     );
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-create.example",
-        "legacy-id-create.example",
-    );
-
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
-    assert_no_runtime_state(&workspace_home, "id create");
 }
 
 #[test]
@@ -588,6 +686,8 @@ fn assert_identity_boundary_after_legacy_config_upgrade(args: &[&str], label: &s
 #[test]
 fn identity_dry_run_and_validation_contracts_match_go() {
     let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
     let create = success_json(&awiki_cmd(
         &[
             "--migration",
@@ -747,6 +847,12 @@ fn identity_dry_run_and_validation_contracts_match_go() {
             make_default: true,
         },
     );
+    set_secret_storage_mode(&workspace_home, "vault_required");
+    assert_success(&awiki_cmd_with_vault_root(
+        &["--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        None,
+    ));
 
     let replace = success_json(&awiki_cmd(
         &[
@@ -883,6 +989,8 @@ fn identity_dry_run_and_validation_contracts_match_go() {
 #[test]
 fn identity_import_v1_flat_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    write_file_compat_config(&workspace_home);
     let home = workspace.path().join("home");
     let generated = generated_legacy_identity("example.test", "legacy-flat");
     let legacy = home
@@ -965,21 +1073,17 @@ fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
     )
     .unwrap();
 
-    let imported = success_json(&awiki_cmd_with_home(
+    let imported = awiki_cmd_with_home(
         &["--migration", "id", "import-v1", "--name", "legacy-flat"],
         workspace.path(),
         &home,
-    ));
-    assert_eq!(
-        imported["data"]["result"]["imported"][0]["identity_name"],
-        "legacy-flat"
     );
-    let current = success_json(&awiki_cmd_with_home(
-        &["id", "current"],
-        workspace.path(),
-        &home,
-    ));
-    assert_eq!(current["data"]["identity"]["identity_name"], "legacy-flat");
+    assert_code(&imported, 3);
+    let imported = error_json(&imported);
+    assert_eq!(
+        imported["error"]["code"],
+        "legacy_plaintext_identity_storage_disabled"
+    );
 
     assert!(
         !legacy_config.exists(),
@@ -1024,6 +1128,15 @@ fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, 
     let legacy_text = serde_json::to_string(&payload).expect("serialize legacy config");
     std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
     (legacy_config, legacy_text)
+}
+
+fn write_file_compat_config(workspace_home: &Path) {
+    std::fs::create_dir_all(workspace_home).expect("create workspace home");
+    std::fs::write(
+        workspace_home.join("config.yaml"),
+        "secret_storage:\n  mode: file_compat\n",
+    )
+    .expect("write file_compat config");
 }
 
 fn assert_migrated_config(

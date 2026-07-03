@@ -16,7 +16,6 @@ use awiki_deamon::state::{AppMessageAgentBindingRecord, CreateCliRouteSession};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{
     daemon_cli::{setup_daemon_agent_from_token, SetupDaemonAgentOptions},
-    im_core_adapter::sync_agent_identity_to_im_core,
     run_command_json, DaemonCommand, DaemonConfig, DaemonState,
 };
 use rusqlite::Connection;
@@ -669,7 +668,10 @@ fn runtime_agent_create_reuses_client_request_id_without_second_exchange() {
 
 #[test]
 fn agent_status_query_returns_snapshot_payload_without_chat_content() {
-    let (_root, config, state) = fixture();
+    let (root, mut config, state) = fixture();
+    let release_root = root.path().join("daemon-release");
+    write_release_status_manifest(&release_root, awiki_deamon::upgrade::CURRENT_DAEMON_VERSION);
+    config.download_base_url = format!("file://{}", release_root.display());
     let registration = MockRegistrationClient::default();
     let daemon = setup_daemon_agent(
         &config,
@@ -2197,8 +2199,6 @@ fn runtime_inbox_commands_read_owned_runtime_local_projection() {
     )
     .unwrap();
     let created = expect_created(outcome);
-    let runtime_identity = state.load_agent_identity(&created.agent_did).unwrap();
-    sync_agent_identity_to_im_core(&config, &runtime_identity, None).unwrap();
     seed_runtime_inbox_projection(&config, &created.agent_did);
 
     let inbox_outbox = MemoryRuntimeOutbox::default();
@@ -2495,8 +2495,6 @@ fn runtime_inbox_query_repairs_controller_direct_messages_from_runtime_scope() {
         )
         .unwrap(),
     );
-    let runtime_identity = state.load_agent_identity(&created.agent_did).unwrap();
-    sync_agent_identity_to_im_core(&config, &runtime_identity, None).unwrap();
     if let Some(parent) = config.im_core_sqlite_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
@@ -2622,8 +2620,6 @@ fn runtime_inbox_query_keeps_scoped_thread_when_latest_outgoing_lacks_scope() {
         )
         .unwrap(),
     );
-    let runtime_identity = state.load_agent_identity(&created.agent_did).unwrap();
-    sync_agent_identity_to_im_core(&config, &runtime_identity, None).unwrap();
     if let Some(parent) = config.im_core_sqlite_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }

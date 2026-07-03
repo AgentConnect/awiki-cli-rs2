@@ -1,14 +1,22 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use im_core::{
     IdentitySecretStorageBackend, IdentitySecretStoragePolicy, IdentitySelector, ImCore,
     ImCoreOpenOptions, ImCoreSecretVaultOptions,
 };
+use rand::rngs::OsRng;
+use rand::RngCore;
 use serde_json::{json, Value};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::cli_output::ExitError;
 use crate::m_core_cli_adapter::message_result::CommandResult;
 
 pub const ROOT_KEY_HINT: &str =
-    "Set AWIKI_IM_CORE_VAULT_ROOT_KEY_B64 to a base64/base64url encoded 32-byte key.";
+    "Set AWIKI_IM_CORE_VAULT_ROOT_KEY_B64 or let awiki-cli create its no-prompt local vault root key file.";
+const LOCAL_ROOT_KEY_FILE_NAME: &str = "root-key.b64u";
+const LOCAL_ROOT_KEY_SOURCE: &str = "local_private_file";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliVaultOpenPlan {
@@ -20,6 +28,7 @@ pub struct CliVaultOpenPlan {
     pub vault_dir: String,
     pub workspace_id: String,
     pub device_id: String,
+    pub local_root_key_file: String,
 }
 
 pub fn build_im_core_open_options(
@@ -32,7 +41,7 @@ pub fn build_im_core_open_options(
     if !plan.root_key_available {
         return Err(missing_root_key_error("build im-core"));
     }
-    let root_key = im_core::vault::im_core_vault_root_key_from_env()
+    let root_key = load_or_create_cli_vault_root_key(&plan)
         .map_err(|err| super::error::map_im_error(err, "build im-core identity vault"))?;
     Ok(ImCoreOpenOptions::default().with_identity_secret_vault(
         plan.mode,
@@ -47,11 +56,11 @@ pub fn cli_vault_open_plan(
         crate::workspace_config::resolve_secret_storage(resolved).map_err(|err| {
             ExitError::new(
                 "invalid_config",
-                2,
-                format!("invalid secret_storage config: {err}"),
-                "Use file_compat, vault_preferred, or vault_required without storing root keys.",
-            )
-        })?;
+            2,
+            format!("invalid secret_storage config: {err}"),
+            "Use vault_required for new workspaces; root keys are read from env or a local private file.",
+        )
+    })?;
     let mode = match secret_storage.mode.as_str() {
         "file_compat" => IdentitySecretStoragePolicy::FileCompat,
         "vault_preferred" => IdentitySecretStoragePolicy::VaultPreferred,
@@ -65,15 +74,31 @@ pub fn cli_vault_open_plan(
             ));
         }
     };
+    let local_root_key_file = local_root_key_file(&secret_storage.vault_dir)
+        .to_string_lossy()
+        .into_owned();
+    let root_key_available = secret_storage.root_key_available
+        || Path::new(&local_root_key_file).is_file()
+        || !matches!(mode, IdentitySecretStoragePolicy::FileCompat);
+    let root_key_source = if secret_storage.root_key_available {
+        secret_storage.root_key_source
+    } else if Path::new(&local_root_key_file).is_file() {
+        LOCAL_ROOT_KEY_SOURCE.to_string()
+    } else if !matches!(mode, IdentitySecretStoragePolicy::FileCompat) {
+        "local_private_file_pending_create".to_string()
+    } else {
+        "unset".to_string()
+    };
     Ok(CliVaultOpenPlan {
         mode,
         vault_enabled: !matches!(mode, IdentitySecretStoragePolicy::FileCompat),
         vault_required: matches!(mode, IdentitySecretStoragePolicy::VaultRequired),
-        root_key_available: secret_storage.root_key_available,
-        root_key_source: secret_storage.root_key_source,
+        root_key_available,
+        root_key_source,
         vault_dir: secret_storage.vault_dir,
         workspace_id: secret_storage.workspace_id,
         device_id: secret_storage.device_id,
+        local_root_key_file,
     })
 }
 
@@ -206,6 +231,7 @@ pub fn vault_diagnostics_snapshot(resolved: &crate::workspace_config::Resolved) 
             "vault_dir": plan.vault_dir,
             "workspace_id": plan.workspace_id,
             "device_id": plan.device_id,
+            "local_root_key_file": plan.local_root_key_file,
             "root_key": root_key_status(&plan),
         }),
         Err(err) => json!({
@@ -215,6 +241,7 @@ pub fn vault_diagnostics_snapshot(resolved: &crate::workspace_config::Resolved) 
                 "available": false,
                 "source": "unset",
                 "env": im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV,
+                "local_private_file": null,
             }
         }),
     }
@@ -238,7 +265,7 @@ fn build_im_core_for_vault_status(
 ) -> Result<ImCore, ExitError> {
     let config = super::core_config::build_im_core_config(resolved)?;
     let paths = super::paths::build_im_core_paths(resolved)?;
-    if plan.vault_enabled && plan.root_key_available {
+    if plan.vault_enabled && root_key_material_available(plan) {
         let options = build_im_core_open_options(resolved)?;
         return ImCore::new_with_options(config, paths, options)
             .map_err(|err| super::error::map_im_error(err, "id vault status"));
@@ -252,7 +279,7 @@ async fn build_im_core_for_vault_status_async(
 ) -> Result<ImCore, ExitError> {
     let config = super::core_config::build_im_core_config(resolved)?;
     let paths = super::paths::build_im_core_paths(resolved)?;
-    if plan.vault_enabled && plan.root_key_available {
+    if plan.vault_enabled && root_key_material_available(plan) {
         let options = build_im_core_open_options(resolved)?;
         return ImCore::open_with_options(config, paths, options)
             .await
@@ -281,8 +308,7 @@ fn status_command_result(status: Value, plan: &CliVaultOpenPlan) -> CommandResul
     let mut warnings = Vec::new();
     if !plan.root_key_available && plan.vault_enabled {
         warnings.push(format!(
-            "{} is not set; vault-backed identity open will fail.",
-            im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV
+            "identity vault root key is unavailable; vault-backed identity open will fail."
         ));
     }
     for warning in status["warnings"].as_array().into_iter().flatten() {
@@ -295,7 +321,7 @@ fn status_command_result(status: Value, plan: &CliVaultOpenPlan) -> CommandResul
             "vault": {
                 "open_options": open_options_json(plan),
                 "status_context": {
-                    "checked_without_vault_context": plan.vault_enabled && !plan.root_key_available,
+                    "checked_without_vault_context": plan.vault_enabled && !root_key_material_available(plan),
                 },
                 "identity": status,
             }
@@ -360,6 +386,7 @@ fn open_options_json(plan: &CliVaultOpenPlan) -> Value {
         "vault_dir": plan.vault_dir,
         "workspace_id": plan.workspace_id,
         "device_id": plan.device_id,
+        "local_root_key_file": plan.local_root_key_file,
         "root_key": root_key_status(plan),
     })
 }
@@ -369,7 +396,14 @@ fn root_key_status(plan: &CliVaultOpenPlan) -> Value {
         "available": plan.root_key_available,
         "source": plan.root_key_source,
         "env": im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV,
+        "local_private_file": plan.local_root_key_file,
     })
+}
+
+fn root_key_material_available(plan: &CliVaultOpenPlan) -> bool {
+    plan.vault_enabled
+        && plan.root_key_available
+        && plan.root_key_source != "local_private_file_pending_create"
 }
 
 fn require_vault_root_key_for_mutation(
@@ -394,10 +428,7 @@ fn missing_root_key_error(context: &'static str) -> ExitError {
     ExitError::new(
         "vault_root_key_required",
         3,
-        format!(
-            "{context}: {} is required for identity secret vault.",
-            im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV
-        ),
+        format!("{context}: identity secret vault root key is required."),
         ROOT_KEY_HINT,
     )
 }
@@ -439,4 +470,108 @@ fn mode_label(mode: IdentitySecretStoragePolicy) -> &'static str {
         IdentitySecretStoragePolicy::VaultPreferred => "vault_preferred",
         IdentitySecretStoragePolicy::VaultRequired => "vault_required",
     }
+}
+
+fn load_or_create_cli_vault_root_key(
+    plan: &CliVaultOpenPlan,
+) -> im_core::ImResult<im_core::vault::DeviceVaultRootKey> {
+    match std::env::var(im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV) {
+        Ok(raw) if !raw.trim().is_empty() => {
+            return im_core::vault::parse_device_vault_root_key_b64(
+                &raw,
+                im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV,
+            );
+        }
+        _ => {}
+    }
+    let path = Path::new(&plan.local_root_key_file);
+    match fs::read_to_string(path) {
+        Ok(raw) => {
+            return im_core::vault::parse_device_vault_root_key_b64(&raw, LOCAL_ROOT_KEY_SOURCE);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(im_core::ImError::CredentialFileUnreadable {
+                path_kind: "cli_identity_vault_root_key".to_string(),
+                detail: err.to_string(),
+            });
+        }
+    }
+    let mut bytes = [0_u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN];
+    OsRng.fill_bytes(&mut bytes);
+    if !write_cli_vault_root_key_file(path, &bytes)? {
+        let raw =
+            fs::read_to_string(path).map_err(|err| im_core::ImError::CredentialFileUnreadable {
+                path_kind: "cli_identity_vault_root_key".to_string(),
+                detail: err.to_string(),
+            })?;
+        return im_core::vault::parse_device_vault_root_key_b64(&raw, LOCAL_ROOT_KEY_SOURCE);
+    }
+    Ok(im_core::vault::DeviceVaultRootKey::from_bytes(bytes))
+}
+
+fn write_cli_vault_root_key_file(
+    path: &Path,
+    root_key: &[u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN],
+) -> im_core::ImResult<bool> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(im_core::ImError::from)?;
+        set_private_dir_mode(parent)?;
+    }
+    let encoded = URL_SAFE_NO_PAD.encode(root_key);
+    let mut file = match create_private_file(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(err) => return Err(im_core::ImError::from(err)),
+    };
+    file.write_all(encoded.as_bytes())
+        .map_err(im_core::ImError::from)?;
+    file.write_all(b"\n").map_err(im_core::ImError::from)?;
+    file.sync_all().map_err(im_core::ImError::from)?;
+    set_private_file_mode(path)?;
+    Ok(true)
+}
+
+fn local_root_key_file(vault_dir: &str) -> PathBuf {
+    Path::new(vault_dir).join(LOCAL_ROOT_KEY_FILE_NAME)
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn set_private_dir_mode(path: &Path) -> im_core::ImResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(im_core::ImError::from)
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_mode(_path: &Path) -> im_core::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_mode(path: &Path) -> im_core::ImResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(im_core::ImError::from)
+}
+
+#[cfg(not(unix))]
+fn set_private_file_mode(_path: &Path) -> im_core::ImResult<()> {
+    Ok(())
 }

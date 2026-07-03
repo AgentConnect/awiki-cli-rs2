@@ -140,8 +140,8 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 当前 `daemon.db` 的 agent / runtime 相关状态包括：
 
 - `agent_definition`：daemon agent 和 runtime agent 的本地定义，包含 `handle`、`agent_kind`、`controller_did`、runtime profile、workspace 和本地路径。
-- `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥只保存在本地 daemon 状态库中，不进入 Debug 输出、日志或 audit。
-- `agent_auth_state`：daemon/runtime agent 调 message-service 时使用的本地 bearer token 状态。该表用于本地长驻 E2E 和后续登录态恢复；不要把 token 原文写入日志或 audit。
+- `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥 seal 到 daemon SecretVault，状态库只保存 sentinel 和 `SecretRef`，不进入 Debug 输出、日志或 audit。
+- `agent_auth_state`：daemon/runtime agent 调 message-service 时使用的本地 bearer token 状态。token seal 到 daemon SecretVault，状态库只保存 sentinel 和 `SecretRef`，用于本地长驻 E2E 和后续登录态恢复。
 - `runtime_profile`：runtime agent 绑定的 runtime plugin type、展示名和状态。CLI 家族新数据统一使用 `runtime_plugin_id=generic-cli`。
 - `cli_runtime_profile`：`generic-cli` 插件内部 profile，保存 `driver_id`、binary/config、默认 sandbox、默认 workspace mode、`msg.send` recipient policy 和 driver-specific config。
 - `cli_driver_run`：CLI run 的 route/session/workspace/output metadata，包括 workspace instance、command、stdout/stderr/JSONL/final output 路径和 fallback final 来源。
@@ -156,15 +156,15 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 
 - 新写入 `agent_identity` 时，`auth_private_key_pem`、`e2ee_signing_private_key_pem` 和 `e2ee_agreement_private_key_pem` 列只保存 `<awiki-secret-vault-ref>` sentinel，真实私钥 seal 到 daemon SecretVault，并在 `*_private_key_ref_json` 列保存 `SecretRef` JSON。
 - 新写入 `user_delegated_identity` 时，`private_key_material` 只保存 `<awiki-secret-vault-ref>` sentinel，真实 delegated private key seal 到 daemon SecretVault，并在 `private_key_ref_json` 保存 `SecretRef` JSON。
-- 旧明文行只作为兼容迁移桥读取；当 `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` 可用时，读取后会重新 seal 并更新为 vault ref。缺少 daemon vault root key 时，新 secret 持久化会 fail-closed，不回退明文。
+- 旧明文行不再兼容读取；缺少 daemon vault root key 或缺少 `SecretRef` 时，secret 读取/持久化会 fail-closed，不回退明文。
 - Direct E2EE session/prekey local state 通过 `im-core` SecretVault envelope 密文落盘；历史明文 blob / 文件只在读路径兼容。
 - daemon delegated inbox 的 `inbox_auth_key_ref` 使用 `vault:`，私钥 seal 到 `im-core` file vault。新路径需要 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，不再写 `runtime/cache/delegated-inbox/.../daemon-key-1.pem` 或 shadow identity `private.key`。
-- `agent_auth_state` 仍保存 daemon/runtime agent bearer token 状态。不要把 token 原文写入日志、audit 或 E2E 报告。
-- `im_core_adapter` 的 Message/im-core SDK 主路径使用 hosted in-memory identity material，不写 `private.key`、`e2ee-agreement-private.pem` 或 `auth.json`。`sync_agent_identity_to_im_core` / `agent_identity_auth_paths` 仍是 user-service DID-auth 兼容入口，可能创建兼容 PEM/auth.json 文件，不应被当作推荐新路径。
+- `agent_auth_state` 保存 daemon/runtime agent bearer token 的 vault ref 状态，`jwt_token` 列只允许 `<awiki-secret-vault-ref>` sentinel，真实 token seal 到 daemon SecretVault。不要把 token 原文写入日志、audit 或 E2E 报告。
+- `im_core_adapter` 的 Message/im-core SDK 主路径使用 hosted in-memory identity material，不写 `private.key`、`e2ee-agreement-private.pem` 或 `auth.json`。user-service inventory DID-auth 也使用内存态 `DidAuthMaterial` 签名，不再通过兼容 PEM/auth.json 文件落盘。
 - 显式 delegated `key_ref` 仍兼容 `file:`、`local:` 和裸路径读取 caller-provided delegated private key；新 daemon-owned delegated key 应使用 `vault:`。
 - App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO，传输可以暂时明文；daemon 接收后持久化必须按上面的 vault ref 存储。后续应改为端到端加密 bootstrap envelope。
 
-因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、legacy file-backed identity provider 下线、user-service DID-auth 兼容文件收敛和 bearer token 加密仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token 或 E2EE 本地 secret。
+因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥、agent auth token 以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、legacy file-backed identity provider 下线和 user-service DID-auth 兼容文件收敛仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token 或 E2EE 本地 secret。
 
 ## 本地验证
 

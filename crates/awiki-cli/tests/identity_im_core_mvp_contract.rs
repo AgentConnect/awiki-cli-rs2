@@ -71,6 +71,10 @@ fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() 
 fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"access_token":"jwt-bob-refreshed"},"id":"req-1"}"#,
+    )]);
+    write_service_config(&workspace_home, &server.base_url());
     write_ready_identity(
         &workspace_home,
         TestIdentityOptions {
@@ -91,6 +95,11 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
             make_default: false,
         },
     );
+    success_json(&awiki_cmd_with_env(
+        &["--identity", "bob", "--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        &[],
+    ));
     std::fs::remove_file(
         workspace_home
             .join("identities")
@@ -99,15 +108,21 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     )
     .expect("remove bob private key");
 
-    let result = awiki_cmd_with_env(
+    let result = success_json(&awiki_cmd_with_env(
         &["--identity", "bob", "id", "refresh-token"],
         workspace.path(),
         &[],
-    );
-    assert_code(&result, 3);
-    let result = error_json(&result);
-    assert_eq!(result["error"]["code"], "auth_required");
-    assert!(result["error"]["message"].as_str().unwrap().contains("bob"));
+    ));
+    assert_eq!(result["summary"], "JWT refreshed for identity bob");
+    assert_eq!(result["data"]["identity"]["identity_name"], "bob");
+    assert_eq!(result["data"]["identity"]["has_jwt"], true);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(body["method"], "get_me");
+    assert_contains_text(&requests[0], "signature-input:");
+    assert_contains_text(&requests[0], "did:wba:awiki.ai:user:bob:");
 }
 
 #[test]
@@ -868,16 +883,6 @@ fn success_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("success JSON")
-}
-
-fn error_json(output: &Output) -> Value {
-    assert!(
-        !output.status.success(),
-        "command should fail\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stderr).expect("error JSON")
 }
 
 fn assert_code(output: &Output, expected: i32) {

@@ -17,7 +17,7 @@ use crate::plugins::hermes::{
 };
 use crate::registration::{
     AgentInventoryClient, AgentRegistrationClient, AgentRegistrationExchangeRequest,
-    AgentRegistrationExchangeResult, DidAuthMaterial, RegistrationToken,
+    AgentRegistrationExchangeResult, RegistrationToken,
 };
 use crate::runtime::{
     default_preferred_language, normalize_preferred_language, RuntimeAgentProfile,
@@ -2339,13 +2339,7 @@ fn archive_agent_remote<C>(
 where
     C: AgentInventoryClient,
 {
-    let auth_paths =
-        crate::im_core_adapter::agent_identity_auth_paths(config, &daemon_agent.agent_did);
-    let auth = DidAuthMaterial {
-        did_document_path: auth_paths.0,
-        private_key_path: auth_paths.1,
-        bearer_token: state.load_agent_auth_token(&daemon_agent.agent_did)?,
-    };
+    let auth = crate::controller_scope::daemon_auth_material(config, state, daemon_agent)?;
     registration_client.archive_agent(&daemon_agent.agent_did, agent_did, &auth)
 }
 

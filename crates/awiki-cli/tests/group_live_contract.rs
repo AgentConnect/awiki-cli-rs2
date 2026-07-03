@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn group_get_live_posts_group_get_and_maps_snapshot_like_go() {
     let workspace = TempDir::new("group-live-get").expect("workspace");
@@ -361,6 +365,7 @@ fn register_ready_group_identity(
     handle: &str,
     jwt_token: &str,
 ) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -416,6 +421,10 @@ fn register_ready_group_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
 }
 
 fn write_group_config(workspace: &Path, base_url: &str) {

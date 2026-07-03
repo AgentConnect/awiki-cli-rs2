@@ -13,6 +13,10 @@ const IDENTITY: &str = "alice-group-ws";
 const BOB_DID: &str = "did:wba:awiki.ai:bob:e1_bob";
 const GROUP_DID: &str = "did:wba:awiki.ai:groups:ws:e1_group";
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn msg_send_group_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     let workspace = TempDir::new("gws-send-http-cutover").expect("workspace");
@@ -217,6 +221,7 @@ fn register_ready_group_identity(
     handle: &str,
     jwt_token: &str,
 ) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -273,6 +278,10 @@ fn register_ready_group_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
 }
 
 fn write_group_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {

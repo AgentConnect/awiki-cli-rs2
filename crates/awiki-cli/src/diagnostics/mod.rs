@@ -179,11 +179,11 @@ fn identity_vault_check(resolved: &Resolved) -> Check {
         summary = "Identity SecretVault open options are configured";
         if !root_key_available {
             status = "error";
-            summary = "Identity SecretVault is enabled but root key env is missing";
+            summary = "Identity SecretVault is enabled but root key is unavailable";
         }
     }
     if mode == "vault_required" && root_key_available {
-        summary = "Identity SecretVault is required and root key env is available";
+        summary = "Identity SecretVault is required and root key is available";
     }
     check("identity_vault", status, summary, Some(snapshot))
 }

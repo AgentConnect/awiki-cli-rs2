@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use crate::agent::{agent_data_paths, generate_product_handle, AgentDefinition, AgentKind};
 use crate::commands::setup_daemon_agent;
 use crate::plugins::hermes::{HermesGateway, HERMES_RUNTIME_PLUGIN_ID};
+#[cfg(test)]
+use crate::registration::DidAuthMaterial;
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationExchangeRequest,
-    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
-    UserServiceAgentRegistrationClient,
+    RegistrationToken, RegistrationTokenMetadata, UserServiceAgentRegistrationClient,
 };
 use crate::runtime::RuntimeInstallStatus;
 use crate::service::{
@@ -713,6 +714,22 @@ mod tests {
         (root, config, state)
     }
 
+    fn write_status_manifest(root: &std::path::Path, latest: &str) -> PathBuf {
+        let releases = root.join("releases");
+        std::fs::create_dir_all(&releases).unwrap();
+        let manifest = releases.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&json!({
+                "latest": latest,
+                "packages": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        manifest
+    }
+
     fn store_existing_daemon(config: &DaemonConfig, state: &DaemonState) -> AgentDefinition {
         let identity = generate_agent_identity(config, AgentKind::Daemon, "alice-mac-daemon")
             .unwrap()
@@ -993,7 +1010,9 @@ mod tests {
 
     #[test]
     fn latest_status_uses_daemon_did_auth_and_contract_platform() {
-        let (_root, config, state) = fixture();
+        let (root, mut config, state) = fixture();
+        write_status_manifest(root.path(), crate::upgrade::CURRENT_DAEMON_VERSION);
+        config.download_base_url = format!("file://{}", root.path().display());
         let agent = store_existing_daemon(&config, &state);
         let im_core = crate::ImCoreAdapter::open(&config).unwrap();
         sync_one_agent_identity(&config, &state, &im_core, &agent).unwrap();
@@ -1052,12 +1071,7 @@ fn update_daemon_latest_status(
     agent: &AgentDefinition,
     service: &ServiceStatus,
 ) -> Result<()> {
-    let auth_paths = crate::im_core_adapter::agent_identity_auth_paths(config, &agent.agent_did);
-    let auth = DidAuthMaterial {
-        did_document_path: auth_paths.0,
-        private_key_path: auth_paths.1,
-        bearer_token: state.load_agent_auth_token(&agent.agent_did)?,
-    };
+    let auth = crate::controller_scope::daemon_auth_material(config, state, agent)?;
     let release = check_release_status(config);
     let response = client.update_latest_status(
         &agent.agent_did,

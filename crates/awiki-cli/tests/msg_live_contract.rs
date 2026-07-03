@@ -466,7 +466,7 @@ fn register_generated_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) -> TestIdentity {
-    write_ready_identity(
+    let identity = write_ready_identity(
         workspace,
         TestIdentityOptions {
             identity_name,
@@ -475,7 +475,20 @@ fn register_generated_msg_identity(
             jwt_token,
             make_default: true,
         },
-    )
+    );
+    migrate_identity_to_vault(workspace);
+    identity
+}
+
+fn migrate_identity_to_vault(workspace: &Path) {
+    let output = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vault migration failed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
