@@ -52,6 +52,24 @@ pub struct IdentityVaultStatus {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityVaultMigrationReport {
+    pub identity: IdentitySummary,
+    pub status: IdentityVaultStatus,
+    pub migrated: bool,
+    pub verified: bool,
+    pub plaintext_compat_retained: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityVaultVerificationReport {
+    pub identity: IdentitySummary,
+    pub status: IdentityVaultStatus,
+    pub verified: bool,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct HostedIdentityMaterial {
     pub identity_id: String,

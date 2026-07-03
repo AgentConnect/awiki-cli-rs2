@@ -193,6 +193,118 @@ impl<'a> IdentityRegistry<'a> {
         Ok(self.identity_vault_status(&entry.summary, Some(entry)))
     }
 
+    pub fn migrate_identity_vault(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
+        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "identity vault migration requires identity secret vault open options"
+                    .to_owned(),
+            }
+        })?;
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        let local_alias =
+            entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_owned(),
+                })?;
+        crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .migrate_identity_to_vault(
+            &local_alias,
+            context.workspace_id(),
+            context.device_id(),
+            context.vault().as_ref(),
+        )?;
+        let status = self.vault_status(super::IdentitySelector::LocalAlias(local_alias))?;
+        self.verify_identity_vault_status(status, true)
+            .map(|verification| super::IdentityVaultMigrationReport {
+                plaintext_compat_retained: verification
+                    .status
+                    .plaintext_compat_retained
+                    .unwrap_or(false),
+                warnings: verification.warnings,
+                identity: verification.identity,
+                status: verification.status,
+                migrated: true,
+                verified: verification.verified,
+            })
+    }
+
+    pub async fn migrate_identity_vault_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
+        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "identity vault migration requires identity secret vault open options"
+                    .to_owned(),
+            }
+        })?;
+        let registry = self.load_registry_async().await?;
+        let entry = registry.find_entry(selector)?;
+        let local_alias =
+            entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_owned(),
+                })?;
+        let paths = self.core.inner().sdk_paths().identities.clone();
+        let workspace_id = context.workspace_id().to_owned();
+        let device_id = context.device_id().to_owned();
+        let vault = context.vault();
+        let local_alias_for_migration = local_alias.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_store::IdentityStore::new(&paths).migrate_identity_to_vault(
+                &local_alias_for_migration,
+                &workspace_id,
+                &device_id,
+                vault.as_ref(),
+            )
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })??;
+        let status = self
+            .vault_status_async(super::IdentitySelector::LocalAlias(local_alias))
+            .await?;
+        self.verify_identity_vault_status(status, true)
+            .map(|verification| super::IdentityVaultMigrationReport {
+                plaintext_compat_retained: verification
+                    .status
+                    .plaintext_compat_retained
+                    .unwrap_or(false),
+                warnings: verification.warnings,
+                identity: verification.identity,
+                status: verification.status,
+                migrated: true,
+                verified: verification.verified,
+            })
+    }
+
+    pub fn verify_identity_vault(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
+        let status = self.vault_status(selector)?;
+        self.verify_identity_vault_status(status, true)
+    }
+
+    pub async fn verify_identity_vault_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
+        let status = self.vault_status_async(selector).await?;
+        self.verify_identity_vault_status(status, true)
+    }
+
     pub fn load_daemon_subkey_package(
         &self,
         selector: super::IdentitySelector,
@@ -1152,6 +1264,40 @@ impl IdentityRegistry<'_> {
         Ok(Arc::new(
             crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir),
         ))
+    }
+
+    fn verify_identity_vault_status(
+        &self,
+        status: super::IdentityVaultStatus,
+        require_vault_backend: bool,
+    ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
+        if require_vault_backend
+            && status.selected_backend != super::IdentitySecretStorageBackend::Vault
+        {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: status.identity.did.as_str().to_owned(),
+                missing: if status.missing.is_empty() {
+                    vec!["identity_vault_backend".to_owned()]
+                } else {
+                    status.missing.clone()
+                },
+            });
+        }
+        let runtime = self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
+        let _ = runtime.key_provider.optional_did_document()?;
+        let _ = runtime.key_provider.default_signing_private_pem()?;
+        let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
+        let _ = runtime.key_provider.auth_state()?;
+        let mut warnings = status.warnings.clone();
+        if status.plaintext_compat_retained.unwrap_or(false) {
+            warnings.push("identity plaintext compatibility files are still retained".to_owned());
+        }
+        Ok(super::IdentityVaultVerificationReport {
+            identity: status.identity.clone(),
+            status,
+            verified: true,
+            warnings,
+        })
     }
 
     fn identity_vault_status(
@@ -2181,6 +2327,75 @@ mod tests {
         write_registry(&rewritten, &written).unwrap();
         let reparsed = parse_registry(&std::fs::read(rewritten).unwrap()).unwrap();
         assert!(reparsed.entries[0].vault_migration.is_some());
+    }
+
+    #[test]
+    fn identity_vault_migrate_and_verify_public_api_use_vault_provider() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+        store
+            .save_identity(crate::internal::identity_store::SaveIdentityInput {
+                local_alias: "alice".to_owned(),
+                did: crate::ids::Did::parse("did:example:alice").unwrap(),
+                unique_id: "alice-id".to_owned(),
+                user_id: "user-1".to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.example".to_owned(),
+                jwt_token: "jwt-secret-value".to_owned(),
+                did_document: Some(json!({"id": "did:example:alice"})),
+                key1_private_pem: "signing-private-secret".to_owned(),
+                key1_public_pem: "signing-public".to_owned(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: "e2ee-agreement-secret".to_owned(),
+                daemon_subkey_package: None,
+                make_default: true,
+            })
+            .unwrap();
+        let vault_dir = root.path().join("vault");
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            paths,
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([41_u8; 32]),
+                    &vault_dir,
+                    "workspace-a",
+                    "device-a",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let report = core
+            .identities()
+            .migrate_identity_vault(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+
+        assert!(report.migrated);
+        assert!(report.verified);
+        assert!(report.plaintext_compat_retained);
+        assert_eq!(
+            report.status.selected_backend,
+            crate::identity::IdentitySecretStorageBackend::Vault
+        );
+        assert_eq!(report.identity.did.as_str(), "did:example:alice");
+
+        let verification = core
+            .identities()
+            .verify_identity_vault(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+        assert!(verification.verified);
+        assert_eq!(
+            verification.status.selected_backend,
+            crate::identity::IdentitySecretStorageBackend::Vault
+        );
     }
 
     #[test]

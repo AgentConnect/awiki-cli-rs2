@@ -40,7 +40,8 @@ pub use crate::error::{ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{
     DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
-    IdentitySelector, IdentitySummary, IdentityVaultStatus,
+    IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
+    IdentityVaultVerificationReport,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;
