@@ -708,7 +708,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
         state.initialize().unwrap();
         (root, config, state)
     }

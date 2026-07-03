@@ -1,5 +1,10 @@
 use super::row_mappers::*;
 use super::*;
+use im_core::vault::{
+    SealSecretRequest, SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretRef,
+};
+
+const VAULT_PRIVATE_KEY_SENTINEL: &str = "<awiki-secret-vault-ref>";
 
 impl DaemonState {
     pub fn store_agent_identity(&self, identity: &AgentIdentityRecord) -> Result<()> {
@@ -9,6 +14,7 @@ impl DaemonState {
         if identity.handle.trim().is_empty() {
             bail!("handle must not be empty");
         }
+        let refs = self.seal_agent_identity_private_keys(identity)?;
         let connection = self.connection()?;
         let now = current_time_millis()?.to_string();
         connection.execute(
@@ -24,9 +30,12 @@ INSERT INTO agent_identity (
     auth_private_key_pem,
     e2ee_signing_private_key_pem,
     e2ee_agreement_private_key_pem,
+    auth_private_key_ref_json,
+    e2ee_signing_private_key_ref_json,
+    e2ee_agreement_private_key_ref_json,
     created_at,
     updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
 ON CONFLICT(agent_did) DO UPDATE SET
     handle = excluded.handle,
     agent_kind = excluded.agent_kind,
@@ -37,6 +46,9 @@ ON CONFLICT(agent_did) DO UPDATE SET
     auth_private_key_pem = excluded.auth_private_key_pem,
     e2ee_signing_private_key_pem = excluded.e2ee_signing_private_key_pem,
     e2ee_agreement_private_key_pem = excluded.e2ee_agreement_private_key_pem,
+    auth_private_key_ref_json = excluded.auth_private_key_ref_json,
+    e2ee_signing_private_key_ref_json = excluded.e2ee_signing_private_key_ref_json,
+    e2ee_agreement_private_key_ref_json = excluded.e2ee_agreement_private_key_ref_json,
     updated_at = excluded.updated_at
 "#,
             rusqlite::params![
@@ -47,9 +59,20 @@ ON CONFLICT(agent_did) DO UPDATE SET
                 identity.endpoint_url,
                 identity.key_algorithm,
                 identity.public_key,
-                identity.auth_private_key_pem,
-                identity.e2ee_signing_private_key_pem,
-                identity.e2ee_agreement_private_key_pem,
+                VAULT_PRIVATE_KEY_SENTINEL,
+                if refs.e2ee_signing_private_key_ref_json.is_some() {
+                    VAULT_PRIVATE_KEY_SENTINEL
+                } else {
+                    ""
+                },
+                if refs.e2ee_agreement_private_key_ref_json.is_some() {
+                    VAULT_PRIVATE_KEY_SENTINEL
+                } else {
+                    ""
+                },
+                refs.auth_private_key_ref_json,
+                refs.e2ee_signing_private_key_ref_json,
+                refs.e2ee_agreement_private_key_ref_json,
                 now,
             ],
         )?;
@@ -58,7 +81,7 @@ ON CONFLICT(agent_did) DO UPDATE SET
 
     pub fn load_agent_identity(&self, agent_did: &str) -> Result<AgentIdentityRecord> {
         let connection = self.connection()?;
-        connection
+        let row = connection
             .query_row(
                 r#"
 SELECT
@@ -71,14 +94,23 @@ SELECT
     public_key,
     auth_private_key_pem,
     e2ee_signing_private_key_pem,
-    e2ee_agreement_private_key_pem
+    e2ee_agreement_private_key_pem,
+    auth_private_key_ref_json,
+    e2ee_signing_private_key_ref_json,
+    e2ee_agreement_private_key_ref_json
 FROM agent_identity
 WHERE agent_did = ?1
 "#,
                 [agent_did],
-                agent_identity_from_row,
+                agent_identity_storage_row_from_row,
             )
-            .with_context(|| format!("load agent identity {agent_did}"))
+            .with_context(|| format!("load agent identity {agent_did}"))?;
+        let (identity, used_legacy_plaintext) = self.agent_identity_from_storage_row(row)?;
+        if used_legacy_plaintext && self.secret_vault().is_some() {
+            self.store_agent_identity(&identity)
+                .with_context(|| format!("migrate agent identity {agent_did} to secret vault"))?;
+        }
+        Ok(identity)
     }
 
     pub fn store_bootstrap_state(
@@ -1201,4 +1233,167 @@ ORDER BY agent_did ASC
         }
         Ok(tokens)
     }
+}
+
+struct AgentIdentitySecretRefsJson {
+    auth_private_key_ref_json: String,
+    e2ee_signing_private_key_ref_json: Option<String>,
+    e2ee_agreement_private_key_ref_json: Option<String>,
+}
+
+impl DaemonState {
+    fn seal_agent_identity_private_keys(
+        &self,
+        identity: &AgentIdentityRecord,
+    ) -> Result<AgentIdentitySecretRefsJson> {
+        let vault = self.secret_vault().context(
+            "daemon secret vault root key is required to store agent identity private keys; refusing plaintext fallback",
+        )?;
+        let auth_private_key_ref_json = seal_agent_identity_secret(
+            vault,
+            identity,
+            SecretKind::IdentityDaemonPrivate,
+            "auth",
+            &identity.auth_private_key_pem,
+            true,
+        )?
+        .context("auth private key ref missing after seal")?;
+        let e2ee_signing_private_key_ref_json = seal_agent_identity_secret(
+            vault,
+            identity,
+            SecretKind::IdentityE2eeSigningPrivate,
+            "e2ee-signing",
+            &identity.e2ee_signing_private_key_pem,
+            false,
+        )?;
+        let e2ee_agreement_private_key_ref_json = seal_agent_identity_secret(
+            vault,
+            identity,
+            SecretKind::IdentityE2eeAgreementPrivate,
+            "e2ee-agreement",
+            &identity.e2ee_agreement_private_key_pem,
+            false,
+        )?;
+        Ok(AgentIdentitySecretRefsJson {
+            auth_private_key_ref_json,
+            e2ee_signing_private_key_ref_json,
+            e2ee_agreement_private_key_ref_json,
+        })
+    }
+
+    fn agent_identity_from_storage_row(
+        &self,
+        row: AgentIdentityStorageRow,
+    ) -> Result<(AgentIdentityRecord, bool)> {
+        let auth_opened = self.open_agent_identity_secret(
+            row.auth_private_key_ref_json.as_deref(),
+            &row.auth_private_key_pem,
+            "auth_private_key_ref_json",
+        )?;
+        let signing_legacy = row.e2ee_signing_private_key_pem.unwrap_or_default();
+        let signing_opened = self.open_agent_identity_secret(
+            row.e2ee_signing_private_key_ref_json.as_deref(),
+            &signing_legacy,
+            "e2ee_signing_private_key_ref_json",
+        )?;
+        let agreement_legacy = row.e2ee_agreement_private_key_pem.unwrap_or_default();
+        let agreement_opened = self.open_agent_identity_secret(
+            row.e2ee_agreement_private_key_ref_json.as_deref(),
+            &agreement_legacy,
+            "e2ee_agreement_private_key_ref_json",
+        )?;
+        let used_legacy_plaintext = auth_opened.used_legacy_plaintext
+            || signing_opened.used_legacy_plaintext
+            || agreement_opened.used_legacy_plaintext;
+        Ok((
+            AgentIdentityRecord {
+                agent_did: row.agent_did,
+                handle: row.handle,
+                agent_kind: row.agent_kind,
+                did_document: row.did_document,
+                endpoint_url: row.endpoint_url,
+                key_algorithm: row.key_algorithm,
+                public_key: row.public_key,
+                auth_private_key_pem: auth_opened.private_key_pem,
+                e2ee_signing_private_key_pem: signing_opened.private_key_pem,
+                e2ee_agreement_private_key_pem: agreement_opened.private_key_pem,
+            },
+            used_legacy_plaintext,
+        ))
+    }
+
+    fn open_agent_identity_secret(
+        &self,
+        secret_ref_json: Option<&str>,
+        legacy_private_key_pem: &str,
+        field: &str,
+    ) -> Result<OpenedAgentIdentitySecret> {
+        if let Some(secret_ref_json) = non_empty(secret_ref_json) {
+            let vault = self
+                .secret_vault()
+                .with_context(|| format!("{field} requires daemon secret vault root key"))?;
+            let secret_ref: SecretRef =
+                serde_json::from_str(secret_ref_json).with_context(|| format!("parse {field}"))?;
+            let secret = vault
+                .open(&secret_ref)
+                .map_err(anyhow::Error::from)
+                .with_context(|| format!("open {field}"))?;
+            let private_key_pem = String::from_utf8(secret.expose_secret().to_vec())
+                .with_context(|| format!("{field} secret is not utf-8"))?;
+            return Ok(OpenedAgentIdentitySecret {
+                private_key_pem,
+                used_legacy_plaintext: false,
+            });
+        }
+        if legacy_private_key_pem == VAULT_PRIVATE_KEY_SENTINEL {
+            bail!("{field} is missing a daemon secret vault ref");
+        }
+        Ok(OpenedAgentIdentitySecret {
+            private_key_pem: legacy_private_key_pem.to_owned(),
+            used_legacy_plaintext: !legacy_private_key_pem.trim().is_empty()
+                && legacy_private_key_pem != VAULT_PRIVATE_KEY_SENTINEL,
+        })
+    }
+}
+
+struct OpenedAgentIdentitySecret {
+    private_key_pem: String,
+    used_legacy_plaintext: bool,
+}
+
+fn seal_agent_identity_secret(
+    vault: &crate::secret_vault::DaemonSecretVault,
+    identity: &AgentIdentityRecord,
+    kind: SecretKind,
+    key_id_suffix: &str,
+    private_key_pem: &str,
+    required: bool,
+) -> Result<Option<String>> {
+    if private_key_pem.trim().is_empty() {
+        if required {
+            bail!("{key_id_suffix} private key must not be empty");
+        }
+        return Ok(None);
+    }
+    let secret_ref = vault
+        .seal(SealSecretRequest {
+            metadata: SecretMetadata {
+                workspace_id: "awiki-daemon".to_owned(),
+                device_id: "local-daemon".to_owned(),
+                identity_id: Some(identity.agent_did.clone()),
+                did: Some(identity.agent_did.clone()),
+                kind,
+                key_id: format!("{}#{key_id_suffix}", identity.agent_did),
+                key_version: 1,
+                policy: SecretAccessPolicy::no_prompt_local_secret(),
+            },
+            plaintext: SecretBytes::from_vec(private_key_pem.as_bytes().to_vec()),
+        })
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("seal {key_id_suffix} private key"))?;
+    Ok(Some(serde_json::to_string(&secret_ref)?))
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }

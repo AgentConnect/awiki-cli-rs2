@@ -1,6 +1,6 @@
 use awiki_deamon::{run_command, DaemonCommand, DaemonConfig, DaemonState};
 
-const EXPECTED_DAEMON_SCHEMA_VERSION: i64 = 31;
+const EXPECTED_DAEMON_SCHEMA_VERSION: i64 = 32;
 
 #[test]
 fn init_state_creates_daemon_and_im_core_databases() {
@@ -16,6 +16,7 @@ fn init_state_creates_daemon_and_im_core_databases() {
     assert!(root.path().join("identity").is_dir());
     assert!(root.path().join("runtime").join("cache").is_dir());
     assert!(root.path().join("runtime").join("tmp").is_dir());
+    assert!(root.path().join("secrets").join("vault").is_dir());
     assert!(status
         .local_socket_path
         .parent()

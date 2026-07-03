@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 31;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 32;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -246,6 +246,9 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             auth_private_key_pem TEXT NOT NULL,
             e2ee_signing_private_key_pem TEXT,
             e2ee_agreement_private_key_pem TEXT,
+            auth_private_key_ref_json TEXT,
+            e2ee_signing_private_key_ref_json TEXT,
+            e2ee_agreement_private_key_ref_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -607,6 +610,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_scope_authority_v29(connection)?;
     migrate_hermes_native_session_stored_ids_v30(connection)?;
     migrate_runtime_profile_preferred_language_v31(connection)?;
+    migrate_agent_identity_vault_refs_v32(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -614,6 +618,28 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_agent_identity_vault_refs_v32(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "agent_identity",
+        "auth_private_key_ref_json",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "agent_identity",
+        "e2ee_signing_private_key_ref_json",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "agent_identity",
+        "e2ee_agreement_private_key_ref_json",
+        "TEXT",
     )?;
     Ok(())
 }

@@ -166,7 +166,7 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [25_u8; 32]);
     state.initialize().unwrap();
     (root, config, state)
 }
@@ -218,7 +218,7 @@ fn hermes_profile_schema_roundtrips_and_migrates_old_db() {
         .unwrap()
         .initialize()
         .unwrap();
-    assert_eq!(summary.schema_version, 31);
+    assert_eq!(summary.schema_version, 32);
     let table_count: i64 = Connection::open(&migrated_config.daemon_db_path)
         .unwrap()
         .query_row(

@@ -3188,7 +3188,7 @@ WHERE daemon_agent_did = 'did:agent:daemon'
 fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [11_u8; 32]);
     state.initialize().unwrap();
     let identity = AgentIdentityRecord {
         agent_did: "did:agent:daemon".to_string(),
@@ -3207,10 +3207,164 @@ fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
     let loaded = state.load_agent_identity("did:agent:daemon").unwrap();
     assert_eq!(loaded.agent_did, identity.agent_did);
     assert_eq!(loaded.auth_private_key_pem, "private-secret");
+    assert_eq!(loaded.e2ee_signing_private_key_pem, "signing-secret");
+    assert_eq!(loaded.e2ee_agreement_private_key_pem, "agreement-secret");
+
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    let (
+        auth_private_key_pem,
+        e2ee_signing_private_key_pem,
+        e2ee_agreement_private_key_pem,
+        auth_private_key_ref_json,
+        e2ee_signing_private_key_ref_json,
+        e2ee_agreement_private_key_ref_json,
+    ): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = connection
+        .query_row(
+            r#"
+SELECT
+    auth_private_key_pem,
+    e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem,
+    auth_private_key_ref_json,
+    e2ee_signing_private_key_ref_json,
+    e2ee_agreement_private_key_ref_json
+FROM agent_identity
+WHERE agent_did = ?1
+"#,
+            ["did:agent:daemon"],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(auth_private_key_pem, "<awiki-secret-vault-ref>");
+    assert_eq!(
+        e2ee_signing_private_key_pem.as_deref(),
+        Some("<awiki-secret-vault-ref>")
+    );
+    assert_eq!(
+        e2ee_agreement_private_key_pem.as_deref(),
+        Some("<awiki-secret-vault-ref>")
+    );
+    assert!(auth_private_key_ref_json.is_some());
+    assert!(e2ee_signing_private_key_ref_json.is_some());
+    assert!(e2ee_agreement_private_key_ref_json.is_some());
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    let raw_db_text = String::from_utf8_lossy(&raw_db);
+    assert!(!raw_db_text.contains("private-secret"));
+    assert!(!raw_db_text.contains("signing-secret"));
+    assert!(!raw_db_text.contains("agreement-secret"));
+
     let debug = format!("{loaded:?}");
     assert!(!debug.contains("private-secret"));
     assert!(!debug.contains("signing-secret"));
     assert!(!debug.contains("agreement-secret"));
+}
+
+#[test]
+fn agent_identity_store_requires_secret_vault_root_key() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    state.initialize().unwrap();
+    let identity = AgentIdentityRecord {
+        agent_did: "did:agent:daemon".to_string(),
+        handle: "alice-daemon".to_string(),
+        agent_kind: AgentKind::Daemon,
+        did_document: serde_json::json!({ "id": "did:agent:daemon" }),
+        endpoint_url: Some("https://example.test/anp-im/rpc".to_string()),
+        key_algorithm: "JsonWebKey2020".to_string(),
+        public_key: "public".to_string(),
+        auth_private_key_pem: "private-secret".to_string(),
+        e2ee_signing_private_key_pem: "signing-secret".to_string(),
+        e2ee_agreement_private_key_pem: "agreement-secret".to_string(),
+    };
+
+    let error = state.store_agent_identity(&identity).unwrap_err();
+
+    assert!(error.to_string().contains("refusing plaintext fallback"));
+}
+
+#[test]
+fn agent_identity_legacy_plaintext_row_loads_and_migrates_when_vault_available() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let legacy_state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    legacy_state.initialize().unwrap();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO agent_identity (
+    agent_did,
+    handle,
+    agent_kind,
+    did_document_json,
+    endpoint_url,
+    key_algorithm,
+    public_key,
+    auth_private_key_pem,
+    e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+"#,
+            rusqlite::params![
+                "did:agent:daemon",
+                "alice-daemon",
+                AgentKind::Daemon.as_str(),
+                serde_json::json!({ "id": "did:agent:daemon" }).to_string(),
+                "https://example.test/anp-im/rpc",
+                "JsonWebKey2020",
+                "public",
+                "legacy-private-secret",
+                "legacy-signing-secret",
+                "legacy-agreement-secret",
+                "1700000000000",
+            ],
+        )
+        .unwrap();
+
+    let state = DaemonState::open_with_root_key_bytes(&config, [12_u8; 32]);
+    let loaded = state.load_agent_identity("did:agent:daemon").unwrap();
+
+    assert_eq!(loaded.auth_private_key_pem, "legacy-private-secret");
+    assert_eq!(loaded.e2ee_signing_private_key_pem, "legacy-signing-secret");
+    assert_eq!(
+        loaded.e2ee_agreement_private_key_pem,
+        "legacy-agreement-secret"
+    );
+    let migrated_auth_pem: String = connection
+        .query_row(
+            "SELECT auth_private_key_pem FROM agent_identity WHERE agent_did = ?1",
+            ["did:agent:daemon"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let migrated_auth_ref: Option<String> = connection
+        .query_row(
+            "SELECT auth_private_key_ref_json FROM agent_identity WHERE agent_did = ?1",
+            ["did:agent:daemon"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(migrated_auth_pem, "<awiki-secret-vault-ref>");
+    assert!(migrated_auth_ref.is_some());
 }
 
 #[test]

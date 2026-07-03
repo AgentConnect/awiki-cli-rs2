@@ -2151,7 +2151,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
         let daemon = daemon();
         state.upsert_agent_definition(&daemon).unwrap();
@@ -2183,7 +2183,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
         let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
             .unwrap()
@@ -2234,7 +2234,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
         let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
             .unwrap()

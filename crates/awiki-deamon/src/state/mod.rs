@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
@@ -9,11 +10,13 @@ use serde_json::Value;
 
 use crate::agent::{agent_data_paths, AgentDefinition, AgentIdentityRecord, AgentKind};
 use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
+use crate::secret_vault::{DaemonSecretVault, DAEMON_VAULT_ROOT_KEY_ENV};
 use crate::security::runtime_token::{
     current_time_millis, IssuedRuntimeToken, RpcMethod, RuntimeRpcToken, RuntimeTokenScope,
 };
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
+use im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN;
 
 mod delegated_state;
 mod records;
@@ -33,13 +36,48 @@ use schema::initialize_schema;
 #[derive(Debug, Clone)]
 pub struct DaemonState {
     database_path: PathBuf,
+    secret_vault: Option<Arc<DaemonSecretVault>>,
 }
 
 impl DaemonState {
     pub fn open(config: &DaemonConfig) -> Result<Self> {
+        let secret_vault = if std::env::var_os(DAEMON_VAULT_ROOT_KEY_ENV).is_some() {
+            Some(Arc::new(
+                DaemonSecretVault::from_config_and_env(config)
+                    .context("open daemon secret vault")?,
+            ))
+        } else {
+            None
+        };
         Ok(Self {
             database_path: config.daemon_db_path.clone(),
+            secret_vault,
         })
+    }
+
+    pub fn open_with_secret_vault(config: &DaemonConfig, secret_vault: DaemonSecretVault) -> Self {
+        Self {
+            database_path: config.daemon_db_path.clone(),
+            secret_vault: Some(Arc::new(secret_vault)),
+        }
+    }
+
+    pub fn open_with_root_key_bytes(
+        config: &DaemonConfig,
+        bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN],
+    ) -> Self {
+        Self::open_with_secret_vault(
+            config,
+            DaemonSecretVault::from_root_key_bytes(config, bytes),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_without_secret_vault_for_legacy(config: &DaemonConfig) -> Self {
+        Self {
+            database_path: config.daemon_db_path.clone(),
+            secret_vault: None,
+        }
     }
 
     pub fn initialize(&self) -> Result<StateSummary> {
@@ -63,6 +101,10 @@ impl DaemonState {
     pub fn connection(&self) -> Result<Connection> {
         Connection::open(&self.database_path)
             .with_context(|| format!("open daemon database {}", self.database_path.display()))
+    }
+
+    pub(crate) fn secret_vault(&self) -> Option<&DaemonSecretVault> {
+        self.secret_vault.as_deref()
     }
 }
 

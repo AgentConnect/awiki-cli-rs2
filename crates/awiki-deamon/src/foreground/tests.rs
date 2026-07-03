@@ -240,7 +240,7 @@ fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     config.ensure_state_layout().unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [22_u8; 32]);
     state.initialize().unwrap();
     (root, config, state)
 }
@@ -3111,7 +3111,7 @@ fn daemon_secure_bootstrap_replay_reuses_message_agent() {
     assert!(!first_bootstrap.replayed);
     assert!(first_agent.created_runtime_agent);
 
-    let reopened_state = DaemonState::open(&config).unwrap();
+    let reopened_state = DaemonState::open_with_root_key_bytes(&config, [22_u8; 32]);
     let replay_payload = first_payload.clone();
     let replay = handle_app_control_payload(
         &config,

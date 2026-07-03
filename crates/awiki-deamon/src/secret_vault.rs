@@ -27,8 +27,7 @@ impl DaemonSecretVault {
         Ok(Self::from_root_key(config, root_key))
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_root_key_for_tests(
+    pub fn from_root_key_bytes(
         config: &DaemonConfig,
         bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN],
     ) -> Self {
@@ -113,7 +112,7 @@ mod tests {
     fn daemon_secret_vault_seals_opens_and_lists_secret() {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
-        let vault = DaemonSecretVault::from_root_key_for_tests(&config, [9_u8; 32]);
+        let vault = DaemonSecretVault::from_root_key_bytes(&config, [9_u8; 32]);
 
         let secret_ref = vault
             .seal(SealSecretRequest {
