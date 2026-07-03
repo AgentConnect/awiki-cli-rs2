@@ -16,6 +16,7 @@ pub use self::dto::{
     SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult,
     ThreadMessagePatchSession, ThreadMessageStorePatch, ThreadRef,
 };
+pub(crate) use self::service::normalize_direct_send_result_for_peer_scope;
 
 pub use self::mention::{
     is_message_mention_payload, parse_message_mention_payload, validate_message_mention_payload,

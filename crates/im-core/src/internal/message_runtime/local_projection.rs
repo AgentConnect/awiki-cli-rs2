@@ -437,13 +437,23 @@ pub(crate) fn persist_direct_e2ee_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
     target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
     crate::internal::local_state::messages::upsert_message(
         connection,
-        &direct_e2ee_outgoing_record(client, target_did, text, kind, sdk_result),
+        &direct_e2ee_outgoing_record(
+            client,
+            target_did,
+            target_handle,
+            peer_scope,
+            text,
+            kind,
+            sdk_result,
+        ),
     )
 }
 
@@ -452,6 +462,8 @@ pub(crate) fn persist_direct_e2ee_outgoing(
     _connection: &rusqlite::Connection,
     _client: &crate::core::ImClient,
     _target_did: &str,
+    _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _text: &str,
     _kind: &crate::messages::MessageKind,
     _sdk_result: &crate::messages::SendMessageResult,
@@ -463,11 +475,21 @@ pub(crate) fn persist_direct_e2ee_outgoing(
 pub(crate) async fn persist_direct_e2ee_outgoing_async(
     client: &crate::core::ImClient,
     target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
-    let record = direct_e2ee_outgoing_record(client, target_did, text, kind, sdk_result);
+    let record = direct_e2ee_outgoing_record(
+        client,
+        target_did,
+        target_handle,
+        peer_scope,
+        text,
+        kind,
+        sdk_result,
+    );
     client
         .core_inner()
         .local_state_db()
@@ -481,12 +503,21 @@ pub(crate) fn persist_direct_e2ee_attachment_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
     target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     redacted_manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
     crate::internal::local_state::messages::upsert_message(
         connection,
-        &direct_e2ee_attachment_outgoing_record(client, target_did, redacted_manifest, sdk_result),
+        &direct_e2ee_attachment_outgoing_record(
+            client,
+            target_did,
+            target_handle,
+            peer_scope,
+            redacted_manifest,
+            sdk_result,
+        ),
     )
 }
 
@@ -495,6 +526,8 @@ pub(crate) fn persist_direct_e2ee_attachment_outgoing(
     _connection: &rusqlite::Connection,
     _client: &crate::core::ImClient,
     _target_did: &str,
+    _target_handle: Option<&str>,
+    _peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     _redacted_manifest: &Value,
     _sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
@@ -507,11 +540,19 @@ pub(crate) fn persist_direct_e2ee_attachment_outgoing(
 pub(crate) async fn persist_direct_e2ee_attachment_outgoing_async(
     client: &crate::core::ImClient,
     target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     redacted_manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::ImResult<()> {
-    let record =
-        direct_e2ee_attachment_outgoing_record(client, target_did, redacted_manifest, sdk_result);
+    let record = direct_e2ee_attachment_outgoing_record(
+        client,
+        target_did,
+        target_handle,
+        peer_scope,
+        redacted_manifest,
+        sdk_result,
+    );
     client
         .core_inner()
         .local_state_db()
@@ -679,7 +720,7 @@ fn group_e2ee_outgoing_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,
         is_read: true,
-        metadata: secure_metadata_json("group-e2ee", &sdk_result.message.metadata),
+        metadata: secure_metadata_json_without_extras("group-e2ee", &sdk_result.message.metadata),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -709,7 +750,7 @@ fn group_e2ee_payload_outgoing_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,
         is_read: true,
-        metadata: secure_metadata_json("group-e2ee", &sdk_result.message.metadata),
+        metadata: secure_metadata_json_without_extras("group-e2ee", &sdk_result.message.metadata),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -739,7 +780,7 @@ fn group_e2ee_attachment_outgoing_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,
         is_read: true,
-        metadata: secure_metadata_json("group-e2ee", &sdk_result.message.metadata),
+        metadata: secure_metadata_json_without_extras("group-e2ee", &sdk_result.message.metadata),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -880,11 +921,13 @@ fn direct_outgoing_result_record(
 fn direct_e2ee_outgoing_record(
     client: &crate::core::ImClient,
     target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
-    let conversation_id = direct_conversation_id(target_did);
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -900,7 +943,11 @@ fn direct_e2ee_outgoing_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,
         is_read: true,
-        metadata: secure_metadata_json("direct-e2ee", &sdk_result.message.metadata),
+        metadata: secure_metadata_json(
+            "direct-e2ee",
+            &sdk_result.message.metadata,
+            direct_metadata_extras(target_handle, peer_scope, target_did),
+        ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -910,10 +957,12 @@ fn direct_e2ee_outgoing_record(
 fn direct_e2ee_attachment_outgoing_record(
     client: &crate::core::ImClient,
     target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
     redacted_manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
-    let conversation_id = direct_conversation_id(target_did);
+    let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
@@ -929,7 +978,11 @@ fn direct_e2ee_attachment_outgoing_record(
         sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
         is_e2ee: true,
         is_read: true,
-        metadata: secure_metadata_json("direct-e2ee", &sdk_result.message.metadata),
+        metadata: secure_metadata_json(
+            "direct-e2ee",
+            &sdk_result.message.metadata,
+            attachment_metadata_extras(redacted_manifest, target_handle, peer_scope, target_did),
+        ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
@@ -1279,7 +1332,14 @@ fn insert_attachment_manifest_fields(object: &mut Map<String, Value>, manifest: 
     }
 }
 
-fn secure_metadata_json(security: &str, metadata: &crate::messages::MessageMetadata) -> String {
+fn secure_metadata_json<'a, I>(
+    security: &str,
+    metadata: &crate::messages::MessageMetadata,
+    extras: I,
+) -> String
+where
+    I: IntoIterator<Item = (&'a str, String)>,
+{
     let mut object = Map::new();
     object.insert("security".to_owned(), Value::String(security.to_owned()));
     object.insert(
@@ -1322,7 +1382,15 @@ fn secure_metadata_json(security: &str, metadata: &crate::messages::MessageMetad
     }
     for attribute in &metadata.attributes {
         match attribute.key.as_str() {
-            "raw_message_id" | "group_event_seq" | "group_state_version" | "secure_outbox_id"
+            "raw_message_id"
+            | "group_event_seq"
+            | "group_state_version"
+            | "secure_outbox_id"
+            | "target_handle"
+            | "resolved_target_did"
+            | "peer_user_id"
+            | "peer_full_handle"
+            | "peer_current_did"
                 if !attribute.value.trim().is_empty() =>
             {
                 object.insert(
@@ -1337,7 +1405,17 @@ fn secure_metadata_json(security: &str, metadata: &crate::messages::MessageMetad
             _ => {}
         }
     }
+    for (key, value) in extras {
+        insert_string(&mut object, key, Some(value.as_str()));
+    }
     Value::Object(object).to_string()
+}
+
+fn secure_metadata_json_without_extras(
+    security: &str,
+    metadata: &crate::messages::MessageMetadata,
+) -> String {
+    secure_metadata_json(security, metadata, std::iter::empty::<(&str, String)>())
 }
 
 fn insert_string(object: &mut Map<String, Value>, key: &str, value: Option<&str>) {
@@ -1687,7 +1765,7 @@ mod tests {
             ..Default::default()
         };
 
-        let encoded = secure_metadata_json("group-e2ee", &metadata);
+        let encoded = secure_metadata_json_without_extras("group-e2ee", &metadata);
         let value: Value = serde_json::from_str(&encoded).unwrap();
         assert_eq!(value["security"], "group-e2ee");
         assert_eq!(value["contains_sensitive"], false);

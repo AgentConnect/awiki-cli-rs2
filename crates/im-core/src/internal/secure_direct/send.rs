@@ -16,6 +16,8 @@ pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 pub(crate) struct DirectSecureTextSend {
     pub(crate) request: crate::messages::SendMessageRequest,
     pub(crate) resolved_target_did: Option<String>,
+    pub(crate) target_handle: Option<String>,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     pub(crate) local_persistence: DirectSecureLocalPersistence,
 }
 
@@ -23,6 +25,8 @@ pub(crate) struct DirectSecureTextSend {
 pub(crate) struct DirectSecureAttachmentSend {
     pub(crate) request: crate::messages::SendMessageRequest,
     pub(crate) resolved_target_did: Option<String>,
+    pub(crate) target_handle: Option<String>,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     pub(crate) committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
     pub(crate) local_persistence: DirectSecureLocalPersistence,
 }
@@ -32,6 +36,8 @@ pub(crate) struct DirectSecureTextSendResult {
     pub(crate) sdk_result: crate::messages::SendMessageResult,
     pub(crate) queued_outbox_id: Option<String>,
     pub(crate) target_did: String,
+    pub(crate) target_handle: Option<String>,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     pub(crate) text: String,
     pub(crate) kind: crate::messages::MessageKind,
     pub(crate) raw: Option<Value>,
@@ -42,6 +48,8 @@ pub(crate) struct DirectSecureTextSendResult {
 pub(crate) struct DirectSecureAttachmentSendResult {
     pub(crate) sdk_result: crate::messages::SendMessageResult,
     pub(crate) target_did: String,
+    pub(crate) target_handle: Option<String>,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     pub(crate) redacted_manifest: Value,
     pub(crate) raw: Option<Value>,
     pub(crate) local_effect: DirectSecureAttachmentLocalEffect,
@@ -206,12 +214,20 @@ where
                     kind.clone(),
                     warnings,
                 )?;
+                crate::messages::normalize_direct_send_result_for_peer_scope(
+                    &mut sdk_result,
+                    input.peer_scope.as_ref(),
+                    input.target_handle.as_deref(),
+                    Some(target_did.as_str()),
+                )?;
                 let local_effect = match input.local_persistence {
                     DirectSecureLocalPersistence::LegacySqlite => {
                         match crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing(
                             &connection,
                             self.client,
                             &target_did,
+                            input.target_handle.as_deref(),
+                            input.peer_scope.as_ref(),
                             text,
                             &kind,
                             &sdk_result,
@@ -236,6 +252,8 @@ where
                     sdk_result,
                     queued_outbox_id: None,
                     target_did,
+                    target_handle: input.target_handle,
+                    peer_scope: input.peer_scope,
                     text,
                     kind,
                     raw: Some(Value::Object(raw)),
@@ -254,7 +272,7 @@ where
                     queue_pending_confirmation_outbox(&connection, record.clone())?;
                 }
                 let outbox_id = record.outbox_id.clone();
-                let sdk_result = queued_sdk_result(
+                let mut sdk_result = queued_sdk_result(
                     &outbox_id,
                     self.client.did().clone(),
                     peer,
@@ -264,6 +282,12 @@ where
                     operation_id,
                     message_id,
                     warnings,
+                )?;
+                crate::messages::normalize_direct_send_result_for_peer_scope(
+                    &mut sdk_result,
+                    input.peer_scope.as_ref(),
+                    input.target_handle.as_deref(),
+                    Some(target_did.as_str()),
                 )?;
                 let text = text.to_owned();
                 let local_effect = match input.local_persistence {
@@ -276,6 +300,8 @@ where
                     sdk_result,
                     queued_outbox_id: Some(outbox_id),
                     target_did,
+                    target_handle: input.target_handle,
+                    peer_scope: input.peer_scope,
                     text,
                     kind,
                     raw: None,
@@ -403,12 +429,20 @@ where
                     &input.committed.redacted_manifest,
                     warnings,
                 )?;
+                crate::messages::normalize_direct_send_result_for_peer_scope(
+                    &mut sdk_result,
+                    input.peer_scope.as_ref(),
+                    input.target_handle.as_deref(),
+                    Some(target_did.as_str()),
+                )?;
                 let local_effect = match input.local_persistence {
                     DirectSecureLocalPersistence::LegacySqlite => {
                         match crate::internal::message_runtime::local_projection::persist_direct_e2ee_attachment_outgoing(
                             &connection,
                             self.client,
                             &target_did,
+                            input.target_handle.as_deref(),
+                            input.peer_scope.as_ref(),
                             &input.committed.redacted_manifest,
                             &sdk_result,
                         ) {
@@ -430,6 +464,8 @@ where
                 Ok(DirectSecureAttachmentSendResult {
                     sdk_result,
                     target_did,
+                    target_handle: input.target_handle,
+                    peer_scope: input.peer_scope,
                     redacted_manifest: input.committed.redacted_manifest,
                     raw: Some(Value::Object(raw)),
                     local_effect,
@@ -971,6 +1007,8 @@ mod tests {
             .send(DirectSecureTextSend {
                 request: secure_direct_request(&bob.did, "secret text"),
                 resolved_target_did: None,
+                target_handle: None,
+                peer_scope: None,
                 local_persistence: DirectSecureLocalPersistence::LegacySqlite,
             })
             .unwrap();
@@ -1085,6 +1123,8 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
             .send_attachment(DirectSecureAttachmentSend {
                 request: secure_direct_attachment_request(&bob.did),
                 resolved_target_did: None,
+                target_handle: None,
+                peer_scope: None,
                 committed,
                 local_persistence: DirectSecureLocalPersistence::LegacySqlite,
             })

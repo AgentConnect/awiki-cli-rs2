@@ -880,6 +880,72 @@ fn messages_read_runtime_local_history_reads_projection_without_rpc() {
 }
 
 #[test]
+fn messages_read_runtime_local_history_preserves_peer_scope_without_metadata() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        "user-runtime-agent",
+        "runtime-agent.awiki.test",
+    )
+    .unwrap();
+    let conversation_id =
+        crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+            &peer_scope,
+        );
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "runtime-final:msg-local-runtime-reply".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            direction: 0,
+            sender_did: "did:example:agent-runtime:e1_current".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "runtime reply".to_owned(),
+            sent_at: "2026-05-21T00:00:02Z".to_owned(),
+            stored_at: "2026-05-21T00:00:02Z".to_owned(),
+            server_seq: Some(42),
+            metadata: r#"{"content_type":"text/plain","server_sequence":42}"#.to_owned(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: json!({"messages": [{"id": "remote-should-not-be-used"}]}),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .local_history(LocalHistoryRead {
+            thread: crate::messages::ThreadRef::Thread(
+                crate::ids::ThreadId::parse(&conversation_id).unwrap(),
+            ),
+            query: crate::messages::LocalHistoryQuery {
+                limit: crate::ids::PageLimit(10),
+                cursor: None,
+            },
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let message = &result.page.items[0];
+    assert_eq!(message.id.as_str(), "runtime-final:msg-local-runtime-reply");
+    assert!(matches!(
+        &message.thread,
+        crate::messages::ThreadRef::Thread(thread) if thread.as_str() == conversation_id
+    ));
+}
+
+#[test]
 fn messages_read_runtime_local_history_restores_legacy_attachment_manifest_projection() {
     let fixture = Fixture::new();
     let client = fixture.client();

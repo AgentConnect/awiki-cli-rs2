@@ -33,6 +33,14 @@ impl<'a> AttachmentService<'a> {
                 credentials: None,
             },
         )?;
+        if result.target_kind != "group" {
+            crate::messages::normalize_direct_send_result_for_peer_scope(
+                &mut result.sdk_result,
+                resolved_target.peer_scope.as_ref(),
+                resolved_target.direct_handle.as_deref(),
+                Some(result.target_did.as_str()),
+            )?;
+        }
         #[cfg(feature = "sqlite")]
         {
             let projection = if result.target_kind == "group" {
@@ -95,6 +103,14 @@ impl<'a> AttachmentService<'a> {
             },
         )
         .await?;
+        if result.target_kind != "group" {
+            crate::messages::normalize_direct_send_result_for_peer_scope(
+                &mut result.sdk_result,
+                resolved_target.peer_scope.as_ref(),
+                resolved_target.direct_handle.as_deref(),
+                Some(result.target_did.as_str()),
+            )?;
+        }
         #[cfg(feature = "sqlite")]
         {
             let projection = if result.target_kind == "group" {

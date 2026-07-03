@@ -121,6 +121,8 @@ async fn async_direct_secure_sender_uses_actor_cas_and_async_transport_for_follo
     .send_follow_up_if_ready(super::super::send::DirectSecureTextSend {
         request: secure_direct_request("did:example:bob", "actor async secret"),
         resolved_target_did: None,
+        target_handle: None,
+        peer_scope: None,
         local_persistence: super::super::send::DirectSecureLocalPersistence::Deferred,
     })
     .await
@@ -201,6 +203,8 @@ async fn async_direct_secure_attachment_sender_sends_cipher_and_non_secret_grant
     .send_attachment_follow_up_if_ready(super::super::send::DirectSecureAttachmentSend {
         request: secure_direct_attachment_request("did:example:bob"),
         resolved_target_did: None,
+        target_handle: None,
+        peer_scope: None,
         committed,
         local_persistence: super::super::send::DirectSecureLocalPersistence::Deferred,
     })
@@ -285,6 +289,8 @@ async fn async_direct_secure_attachment_sender_initializes_session_without_leaki
     .send_attachment_async_if_ready(super::super::send::DirectSecureAttachmentSend {
         request: secure_direct_attachment_request(&bob.did),
         resolved_target_did: None,
+        target_handle: None,
+        peer_scope: None,
         committed,
         local_persistence: super::super::send::DirectSecureLocalPersistence::Deferred,
     })
@@ -357,6 +363,8 @@ async fn async_direct_secure_sender_initializes_session_via_actor_and_async_tran
     .send_async_if_ready(super::super::send::DirectSecureTextSend {
         request: secure_direct_request(&bob.did, "async init secret"),
         resolved_target_did: None,
+        target_handle: None,
+        peer_scope: None,
         local_persistence: super::super::send::DirectSecureLocalPersistence::Deferred,
     })
     .await
@@ -430,6 +438,8 @@ async fn async_direct_secure_sender_queues_when_session_pending_confirmation() {
     .send_async_if_ready(super::super::send::DirectSecureTextSend {
         request: secure_direct_request("did:example:bob", "queued async secret"),
         resolved_target_did: None,
+        target_handle: None,
+        peer_scope: None,
         local_persistence: super::super::send::DirectSecureLocalPersistence::Deferred,
     })
     .await

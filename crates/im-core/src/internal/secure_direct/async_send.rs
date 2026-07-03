@@ -115,6 +115,8 @@ where
                 directory_transport,
                 peer,
                 target_did,
+                input.target_handle.clone(),
+                input.peer_scope.clone(),
                 text,
                 kind,
                 operation_id,
@@ -127,6 +129,8 @@ where
                 self.client,
                 peer,
                 target_did,
+                input.target_handle.clone(),
+                input.peer_scope.clone(),
                 text,
                 kind,
                 operation_id,
@@ -183,7 +187,7 @@ where
         )
         .await
         .and_then(super::send::object_result)?;
-        let sdk_result = super::send::sdk_result_from_secure_result(
+        let mut sdk_result = super::send::sdk_result_from_secure_result(
             &raw,
             self.client.did().clone(),
             peer,
@@ -192,11 +196,19 @@ where
             kind.clone(),
             Vec::new(),
         )?;
+        crate::messages::normalize_direct_send_result_for_peer_scope(
+            &mut sdk_result,
+            input.peer_scope.as_ref(),
+            input.target_handle.as_deref(),
+            Some(target_did.as_str()),
+        )?;
         Ok(AsyncDirectSecureSendOutcome::Sent(
             DirectSecureTextSendResult {
                 sdk_result,
                 queued_outbox_id: None,
                 target_did,
+                target_handle: input.target_handle,
+                peer_scope: input.peer_scope,
                 text: text.to_owned(),
                 kind,
                 raw: Some(Value::Object(raw)),
@@ -287,7 +299,7 @@ where
         )
         .await
         .and_then(super::send::object_result)?;
-        let sdk_result = super::send::sdk_result_from_secure_result(
+        let mut sdk_result = super::send::sdk_result_from_secure_result(
             &raw,
             self.client.did().clone(),
             peer,
@@ -296,11 +308,19 @@ where
             kind.clone(),
             Vec::new(),
         )?;
+        crate::messages::normalize_direct_send_result_for_peer_scope(
+            &mut sdk_result,
+            input.peer_scope.as_ref(),
+            input.target_handle.as_deref(),
+            Some(target_did.as_str()),
+        )?;
         Ok(AsyncDirectSecureSendOutcome::Sent(
             DirectSecureTextSendResult {
                 sdk_result,
                 queued_outbox_id: None,
                 target_did,
+                target_handle: input.target_handle,
+                peer_scope: input.peer_scope,
                 text: text.to_owned(),
                 kind,
                 raw: Some(Value::Object(raw)),
@@ -396,7 +416,7 @@ where
         )
         .await
         .and_then(super::send::object_result)?;
-        let sdk_result = super::send::sdk_result_from_secure_attachment_result(
+        let mut sdk_result = super::send::sdk_result_from_secure_attachment_result(
             &raw,
             self.client.did().clone(),
             peer,
@@ -404,9 +424,17 @@ where
             &redacted_manifest,
             Vec::new(),
         )?;
+        crate::messages::normalize_direct_send_result_for_peer_scope(
+            &mut sdk_result,
+            input.peer_scope.as_ref(),
+            input.target_handle.as_deref(),
+            Some(target_did.as_str()),
+        )?;
         Ok(Some(DirectSecureAttachmentSendResult {
             sdk_result,
             target_did,
+            target_handle: input.target_handle,
+            peer_scope: input.peer_scope,
             redacted_manifest,
             raw: Some(Value::Object(raw)),
             local_effect: DirectSecureAttachmentLocalEffect::PersistOutgoing,
@@ -451,6 +479,8 @@ where
             self.directory_transport,
             peer,
             target_did,
+            input.target_handle,
+            input.peer_scope,
             operation_id,
             message_id,
             committed,
@@ -599,6 +629,8 @@ async fn send_init_if_ready<M, D>(
     mut directory_transport: D,
     peer: crate::ids::PeerRef,
     target_did: String,
+    target_handle: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: crate::messages::MessageKind,
     operation_id: String,
@@ -667,7 +699,7 @@ where
     )
     .await
     .and_then(super::send::object_result)?;
-    let sdk_result = super::send::sdk_result_from_secure_result(
+    let mut sdk_result = super::send::sdk_result_from_secure_result(
         &raw,
         client.did().clone(),
         peer,
@@ -676,11 +708,19 @@ where
         kind.clone(),
         Vec::new(),
     )?;
+    crate::messages::normalize_direct_send_result_for_peer_scope(
+        &mut sdk_result,
+        peer_scope.as_ref(),
+        target_handle.as_deref(),
+        Some(target_did.as_str()),
+    )?;
     Ok(AsyncDirectSecureSendOutcome::Sent(
         DirectSecureTextSendResult {
             sdk_result,
             queued_outbox_id: None,
             target_did,
+            target_handle,
+            peer_scope,
             text: text.to_owned(),
             kind,
             raw: Some(Value::Object(raw)),
@@ -697,6 +737,8 @@ async fn send_attachment_init_if_ready<M, D>(
     mut directory_transport: D,
     peer: crate::ids::PeerRef,
     target_did: String,
+    target_handle: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     operation_id: String,
     message_id: String,
     committed: crate::internal::attachment_runtime::upload::PreparedCommittedAttachment,
@@ -772,7 +814,7 @@ where
     )
     .await
     .and_then(super::send::object_result)?;
-    let sdk_result = super::send::sdk_result_from_secure_attachment_result(
+    let mut sdk_result = super::send::sdk_result_from_secure_attachment_result(
         &raw,
         client.did().clone(),
         peer,
@@ -780,9 +822,17 @@ where
         &redacted_manifest,
         Vec::new(),
     )?;
+    crate::messages::normalize_direct_send_result_for_peer_scope(
+        &mut sdk_result,
+        peer_scope.as_ref(),
+        target_handle.as_deref(),
+        Some(target_did.as_str()),
+    )?;
     Ok(Some(DirectSecureAttachmentSendResult {
         sdk_result,
         target_did,
+        target_handle,
+        peer_scope,
         redacted_manifest,
         raw: Some(Value::Object(raw)),
         local_effect: DirectSecureAttachmentLocalEffect::PersistOutgoing,
@@ -1102,6 +1152,8 @@ fn queued_pending_confirmation_result(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
     target_did: String,
+    target_handle: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
     text: &str,
     kind: crate::messages::MessageKind,
     operation_id: String,
@@ -1115,7 +1167,7 @@ fn queued_pending_confirmation_result(
         "pending-confirmation",
     );
     let outbox_id = record.outbox_id.clone();
-    let sdk_result = super::send::queued_sdk_result(
+    let mut sdk_result = super::send::queued_sdk_result(
         &outbox_id,
         client.did().clone(),
         peer,
@@ -1126,11 +1178,19 @@ fn queued_pending_confirmation_result(
         message_id,
         Vec::new(),
     )?;
+    crate::messages::normalize_direct_send_result_for_peer_scope(
+        &mut sdk_result,
+        peer_scope.as_ref(),
+        target_handle.as_deref(),
+        Some(target_did.as_str()),
+    )?;
     Ok(AsyncDirectSecureSendOutcome::Sent(
         DirectSecureTextSendResult {
             sdk_result,
             queued_outbox_id: Some(outbox_id),
             target_did,
+            target_handle,
+            peer_scope,
             text: text.to_owned(),
             kind,
             raw: None,

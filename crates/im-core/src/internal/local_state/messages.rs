@@ -404,11 +404,11 @@ WHERE thread_scope = 'direct'
     for (owner_identity_id, owner_did, thread_id, seq, read_at) in states {
         let owner_identity_id = owner_identity_id.trim();
         let owner_did = owner_did.trim();
-        let peer = thread_id
-            .trim()
-            .strip_prefix("dm:")
-            .unwrap_or_else(|| thread_id.trim())
-            .trim();
+        let thread_id = thread_id.trim();
+        if thread_id.starts_with("dm:peer-scope:") {
+            continue;
+        }
+        let peer = thread_id.strip_prefix("dm:").unwrap_or(thread_id).trim();
         if owner_identity_id.is_empty() || peer.is_empty() || seq.trim().is_empty() {
             continue;
         }
@@ -425,16 +425,7 @@ WHERE thread_scope = 'direct'
         )?;
         let rows = usize::try_from(rows).unwrap_or(usize::MAX);
         updated = updated.saturating_add(rows);
-        if !read_at.trim().is_empty() {
-            let rows = mark_thread_messages_read_up_to_read_at(
-                connection,
-                owner_identity_id,
-                &conversation_ids,
-                &read_at,
-            )?;
-            let rows = usize::try_from(rows).unwrap_or(usize::MAX);
-            updated = updated.saturating_add(rows);
-        }
+        let _ = read_at;
     }
     Ok(updated)
 }
@@ -632,6 +623,32 @@ fn message_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageR
 }
 
 #[cfg(feature = "sqlite")]
+fn peer_scope_projection_id_for_thread_ref(thread: &crate::messages::ThreadRef) -> Option<String> {
+    match thread {
+        crate::messages::ThreadRef::Thread(thread) => {
+            let raw = thread.as_str().trim();
+            raw.starts_with("dm:peer-scope:").then(|| raw.to_owned())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn project_direct_records_to_thread(records: &mut [MessageRecord], thread_id: &str) {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() {
+        return;
+    }
+    for record in records {
+        if !record.group_id.trim().is_empty() || !record.group_did.trim().is_empty() {
+            continue;
+        }
+        record.conversation_id = thread_id.to_owned();
+        record.thread_id = thread_id.to_owned();
+    }
+}
+
+#[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MarkReadClassification {
     pub(crate) direct_ids: Vec<String>,
@@ -710,6 +727,7 @@ pub(crate) fn list_messages_for_thread_ref_for_owner_identity(
     let cursor = decode_local_history_cursor(cursor)?;
     let conversation_ids =
         conversation_ids_for_thread_ref(connection, &owner_identity_id, owner_did, thread)?;
+    let peer_scope_projection_id = peer_scope_projection_id_for_thread_ref(thread);
     if conversation_ids.is_empty() {
         return Ok(ThreadLocalHistoryRecords {
             records: Vec::new(),
@@ -781,6 +799,9 @@ LIMIT ?"#,
     let mut records = Vec::new();
     for row in rows {
         records.push(row.map_err(super::local_state_unavailable)?);
+    }
+    if let Some(peer_scope_projection_id) = peer_scope_projection_id.as_deref() {
+        project_direct_records_to_thread(&mut records, peer_scope_projection_id);
     }
     let has_more = i64::try_from(records.len()).unwrap_or(i64::MAX) > limit;
     if has_more {
@@ -1776,7 +1797,16 @@ fn conversation_ids_for_thread_ref(
             let raw = thread.as_str().trim();
             if !raw.is_empty() {
                 push_unique(&mut ids, raw.to_owned());
-                if raw.starts_with("dm:") && !raw.starts_with("dm:peer-scope:") {
+                if raw.starts_with("dm:peer-scope:") {
+                    for id in legacy_direct_conversation_ids_for_peer_scope_thread(
+                        connection,
+                        owner_identity_id,
+                        owner_did,
+                        raw,
+                    )? {
+                        push_unique(&mut ids, id);
+                    }
+                } else if raw.starts_with("dm:") {
                     let peer = raw.strip_prefix("dm:").unwrap_or(raw);
                     for id in conversation_ids_for_direct_peer(
                         connection,
@@ -1799,6 +1829,30 @@ fn conversation_ids_for_thread_ref(
                     push_unique(&mut ids, group_conversation_id_for_ref(group));
                 }
             }
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(feature = "sqlite")]
+fn legacy_direct_conversation_ids_for_peer_scope_thread(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    peer_scope_conversation_id: &str,
+) -> crate::ImResult<Vec<String>> {
+    let mut ids = Vec::new();
+    for candidate in peer_scope_direct_candidates(connection, owner_identity_id)? {
+        if candidate.conversation_id.trim() != peer_scope_conversation_id.trim() {
+            continue;
+        }
+        for legacy_id in legacy_direct_conversation_ids_for_peer_scope_candidate(
+            connection,
+            owner_identity_id,
+            owner_did,
+            &candidate,
+        )? {
+            push_unique(&mut ids, legacy_id);
         }
     }
     Ok(ids)
@@ -2140,6 +2194,38 @@ fn peer_scope_candidate_dids(
         }
     }
     dids
+}
+
+#[cfg(feature = "sqlite")]
+fn legacy_direct_conversation_ids_for_peer_scope_candidate(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    candidate: &PeerScopeDirectCandidate,
+) -> crate::ImResult<Vec<String>> {
+    let metadata = parse_metadata(&candidate.metadata);
+    let mut ids = Vec::new();
+    for did in peer_scope_candidate_dids(candidate, owner_did, &metadata) {
+        push_unique(
+            &mut ids,
+            crate::internal::local_state::owner_scope::direct_conversation_id(&did),
+        );
+    }
+    if let Some(full_handle) = metadata
+        .get("peer_full_handle")
+        .and_then(serde_json::Value::as_str)
+        .map(normalize_full_handle)
+        .filter(|value| !value.is_empty())
+    {
+        for conversation_id in legacy_direct_conversation_ids_matching_handle(
+            connection,
+            owner_identity_id,
+            &full_handle,
+        )? {
+            push_unique(&mut ids, conversation_id);
+        }
+    }
+    Ok(ids)
 }
 
 #[cfg(feature = "sqlite")]
@@ -3323,6 +3409,98 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
     }
 
     #[test]
+    fn local_state_peer_scope_thread_ref_includes_legacy_direct_messages() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "alice-id";
+        let owner_did = "did:wba:example.com:alice:e1_owner";
+        let legacy_peer_did = "did:wba:example.com:agent:runtime:bob:e1_old";
+        let current_peer_did = "did:wba:example.com:agent:runtime:bob:e1_current";
+        let peer_handle = "bob.example.com";
+        let legacy_conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(legacy_peer_did);
+        let scoped_conversation_id = "dm:peer-scope:v1:bob";
+
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, receiver_did, content_type, content, server_seq, sent_at, stored_at, is_read)
+VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?3, 'text/plain', 'legacy reply', 1,
+        '2026-06-27T00:00:01Z', '2026-06-27T00:00:01Z', 0)"#,
+            (
+                "legacy-reply",
+                owner_identity_id,
+                owner_did,
+                &legacy_conversation_id,
+                legacy_peer_did,
+            ),
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &peer_scope_message(
+                "scoped-reply",
+                owner_identity_id,
+                owner_did,
+                scoped_conversation_id,
+                current_peer_did,
+                peer_handle,
+                2,
+            ),
+        )
+        .unwrap();
+
+        let records = list_messages_for_thread_ref_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            &crate::messages::ThreadRef::Thread(
+                crate::ids::ThreadId::parse(scoped_conversation_id).unwrap(),
+            ),
+            10,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            records
+                .records
+                .iter()
+                .map(|record| record.msg_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["scoped-reply", "legacy-reply"]
+        );
+        assert!(
+            records
+                .records
+                .iter()
+                .all(|record| record.conversation_id == scoped_conversation_id
+                    && record.thread_id == scoped_conversation_id),
+            "peer-scope local history must project alias rows to the requested storage thread"
+        );
+
+        let result = mark_thread_read_watermark_for_owner_identity(
+            &db,
+            owner_identity_id,
+            owner_did,
+            MarkThreadReadWatermarkInput {
+                thread: crate::messages::ThreadRef::Thread(
+                    crate::ids::ThreadId::parse(scoped_conversation_id).unwrap(),
+                ),
+                read_watermark_message_id: Some("scoped-reply".to_owned()),
+                read_watermark_seq: Some("2".to_owned()),
+                read_watermark_at: Some("2026-06-27T00:02:00Z".to_owned()),
+                pending_remote_ack: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.updated_count, 2);
+        assert_eq!(read_by_msg_id(&db, "legacy-reply"), 1);
+        assert_eq!(read_by_msg_id(&db, "scoped-reply"), 1);
+    }
+
+    #[test]
     fn local_state_direct_owner_did_does_not_include_peer_scope_messages_addressed_to_owner() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
@@ -3617,7 +3795,7 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:02Z',
     }
 
     #[test]
-    fn local_state_repair_uses_direct_read_state_time_for_peer_scope_alias() {
+    fn local_state_repair_ignores_direct_read_state_time_for_peer_scope_alias() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         let owner_identity_id = "alice-id";
@@ -3658,11 +3836,65 @@ VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
 
         let repaired = repair_thread_read_state_alias_projection(&db).unwrap();
 
-        assert_eq!(repaired, 3);
+        assert_eq!(repaired, 2);
         assert_eq!(read_by_msg_id(&db, "m1"), 1);
         assert_eq!(read_by_msg_id(&db, "m2"), 1);
-        assert_eq!(read_by_msg_id(&db, "m3"), 1);
+        assert_eq!(read_by_msg_id(&db, "m3"), 0);
         assert_eq!(read_by_msg_id(&db, "m4"), 0);
+        assert_eq!(
+            summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
+            2
+        );
+    }
+
+    #[test]
+    fn local_state_repair_does_not_replay_peer_scope_read_state_by_time() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let owner_identity_id = "alice-id";
+        let owner_did = "did:example:alice";
+        let peer_did = "did:wba:example.com:agent:runtime:bob:e1_peer";
+        let peer_handle = "bob.example.com";
+        let conversation_id = "dm:peer-scope:v1:bob";
+        for (msg_id, seq) in [("m1", 1), ("m2", 2), ("m3", 3)] {
+            upsert_message(
+                &db,
+                &peer_scope_message(
+                    msg_id,
+                    owner_identity_id,
+                    owner_did,
+                    conversation_id,
+                    peer_did,
+                    peer_handle,
+                    seq,
+                ),
+            )
+            .unwrap();
+        }
+        db.execute(
+            "UPDATE messages SET is_read = 1 WHERE msg_id IN ('m1', 'm2')",
+            [],
+        )
+        .unwrap();
+        crate::internal::local_state::conversation_summaries::rebuild_all(&db).unwrap();
+        db.execute(
+            r#"
+INSERT INTO thread_read_state
+    (owner_identity_id, owner_did, thread_scope, thread_id, conversation_id,
+     read_watermark_message_id, read_watermark_seq, read_watermark_at,
+     pending_remote_ack, remote_ack_at, updated_at)
+VALUES (?1, ?2, 'direct', ?3, ?3, 'm2', '2', '2026-06-27T00:00:03Z',
+        0, '2026-06-27T00:00:03Z', '2026-06-27T00:00:03Z')"#,
+            (owner_identity_id, owner_did, conversation_id),
+        )
+        .unwrap();
+
+        let repaired = repair_thread_read_state_alias_projection(&db).unwrap();
+
+        assert_eq!(repaired, 0);
+        assert_eq!(read_by_msg_id(&db, "m1"), 1);
+        assert_eq!(read_by_msg_id(&db, "m2"), 1);
+        assert_eq!(read_by_msg_id(&db, "m3"), 0);
         assert_eq!(
             summary_snapshot(&db, owner_identity_id, conversation_id).unread_count,
             1
