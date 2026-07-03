@@ -9,20 +9,20 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use zeroize::Zeroize;
 
-pub(crate) const DEVICE_VAULT_ROOT_KEY_LEN: usize = 32;
+pub const DEVICE_VAULT_ROOT_KEY_LEN: usize = 32;
 const PLATFORM_PROTECTED_SECRET_SCHEMA_VERSION: u32 = 1;
 const MEMORY_PROTECTOR_NONCE_LEN: usize = 12;
 
-pub(crate) struct SecretBytes {
+pub struct SecretBytes {
     inner: Vec<u8>,
 }
 
 impl SecretBytes {
-    pub(crate) fn from_vec(inner: Vec<u8>) -> Self {
+    pub fn from_vec(inner: Vec<u8>) -> Self {
         Self { inner }
     }
 
-    pub(crate) fn expose_secret(&self) -> &[u8] {
+    pub fn expose_secret(&self) -> &[u8] {
         &self.inner
     }
 }
@@ -42,22 +42,22 @@ impl fmt::Debug for SecretBytes {
     }
 }
 
-pub(crate) struct DeviceVaultRootKey {
+pub struct DeviceVaultRootKey {
     bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN],
 }
 
 impl DeviceVaultRootKey {
-    pub(crate) fn generate() -> Self {
+    pub fn generate() -> Self {
         let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
         OsRng.fill_bytes(&mut bytes);
         Self { bytes }
     }
 
-    pub(crate) fn from_bytes(bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN]) -> Self {
+    pub fn from_bytes(bytes: [u8; DEVICE_VAULT_ROOT_KEY_LEN]) -> Self {
         Self { bytes }
     }
 
-    pub(crate) fn try_from_secret(secret: &SecretBytes) -> crate::ImResult<Self> {
+    pub fn try_from_secret(secret: &SecretBytes) -> crate::ImResult<Self> {
         let bytes = secret.expose_secret();
         if bytes.len() != DEVICE_VAULT_ROOT_KEY_LEN {
             return Err(crate::ImError::Serialization {

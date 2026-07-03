@@ -6,7 +6,7 @@ pub(crate) const VAULT_RECORD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SecretKind {
+pub enum SecretKind {
     IdentityRootPrivate,
     IdentityE2eeSigningPrivate,
     IdentityE2eeAgreementPrivate,
@@ -20,7 +20,7 @@ pub(crate) enum SecretKind {
 }
 
 impl SecretKind {
-    pub(crate) fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::IdentityRootPrivate => "identity.root.private",
             Self::IdentityE2eeSigningPrivate => "identity.e2ee.signing.private",
@@ -65,19 +65,19 @@ impl VaultKdf {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SecretMetadata {
-    pub(crate) workspace_id: String,
-    pub(crate) device_id: String,
-    pub(crate) identity_id: Option<String>,
-    pub(crate) did: Option<String>,
-    pub(crate) kind: SecretKind,
-    pub(crate) key_id: String,
-    pub(crate) key_version: u32,
-    pub(crate) policy: SecretAccessPolicy,
+pub struct SecretMetadata {
+    pub workspace_id: String,
+    pub device_id: String,
+    pub identity_id: Option<String>,
+    pub did: Option<String>,
+    pub kind: SecretKind,
+    pub key_id: String,
+    pub key_version: u32,
+    pub policy: SecretAccessPolicy,
 }
 
 impl SecretMetadata {
-    pub(crate) fn secret_ref(&self) -> SecretRef {
+    pub fn secret_ref(&self) -> SecretRef {
         SecretRef {
             workspace_id: self.workspace_id.clone(),
             device_id: self.device_id.clone(),
@@ -91,14 +91,14 @@ impl SecretMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SecretRef {
-    pub(crate) workspace_id: String,
-    pub(crate) device_id: String,
-    pub(crate) identity_id: Option<String>,
-    pub(crate) did: Option<String>,
-    pub(crate) kind: SecretKind,
-    pub(crate) key_id: String,
-    pub(crate) key_version: u32,
+pub struct SecretRef {
+    pub workspace_id: String,
+    pub device_id: String,
+    pub identity_id: Option<String>,
+    pub did: Option<String>,
+    pub kind: SecretKind,
+    pub key_id: String,
+    pub key_version: u32,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

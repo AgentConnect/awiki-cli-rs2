@@ -5,15 +5,16 @@ mod store;
 
 use crate::internal::platform_secret::{DeviceVaultRootKey, SecretBytes};
 
-pub(crate) use self::record::{SecretMetadata, SecretRef};
-pub(crate) use self::store::FileSecretVaultStore;
+pub use self::policy::SecretAccessPolicy;
+pub use self::record::{SecretKind, SecretMetadata, SecretRef};
+pub use self::store::FileSecretVaultStore;
 
-pub(crate) struct SealSecretRequest {
-    pub(crate) metadata: SecretMetadata,
-    pub(crate) plaintext: SecretBytes,
+pub struct SealSecretRequest {
+    pub metadata: SecretMetadata,
+    pub plaintext: SecretBytes,
 }
 
-pub(crate) trait SecretVault {
+pub trait SecretVault {
     fn seal(&self, request: SealSecretRequest) -> crate::ImResult<SecretRef>;
 
     fn open(&self, secret_ref: &SecretRef) -> crate::ImResult<SecretBytes>;
@@ -24,17 +25,17 @@ pub(crate) trait SecretVault {
 }
 
 #[derive(Debug)]
-pub(crate) struct FileSecretVault {
+pub struct FileSecretVault {
     root_key: DeviceVaultRootKey,
     store: FileSecretVaultStore,
 }
 
 impl FileSecretVault {
-    pub(crate) fn new(root_key: DeviceVaultRootKey, store: FileSecretVaultStore) -> Self {
+    pub fn new(root_key: DeviceVaultRootKey, store: FileSecretVaultStore) -> Self {
         Self { root_key, store }
     }
 
-    pub(crate) fn store(&self) -> &FileSecretVaultStore {
+    pub fn store(&self) -> &FileSecretVaultStore {
         &self.store
     }
 }

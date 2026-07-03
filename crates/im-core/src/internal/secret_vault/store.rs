@@ -6,12 +6,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
-pub(crate) struct FileSecretVaultStore {
+pub struct FileSecretVaultStore {
     root_dir: PathBuf,
 }
 
 impl FileSecretVaultStore {
-    pub(crate) fn new(root_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(root_dir: impl Into<PathBuf>) -> Self {
         Self {
             root_dir: root_dir.into(),
         }

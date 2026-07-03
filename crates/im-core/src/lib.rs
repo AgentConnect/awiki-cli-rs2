@@ -20,6 +20,7 @@ pub mod prelude;
 pub mod realtime;
 pub mod secure;
 pub mod site;
+pub mod vault;
 
 #[doc(hidden)]
 pub mod compat;
