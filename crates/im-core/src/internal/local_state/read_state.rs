@@ -103,6 +103,51 @@ ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn replace_thread_read_state(
+    connection: &rusqlite::Connection,
+    record: &ThreadReadStateRecord,
+) -> crate::ImResult<()> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
+    let thread_scope = required("thread_scope", &record.thread_scope)?;
+    let thread_id = required("thread_id", &record.thread_id)?;
+    let updated_at = required("updated_at", &record.updated_at)?;
+    connection
+        .execute(
+            r#"
+INSERT INTO thread_read_state
+    (owner_identity_id, owner_did, thread_scope, thread_id, conversation_id,
+     read_watermark_message_id, read_watermark_seq, read_watermark_at,
+     pending_remote_ack, remote_ack_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+ON CONFLICT(owner_identity_id, thread_scope, thread_id) DO UPDATE SET
+    owner_did = excluded.owner_did,
+    conversation_id = excluded.conversation_id,
+    read_watermark_message_id = excluded.read_watermark_message_id,
+    read_watermark_seq = excluded.read_watermark_seq,
+    read_watermark_at = excluded.read_watermark_at,
+    pending_remote_ack = excluded.pending_remote_ack,
+    remote_ack_at = excluded.remote_ack_at,
+    updated_at = excluded.updated_at"#,
+            rusqlite::params![
+                owner_identity_id,
+                record.owner_did.trim(),
+                thread_scope,
+                thread_id,
+                record.conversation_id.trim(),
+                nullable_option(record.read_watermark_message_id.as_deref()),
+                nullable_option(record.read_watermark_seq.as_deref()),
+                nullable_option(record.read_watermark_at.as_deref()),
+                record.pending_remote_ack,
+                nullable_option(record.remote_ack_at.as_deref()),
+                updated_at,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn get_thread_read_state(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
