@@ -48,7 +48,7 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
             no_color: Some(resolved.no_color),
         },
         secret_storage: SecretStorageConfig {
-            mode: "file_compat".to_string(),
+            mode: "vault_required".to_string(),
             vault_dir: Path::new(&resolved.paths.data_dir)
                 .join("identity-vault")
                 .to_string_lossy()
@@ -276,7 +276,7 @@ fn normalize_config_for_write(path: &str, mut config: FileConfig) -> FileConfig 
     config.schema_version = CONFIG_SCHEMA_VERSION;
     let config_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
     if config.secret_storage.mode.trim().is_empty() {
-        config.secret_storage.mode = "file_compat".to_string();
+        config.secret_storage.mode = "vault_required".to_string();
     }
     if config.secret_storage.vault_dir.trim().is_empty() {
         config.secret_storage.vault_dir = config_dir

@@ -104,7 +104,7 @@ fn config_writer_core_mutators_match_go_contract() {
     assert_contains(&text, "    auto_start: true\n");
     assert_contains(&text, "    sink: hermes\n");
     assert_contains(&text, "secret_storage:\n");
-    assert_contains(&text, "  mode: file_compat\n");
+    assert_contains(&text, "  mode: vault_required\n");
     assert_contains(&text, "  vault_dir: ");
     assert_contains(&text, "  workspace_id: cli-workspace-");
     assert_contains(&text, "  device_id: cli-local-device\n");
@@ -132,7 +132,7 @@ fn config_writer_never_persists_identity_vault_root_key() {
 
     let text = std::fs::read_to_string(temp.path().join("config.yaml")).expect("read config");
     assert_contains(&text, "secret_storage:\n");
-    assert_contains(&text, "  mode: file_compat\n");
+    assert_contains(&text, "  mode: vault_required\n");
     assert!(
         !text.contains(root_key),
         "config.yaml must not persist identity vault root key: {text:?}"

@@ -157,7 +157,7 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
     assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
-    assert_eq!(stored.auth["jwt_token"], "jwt-register");
+    assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
 }
 
 #[test]
@@ -262,7 +262,6 @@ fn request_body(raw: &str) -> &str {
 struct StoredIdentity {
     index: Value,
     identity: Value,
-    auth: Value,
 }
 
 fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity {
@@ -277,8 +276,36 @@ fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity
             &std::fs::read(identity_dir.join("identity.json")).unwrap(),
         )
         .unwrap(),
-        auth: serde_json::from_slice(&std::fs::read(identity_dir.join("auth.json")).unwrap())
-            .unwrap(),
+    }
+}
+
+fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
+    workspace: &Path,
+    identity_name: &str,
+) {
+    let index_path = workspace.join("identities").join("index.json");
+    let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let entry = &index["credentials"][identity_name];
+    let vault = &entry["vault_migration"];
+    assert_eq!(vault["status"], "verified");
+    assert_eq!(vault["backend"], "vault");
+    assert_eq!(vault["plaintext_compat_retained"], false);
+    assert!(
+        vault["refs"]["auth_jwt"].is_object(),
+        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+    );
+    let dir_name = entry["dir_name"].as_str().unwrap();
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required identity must not persist plaintext {file}"
+        );
     }
 }
 

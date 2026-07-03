@@ -4,6 +4,10 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let workspace = TempDir::new().expect("temp workspace");
@@ -109,6 +113,7 @@ fn doctor_identity_vault_reports_root_key_availability_without_secret_value() {
 fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     let workspace = TempDir::new().expect("temp workspace");
     assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
+    set_secret_storage_mode(workspace.path(), "file_compat");
     assert_success(&awiki_cmd_with_workspace(
         &[
             "--migration",

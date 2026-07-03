@@ -257,6 +257,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS agent_auth_state (
             agent_did TEXT PRIMARY KEY,
             jwt_token TEXT NOT NULL,
+            jwt_token_ref_json TEXT,
             updated_at_ms INTEGER NOT NULL
         );
 
@@ -1697,10 +1698,12 @@ fn migrate_agent_auth_state_v5(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS agent_auth_state (
             agent_did TEXT PRIMARY KEY,
             jwt_token TEXT NOT NULL,
+            jwt_token_ref_json TEXT,
             updated_at_ms INTEGER NOT NULL
         );
         "#,
     )?;
+    add_column_if_missing(connection, "agent_auth_state", "jwt_token_ref_json", "TEXT")?;
     Ok(())
 }
 

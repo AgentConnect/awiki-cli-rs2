@@ -1346,7 +1346,7 @@ fn user_delegated_identity_store_requires_secret_vault_root_key() {
 }
 
 #[test]
-fn user_delegated_identity_legacy_plaintext_row_loads_and_migrates_when_vault_available() {
+fn user_delegated_identity_plaintext_row_without_vault_ref_is_rejected() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let legacy_state = DaemonState::open_without_secret_vault_for_legacy(&config);
@@ -1421,15 +1421,12 @@ INSERT INTO user_delegated_identity (
         .unwrap();
 
     let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
-    let loaded = state
+    let error = state
         .load_user_delegated_identity(&identity.verification_method)
-        .unwrap()
-        .unwrap();
+        .unwrap_err()
+        .to_string();
 
-    assert_eq!(
-        loaded.private_key_material,
-        "legacy-delegated-private-secret"
-    );
+    assert!(error.contains("private_key_ref_json is missing a daemon secret vault ref"));
     let (stored_private_key_material, private_key_ref_json): (String, Option<String>) = connection
         .query_row(
             r#"
@@ -1441,8 +1438,11 @@ WHERE verification_method = ?1
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(stored_private_key_material, "<awiki-secret-vault-ref>");
-    assert!(private_key_ref_json.is_some());
+    assert_eq!(
+        stored_private_key_material,
+        "legacy-delegated-private-secret"
+    );
+    assert!(private_key_ref_json.is_none());
 }
 
 #[test]
@@ -3431,7 +3431,7 @@ fn agent_identity_store_requires_secret_vault_root_key() {
 }
 
 #[test]
-fn agent_identity_legacy_plaintext_row_loads_and_migrates_when_vault_available() {
+fn agent_identity_plaintext_row_without_vault_ref_is_rejected() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
     let legacy_state = DaemonState::open_without_secret_vault_for_legacy(&config);
@@ -3472,15 +3472,13 @@ INSERT INTO agent_identity (
         .unwrap();
 
     let state = DaemonState::open_with_root_key_bytes(&config, [12_u8; 32]);
-    let loaded = state.load_agent_identity("did:agent:daemon").unwrap();
+    let error = state
+        .load_agent_identity("did:agent:daemon")
+        .unwrap_err()
+        .to_string();
 
-    assert_eq!(loaded.auth_private_key_pem, "legacy-private-secret");
-    assert_eq!(loaded.e2ee_signing_private_key_pem, "legacy-signing-secret");
-    assert_eq!(
-        loaded.e2ee_agreement_private_key_pem,
-        "legacy-agreement-secret"
-    );
-    let migrated_auth_pem: String = connection
+    assert!(error.contains("auth_private_key_ref_json is missing a daemon secret vault ref"));
+    let stored_auth_pem: String = connection
         .query_row(
             "SELECT auth_private_key_pem FROM agent_identity WHERE agent_did = ?1",
             ["did:agent:daemon"],
@@ -3494,15 +3492,15 @@ INSERT INTO agent_identity (
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(migrated_auth_pem, "<awiki-secret-vault-ref>");
-    assert!(migrated_auth_ref.is_some());
+    assert_eq!(stored_auth_pem, "legacy-private-secret");
+    assert!(migrated_auth_ref.is_none());
 }
 
 #[test]
-fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
+fn agent_auth_token_roundtrips_from_vault_without_plaintext_storage() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [31_u8; 32]);
     state.initialize().unwrap();
 
     state
@@ -3523,6 +3521,19 @@ fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
             "jwt-secret-value".to_string()
         )]
     );
+    let (stored_jwt_token, jwt_token_ref_json): (String, Option<String>) = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT jwt_token, jwt_token_ref_json FROM agent_auth_state WHERE agent_did = ?1",
+            ["did:agent:daemon"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_jwt_token, "<awiki-secret-vault-ref>");
+    assert!(jwt_token_ref_json.is_some());
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    assert!(!String::from_utf8_lossy(&raw_db).contains("jwt-secret-value"));
 
     let audit_count: i64 = state
         .connection()
@@ -3530,6 +3541,21 @@ fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
         .unwrap();
     assert_eq!(audit_count, 0);
+}
+
+#[test]
+fn agent_auth_token_store_requires_secret_vault_root_key() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    state.initialize().unwrap();
+
+    let error = state
+        .store_agent_auth_token("did:agent:daemon", "jwt-secret-value")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("refusing plaintext fallback"));
 }
 
 #[test]

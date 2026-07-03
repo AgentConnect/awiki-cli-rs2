@@ -105,11 +105,7 @@ WHERE agent_did = ?1
                 agent_identity_storage_row_from_row,
             )
             .with_context(|| format!("load agent identity {agent_did}"))?;
-        let (identity, used_legacy_plaintext) = self.agent_identity_from_storage_row(row)?;
-        if used_legacy_plaintext && self.secret_vault().is_some() {
-            self.store_agent_identity(&identity)
-                .with_context(|| format!("migrate agent identity {agent_did} to secret vault"))?;
-        }
+        let identity = self.agent_identity_from_storage_row(row)?;
         Ok(identity)
     }
 
@@ -270,14 +266,7 @@ WHERE verification_method = ?1
         let Some(stored) = stored else {
             return Ok(None);
         };
-        let (identity, used_legacy_plaintext) =
-            self.user_delegated_identity_from_storage_record(stored)?;
-        if used_legacy_plaintext && self.secret_vault().is_some() {
-            self.update_user_delegated_identity_private_key_ref(&identity)
-                .with_context(|| {
-                    format!("migrate user delegated identity {verification_method} to secret vault")
-                })?;
-        }
+        let identity = self.user_delegated_identity_from_storage_record(stored)?;
         Ok(Some(identity))
     }
 
@@ -1205,6 +1194,7 @@ WHERE idempotency_key = ?4
         if jwt_token.is_empty() {
             bail!("agent auth token must not be empty");
         }
+        let jwt_token_ref_json = self.seal_agent_auth_token(agent_did, jwt_token)?;
         let connection = self.connection()?;
         let now = current_time_millis()?;
         connection.execute(
@@ -1212,41 +1202,64 @@ WHERE idempotency_key = ?4
 INSERT INTO agent_auth_state (
     agent_did,
     jwt_token,
+    jwt_token_ref_json,
     updated_at_ms
-) VALUES (?1, ?2, ?3)
+) VALUES (?1, ?2, ?3, ?4)
 ON CONFLICT(agent_did) DO UPDATE SET
     jwt_token = excluded.jwt_token,
+    jwt_token_ref_json = excluded.jwt_token_ref_json,
     updated_at_ms = excluded.updated_at_ms
 "#,
-            rusqlite::params![agent_did, jwt_token, now],
+            rusqlite::params![
+                agent_did,
+                VAULT_PRIVATE_KEY_SENTINEL,
+                jwt_token_ref_json,
+                now
+            ],
         )?;
         Ok(())
     }
 
     pub fn load_agent_auth_token(&self, agent_did: &str) -> Result<Option<String>> {
         let connection = self.connection()?;
-        let mut statement =
-            connection.prepare("SELECT jwt_token FROM agent_auth_state WHERE agent_did = ?1")?;
+        let mut statement = connection.prepare(
+            "SELECT jwt_token, jwt_token_ref_json FROM agent_auth_state WHERE agent_did = ?1",
+        )?;
         let mut rows = statement.query([agent_did])?;
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
-        Ok(Some(row.get(0)?))
+        let jwt_token: String = row.get(0)?;
+        let jwt_token_ref_json: Option<String> = row.get(1)?;
+        Ok(Some(self.open_agent_auth_token(
+            jwt_token_ref_json.as_deref(),
+            &jwt_token,
+        )?))
     }
 
     pub fn list_agent_auth_tokens(&self) -> Result<Vec<(String, String)>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             r#"
-SELECT agent_did, jwt_token
+SELECT agent_did, jwt_token, jwt_token_ref_json
 FROM agent_auth_state
 ORDER BY agent_did ASC
 "#,
         )?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
         let mut tokens = Vec::new();
         for row in rows {
-            tokens.push(row?);
+            let (agent_did, jwt_token, jwt_token_ref_json) = row?;
+            tokens.push((
+                agent_did,
+                self.open_agent_auth_token(jwt_token_ref_json.as_deref(), &jwt_token)?,
+            ));
         }
         Ok(tokens)
     }
@@ -1301,7 +1314,7 @@ impl DaemonState {
     fn agent_identity_from_storage_row(
         &self,
         row: AgentIdentityStorageRow,
-    ) -> Result<(AgentIdentityRecord, bool)> {
+    ) -> Result<AgentIdentityRecord> {
         let auth_opened = self.open_agent_identity_secret(
             row.auth_private_key_ref_json.as_deref(),
             &row.auth_private_key_pem,
@@ -1319,24 +1332,18 @@ impl DaemonState {
             &agreement_legacy,
             "e2ee_agreement_private_key_ref_json",
         )?;
-        let used_legacy_plaintext = auth_opened.used_legacy_plaintext
-            || signing_opened.used_legacy_plaintext
-            || agreement_opened.used_legacy_plaintext;
-        Ok((
-            AgentIdentityRecord {
-                agent_did: row.agent_did,
-                handle: row.handle,
-                agent_kind: row.agent_kind,
-                did_document: row.did_document,
-                endpoint_url: row.endpoint_url,
-                key_algorithm: row.key_algorithm,
-                public_key: row.public_key,
-                auth_private_key_pem: auth_opened.private_key_pem,
-                e2ee_signing_private_key_pem: signing_opened.private_key_pem,
-                e2ee_agreement_private_key_pem: agreement_opened.private_key_pem,
-            },
-            used_legacy_plaintext,
-        ))
+        Ok(AgentIdentityRecord {
+            agent_did: row.agent_did,
+            handle: row.handle,
+            agent_kind: row.agent_kind,
+            did_document: row.did_document,
+            endpoint_url: row.endpoint_url,
+            key_algorithm: row.key_algorithm,
+            public_key: row.public_key,
+            auth_private_key_pem: auth_opened.private_key_pem,
+            e2ee_signing_private_key_pem: signing_opened.private_key_pem,
+            e2ee_agreement_private_key_pem: agreement_opened.private_key_pem,
+        })
     }
 
     fn open_agent_identity_secret(
@@ -1357,19 +1364,10 @@ impl DaemonState {
                 .with_context(|| format!("open {field}"))?;
             let private_key_pem = String::from_utf8(secret.expose_secret().to_vec())
                 .with_context(|| format!("{field} secret is not utf-8"))?;
-            return Ok(OpenedAgentIdentitySecret {
-                private_key_pem,
-                used_legacy_plaintext: false,
-            });
+            return Ok(OpenedAgentIdentitySecret { private_key_pem });
         }
-        if legacy_private_key_pem == VAULT_PRIVATE_KEY_SENTINEL {
-            bail!("{field} is missing a daemon secret vault ref");
-        }
-        Ok(OpenedAgentIdentitySecret {
-            private_key_pem: legacy_private_key_pem.to_owned(),
-            used_legacy_plaintext: !legacy_private_key_pem.trim().is_empty()
-                && legacy_private_key_pem != VAULT_PRIVATE_KEY_SENTINEL,
-        })
+        let _ = legacy_private_key_pem;
+        bail!("{field} is missing a daemon secret vault ref")
     }
 
     fn seal_user_delegated_private_key(
@@ -1415,13 +1413,13 @@ impl DaemonState {
     fn user_delegated_identity_from_storage_record(
         &self,
         mut record: UserDelegatedIdentityRecord,
-    ) -> Result<(UserDelegatedIdentityRecord, bool)> {
+    ) -> Result<UserDelegatedIdentityRecord> {
         let opened = self.open_user_delegated_private_key(
             record.private_key_ref_json.as_deref(),
             &record.private_key_material,
         )?;
         record.private_key_material = opened.private_key_pem;
-        Ok((record, opened.used_legacy_plaintext))
+        Ok(record)
     }
 
     fn open_user_delegated_private_key(
@@ -1436,34 +1434,54 @@ impl DaemonState {
         )
     }
 
-    fn update_user_delegated_identity_private_key_ref(
-        &self,
-        identity: &UserDelegatedIdentityRecord,
-    ) -> Result<()> {
-        let private_key_ref_json = self.seal_user_delegated_private_key(identity)?;
-        let connection = self.connection()?;
-        connection.execute(
-            r#"
-UPDATE user_delegated_identity
-SET private_key_material = ?1,
-    private_key_ref_json = ?2,
-    updated_at_ms = ?3
-WHERE verification_method = ?4
-"#,
-            rusqlite::params![
-                VAULT_PRIVATE_KEY_SENTINEL,
-                private_key_ref_json,
-                current_time_millis()?,
-                &identity.verification_method,
-            ],
+    fn seal_agent_auth_token(&self, agent_did: &str, jwt_token: &str) -> Result<String> {
+        let vault = self.secret_vault().context(
+            "daemon secret vault root key is required to store agent auth tokens; refusing plaintext fallback",
         )?;
-        Ok(())
+        let secret_ref = vault
+            .seal(SealSecretRequest {
+                metadata: SecretMetadata {
+                    workspace_id: "awiki-daemon".to_owned(),
+                    device_id: "local-daemon".to_owned(),
+                    identity_id: Some(agent_did.to_owned()),
+                    did: Some(agent_did.to_owned()),
+                    kind: SecretKind::AuthJwt,
+                    key_id: "agent-auth-token".to_owned(),
+                    key_version: 1,
+                    policy: SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: SecretBytes::from_vec(jwt_token.as_bytes().to_vec()),
+            })
+            .map_err(anyhow::Error::from)
+            .context("seal agent auth token")?;
+        Ok(serde_json::to_string(&secret_ref)?)
+    }
+
+    fn open_agent_auth_token(
+        &self,
+        jwt_token_ref_json: Option<&str>,
+        legacy_jwt_token: &str,
+    ) -> Result<String> {
+        let Some(jwt_token_ref_json) = non_empty(jwt_token_ref_json) else {
+            let _ = legacy_jwt_token;
+            bail!("jwt_token_ref_json is missing a daemon secret vault ref");
+        };
+        let vault = self
+            .secret_vault()
+            .context("jwt_token_ref_json requires daemon secret vault root key")?;
+        let secret_ref: SecretRef =
+            serde_json::from_str(jwt_token_ref_json).context("parse jwt_token_ref_json")?;
+        let secret = vault
+            .open(&secret_ref)
+            .map_err(anyhow::Error::from)
+            .context("open jwt_token_ref_json")?;
+        String::from_utf8(secret.expose_secret().to_vec())
+            .context("jwt_token_ref_json secret is not utf-8")
     }
 }
 
 struct OpenedAgentIdentitySecret {
     private_key_pem: String,
-    used_legacy_plaintext: bool,
 }
 
 fn seal_agent_identity_secret(

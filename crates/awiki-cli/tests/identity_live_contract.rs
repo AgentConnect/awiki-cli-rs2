@@ -81,7 +81,8 @@ fn identity_register_phone_otp_live_posts_register_and_persists_identity_like_go
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
     assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
-    assert_eq!(stored.auth["jwt_token"], "jwt-register");
+    assert_eq!(stored.auth, Value::Null);
+    assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice");
 }
 
 #[test]
@@ -111,8 +112,6 @@ fn identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go() {
         workspace.path(),
     );
     assert_success(&register);
-    write_stored_auth_token(workspace.path(), "alice", "stale-token");
-
     let output = awiki_cmd(
         &["--identity", "alice", "id", "refresh-token"],
         workspace.path(),
@@ -136,7 +135,7 @@ fn identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go() {
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    assert_header_absent(&requests[1], "Authorization", "Bearer stale-token");
+    assert_header_absent(&requests[1], "Authorization", "Bearer jwt-register");
     assert_contains_text(&requests[1], "Signature-Input:");
     assert_contains_text(&requests[1], "Signature:");
     let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
@@ -150,8 +149,7 @@ fn identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go() {
         })
     );
 
-    let stored = read_stored_identity(workspace.path(), "alice");
-    assert_eq!(stored.auth["jwt_token"], "fresh-token");
+    assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice");
 }
 
 #[test]
@@ -903,25 +901,31 @@ fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity
             &std::fs::read(identity_dir.join("identity.json")).unwrap(),
         )
         .unwrap(),
-        auth: serde_json::from_slice(&std::fs::read(identity_dir.join("auth.json")).unwrap())
-            .unwrap(),
+        auth: std::fs::read(identity_dir.join("auth.json"))
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+            .unwrap_or(Value::Null),
     }
 }
 
-fn write_stored_auth_token(workspace: &Path, identity_name: &str, jwt_token: &str) {
+fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identity_name: &str) {
     let index_path = workspace.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    std::fs::write(
-        workspace
-            .join("identities")
-            .join(dir_name)
-            .join("auth.json"),
-        serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
-    )
-    .unwrap();
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required identity must not persist plaintext {file}"
+        );
+    }
 }
 
 #[derive(Clone)]

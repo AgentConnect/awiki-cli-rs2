@@ -66,15 +66,14 @@ where
 }
 
 pub fn daemon_auth_material(
-    config: &DaemonConfig,
+    _config: &DaemonConfig,
     state: &DaemonState,
     daemon_agent: &AgentDefinition,
 ) -> Result<DidAuthMaterial> {
-    let auth_paths =
-        crate::im_core_adapter::agent_identity_auth_paths(config, &daemon_agent.agent_did);
+    let identity = state.load_agent_identity(&daemon_agent.agent_did)?;
     Ok(DidAuthMaterial {
-        did_document_path: auth_paths.0,
-        private_key_path: auth_paths.1,
+        did_document: identity.did_document,
+        private_key_pem: identity.auth_private_key_pem,
         bearer_token: state.load_agent_auth_token(&daemon_agent.agent_did)?,
     })
 }

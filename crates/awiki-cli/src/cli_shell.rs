@@ -466,6 +466,7 @@ impl App {
             ));
         }
         let resolved = self.resolve_config_for_workspace()?;
+        require_legacy_file_compat_identity_storage(&resolved, "id create")?;
         let manager = self.identity_manager(&resolved);
         if self.globals.dry_run {
             let existing = manager.list().unwrap_or_default();
@@ -698,6 +699,7 @@ impl App {
 
     pub fn run_id_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        require_legacy_file_compat_identity_storage(&resolved, "id import-v1")?;
         let name = command.flags.get("name").cloned().unwrap_or_default();
         let import_all = command
             .flags
@@ -972,8 +974,10 @@ impl App {
         result.map_err(|err| internal_anyhow(anyhow::Error::new(err)))?;
 
         let resolved = self.resolve_config_untraced().map_err(internal_anyhow)?;
-        legacy_identity::ensure_all_identity_private_keys_compatible(&resolved.paths)
-            .map_err(identity_exit)?;
+        if legacy_file_compat_identity_storage_enabled(&resolved)? {
+            legacy_identity::ensure_all_identity_private_keys_compatible(&resolved.paths)
+                .map_err(identity_exit)?;
+        }
         Ok(resolved)
     }
 
@@ -1230,6 +1234,33 @@ fn legacy_command_result(result: legacy_identity::CommandResult) -> CommandResul
         summary: result.summary,
         warnings: result.warnings,
     }
+}
+
+fn legacy_file_compat_identity_storage_enabled(resolved: &Resolved) -> Result<bool, ExitError> {
+    let secret_storage = workspace_config::resolve_secret_storage(resolved).map_err(|err| {
+        ExitError::new(
+            "invalid_config",
+            2,
+            format!("invalid secret_storage config: {err}"),
+            "Use secret_storage.mode=file_compat only for legacy plaintext identity migrations.",
+        )
+    })?;
+    Ok(secret_storage.mode == "file_compat")
+}
+
+fn require_legacy_file_compat_identity_storage(
+    resolved: &Resolved,
+    command: &'static str,
+) -> Result<(), ExitError> {
+    if legacy_file_compat_identity_storage_enabled(resolved)? {
+        return Ok(());
+    }
+    Err(ExitError::new(
+        "legacy_plaintext_identity_storage_disabled",
+        3,
+        format!("{command}: legacy plaintext identity storage is disabled."),
+        "Use `awiki-cli id register` or `awiki-cli id recover` for vault-backed identities. Set secret_storage.mode=file_compat only for explicit legacy migration work.",
+    ))
 }
 
 pub(crate) fn identity_exit(err: IdentityError) -> ExitError {

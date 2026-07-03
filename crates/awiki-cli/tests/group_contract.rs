@@ -1046,6 +1046,7 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
 #[test]
 fn group_e2ee_leave_reaches_supported_path_before_identity_lookup() {
     let workspace = TempDir::new().expect("workspace");
+    register_generated_group_identity(workspace.path(), "alice", "alice", "");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
 
     let output = awiki_cmd(
@@ -1063,8 +1064,11 @@ fn group_e2ee_leave_reaches_supported_path_before_identity_lookup() {
 
     assert_code(&output, 3);
     let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "identity_required");
-    assert_eq!(envelope["error"]["message"], "authentication is required");
+    assert_eq!(envelope["error"]["code"], "auth_required");
+    assert!(!envelope["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("identity_vault_metadata"));
 }
 
 #[test]
@@ -1486,7 +1490,7 @@ fn register_generated_group_identity(
     handle: &str,
     jwt_token: &str,
 ) -> TestIdentity {
-    write_ready_identity(
+    let identity = write_ready_identity(
         workspace,
         TestIdentityOptions {
             identity_name,
@@ -1495,7 +1499,10 @@ fn register_generated_group_identity(
             jwt_token,
             make_default: true,
         },
-    )
+    );
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_code(&migrate, 0);
+    identity
 }
 
 fn write_group_config(workspace: &Path, base_url: &str) {
