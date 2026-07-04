@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::agent::{agent_data_paths, AgentDefinition, AgentIdentityRecord, AgentKind};
 use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
-use crate::secret_vault::{DaemonSecretVault, DAEMON_VAULT_ROOT_KEY_ENV};
+use crate::secret_vault::DaemonSecretVault;
 use crate::security::runtime_token::{
     current_time_millis, IssuedRuntimeToken, RpcMethod, RuntimeRpcToken, RuntimeTokenScope,
 };
@@ -41,17 +41,11 @@ pub struct DaemonState {
 
 impl DaemonState {
     pub fn open(config: &DaemonConfig) -> Result<Self> {
-        let secret_vault = if std::env::var_os(DAEMON_VAULT_ROOT_KEY_ENV).is_some() {
-            Some(Arc::new(
-                DaemonSecretVault::from_config_and_env(config)
-                    .context("open daemon secret vault")?,
-            ))
-        } else {
-            None
-        };
         Ok(Self {
             database_path: config.daemon_db_path.clone(),
-            secret_vault,
+            secret_vault: Some(Arc::new(
+                DaemonSecretVault::from_config(config).context("open daemon secret vault")?,
+            )),
         })
     }
 

@@ -7,10 +7,16 @@ use im_core::vault::{
     DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretBytes,
     SecretRef, SecretVault, DEVICE_VAULT_ROOT_KEY_LEN,
 };
+use rand::rngs::OsRng;
+use rand::RngCore;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::DaemonConfig;
 
 pub const DAEMON_VAULT_ROOT_KEY_ENV: &str = "AWIKI_DAEMON_VAULT_ROOT_KEY_B64";
+const DAEMON_LOCAL_ROOT_KEY_FILE_NAME: &str = "root-key.b64u";
 
 #[derive(Debug)]
 pub struct DaemonSecretVault {
@@ -18,6 +24,11 @@ pub struct DaemonSecretVault {
 }
 
 impl DaemonSecretVault {
+    pub fn from_config(config: &DaemonConfig) -> Result<Self> {
+        let root_key = load_or_create_root_key(config)?;
+        Ok(Self::from_root_key(config, root_key))
+    }
+
     pub fn from_config_and_env(config: &DaemonConfig) -> Result<Self> {
         let raw = std::env::var(DAEMON_VAULT_ROOT_KEY_ENV)
             .ok()
@@ -59,17 +70,192 @@ impl DaemonSecretVault {
 }
 
 pub fn parse_root_key(raw: Option<&str>) -> Result<DeviceVaultRootKey> {
+    parse_root_key_from_source(raw, DAEMON_VAULT_ROOT_KEY_ENV)
+}
+
+fn local_root_key_file(config: &DaemonConfig) -> PathBuf {
+    config
+        .secret_vault_dir
+        .join(DAEMON_LOCAL_ROOT_KEY_FILE_NAME)
+}
+
+fn load_or_create_root_key(config: &DaemonConfig) -> Result<DeviceVaultRootKey> {
+    let raw = std::env::var(DAEMON_VAULT_ROOT_KEY_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if raw.is_some() {
+        return parse_root_key(raw.as_deref());
+    }
+    load_or_create_local_root_key(&local_root_key_file(config))
+}
+
+fn load_or_create_local_root_key(path: &Path) -> Result<DeviceVaultRootKey> {
+    match read_local_root_key_file(path)? {
+        Some(raw) => {
+            return parse_root_key_from_source(Some(&raw), "daemon local vault root key file");
+        }
+        None => {}
+    }
+
+    let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
+    OsRng.fill_bytes(&mut bytes);
+    match write_local_root_key_file(path, &bytes)? {
+        LocalRootKeyWriteOutcome::Created => {
+            let root_key = DeviceVaultRootKey::from_bytes(bytes);
+            bytes.fill(0);
+            Ok(root_key)
+        }
+        LocalRootKeyWriteOutcome::AlreadyExists => {
+            bytes.fill(0);
+            let raw = read_local_root_key_file(path)?
+                .context("daemon local vault root key file appeared but could not be read")?;
+            parse_root_key_from_source(Some(&raw), "daemon local vault root key file")
+        }
+    }
+}
+
+fn read_local_root_key_file(path: &Path) -> Result<Option<String>> {
+    reject_root_key_symlink(path)?;
+    match fs::read_to_string(path) {
+        Ok(raw) => {
+            if let Some(parent) = path.parent() {
+                reject_root_key_symlink(parent)?;
+                set_private_dir_mode(parent).with_context(|| {
+                    format!(
+                        "secure daemon vault root key directory {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            set_private_file_mode(path)
+                .with_context(|| format!("secure daemon vault root key file {}", path.display()))?;
+            Ok(Some(raw))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => {
+            Err(err).with_context(|| format!("read daemon vault root key file {}", path.display()))
+        }
+    }
+}
+
+enum LocalRootKeyWriteOutcome {
+    Created,
+    AlreadyExists,
+}
+
+fn write_local_root_key_file(
+    path: &Path,
+    root_key: &[u8; DEVICE_VAULT_ROOT_KEY_LEN],
+) -> Result<LocalRootKeyWriteOutcome> {
+    if let Some(parent) = path.parent() {
+        reject_root_key_symlink(parent)?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create daemon vault root key directory {}",
+                parent.display()
+            )
+        })?;
+        reject_root_key_symlink(parent)?;
+        set_private_dir_mode(parent).with_context(|| {
+            format!(
+                "secure daemon vault root key directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    reject_root_key_symlink(path)?;
+    let encoded = URL_SAFE_NO_PAD.encode(root_key);
+    let mut file = match create_private_file(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(LocalRootKeyWriteOutcome::AlreadyExists);
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("create daemon vault root key file {}", path.display()));
+        }
+    };
+    file.write_all(encoded.as_bytes())
+        .with_context(|| format!("write daemon vault root key file {}", path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("write daemon vault root key file {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync daemon vault root key file {}", path.display()))?;
+    set_private_file_mode(path)
+        .with_context(|| format!("secure daemon vault root key file {}", path.display()))?;
+    Ok(LocalRootKeyWriteOutcome::Created)
+}
+
+fn reject_root_key_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!(
+                "refusing to use daemon vault root key symlink {}",
+                path.display()
+            );
+        }
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err)
+            .with_context(|| format!("inspect daemon vault root key file {}", path.display())),
+    }
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn set_private_dir_mode(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("chmod 0700 {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_mode(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_mode(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod 0600 {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_file_mode(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn parse_root_key_from_source(raw: Option<&str>, source_name: &str) -> Result<DeviceVaultRootKey> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         bail!(
-            "{DAEMON_VAULT_ROOT_KEY_ENV} is required for daemon secret vault persistence; refusing plaintext fallback"
+            "{source_name} is required for daemon secret vault persistence; refusing plaintext fallback"
         );
     };
     let decoded = URL_SAFE_NO_PAD
         .decode(raw)
         .or_else(|_| STANDARD.decode(raw))
-        .with_context(|| format!("{DAEMON_VAULT_ROOT_KEY_ENV} must be base64url/base64"))?;
+        .with_context(|| format!("{source_name} must be base64url/base64"))?;
     if decoded.len() != DEVICE_VAULT_ROOT_KEY_LEN {
-        bail!("{DAEMON_VAULT_ROOT_KEY_ENV} must decode to {DEVICE_VAULT_ROOT_KEY_LEN} bytes");
+        bail!("{source_name} must decode to {DEVICE_VAULT_ROOT_KEY_LEN} bytes");
     }
     let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
     bytes.copy_from_slice(&decoded);

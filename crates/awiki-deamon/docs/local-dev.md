@@ -156,7 +156,8 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 
 - 新写入 `agent_identity` 时，`auth_private_key_pem`、`e2ee_signing_private_key_pem` 和 `e2ee_agreement_private_key_pem` 列只保存 `<awiki-secret-vault-ref>` sentinel，真实私钥 seal 到 daemon SecretVault，并在 `*_private_key_ref_json` 列保存 `SecretRef` JSON。
 - 新写入 `user_delegated_identity` 时，`private_key_material` 只保存 `<awiki-secret-vault-ref>` sentinel，真实 delegated private key seal 到 daemon SecretVault，并在 `private_key_ref_json` 保存 `SecretRef` JSON。
-- 旧明文行不再兼容读取；缺少 daemon vault root key 或缺少 `SecretRef` 时，secret 读取/持久化会 fail-closed，不回退明文。
+- daemon 优先使用 `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` 作为 SecretVault root key；未显式提供时，会在 `secrets/vault/root-key.b64u` 懒初始化本机 no-prompt root key 文件。该文件在 Unix/macOS 上按 `0600` 写入，`secrets/vault/` 目录按 `0700` 收紧；不要提交、打印、放入 env file 或写入 E2E 报告。
+- 旧明文行不再兼容读取；缺少 `SecretRef`、root key 文件损坏或 root key 不匹配时，secret 读取/持久化会 fail-closed，不回退明文。首次安装不再因为未配置 `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` 回退明文，而是创建本机 root key 文件后继续以 SecretVault 密文保存。
 - Direct E2EE session/prekey local state 通过 `im-core` SecretVault envelope 密文落盘；历史明文 blob / 文件只在读路径兼容。
 - daemon delegated inbox 的 `inbox_auth_key_ref` 使用 `vault:`，私钥 seal 到 `im-core` file vault。新路径需要 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，不再写 `runtime/cache/delegated-inbox/.../daemon-key-1.pem` 或 shadow identity `private.key`。
 - `agent_auth_state` 保存 daemon/runtime agent bearer token 的 vault ref 状态，`jwt_token` 列只允许 `<awiki-secret-vault-ref>` sentinel，真实 token seal 到 daemon SecretVault。不要把 token 原文写入日志、audit 或 E2E 报告。
@@ -164,7 +165,7 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 - 显式 delegated `key_ref` 仍兼容 `file:`、`local:` 和裸路径读取 caller-provided delegated private key；新 daemon-owned delegated key 应使用 `vault:`。
 - App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO，传输可以暂时明文；daemon 接收后持久化必须按上面的 vault ref 存储。后续应改为端到端加密 bootstrap envelope。
 
-因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥、agent auth token 以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、legacy file-backed identity provider 下线和 user-service DID-auth 兼容文件收敛仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token 或 E2EE 本地 secret。
+因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥、agent auth token 以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；daemon root key 由 env 或本机 `root-key.b64u` 解锁，不进入 daemon DB、日志、audit 或 UI。App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、root key rotation/backup、legacy file-backed identity provider 下线和 user-service DID-auth 兼容文件收敛仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token、root key 或 E2EE 本地 secret。
 
 ## 本地验证
 
