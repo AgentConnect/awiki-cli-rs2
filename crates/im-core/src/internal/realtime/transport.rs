@@ -224,27 +224,6 @@ fn connect_error(
     Err(crate::ImError::TransportUnavailable { detail: error })
 }
 
-#[cfg(feature = "blocking")]
-pub(crate) fn require_realtime_auth_token(client: &crate::core::ImClient) -> crate::ImResult<()> {
-    client
-        .runtime()
-        .key_provider
-        .valid_auth_token()?
-        .map(|_| ())
-        .ok_or(crate::ImError::AuthRequired)
-}
-
-pub(crate) async fn require_realtime_auth_token_async(
-    client: &crate::core::ImClient,
-) -> crate::ImResult<()> {
-    client
-        .runtime()
-        .key_provider
-        .valid_auth_token()?
-        .map(|_| ())
-        .ok_or(crate::ImError::AuthRequired)
-}
-
 pub(crate) async fn connect_async_websocket_session(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<super::async_ws_transport::AsyncWsTransport> {
@@ -254,7 +233,7 @@ pub(crate) async fn connect_async_websocket_session(
         .runtime()
         .key_provider
         .valid_auth_token()?
-        .ok_or(crate::ImError::AuthRequired)?;
+        .unwrap_or_default();
     connect_async_websocket_session_with_token(client, &endpoints, current_jwt.trim()).await
 }
 
@@ -325,7 +304,7 @@ pub(crate) fn connect_native_websocket_session(
         .runtime()
         .key_provider
         .valid_auth_token()?
-        .ok_or(crate::ImError::AuthRequired)?;
+        .unwrap_or_default();
     connect_native_websocket_session_with_token(client, &endpoints, current_jwt.trim())
 }
 

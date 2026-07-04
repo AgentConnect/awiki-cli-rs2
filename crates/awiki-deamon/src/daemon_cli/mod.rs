@@ -13,7 +13,8 @@ use crate::plugins::hermes::{HermesGateway, HERMES_RUNTIME_PLUGIN_ID};
 use crate::registration::DidAuthMaterial;
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationExchangeRequest,
-    RegistrationToken, RegistrationTokenMetadata, UserServiceAgentRegistrationClient,
+    AgentRegistrationExchangeResult, RegistrationToken, RegistrationTokenMetadata,
+    UserServiceAgentRegistrationClient,
 };
 use crate::runtime::RuntimeInstallStatus;
 use crate::service::{
@@ -395,16 +396,34 @@ where
         &exchange.controller_user_id,
         &exchange.controller_full_handle,
     )?;
-    existing.handle = exchange.handle;
-    existing.controller_user_id = exchange.controller_user_id;
-    existing.controller_full_handle = exchange.controller_full_handle;
+    existing.handle = exchange.handle.clone();
+    existing.controller_user_id = exchange.controller_user_id.clone();
+    existing.controller_full_handle = exchange.controller_full_handle.clone();
     existing.controller_scope_key = exchange_scope_key;
-    existing.controller_did = exchange.controller_did;
+    existing.controller_did = exchange.controller_did.clone();
     existing.local_agent_db_path = local_agent_db_path;
     existing.message_db_path = message_db_path;
     existing.status = "active".to_string();
     state.upsert_agent_definition(&existing)?;
+    store_exchange_auth_token(state, &exchange)?;
     Ok(existing)
+}
+
+fn store_exchange_auth_token(
+    state: &DaemonState,
+    exchange: &AgentRegistrationExchangeResult,
+) -> Result<()> {
+    if let Some(token) = exchange
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        state
+            .store_agent_auth_token(&exchange.did, token)
+            .context("store agent auth token from registration exchange")?;
+    }
+    Ok(())
 }
 
 fn existing_daemon_agent(state: &DaemonState) -> Result<Option<AgentDefinition>> {
@@ -623,6 +642,7 @@ mod tests {
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
+                access_token: Some("jwt-agent-secret".to_string()),
             })
         }
     }
@@ -810,6 +830,13 @@ mod tests {
         assert_eq!(agent.controller_did, "did:human:alice");
         assert_eq!(agent.handle, "alice-mac-daemon");
         assert_eq!(client.exchange_count(), 1);
+        assert_eq!(
+            state
+                .load_agent_auth_token(&agent.agent_did)
+                .unwrap()
+                .as_deref(),
+            Some("jwt-agent-secret")
+        );
     }
 
     #[test]
@@ -858,6 +885,13 @@ mod tests {
         );
         assert_eq!(agent.agent_did, existing.agent_did);
         let recovered = state.load_agent_definition(&existing.agent_did).unwrap();
+        assert_eq!(
+            state
+                .load_agent_auth_token(&existing.agent_did)
+                .unwrap()
+                .as_deref(),
+            Some("jwt-agent-secret")
+        );
         assert_eq!(recovered.controller_user_id, "user-alice");
         assert_eq!(recovered.controller_full_handle, "alice.anpclaw.com");
         assert_eq!(recovered.controller_did, "did:human:alice");

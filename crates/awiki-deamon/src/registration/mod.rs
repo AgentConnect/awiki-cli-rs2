@@ -24,7 +24,7 @@ pub struct AgentRegistrationExchangeRequest {
     pub allow_existing_agent_did: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRegistrationExchangeResult {
     pub token_id: String,
     pub did: String,
@@ -35,6 +35,28 @@ pub struct AgentRegistrationExchangeResult {
     pub controller_did: String,
     pub handle: String,
     pub status: String,
+    pub access_token: Option<String>,
+}
+
+impl fmt::Debug for AgentRegistrationExchangeResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentRegistrationExchangeResult")
+            .field("token_id", &self.token_id)
+            .field("did", &self.did)
+            .field("user_id", &self.user_id)
+            .field("agent_kind", &self.agent_kind)
+            .field("controller_user_id", &self.controller_user_id)
+            .field("controller_full_handle", &self.controller_full_handle)
+            .field("controller_did", &self.controller_did)
+            .field("handle", &self.handle)
+            .field("status", &self.status)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted-token>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -796,6 +818,7 @@ fn parse_exchange_response(bytes: &[u8]) -> Result<AgentRegistrationExchangeResu
         controller_full_handle: required_string(&result, "controller_full_handle")?,
         handle: required_string(&result, "handle")?,
         status: required_string(&result, "status")?,
+        access_token: optional_auth_token(&result),
     };
     Ok(parsed)
 }
@@ -960,6 +983,15 @@ fn optional_string(value: &Value, field: &str) -> Option<String> {
     value.get(field).and_then(Value::as_str).map(str::to_string)
 }
 
+fn optional_auth_token(value: &Value) -> Option<String> {
+    ["access_token", "jwt_token", "bearer_token"]
+        .iter()
+        .filter_map(|field| value.get(*field).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,7 +1047,8 @@ mod tests {
                 "controller_full_handle": "alice.anpclaw.com",
                 "controller_did": "did:human:alice",
                 "handle": "alice-daemon",
-                "status": "registered"
+                "status": "registered",
+                "access_token": "jwt-agent-secret"
             },
             "error": null,
             "id": 1
@@ -1026,5 +1059,8 @@ mod tests {
         assert_eq!(parsed.token_id, "areg_tok_1");
         assert_eq!(parsed.did, "did:agent:daemon");
         assert_eq!(parsed.agent_kind, AgentKind::Daemon);
+        assert_eq!(parsed.access_token.as_deref(), Some("jwt-agent-secret"));
+        assert!(!format!("{parsed:?}").contains("jwt-agent-secret"));
+        assert!(format!("{parsed:?}").contains("<redacted-token>"));
     }
 }

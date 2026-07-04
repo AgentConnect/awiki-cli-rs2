@@ -66,6 +66,7 @@ impl AgentRegistrationClient for MockRegistrationClient {
             controller_did: request.controller_did,
             handle: request.handle,
             status: "registered".to_string(),
+            access_token: Some("jwt-agent-secret".to_string()),
         })
     }
 }

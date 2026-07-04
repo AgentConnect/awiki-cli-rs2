@@ -629,13 +629,13 @@ where
     state.store_agent_identity(&identity.into_record(handle.clone(), AgentKind::Daemon))?;
     let (local_agent_db_path, message_db_path) = agent_data_paths(&exchange.did)?;
     let definition = AgentDefinition {
-        agent_did: exchange.did,
-        handle: exchange.handle,
+        agent_did: exchange.did.clone(),
+        handle: exchange.handle.clone(),
         agent_kind: AgentKind::Daemon,
-        controller_user_id: exchange.controller_user_id,
-        controller_full_handle: exchange.controller_full_handle,
+        controller_user_id: exchange.controller_user_id.clone(),
+        controller_full_handle: exchange.controller_full_handle.clone(),
         controller_scope_key: exchange_scope_key,
-        controller_did: exchange.controller_did,
+        controller_did: exchange.controller_did.clone(),
         runtime_plugin_id: None,
         runtime_profile_id: None,
         workspace_id: None,
@@ -645,6 +645,7 @@ where
         status: "active".to_string(),
     };
     state.upsert_agent_definition(&definition)?;
+    store_exchange_auth_token(state, &exchange)?;
     Ok(definition)
 }
 
@@ -905,6 +906,8 @@ where
             }
         }
     }
+
+    store_exchange_auth_token(state, &exchange)?;
 
     let outcome = RuntimeAgentCreateOutcome {
         command_id: payload.command_id.clone(),
@@ -2499,6 +2502,23 @@ fn validate_application_json_payload(message: &IncomingAgentPayloadMessage) -> R
     }
     if message.target_agent_did.trim().is_empty() {
         bail!("target_agent_did must not be empty");
+    }
+    Ok(())
+}
+
+fn store_exchange_auth_token(
+    state: &DaemonState,
+    exchange: &AgentRegistrationExchangeResult,
+) -> Result<()> {
+    if let Some(token) = exchange
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        state
+            .store_agent_auth_token(&exchange.did, token)
+            .context("store agent auth token from registration exchange")?;
     }
     Ok(())
 }

@@ -141,6 +141,7 @@ Transport is explicit through configuration and capability checks:
 
 - `HttpOnly` keeps business operations on HTTP/RPC.
 - realtime runner requires a non-HTTP-only transport policy and returns a capability error when unavailable.
+- realtime session startup does not require a cached bearer token before spawning the runner. The WebSocket transport first tries the cached token when present, refreshes through DID-auth when the token is missing or receives `401`, and only then reports transport/auth failure to the session status stream. This lets hosted daemon/runtime agent identities recover after install when user-service did not include a bearer token in the registration exchange response.
 - group E2EE, secure direct, SQLite-backed state, and advanced provider traits are feature-gated where appropriate.
 
 ## 9. Security Rules

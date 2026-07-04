@@ -63,6 +63,7 @@ impl AgentRegistrationClient for MockRegistrationClient {
             controller_did: request.controller_did,
             handle: request.handle,
             status: "registered".to_string(),
+            access_token: Some("jwt-agent-secret".to_string()),
         })
     }
 }
@@ -496,6 +497,20 @@ fn daemon_setup_and_runtime_agent_create_command_persist_records_and_status_payl
     assert_eq!(requests[1].agent_kind, AgentKind::Runtime);
     assert!(!format!("{:?}", requests[1]).contains("tok_runtime_secret_value"));
     assert!(format!("{:?}", requests[1]).contains("<redacted>"));
+    assert_eq!(
+        state
+            .load_agent_auth_token(&daemon.agent_did)
+            .unwrap()
+            .as_deref(),
+        Some("jwt-agent-secret")
+    );
+    assert_eq!(
+        state
+            .load_agent_auth_token(&created.agent_did)
+            .unwrap()
+            .as_deref(),
+        Some("jwt-agent-secret")
+    );
 
     let connection = Connection::open(root.path().join("daemon.db")).unwrap();
     let agent_count: i64 = connection

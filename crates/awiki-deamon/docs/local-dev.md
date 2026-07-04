@@ -299,7 +299,8 @@ daemon setup 的最小流程：
 2. daemon 生成 Daemon Agent DID 文档和本地密钥。
 3. daemon 使用 token、handle、DID document 调 user-service `exchange_token`。
 4. 兑换成功后，daemon 写入 `agent_identity` 和 `agent_definition`。
-5. 后续再次 setup 同一个 handle 时，优先恢复本地已有 Daemon Agent 定义。
+5. 如果 `exchange_token` 响应同时返回 `access_token`、`jwt_token` 或 `bearer_token`，daemon 会在本地身份/定义写入成功后把 token seal 到 `agent_auth_state`；如果响应没有返回 token，后续 realtime/HTTP 业务仍可用 agent DID-auth 在 transport boundary 刷新 bearer。
+6. 后续再次 setup 同一个 handle 时，优先恢复本地已有 Daemon Agent 定义，并用新的 registration token 兑换结果刷新本地 bearer token。
 
 runtime agent 的最小创建流程：
 
@@ -308,7 +309,8 @@ runtime agent 的最小创建流程：
 3. daemon 校验 `sender_did == daemon agent.controller_did`。
 4. daemon 生成 Runtime Agent DID 文档，用 registration token 调 user-service `exchange_token`。
 5. daemon 写入 `agent_identity`、`agent_definition`、`runtime_profile` 和可选 `workspace_binding`。
-6. daemon 通过 `im-core` payload 消息出口回发 `awiki.agent.status.v1` ready/failed 状态；测试中使用 `MemoryRuntimeOutbox`。
+6. 如果 `exchange_token` 响应携带 bearer token，daemon 在 runtime agent 本地记录写入成功后 seal 到 `agent_auth_state`；否则 runtime agent 的 foreground realtime session 不在启动前 fail-fast，而是在 WebSocket transport 连接边界通过 DID-auth 刷新。
+7. daemon 通过 `im-core` payload 消息出口回发 `awiki.agent.status.v1` ready/failed 状态；测试中使用 `MemoryRuntimeOutbox`。
 
 结构化命令固定使用普通 JSON payload：
 
