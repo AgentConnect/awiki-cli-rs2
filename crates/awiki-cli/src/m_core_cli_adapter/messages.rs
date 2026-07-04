@@ -202,14 +202,11 @@ pub fn send_message_via_im_core(
     })?;
     rpc_phase.finish();
     match &result.message.thread {
-        ThreadRef::Direct(_) => {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_result(&result);
             render_send_result(&target, &result, secure)
         }
         ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
-        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
-            "thread send results are not supported by the CLI renderer".to_string(),
-        )),
     }
 }
 
@@ -232,14 +229,11 @@ pub async fn send_message_via_im_core_async(
     })?;
     rpc_phase.finish();
     match &result.message.thread {
-        ThreadRef::Direct(_) => {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_result(&result);
             render_send_result(&target, &result, secure)
         }
         ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
-        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
-            "thread send results are not supported by the CLI renderer".to_string(),
-        )),
     }
 }
 
@@ -255,16 +249,13 @@ pub fn send_attachment_via_im_core(
         .send(target, request)
         .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
-        ThreadRef::Direct(_) => {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
             render_direct_attachment_result(resolved, &target, &result)
         }
         ThreadRef::Group(group) => {
             render_group_attachment_result(resolved, group.as_str(), &result)
         }
-        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
-            "thread attachment send results are not supported by the CLI renderer".to_string(),
-        )),
     }
 }
 
@@ -281,16 +272,13 @@ pub async fn send_attachment_via_im_core_async(
         .await
         .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
-        ThreadRef::Direct(_) => {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
             render_direct_attachment_result(resolved, &target, &result)
         }
         ThreadRef::Group(group) => {
             render_group_attachment_result(resolved, group.as_str(), &result)
         }
-        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
-            "thread attachment send results are not supported by the CLI renderer".to_string(),
-        )),
     }
 }
 
@@ -1189,15 +1177,25 @@ fn direct_target_from_result(result: &SendMessageResult) -> TargetResolution {
         .or_else(|| direct_thread_peer(result))
         .map(|peer| peer.as_str())
         .unwrap_or_default();
+    let target_handle = message_attribute(&result.message.metadata.attributes, "target_handle")
+        .or_else(|| message_attribute(&result.message.metadata.attributes, "peer_full_handle"));
     let did = message_attribute(&result.message.metadata.attributes, "resolved_target_did")
-        .unwrap_or_else(|| raw_peer.to_string());
+        .unwrap_or_else(|| {
+            if raw_peer.starts_with("did:") {
+                raw_peer.to_string()
+            } else {
+                String::new()
+            }
+        });
     TargetResolution {
         did,
-        handle: if raw_peer.starts_with("did:") {
-            String::new()
-        } else {
-            raw_peer.to_string()
-        },
+        handle: target_handle.unwrap_or_else(|| {
+            if raw_peer.starts_with("did:") {
+                String::new()
+            } else {
+                raw_peer.to_string()
+            }
+        }),
     }
 }
 
@@ -2015,101 +2013,5 @@ fn optional_message_id_flag(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn attachment_transport_warnings_match_legacy_websocket_contract() {
-        assert_eq!(
-            attachment_transport_warnings_for_mode("websocket", false),
-            vec!["Attachment messages use HTTP transport even when runtime.mode is websocket."]
-        );
-        assert_eq!(
-            attachment_transport_warnings_for_mode("websocket", true),
-            vec!["Attachment downloads use HTTP transport even when runtime.mode is websocket."]
-        );
-        assert!(attachment_transport_warnings_for_mode("http", false).is_empty());
-    }
-
-    #[test]
-    fn direct_attachment_download_target_uses_resolved_did() {
-        let thread = ThreadRef::Direct(PeerRef::parse("bob", "").expect("peer"));
-        let selection = AttachmentSelection {
-            sender_did: "did:wba:example:bob".to_string(),
-            ..AttachmentSelection::default()
-        };
-
-        assert_eq!(
-            download_target_value(&thread, Some(&selection)),
-            json!({"kind": "direct", "did": "did:wba:example:bob"})
-        );
-    }
-
-    #[test]
-    fn attachment_output_preparation_errors_map_to_cli_path_errors() {
-        let root = unique_temp_root("attachment-output-path-error");
-        std::fs::create_dir_all(&root).unwrap();
-        let parent_file = root.join("not-a-directory");
-        std::fs::write(&parent_file, b"file").unwrap();
-        let request = DownloadAttachmentRequest {
-            thread: ThreadRef::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
-            message_id: MessageId::parse("msg-1").unwrap(),
-            attachment_id: Some("att-1".to_string()),
-            destination: AttachmentDestination::LocalFile(parent_file.join("out.bin")),
-            overwrite: true,
-        };
-
-        let err = prepare_download_destination(&request).unwrap_err();
-
-        assert!(matches!(err, MessageAdapterError::PathUnavailable(message)
-            if message.contains("create attachment output directory")
-                && message.contains("not-a-directory")));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn attachment_destination_errors_map_to_cli_path_errors() {
-        assert_eq!(
-            im_error_to_message_error(im_core::ImError::invalid_input(
-                Some("destination".to_string()),
-                "destination already exists and overwrite is false: out.bin",
-            )),
-            MessageAdapterError::PathUnavailable(
-                "destination already exists and overwrite is false: out.bin".to_string()
-            )
-        );
-        assert_eq!(
-            im_error_to_message_error(im_core::ImError::PathUnavailable {
-                path_kind: "attachment_output".to_string(),
-                detail: "parent is not writable".to_string(),
-            }),
-            MessageAdapterError::PathUnavailable(
-                "attachment_output path unavailable: parent is not writable".to_string()
-            )
-        );
-        assert_eq!(
-            im_error_to_message_error(im_core::ImError::Io {
-                detail: "write temp file failed".to_string(),
-            }),
-            MessageAdapterError::PathUnavailable("write temp file failed".to_string())
-        );
-    }
-
-    fn unique_temp_root(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("awiki-cli-{name}-{}-{nanos}", std::process::id()))
-    }
-
-    #[test]
-    fn secure_attachment_unsupported_maps_to_specific_adapter_error() {
-        let err = im_error_to_message_error(im_core::ImError::UnsupportedCapability {
-            capability: "secure-attachments".to_string(),
-        });
-
-        assert_eq!(err, MessageAdapterError::SecureAttachmentNotSupported);
-    }
-}
+#[path = "messages_tests.rs"]
+mod tests;
