@@ -347,12 +347,14 @@ impl DaemonConfig {
     }
 
     pub fn ensure_state_layout(&self) -> Result<()> {
+        let logs_dir = self.state_root.join("logs");
         for dir in [
             &self.state_root,
             &self.identity_root_dir,
             &self.secret_vault_dir,
             &self.runtime_cache_dir,
             &self.runtime_temp_dir,
+            &logs_dir,
         ] {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("create daemon state directory {}", dir.display()))?;
@@ -886,6 +888,7 @@ mod tests {
         assert!(config.secret_vault_dir.is_dir());
         assert!(config.runtime_cache_dir.is_dir());
         assert!(config.runtime_temp_dir.is_dir());
+        assert!(root.path().join("logs").is_dir());
         assert!(config.local_socket_path.parent().unwrap().is_dir());
         assert!(config.audit_log_path.parent().unwrap().is_dir());
     }

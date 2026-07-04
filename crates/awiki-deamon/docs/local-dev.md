@@ -113,6 +113,11 @@ AWiki env file 后再 `exec awiki-deamon foreground`；不会默认读取用户 
 service 化时应复用同一“daemon runtime env file / credential provider”设计，而不是在
 Claude/Codex driver 中写死平台专用环境变量。
 
+macOS 安装会在写入 LaunchAgent 后显式执行 `launchctl enable
+gui/<uid>/ai.awiki.deamon`，用于覆盖旧 cleanup 或手工联调遗留的 disabled 状态；同时
+`ensure_state_layout()` 会预创建 `state/logs/`，避免 launchd 因 stdout/stderr 目标目录缺失而在
+首次 bootstrap 时返回 I/O error。
+
 Hermes Runtime 使用 Hermes TUI Gateway 的 stdio JSON-RPC 入口，不是普通 messaging gateway。官方 TUI Gateway 入口形态是：
 
 ```text
