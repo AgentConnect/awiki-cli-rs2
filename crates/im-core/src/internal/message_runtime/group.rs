@@ -448,9 +448,6 @@ fn message_id_from_group_result(
     group_did: &str,
     result: &GroupRpcResult,
 ) -> crate::ImResult<crate::ids::MessageId> {
-    if !result.message_id.trim().is_empty() {
-        return crate::ids::MessageId::parse(&result.message_id);
-    }
     if !result.group_did.trim().is_empty() && !result.group_event_seq.trim().is_empty() {
         return crate::ids::MessageId::parse(format!(
             "{}:{}",
@@ -464,6 +461,9 @@ fn message_id_from_group_result(
             group_did.trim(),
             result.group_event_seq.trim()
         ));
+    }
+    if !result.message_id.trim().is_empty() {
+        return crate::ids::MessageId::parse(&result.message_id);
     }
     crate::ids::MessageId::parse(format!(
         "msg-{}",
@@ -603,7 +603,10 @@ mod tests {
             result.sdk_result.message.group.as_ref().unwrap().as_str(),
             group_did
         );
-        assert_eq!(result.sdk_result.message.id.as_str(), "server-message-id");
+        assert_eq!(
+            result.sdk_result.message.id.as_str(),
+            "did:example:groups:demo:42"
+        );
         assert_eq!(
             result.sdk_result.message.metadata.operation_id.as_deref(),
             Some("server-operation-id")
@@ -627,6 +630,15 @@ mod tests {
         );
         assert!(result.sdk_result.message.metadata.retry_plan.is_none());
         assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(42));
+        assert!(result
+            .sdk_result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| {
+                attribute.key == "raw_message_id" && attribute.value == "server-message-id"
+            }));
         assert!(matches!(
             result.sdk_result.delivery,
             crate::messages::DeliveryState::Accepted
@@ -769,7 +781,10 @@ mod tests {
         assert_eq!(result.group_did, group_did);
         assert_eq!(result.message_type, "markdown");
         assert_eq!(result.text, "hello async group");
-        assert_eq!(result.sdk_result.message.id.as_str(), "server-message-id");
+        assert_eq!(
+            result.sdk_result.message.id.as_str(),
+            "did:example:groups:async:43"
+        );
         assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(43));
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
@@ -1009,7 +1024,10 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(result.sdk_result.message.id.as_str(), "msg-client-group");
+        assert_eq!(
+            result.sdk_result.message.id.as_str(),
+            "did:example:groups:client-id:45"
+        );
         assert_eq!(
             result.sdk_result.message.metadata.operation_id.as_deref(),
             Some("op-client-group")
@@ -1019,6 +1037,9 @@ mod tests {
         assert!(attributes
             .iter()
             .any(|attribute| { attribute.key == "group_event_seq" && attribute.value == "45" }));
+        assert!(attributes.iter().any(|attribute| {
+            attribute.key == "raw_message_id" && attribute.value == "msg-client-group"
+        }));
         let calls = calls.borrow();
         assert_eq!(calls[0].params["meta"]["message_id"], "msg-client-group");
         assert_eq!(calls[0].params["meta"]["operation_id"], "op-client-group");
