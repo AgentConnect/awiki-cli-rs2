@@ -78,6 +78,13 @@ impl GroupReadResult {
     pub(crate) fn push_warning(&mut self, warning: impl Into<String>) {
         self.warnings.push(warning.into());
     }
+
+    pub(crate) fn replace_messages(
+        &mut self,
+        messages: crate::ids::Page<crate::messages::Message>,
+    ) {
+        self.messages = messages;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

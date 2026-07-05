@@ -1253,8 +1253,9 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupMessagesRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        let limit = request.limit;
         let group = request.group.as_str().to_string();
-        let result = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        let mut result = crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -1269,6 +1270,14 @@ impl<'a> GroupService<'a> {
             self.client,
             &result.messages.items,
         );
+        result.replace_messages(
+            crate::internal::message_runtime::read::merge_group_local_projection_best_effort(
+                self.client,
+                result.messages.clone(),
+                &crate::ids::GroupRef::parse(&group)?,
+                limit,
+            ),
+        );
         Ok(result)
     }
 
@@ -1277,7 +1286,8 @@ impl<'a> GroupService<'a> {
         request: super::GroupMessagesRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
         let group = request.group.as_str().to_string();
-        let result = crate::internal::group_runtime::read::GroupReadRuntime::new(
+        let limit = request.limit;
+        let mut result = crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -1295,6 +1305,15 @@ impl<'a> GroupService<'a> {
             &result.messages.items,
         )
         .await;
+        let merged =
+            crate::internal::message_runtime::read::merge_group_local_projection_best_effort_async(
+                self.client,
+                result.messages.clone(),
+                &crate::ids::GroupRef::parse(&group)?,
+                limit,
+            )
+            .await;
+        result.replace_messages(merged);
         Ok(result)
     }
 

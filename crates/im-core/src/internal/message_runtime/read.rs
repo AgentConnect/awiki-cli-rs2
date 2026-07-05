@@ -281,9 +281,15 @@ where
                     params,
                 )?;
                 project_group_e2ee_messages(self.client, &mut raw);
-                let page =
+                let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
                 persist_projection_best_effort(self.client, &page.items);
+                page = merge_group_local_projection_best_effort(
+                    self.client,
+                    page,
+                    &group,
+                    input.query.limit,
+                );
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Thread(_) => {
@@ -549,9 +555,16 @@ where
                     .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
                     .await?;
                 project_group_e2ee_messages_async(self.client, &mut raw).await;
-                let page =
+                let mut page =
                     page_from_raw_with_group(self.client, &raw, input.query.limit, Some(&group))?;
                 persist_projection_best_effort_async(self.client, &page.items).await;
+                page = merge_group_local_projection_best_effort_async(
+                    self.client,
+                    page,
+                    &group,
+                    input.query.limit,
+                )
+                .await;
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Thread(_) => {
@@ -728,6 +741,80 @@ async fn merge_direct_local_projection_best_effort_async(
     page
 }
 
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
+pub(crate) fn merge_group_local_projection_best_effort(
+    client: &crate::core::ImClient,
+    mut page: crate::ids::Page<crate::messages::Message>,
+    group: &crate::ids::GroupRef,
+    requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return page;
+    };
+    let Ok(rows) = crate::internal::local_state::groups::list_group_messages_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        group.as_str(),
+        page_limit(requested_limit, 50),
+        None,
+    ) else {
+        return page;
+    };
+    merge_local_message_values_into_page(&mut page, rows, requested_limit);
+    page
+}
+
+#[cfg(not(all(feature = "sqlite", any(feature = "blocking", test))))]
+pub(crate) fn merge_group_local_projection_best_effort(
+    _client: &crate::core::ImClient,
+    page: crate::ids::Page<crate::messages::Message>,
+    _group: &crate::ids::GroupRef,
+    _requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    page
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn merge_group_local_projection_best_effort_async(
+    client: &crate::core::ImClient,
+    mut page: crate::ids::Page<crate::messages::Message>,
+    group: &crate::ids::GroupRef,
+    requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    let db = match client.core_inner().local_state_db().await {
+        Ok(db) => db,
+        Err(_) => return page,
+    };
+    let rows = match db
+        .list_group_messages(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            group.as_str(),
+            page_limit(requested_limit, 50),
+            None,
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return page,
+    };
+    merge_local_message_values_into_page(&mut page, rows, requested_limit);
+    page
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn merge_group_local_projection_best_effort_async(
+    _client: &crate::core::ImClient,
+    page: crate::ids::Page<crate::messages::Message>,
+    _group: &crate::ids::GroupRef,
+    _requested_limit: crate::ids::PageLimit,
+) -> crate::ids::Page<crate::messages::Message> {
+    page
+}
+
 #[cfg(feature = "sqlite")]
 fn merge_local_message_records_into_page(
     page: &mut crate::ids::Page<crate::messages::Message>,
@@ -746,6 +833,57 @@ fn merge_local_message_records_into_page(
     }
     page.items.append(&mut local_messages);
     page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn merge_local_message_values_into_page(
+    page: &mut crate::ids::Page<crate::messages::Message>,
+    rows: Vec<serde_json::Value>,
+    requested_limit: crate::ids::PageLimit,
+) {
+    let mut local_messages = rows
+        .iter()
+        .filter_map(|row| message_from_local_state_value(row).ok())
+        .collect::<Vec<_>>();
+    if local_messages.is_empty() {
+        return;
+    }
+    page.items.append(&mut local_messages);
+    page.has_more |= sort_dedupe_and_truncate_messages(&mut page.items, requested_limit);
+}
+
+#[cfg(feature = "sqlite")]
+fn message_from_local_state_value(
+    row: &serde_json::Value,
+) -> crate::ImResult<crate::messages::Message> {
+    let record = crate::internal::local_state::messages::MessageRecord {
+        msg_id: string_value(row.get("msg_id")),
+        owner_identity_id: string_value(row.get("owner_identity_id")),
+        owner_did: string_value(row.get("owner_did")),
+        conversation_id: string_value(row.get("conversation_id")),
+        thread_id: string_value(row.get("thread_id")),
+        direction: row
+            .get("direction")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or_default(),
+        sender_did: string_value(row.get("sender_did")),
+        receiver_did: string_value(row.get("receiver_did")),
+        group_id: string_value(row.get("group_id")),
+        group_did: string_value(row.get("group_did")),
+        content_type: string_value(row.get("content_type")),
+        content: string_value(row.get("content")),
+        title: string_value(row.get("title")),
+        server_seq: row.get("server_seq").and_then(serde_json::Value::as_i64),
+        sent_at: string_value(row.get("sent_at")),
+        stored_at: string_value(row.get("stored_at")),
+        is_e2ee: bool_value(row.get("is_e2ee")).unwrap_or(false),
+        is_read: bool_value(row.get("is_read")).unwrap_or(false),
+        sender_name: string_value(row.get("sender_name")),
+        metadata: string_value(row.get("metadata")),
+        mentions_current_user: bool_value(row.get("mentions_current_user")).unwrap_or(false),
+        credential_name: string_value(row.get("credential_name")),
+    };
+    crate::internal::message_runtime::conversations::message_from_record(&record)
 }
 
 #[cfg(feature = "sqlite")]

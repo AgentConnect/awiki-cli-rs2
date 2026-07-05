@@ -1408,11 +1408,13 @@ fn group_outgoing_result_record(
         &sdk_result.message.body,
         sdk_result.message.metadata.content_type.as_deref(),
     );
+    let conversation_id = group_conversation_id(group_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: group_thread_id(group_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         group_id: group_storage_key(group_did),

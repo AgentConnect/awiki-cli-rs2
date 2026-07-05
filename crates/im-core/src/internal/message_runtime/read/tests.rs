@@ -857,6 +857,88 @@ fn messages_read_runtime_builds_direct_history_rpc() {
 }
 
 #[test]
+fn messages_read_runtime_group_history_merges_committed_local_projection() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let connection = crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+    crate::internal::local_state::messages::upsert_message(
+        &connection,
+        &crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-local-group-send".to_owned(),
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            conversation_id: "group:did:example:group".to_owned(),
+            thread_id: "group:did:example:group".to_owned(),
+            direction: 1,
+            sender_did: "did:example:alice".to_owned(),
+            group_id: "did:example:group".to_owned(),
+            group_did: "did:example:group".to_owned(),
+            content_type: "text/plain".to_owned(),
+            content: "local group send".to_owned(),
+            sent_at: "2026-05-21T00:00:03Z".to_owned(),
+            stored_at: "2026-05-21T00:00:03Z".to_owned(),
+            server_seq: Some(77),
+            is_read: true,
+            metadata: json!({
+                "content_type": "text/plain",
+                "server_sequence": 77,
+                "delivery_state": "sent"
+            })
+            .to_string(),
+            ..crate::internal::local_state::messages::MessageRecord::default()
+        },
+    )
+    .unwrap();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadyGroupSessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({
+                "messages": [],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .history(HistoryRead {
+            thread: crate::messages::ThreadRef::Group(
+                crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            ),
+            query: crate::messages::HistoryQuery {
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                inbox_history_options: None,
+            },
+            resolved_peer_did: None,
+            peer_scope: None,
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    let message = &result.page.items[0];
+    assert_eq!(message.id.as_str(), "msg-local-group-send");
+    assert_eq!(
+        message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .unwrap()
+            .conversation_id,
+        "group:did:example:group"
+    );
+    assert_eq!(message.metadata.server_sequence, Some(77));
+    assert_eq!(
+        calls.borrow()[0].method,
+        "group.list_messages",
+        "remote sync should still run before the committed projection is read"
+    );
+}
+
+#[test]
 fn messages_read_runtime_local_history_reads_projection_without_rpc() {
     let fixture = Fixture::new();
     let client = fixture.client();
