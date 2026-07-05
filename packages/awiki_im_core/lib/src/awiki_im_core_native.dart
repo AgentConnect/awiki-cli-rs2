@@ -556,6 +556,33 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<SendMessageResult> sendConversationText(
+    SendConversationTextRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.sendConversationText(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<SendMessageResult> sendConversationPayload(
+    SendConversationPayloadRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    validateMessagePayloadJson(request.payloadJson);
+    final result = await _mapNativeErrors(
+      () => gen_messages.sendConversationPayload(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<MessagePage> inbox({
     required int limit,
     String? cursor,
@@ -1810,6 +1837,33 @@ extension on SendPayloadRequest {
   gen_message.DartSendPayloadRequest _toGen() =>
       gen_message.DartSendPayloadRequest(
         target: target._toGen(),
+        payloadJson: payloadJson,
+        security: security._toGen(),
+        clientMessageId: clientMessageId,
+        idempotencyKey: idempotencyKey,
+        waitForFinalAcceptance: waitForFinalAcceptance,
+        delegatedSigning: delegatedSigning?._toGen(),
+      );
+}
+
+extension on SendConversationTextRequest {
+  gen_message.DartSendConversationTextRequest _toGen() =>
+      gen_message.DartSendConversationTextRequest(
+        conversation: conversation._toGen(),
+        text: text,
+        markdown: markdown,
+        security: security._toGen(),
+        clientMessageId: clientMessageId,
+        idempotencyKey: idempotencyKey,
+        waitForFinalAcceptance: waitForFinalAcceptance,
+        delegatedSigning: delegatedSigning?._toGen(),
+      );
+}
+
+extension on SendConversationPayloadRequest {
+  gen_message.DartSendConversationPayloadRequest _toGen() =>
+      gen_message.DartSendConversationPayloadRequest(
+        conversation: conversation._toGen(),
         payloadJson: payloadJson,
         security: security._toGen(),
         clientMessageId: clientMessageId,

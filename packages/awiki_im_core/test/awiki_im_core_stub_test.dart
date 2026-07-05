@@ -94,48 +94,54 @@ void main() {
     expect(status.warnings, isEmpty);
   });
 
-  test('identity vault migration and verification reports expose safe fields', () {
-    const status = IdentityVaultStatus(
-      identity: IdentitySummary(
-        id: 'id-alice',
-        did: 'did:example:alice',
-        localAlias: 'alice',
-        isDefault: true,
-        readyForAuth: true,
-        readyForMessaging: true,
-      ),
-      storagePolicy: IdentitySecretStoragePolicy.vaultRequired,
-      selectedBackend: IdentitySecretStorageBackend.vault,
-      vaultAvailable: true,
-      vaultMetadataPresent: true,
-      vaultMetadataVerified: true,
-      workspaceId: 'workspace-a',
-      deviceId: 'device-a',
-      plaintextCompatRetained: true,
-    );
-    final migration = IdentityVaultMigrationReport(
-      identity: status.identity,
-      status: status,
-      migrated: true,
-      verified: true,
-      plaintextCompatRetained: true,
-      warnings: ['plaintext compatibility files are still retained'],
-    );
-    final verification = IdentityVaultVerificationReport(
-      identity: status.identity,
-      status: status,
-      verified: true,
-      warnings: ['plaintext compatibility files are still retained'],
-    );
+  test(
+    'identity vault migration and verification reports expose safe fields',
+    () {
+      const status = IdentityVaultStatus(
+        identity: IdentitySummary(
+          id: 'id-alice',
+          did: 'did:example:alice',
+          localAlias: 'alice',
+          isDefault: true,
+          readyForAuth: true,
+          readyForMessaging: true,
+        ),
+        storagePolicy: IdentitySecretStoragePolicy.vaultRequired,
+        selectedBackend: IdentitySecretStorageBackend.vault,
+        vaultAvailable: true,
+        vaultMetadataPresent: true,
+        vaultMetadataVerified: true,
+        workspaceId: 'workspace-a',
+        deviceId: 'device-a',
+        plaintextCompatRetained: true,
+      );
+      final migration = IdentityVaultMigrationReport(
+        identity: status.identity,
+        status: status,
+        migrated: true,
+        verified: true,
+        plaintextCompatRetained: true,
+        warnings: ['plaintext compatibility files are still retained'],
+      );
+      final verification = IdentityVaultVerificationReport(
+        identity: status.identity,
+        status: status,
+        verified: true,
+        warnings: ['plaintext compatibility files are still retained'],
+      );
 
-    expect(migration.migrated, isTrue);
-    expect(migration.verified, isTrue);
-    expect(migration.plaintextCompatRetained, isTrue);
-    expect(verification.verified, isTrue);
-    expect(migration.identity.did, 'did:example:alice');
-    expect(verification.status.selectedBackend, IdentitySecretStorageBackend.vault);
-    expect('$migration $verification', isNot(contains('SecretRef')));
-  });
+      expect(migration.migrated, isTrue);
+      expect(migration.verified, isTrue);
+      expect(migration.plaintextCompatRetained, isTrue);
+      expect(verification.verified, isTrue);
+      expect(migration.identity.did, 'did:example:alice');
+      expect(
+        verification.status.selectedBackend,
+        IdentitySecretStorageBackend.vault,
+      );
+      expect('$migration $verification', isNot(contains('SecretRef')));
+    },
+  );
 
   test('unsupported capability error shape is stable', () {
     const err = AwikiImCoreException(
@@ -174,6 +180,31 @@ void main() {
 
   test('conversation mark-read API shape remains app-usable', () {
     expect(_markConversationReadApiShape, isA<Function>());
+  });
+
+  test('conversation send API shape remains app-usable', () {
+    const text = SendConversationTextRequest(
+      conversation: ConversationReadRef(conversationId: 'dm:did:example:bob'),
+      text: 'hello',
+      clientMessageId: 'msg-client-text',
+      idempotencyKey: 'op-client-text',
+    );
+    expect(text.conversation.conversationId, 'dm:did:example:bob');
+    expect(text.security, MessageSecurityMode.defaultPlain);
+
+    const payload = SendConversationPayloadRequest(
+      conversation: ConversationReadRef(
+        conversationId: 'group:did:example:group',
+      ),
+      payloadJson: '{"schema":"awiki.agent.mention.v1"}',
+      clientMessageId: 'msg-client-payload',
+      idempotencyKey: 'op-client-payload',
+    );
+    expect(payload.conversation.conversationId, 'group:did:example:group');
+    expect(payload.security, MessageSecurityMode.defaultPlain);
+
+    expect(_sendConversationTextApiShape, isA<Function>());
+    expect(_sendConversationPayloadApiShape, isA<Function>());
   });
 
   test('local history API shape remains app-usable', () {
@@ -360,6 +391,30 @@ Future<MarkThreadReadResult> _markConversationReadApiShape(MessageApi api) {
     const ConversationReadRef(conversationId: 'dm:did:example:bob'),
     watermark: const ReadWatermark(lastReadThreadSeq: '42'),
     fallbackMaxMessageIds: 100,
+  );
+}
+
+Future<SendMessageResult> _sendConversationTextApiShape(MessageApi api) {
+  return api.sendConversationText(
+    const SendConversationTextRequest(
+      conversation: ConversationReadRef(conversationId: 'dm:did:example:bob'),
+      text: 'hello',
+      clientMessageId: 'msg-client-text',
+      idempotencyKey: 'op-client-text',
+    ),
+  );
+}
+
+Future<SendMessageResult> _sendConversationPayloadApiShape(MessageApi api) {
+  return api.sendConversationPayload(
+    const SendConversationPayloadRequest(
+      conversation: ConversationReadRef(
+        conversationId: 'group:did:example:group',
+      ),
+      payloadJson: '{"schema":"awiki.agent.mention.v1"}',
+      clientMessageId: 'msg-client-payload',
+      idempotencyKey: 'op-client-payload',
+    ),
   );
 }
 

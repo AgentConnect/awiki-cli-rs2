@@ -90,6 +90,48 @@ class SendPayloadRequest {
   final DelegatedSigningOptions? delegatedSigning;
 }
 
+class SendConversationTextRequest {
+  const SendConversationTextRequest({
+    required this.conversation,
+    required this.text,
+    this.markdown = false,
+    this.security = MessageSecurityMode.defaultPlain,
+    this.clientMessageId,
+    this.idempotencyKey,
+    this.waitForFinalAcceptance = false,
+    this.delegatedSigning,
+  });
+
+  final ConversationReadRef conversation;
+  final String text;
+  final bool markdown;
+  final MessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DelegatedSigningOptions? delegatedSigning;
+}
+
+class SendConversationPayloadRequest {
+  const SendConversationPayloadRequest({
+    required this.conversation,
+    required this.payloadJson,
+    this.security = MessageSecurityMode.defaultPlain,
+    this.clientMessageId,
+    this.idempotencyKey,
+    this.waitForFinalAcceptance = false,
+    this.delegatedSigning,
+  });
+
+  final ConversationReadRef conversation;
+  final String payloadJson;
+  final MessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DelegatedSigningOptions? delegatedSigning;
+}
+
 class DelegatedSigningOptions {
   const DelegatedSigningOptions({
     this.logicalSenderDid,

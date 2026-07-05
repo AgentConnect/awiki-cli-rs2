@@ -296,6 +296,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw);
 
   @protected
+  DartSendConversationPayloadRequest
+  dco_decode_box_autoadd_dart_send_conversation_payload_request(dynamic raw);
+
+  @protected
+  DartSendConversationTextRequest
+  dco_decode_box_autoadd_dart_send_conversation_text_request(dynamic raw);
+
+  @protected
   DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(
     dynamic raw,
   );
@@ -712,6 +720,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSecureProblemCode dco_decode_dart_secure_problem_code(dynamic raw);
+
+  @protected
+  DartSendConversationPayloadRequest
+  dco_decode_dart_send_conversation_payload_request(dynamic raw);
+
+  @protected
+  DartSendConversationTextRequest
+  dco_decode_dart_send_conversation_text_request(dynamic raw);
 
   @protected
   DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw);
@@ -1219,6 +1235,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSecureProblem sse_decode_box_autoadd_dart_secure_problem(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationPayloadRequest
+  sse_decode_box_autoadd_dart_send_conversation_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationTextRequest
+  sse_decode_box_autoadd_dart_send_conversation_text_request(
     SseDeserializer deserializer,
   );
 
@@ -1761,6 +1789,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSecureProblemCode sse_decode_dart_secure_problem_code(
     SseDeserializer deserializer,
   );
+
+  @protected
+  DartSendConversationPayloadRequest
+  sse_decode_dart_send_conversation_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationTextRequest
+  sse_decode_dart_send_conversation_text_request(SseDeserializer deserializer);
 
   @protected
   DartSendEmailRequest sse_decode_dart_send_email_request(
@@ -2365,6 +2403,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_secure_problem(
     DartSecureProblem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_conversation_payload_request(
+    DartSendConversationPayloadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_conversation_text_request(
+    DartSendConversationTextRequest self,
     SseSerializer serializer,
   );
 
@@ -3034,6 +3084,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_secure_problem_code(
     DartSecureProblemCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_conversation_payload_request(
+    DartSendConversationPayloadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_conversation_text_request(
+    DartSendConversationTextRequest self,
     SseSerializer serializer,
   );
 

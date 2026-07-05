@@ -59,7 +59,8 @@ where
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
 
         let message_type = body.message_type();
-        let payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
+        let mut payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
+        apply_delivery_overrides(&mut payload.meta, &input.request);
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials(self.client)?,
@@ -116,7 +117,8 @@ where
             .await?;
 
         let message_type = body.message_type();
-        let payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
+        let mut payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
+        apply_delivery_overrides(&mut payload.meta, &input.request);
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials_async(self.client).await?,
@@ -366,6 +368,18 @@ fn fill_group_result_defaults(result: &mut GroupRpcResult, meta: &Value, group_d
     }
 }
 
+fn apply_delivery_overrides(meta: &mut Value, request: &crate::messages::SendMessageRequest) {
+    if let Some(message_id) = request.client_message_id.as_ref() {
+        meta["message_id"] = Value::String(message_id.as_str().to_string());
+    }
+    if let Some(idempotency_key) = request.delivery.idempotency_key.as_ref() {
+        let value = idempotency_key.trim();
+        if !value.is_empty() {
+            meta["operation_id"] = Value::String(value.to_string());
+        }
+    }
+}
+
 pub(crate) fn sdk_result_from_group_result(
     result: &GroupRpcResult,
     sender: crate::ids::Did,
@@ -434,6 +448,9 @@ fn message_id_from_group_result(
     group_did: &str,
     result: &GroupRpcResult,
 ) -> crate::ImResult<crate::ids::MessageId> {
+    if !result.message_id.trim().is_empty() {
+        return crate::ids::MessageId::parse(&result.message_id);
+    }
     if !result.group_did.trim().is_empty() && !result.group_event_seq.trim().is_empty() {
         return crate::ids::MessageId::parse(format!(
             "{}:{}",
@@ -447,9 +464,6 @@ fn message_id_from_group_result(
             group_did.trim(),
             result.group_event_seq.trim()
         ));
-    }
-    if !result.message_id.trim().is_empty() {
-        return crate::ids::MessageId::parse(&result.message_id);
     }
     crate::ids::MessageId::parse(format!(
         "msg-{}",
@@ -589,10 +603,7 @@ mod tests {
             result.sdk_result.message.group.as_ref().unwrap().as_str(),
             group_did
         );
-        assert_eq!(
-            result.sdk_result.message.id.as_str(),
-            "did:example:groups:demo:42"
-        );
+        assert_eq!(result.sdk_result.message.id.as_str(), "server-message-id");
         assert_eq!(
             result.sdk_result.message.metadata.operation_id.as_deref(),
             Some("server-operation-id")
@@ -758,10 +769,7 @@ mod tests {
         assert_eq!(result.group_did, group_did);
         assert_eq!(result.message_type, "markdown");
         assert_eq!(result.text, "hello async group");
-        assert_eq!(
-            result.sdk_result.message.id.as_str(),
-            "did:example:groups:async:43"
-        );
+        assert_eq!(result.sdk_result.message.id.as_str(), "server-message-id");
         assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(43));
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
@@ -963,6 +971,57 @@ mod tests {
             delivery: crate::messages::MessageDeliveryOptions::default(),
             delegated_signing: None,
         }
+    }
+
+    #[test]
+    fn messages_group_sender_uses_client_message_id_as_logical_id() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group_did = "did:example:groups:client-id";
+        let sender = GroupTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "final_acceptance": true,
+                    "group_did": group_did,
+                    "group_event_seq": "45",
+                    "group_state_version": "v45",
+                    "accepted_at": "2026-05-21T00:00:00Z"
+                }),
+            },
+        );
+        let mut request = group_text_request(
+            group_did,
+            "hello client id",
+            crate::messages::MessageKind::Text,
+        );
+        request.client_message_id = Some(crate::ids::MessageId::parse("msg-client-group").unwrap());
+        request.delivery.idempotency_key = Some("op-client-group".to_owned());
+
+        let result = sender
+            .send(GroupTextSend {
+                request,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(result.sdk_result.message.id.as_str(), "msg-client-group");
+        assert_eq!(
+            result.sdk_result.message.metadata.operation_id.as_deref(),
+            Some("op-client-group")
+        );
+        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(45));
+        let attributes = result.sdk_result.message.metadata.attributes;
+        assert!(attributes
+            .iter()
+            .any(|attribute| { attribute.key == "group_event_seq" && attribute.value == "45" }));
+        let calls = calls.borrow();
+        assert_eq!(calls[0].params["meta"]["message_id"], "msg-client-group");
+        assert_eq!(calls[0].params["meta"]["operation_id"], "op-client-group");
     }
 
     fn group_payload_request(group: &str, payload: Value) -> crate::messages::SendMessageRequest {

@@ -53,6 +53,7 @@ pub(crate) fn send_state_from_delivery(
 
 pub(crate) fn send_state_label(state: &crate::messages::MessageSendStateKind) -> &'static str {
     match state {
+        crate::messages::MessageSendStateKind::Pending => "pending",
         crate::messages::MessageSendStateKind::Accepted => "accepted",
         crate::messages::MessageSendStateKind::Sent => "sent",
         crate::messages::MessageSendStateKind::StoredLocally => "stored_locally",
@@ -243,6 +244,7 @@ fn retry_action_from_str(value: &str) -> Option<crate::messages::MessageRetryAct
 
 fn send_state_kind_from_str(value: &str) -> Option<crate::messages::MessageSendStateKind> {
     match normalize_state(value).as_str() {
+        "pending" => Some(crate::messages::MessageSendStateKind::Pending),
         "accepted" => Some(crate::messages::MessageSendStateKind::Accepted),
         "sent" => Some(crate::messages::MessageSendStateKind::Sent),
         "stored_locally" => Some(crate::messages::MessageSendStateKind::StoredLocally),

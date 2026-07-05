@@ -44,6 +44,29 @@ pub struct DartSendPayloadRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSendConversationTextRequest {
+    pub conversation: DartConversationReadRef,
+    pub text: String,
+    pub markdown: bool,
+    pub security: DartMessageSecurityMode,
+    pub client_message_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+    pub delegated_signing: Option<DartDelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSendConversationPayloadRequest {
+    pub conversation: DartConversationReadRef,
+    pub payload_json: String,
+    pub security: DartMessageSecurityMode,
+    pub client_message_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+    pub delegated_signing: Option<DartDelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartDelegatedSigningOptions {
     pub logical_sender_did: Option<String>,
     pub signing_verification_method: Option<String>,

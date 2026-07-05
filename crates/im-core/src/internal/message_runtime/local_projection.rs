@@ -215,6 +215,72 @@ pub(crate) async fn persist_group_outgoing_result_async(
         .await
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) async fn persist_send_projection_async(
+    client: &crate::core::ImClient,
+    target: &crate::messages::MessageTarget,
+    body: &crate::messages::MessageBody,
+    message_id: &crate::ids::MessageId,
+    operation_id: Option<&str>,
+    delivery: crate::messages::DeliveryState,
+    target_did: Option<&str>,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    let sdk_result = send_projection_result(
+        client,
+        target,
+        body,
+        message_id,
+        operation_id,
+        delivery,
+        target_did,
+        target_handle,
+        peer_scope,
+    )?;
+    let record = send_projection_record(
+        client,
+        target,
+        body,
+        &sdk_result,
+        target_did,
+        target_handle,
+        peer_scope,
+    )?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(vec![record])
+        .await?;
+    Ok(sdk_result)
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn persist_send_projection_async(
+    client: &crate::core::ImClient,
+    target: &crate::messages::MessageTarget,
+    body: &crate::messages::MessageBody,
+    message_id: &crate::ids::MessageId,
+    operation_id: Option<&str>,
+    delivery: crate::messages::DeliveryState,
+    target_did: Option<&str>,
+    _target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    send_projection_result(
+        client,
+        target,
+        body,
+        message_id,
+        operation_id,
+        delivery,
+        target_did,
+        _target_handle,
+        peer_scope,
+    )
+}
+
 #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_outgoing(
     client: &crate::core::ImClient,
@@ -914,6 +980,316 @@ fn direct_outgoing_result_record(
         ),
         credential_name: credential_name(client),
         ..crate::internal::local_state::messages::MessageRecord::default()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn send_projection_record(
+    client: &crate::core::ImClient,
+    target: &crate::messages::MessageTarget,
+    body: &crate::messages::MessageBody,
+    sdk_result: &crate::messages::SendMessageResult,
+    target_did: Option<&str>,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
+    let (content_type, content) = request_body_projection(body)?;
+    let record = match target {
+        crate::messages::MessageTarget::Direct(peer) => {
+            let target_did = target_did
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| peer.as_str().trim());
+            let conversation_id = direct_conversation_id_for_scope_or_did(peer_scope, target_did);
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: sdk_result.message.id.as_str().to_owned(),
+                owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                owner_did: client.did().as_str().to_owned(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id,
+                direction: 1,
+                sender_did: client.did().as_str().to_owned(),
+                receiver_did: target_did.to_owned(),
+                content_type,
+                content,
+                server_seq: sdk_result.message.metadata.server_sequence,
+                sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+                stored_at: sdk_result
+                    .message
+                    .sent_at
+                    .clone()
+                    .unwrap_or_else(crate::internal::wire::common::now_rfc3339),
+                is_e2ee: false,
+                is_read: true,
+                metadata: delivery_metadata_json(
+                    &sdk_result.message.metadata,
+                    direct_metadata_extras(target_handle, peer_scope, target_did),
+                ),
+                credential_name: credential_name(client),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            }
+        }
+        crate::messages::MessageTarget::Group(group) => {
+            let group_did = group.as_str();
+            let conversation_id = group_conversation_id(group_did);
+            crate::internal::local_state::messages::MessageRecord {
+                msg_id: sdk_result.message.id.as_str().to_owned(),
+                owner_identity_id: client.current_identity().id.as_str().to_owned(),
+                owner_did: client.did().as_str().to_owned(),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id,
+                direction: 1,
+                sender_did: client.did().as_str().to_owned(),
+                group_id: group_storage_key(group_did),
+                group_did: group_did.trim().to_owned(),
+                content_type,
+                content,
+                server_seq: sdk_result.message.metadata.server_sequence,
+                sent_at: sdk_result.message.sent_at.clone().unwrap_or_default(),
+                stored_at: sdk_result
+                    .message
+                    .sent_at
+                    .clone()
+                    .unwrap_or_else(crate::internal::wire::common::now_rfc3339),
+                is_e2ee: false,
+                is_read: true,
+                metadata: delivery_metadata_json(
+                    &sdk_result.message.metadata,
+                    Vec::<(&str, String)>::new(),
+                ),
+                credential_name: credential_name(client),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            }
+        }
+    };
+    Ok(record)
+}
+
+fn send_projection_result(
+    client: &crate::core::ImClient,
+    target: &crate::messages::MessageTarget,
+    body: &crate::messages::MessageBody,
+    message_id: &crate::ids::MessageId,
+    operation_id: Option<&str>,
+    delivery: crate::messages::DeliveryState,
+    target_did: Option<&str>,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    let body_view = request_body_view(body)?;
+    let now = crate::internal::wire::common::now_rfc3339();
+    let retry_target = retry_target_for_body_and_target(body, target)?;
+    let operation_id = operation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let reason = match &delivery {
+        crate::messages::DeliveryState::Failed { reason } => {
+            Some(reason.trim().to_owned()).filter(|value| !value.is_empty())
+        }
+        _ => None,
+    };
+    let send_state_kind = match &delivery {
+        crate::messages::DeliveryState::StoredLocally => {
+            crate::messages::MessageSendStateKind::Pending
+        }
+        crate::messages::DeliveryState::Accepted => crate::messages::MessageSendStateKind::Accepted,
+        crate::messages::DeliveryState::Sent => crate::messages::MessageSendStateKind::Sent,
+        crate::messages::DeliveryState::Failed { .. } => {
+            crate::messages::MessageSendStateKind::Failed
+        }
+    };
+    let send_state = crate::messages::MessageSendState {
+        state: send_state_kind.clone(),
+        operation_id: operation_id.clone(),
+        message_id: Some(message_id.clone()),
+        reason: reason.clone(),
+        updated_at: Some(now.clone()),
+    };
+    let retry_plan = crate::internal::message_runtime::state::retry_plan_for_state(
+        &send_state_kind,
+        Some(retry_target),
+        operation_id.clone(),
+        Some(message_id.clone()),
+        reason,
+    );
+    let thread = send_projection_thread_ref(target, peer_scope)?;
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref_for_owner(
+        &thread,
+        client.did().as_str(),
+    );
+    let (receiver, group) = match target {
+        crate::messages::MessageTarget::Direct(peer) => {
+            let receiver = target_did
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| peer.as_str().trim());
+            (Some(crate::ids::PeerRef::parse(receiver, "")?), None)
+        }
+        crate::messages::MessageTarget::Group(group) => (None, Some(group.clone())),
+    };
+    let mut attributes = Vec::new();
+    if let crate::messages::MessageTarget::Direct(peer) = target {
+        let target_did = target_did
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| peer.as_str().trim());
+        for (key, value) in direct_metadata_extras(target_handle, peer_scope, target_did) {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: key.to_owned(),
+                value,
+            });
+        }
+    }
+    let delivery_state =
+        crate::internal::message_runtime::state::send_state_label(&send_state_kind).to_owned();
+    Ok(crate::messages::SendMessageResult {
+        message: crate::messages::Message {
+            id: message_id.clone(),
+            thread,
+            direction: crate::messages::MessageDirection::Outgoing,
+            sender: crate::ids::PeerRef::parse(client.did().as_str(), "")?,
+            receiver,
+            group,
+            body: body_view,
+            sent_at: Some(now),
+            received_at: None,
+            metadata: crate::messages::MessageMetadata {
+                operation_id,
+                delivery_state: Some(delivery_state),
+                send_state: Some(send_state),
+                retry_plan,
+                server_sequence: None,
+                content_type: Some(content_type_for_message_body(body)?.to_owned()),
+                conversation_identity: Some(conversation_identity),
+                attributes,
+            },
+        },
+        delivery,
+        warnings: Vec::new(),
+    })
+}
+
+fn send_projection_thread_ref(
+    target: &crate::messages::MessageTarget,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+) -> crate::ImResult<crate::messages::ThreadRef> {
+    match target {
+        crate::messages::MessageTarget::Direct(peer) => {
+            if let Some(scope) = peer_scope {
+                return crate::messages::direct_peer_scope_thread_id(
+                    scope.user_id.as_str(),
+                    scope.full_handle.as_str(),
+                )
+                .map(crate::messages::ThreadRef::Thread);
+            }
+            Ok(crate::messages::ThreadRef::Direct(peer.clone()))
+        }
+        crate::messages::MessageTarget::Group(group) => {
+            Ok(crate::messages::ThreadRef::Group(group.clone()))
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn request_body_projection(
+    body: &crate::messages::MessageBody,
+) -> crate::ImResult<(String, String)> {
+    match body {
+        crate::messages::MessageBody::Text { text, kind } => {
+            if text.trim().is_empty() {
+                return Err(crate::ImError::invalid_input(
+                    Some("text".to_owned()),
+                    "text message must not be empty",
+                ));
+            }
+            Ok((content_type_for_kind(kind).to_owned(), text.to_owned()))
+        }
+        crate::messages::MessageBody::Payload { payload } => {
+            if !payload.is_object() {
+                return Err(crate::ImError::invalid_input(
+                    Some("payload".to_owned()),
+                    "message payload must be a JSON object",
+                ));
+            }
+            Ok((
+                "application/json".to_owned(),
+                serde_json::to_string(payload).unwrap_or_default(),
+            ))
+        }
+        crate::messages::MessageBody::Attachment { .. } => {
+            Err(crate::ImError::unsupported("conversation-attachment-send"))
+        }
+    }
+}
+
+fn request_body_view(
+    body: &crate::messages::MessageBody,
+) -> crate::ImResult<crate::messages::MessageBodyView> {
+    match body {
+        crate::messages::MessageBody::Text { text, kind } => {
+            if text.trim().is_empty() {
+                return Err(crate::ImError::invalid_input(
+                    Some("text".to_owned()),
+                    "text message must not be empty",
+                ));
+            }
+            Ok(crate::messages::MessageBodyView::Text {
+                text: text.clone(),
+                kind: kind.clone(),
+            })
+        }
+        crate::messages::MessageBody::Payload { payload } => {
+            if !payload.is_object() {
+                return Err(crate::ImError::invalid_input(
+                    Some("payload".to_owned()),
+                    "message payload must be a JSON object",
+                ));
+            }
+            Ok(crate::messages::MessageBodyView::Payload {
+                payload: payload.clone(),
+            })
+        }
+        crate::messages::MessageBody::Attachment { .. } => {
+            Err(crate::ImError::unsupported("conversation-attachment-send"))
+        }
+    }
+}
+
+fn retry_target_for_body_and_target(
+    body: &crate::messages::MessageBody,
+    target: &crate::messages::MessageTarget,
+) -> crate::ImResult<crate::internal::message_runtime::state::MessageRetryTarget> {
+    match (target, body) {
+        (crate::messages::MessageTarget::Direct(_), crate::messages::MessageBody::Text { .. }) => {
+            Ok(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
+        }
+        (
+            crate::messages::MessageTarget::Direct(_),
+            crate::messages::MessageBody::Payload { .. },
+        ) => Ok(crate::internal::message_runtime::state::MessageRetryTarget::DirectPayload),
+        (crate::messages::MessageTarget::Group(_), crate::messages::MessageBody::Text { .. }) => {
+            Ok(crate::internal::message_runtime::state::MessageRetryTarget::GroupText)
+        }
+        (
+            crate::messages::MessageTarget::Group(_),
+            crate::messages::MessageBody::Payload { .. },
+        ) => Ok(crate::internal::message_runtime::state::MessageRetryTarget::GroupPayload),
+        (_, crate::messages::MessageBody::Attachment { .. }) => {
+            Err(crate::ImError::unsupported("conversation-attachment-send"))
+        }
+    }
+}
+
+fn content_type_for_message_body(
+    body: &crate::messages::MessageBody,
+) -> crate::ImResult<&'static str> {
+    match body {
+        crate::messages::MessageBody::Text { kind, .. } => Ok(content_type_for_kind(kind)),
+        crate::messages::MessageBody::Payload { .. } => Ok("application/json"),
+        crate::messages::MessageBody::Attachment { .. } => {
+            Err(crate::ImError::unsupported("conversation-attachment-send"))
+        }
     }
 }
 
@@ -1816,5 +2192,247 @@ mod tests {
         );
         let stored: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(stored, payload);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn conversation_send_projection_persists_pending_and_failed_state() {
+        let fixture = Fixture::new("conversation-send-projection");
+        let client = fixture.client();
+        let target = crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+        );
+        let body = crate::messages::MessageBody::Text {
+            text: "hello durable pending".to_owned(),
+            kind: crate::messages::MessageKind::Text,
+        };
+        let message_id = crate::ids::MessageId::parse("msg-durable-pending").unwrap();
+
+        persist_send_projection_async(
+            &client,
+            &target,
+            &body,
+            &message_id,
+            Some("op-durable-pending"),
+            crate::messages::DeliveryState::StoredLocally,
+            Some("did:example:bob"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let page = client
+            .messages()
+            .local_conversation_timeline_with_metadata_async(
+                crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+                crate::messages::LocalHistoryQuery {
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        let pending = &page.items[0];
+        assert_eq!(pending.id.as_str(), "msg-durable-pending");
+        assert_eq!(
+            pending.metadata.send_state.as_ref().unwrap().state,
+            crate::messages::MessageSendStateKind::Pending
+        );
+        assert!(pending.metadata.retry_plan.is_none());
+
+        persist_send_projection_async(
+            &client,
+            &target,
+            &body,
+            &message_id,
+            Some("op-durable-pending"),
+            crate::messages::DeliveryState::Failed {
+                reason: "network unavailable".to_owned(),
+            },
+            Some("did:example:bob"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let page = client
+            .messages()
+            .local_conversation_timeline_with_metadata_async(
+                crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+                crate::messages::LocalHistoryQuery {
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1, "failure must update the same row");
+        let failed = &page.items[0];
+        let send_state = failed.metadata.send_state.as_ref().unwrap();
+        assert_eq!(
+            send_state.state,
+            crate::messages::MessageSendStateKind::Failed
+        );
+        assert_eq!(send_state.reason.as_deref(), Some("network unavailable"));
+        let retry_plan = failed.metadata.retry_plan.as_ref().unwrap();
+        assert!(retry_plan.retryable);
+        assert_eq!(
+            retry_plan.action,
+            crate::messages::MessageRetryAction::RetryDirectText
+        );
+        assert_eq!(
+            retry_plan.message_id.as_ref().unwrap().as_str(),
+            "msg-durable-pending"
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn conversation_send_projection_uses_peer_scope_conversation_id() {
+        let fixture = Fixture::new("conversation-send-peer-scope");
+        let client = fixture.client();
+        let scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &scope,
+            );
+        let target = crate::messages::MessageTarget::Direct(
+            crate::ids::PeerRef::parse("bob.awiki.test", "").unwrap(),
+        );
+        let body = crate::messages::MessageBody::Payload {
+            payload: serde_json::json!({
+                "schema": "awiki.agent.mention.v1",
+                "text": "@Bob hello"
+            }),
+        };
+
+        persist_send_projection_async(
+            &client,
+            &target,
+            &body,
+            &crate::ids::MessageId::parse("msg-peer-scope-pending").unwrap(),
+            Some("op-peer-scope-pending"),
+            crate::messages::DeliveryState::StoredLocally,
+            Some("did:example:bob-current"),
+            Some("bob.awiki.test"),
+            Some(&scope),
+        )
+        .await
+        .unwrap();
+
+        let page = client
+            .messages()
+            .local_conversation_timeline_with_metadata_async(
+                crate::messages::ConversationReadRef::new(conversation_id.clone()).unwrap(),
+                crate::messages::LocalHistoryQuery {
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        let message = &page.items[0];
+        assert_eq!(
+            message
+                .metadata
+                .conversation_identity
+                .as_ref()
+                .unwrap()
+                .conversation_id,
+            conversation_id
+        );
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "peer_user_id" && attribute.value == "user-bob" }));
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "peer_current_did" && attribute.value == "did:example:bob-current"
+        }));
+    }
+
+    #[cfg(feature = "sqlite")]
+    struct Fixture {
+        root: std::path::PathBuf,
+    }
+
+    #[cfg(feature = "sqlite")]
+    impl Fixture {
+        fn new(prefix: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("im-core-{prefix}-{}-{nanos}", std::process::id()));
+            let identity_root = root.join("identities");
+            let identity_dir = identity_root.join("alice");
+            std::fs::create_dir_all(&identity_dir).unwrap();
+            std::fs::create_dir_all(root.join("local")).unwrap();
+            std::fs::write(identity_root.join("default"), "alice\n").unwrap();
+            std::fs::write(
+                identity_root.join("registry.json"),
+                serde_json::json!({
+                    "default_identity": "alice",
+                    "identities": [{
+                        "id": "alice-id",
+                        "did": "did:example:alice",
+                        "local_alias": "alice",
+                        "ready_for_auth": true,
+                        "ready_for_messaging": true,
+                        "missing": []
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(identity_dir.join("did.json"), "{}").unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::IdentityRegistryPaths {
+                        identity_root_dir: self.root.join("identities"),
+                        registry_path: self.root.join("identities").join("registry.json"),
+                        default_identity_path: Some(self.root.join("identities").join("default")),
+                    },
+                    local_state: crate::LocalStatePaths {
+                        sqlite_path: self.root.join("local").join("im.sqlite"),
+                    },
+                    runtime: crate::RuntimePaths {
+                        cache_dir: self.root.join("cache"),
+                        temp_dir: self.root.join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
     }
 }

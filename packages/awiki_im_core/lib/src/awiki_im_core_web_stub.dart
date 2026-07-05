@@ -82,6 +82,26 @@ class AwikiImClient {
 class MessageApi {
   MessageApi._();
 
+  Future<SendMessageResult> sendText(SendTextRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<SendMessageResult> sendPayload(SendPayloadRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<SendMessageResult> sendConversationText(
+    SendConversationTextRequest request,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<SendMessageResult> sendConversationPayload(
+    SendConversationPayloadRequest request,
+  ) async {
+    throw _unsupported();
+  }
+
   Future<MessagePage> localHistory(
     ThreadRef thread, {
     required int limit,

@@ -641,6 +641,7 @@ impl From<im_core::messages::ConversationMigrationState> for DartConversationMig
 
 fn message_send_state_to_string(value: im_core::messages::MessageSendStateKind) -> String {
     match value {
+        im_core::messages::MessageSendStateKind::Pending => "pending".to_string(),
         im_core::messages::MessageSendStateKind::Accepted => "accepted".to_string(),
         im_core::messages::MessageSendStateKind::Sent => "sent".to_string(),
         im_core::messages::MessageSendStateKind::StoredLocally => "stored_locally".to_string(),

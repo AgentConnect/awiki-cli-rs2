@@ -223,6 +223,7 @@ pub struct MessageSendState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageSendStateKind {
+    Pending,
     Accepted,
     Sent,
     StoredLocally,
@@ -446,6 +447,31 @@ impl ConversationReadRef {
     pub fn as_thread_ref(&self) -> crate::ImResult<ThreadRef> {
         crate::ids::ThreadId::parse(&self.conversation_id).map(ThreadRef::Thread)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendConversationTextRequest {
+    pub conversation: ConversationReadRef,
+    pub text: String,
+    pub markdown: bool,
+    pub security: MessageSecurityMode,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_signing: Option<DelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendConversationPayloadRequest {
+    pub conversation: ConversationReadRef,
+    pub payload: serde_json::Value,
+    pub security: MessageSecurityMode,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_signing: Option<DelegatedSigningOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

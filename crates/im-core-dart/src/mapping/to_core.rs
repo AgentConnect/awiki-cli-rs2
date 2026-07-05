@@ -15,7 +15,8 @@ use crate::dto::{
     message::{
         DartConversationReadRef, DartDelegatedSigningOptions, DartInboxAuth,
         DartInboxHistoryOptions, DartMarkConversationReadRequest, DartMessageSecurityMode,
-        DartMessageTarget, DartScopedInboxToken, DartSendPayloadRequest, DartSendTextRequest,
+        DartMessageTarget, DartScopedInboxToken, DartSendConversationPayloadRequest,
+        DartSendConversationTextRequest, DartSendPayloadRequest, DartSendTextRequest,
         DartSyncConversationAfterRequest, DartSyncDeltaRequest, DartSyncThreadAfterRequest,
         DartThreadRef,
     },
@@ -422,19 +423,7 @@ impl TryFrom<DartSendPayloadRequest> for im_core::messages::SendMessageRequest {
     type Error = DartImError;
 
     fn try_from(value: DartSendPayloadRequest) -> Result<Self, Self::Error> {
-        let payload: serde_json::Value =
-            serde_json::from_str(&value.payload_json).map_err(|err| {
-                DartImError::invalid_input(
-                    Some("payload_json".to_string()),
-                    format!("payload_json must be a JSON object: {err}"),
-                )
-            })?;
-        if !payload.is_object() {
-            return Err(DartImError::invalid_input(
-                Some("payload_json".to_string()),
-                "payload_json must be a JSON object",
-            ));
-        }
+        let payload = parse_payload_json(value.payload_json)?;
         Ok(Self {
             target: value.target.try_into()?,
             body: im_core::messages::MessageBody::Payload { payload },
@@ -451,6 +440,65 @@ impl TryFrom<DartSendPayloadRequest> for im_core::messages::SendMessageRequest {
             delegated_signing: value.delegated_signing.map(Into::into),
         })
     }
+}
+
+impl TryFrom<DartSendConversationTextRequest> for im_core::messages::SendConversationTextRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSendConversationTextRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            text: value.text,
+            markdown: value.markdown,
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            idempotency_key: value.idempotency_key,
+            wait_for_final_acceptance: value.wait_for_final_acceptance,
+            delegated_signing: value.delegated_signing.map(Into::into),
+        })
+    }
+}
+
+impl TryFrom<DartSendConversationPayloadRequest>
+    for im_core::messages::SendConversationPayloadRequest
+{
+    type Error = DartImError;
+
+    fn try_from(value: DartSendConversationPayloadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            payload: parse_payload_json(value.payload_json)?,
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            idempotency_key: value.idempotency_key,
+            wait_for_final_acceptance: value.wait_for_final_acceptance,
+            delegated_signing: value.delegated_signing.map(Into::into),
+        })
+    }
+}
+
+fn parse_payload_json(value: String) -> Result<serde_json::Value, DartImError> {
+    let payload: serde_json::Value = serde_json::from_str(&value).map_err(|err| {
+        DartImError::invalid_input(
+            Some("payload_json".to_string()),
+            format!("payload_json must be a JSON object: {err}"),
+        )
+    })?;
+    if !payload.is_object() {
+        return Err(DartImError::invalid_input(
+            Some("payload_json".to_string()),
+            "payload_json must be a JSON object",
+        ));
+    }
+    Ok(payload)
 }
 
 impl From<DartDelegatedSigningOptions> for im_core::messages::DelegatedSigningOptions {

@@ -6,7 +6,8 @@ use crate::dto::{
     message::{
         DartConversationListSnapshot, DartConversationPage, DartConversationReadRef,
         DartConversationStorePatch, DartInboxHistoryOptions, DartMarkConversationReadRequest,
-        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult,
+        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage,
+        DartSendConversationPayloadRequest, DartSendConversationTextRequest, DartSendMessageResult,
         DartSendPayloadRequest, DartSendTextRequest, DartSyncConversationAfterRequest,
         DartSyncDeltaRequest, DartSyncDeltaResult, DartSyncThreadAfterRequest,
         DartSyncThreadAfterResult, DartThreadMessageStorePatch, DartThreadRef,
@@ -151,6 +152,32 @@ pub async fn send_payload(
     inner
         .messages()
         .send_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn send_conversation_text(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSendConversationTextRequest,
+) -> Result<DartSendMessageResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .send_conversation_text_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn send_conversation_payload(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSendConversationPayloadRequest,
+) -> Result<DartSendMessageResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .send_conversation_payload_async(request.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)

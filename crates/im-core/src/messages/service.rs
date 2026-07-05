@@ -1197,6 +1197,188 @@ impl<'a> MessageService<'a> {
         }
     }
 
+    pub async fn send_conversation_text_async(
+        &self,
+        request: super::SendConversationTextRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        let body = super::MessageBody::Text {
+            text: request.text,
+            kind: if request.markdown {
+                super::MessageKind::Markdown
+            } else {
+                super::MessageKind::Text
+            },
+        };
+        let send_request = conversation_send_request(
+            self.client,
+            request.conversation,
+            body,
+            request.security,
+            request.client_message_id,
+            request.idempotency_key,
+            request.wait_for_final_acceptance,
+            request.delegated_signing,
+        )?;
+        self.send_conversation_request_async(send_request).await
+    }
+
+    pub async fn send_conversation_payload_async(
+        &self,
+        request: super::SendConversationPayloadRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        let send_request = conversation_send_request(
+            self.client,
+            request.conversation,
+            super::MessageBody::Payload {
+                payload: request.payload,
+            },
+            request.security,
+            request.client_message_id,
+            request.idempotency_key,
+            request.wait_for_final_acceptance,
+            request.delegated_signing,
+        )?;
+        self.send_conversation_request_async(send_request).await
+    }
+
+    async fn send_conversation_request_async(
+        &self,
+        resolved: ResolvedConversationSendRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        validate_plain_conversation_send(&resolved.request)?;
+        let message_id = resolved
+            .request
+            .client_message_id
+            .as_ref()
+            .expect("conversation send request should always have a client message id")
+            .clone();
+        let operation_id = resolved.request.delivery.idempotency_key.as_deref();
+        let target_did = resolved.target_did.as_deref();
+        let target_handle = resolved.target_handle.as_deref();
+        let peer_scope = resolved.peer_scope.as_ref();
+
+        crate::internal::message_runtime::local_projection::persist_send_projection_async(
+            self.client,
+            &resolved.request.target,
+            &resolved.request.body,
+            &message_id,
+            operation_id,
+            super::DeliveryState::StoredLocally,
+            target_did,
+            target_handle,
+            peer_scope,
+        )
+        .await?;
+        self.client
+            .emit_committed_local_message_projection("local_send_pending");
+
+        match self.send_plain_conversation_network_async(&resolved).await {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                let failed = crate::internal::message_runtime::local_projection::persist_send_projection_async(
+                    self.client,
+                    &resolved.request.target,
+                    &resolved.request.body,
+                    &message_id,
+                    operation_id,
+                    super::DeliveryState::Failed {
+                        reason: err.to_string(),
+                    },
+                    target_did,
+                    target_handle,
+                    peer_scope,
+                )
+                .await;
+                match failed {
+                    Ok(_) => self
+                        .client
+                        .emit_committed_local_message_projection("local_send_failed"),
+                    Err(_persist_err) => {}
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn send_plain_conversation_network_async(
+        &self,
+        resolved: &ResolvedConversationSendRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        match &resolved.request.target {
+            super::MessageTarget::Direct(_) => {
+                let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .send_async(crate::internal::message_runtime::direct::DirectTextSend {
+                    request: resolved.request.clone(),
+                    resolved_target_did: resolved.target_did.clone(),
+                    credentials: None,
+                })
+                .await?;
+                normalize_direct_send_result_for_peer_scope(
+                    &mut result.sdk_result,
+                    resolved.peer_scope.as_ref(),
+                    resolved.target_handle.as_deref(),
+                    Some(result.target_did.as_str()),
+                )?;
+                #[cfg(feature = "sqlite")]
+                match crate::internal::message_runtime::local_projection::persist_direct_outgoing_result_async(
+                    self.client,
+                    &result.target_did,
+                    resolved.target_handle.as_deref(),
+                    resolved.peer_scope.as_ref(),
+                    &result.sdk_result,
+                )
+                .await
+                {
+                    Ok(()) => self
+                        .client
+                        .emit_committed_local_message_projection("local_send"),
+                    Err(err) => {
+                        result
+                            .sdk_result
+                            .warnings
+                            .push(format!("Failed to persist local conversation message: {err}"));
+                    }
+                }
+                Ok(result.sdk_result)
+            }
+            super::MessageTarget::Group(_) => {
+                let mut result = crate::internal::message_runtime::group::GroupTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
+                )
+                .send_async(crate::internal::message_runtime::group::GroupTextSend {
+                    request: resolved.request.clone(),
+                    credentials: None,
+                })
+                .await?;
+                #[cfg(feature = "sqlite")]
+                match crate::internal::message_runtime::local_projection::persist_group_outgoing_result_async(
+                    self.client,
+                    &result.group_did,
+                    &result.sdk_result,
+                )
+                .await
+                {
+                    Ok(()) => self
+                        .client
+                        .emit_committed_local_message_projection("local_send"),
+                    Err(err) => {
+                        result
+                            .sdk_result
+                            .warnings
+                            .push(format!("Failed to persist local conversation group message: {err}"));
+                    }
+                }
+                Ok(result.sdk_result)
+            }
+        }
+    }
+
     pub(crate) async fn send_secure_attachment_async(
         &self,
         request: super::SendMessageRequest,
@@ -2459,6 +2641,14 @@ struct ResolvedSendRequest {
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
+#[derive(Clone)]
+struct ResolvedConversationSendRequest {
+    request: super::SendMessageRequest,
+    target_did: Option<String>,
+    target_handle: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
 impl ResolvedSendRequest {
     fn direct_handle(&self) -> Option<&str> {
         self.peer_scope
@@ -2515,6 +2705,108 @@ pub(crate) fn normalize_direct_send_result_for_peer_scope(
         );
     }
     Ok(())
+}
+
+fn conversation_send_request(
+    client: &crate::core::ImClient,
+    conversation: super::ConversationReadRef,
+    body: super::MessageBody,
+    security: super::MessageSecurityMode,
+    client_message_id: Option<crate::ids::MessageId>,
+    idempotency_key: Option<String>,
+    wait_for_final_acceptance: bool,
+    delegated_signing: Option<super::DelegatedSigningOptions>,
+) -> crate::ImResult<ResolvedConversationSendRequest> {
+    let resolved = resolve_sync_conversation_thread(client, &conversation)?;
+    let client_message_id = match client_message_id {
+        Some(id) => id,
+        None => crate::ids::MessageId::parse(format!(
+            "msg-{}",
+            crate::internal::wire::common::generate_operation_id()
+        ))?,
+    };
+    let idempotency_key = idempotency_key
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some(format!("op-{}", client_message_id.as_str())));
+    let (target, target_did, target_handle, peer_scope) = conversation_send_target(resolved)?;
+    let request = super::SendMessageRequest {
+        target,
+        body,
+        security,
+        client_message_id: Some(client_message_id),
+        delivery: super::MessageDeliveryOptions {
+            idempotency_key,
+            wait_for_final_acceptance,
+        },
+        delegated_signing,
+    };
+    Ok(ResolvedConversationSendRequest {
+        request,
+        target_did,
+        target_handle,
+        peer_scope,
+    })
+}
+
+fn conversation_send_target(
+    resolved: ResolvedConversationSyncThread,
+) -> crate::ImResult<(
+    super::MessageTarget,
+    Option<String>,
+    Option<String>,
+    Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+)> {
+    match resolved.thread {
+        super::ThreadRef::Direct(peer) => {
+            let target_did = resolved.resolved_did.clone().or_else(|| {
+                peer.as_str()
+                    .starts_with("did:")
+                    .then(|| peer.as_str().to_owned())
+            });
+            let target_handle = resolved
+                .peer_scope
+                .as_ref()
+                .map(|scope| scope.full_handle.clone());
+            let target_peer = target_handle
+                .as_deref()
+                .map(|handle| crate::ids::PeerRef::parse(handle, ""))
+                .transpose()?
+                .unwrap_or(peer);
+            Ok((
+                super::MessageTarget::Direct(target_peer),
+                target_did,
+                target_handle,
+                resolved.peer_scope,
+            ))
+        }
+        super::ThreadRef::Group(group) => {
+            Ok((super::MessageTarget::Group(group), None, None, None))
+        }
+        super::ThreadRef::Thread(_) => Err(crate::ImError::invalid_input(
+            Some("conversation_id".to_owned()),
+            "send_conversation requires a canonical dm: or group: conversation_id",
+        )),
+    }
+}
+
+fn validate_plain_conversation_send(request: &super::SendMessageRequest) -> crate::ImResult<()> {
+    validate_body(&request.body)?;
+    if matches!(request.body, super::MessageBody::Attachment { .. }) {
+        return Err(crate::ImError::unsupported("conversation-attachment-send"));
+    }
+    match request.security {
+        super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain => {}
+        super::MessageSecurityMode::E2eeRequired
+        | super::MessageSecurityMode::SecureDirect
+        | super::MessageSecurityMode::GroupE2ee => {
+            return Err(crate::ImError::unsupported(
+                "secure-conversation-send-local-echo",
+            ));
+        }
+    }
+    validate_send_mode(&request.target, &request.security)?;
+    validate_delegated_send_scope(request)
 }
 
 fn normalize_resolved_direct_send_result(

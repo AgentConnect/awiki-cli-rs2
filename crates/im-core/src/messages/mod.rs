@@ -14,7 +14,8 @@ pub use self::dto::{
     Message, MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
     MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
-    MessageTarget, ReadWatermark, ScopedInboxToken, SendMessageRequest, SendMessageResult,
+    MessageTarget, ReadWatermark, ScopedInboxToken, SendConversationPayloadRequest,
+    SendConversationTextRequest, SendMessageRequest, SendMessageResult,
     SyncConversationAfterRequest, SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest,
     SyncThreadAfterResult, ThreadMessagePatchSession, ThreadMessageStorePatch, ThreadRef,
 };

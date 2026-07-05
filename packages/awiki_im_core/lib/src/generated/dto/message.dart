@@ -878,6 +878,96 @@ class DartScopedInboxToken {
           token == other.token;
 }
 
+class DartSendConversationPayloadRequest {
+  final DartConversationReadRef conversation;
+  final String payloadJson;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
+
+  const DartSendConversationPayloadRequest({
+    required this.conversation,
+    required this.payloadJson,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+    this.delegatedSigning,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      payloadJson.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendConversationPayloadRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          payloadJson == other.payloadJson &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
+}
+
+class DartSendConversationTextRequest {
+  final DartConversationReadRef conversation;
+  final String text;
+  final bool markdown;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
+
+  const DartSendConversationTextRequest({
+    required this.conversation,
+    required this.text,
+    required this.markdown,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+    this.delegatedSigning,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      text.hashCode ^
+      markdown.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendConversationTextRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          text == other.text &&
+          markdown == other.markdown &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
+}
+
 class DartSendMessageResult {
   final DartMessage message;
   final String deliveryState;
