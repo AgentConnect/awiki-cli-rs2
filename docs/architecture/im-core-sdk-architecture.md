@@ -210,7 +210,7 @@ These files describe the SDK public surface and interface-level contracts. They 
 
 ## 11. Local Conversation Summary Projection
 
-The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries, and schema version 19 adds an owner/conversation/timestamp hot index for local-first message history pagination:
+The SQLite local state keeps `messages` as the durable message projection truth. Conversation list reads must not aggregate all owner messages on every refresh. Schema version 18 adds `conversation_summaries` as a rebuildable materialized projection for chat-list summaries, schema version 19 adds an owner/conversation/timestamp hot index for local-first message history pagination, schema version 20 adds `sync_state`, and current schema version 21 carries the current conversation/read/send projection contract:
 
 - primary key: `(owner_identity_id, conversation_id)`;
 - hot index: `idx_conversation_summaries_owner_last(owner_identity_id, last_message_at DESC, conversation_id)`;
@@ -222,10 +222,12 @@ Summary rows are derived state and may be rebuilt from `messages`, but hot write
 
 - schema open creates the table/indexes and backfills v17 stores when summaries are absent;
 - ordinary message insert/update updates `conversation_summaries` by delta in the same SQLite write transaction;
-- bounded mark-read and `mark_thread_read` update unread / unread mention counters by delta where the previous state is known;
+- bounded mark-read, `mark_conversation_read`, and legacy `mark_thread_read` update unread / unread mention counters by delta where the previous state is known;
 - fallback rebuild remains for message conversation moves, legacy DID-to-peer-scope direct merges, last-message ambiguity, missing/corrupt summary rows, first unread mention ambiguity, and explicit owner repair;
 - committed invalidation and runtime store patches are emitted only after the local projection transaction commits;
 - peer-scope direct compatibility uses a SQLite TEMP, owner-scoped memo per local-state connection: after a legacy DID fold, or after a peer handle has been recognized, later upserts in the same actor/session do not rescan all legacy DID rows or rerun the large UPDATE; late legacy rows that match the memoized DID/handle are normalized into the peer-scope conversation before insert.
+
+`ConversationIdentity.conversation_id` is the SDK-level routing key for message display. Conversation list rows, message metadata, timeline patches, read-state updates, conversation-scoped send, and local repair must carry or derive from this canonical identity. `ThreadRef::{Direct, Group, Thread}` remains a compatibility / adapter surface for CLI migration, legacy callers, and low-level diagnostics. New AWiki Me and Flutter SDK message-display paths must not reconstruct a route from DID, handle, or legacy direct aliases when a canonical `conversation_id` is available.
 
 Because summaries contain message preview fields, diagnostics and tests should treat them as local private state. Do not expose message content, payload JSON, or sender details in public logs; only log counts, durations, and redacted identifiers.
 
@@ -237,10 +239,11 @@ Conversation snapshot and patch APIs are non-authoritative acceleration layers o
 - Snapshot entries use `ConversationSnapshotItem`, a core-only DTO containing thread identity, participants, last message projection, unread counts, message count, and last message time.
 - `messages.watch_conversation_patches()` / Dart `client.messages.watchConversationPatches()` streams versioned `ConversationStorePatch` values from an in-memory runtime store seeded by snapshot/local projection.
 - `messages.repair_conversation_store()` / Dart `client.messages.repairConversationStore()` returns a reset/repair patch and the current runtime store version after lag, overflow, stream close, or version gaps.
-- `messages.watch_thread_patches(thread, limit)` / Dart `client.messages.watchThreadPatches(thread, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened thread.
-- `messages.repair_thread_store(thread, limit)` / Dart `client.messages.repairThreadStore(thread, limit: ...)` returns a reset/repair patch for the thread message runtime store.
+- `messages.watch_conversation_timeline_patches(conversation, limit)` / Dart `client.messages.watchConversationTimelinePatches(conversation, limit: ...)` streams versioned `ThreadMessageStorePatch` values for the currently opened canonical conversation timeline.
+- `messages.repair_conversation_timeline_store(conversation, limit)` / Dart `client.messages.repairConversationTimelineStore(conversation, limit: ...)` returns a reset/repair patch for the conversation timeline runtime store.
+- `messages.watch_thread_patches(thread, limit)` / Dart `client.messages.watchThreadPatches(thread, limit: ...)` and `messages.repair_thread_store(thread, limit)` / Dart `client.messages.repairThreadStore(thread, limit: ...)` remain compatibility adapters for CLI / legacy `ThreadRef` paths, not the AWiki Me display-chain owner.
 - Patch notifications are emitted only after the underlying local projection commit succeeds; `snapshot_required=true` or failed sync apply must not emit an authoritative patch.
-- Realtime incoming messages follow the same committed-projection rule: a WebSocket hint or decoded event is not authoritative by itself, but once its message projection is committed to SQLite, `im-core` emits conversation and thread patches for active subscribers.
+- Realtime incoming messages follow the same committed-projection rule: a WebSocket hint or decoded event is not authoritative by itself, but once its message projection is committed to SQLite, `im-core` emits conversation and conversation-timeline patches for active subscribers.
 
 The public APIs currently live under `messages()` / `client.messages` for compatibility with the existing SDK grouping. A future `conversations()` / `client.conversations` namespace may wrap the same core store, but both names must not expose divergent DTOs or ownership semantics.
 
@@ -250,16 +253,22 @@ Because snapshots and patches contain message preview fields, diagnostics and te
 
 ## 13. Local-first Message History
 
-`messages.history()` keeps its remote history + projection/reconcile semantics. Hot UI paths that only need already-projected local messages should use `messages.local_history()` / Dart `client.messages.localHistory(...)` instead.
+`messages.history()` keeps its remote history + projection/reconcile semantics. AWiki Me first paint should use `messages.local_conversation_timeline()` / Dart `client.messages.localConversationTimeline(...)` with a `ConversationReadRef`. Hot compatibility paths that only need already-projected local messages can still use `messages.local_history()` / Dart `client.messages.localHistory(...)`.
 
-Local history:
+Local conversation timeline:
 
-- reads only the local SQLite `messages` projection through `owner_identity_id` and `ThreadRef`;
+- reads only the local SQLite `messages` projection through `owner_identity_id` and canonical `ConversationReadRef.conversation_id`;
 - does not call `direct.get_history`, `group.list_messages`, `inbox.get`, directory lookup, or E2EE remote projection;
 - returns newest-first `MessagePage` items and an opaque `local-history:v1:*` cursor for paging older local messages;
-- supports direct, group, and raw thread refs using the same owner-scoped conversation-id normalization as thread mark-read.
+- supports direct, group, and raw thread-backed conversations through the same owner-scoped conversation-id normalization as conversation mark-read.
 
-The API is for fast first paint. Apps should show local history immediately, then run remote `history()` as a background reconcile when freshness is needed.
+The API is for fast first paint. Apps should show local conversation timeline rows immediately, then run `sync_conversation_after()` or a documented repair path in the background when freshness is needed. Remote history/backfill results are not UI truth until they have been persisted to the local projection and reloaded or emitted through the conversation timeline store.
+
+## 13.1 Conversation Send And Local Echo
+
+Conversation-surface sends should use `messages.send_conversation_text()` / Dart `client.messages.sendConversationText(...)` or `messages.send_conversation_payload()` / Dart `client.messages.sendConversationPayload(...)` when the caller already has a `ConversationReadRef`. `im-core` resolves the canonical conversation to the storage route, writes a durable pending projection row before network send, updates the row to accepted/sent/failed as the network result arrives, and emits committed patches only after the SQLite transaction succeeds.
+
+`MessageMetadata.send_state`, `MessageMetadata.retry_plan`, and `MessageMetadata.conversation_identity` are the SDK facts for pending/accepted/sent/failed presentation. AWiki Me may render those states, but it must not create a second durable optimistic message store or decide send correctness from memory-only pending rows. Secure/E2EE conversation-surface local echo is currently fail-closed; attachment presentation fallback remains an App-specific compatibility path until it is separately migrated.
 
 ## 14. Reliable Message Sync
 
@@ -280,11 +289,7 @@ the SDK architecture boundary.
 - `snapshot_required=true` is fail-closed until a documented repair API exists:
   no checkpoint advance and no local projection wipe.
 
-`messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` are
-thread-local catch-up APIs. They use `after_server_seq` and do not read or
-advance the account-level checkpoint. Implementations must not return a locally
-merged `history_async` page as a catch-up result; they use a raw remote path or
-strictly filter `server_seq > after_server_seq`.
+`messages.sync_conversation_after()` / Dart `client.messages.syncConversationAfter(...)` is the conversationId-first catch-up API for AWiki Me and the Flutter SDK display chain. It resolves `ConversationReadRef.conversation_id` to the syncable storage thread/ref, uses `after_server_seq`, and does not read or advance the account-level checkpoint. `messages.sync_thread_after()` / Dart `client.messages.syncThreadAfter(...)` remains a legacy / debug adapter. Implementations must not return a locally merged `history_async` page as a catch-up result; they use a raw remote path or strictly filter `server_seq > after_server_seq`.
 
 Realtime notification parsing may expose a readonly `RealtimeSyncHint` from the
 top-level WebSocket `sync` member. The hint is scheduling metadata for
@@ -292,7 +297,7 @@ duplicate/gap/dirty detection and for deciding when to call `sync_delta`.
 Realtime projection is allowed to keep the UI fresh, but receiving a realtime
 hint or applying a realtime projection does not advance the reliable checkpoint.
 If a realtime incoming message cannot be projected or its local SQLite write
-fails, it must not emit an authoritative conversation/thread patch; the next
+fails, it must not emit an authoritative conversation/timeline patch; the next
 reliable sync or repair path remains responsible for convergence.
 
 Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
@@ -307,11 +312,12 @@ Schema version 20 adds `sync_state` with owner-scoped checkpoint rows:
 durations, redacted owner/thread identifiers, and checkpoint age rather than raw
 message payloads or sensitive E2EE material.
 
-## 15. Thread Read State
+## 15. Conversation Read State
 
-Thread-level read state is separate from reliable sync checkpoints:
+Conversation-level read state is separate from reliable sync checkpoints:
 
-- `messages.mark_thread_read()` / Dart `client.messages.markThreadRead(...)` accepts an optional `ReadWatermark`.
+- `messages.mark_conversation_read()` / Dart `client.messages.markConversationRead(...)` accepts `ConversationReadRef` and an optional `ReadWatermark`; this is the AWiki Me / Flutter SDK display-chain read ack path.
+- `messages.mark_thread_read()` / Dart `client.messages.markThreadRead(...)` remains a compatibility adapter for CLI / legacy `ThreadRef` callers.
 - If no watermark is provided, `im-core` computes the highest visible committed thread-local sequence from local projection / thread store.
 - Direct read watermarks use direct thread-local `server_seq`.
 - Group read watermarks use the group thread view `server_seq`; the service may map it from group host `group_event_seq`, but public SDK/API callers do not submit `read_up_to_group_event_seq`.

@@ -132,12 +132,16 @@ final snapshot = await client.messages.loadConversationSnapshot();
 await client.messages.clearConversationSnapshot();
 final patches = client.messages.watchConversationPatches();
 final repair = await client.messages.repairConversationStore();
-final threadPatches = client.messages.watchThreadPatches(
-  const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+final timelinePatches = client.messages.watchConversationTimelinePatches(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
   limit: 100,
 );
-final threadRepair = await client.messages.repairThreadStore(
-  const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+final timelineRepair = await client.messages.repairConversationTimelineStore(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
   limit: 100,
 );
 ```
@@ -149,10 +153,13 @@ projection, runtime store, read state, or reliable checkpoint. `watchConversatio
 `ConversationStorePatch` values (`reset`, `upsert`, `remove`, `reorder`,
 `repairRequired`) emitted only after the underlying local projection commit
 succeeds. `repairConversationStore` returns a reset/repair patch after lag,
-overflow, stream close, or version gaps. `watchThreadPatches` and
-`repairThreadStore` expose the same committed-projection rule for an opened
-thread message window; remote history best-effort pages or realtime hints must
-not become authoritative thread patches before persistence succeeds. A
+overflow, stream close, or version gaps. `watchConversationTimelinePatches` and
+`repairConversationTimelineStore` expose the same committed-projection rule for an
+opened conversation timeline keyed by `ConversationReadRef.conversationId`;
+remote history best-effort pages or realtime hints must not become authoritative
+timeline patches before persistence succeeds. `watchThreadPatches(ThreadRef)` and
+`repairThreadStore(ThreadRef)` remain compatibility adapters for CLI/legacy paths,
+not the AWiki Me display-chain owner. A
 realtime incoming message becomes patch-visible only after `im-core` has
 committed its SQLite local projection; failed or skipped realtime projection
 does not emit an authoritative conversation/thread patch.
@@ -167,22 +174,57 @@ Conversation snapshot / store DTOs are core-only. They must not carry
 AWiki Me applies those presentation fields in its own application layer; see
 `awiki-me/docs/conversation-presentation-ownership.md`.
 
-`client.messages.localHistory(thread, limit: ..., cursor: ...)` is distinct from `client.messages.history(...)`:
+`client.messages.localConversationTimeline(conversation, limit: ..., cursor: ...)`
+is the App timeline first-paint API. It reads the committed local projection by
+canonical `conversationId` and does not call remote history. `localHistory(thread, ...)`
+and `history(thread, ...)` remain migration adapters:
 
-- `localHistory` reads only the local SQLite projection and returns an opaque local cursor;
+- `localConversationTimeline` / `localHistory` read only the local SQLite projection and return an opaque local cursor;
 - it does not call message-service history RPCs, directory lookup, or remote E2EE projection;
 - it is the correct API for chat first paint before background reconcile;
 - `history` keeps remote history + projection/reconcile semantics and should be called in the background when freshness is required.
 
 Both APIs are async `Future<MessagePage>` methods. Apps must not bypass the SDK or read SQLite directly.
 
-## Thread read watermark
+## Conversation send and local echo
 
-Thread-level mark-read is exposed as a watermark-first message API:
+Conversation UI sends should use the conversationId-first APIs when the App already has a selected conversation:
 
 ```dart
-final result = await client.messages.markThreadRead(
-  const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+final sent = await client.messages.sendConversationText(
+  const SendConversationTextRequest(
+    conversation: ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    text: 'hello',
+  ),
+);
+
+final payload = await client.messages.sendConversationPayload(
+  const SendConversationPayloadRequest(
+    conversation: ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    payloadJson: '{"text":"@agents summarize","mentions":[]}',
+  ),
+);
+```
+
+`im-core` resolves the conversation to the storage route, persists a pending local
+projection row, emits patches after the local transaction succeeds, and updates
+the same durable row to accepted/sent/failed after network send. Apps render
+`Message.metadata.sendState` / retry data from the SDK message DTO. They must not
+create a second durable optimistic message store for text or payload sends.
+
+## Conversation read watermark
+
+Conversation-level mark-read is exposed as a watermark-first message API:
+
+```dart
+final result = await client.messages.markConversationRead(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
   watermark: const ReadWatermark(
     lastReadThreadSeq: '991',
     lastReadMessageId: 'msg_direct_991',
@@ -213,8 +255,10 @@ local/pending only. Results must expose `updatedCount`, `remoteAcknowledged`,
 `partial`, `fallbackUsed`, `pendingRemoteAck`, and `warnings`; any returned
 message ids are legacy fallback diagnostics only.
 
-`markThreadRead` does not expose or advance the reliable sync checkpoint.
+`markConversationRead` does not expose or advance the reliable sync checkpoint.
 `remoteAcknowledged` and `pendingRemoteAck` describe only read-ack state.
+`markThreadRead(ThreadRef)` remains available as a CLI/legacy adapter, but AWiki Me
+must route visible conversations by `ConversationReadRef.conversationId`.
 
 ## Reliable message sync
 
@@ -232,9 +276,11 @@ final delta = await client.messages.syncDelta(
   ),
 );
 
-final page = await client.messages.syncThreadAfter(
-  SyncThreadAfterRequest(
-    thread: const ThreadRef.direct('did:wba:example.com:user:e1_bob'),
+final page = await client.messages.syncConversationAfter(
+  SyncConversationAfterRequest(
+    conversation: const ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
     afterServerSeq: '991',
     limit: 100,
   ),
@@ -254,7 +300,7 @@ final page = await client.messages.syncThreadAfter(
 - Dart callers can choose `limit` and `reason`; they cannot choose or store the
   reliable checkpoint.
 
-`syncThreadAfter` semantics:
+`syncConversationAfter` semantics:
 
 - It is a thread-local freshness API for direct/group chat surfaces.
 - `afterServerSeq` is a thread-local message sequence, not the account-level
@@ -262,6 +308,10 @@ final page = await client.messages.syncThreadAfter(
 - It does not read or advance the reliable global checkpoint.
 - The returned page must contain only `server_seq > afterServerSeq` messages in
   ascending `server_seq` order.
+- Returned messages are not UI truth until `im-core` persists them to the local
+  projection and the App reloads/repairs through the conversation timeline.
+`syncThreadAfter(ThreadRef)` remains a compatibility wrapper and should not be the
+AWiki Me display-chain routing owner.
 
 Realtime integration:
 

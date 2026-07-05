@@ -1,6 +1,6 @@
 # 04. Message Interface
 
-P1 messages 只做普通文本：私聊文本、面向已有 `GroupRef` 的群聊文本、必要 inbox/history。
+本文最早来自 P1 message interface 设计，但本文件位于当前 API 文档目录下，必须以当前实现为准。历史 P1 限定只作为背景；当前消息显示链路的主合同是 canonical `ConversationIdentity.conversation_id` / `ConversationReadRef`，旧 `ThreadRef` 入口只保留为 CLI、legacy caller 和低层诊断 adapter。
 
 ## 1. Service
 
@@ -13,6 +13,16 @@ pub struct MessageService<'a> {
 
 impl MessageService<'_> {
     pub fn send(&self, request: SendMessageRequest) -> crate::ImResult<SendMessageResult>;
+
+    pub fn send_conversation_text(
+        &self,
+        request: SendConversationTextRequest,
+    ) -> crate::ImResult<SendMessageResult>;
+
+    pub fn send_conversation_payload(
+        &self,
+        request: SendConversationPayloadRequest,
+    ) -> crate::ImResult<SendMessageResult>;
 
     pub fn inbox(&self, query: InboxQuery) -> crate::ImResult<crate::ids::Page<Message>>;
 
@@ -38,12 +48,28 @@ impl MessageService<'_> {
         request: MarkThreadReadRequest,
     ) -> crate::ImResult<MarkThreadReadResult>;
 
+    pub fn mark_conversation_read(
+        &self,
+        request: MarkConversationReadRequest,
+    ) -> crate::ImResult<MarkThreadReadResult>;
+
     pub fn sync_delta(&self, request: SyncDeltaRequest) -> crate::ImResult<SyncDeltaResult>;
 
     pub fn sync_thread_after(
         &self,
         request: SyncThreadAfterRequest,
     ) -> crate::ImResult<SyncThreadAfterResult>;
+
+    pub fn sync_conversation_after(
+        &self,
+        request: SyncConversationAfterRequest,
+    ) -> crate::ImResult<SyncThreadAfterResult>;
+
+    pub fn local_conversation_timeline(
+        &self,
+        conversation: ConversationReadRef,
+        query: LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<Message>>;
 
     pub fn load_conversation_snapshot(
         &self,
@@ -66,19 +92,24 @@ impl MessageService<'_> {
         thread: ThreadRef,
         limit: Option<u32>,
     ) -> crate::ImResult<ThreadMessageStorePatch>;
+
+    pub fn watch_conversation_timeline_patches(
+        &self,
+        conversation: ConversationReadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<ThreadMessagePatchSession>;
+
+    pub fn repair_conversation_timeline_store(
+        &self,
+        conversation: ConversationReadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<ThreadMessageStorePatch>;
 }
 ```
 
-P1 原始范围不提供完整 mark-read / conversation projection；当前实现已经在后续阶段追加
-`mark_read`、`mark_thread_read` 和 `conversations` 等能力。本文保留 P1 原始说明，
-并在下文补充当前 mark-read 契约。当前仍不属于 P1 基线的能力：
-
-```rust
-attachments
-secure direct
-group E2EE
-group lifecycle
-```
+当前实现已经包含 conversation projection、conversation identity、local-first timeline、
+reliable sync、conversation read watermark、text/payload conversation send、attachment 和
+secure/E2EE 相关能力。不要再把“P1 只做普通文本”当成当前 contract。
 
 ## 2. Send Request
 
@@ -114,11 +145,11 @@ pub enum MessageTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageBody {
     Text { text: String, kind: MessageKind },
-
-    // Reserved for Phase 4. P1 returns UnsupportedCapability.
+    Payload { payload: serde_json::Value },
     Attachment {
         input: AttachmentInput,
         caption: Option<String>,
+        mention_payload: Option<serde_json::Value>,
         mime_type: Option<String>,
         filename: Option<String>,
     },
@@ -131,13 +162,15 @@ pub enum MessageKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MessageSecurityPolicy {
-    Default,
-    Plaintext,
-
-    // Reserved for Phase 6. P1 returns UnsupportedCapability.
+pub enum MessageSecurityMode {
+    DefaultPlain,
+    Plain,
     E2eeRequired,
+    SecureDirect,
+    GroupE2ee,
 }
+
+pub type MessageSecurityPolicy = MessageSecurityMode;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageDeliveryOptions {
@@ -158,7 +191,45 @@ pub enum AttachmentInput {
 }
 ```
 
-P1 `AttachmentInput` 只作为 reserved enum 形态存在。不要在 P1 实现 upload/download。
+`SendMessageRequest` 是通用 target-first send 入口。Conversation UI 已经知道 canonical
+conversation 时，优先使用 `SendConversationTextRequest` / `SendConversationPayloadRequest`：
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationReadRef {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendConversationTextRequest {
+    pub conversation: ConversationReadRef,
+    pub text: String,
+    pub markdown: bool,
+    pub security: MessageSecurityMode,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+    pub delegated_signing: Option<DelegatedSigningOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendConversationPayloadRequest {
+    pub conversation: ConversationReadRef,
+    pub payload: serde_json::Value,
+    pub security: MessageSecurityMode,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+    pub delegated_signing: Option<DelegatedSigningOptions>,
+}
+```
+
+Conversation send is local-echo first for plain text/payload. `im-core` resolves
+`conversation_id` to the storage route, persists a pending local projection row,
+emits committed patches after the local transaction succeeds, then updates the
+same durable row with accepted/sent/failed state. AWiki Me renders
+`MessageMetadata.send_state` / retry fields from SDK DTOs; it must not create a
+second durable optimistic message source.
 
 ### 2.1 Delegated Signing Optional 扩展
 
@@ -178,7 +249,7 @@ SDK 本地校验：
 1. `logical_sender_did` 必须与 `signing_verification_method` 的 DID owner 一致。
 2. `signing_verification_method` 必须能在对应 DID Document 的 `authentication` 或兼容 verification method 中找到。
 3. `signing_key_ref` 必须能在本地解析到私钥。`vault:` 失败时不会回退到文件路径，避免 scheme 混淆；`file:` / `local:` 仍按 legacy 兼容读取。
-4. Delegated send 只允许 direct 普通非 E2EE 消息：`DefaultPlain` / `Plain`。
+4. Delegated send 当前只允许 direct 普通非 E2EE 消息：`DefaultPlain` / `Plain`。
 5. Delegated send 对 group、attachment、`E2eeRequired`、`SecureDirect`、`GroupE2ee` 返回 `UnsupportedCapability`，防止 Agent IM MVP 绕过 E2EE 边界。
 
 ### 2.2 ANP P9 mention payload 扩展
@@ -326,6 +397,7 @@ pub enum MessageDirection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageBodyView {
     Text { text: String, kind: MessageKind },
+    Payload { payload: serde_json::Value },
     Unsupported { content_type: Option<String> },
 }
 
@@ -333,8 +405,11 @@ pub enum MessageBodyView {
 pub struct MessageMetadata {
     pub operation_id: Option<String>,
     pub delivery_state: Option<String>,
+    pub send_state: Option<MessageSendState>,
+    pub retry_plan: Option<MessageRetryPlan>,
     pub server_sequence: Option<i64>,
     pub content_type: Option<String>,
+    pub conversation_identity: Option<ConversationIdentity>,
     pub attributes: Vec<MessageMetadataAttribute>,
 }
 
@@ -346,6 +421,9 @@ pub struct MessageMetadataAttribute {
 ```
 
 `MessageMetadata` 只承载业务可解释的补充字段。不要把完整 wire payload 塞进 `metadata`。
+`conversation_identity.conversation_id` 是 list/detail/read/send/timeline repair 的跨层 routing
+key；`send_state` 和 `retry_plan` 是 pending/accepted/sent/failed 展示事实，不能由 App memory
+pending rows 替代。
 
 ## 5. Inbox / History Query
 
@@ -436,7 +514,7 @@ pub struct MarkThreadReadResult {
 
 ### 5.0 Local History 当前补充
 
-`history(thread, query)` 保持远端 history + 本地 projection/reconcile 语义。性能敏感的首屏读取应使用 `local_history(thread, query)`：
+`history(thread, query)` 保持远端 history + 本地 projection/reconcile 语义。AWiki Me 首屏读取应使用 `local_conversation_timeline(conversation, query)`；`local_history(thread, query)` 是兼容入口：
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -446,47 +524,52 @@ pub struct LocalHistoryQuery {
 }
 ```
 
-`local_history` 行为：
+`local_conversation_timeline` / `local_history` 行为：
 
 1. 只读取本地 `messages` projection，不访问 `direct.get_history`、`group.list_messages`、`inbox.get` 或目录 RPC。
-2. 按 `owner_identity_id` 和 `ThreadRef` 解析出的 conversation ids 查询，返回最近消息，顺序为 newest-first。
-3. `next_cursor` 是 SDK 生成的不透明 `local-history:v1:*` cursor，只能传回 `local_history` 翻页。
-4. direct、group 和 raw thread ref 使用与 thread mark-read 一致的 owner-scoped conversation-id 归一化。
-5. App 首屏应先显示 `local_history`，再后台调用 `history` 做远端 reconcile。
+2. 主路径按 `owner_identity_id` 和 `ConversationReadRef.conversation_id` 查询，返回最近消息，顺序为 newest-first；legacy `local_history(ThreadRef)` 先解析到 owner-scoped conversation ids。
+3. `next_cursor` 是 SDK 生成的不透明 `local-history:v1:*` cursor，只能传回 local timeline/history 翻页。
+4. direct、group 和 raw thread ref 使用与 conversation mark-read 一致的 owner-scoped conversation-id 归一化。
+5. App 首屏应先显示 `local_conversation_timeline`，再后台调用 `sync_conversation_after` 或 repair/load core projection；远端 history/backfill 返回的 messages 只有持久化后才能成为 UI 事实。
 
 P1 不把 `mark_read` 放进 `InboxQuery`。当前实现把 mark-read 作为
 `MessageService` 的显式方法，避免 inbox/history 查询和 read ack 语义耦合。
 
 ### 5.1 Mark Read / Thread Mark Read 当前补充
 
-`mark_read(ids)` 保留按消息 id 确认已读的 legacy compatibility 语义。聊天页打开、
-会话列表清 unread 和 App normal path 应使用 `mark_thread_read(request)`。
+`mark_read(ids)` 保留按消息 id 确认已读的 legacy compatibility 语义。`mark_thread_read(request)`
+是 `ThreadRef` 兼容入口；AWiki Me、Dart SDK 和新的消息显示主路径应优先使用
+`mark_conversation_read(request)`，让 `ConversationReadRef.conversation_id` 成为跨 list、
+timeline、read ack 的唯一 routing key。
 
-`mark_thread_read(request)` 是 watermark-first API：
+`mark_thread_read(request)` / `mark_conversation_read(request)` 都是 watermark-first API：
 
-1. `request.thread` 使用现有 `ThreadRef::Direct` / `ThreadRef::Group`。
-2. `request.watermark` 可选。调用方不传时，SDK 从本地 committed
+1. `mark_conversation_read` 接收 `ConversationReadRef { conversation_id }`，内部只把它转换为
+   raw `ThreadRef::Thread` 兼容 storage routing；调用方不得重新从 target DID、handle 或 legacy
+   direct alias 拼 read key。
+2. `mark_thread_read` 使用现有 `ThreadRef::Direct` / `ThreadRef::Group`，只作为 CLI/legacy
+   migration adapter 或低层 compatibility surface。
+3. `request.watermark` 可选。调用方不传时，SDK 从本地 committed
    `messages` projection / MessageStore thread window 计算当前 thread 可见的最高已读水位。
-3. `ReadWatermark.last_read_thread_seq` 是 thread-local sequence：direct 使用 direct
+4. `ReadWatermark.last_read_thread_seq` 是 thread-local sequence：direct 使用 direct
    message `server_seq`；group 使用 group thread view 中的 `server_seq`，该值可由
    `group_event_seq` 投影而来。两者都不是账号级 reliable sync `event_seq`。
-4. `ReadWatermark.last_read_message_id` 只是诊断、幂等和 mismatch 检查辅助，不是排序事实来源。
-5. `ReadWatermark.read_at` 是客户端已读动作时间，用于审计/展示，不参与授权或 checkpoint。
-6. SDK 优先调用服务端 `read_state.mark_read`。wire contract 以
+5. `ReadWatermark.last_read_message_id` 只是诊断、幂等和 mismatch 检查辅助，不是排序事实来源。
+6. `ReadWatermark.read_at` 是客户端已读动作时间，用于审计/展示，不参与授权或 checkpoint。
+7. SDK 优先调用服务端 `read_state.mark_read`。wire contract 以
    `message-service/docs/api/ANP-client-server-api-read-state.md` 为准。
-7. 旧服务端、endpoint unsupported 或 transport unavailable 时，SDK fallback 到当前
+8. 旧服务端、endpoint unsupported 或 transport unavailable 时，SDK fallback 到当前
    本地 unread ids 查询；direct 尝试 `inbox.mark_read(message_ids)`，group 在旧服务端下只能
    保持 local-read / pending-remote-ack 语义。
-8. `fallback_max_message_ids` 只限制 legacy message-id fallback 的候选数量，默认和硬上限仍为 500；
+9. `fallback_max_message_ids` 只限制 legacy message-id fallback 的候选数量，默认和硬上限仍为 500；
    watermark path 不受该 message id 数量限制。
-9. 远端 ack 失败不回滚本地已读，返回 `partial = true`、`pending_remote_ack = true`
+10. 远端 ack 失败不回滚本地已读，返回 `partial = true`、`pending_remote_ack = true`
    或在 `warnings` 中带失败原因；空 unread 会返回 `updated_count = 0`。
-10. `legacy_message_ids` 只作为 fallback diagnostics；App 不应依赖它作为 thread
+11. `legacy_message_ids` 只作为 fallback diagnostics；App 不应依赖它作为 thread
     mark-read 的核心结果。
 
 `conversation_summaries` 是 rebuildable projection；当前热路径对普通 message upsert、
-bounded mark-read 和 `mark_thread_read` 使用增量维护，只有无法安全增量判断的场景才回退
-rebuild。thread mark-read 同步维护 summary unread 字段；public 契约不因此变化。
+bounded mark-read、`mark_conversation_read` 和 legacy `mark_thread_read` 使用增量维护，只有无法安全增量判断的场景才回退 rebuild。conversation mark-read 同步维护 summary unread 字段；public 契约不因此变化。
 
 ### 5.2 Reliable Sync API
 
@@ -516,6 +599,18 @@ pub struct SyncDeltaResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncThreadAfterRequest {
     pub thread: ThreadRef,
+    pub after_server_seq: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationReadRef {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConversationAfterRequest {
+    pub conversation: ConversationReadRef,
     pub after_server_seq: Option<String>,
     pub limit: Option<u32>,
 }
@@ -560,6 +655,16 @@ pub struct RealtimeSyncHint {
 3. 不读取或写入账号级 checkpoint。
 4. 不得直接返回 `history_async` 的本地合并 page；必要时使用 raw remote history path 并
    严格过滤。
+
+`sync_conversation_after(request)` 是新的 conversationId-first wrapper。它使用
+`ConversationReadRef.conversation_id` 解析 storage thread/ref，再调用同一 thread-local
+`sync.thread_after` contract。AWiki Me 的 realtime dirty/gap、打开会话补新和 backfill
+主路径应走该 API；旧 `sync_thread_after(ThreadRef)` 只保留给 CLI/legacy adapter 或低层调试。
+
+`local_conversation_timeline(conversation, query)` 是 local-first timeline 主路径。它只读取
+`conversation_id` 对应的 committed SQLite projection，不调用远端 history。App 可以用它做
+首屏和 repair 后读取；远端 history/backfill 返回的 messages 只有在 core 持久化后，才能通过
+该 timeline 或 patch stream 成为 UI 事实。
 
 checkpoint 边界：
 
@@ -616,6 +721,12 @@ realtime incoming 消息如果成功写入 SQLite local projection，则按同�
 conversation patch 和对应 thread patch；如果 projection 不存在或写入失败，不得发
 authoritative patch。
 
+`watch_conversation_timeline_patches(conversation, limit)` 和
+`repair_conversation_timeline_store(conversation, limit)` 是 conversationId-first timeline
+patch / repair wrapper，返回同一个 `ThreadMessageStorePatch` DTO。新的 App timeline 主路径
+应使用这些 API；旧 `watch_thread_patches(ThreadRef)` / `repair_thread_store(ThreadRef)` 是
+compatibility adapter，不应继续作为 AWiki Me 消息归属判断的主来源。
+
 Conversation snapshot、conversation store patch 和 thread message patch DTO 都必须保持
 core-only，不包含 `awiki-me` presentation overlay 字段或 App domain DTO。
 
@@ -640,17 +751,18 @@ SDK 本地校验：
 4. Delegated inbox/history 只投影普通非 E2EE 消息。SDK 会过滤 direct/group E2EE opaque 消息，不返回 E2EE 明文、metadata projection 或 private state。
 5. `ScopedInboxToken` 为后续优化，MVP 不作为主路径。
 
-## 6. P1 Behavior
+## 6. Current Behavior Summary
 
 `send()` 行为：
 
 ```text
 1. 校验 body。
    - Text 不能为空。
-   - Attachment -> UnsupportedCapability("attachments")。
+   - Payload 必须是合法 JSON value。
+   - Attachment 通过 attachment/object-E2EE 路径处理。
 2. 校验 security。
-   - Default / Plaintext 继续。
-   - E2eeRequired -> UnsupportedCapability("e2ee")。
+   - `DefaultPlain` / `Plain` 走普通发送。
+   - `E2eeRequired` / `SecureDirect` / `GroupE2ee` 走 secure/E2EE 能力或 fail closed。
 3. 通过 ImClient runtime 注入身份、auth、owner。
 4. Direct target：做最小 PeerRef resolve。
 5. Group target：使用已有 GroupRef，不做 group lifecycle。
@@ -658,7 +770,7 @@ SDK 本地校验：
 7. 构造 internal RPC/wire params。
 8. 发送；session expired 时 refresh 后 retry once。
 9. 远端结果 normalize 成 Message。
-10. 必要时写入最小本地状态或兼容旧存储。
+10. 必要时写入 local projection；conversation-surface text/payload send 先写 pending durable row，再根据网络结果更新 send state。
 ```
 
 `inbox()` / `history()` 行为：
@@ -670,7 +782,7 @@ SDK 本地校验：
 4. GroupOnly 先 group.list 获取当前身份所在群，再按群调用 group.list_messages，合并成 group inbox 视图。
 5. All 合并 DirectOnly 与 GroupOnly 的结果，按 message id 去重并应用 limit。
 6. normalize 成 Page<Message>。
-7. 不在 P1 强制做 conversation projection。
+7. 当前实现会维护 conversation projection；历史 P1“不强制 projection”的限制不再代表当前 contract。
 ```
 
 约束：`InboxHistoryOptions` 目前只支持 direct/delegated inbox；`GroupOnly` 如果传入 delegated inbox options，应返回明确 unsupported；`All` 带 delegated options 时保持兼容，只读取 direct/delegated inbox，不进入 group 子路径，避免 daemon 误把用户 delegated inbox proof 用于群消息读取。
@@ -680,7 +792,23 @@ SDK 本地校验：
 `packages/awiki_im_core` 公开 API 与 Rust DTO 保持同名 optional 参数：
 
 ```dart
-const SendTextRequest(
+await client.messages.sendConversationText(
+  const SendConversationTextRequest(
+    conversation: ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    text: 'hello',
+  ),
+);
+
+await client.messages.sendText(
+  const SendTextRequest(
+    target: MessageTarget.direct('did:example:bob'),
+    text: 'hello',
+  ),
+);
+
+const delegated = SendTextRequest(
   target: MessageTarget.direct('did:example:bob'),
   text: 'hello',
   delegatedSigning: DelegatedSigningOptions(
@@ -698,10 +826,24 @@ await client.messages.inbox(
     inboxAuthKeyRef: 'local:daemon-key-1',
   ),
 );
+
+await client.messages.localConversationTimeline(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
+  limit: 50,
+);
+
+await client.messages.markConversationRead(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
+);
 ```
 
 兼容性要求：
 
 - `SendTextRequest` / `SendPayloadRequest` 的 `delegatedSigning` 默认 `null`。
+- `SendConversationTextRequest` / `SendConversationPayloadRequest` 是 AWiki Me conversation UI send 主路径；target-first send 保留给 CLI、legacy 和没有 canonical conversation 的调用面。
 - `MessageApi.inbox` / `MessageApi.history` 的 `inboxHistoryOptions` 默认 `null`。
 - 老 Dart 调用不需要补参数；FRB 生成 DTO/API 只增加 nullable 字段和 nullable 函数参数。

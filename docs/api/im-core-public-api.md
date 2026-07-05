@@ -331,9 +331,10 @@ pub struct MessageService<'a> {
 pub struct SendMessageRequest {
     pub target: MessageTarget,
     pub body: MessageBody,
-    pub security: MessageSecurityPolicy,
+    pub security: MessageSecurityMode,
     pub client_message_id: Option<MessageId>,
     pub delivery: MessageDeliveryOptions,
+    pub delegated_signing: Option<DelegatedSigningOptions>,
 }
 
 pub enum MessageTarget {
@@ -352,11 +353,14 @@ pub enum MessageBody {
         text: String,
         kind: MessageKind,
     },
+    Payload {
+        payload: serde_json::Value,
+    },
 
-    // P4+
     Attachment {
         input: AttachmentInput,
         caption: Option<String>,
+        mention_payload: Option<serde_json::Value>,
         mime_type: Option<String>,
         filename: Option<String>,
     },
@@ -365,15 +369,14 @@ pub enum MessageBody {
 pub enum MessageKind {
     Text,
     Markdown,
-    System,
 }
 
-pub enum MessageSecurityPolicy {
-    Default,
-    Plaintext,
-
-    // P6+ reserved. P1 返回 UnsupportedCapability。
+pub enum MessageSecurityMode {
+    DefaultPlain,
+    Plain,
     E2eeRequired,
+    SecureDirect,
+    GroupE2ee,
 }
 
 pub struct MessageDeliveryOptions {
@@ -392,8 +395,21 @@ impl Default for MessageDeliveryOptions {
 
 impl MessageService<'_> {
     pub fn send(&self, request: SendMessageRequest) -> ImResult<SendMessageResult>;
+    pub fn send_conversation_text(
+        &self,
+        request: SendConversationTextRequest,
+    ) -> ImResult<SendMessageResult>;
+    pub fn send_conversation_payload(
+        &self,
+        request: SendConversationPayloadRequest,
+    ) -> ImResult<SendMessageResult>;
     pub fn inbox(&self, query: InboxQuery) -> ImResult<Page<Message>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
+    pub fn local_history(
+        &self,
+        thread: ThreadRef,
+        query: LocalHistoryQuery,
+    ) -> ImResult<Page<Message>>;
     pub fn sync_delta(&self, request: SyncDeltaRequest) -> ImResult<SyncDeltaResult>;
     pub fn sync_thread_after(
         &self,
@@ -411,6 +427,19 @@ impl MessageService<'_> {
         &self,
         request: MarkThreadReadRequest,
     ) -> ImResult<MarkThreadReadResult>;
+    pub fn mark_conversation_read(
+        &self,
+        request: MarkConversationReadRequest,
+    ) -> ImResult<MarkThreadReadResult>;
+    pub fn local_conversation_timeline(
+        &self,
+        conversation: ConversationReadRef,
+        query: LocalHistoryQuery,
+    ) -> ImResult<Page<Message>>;
+    pub fn sync_conversation_after(
+        &self,
+        request: SyncConversationAfterRequest,
+    ) -> ImResult<SyncThreadAfterResult>;
     pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
     pub fn load_conversation_snapshot(&self) -> ImResult<Option<ConversationListSnapshot>>;
     pub fn clear_conversation_snapshot(&self) -> ImResult<()>;
@@ -424,6 +453,16 @@ impl MessageService<'_> {
     pub fn repair_thread_store(
         &self,
         thread: ThreadRef,
+        limit: Option<u32>,
+    ) -> ImResult<ThreadMessageStorePatch>;
+    pub fn watch_conversation_timeline_patches(
+        &self,
+        conversation: ConversationReadRef,
+        limit: Option<u32>,
+    ) -> ImResult<ThreadMessagePatchSession>;
+    pub fn repair_conversation_timeline_store(
+        &self,
+        conversation: ConversationReadRef,
         limit: Option<u32>,
     ) -> ImResult<ThreadMessageStorePatch>;
 }
@@ -442,15 +481,25 @@ Reliable sync 补充：
   调用方不得解析、修改或复用到其他 API。
 - `sync_delta` 是高层可靠同步入口，`since_event_seq` 从 `im-core` Rust/SQLite 内部
   checkpoint 注入，调用方不能传入或推进。
-- `sync_thread_after` 是 thread-local 补新入口，使用 `after_server_seq`，不读写账号级
-  checkpoint。
-- `mark_thread_read` 是 thread-level read watermark API。SDK 优先使用服务端
+- `sync_conversation_after` 是 conversationId-first thread-local 补新 wrapper。新的 App/Dart
+  消息显示主路径应使用 `ConversationReadRef.conversation_id`，旧 `sync_thread_after(ThreadRef)`
+  只作为 CLI/legacy adapter 或低层调试入口。
+- `local_conversation_timeline` 读取 `conversation_id` 对应的 committed SQLite projection，
+  是 App local-first timeline 的事实源；远端 history/backfill 结果只有持久化到 projection
+  后才能成为 UI 可见事实。
+- `send_conversation_text` / `send_conversation_payload` 是 conversation-surface send 主路径。
+  `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
+  retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
+- `mark_conversation_read` 是 conversationId-first read watermark API。SDK 优先使用服务端
   `read_state.mark_read`；旧服务端 fallback 到本地 unread ids + `inbox.mark_read(message_ids)`
-  或本地 group pending ack。`mark_read(ids)` 仅保留 legacy/explicit message-id compatibility。
+  或本地 group pending ack。`mark_thread_read(ThreadRef)` 与 `mark_read(ids)` 仅保留
+  legacy/explicit message-id compatibility。
 - `load_conversation_snapshot`、`clear_conversation_snapshot`、
   `watch_conversation_patches`、`repair_conversation_store` 和
-  `watch_thread_patches`、`repair_thread_store` 是 conversation/thread snapshot / patch
-  runtime store API，当前仍挂在 message service namespace 下；
+  `watch_conversation_timeline_patches`、`repair_conversation_timeline_store` 是
+  conversationId-first snapshot / patch runtime store API，当前仍挂在 message service namespace
+  下；`watch_thread_patches(ThreadRef)` 和 `repair_thread_store(ThreadRef)` 是 compatibility
+  wrapper；
   DTO 必须保持 core-only，不引用 `awiki-me` 的 `ConversationSummary`、`ChatMessage`
   或 presentation overlay 字段。
 - Public API 不得暴露 `loadGlobalCheckpoint`、`storeGlobalCheckpoint`、SQLite helper、

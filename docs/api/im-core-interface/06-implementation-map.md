@@ -1,6 +1,8 @@
 # 06. Implementation Map
 
-本文件说明 P1 接口如何和现有 CLI 模块对应。目标是“先 façade，后搬实现”，同时保持固定依赖方向：
+本文件最早说明 P1 接口如何和当时 CLI 模块对应。当前它保留历史迁移背景，同时记录当前实现中仍然有效的 public/internal 边界。若本文件和 `04-message-interface.md`、`im-core-public-api.md` 或源码不一致，以当前 interface/public API 文档和源码为准。
+
+当前固定依赖方向仍然是：
 
 ```text
 awiki-cli -> im-core
@@ -8,11 +10,11 @@ awiki-cli -> im-core
 
 ## 1. Public API 与 Legacy Adapter
 
-P1 分两层。
+历史 P1 分两层；当前实现已经把消息、conversation projection、sync、read-state、send local echo 等主能力迁入 `crates/im-core`，不应再按 P1-alpha 把 App/CLI 主路径路由到旧模块。
 
-### 1.1 P1-alpha：CLI 过渡 adapter 调旧模块
+### 1.1 Historical P1-alpha：CLI 过渡 adapter 调旧模块
 
-P1-alpha 允许这样做：
+历史 P1-alpha 曾允许这样做：
 
 ```text
 CLI handler
@@ -28,7 +30,7 @@ awiki-cli::im_core_adapter 负责把 SDK DTO 转成旧 request
 旧模块测试继续保留
 ```
 
-### 1.2 P1-beta：im-core internal legacy module 调已迁入代码
+### 1.2 Historical P1-beta：im-core internal legacy module 调已迁入代码
 
 P1-beta 允许这样做：
 
@@ -66,10 +68,15 @@ im-core public API exposes current SendRequest / InboxRequest / RPC params
 | --- | --- | --- |
 | `messages().send(Direct + Text)` | current direct send | 当前 `SendRequest { identity_name, target, ... }` 不能作为 SDK public DTO。 |
 | `messages().send(Group + Text)` | current group send | P1 只面向已有 `GroupRef`，不做 group lifecycle。 |
+| `messages().send_conversation_text()` / `messages().send_conversation_payload()` | conversation resolver + local projection + network send | 当前 AWiki Me conversation UI send 主路径；pending/accepted/sent/failed 由 `im-core` durable projection 表达。 |
 | `messages().inbox()` | current inbox | P1 返回 `Page<Message>`，不返回默认 raw JSON payload。 |
 | `messages().history()` | current history | direct/group history 统一成 `ThreadRef`。 |
 | `messages().sync_delta()` | message-service `sync.delta` + local SQLite apply | `since_event_seq` 和 checkpoint 只在 `im-core` 内部；不得由 CLI/App 传入。 |
 | `messages().sync_thread_after()` | message-service `sync.thread_after` | thread-local 补新；不得直接返回本地合并的 `history_async` page。 |
+| `messages().sync_conversation_after()` | `sync_thread_after` + `ConversationReadRef` resolver | AWiki Me / Dart 主路径；用 canonical `conversation_id` 解析 storage thread，不让 App 自己拼 alias。 |
+| `messages().local_conversation_timeline()` | SQLite `messages` projection | conversationId-first local-first timeline；远端 history/backfill 只有持久化后才能通过这里成为 UI 事实。 |
+| `messages().mark_conversation_read()` | `mark_thread_read` + `ConversationReadRef` resolver | conversationId-first read watermark；UI 不从 renderable cache 计算默认水位。 |
+| `messages().watch_conversation_timeline_patches()` | message runtime store | conversationId-first timeline patch stream；旧 `watch_thread_patches(ThreadRef)` 仅保留兼容。 |
 
 ## 4. 现有低层 re-export 收紧目标
 
@@ -82,6 +89,7 @@ build_inbox_rpc_params
 build_history_rpc_params
 build_sync_delta_rpc_params
 build_sync_thread_after_rpc_params
+build_conversation_alias_or_thread_key_in_app
 build_group_*_rpc_params
 build_secure_*_payload
 secure outbox flush internals
@@ -101,7 +109,9 @@ raw wire payload
 
 ## 5. Unsupported Capability Contract
 
-P1 默认 public API 只暴露：
+以下是历史 P1 placeholder 规则。当前 public API 已经暴露 identity、directory、groups、attachments、realtime、secure 等后续能力；这些能力以各自当前 docs/source 为准，不再按本段限制判断是否存在。
+
+历史 P1 默认 public API 只暴露：
 
 ```text
 client.auth()
@@ -127,7 +137,7 @@ client.secure()
 3. 不进入 Phase 1 默认 public API / prelude。
 ```
 
-P1 中这些 message 调用必须返回 `UnsupportedCapability`，不能静默降级：
+历史 P1 中这些 message 调用必须返回 `UnsupportedCapability`，不能静默降级。当前实现已支持 attachment、secure direct 和 group E2EE 的部分/完整路径；当前行为以 `04-message-interface.md`、attachment/E2EE docs 和源码为准：
 
 ```text
 MessageBody::Attachment
@@ -158,9 +168,9 @@ sqlite path
 ActorContext
 ```
 
-## 7. Minimal Local State
+## 7. Current Local State
 
-P1 local state 只要求：
+历史 P1 local state 只要求：
 
 ```text
 bootstrap validate/init/migrate
@@ -168,14 +178,19 @@ optional message write-through for compatibility
 owner context available
 ```
 
-不要求：
+当前实现已经要求并由 `im-core` 拥有：
 
 ```text
 conversation projection
 unread aggregation
 mark-read sync
+conversation read model
+conversation timeline read model
+read-state projection
+send/outbox local echo
+reliable sync checkpoint
 contact cache merge
 group/member projection
 ```
 
-这些放 Phase 3。
+这些不再是 future Phase 3 事项。AWiki Me 必须通过 high-level SDK/API 消费这些 read model，不应重新实现 alias、read watermark、send/outbox、sync checkpoint 或 conversation ownership。

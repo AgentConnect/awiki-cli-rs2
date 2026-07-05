@@ -3,7 +3,7 @@
 ## 状态
 
 - 本文描述当前 Rust `awiki-cli` / `im-core` 本地 SQLite owner scope 的权威模型。
-- 当前 SQLite schema version：`19`。
+- 当前 SQLite schema version：`21`。
 - 当前 workspace schema version：`4`。
 - 本地业务状态已经收敛到 `owner_identity_id` 分区；`owner_did` 只保留为当前 DID snapshot。
 
@@ -32,8 +32,13 @@
 | `direct_e2ee_sessions` | `(owner_identity_id, peer_did)` |
 | `direct_e2ee_signed_prekeys` | `(owner_identity_id, key_id)` |
 | `direct_e2ee_one_time_prekeys` | `(owner_identity_id, key_id)` |
+| `conversation_summaries` | `(owner_identity_id, conversation_id)` |
+| `sync_state` | `(owner_identity_id, scope, checkpoint_kind)` |
+| `thread_read_state` | `(owner_identity_id, thread_kind, thread_id)` |
 
 `conversation_id` 是稳定会话键。私聊会话不能把本地 owner DID 编进 `conversation_id`，否则 DID replace 后会造成会话分裂。
+
+当前消息显示链路把 `conversation_id` 作为跨 list、timeline、read ack、send local echo 和 repair 的 canonical key。`ThreadRef`、legacy direct DID、old Flutter sorted direct、peer-scope storage thread 和 handle/DID rotation alias 只能在 `im-core` resolver / migration 中收敛，不能由 AWiki Me presentation 层重新拼接作为 correctness key。
 
 ## DID history
 

@@ -29,7 +29,7 @@
 crates/awiki-cli/src/workspace_upgrade/types.rs
 ```
 
-当前 local SQLite schema version 为 `20`，定义在：
+当前 local SQLite schema version 为 `21`，定义在：
 
 ```text
 crates/im-core/src/internal/local_state/schema.rs
@@ -42,6 +42,8 @@ crates/im-core/src/internal/local_state/schema.rs
 - `workspace schema 2`：已在 schema 1 基础上对旧 `awiki-agent-id-message` skill 做 best-effort 清理，包括 listener service、skill 安装目录和 OpenClaw `HEARTBEAT.md` legacy section。
 - `workspace schema 3`：已扫描当前 identity store 中的 legacy handle 形态 `k1_...` DID，并按 replace-DID 兼容流程迁到 `e1_...` DID。
 - `workspace schema 4`：SQLite 本地状态已收敛到 identity-owned schema 17，业务行使用 `owner_identity_id` 作为 owner partition key。DID recover/replace 只写 `identity_did_history` 并刷新 `owner_did` snapshot，不再做业务行 owner rebind。旧 SQLite schema 通过 backup 后 clean rebuild 进入干净 schema 17，不按 DID、credential、alias 或路径静默迁移业务所有权。
+
+SQLite schema 18 之后逐步增加 conversation summary projection、local-first history hot index、`sync_state`、`thread_read_state` 和当前 message display read/send projection contract。当前消息显示链路的 owner key 是 `owner_identity_id + conversation_id`；升级或 rebuild 不得把 owner DID、legacy direct alias 或 App display thread id 当成新的持久 correctness key。
 
 ## 3. 工作区路径
 
