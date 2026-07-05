@@ -75,7 +75,7 @@ im-core public API exposes current SendRequest / InboxRequest / RPC params
 | `messages().sync_thread_after()` | message-service `sync.thread_after` | thread-local 补新；不得直接返回本地合并的 `history_async` page。 |
 | `messages().sync_conversation_after()` | `sync_thread_after` + `ConversationReadRef` resolver | AWiki Me / Dart 主路径；用 canonical `conversation_id` 解析 storage thread，不让 App 自己拼 alias。 |
 | `messages().local_conversation_timeline()` | SQLite `messages` projection | conversationId-first local-first timeline；远端 history/backfill 只有持久化后才能通过这里成为 UI 事实。 |
-| `messages().mark_conversation_read()` | `mark_thread_read` + `ConversationReadRef` resolver | conversationId-first read watermark；UI 不从 renderable cache 计算默认水位。 |
+| `messages().mark_conversation_read()` | local storage ref + service-thread resolver + mark-read runtime | conversationId-first read watermark；local `thread_read_state` 使用 canonical storage key，远端 `read_state.mark_read` 只发送 direct/group，UI 不从 renderable cache 计算默认水位。 |
 | `messages().watch_conversation_timeline_patches()` | message runtime store | conversationId-first timeline patch stream；旧 `watch_thread_patches(ThreadRef)` 仅保留兼容。 |
 
 ## 4. 现有低层 re-export 收紧目标

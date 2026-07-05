@@ -490,10 +490,11 @@ Reliable sync 补充：
 - `send_conversation_text` / `send_conversation_payload` 是 conversation-surface send 主路径。
   `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
   retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
-- `mark_conversation_read` 是 conversationId-first read watermark API。SDK 优先使用服务端
-  `read_state.mark_read`；旧服务端 fallback 到本地 unread ids + `inbox.mark_read(message_ids)`
-  或本地 group pending ack。`mark_thread_read(ThreadRef)` 与 `mark_read(ids)` 仅保留
-  legacy/explicit message-id compatibility。
+- `mark_conversation_read` 是 conversationId-first read watermark API。local read-state 使用
+  canonical `conversation_id` storage key，远端 `read_state.mark_read` 由 core resolver 转成
+  direct / group service thread；旧服务端 fallback 到本地 unread ids +
+  `inbox.mark_read(message_ids)` 或本地 group pending ack。`mark_thread_read(ThreadRef)` 与
+  `mark_read(ids)` 仅保留 legacy/explicit message-id compatibility。
 - `load_conversation_snapshot`、`clear_conversation_snapshot`、
   `watch_conversation_patches`、`repair_conversation_store` 和
   `watch_conversation_timeline_patches`、`repair_conversation_timeline_store` 是

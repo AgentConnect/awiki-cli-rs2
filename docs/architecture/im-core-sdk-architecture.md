@@ -322,5 +322,8 @@ Conversation-level read state is separate from reliable sync checkpoints:
 - Direct read watermarks use direct thread-local `server_seq`.
 - Group read watermarks use the group thread view `server_seq`; the service may map it from group host `group_event_seq`, but public SDK/API callers do not submit `read_up_to_group_event_seq`.
 - Local truth lives in `thread_read_state`; `conversation_summaries` caches unread/read display projection but is not the only source of truth.
-- Remote ack uses `message-service` `read_state.mark_read` with profile `anp.read_state.local.v1`; legacy direct `inbox.mark_read(message_ids)` remains only as fallback for unsupported services.
+- Remote ack uses `message-service` `read_state.mark_read` with profile `anp.read_state.local.v1`.
+  The wire thread is resolved by `im-core` to direct / group; raw canonical storage
+  `conversation_id` values are never serialized as `kind: "thread"`. Legacy direct
+  `inbox.mark_read(message_ids)` remains only as fallback for unsupported services.
 - `message.read_state_updated` sync events are not emitted by the current service-compatible phase. Adding that event requires first making stable clients treat the type as known or explicitly ignore-safe, because unknown required `sync.delta` events fail closed.

@@ -97,13 +97,10 @@ fn thread_to_wire(thread: crate::messages::ThreadRef) -> crate::ImResult<Value> 
                 "group_did": group_did,
             }))
         }
-        crate::messages::ThreadRef::Thread(thread) => {
-            let thread_id = required_string("thread.thread_id", thread.as_str())?;
-            Ok(json!({
-                "kind": "thread",
-                "thread_id": thread_id,
-            }))
-        }
+        crate::messages::ThreadRef::Thread(_) => Err(crate::ImError::invalid_input(
+            Some("thread".to_owned()),
+            "read_state.mark_read remote thread must resolve to direct or group",
+        )),
     }
 }
 
@@ -135,12 +132,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mark_read_state_supports_raw_thread_id_wire_shape() {
+    fn mark_read_state_rejects_raw_storage_thread_wire_shape() {
         let identity = WireIdentity {
             did: "did:example:alice".to_owned(),
         };
 
-        let params = build_mark_read_state_rpc_params(
+        let err = build_mark_read_state_rpc_params(
             &identity,
             MarkReadStateWireRequest {
                 thread: crate::messages::ThreadRef::Thread(
@@ -153,13 +150,14 @@ mod tests {
                 device_id: None,
             },
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(params["body"]["thread"]["kind"], "thread");
-        assert_eq!(
-            params["body"]["thread"]["thread_id"],
-            "dm:peer-scope:v1:abc"
-        );
-        assert_eq!(params["body"]["read_up_to_server_seq"], "42");
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "thread"
+        ));
     }
 }

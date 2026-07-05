@@ -544,9 +544,11 @@ timeline、read ack 的唯一 routing key。
 
 `mark_thread_read(request)` / `mark_conversation_read(request)` 都是 watermark-first API：
 
-1. `mark_conversation_read` 接收 `ConversationReadRef { conversation_id }`，内部只把它转换为
-   raw `ThreadRef::Thread` 兼容 storage routing；调用方不得重新从 target DID、handle 或 legacy
-   direct alias 拼 read key。
+1. `mark_conversation_read` 接收 `ConversationReadRef { conversation_id }`，内部拆成两条
+   routing：local projection / `thread_read_state` 使用 raw `ThreadRef::Thread(conversation_id)`
+   作为 storage key；远端 `read_state.mark_read` 必须先由 core resolver 解析成
+   `ThreadRef::Direct(peer_did)` 或 `ThreadRef::Group(group_did)`，不得把 raw
+   `conversation_id` 作为 `kind: "thread"` 发给 message-service。
 2. `mark_thread_read` 使用现有 `ThreadRef::Direct` / `ThreadRef::Group`，只作为 CLI/legacy
    migration adapter 或低层 compatibility surface。
 3. `request.watermark` 可选。调用方不传时，SDK 从本地 committed
@@ -557,7 +559,9 @@ timeline、read ack 的唯一 routing key。
 5. `ReadWatermark.last_read_message_id` 只是诊断、幂等和 mismatch 检查辅助，不是排序事实来源。
 6. `ReadWatermark.read_at` 是客户端已读动作时间，用于审计/展示，不参与授权或 checkpoint。
 7. SDK 优先调用服务端 `read_state.mark_read`。wire contract 以
-   `message-service/docs/api/ANP-client-server-api-read-state.md` 为准。
+   `message-service/docs/api/ANP-client-server-api-read-state.md` 为准，只允许 direct / group
+   service thread。peer-scope direct conversation 的 current DID 必须由 core 从本地 projection
+   metadata / participants 解析，不能由 AWiki Me 拼 alias。
 8. 旧服务端、endpoint unsupported 或 transport unavailable 时，SDK fallback 到当前
    本地 unread ids 查询；direct 尝试 `inbox.mark_read(message_ids)`，group 在旧服务端下只能
    保持 local-read / pending-remote-ack 语义。

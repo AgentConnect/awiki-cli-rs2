@@ -17,6 +17,7 @@ pub(crate) struct MarkReadInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MarkThreadReadInput {
     pub request: crate::messages::MarkThreadReadRequest,
+    pub remote_thread: Option<crate::messages::ThreadRef>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,7 +152,10 @@ where
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                &input.request.thread,
+                input
+                    .remote_thread
+                    .as_ref()
+                    .unwrap_or(&input.request.thread),
                 effective_watermark.as_ref(),
                 input.request.fallback_max_message_ids,
             ) {
@@ -336,7 +340,10 @@ where
                 self.client,
                 &mut self.session_provider,
                 &mut self.transport,
-                &input.request.thread,
+                input
+                    .remote_thread
+                    .as_ref()
+                    .unwrap_or(&input.request.thread),
                 effective_watermark.as_ref(),
                 input.request.fallback_max_message_ids,
             )
@@ -1341,6 +1348,7 @@ mod tests {
                 watermark: None,
                 fallback_max_message_ids: None,
             },
+            remote_thread: None,
         })
         .unwrap();
 
@@ -1383,6 +1391,50 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn mark_thread_read_runtime_uses_remote_thread_override_for_read_state_wire() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message(&client, "direct-thread-storage-1", "", "text/plain", "", 0);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let result = MessageMarkReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"updated_count": 1}),
+            },
+        )
+        .mark_thread_read(MarkThreadReadInput {
+            request: crate::messages::MarkThreadReadRequest {
+                thread: crate::messages::ThreadRef::Thread(
+                    crate::ids::ThreadId::parse("dm:did:example:bob").unwrap(),
+                ),
+                watermark: None,
+                fallback_max_message_ids: None,
+            },
+            remote_thread: Some(crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            )),
+        })
+        .unwrap();
+
+        assert_eq!(result.sdk_result.updated_count, 1);
+        assert!(result.sdk_result.remote_acknowledged);
+        assert!(!result.sdk_result.pending_remote_ack);
+        assert_eq!(fixture.is_read(&client, "direct-thread-storage-1"), 1);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "read_state.mark_read");
+        assert_eq!(calls[0].params["body"]["thread"]["kind"], "direct");
+        assert_eq!(
+            calls[0].params["body"]["thread"]["peer_did"],
+            "did:example:bob"
+        );
+        assert!(calls[0].params["body"]["thread"].get("thread_id").is_none());
+    }
+
     #[tokio::test]
     async fn mark_thread_read_emits_conversation_store_patch_after_local_commit() {
         let fixture = Fixture::new();
@@ -1408,6 +1460,7 @@ mod tests {
                 watermark: None,
                 fallback_max_message_ids: None,
             },
+            remote_thread: None,
         })
         .unwrap();
         let patch = patches.next_patch().await.unwrap();
@@ -1453,6 +1506,7 @@ mod tests {
                 watermark: None,
                 fallback_max_message_ids: None,
             },
+            remote_thread: None,
         })
         .unwrap();
 
@@ -1485,6 +1539,7 @@ mod tests {
                 watermark: None,
                 fallback_max_message_ids: None,
             },
+            remote_thread: None,
         })
         .unwrap();
 
@@ -1541,6 +1596,7 @@ mod tests {
                 watermark: None,
                 fallback_max_message_ids: Some(1),
             },
+            remote_thread: None,
         })
         .unwrap();
 
@@ -1631,6 +1687,7 @@ mod tests {
                 watermark: None,
                 fallback_max_message_ids: None,
             },
+            remote_thread: None,
         })
         .await
         .unwrap();

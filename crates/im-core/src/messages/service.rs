@@ -110,32 +110,69 @@ mod direct_send_result_identity_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod conversation_mark_read_request_tests {
+    use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+
     #[test]
-    fn mark_conversation_read_request_preserves_canonical_storage_thread() {
+    fn mark_conversation_read_maps_direct_storage_and_remote_thread_separately() {
+        let fixture = Fixture::new("mark-read-direct");
+        let client = fixture.client();
         let request = crate::messages::MarkConversationReadRequest {
             conversation: crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
             watermark: None,
             fallback_max_message_ids: Some(25),
         };
 
-        let mapped = super::mark_thread_read_request_for_conversation(request).unwrap();
+        let mapped = super::mark_read_input_for_conversation(&client, request).unwrap();
 
-        match mapped.thread {
+        match mapped.request.thread {
             crate::messages::ThreadRef::Thread(thread) => {
                 assert_eq!(thread.as_str(), "dm:did:example:bob");
             }
             other => panic!("expected storage thread ref, got {other:?}"),
         }
-        assert!(mapped.watermark.is_none());
-        assert_eq!(mapped.fallback_max_message_ids, Some(25));
+        match mapped.remote_thread.expect("remote thread") {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob");
+            }
+            other => panic!("expected remote direct ref, got {other:?}"),
+        }
+        assert!(mapped.request.watermark.is_none());
+        assert_eq!(mapped.request.fallback_max_message_ids, Some(25));
     }
 
     #[test]
-    fn mark_conversation_read_request_preserves_peer_scope_storage_thread() {
+    fn mark_conversation_read_maps_peer_scope_to_remote_direct_from_projection() {
+        let fixture = Fixture::new("mark-read-peer-scope");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-peer-scope-read".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            sender_did: "did:example:bob-current".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            metadata: json!({
+                "peer_user_id": "user-bob",
+                "peer_full_handle": "bob.awiki.test",
+                "peer_current_did": "did:example:bob-current"
+            })
+            .to_string(),
+            ..Fixture::message_record_defaults()
+        });
         let request = crate::messages::MarkConversationReadRequest {
-            conversation: crate::messages::ConversationReadRef::new("dm:peer-scope:v1:agent")
+            conversation: crate::messages::ConversationReadRef::new(conversation_id.clone())
                 .unwrap(),
             watermark: Some(crate::messages::ReadWatermark {
                 last_read_message_id: None,
@@ -145,16 +182,23 @@ mod conversation_mark_read_request_tests {
             fallback_max_message_ids: None,
         };
 
-        let mapped = super::mark_thread_read_request_for_conversation(request).unwrap();
+        let mapped = super::mark_read_input_for_conversation(&client, request).unwrap();
 
-        match mapped.thread {
+        match mapped.request.thread {
             crate::messages::ThreadRef::Thread(thread) => {
-                assert_eq!(thread.as_str(), "dm:peer-scope:v1:agent");
+                assert_eq!(thread.as_str(), conversation_id);
             }
             other => panic!("expected storage thread ref, got {other:?}"),
         }
+        match mapped.remote_thread.expect("remote thread") {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob-current");
+            }
+            other => panic!("expected remote direct ref, got {other:?}"),
+        }
         assert_eq!(
             mapped
+                .request
                 .watermark
                 .as_ref()
                 .and_then(|watermark| watermark.last_read_thread_seq.as_deref()),
@@ -163,7 +207,9 @@ mod conversation_mark_read_request_tests {
     }
 
     #[test]
-    fn mark_conversation_read_request_preserves_group_storage_thread() {
+    fn mark_conversation_read_maps_group_storage_and_remote_thread_separately() {
+        let fixture = Fixture::new("mark-read-group");
+        let client = fixture.client();
         let request = crate::messages::MarkConversationReadRequest {
             conversation: crate::messages::ConversationReadRef::new("group:did:example:group")
                 .unwrap(),
@@ -171,13 +217,114 @@ mod conversation_mark_read_request_tests {
             fallback_max_message_ids: None,
         };
 
-        let mapped = super::mark_thread_read_request_for_conversation(request).unwrap();
+        let mapped = super::mark_read_input_for_conversation(&client, request).unwrap();
 
-        match mapped.thread {
+        match mapped.request.thread {
             crate::messages::ThreadRef::Thread(thread) => {
                 assert_eq!(thread.as_str(), "group:did:example:group");
             }
             other => panic!("expected group storage thread ref, got {other:?}"),
+        }
+        match mapped.remote_thread.expect("remote thread") {
+            crate::messages::ThreadRef::Group(group) => {
+                assert_eq!(group.as_str(), "did:example:group");
+            }
+            other => panic!("expected remote group ref, got {other:?}"),
+        }
+    }
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(prefix: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "im-core-mark-read-{prefix}-{}-{nanos}",
+                std::process::id()
+            ));
+            let identity_root = root.join("identities");
+            let identity_dir = identity_root.join("alice");
+            fs::create_dir_all(&identity_dir).unwrap();
+            fs::write(identity_root.join("default"), "alice\n").unwrap();
+            fs::write(
+                identity_root.join("registry.json"),
+                r#"{
+                  "default_identity": "alice",
+                  "identities": [{
+                    "id": "alice-id",
+                    "did": "did:example:alice",
+                    "local_alias": "alice",
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "device_id": "device-alice",
+                    "missing": []
+                  }]
+                }"#,
+            )
+            .unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::paths::IdentityRegistryPaths {
+                        identity_root_dir: self.root.join("identities"),
+                        registry_path: self.root.join("identities").join("registry.json"),
+                        default_identity_path: Some(self.root.join("identities").join("default")),
+                    },
+                    local_state: crate::paths::LocalStatePaths {
+                        sqlite_path: self.root.join("local").join("im.sqlite"),
+                    },
+                    runtime: crate::paths::RuntimePaths {
+                        cache_dir: self.root.join("cache"),
+                        temp_dir: self.root.join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
+
+        fn seed_message(&self, record: crate::internal::local_state::messages::MessageRecord) {
+            let connection = crate::internal::local_state::open_writable(
+                &self.root.join("local").join("im.sqlite"),
+            )
+            .unwrap();
+            crate::internal::local_state::messages::upsert_message(&connection, &record).unwrap();
+        }
+
+        fn message_record_defaults() -> crate::internal::local_state::messages::MessageRecord {
+            crate::internal::local_state::messages::MessageRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                direction: 0,
+                content_type: "text/plain".to_owned(),
+                content: "hello from projection".to_owned(),
+                sent_at: "2026-07-05T00:00:00Z".to_owned(),
+                stored_at: "2026-07-05T00:00:00Z".to_owned(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            }
         }
     }
 }
@@ -241,7 +388,7 @@ mod conversation_read_model_tests {
         let fixture = Fixture::new("conversation-sync-direct");
         let client = fixture.client();
 
-        let resolved = super::resolve_sync_conversation_thread(
+        let resolved = super::resolve_service_conversation_thread(
             &client,
             &crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
         )
@@ -262,7 +409,7 @@ mod conversation_read_model_tests {
         let fixture = Fixture::new("conversation-sync-direct-alias");
         let client = fixture.client();
 
-        let err = super::resolve_sync_conversation_thread(
+        let err = super::resolve_service_conversation_thread(
             &client,
             &crate::messages::ConversationReadRef::new("dm:bob.awiki.test").unwrap(),
         )
@@ -282,7 +429,7 @@ mod conversation_read_model_tests {
         let fixture = Fixture::new("conversation-sync-sorted-alias");
         let client = fixture.client();
 
-        let err = super::resolve_sync_conversation_thread(
+        let err = super::resolve_service_conversation_thread(
             &client,
             &crate::messages::ConversationReadRef::new("dm:did:example:alice:did:example:bob")
                 .unwrap(),
@@ -328,7 +475,7 @@ mod conversation_read_model_tests {
         let fixture = Fixture::new("conversation-sync-group");
         let client = fixture.client();
 
-        let resolved = super::resolve_sync_conversation_thread(
+        let resolved = super::resolve_service_conversation_thread(
             &client,
             &crate::messages::ConversationReadRef::new("group:did:example:group").unwrap(),
         )
@@ -372,7 +519,7 @@ mod conversation_read_model_tests {
             ..Fixture::message_record_defaults()
         });
 
-        let resolved = super::resolve_sync_conversation_thread(
+        let resolved = super::resolve_service_conversation_thread(
             &client,
             &crate::messages::ConversationReadRef::new(conversation_id).unwrap(),
         )
@@ -433,7 +580,7 @@ mod conversation_read_model_tests {
             ..Fixture::message_record_defaults()
         });
 
-        let resolved = super::resolve_sync_conversation_thread(
+        let resolved = super::resolve_service_conversation_thread(
             &client,
             &crate::messages::ConversationReadRef::new(conversation_id).unwrap(),
         )
@@ -2066,7 +2213,10 @@ impl<'a> MessageService<'a> {
                 crate::internal::transport::CoreHttpTransport::new(self.client),
             )
             .mark_thread_read(
-                crate::internal::message_runtime::mark_read::MarkThreadReadInput { request },
+                crate::internal::message_runtime::mark_read::MarkThreadReadInput {
+                    request,
+                    remote_thread: None,
+                },
             )
             .map(|result| result.sdk_result)
         }
@@ -2087,7 +2237,10 @@ impl<'a> MessageService<'a> {
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .mark_thread_read_async(
-            crate::internal::message_runtime::mark_read::MarkThreadReadInput { request },
+            crate::internal::message_runtime::mark_read::MarkThreadReadInput {
+                request,
+                remote_thread: None,
+            },
         )
         .await
         .map(|result| result.sdk_result)
@@ -2097,15 +2250,37 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::MarkConversationReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
-        self.mark_thread_read(mark_thread_read_request_for_conversation(request)?)
+        #[cfg(feature = "blocking")]
+        {
+            let mapped = mark_read_input_for_conversation(self.client, request)?;
+            crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .mark_thread_read(mapped)
+            .map(|result| result.sdk_result)
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-message-mark-thread-read"))
+        }
     }
 
     pub async fn mark_conversation_read_async(
         &self,
         request: super::MarkConversationReadRequest,
     ) -> crate::ImResult<super::MarkThreadReadResult> {
-        self.mark_thread_read_async(mark_thread_read_request_for_conversation(request)?)
-            .await
+        let mapped = mark_read_input_for_conversation_async(self.client, request).await?;
+        crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .mark_thread_read_async(mapped)
+        .await
+        .map(|result| result.sdk_result)
     }
 
     pub fn sync_thread_after(
@@ -2169,7 +2344,7 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::SyncThreadAfterResult> {
         #[cfg(feature = "blocking")]
         {
-            let resolved = resolve_sync_conversation_thread(self.client, &request.conversation)?;
+            let resolved = resolve_service_conversation_thread(self.client, &request.conversation)?;
             crate::internal::message_runtime::sync::MessageSyncRuntime::new(
                 self.client,
                 crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -2200,7 +2375,7 @@ impl<'a> MessageService<'a> {
         request: super::SyncConversationAfterRequest,
     ) -> crate::ImResult<super::SyncThreadAfterResult> {
         let resolved =
-            resolve_sync_conversation_thread_async(self.client, &request.conversation).await?;
+            resolve_service_conversation_thread_async(self.client, &request.conversation).await?;
         crate::internal::message_runtime::sync::MessageSyncRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -2717,7 +2892,7 @@ fn conversation_send_request(
     wait_for_final_acceptance: bool,
     delegated_signing: Option<super::DelegatedSigningOptions>,
 ) -> crate::ImResult<ResolvedConversationSendRequest> {
-    let resolved = resolve_sync_conversation_thread(client, &conversation)?;
+    let resolved = resolve_service_conversation_thread(client, &conversation)?;
     let client_message_id = match client_message_id {
         Some(id) => id,
         None => crate::ids::MessageId::parse(format!(
@@ -2750,7 +2925,7 @@ fn conversation_send_request(
 }
 
 fn conversation_send_target(
-    resolved: ResolvedConversationSyncThread,
+    resolved: ResolvedConversationServiceThread,
 ) -> crate::ImResult<(
     super::MessageTarget,
     Option<String>,
@@ -3093,7 +3268,7 @@ struct ResolvedHistoryThread {
 }
 
 #[derive(Debug)]
-struct ResolvedConversationSyncThread {
+struct ResolvedConversationServiceThread {
     thread: super::ThreadRef,
     resolved_did: Option<String>,
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
@@ -3135,14 +3310,14 @@ fn resolve_history_thread(
     })
 }
 
-fn resolve_sync_conversation_thread(
+fn resolve_service_conversation_thread(
     client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
-) -> crate::ImResult<ResolvedConversationSyncThread> {
+) -> crate::ImResult<ResolvedConversationServiceThread> {
     let conversation_id = conversation.conversation_id.trim();
     if let Some(group) = conversation_id.strip_prefix("group:") {
         let group = crate::ids::GroupRef::parse(group)?;
-        return Ok(ResolvedConversationSyncThread {
+        return Ok(ResolvedConversationServiceThread {
             thread: super::ThreadRef::Group(group),
             resolved_did: None,
             peer_scope: None,
@@ -3150,10 +3325,10 @@ fn resolve_sync_conversation_thread(
     }
     if let Some(peer) = conversation_id.strip_prefix("dm:") {
         if peer.starts_with("peer-scope:") {
-            return resolve_peer_scope_sync_conversation_thread(client, conversation);
+            return resolve_peer_scope_service_conversation_thread(client, conversation);
         }
         if !is_single_did_ref(peer) {
-            return Err(unresolvable_sync_conversation(
+            return Err(unresolvable_service_conversation(
                 &conversation.conversation_id,
             ));
         }
@@ -3162,7 +3337,7 @@ fn resolve_sync_conversation_thread(
             .as_str()
             .starts_with("did:")
             .then(|| peer.as_str().to_owned());
-        return Ok(ResolvedConversationSyncThread {
+        return Ok(ResolvedConversationServiceThread {
             thread: super::ThreadRef::Direct(peer),
             resolved_did,
             peer_scope: None,
@@ -3170,8 +3345,21 @@ fn resolve_sync_conversation_thread(
     }
     Err(crate::ImError::invalid_input(
         Some("conversation_id".to_owned()),
-        "sync_conversation_after requires a canonical dm: or group: conversation_id",
+        "conversation service operations require a canonical dm: or group: conversation_id",
     ))
+}
+
+fn mark_read_input_for_conversation(
+    client: &crate::core::ImClient,
+    request: super::MarkConversationReadRequest,
+) -> crate::ImResult<crate::internal::message_runtime::mark_read::MarkThreadReadInput> {
+    let remote_thread = resolve_service_conversation_thread(client, &request.conversation)?.thread;
+    Ok(
+        crate::internal::message_runtime::mark_read::MarkThreadReadInput {
+            request: mark_thread_read_request_for_conversation(request)?,
+            remote_thread: Some(remote_thread),
+        },
+    )
 }
 
 fn mark_thread_read_request_for_conversation(
@@ -3184,25 +3372,40 @@ fn mark_thread_read_request_for_conversation(
     })
 }
 
-async fn resolve_sync_conversation_thread_async(
+async fn resolve_service_conversation_thread_async(
     client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
-) -> crate::ImResult<ResolvedConversationSyncThread> {
-    resolve_sync_conversation_thread(client, conversation)
+) -> crate::ImResult<ResolvedConversationServiceThread> {
+    resolve_service_conversation_thread(client, conversation)
+}
+
+async fn mark_read_input_for_conversation_async(
+    client: &crate::core::ImClient,
+    request: super::MarkConversationReadRequest,
+) -> crate::ImResult<crate::internal::message_runtime::mark_read::MarkThreadReadInput> {
+    let remote_thread = resolve_service_conversation_thread_async(client, &request.conversation)
+        .await?
+        .thread;
+    Ok(
+        crate::internal::message_runtime::mark_read::MarkThreadReadInput {
+            request: mark_thread_read_request_for_conversation(request)?,
+            remote_thread: Some(remote_thread),
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]
-fn resolve_peer_scope_sync_conversation_thread(
+fn resolve_peer_scope_service_conversation_thread(
     client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
-) -> crate::ImResult<ResolvedConversationSyncThread> {
+) -> crate::ImResult<ResolvedConversationServiceThread> {
     let records = conversation_projection_records(client, conversation)?;
     let Some(peer_did) = peer_current_did_from_records(&records, client.did().as_str()) else {
-        return Err(unresolvable_sync_conversation(
+        return Err(unresolvable_service_conversation(
             &conversation.conversation_id,
         ));
     };
-    Ok(ResolvedConversationSyncThread {
+    Ok(ResolvedConversationServiceThread {
         thread: super::ThreadRef::Direct(crate::ids::PeerRef::parse(&peer_did, "")?),
         resolved_did: Some(peer_did),
         peer_scope: records.iter().find_map(peer_scope_from_record),
@@ -3210,11 +3413,11 @@ fn resolve_peer_scope_sync_conversation_thread(
 }
 
 #[cfg(not(feature = "sqlite"))]
-fn resolve_peer_scope_sync_conversation_thread(
+fn resolve_peer_scope_service_conversation_thread(
     _client: &crate::core::ImClient,
     conversation: &super::ConversationReadRef,
-) -> crate::ImResult<ResolvedConversationSyncThread> {
-    Err(unresolvable_sync_conversation(
+) -> crate::ImResult<ResolvedConversationServiceThread> {
+    Err(unresolvable_service_conversation(
         &conversation.conversation_id,
     ))
 }
@@ -3327,11 +3530,11 @@ fn metadata_value<'a>(
         .filter(|value| !value.is_empty())
 }
 
-fn unresolvable_sync_conversation(conversation_id: &str) -> crate::ImError {
+fn unresolvable_service_conversation(conversation_id: &str) -> crate::ImError {
     crate::ImError::invalid_input(
         Some("conversation_id".to_owned()),
         format!(
-            "conversation_id {conversation_id} cannot be resolved to a syncable direct or group thread"
+            "conversation_id {conversation_id} cannot be resolved to a service direct or group thread"
         ),
     )
 }
