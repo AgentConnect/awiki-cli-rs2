@@ -473,6 +473,12 @@ class ConversationSnapshotMessageBody {
   final String? unsupportedContentType;
 }
 
+class ConversationReadRef {
+  const ConversationReadRef({required this.conversationId});
+
+  final String conversationId;
+}
+
 class SyncThreadAfterRequest {
   const SyncThreadAfterRequest({
     required this.thread,
@@ -481,6 +487,18 @@ class SyncThreadAfterRequest {
   });
 
   final ThreadRef thread;
+  final String? afterServerSeq;
+  final int? limit;
+}
+
+class SyncConversationAfterRequest {
+  const SyncConversationAfterRequest({
+    required this.conversation,
+    this.afterServerSeq,
+    this.limit,
+  });
+
+  final ConversationReadRef conversation;
   final String? afterServerSeq;
   final int? limit;
 }

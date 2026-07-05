@@ -68,6 +68,18 @@ Future<DartMessagePage> localHistory({
   cursor: cursor,
 );
 
+Future<DartMessagePage> localConversationTimeline({
+  required ArcDartImClient client,
+  required DartConversationReadRef conversation,
+  required int limit,
+  String? cursor,
+}) => RustLib.instance.api.crateApiMessagesLocalConversationTimeline(
+  client: client,
+  conversation: conversation,
+  limit: limit,
+  cursor: cursor,
+);
+
 Future<DartMarkReadResult> markRead({
   required ArcDartImClient client,
   required List<String> messageIds,
@@ -100,6 +112,14 @@ Future<DartSyncThreadAfterResult> syncThreadAfter({
   required ArcDartImClient client,
   required DartSyncThreadAfterRequest request,
 }) => RustLib.instance.api.crateApiMessagesSyncThreadAfter(
+  client: client,
+  request: request,
+);
+
+Future<DartSyncThreadAfterResult> syncConversationAfter({
+  required ArcDartImClient client,
+  required DartSyncConversationAfterRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncConversationAfter(
   client: client,
   request: request,
 );
@@ -165,6 +185,16 @@ Future<ArcDartThreadMessagePatchSession> watchThreadPatches({
   limit: limit,
 );
 
+Future<ArcDartThreadMessagePatchSession> watchConversationTimelinePatches({
+  required ArcDartImClient client,
+  required DartConversationReadRef conversation,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesWatchConversationTimelinePatches(
+  client: client,
+  conversation: conversation,
+  limit: limit,
+);
+
 Stream<DartThreadMessageStorePatch> threadMessagePatchStream({
   required ArcDartThreadMessagePatchSession session,
 }) => RustLib.instance.api.crateApiMessagesThreadMessagePatchStream(
@@ -184,6 +214,16 @@ Future<DartThreadMessageStorePatch> repairThreadStore({
 }) => RustLib.instance.api.crateApiMessagesRepairThreadStore(
   client: client,
   thread: thread,
+  limit: limit,
+);
+
+Future<DartThreadMessageStorePatch> repairConversationTimelineStore({
+  required ArcDartImClient client,
+  required DartConversationReadRef conversation,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesRepairConversationTimelineStore(
+  client: client,
+  conversation: conversation,
   limit: limit,
 );
 

@@ -111,6 +111,375 @@ mod direct_send_result_identity_tests {
 }
 
 #[cfg(all(test, feature = "sqlite"))]
+mod conversation_read_model_tests {
+    use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn local_conversation_timeline_reads_projection_by_conversation_id() {
+        let fixture = Fixture::new("conversation-timeline");
+        let client = fixture.client();
+        let connection =
+            crate::internal::local_state::open_writable(&fixture.sqlite_path()).unwrap();
+        crate::internal::local_state::messages::upsert_message(
+            &connection,
+            &crate::internal::local_state::messages::MessageRecord {
+                msg_id: "msg-conversation-local".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                conversation_id: "dm:did:example:bob".to_owned(),
+                thread_id: "dm:did:example:bob".to_owned(),
+                direction: 0,
+                sender_did: "did:example:bob".to_owned(),
+                receiver_did: "did:example:alice".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "hello from projection".to_owned(),
+                sent_at: "2026-07-05T00:00:00Z".to_owned(),
+                stored_at: "2026-07-05T00:00:00Z".to_owned(),
+                server_seq: Some(7),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        let page = client
+            .messages()
+            .local_conversation_timeline_with_metadata(
+                crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+                crate::messages::LocalHistoryQuery {
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id.as_str(), "msg-conversation-local");
+        assert_eq!(
+            page.items[0].metadata.server_sequence,
+            Some(7),
+            "conversation timeline should read committed projection metadata"
+        );
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn sync_conversation_after_resolves_direct_conversation_to_syncable_thread() {
+        let fixture = Fixture::new("conversation-sync-direct");
+        let client = fixture.client();
+
+        let resolved = super::resolve_sync_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+        )
+        .unwrap();
+
+        match resolved.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob");
+            }
+            other => panic!("expected direct thread, got {other:?}"),
+        }
+        assert_eq!(resolved.resolved_did.as_deref(), Some("did:example:bob"));
+        assert!(resolved.peer_scope.is_none());
+    }
+
+    #[test]
+    fn sync_conversation_after_rejects_non_canonical_direct_alias() {
+        let fixture = Fixture::new("conversation-sync-direct-alias");
+        let client = fixture.client();
+
+        let err = super::resolve_sync_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new("dm:bob.awiki.test").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "conversation_id"
+        ));
+    }
+
+    #[test]
+    fn sync_conversation_after_rejects_legacy_sorted_direct_alias() {
+        let fixture = Fixture::new("conversation-sync-sorted-alias");
+        let client = fixture.client();
+
+        let err = super::resolve_sync_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new("dm:did:example:alice:did:example:bob")
+                .unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "conversation_id"
+        ));
+    }
+
+    #[test]
+    fn sync_conversation_after_public_path_does_not_route_as_raw_thread() {
+        let fixture = Fixture::new("conversation-sync-public-path");
+        let client = fixture.client();
+
+        let err = client
+            .messages()
+            .sync_conversation_after(crate::messages::SyncConversationAfterRequest {
+                conversation: crate::messages::ConversationReadRef::new("dm:did:example:bob")
+                    .unwrap(),
+                after_server_seq: Some("0".to_owned()),
+                limit: Some(1),
+            })
+            .unwrap_err();
+
+        assert!(
+            !matches!(
+                err,
+                crate::ImError::UnsupportedCapability { ref capability }
+                    if capability == "sync-thread-after-raw-thread"
+            ),
+            "sync_conversation_after must resolve conversation_id before calling thread-after"
+        );
+    }
+
+    #[test]
+    fn sync_conversation_after_resolves_group_conversation_to_syncable_thread() {
+        let fixture = Fixture::new("conversation-sync-group");
+        let client = fixture.client();
+
+        let resolved = super::resolve_sync_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new("group:did:example:group").unwrap(),
+        )
+        .unwrap();
+
+        match resolved.thread {
+            crate::messages::ThreadRef::Group(group) => {
+                assert_eq!(group.as_str(), "did:example:group");
+            }
+            other => panic!("expected group thread, got {other:?}"),
+        }
+        assert!(resolved.resolved_did.is_none());
+        assert!(resolved.peer_scope.is_none());
+    }
+
+    #[test]
+    fn sync_conversation_after_resolves_peer_scope_from_projection_metadata() {
+        let fixture = Fixture::new("conversation-sync-peer-scope");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "Bob.AWiki.Test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-peer-scope-sync".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            sender_did: "did:example:bob-current".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            metadata: json!({
+                "peer_user_id": "user-bob",
+                "peer_full_handle": "bob.awiki.test",
+                "peer_current_did": "did:example:bob-current"
+            })
+            .to_string(),
+            ..Fixture::message_record_defaults()
+        });
+
+        let resolved = super::resolve_sync_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new(conversation_id).unwrap(),
+        )
+        .unwrap();
+
+        match resolved.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob-current");
+            }
+            other => panic!("expected direct thread, got {other:?}"),
+        }
+        assert_eq!(
+            resolved.resolved_did.as_deref(),
+            Some("did:example:bob-current")
+        );
+        let resolved_scope = resolved.peer_scope.expect("peer scope");
+        assert_eq!(resolved_scope.user_id, "user-bob");
+        assert_eq!(resolved_scope.full_handle, "bob.awiki.test");
+    }
+
+    #[test]
+    fn sync_conversation_after_peer_scope_prefers_metadata_did_over_legacy_alias_rows() {
+        let fixture = Fixture::new("conversation-sync-peer-scope-rotation");
+        let client = fixture.client();
+        let peer_scope = crate::internal::local_state::owner_scope::DirectPeerScope::new(
+            "user-bob",
+            "bob.awiki.test",
+        )
+        .unwrap();
+        let conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id_for_peer_scope(
+                &peer_scope,
+            );
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-legacy-latest".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            sender_did: "did:example:bob-old".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            sent_at: "2026-07-05T00:02:00Z".to_owned(),
+            stored_at: "2026-07-05T00:02:00Z".to_owned(),
+            ..Fixture::message_record_defaults()
+        });
+        fixture.seed_message(crate::internal::local_state::messages::MessageRecord {
+            msg_id: "msg-metadata-older".to_owned(),
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id.clone(),
+            sender_did: "did:example:bob-old".to_owned(),
+            receiver_did: "did:example:alice".to_owned(),
+            sent_at: "2026-07-05T00:01:00Z".to_owned(),
+            stored_at: "2026-07-05T00:01:00Z".to_owned(),
+            metadata: json!({
+                "peer_user_id": "user-bob",
+                "peer_full_handle": "bob.awiki.test",
+                "peer_current_did": "did:example:bob-current"
+            })
+            .to_string(),
+            ..Fixture::message_record_defaults()
+        });
+
+        let resolved = super::resolve_sync_conversation_thread(
+            &client,
+            &crate::messages::ConversationReadRef::new(conversation_id).unwrap(),
+        )
+        .unwrap();
+
+        match resolved.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                assert_eq!(peer.as_str(), "did:example:bob-current");
+            }
+            other => panic!("expected direct thread, got {other:?}"),
+        }
+        assert_eq!(
+            resolved.resolved_did.as_deref(),
+            Some("did:example:bob-current")
+        );
+    }
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(prefix: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "im-core-service-{prefix}-{}-{nanos}",
+                std::process::id()
+            ));
+            let identity_root = root.join("identities");
+            let identity_dir = identity_root.join("alice");
+            fs::create_dir_all(&identity_dir).unwrap();
+            fs::create_dir_all(root.join("local")).unwrap();
+            fs::write(identity_root.join("default"), "alice\n").unwrap();
+            fs::write(
+                identity_root.join("registry.json"),
+                json!({
+                    "default_identity": "alice",
+                    "identities": [{
+                        "id": "alice-id",
+                        "did": "did:example:alice",
+                        "local_alias": "alice",
+                        "ready_for_auth": true,
+                        "ready_for_messaging": true,
+                        "missing": []
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            fs::write(identity_dir.join("did.json"), "{}").unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::IdentityRegistryPaths {
+                        identity_root_dir: self.root.join("identities"),
+                        registry_path: self.root.join("identities").join("registry.json"),
+                        default_identity_path: Some(self.root.join("identities").join("default")),
+                    },
+                    local_state: crate::LocalStatePaths {
+                        sqlite_path: self.sqlite_path(),
+                    },
+                    runtime: crate::RuntimePaths {
+                        cache_dir: self.root.join("cache"),
+                        temp_dir: self.root.join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
+
+        fn sqlite_path(&self) -> PathBuf {
+            self.root.join("local").join("im.sqlite")
+        }
+
+        fn seed_message(&self, record: crate::internal::local_state::messages::MessageRecord) {
+            let connection =
+                crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+            crate::internal::local_state::messages::upsert_message(&connection, &record).unwrap();
+        }
+
+        fn message_record_defaults() -> crate::internal::local_state::messages::MessageRecord {
+            crate::internal::local_state::messages::MessageRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                direction: 0,
+                content_type: "text/plain".to_owned(),
+                content: "hello from projection".to_owned(),
+                sent_at: "2026-07-05T00:00:00Z".to_owned(),
+                stored_at: "2026-07-05T00:00:00Z".to_owned(),
+                ..crate::internal::local_state::messages::MessageRecord::default()
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
 mod direct_e2ee_async_persistence_tests {
     use serde_json::json;
 
@@ -1356,6 +1725,42 @@ impl<'a> MessageService<'a> {
         .map(message_page_from_read_result)?
     }
 
+    pub fn local_conversation_timeline(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.local_conversation_timeline_with_metadata(conversation, query)
+            .map(super::MessagePage::into_page)
+    }
+
+    pub async fn local_conversation_timeline_async(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.local_conversation_timeline_with_metadata_async(conversation, query)
+            .await
+            .map(super::MessagePage::into_page)
+    }
+
+    pub fn local_conversation_timeline_with_metadata(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        self.local_history_with_metadata(conversation.as_thread_ref()?, query)
+    }
+
+    pub async fn local_conversation_timeline_with_metadata_async(
+        &self,
+        conversation: super::ConversationReadRef,
+        query: super::LocalHistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        self.local_history_with_metadata_async(conversation.as_thread_ref()?, query)
+            .await
+    }
+
     pub fn mark_read(
         &self,
         ids: Vec<crate::ids::MessageId>,
@@ -1481,6 +1886,64 @@ impl<'a> MessageService<'a> {
                 request: super::SyncThreadAfterRequest {
                     thread: resolved.thread,
                     ..request
+                },
+                resolved_peer_did: resolved.resolved_did,
+                peer_scope: resolved.peer_scope,
+            },
+        )
+        .await
+    }
+
+    pub fn sync_conversation_after(
+        &self,
+        request: super::SyncConversationAfterRequest,
+    ) -> crate::ImResult<super::SyncThreadAfterResult> {
+        #[cfg(feature = "blocking")]
+        {
+            let resolved = resolve_sync_conversation_thread(self.client, &request.conversation)?;
+            crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .sync_thread_after(
+                crate::internal::message_runtime::sync::SyncThreadAfterInput {
+                    request: super::SyncThreadAfterRequest {
+                        thread: resolved.thread,
+                        after_server_seq: request.after_server_seq,
+                        limit: request.limit,
+                    },
+                    resolved_peer_did: resolved.resolved_did,
+                    peer_scope: resolved.peer_scope,
+                },
+            )
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-conversation-after"))
+        }
+    }
+
+    pub async fn sync_conversation_after_async(
+        &self,
+        request: super::SyncConversationAfterRequest,
+    ) -> crate::ImResult<super::SyncThreadAfterResult> {
+        let resolved =
+            resolve_sync_conversation_thread_async(self.client, &request.conversation).await?;
+        crate::internal::message_runtime::sync::MessageSyncRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .sync_thread_after_async(
+            crate::internal::message_runtime::sync::SyncThreadAfterInput {
+                request: super::SyncThreadAfterRequest {
+                    thread: resolved.thread,
+                    after_server_seq: request.after_server_seq,
+                    limit: request.limit,
                 },
                 resolved_peer_did: resolved.resolved_did,
                 peer_scope: resolved.peer_scope,
@@ -1615,6 +2078,22 @@ impl<'a> MessageService<'a> {
         self.watch_thread_patches(thread, limit)
     }
 
+    pub fn watch_conversation_timeline_patches(
+        &self,
+        conversation: super::ConversationReadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessagePatchSession> {
+        self.watch_thread_patches(conversation.as_thread_ref()?, limit)
+    }
+
+    pub async fn watch_conversation_timeline_patches_async(
+        &self,
+        conversation: super::ConversationReadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessagePatchSession> {
+        self.watch_conversation_timeline_patches(conversation, limit)
+    }
+
     pub fn repair_thread_store(
         &self,
         thread: super::ThreadRef,
@@ -1633,6 +2112,22 @@ impl<'a> MessageService<'a> {
         limit: Option<u32>,
     ) -> crate::ImResult<super::ThreadMessageStorePatch> {
         self.repair_thread_store(thread, limit)
+    }
+
+    pub fn repair_conversation_timeline_store(
+        &self,
+        conversation: super::ConversationReadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessageStorePatch> {
+        self.repair_thread_store(conversation.as_thread_ref()?, limit)
+    }
+
+    pub async fn repair_conversation_timeline_store_async(
+        &self,
+        conversation: super::ConversationReadRef,
+        limit: Option<u32>,
+    ) -> crate::ImResult<super::ThreadMessageStorePatch> {
+        self.repair_conversation_timeline_store(conversation, limit)
     }
 }
 
@@ -2218,6 +2713,13 @@ struct ResolvedHistoryThread {
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
+#[derive(Debug)]
+struct ResolvedConversationSyncThread {
+    thread: super::ThreadRef,
+    resolved_did: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
 fn resolve_history_thread(
     client: &crate::core::ImClient,
     thread: super::ThreadRef,
@@ -2252,6 +2754,197 @@ fn resolve_history_thread(
         handle_peer: Some((full_handle, did)),
         peer_scope: Some(peer_scope),
     })
+}
+
+fn resolve_sync_conversation_thread(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<ResolvedConversationSyncThread> {
+    let conversation_id = conversation.conversation_id.trim();
+    if let Some(group) = conversation_id.strip_prefix("group:") {
+        let group = crate::ids::GroupRef::parse(group)?;
+        return Ok(ResolvedConversationSyncThread {
+            thread: super::ThreadRef::Group(group),
+            resolved_did: None,
+            peer_scope: None,
+        });
+    }
+    if let Some(peer) = conversation_id.strip_prefix("dm:") {
+        if peer.starts_with("peer-scope:") {
+            return resolve_peer_scope_sync_conversation_thread(client, conversation);
+        }
+        if !is_single_did_ref(peer) {
+            return Err(unresolvable_sync_conversation(
+                &conversation.conversation_id,
+            ));
+        }
+        let peer = crate::ids::PeerRef::parse(peer, "")?;
+        let resolved_did = peer
+            .as_str()
+            .starts_with("did:")
+            .then(|| peer.as_str().to_owned());
+        return Ok(ResolvedConversationSyncThread {
+            thread: super::ThreadRef::Direct(peer),
+            resolved_did,
+            peer_scope: None,
+        });
+    }
+    Err(crate::ImError::invalid_input(
+        Some("conversation_id".to_owned()),
+        "sync_conversation_after requires a canonical dm: or group: conversation_id",
+    ))
+}
+
+async fn resolve_sync_conversation_thread_async(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<ResolvedConversationSyncThread> {
+    resolve_sync_conversation_thread(client, conversation)
+}
+
+#[cfg(feature = "sqlite")]
+fn resolve_peer_scope_sync_conversation_thread(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<ResolvedConversationSyncThread> {
+    let records = conversation_projection_records(client, conversation)?;
+    let Some(peer_did) = peer_current_did_from_records(&records, client.did().as_str()) else {
+        return Err(unresolvable_sync_conversation(
+            &conversation.conversation_id,
+        ));
+    };
+    Ok(ResolvedConversationSyncThread {
+        thread: super::ThreadRef::Direct(crate::ids::PeerRef::parse(&peer_did, "")?),
+        resolved_did: Some(peer_did),
+        peer_scope: records.iter().find_map(peer_scope_from_record),
+    })
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn resolve_peer_scope_sync_conversation_thread(
+    _client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<ResolvedConversationSyncThread> {
+    Err(unresolvable_sync_conversation(
+        &conversation.conversation_id,
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+fn conversation_projection_records(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<Vec<crate::internal::local_state::messages::MessageRecord>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let page =
+        crate::internal::local_state::messages::list_messages_for_thread_ref_for_owner_identity(
+            &connection,
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            &conversation.as_thread_ref()?,
+            20,
+            None,
+        )?;
+    Ok(page.records)
+}
+
+#[cfg(feature = "sqlite")]
+fn peer_current_did_from_records(
+    records: &[crate::internal::local_state::messages::MessageRecord],
+    owner_did: &str,
+) -> Option<String> {
+    records
+        .iter()
+        .find_map(|record| metadata_peer_current_did_from_record(record, owner_did))
+        .or_else(|| {
+            records
+                .iter()
+                .find_map(|record| participant_peer_did_from_record(record, owner_did))
+        })
+}
+
+#[cfg(feature = "sqlite")]
+fn metadata_peer_current_did_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+    owner_did: &str,
+) -> Option<String> {
+    let metadata = parse_message_metadata(&record.metadata);
+    for candidate in [
+        metadata_value(&metadata, "peer_current_did"),
+        metadata_value(&metadata, "resolved_target_did"),
+    ] {
+        if let Some(candidate) = canonical_peer_did(candidate?, owner_did) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
+#[cfg(feature = "sqlite")]
+fn participant_peer_did_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+    owner_did: &str,
+) -> Option<String> {
+    for candidate in [record.sender_did.as_str(), record.receiver_did.as_str()] {
+        if let Some(candidate) = canonical_peer_did(candidate, owner_did) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
+#[cfg(feature = "sqlite")]
+fn canonical_peer_did<'a>(candidate: &'a str, owner_did: &str) -> Option<&'a str> {
+    let candidate = candidate.trim();
+    (is_single_did_ref(candidate) && candidate != owner_did).then_some(candidate)
+}
+
+fn is_single_did_ref(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("did:") && !value["did:".len()..].contains(":did:")
+}
+
+#[cfg(feature = "sqlite")]
+fn peer_scope_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let metadata = parse_message_metadata(&record.metadata);
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        metadata_value(&metadata, "peer_user_id")?,
+        metadata_value(&metadata, "peer_full_handle")?,
+    )
+    .ok()
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_message_metadata(metadata: &str) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(metadata)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "sqlite")]
+fn metadata_value<'a>(
+    metadata: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a str> {
+    metadata
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn unresolvable_sync_conversation(conversation_id: &str) -> crate::ImError {
+    crate::ImError::invalid_input(
+        Some("conversation_id".to_owned()),
+        format!(
+            "conversation_id {conversation_id} cannot be resolved to a syncable direct or group thread"
+        ),
+    )
 }
 
 async fn resolve_history_thread_async(

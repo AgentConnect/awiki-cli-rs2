@@ -93,6 +93,22 @@ void main() {
     expect(legacyMetadata.conversationIdentity, isNull);
   });
 
+  test('conversation read model requests are conversation-id keyed', () {
+    const conversation = ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:abc',
+    );
+    const sync = SyncConversationAfterRequest(
+      conversation: conversation,
+      afterServerSeq: '992',
+      limit: 25,
+    );
+
+    expect(conversation.conversationId, 'dm:peer-scope:v1:abc');
+    expect(sync.conversation, same(conversation));
+    expect(sync.afterServerSeq, '992');
+    expect(sync.limit, 25);
+  });
+
   test('agent control helpers identify command and status payloads', () {
     const commandPayload =
         '{"schema":"awiki.agent.command.v1","command":"runtime.agent.create"}';

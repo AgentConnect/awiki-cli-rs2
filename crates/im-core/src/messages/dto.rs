@@ -415,8 +415,42 @@ pub struct MarkThreadReadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationReadRef {
+    pub conversation_id: String,
+}
+
+impl ConversationReadRef {
+    pub fn new(conversation_id: impl Into<String>) -> crate::ImResult<Self> {
+        let conversation_id = conversation_id.into();
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("conversation_id".to_owned()),
+                "conversation_id must not be empty",
+            ));
+        }
+        Ok(Self {
+            conversation_id: conversation_id.to_owned(),
+        })
+    }
+
+    pub fn as_thread_ref(&self) -> crate::ImResult<ThreadRef> {
+        crate::ids::ThreadId::parse(&self.conversation_id).map(ThreadRef::Thread)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncThreadAfterRequest {
     pub thread: ThreadRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_server_seq: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConversationAfterRequest {
+    pub conversation: ConversationReadRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_server_seq: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -191,6 +191,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_dart_conversation_list_snapshot(dynamic raw);
 
   @protected
+  DartConversationReadRef dco_decode_box_autoadd_dart_conversation_read_ref(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationSnapshotItem
   dco_decode_box_autoadd_dart_conversation_snapshot_item(dynamic raw);
 
@@ -300,6 +305,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSyncConversationAfterRequest
+  dco_decode_box_autoadd_dart_sync_conversation_after_request(dynamic raw);
+
+  @protected
   DartSyncDeltaRequest dco_decode_box_autoadd_dart_sync_delta_request(
     dynamic raw,
   );
@@ -377,6 +386,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartConversationPage dco_decode_dart_conversation_page(dynamic raw);
+
+  @protected
+  DartConversationReadRef dco_decode_dart_conversation_read_ref(dynamic raw);
 
   @protected
   DartConversationSnapshotItem dco_decode_dart_conversation_snapshot_item(
@@ -711,6 +723,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSessionUpdate dco_decode_dart_session_update(dynamic raw);
+
+  @protected
+  DartSyncConversationAfterRequest
+  dco_decode_dart_sync_conversation_after_request(dynamic raw);
 
   @protected
   DartSyncDeltaRequest dco_decode_dart_sync_delta_request(dynamic raw);
@@ -1058,6 +1074,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartConversationReadRef sse_decode_box_autoadd_dart_conversation_read_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationSnapshotItem
   sse_decode_box_autoadd_dart_conversation_snapshot_item(
     SseDeserializer deserializer,
@@ -1201,6 +1222,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSyncConversationAfterRequest
+  sse_decode_box_autoadd_dart_sync_conversation_after_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSyncDeltaRequest sse_decode_box_autoadd_dart_sync_delta_request(
     SseDeserializer deserializer,
   );
@@ -1294,6 +1321,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartConversationPage sse_decode_dart_conversation_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationReadRef sse_decode_dart_conversation_read_ref(
     SseDeserializer deserializer,
   );
 
@@ -1746,6 +1778,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSyncConversationAfterRequest
+  sse_decode_dart_sync_conversation_after_request(SseDeserializer deserializer);
+
+  @protected
   DartSyncDeltaRequest sse_decode_dart_sync_delta_request(
     SseDeserializer deserializer,
   );
@@ -2151,6 +2187,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_conversation_read_ref(
+    DartConversationReadRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_conversation_snapshot_item(
     DartConversationSnapshotItem self,
     SseSerializer serializer,
@@ -2319,6 +2361,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_sync_conversation_after_request(
+    DartSyncConversationAfterRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_sync_delta_request(
     DartSyncDeltaRequest self,
     SseSerializer serializer,
@@ -2435,6 +2483,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_conversation_page(
     DartConversationPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_read_ref(
+    DartConversationReadRef self,
     SseSerializer serializer,
   );
 
@@ -2990,6 +3044,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_session_update(
     DartSessionUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_conversation_after_request(
+    DartSyncConversationAfterRequest self,
     SseSerializer serializer,
   );
 

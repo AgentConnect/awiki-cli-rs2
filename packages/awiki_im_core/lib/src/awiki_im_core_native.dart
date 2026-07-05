@@ -611,6 +611,23 @@ class MessageApi {
     return page._toModel();
   }
 
+  Future<MessagePage> localConversationTimeline(
+    ConversationReadRef conversation, {
+    required int limit,
+    String? cursor,
+  }) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_messages.localConversationTimeline(
+        client: _client._inner,
+        conversation: conversation._toGen(),
+        limit: limit,
+        cursor: cursor,
+      ),
+    );
+    return page._toModel();
+  }
+
   Future<MarkReadResult> markRead(List<String> messageIds) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
@@ -654,6 +671,19 @@ class MessageApi {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_messages.syncThreadAfter(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<SyncThreadAfterResult> syncConversationAfter(
+    SyncConversationAfterRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.syncConversationAfter(
         client: _client._inner,
         request: request._toGen(),
       ),
@@ -744,6 +774,29 @@ class MessageApi {
     }
   }
 
+  Stream<ThreadMessageStorePatch> watchConversationTimelinePatches(
+    ConversationReadRef conversation, {
+    int limit = 100,
+  }) async* {
+    _client._ensureNotDisposed();
+    final session = await _mapNativeErrors(
+      () => gen_messages.watchConversationTimelinePatches(
+        client: _client._inner,
+        conversation: conversation._toGen(),
+        limit: limit,
+      ),
+    );
+    try {
+      yield* gen_messages
+          .threadMessagePatchStream(session: session)
+          .map((patch) => patch._toModel());
+    } finally {
+      await _mapNativeErrors(
+        () => gen_messages.stopThreadMessagePatchSession(session: session),
+      );
+    }
+  }
+
   Future<ThreadMessageStorePatch> repairThreadStore(
     ThreadRef thread, {
     int limit = 100,
@@ -753,6 +806,21 @@ class MessageApi {
       () => gen_messages.repairThreadStore(
         client: _client._inner,
         thread: thread._toGen(),
+        limit: limit,
+      ),
+    );
+    return patch._toModel();
+  }
+
+  Future<ThreadMessageStorePatch> repairConversationTimelineStore(
+    ConversationReadRef conversation, {
+    int limit = 100,
+  }) async {
+    _client._ensureNotDisposed();
+    final patch = await _mapNativeErrors(
+      () => gen_messages.repairConversationTimelineStore(
+        client: _client._inner,
+        conversation: conversation._toGen(),
         limit: limit,
       ),
     );
@@ -1772,10 +1840,24 @@ extension on SyncDeltaRequest {
   );
 }
 
+extension on ConversationReadRef {
+  gen_message.DartConversationReadRef _toGen() =>
+      gen_message.DartConversationReadRef(conversationId: conversationId);
+}
+
 extension on SyncThreadAfterRequest {
   gen_message.DartSyncThreadAfterRequest _toGen() =>
       gen_message.DartSyncThreadAfterRequest(
         thread: thread._toGen(),
+        afterServerSeq: afterServerSeq,
+        limit: limit,
+      );
+}
+
+extension on SyncConversationAfterRequest {
+  gen_message.DartSyncConversationAfterRequest _toGen() =>
+      gen_message.DartSyncConversationAfterRequest(
+        conversation: conversation._toGen(),
         afterServerSeq: afterServerSeq,
         limit: limit,
       );

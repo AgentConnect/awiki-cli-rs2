@@ -105,6 +105,28 @@ fn sync_thread_after_request_uses_thread_local_sequence_only() {
 }
 
 #[test]
+fn sync_conversation_after_request_uses_canonical_conversation_ref() {
+    let request = awiki_im_core::dto::message::DartSyncConversationAfterRequest {
+        conversation: awiki_im_core::dto::message::DartConversationReadRef {
+            conversation_id: "dm:peer-scope:v1:abc".to_string(),
+        },
+        after_server_seq: Some("992".to_string()),
+        limit: Some(25),
+    };
+
+    let core: im_core::messages::SyncConversationAfterRequest =
+        request.try_into().expect("sync conversation-after maps");
+    assert_eq!(core.conversation.conversation_id, "dm:peer-scope:v1:abc");
+    assert!(matches!(
+        core.conversation.as_thread_ref().expect("conversation thread ref"),
+        im_core::messages::ThreadRef::Thread(thread)
+            if thread.as_str() == "dm:peer-scope:v1:abc"
+    ));
+    assert_eq!(core.after_server_seq.as_deref(), Some("992"));
+    assert_eq!(core.limit, Some(25));
+}
+
+#[test]
 fn sync_thread_after_result_preserves_ordered_message_page_metadata() {
     let peer_scope_thread_id =
         im_core::messages::direct_peer_scope_thread_id("user-bob", "bob.example")

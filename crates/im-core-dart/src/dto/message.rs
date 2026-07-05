@@ -388,8 +388,20 @@ pub struct DartConversationSnapshotMessageBody {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationReadRef {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartSyncThreadAfterRequest {
     pub thread: DartThreadRef,
+    pub after_server_seq: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSyncConversationAfterRequest {
+    pub conversation: DartConversationReadRef,
     pub after_server_seq: Option<String>,
     pub limit: Option<u32>,
 }

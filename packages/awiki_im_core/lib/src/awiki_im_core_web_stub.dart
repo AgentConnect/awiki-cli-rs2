@@ -90,6 +90,14 @@ class MessageApi {
     throw _unsupported();
   }
 
+  Future<MessagePage> localConversationTimeline(
+    ConversationReadRef conversation, {
+    required int limit,
+    String? cursor,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<MarkThreadReadResult> markThreadRead(
     ThreadRef thread, {
     ReadWatermark? watermark,
@@ -104,6 +112,12 @@ class MessageApi {
 
   Future<SyncThreadAfterResult> syncThreadAfter(
     SyncThreadAfterRequest request,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<SyncThreadAfterResult> syncConversationAfter(
+    SyncConversationAfterRequest request,
   ) async {
     throw _unsupported();
   }
@@ -131,8 +145,22 @@ class MessageApi {
     throw _unsupported();
   }
 
+  Stream<ThreadMessageStorePatch> watchConversationTimelinePatches(
+    ConversationReadRef conversation, {
+    int limit = 100,
+  }) {
+    throw _unsupported();
+  }
+
   Future<ThreadMessageStorePatch> repairThreadStore(
     ThreadRef thread, {
+    int limit = 100,
+  }) async {
+    throw _unsupported();
+  }
+
+  Future<ThreadMessageStorePatch> repairConversationTimelineStore(
+    ConversationReadRef conversation, {
     int limit = 100,
   }) async {
     throw _unsupported();

@@ -618,6 +618,14 @@ mod tests {
             metadata: crate::messages::MessageMetadata {
                 server_sequence: Some(1),
                 content_type: Some("text/plain".to_owned()),
+                conversation_identity: Some(
+                    crate::messages::ConversationIdentity::from_thread_ref_for_owner(
+                        &crate::messages::ThreadRef::Direct(
+                            crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                        ),
+                        "did:example:alice",
+                    ),
+                ),
                 ..crate::messages::MessageMetadata::default()
             },
         }

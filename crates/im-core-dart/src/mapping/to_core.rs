@@ -13,9 +13,10 @@ use crate::dto::{
     group::DartCreateGroupRequest,
     identity::DartIdentitySelector,
     message::{
-        DartDelegatedSigningOptions, DartInboxAuth, DartInboxHistoryOptions,
-        DartMessageSecurityMode, DartMessageTarget, DartScopedInboxToken, DartSendPayloadRequest,
-        DartSendTextRequest, DartSyncDeltaRequest, DartSyncThreadAfterRequest, DartThreadRef,
+        DartConversationReadRef, DartDelegatedSigningOptions, DartInboxAuth,
+        DartInboxHistoryOptions, DartMessageSecurityMode, DartMessageTarget, DartScopedInboxToken,
+        DartSendPayloadRequest, DartSendTextRequest, DartSyncConversationAfterRequest,
+        DartSyncDeltaRequest, DartSyncThreadAfterRequest, DartThreadRef,
     },
     profile::DartProfilePatch,
     realtime::DartRealtimeOptions,
@@ -505,6 +506,26 @@ impl TryFrom<DartSyncThreadAfterRequest> for im_core::messages::SyncThreadAfterR
     fn try_from(value: DartSyncThreadAfterRequest) -> Result<Self, Self::Error> {
         Ok(Self {
             thread: value.thread.try_into()?,
+            after_server_seq: value.after_server_seq,
+            limit: value.limit,
+        })
+    }
+}
+
+impl TryFrom<DartConversationReadRef> for im_core::messages::ConversationReadRef {
+    type Error = DartImError;
+
+    fn try_from(value: DartConversationReadRef) -> Result<Self, Self::Error> {
+        im_core::messages::ConversationReadRef::new(value.conversation_id).map_err(Into::into)
+    }
+}
+
+impl TryFrom<DartSyncConversationAfterRequest> for im_core::messages::SyncConversationAfterRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSyncConversationAfterRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
             after_server_seq: value.after_server_seq,
             limit: value.limit,
         })

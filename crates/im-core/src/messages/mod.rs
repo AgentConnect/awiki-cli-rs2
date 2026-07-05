@@ -6,7 +6,7 @@ pub(crate) use self::dto::thread_ref_parts;
 pub use self::dto::{
     direct_peer_scope_thread_id, Conversation, ConversationAlias, ConversationAliasSource,
     ConversationIdentity, ConversationIdentityScope, ConversationListSnapshot,
-    ConversationMigrationState, ConversationPatchSession, ConversationQuery,
+    ConversationMigrationState, ConversationPatchSession, ConversationQuery, ConversationReadRef,
     ConversationSnapshotItem, ConversationSnapshotMessage, ConversationSnapshotMessageBody,
     ConversationStorageThreadRef, ConversationStorePatch, DelegatedSigningOptions, DeliveryState,
     HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope, LocalHistoryQuery,
@@ -15,8 +15,8 @@ pub use self::dto::{
     MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
     MessageTarget, ReadWatermark, ScopedInboxToken, SendMessageRequest, SendMessageResult,
-    SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult,
-    ThreadMessagePatchSession, ThreadMessageStorePatch, ThreadRef,
+    SyncConversationAfterRequest, SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest,
+    SyncThreadAfterResult, ThreadMessagePatchSession, ThreadMessageStorePatch, ThreadRef,
 };
 pub(crate) use self::service::normalize_direct_send_result_for_peer_scope;
 

@@ -223,6 +223,22 @@ class DartConversationPage {
           hasMore == other.hasMore;
 }
 
+class DartConversationReadRef {
+  final String conversationId;
+
+  const DartConversationReadRef({required this.conversationId});
+
+  @override
+  int get hashCode => conversationId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationReadRef &&
+          runtimeType == other.runtimeType &&
+          conversationId == other.conversationId;
+}
+
 class DartConversationSnapshotItem {
   final String threadKind;
   final String threadId;
@@ -948,6 +964,31 @@ class DartSendTextRequest {
           idempotencyKey == other.idempotencyKey &&
           waitForFinalAcceptance == other.waitForFinalAcceptance &&
           delegatedSigning == other.delegatedSigning;
+}
+
+class DartSyncConversationAfterRequest {
+  final DartConversationReadRef conversation;
+  final String? afterServerSeq;
+  final int? limit;
+
+  const DartSyncConversationAfterRequest({
+    required this.conversation,
+    this.afterServerSeq,
+    this.limit,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^ afterServerSeq.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncConversationAfterRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          afterServerSeq == other.afterServerSeq &&
+          limit == other.limit;
 }
 
 class DartSyncDeltaRequest {

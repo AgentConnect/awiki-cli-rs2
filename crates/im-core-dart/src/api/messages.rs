@@ -4,9 +4,10 @@ use std::sync::Mutex;
 use crate::dto::{
     error::DartImError,
     message::{
-        DartConversationListSnapshot, DartConversationPage, DartConversationStorePatch,
-        DartInboxHistoryOptions, DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage,
-        DartSendMessageResult, DartSendPayloadRequest, DartSendTextRequest, DartSyncDeltaRequest,
+        DartConversationListSnapshot, DartConversationPage, DartConversationReadRef,
+        DartConversationStorePatch, DartInboxHistoryOptions, DartMarkReadResult,
+        DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult, DartSendPayloadRequest,
+        DartSendTextRequest, DartSyncConversationAfterRequest, DartSyncDeltaRequest,
         DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult,
         DartThreadMessageStorePatch, DartThreadRef,
     },
@@ -227,6 +228,28 @@ pub async fn local_history(
         .map_err(DartImError::from)
 }
 
+pub async fn local_conversation_timeline(
+    client: &Arc<crate::api::client::DartImClient>,
+    conversation: DartConversationReadRef,
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<DartMessagePage, DartImError> {
+    let inner = client.clone_inner()?;
+    let query = im_core::messages::LocalHistoryQuery {
+        limit: page_limit(limit)?,
+        cursor: cursor
+            .map(im_core::ids::Cursor::parse)
+            .transpose()
+            .map_err(DartImError::from)?,
+    };
+    inner
+        .messages()
+        .local_conversation_timeline_async(conversation.try_into()?, query)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn mark_read(
     client: &Arc<crate::api::client::DartImClient>,
     message_ids: Vec<String>,
@@ -311,6 +334,19 @@ pub async fn sync_thread_after(
     inner
         .messages()
         .sync_thread_after_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn sync_conversation_after(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSyncConversationAfterRequest,
+) -> Result<DartSyncThreadAfterResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .sync_conversation_after_async(request.try_into()?)
         .await
         .map(Into::into)
         .map_err(DartImError::from)
@@ -427,6 +463,20 @@ pub async fn watch_thread_patches(
     Ok(Arc::new(DartThreadMessagePatchSession::new(session)))
 }
 
+pub async fn watch_conversation_timeline_patches(
+    client: &Arc<crate::api::client::DartImClient>,
+    conversation: DartConversationReadRef,
+    limit: Option<u32>,
+) -> Result<Arc<DartThreadMessagePatchSession>, DartImError> {
+    let inner = client.clone_inner()?;
+    let session = inner
+        .messages()
+        .watch_conversation_timeline_patches_async(conversation.try_into()?, limit)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(Arc::new(DartThreadMessagePatchSession::new(session)))
+}
+
 pub async fn thread_message_patch_stream(
     session: &Arc<DartThreadMessagePatchSession>,
     sink: StreamSink<DartThreadMessageStorePatch>,
@@ -458,6 +508,20 @@ pub async fn repair_thread_store(
     inner
         .messages()
         .repair_thread_store_async(thread.try_into()?, limit)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn repair_conversation_timeline_store(
+    client: &Arc<crate::api::client::DartImClient>,
+    conversation: DartConversationReadRef,
+    limit: Option<u32>,
+) -> Result<DartThreadMessageStorePatch, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .repair_conversation_timeline_store_async(conversation.try_into()?, limit)
         .await
         .map(Into::into)
         .map_err(DartImError::from)
