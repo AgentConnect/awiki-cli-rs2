@@ -6,10 +6,11 @@
 
 1. `architecture/awiki-v2-architecture.md`：当前系统总架构，说明 `im-core`、`awiki-cli`、Flutter SDK、runtime 和本地状态的职责。
 2. `architecture/im-core-sdk-architecture.md`：`im-core` SDK 架构、CLI thin shell 边界、模块职责、路径/依赖约束。
-3. `architecture/awiki-command-v2.md` 与 `architecture/output-format.md`：CLI 命令面与结构化输出契约。
-4. `installation.md`：本地构建、配置、工作区和常见运行方式。
-5. `publish.md`：本地/服务器构建、文件服务 staging 和回滚流程。
-6. `api/im-core-public-api.md` 与 `api/im-core-interface/*`：SDK API / interface 规格；只有 API 变化时才修改。
+3. `architecture/identity-secret-storage.md`：端侧 identity SecretVault、CLI/App/daemon root key、私钥/JWT/E2EE local secret 加密持久化边界。
+4. `architecture/awiki-command-v2.md` 与 `architecture/output-format.md`：CLI 命令面与结构化输出契约。
+5. `installation.md`：本地构建、配置、工作区和常见运行方式。
+6. `publish.md`：本地/服务器构建、文件服务 staging 和回滚流程。
+7. `api/im-core-public-api.md` 与 `api/im-core-interface/*`：SDK API / interface 规格；只有 API 变化时才修改。
 
 ## 稳定文档分区
 
@@ -17,6 +18,7 @@
 
 - `architecture/awiki-v2-architecture.md`：系统总览。
 - `architecture/im-core-sdk-architecture.md`：SDK 架构、CLI/SDK 边界、模块职责和安全/路径约束。
+- `architecture/identity-secret-storage.md`：identity SecretVault 当前方案、CLI/App/daemon root key source、私钥/JWT/E2EE local secret 加密持久化边界和剩余风险。
 - `architecture/awiki-command-v2.md`：CLI 命令契约。
 - `architecture/output-format.md`：输出 envelope、dry-run、错误码和格式化规则。
 - `architecture/local-state-upgrade.md`：工作区、本地状态和历史数据升级策略。

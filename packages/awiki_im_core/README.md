@@ -42,6 +42,10 @@ the root key in app config, logs, JSON output, or ordinary test fixtures.
 `vaultPreferred` is a migration aid and should not be treated as proof that
 private material is fully protected.
 
+The full client-side identity secret storage design, including CLI, App, daemon,
+Direct E2EE local state, and residual risks, lives in
+`../../docs/architecture/identity-secret-storage.md`.
+
 Identity vault status, migration, and verification are available on
 `AwikiImCore`:
 

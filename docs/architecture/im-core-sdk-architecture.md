@@ -153,6 +153,10 @@ Transport is explicit through configuration and capability checks:
 
 ## 9.1 Key Material Boundary
 
+The full current technical design is documented in
+`docs/architecture/identity-secret-storage.md`. This section is the short
+architecture summary.
+
 Identity private material is an internal SDK concern. Business flows must not read `private_key_path`, `e2ee_agreement_private_key_path`, PEM files, or `auth.json` directly. DID-WBA auth, direct/group message signing, attachment signing, and secure direct static key loading go through the internal `KeyMaterialProvider` contract.
 
 The compatibility default remains file-backed when a host opens `ImCore` without
@@ -178,21 +182,21 @@ Process boundaries matter. App, CLI, and daemon run as separate hosts and must e
 Current host integration status:
 
 - Plain `ImCore::new` / `open` remains FileCompat for compatibility. Secure callers must pass explicit vault options.
-- `awiki-cli` resolves `secret_storage.mode`, `vault_dir`, `workspace_id`, and `device_id` from workspace config and reads the root key only from `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`. `id vault status`, `id vault migrate`, `id vault cleanup-plaintext`, and doctor output are redacted.
+- `awiki-cli` resolves `secret_storage.mode`, `vault_dir`, `workspace_id`, and `device_id` from workspace config. The root key is read from `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` when present, otherwise from `vault_dir/root-key.b64u`; normal live paths may create that local private root-key file, while status/dry-run surfaces only report a redacted plan. `id vault status`, `id vault migrate`, `id vault cleanup-plaintext`, and doctor output are redacted.
 - `im-core-dart` / `packages/awiki_im_core` expose optional Dart open options plus identity vault status/migrate/verify facade methods. The Dart package does not generate or persist host root keys.
 - `awiki-me` opens `im-core` with `VaultRequired`. Production and custom state-root runs use `SecureAppKeyValueStore` for the App-local root key; only explicit E2E state roots use a private file test provider.
 - `awiki-deamon` stores daemon/runtime `agent_identity` private keys and `user_delegated_identity` private keys as SecretVault refs in `daemon.db`; the legacy PEM columns keep a sentinel for compatibility. Older plaintext rows are read only as a migration bridge and are re-sealed when a daemon vault root key is available.
 
 Known residual risks after the App/CLI/daemon vault integration:
 
-- CLI root keys supplied through `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` are visible to the process environment. A platform wrapping/root-key backend and rotation/backup story remain follow-up work.
+- CLI root keys supplied through `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` are visible to the process environment; CLI root keys stored in `vault_dir/root-key.b64u` rely on private local file permissions. A platform wrapping/root-key backend and rotation/backup story remain follow-up work.
 - App root key rotation, backup, recovery UX, and secure deletion of old plaintext compatibility files are not implemented.
 - `id vault cleanup-plaintext` is a migration-gated/preflight surface unless a CLI-safe live cleanup API is added. Do not document it as deleting legacy files in this build.
 - Explicit delegated `key_ref` flows support `vault:` refs and should use them for new daemon-owned delegated keys. `file:` / `local:` / bare path refs remain compatibility inputs and can still read caller-provided delegated private key files.
 - The daemon Message/im-core SDK main path uses hosted in-memory identity material and no longer writes `private.key`, `e2ee-agreement-private.pem`, or `auth.json` for that path. Legacy DID-auth compatibility helpers may still create those files for user-service inventory/auth paths and should be treated as compatibility-only.
 - The App bootstrap path can still receive a daemon subkey private key plaintext DTO. This is a temporary compatibility exception and should be replaced by an encrypted bootstrap envelope in a separate change.
 - Direct E2EE session/prekey local state is encrypted at rest through SecretVault envelopes. Group MLS private state is outside this hardening pass.
-- `awiki-deamon` `agent_auth_state` bearer tokens are still persisted as token state; do not log or expose them.
+- `awiki-deamon` `agent_auth_state` bearer tokens are persisted as daemon SecretVault refs with a sentinel in the `jwt_token` column; do not log or expose them.
 - External key-agent IPC, public signing APIs, and DID child-key scope/revocation semantics are outside this boundary.
 
 ## 10. API References

@@ -51,11 +51,14 @@ secret_storage:
   device_id: cli-device-id
 ```
 
-The vault root key is never written to `config.yaml`. It is read only from
+The vault root key is never written to `config.yaml`. It is read first from
 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`, which must contain a base64/base64url
-encoded 32-byte root key. `config show`, diagnostics, JSON output, human output,
-errors, and dry-run plans must report only whether the root key is available and
-which source would be used.
+encoded 32-byte root key. If the env var is absent, CLI reads
+`vault_dir/root-key.b64u`; normal live SDK opens and registration/recovery paths
+may create that local private file, while status and dry-run mutation surfaces
+only report the redacted plan. `config show`, diagnostics, JSON output, human
+output, errors, and dry-run plans must report only whether the root key is
+available and which source would be used.
 
 `build_im_core(_async)` resolves `secret_storage` into `ImCoreOpenOptions`:
 
@@ -63,8 +66,8 @@ which source would be used.
 - `vault_preferred` passes vault options when the root key is available and is a
   migration-period mode.
 - `vault_required` passes `IdentitySecretStoragePolicy::VaultRequired`; normal
-  SDK opens and mutation paths fail closed when the root key is missing or
-  invalid. `id vault status` may use a redacted
+  SDK opens and mutation paths fail closed when the root key is invalid or
+  cannot be created/read. `id vault status` may use a redacted
   `checked_without_vault_context` mode for diagnostics.
 
 ## 3. Paths Adapter
@@ -162,7 +165,7 @@ pub fn map_im_error(
 | `UnsupportedCapability` | 提示该能力不在 Phase 1。 |
 | `TransportUnavailable` | 提示检查 endpoint/network。 |
 | `PathUnavailable` | 提示检查 workspace/path/permission。 |
-| secret vault local-state errors | 映射到 `vault_root_key_required`、`vault_root_key_invalid` 或 `vault_not_ready`，并提示 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`。 |
+| secret vault local-state errors | 映射到 `vault_root_key_required`、`vault_root_key_invalid` 或 `vault_not_ready`，并提示 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64` 或本地私有 root-key 文件。 |
 
 `ImError` 不携带 exit code；exit code 是 CLI 产品策略。
 
