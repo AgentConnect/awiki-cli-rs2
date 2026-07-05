@@ -155,6 +155,72 @@ impl TryFrom<DartImCorePaths> for im_core::ImCorePaths {
     }
 }
 
+impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenOptions {
+    type Error = DartImError;
+
+    fn try_from(value: crate::dto::config::DartImCoreOpenOptions) -> Result<Self, Self::Error> {
+        let mut options = im_core::ImCoreOpenOptions {
+            identity_secret_storage_policy: value.identity_secret_storage_policy.into(),
+            identity_secret_vault: None,
+        };
+        if let Some(vault) = value.identity_secret_vault {
+            options.identity_secret_vault = Some(vault.try_into()?);
+        }
+        Ok(options)
+    }
+}
+
+impl From<crate::dto::config::DartIdentitySecretStoragePolicy>
+    for im_core::IdentitySecretStoragePolicy
+{
+    fn from(value: crate::dto::config::DartIdentitySecretStoragePolicy) -> Self {
+        match value {
+            crate::dto::config::DartIdentitySecretStoragePolicy::FileCompat => Self::FileCompat,
+            crate::dto::config::DartIdentitySecretStoragePolicy::VaultPreferred => {
+                Self::VaultPreferred
+            }
+            crate::dto::config::DartIdentitySecretStoragePolicy::VaultRequired => {
+                Self::VaultRequired
+            }
+        }
+    }
+}
+
+impl TryFrom<crate::dto::config::DartImCoreSecretVaultOptions>
+    for im_core::ImCoreSecretVaultOptions
+{
+    type Error = DartImError;
+
+    fn try_from(
+        value: crate::dto::config::DartImCoreSecretVaultOptions,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self::new(
+            value.root_key.try_into()?,
+            PathBuf::from(value.vault_dir),
+            value.workspace_id,
+            value.device_id,
+        ))
+    }
+}
+
+impl TryFrom<crate::dto::config::DartDeviceVaultRootKey> for im_core::vault::DeviceVaultRootKey {
+    type Error = DartImError;
+
+    fn try_from(value: crate::dto::config::DartDeviceVaultRootKey) -> Result<Self, Self::Error> {
+        let bytes: [u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN] =
+            value.bytes.try_into().map_err(|_| {
+                DartImError::invalid_input(
+                    Some("root_key".to_string()),
+                    format!(
+                        "device vault root key must be {} bytes",
+                        im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN
+                    ),
+                )
+            })?;
+        Ok(Self::from_bytes(bytes))
+    }
+}
+
 impl TryFrom<DartIdentitySelector> for im_core::identity::IdentitySelector {
     type Error = DartImError;
 

@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,7 +24,7 @@ pub struct AgentRegistrationExchangeRequest {
     pub allow_existing_agent_did: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRegistrationExchangeResult {
     pub token_id: String,
     pub did: String,
@@ -36,6 +35,28 @@ pub struct AgentRegistrationExchangeResult {
     pub controller_did: String,
     pub handle: String,
     pub status: String,
+    pub access_token: Option<String>,
+}
+
+impl fmt::Debug for AgentRegistrationExchangeResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentRegistrationExchangeResult")
+            .field("token_id", &self.token_id)
+            .field("did", &self.did)
+            .field("user_id", &self.user_id)
+            .field("agent_kind", &self.agent_kind)
+            .field("controller_user_id", &self.controller_user_id)
+            .field("controller_full_handle", &self.controller_full_handle)
+            .field("controller_did", &self.controller_did)
+            .field("handle", &self.handle)
+            .field("status", &self.status)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted-token>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,11 +108,25 @@ pub struct AgentLatestStatusUpdateItem {
     pub diagnostics_summary: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DidAuthMaterial {
-    pub did_document_path: PathBuf,
-    pub private_key_path: PathBuf,
+    pub did_document: Value,
+    pub private_key_pem: String,
     pub bearer_token: Option<String>,
+}
+
+impl fmt::Debug for DidAuthMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DidAuthMaterial")
+            .field("did_document", &self.did_document)
+            .field("private_key_pem", &"<redacted-private-key>")
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "<redacted-token>"),
+            )
+            .finish()
+    }
 }
 
 pub trait AgentRegistrationClient {
@@ -783,6 +818,7 @@ fn parse_exchange_response(bytes: &[u8]) -> Result<AgentRegistrationExchangeResu
         controller_full_handle: required_string(&result, "controller_full_handle")?,
         handle: required_string(&result, "handle")?,
         status: required_string(&result, "status")?,
+        access_token: optional_auth_token(&result),
     };
     Ok(parsed)
 }
@@ -908,25 +944,29 @@ fn did_auth_headers(
 ) -> Result<BTreeMap<String, String>> {
     let mut headers =
         BTreeMap::from([("Content-Type".to_string(), "application/json".to_string())]);
-    let mut helper = anp::authentication::DIDWbaAuthHeader::new(
-        &auth.did_document_path,
-        &auth.private_key_path,
-        anp::authentication::AuthMode::HttpSignatures,
-    );
     if let Some(token) = auth
         .bearer_token
         .as_deref()
         .map(str::trim)
         .filter(|token| !token.is_empty())
     {
-        helper.update_token(
-            url,
-            &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
-        );
+        headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+        return Ok(headers);
     }
-    let auth_headers = helper
-        .get_auth_header(url, false, "POST", Some(&headers), Some(body))
-        .map_err(|error| anyhow::anyhow!("build DID auth headers: {error}"))?;
+    let private_key =
+        anp::PrivateKeyMaterial::from_pem(&auth.private_key_pem).map_err(|error| {
+            anyhow::anyhow!("build DID auth headers: invalid private key material: {error}")
+        })?;
+    let auth_headers = anp::authentication::generate_http_signature_headers(
+        &auth.did_document,
+        url,
+        "POST",
+        &private_key,
+        Some(&headers),
+        Some(body),
+        anp::authentication::HttpSignatureOptions::default(),
+    )
+    .map_err(|error| anyhow::anyhow!("build DID auth headers: {error}"))?;
     headers.extend(auth_headers);
     Ok(headers)
 }
@@ -941,6 +981,15 @@ fn required_string(value: &Value, field: &str) -> Result<String> {
 
 fn optional_string(value: &Value, field: &str) -> Option<String> {
     value.get(field).and_then(Value::as_str).map(str::to_string)
+}
+
+fn optional_auth_token(value: &Value) -> Option<String> {
+    ["access_token", "jwt_token", "bearer_token"]
+        .iter()
+        .filter_map(|field| value.get(*field).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
@@ -998,7 +1047,8 @@ mod tests {
                 "controller_full_handle": "alice.anpclaw.com",
                 "controller_did": "did:human:alice",
                 "handle": "alice-daemon",
-                "status": "registered"
+                "status": "registered",
+                "access_token": "jwt-agent-secret"
             },
             "error": null,
             "id": 1
@@ -1009,5 +1059,8 @@ mod tests {
         assert_eq!(parsed.token_id, "areg_tok_1");
         assert_eq!(parsed.did, "did:agent:daemon");
         assert_eq!(parsed.agent_kind, AgentKind::Daemon);
+        assert_eq!(parsed.access_token.as_deref(), Some("jwt-agent-secret"));
+        assert!(!format!("{parsed:?}").contains("jwt-agent-secret"));
+        assert!(format!("{parsed:?}").contains("<redacted-token>"));
     }
 }

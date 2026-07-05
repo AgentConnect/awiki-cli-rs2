@@ -14,8 +14,7 @@ use crate::plugins::hermes::{
     StdioHermesGateway,
 };
 use crate::registration::{
-    AgentInventoryClient, AgentLatestStatusUpdateItem, DidAuthMaterial,
-    UserServiceAgentRegistrationClient,
+    AgentInventoryClient, AgentLatestStatusUpdateItem, UserServiceAgentRegistrationClient,
 };
 use crate::runtime::RuntimePlugin;
 use crate::security::runtime_token::current_time_millis;
@@ -357,12 +356,7 @@ pub fn update_user_service_latest(
     items: Vec<AgentLatestStatusUpdateItem>,
 ) -> Result<()> {
     let client = UserServiceAgentRegistrationClient::new(&config.user_service_base_url)?;
-    let auth_paths = crate::im_core_adapter::agent_identity_auth_paths(config, &daemon.agent_did);
-    let auth = DidAuthMaterial {
-        did_document_path: auth_paths.0,
-        private_key_path: auth_paths.1,
-        bearer_token: state.load_agent_auth_token(&daemon.agent_did)?,
-    };
+    let auth = crate::controller_scope::daemon_auth_material(config, state, daemon)?;
     let response = client.update_latest_status(&daemon.agent_did, items, &auth)?;
     sync_controller_scope_from_response(state, &daemon.agent_did, &response)?;
     Ok(())
@@ -2167,7 +2161,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
         let daemon = daemon();
         state.upsert_agent_definition(&daemon).unwrap();
@@ -2199,7 +2193,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
         let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
             .unwrap()
@@ -2250,7 +2244,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [24_u8; 32]);
         state.initialize().unwrap();
         let identity = generate_agent_identity(&config, AgentKind::Daemon, "alice-mac-daemon")
             .unwrap()

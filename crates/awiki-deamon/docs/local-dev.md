@@ -113,6 +113,11 @@ AWiki env file 后再 `exec awiki-deamon foreground`；不会默认读取用户 
 service 化时应复用同一“daemon runtime env file / credential provider”设计，而不是在
 Claude/Codex driver 中写死平台专用环境变量。
 
+macOS 安装会在写入 LaunchAgent 后显式执行 `launchctl enable
+gui/<uid>/ai.awiki.deamon`，用于覆盖旧 cleanup 或手工联调遗留的 disabled 状态；同时
+`ensure_state_layout()` 会预创建 `state/logs/`，避免 launchd 因 stdout/stderr 目标目录缺失而在
+首次 bootstrap 时返回 I/O error。
+
 Hermes Runtime 使用 Hermes TUI Gateway 的 stdio JSON-RPC 入口，不是普通 messaging gateway。官方 TUI Gateway 入口形态是：
 
 ```text
@@ -140,8 +145,8 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 当前 `daemon.db` 的 agent / runtime 相关状态包括：
 
 - `agent_definition`：daemon agent 和 runtime agent 的本地定义，包含 `handle`、`agent_kind`、`controller_did`、runtime profile、workspace 和本地路径。
-- `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥只保存在本地 daemon 状态库中，不进入 Debug 输出、日志或 audit。
-- `agent_auth_state`：daemon/runtime agent 调 message-service 时使用的本地 bearer token 状态。该表用于本地长驻 E2E 和后续登录态恢复；不要把 token 原文写入日志或 audit。
+- `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥 seal 到 daemon SecretVault，状态库只保存 sentinel 和 `SecretRef`，不进入 Debug 输出、日志或 audit。
+- `agent_auth_state`：daemon/runtime agent 调 message-service 时使用的本地 bearer token 状态。token seal 到 daemon SecretVault，状态库只保存 sentinel 和 `SecretRef`，用于本地长驻 E2E 和后续登录态恢复。
 - `runtime_profile`：runtime agent 绑定的 runtime plugin type、展示名和状态。CLI 家族新数据统一使用 `runtime_plugin_id=generic-cli`。
 - `cli_runtime_profile`：`generic-cli` 插件内部 profile，保存 `driver_id`、binary/config、默认 sandbox、默认 workspace mode、`msg.send` recipient policy 和 driver-specific config。
 - `cli_driver_run`：CLI run 的 route/session/workspace/output metadata，包括 workspace instance、command、stdout/stderr/JSONL/final output 路径和 fallback final 来源。
@@ -149,6 +154,23 @@ Hermes TUI Gateway 约定在 stdout 上输出 line-delimited JSON-RPC response/e
 - `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
 
 首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
+
+## 私钥与 vault 边界
+
+`im-core` 已把 DID-WBA auth、业务签名和 secure direct 静态 key material 的业务读取路径收敛到内部 `KeyMaterialProvider`，并提供显式 root key 的 SecretVault foundation。当前 daemon 的私钥持久化边界如下：
+
+- 新写入 `agent_identity` 时，`auth_private_key_pem`、`e2ee_signing_private_key_pem` 和 `e2ee_agreement_private_key_pem` 列只保存 `<awiki-secret-vault-ref>` sentinel，真实私钥 seal 到 daemon SecretVault，并在 `*_private_key_ref_json` 列保存 `SecretRef` JSON。
+- 新写入 `user_delegated_identity` 时，`private_key_material` 只保存 `<awiki-secret-vault-ref>` sentinel，真实 delegated private key seal 到 daemon SecretVault，并在 `private_key_ref_json` 保存 `SecretRef` JSON。
+- daemon 优先使用 `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` 作为 SecretVault root key；未显式提供时，会在 `secrets/vault/root-key.b64u` 懒初始化本机 no-prompt root key 文件。该文件在 Unix/macOS 上按 `0600` 写入，`secrets/vault/` 目录按 `0700` 收紧；不要提交、打印、放入 env file 或写入 E2E 报告。
+- 旧明文行不再兼容读取；缺少 `SecretRef`、root key 文件损坏或 root key 不匹配时，secret 读取/持久化会 fail-closed，不回退明文。首次安装不再因为未配置 `AWIKI_DAEMON_VAULT_ROOT_KEY_B64` 回退明文，而是创建本机 root key 文件后继续以 SecretVault 密文保存。
+- Direct E2EE session/prekey local state 通过 `im-core` SecretVault envelope 密文落盘；历史明文 blob / 文件只在读路径兼容。
+- daemon delegated inbox 的 `inbox_auth_key_ref` 使用 `vault:`，私钥 seal 到 `im-core` file vault。新路径需要 `AWIKI_IM_CORE_VAULT_ROOT_KEY_B64`，不再写 `runtime/cache/delegated-inbox/.../daemon-key-1.pem` 或 shadow identity `private.key`。
+- `agent_auth_state` 保存 daemon/runtime agent bearer token 的 vault ref 状态，`jwt_token` 列只允许 `<awiki-secret-vault-ref>` sentinel，真实 token seal 到 daemon SecretVault。不要把 token 原文写入日志、audit 或 E2E 报告。
+- `im_core_adapter` 的 Message/im-core SDK 主路径使用 hosted in-memory identity material，不写 `private.key`、`e2ee-agreement-private.pem` 或 `auth.json`。user-service inventory DID-auth 也使用内存态 `DidAuthMaterial` 签名，不再通过兼容 PEM/auth.json 文件落盘。
+- 显式 delegated `key_ref` 仍兼容 `file:`、`local:` 和裸路径读取 caller-provided delegated private key；新 daemon-owned delegated key 应使用 `vault:`。
+- App bridge bootstrap 的 `user_subkey_package.private_key_pem` 仍是临时兼容 DTO，传输可以暂时明文；daemon 接收后持久化必须按上面的 vault ref 存储。后续应改为端到端加密 bootstrap envelope。
+
+因此，当前安全结论是：daemon 持久化的 agent identity 私钥、Message Agent delegated 私钥、agent auth token 以及 Direct E2EE session/prekey secret 已按 SecretVault 密文保存；daemon root key 由 env 或本机 `root-key.b64u` 解锁，不进入 daemon DB、日志、audit 或 UI。App -> daemon 的 bootstrap 传输加密、真实平台 no-prompt vault backend、root key rotation/backup、legacy file-backed identity provider 下线和 user-service DID-auth 兼容文件收敛仍是后续独立加固范围。不要在日志、audit、E2E 报告或 UI 中输出任何私钥、token、root key 或 E2EE 本地 secret。
 
 ## 本地验证
 
@@ -277,7 +299,8 @@ daemon setup 的最小流程：
 2. daemon 生成 Daemon Agent DID 文档和本地密钥。
 3. daemon 使用 token、handle、DID document 调 user-service `exchange_token`。
 4. 兑换成功后，daemon 写入 `agent_identity` 和 `agent_definition`。
-5. 后续再次 setup 同一个 handle 时，优先恢复本地已有 Daemon Agent 定义。
+5. 如果 `exchange_token` 响应同时返回 `access_token`、`jwt_token` 或 `bearer_token`，daemon 会在本地身份/定义写入成功后把 token seal 到 `agent_auth_state`；如果响应没有返回 token，后续 realtime/HTTP 业务仍可用 agent DID-auth 在 transport boundary 刷新 bearer。
+6. 后续再次 setup 同一个 handle 时，优先恢复本地已有 Daemon Agent 定义，并用新的 registration token 兑换结果刷新本地 bearer token。
 
 runtime agent 的最小创建流程：
 
@@ -286,7 +309,8 @@ runtime agent 的最小创建流程：
 3. daemon 校验 `sender_did == daemon agent.controller_did`。
 4. daemon 生成 Runtime Agent DID 文档，用 registration token 调 user-service `exchange_token`。
 5. daemon 写入 `agent_identity`、`agent_definition`、`runtime_profile` 和可选 `workspace_binding`。
-6. daemon 通过 `im-core` payload 消息出口回发 `awiki.agent.status.v1` ready/failed 状态；测试中使用 `MemoryRuntimeOutbox`。
+6. 如果 `exchange_token` 响应携带 bearer token，daemon 在 runtime agent 本地记录写入成功后 seal 到 `agent_auth_state`；否则 runtime agent 的 foreground realtime session 不在启动前 fail-fast，而是在 WebSocket transport 连接边界通过 DID-auth 刷新。
+7. daemon 通过 `im-core` payload 消息出口回发 `awiki.agent.status.v1` ready/failed 状态；测试中使用 `MemoryRuntimeOutbox`。
 
 结构化命令固定使用普通 JSON payload：
 

@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "awiki-deamon"
-version = "0.1.69"
+version = "0.1.71"
 dependencies = [
  "anp",
  "anyhow",
@@ -1420,6 +1420,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "futures-util",
+ "hkdf",
  "rand 0.8.6",
  "redb",
  "reqwest",
@@ -1434,6 +1435,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "webpki-roots 0.26.11",
+ "zeroize",
 ]
 
 [[package]]

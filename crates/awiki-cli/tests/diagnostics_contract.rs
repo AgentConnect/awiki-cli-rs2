@@ -4,6 +4,10 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let workspace = TempDir::new().expect("temp workspace");
@@ -20,6 +24,7 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
             "config_file",
             "environment",
             "anp_service",
+            "identity_vault",
             "runtime",
             "identity_store",
             "sqlite",
@@ -32,13 +37,14 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     assert_eq!(status_of(&envelope, "config_file"), "warn");
     assert_eq!(status_of(&envelope, "environment"), "ok");
     assert_eq!(status_of(&envelope, "anp_service"), "ok");
+    assert_eq!(status_of(&envelope, "identity_vault"), "ok");
     assert_eq!(status_of(&envelope, "runtime"), "warn");
     assert_eq!(status_of(&envelope, "identity_store"), "warn");
     assert_eq!(status_of(&envelope, "sqlite"), "info");
     assert_eq!(status_of(&envelope, "anp_mls"), "info");
     assert_eq!(status_of(&envelope, "workspace_upgrade"), "ok");
     assert_eq!(status_of(&envelope, "legacy_paths"), "info");
-    assert_eq!(envelope["data"]["counts"]["ok"], 4);
+    assert_eq!(envelope["data"]["counts"]["ok"], 5);
     assert_eq!(envelope["data"]["counts"]["warn"], 3);
     assert_eq!(envelope["data"]["counts"]["error"], 0);
     assert_eq!(envelope["data"]["counts"]["info"], 3);
@@ -73,9 +79,41 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
 }
 
 #[test]
+fn doctor_identity_vault_reports_root_key_availability_without_secret_value() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    std::fs::write(
+        workspace.path().join("config.yaml"),
+        "secret_storage:\n  mode: vault_required\n",
+    )
+    .expect("write vault config");
+
+    let mut command = awiki_command(&["doctor"], workspace.path());
+    command.env("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key);
+    let output = command.output().expect("run doctor");
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    let vault = check_by_name(&envelope, "identity_vault");
+    assert_eq!(vault["status"], "ok");
+    assert_eq!(vault["details"]["mode"], "vault_required");
+    assert_eq!(vault["details"]["root_key"]["available"], true);
+    assert_eq!(
+        vault["details"]["root_key"]["source"],
+        "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
+    );
+    let encoded = serde_json::to_string(&envelope).expect("doctor json");
+    assert!(
+        !encoded.contains(root_key),
+        "doctor must not expose vault root key: {encoded}"
+    );
+}
+
+#[test]
 fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     let workspace = TempDir::new().expect("temp workspace");
     assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
+    set_secret_storage_mode(workspace.path(), "file_compat");
     assert_success(&awiki_cmd_with_workspace(
         &[
             "--migration",
@@ -264,7 +302,8 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT")
-        .env_remove("AWIKI_ANP_MLS_BINARY");
+        .env_remove("AWIKI_ANP_MLS_BINARY")
+        .env_remove("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64");
     command
 }
 

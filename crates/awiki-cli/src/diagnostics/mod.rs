@@ -50,6 +50,7 @@ pub fn run(resolved: &Resolved) -> Report {
         config_file_check(resolved),
         environment_check(resolved),
         anp_service_check(resolved),
+        identity_vault_check(resolved),
         runtime_check(resolved),
         identity_store_check(resolved),
         sqlite_check(resolved),
@@ -165,6 +166,26 @@ fn anp_service_check(resolved: &Resolved) -> Check {
         summary: summary.to_string(),
         details,
     }
+}
+
+fn identity_vault_check(resolved: &Resolved) -> Check {
+    let snapshot = crate::m_core_cli_adapter::vault::vault_diagnostics_snapshot(resolved);
+    let mode = snapshot["mode"].as_str().unwrap_or("unknown");
+    let vault_enabled = snapshot["vault_enabled"].as_bool().unwrap_or(false);
+    let root_key_available = snapshot["root_key"]["available"].as_bool().unwrap_or(false);
+    let mut status = "ok";
+    let mut summary = "Identity SecretVault is in file_compat mode";
+    if vault_enabled {
+        summary = "Identity SecretVault open options are configured";
+        if !root_key_available {
+            status = "error";
+            summary = "Identity SecretVault is enabled but root key is unavailable";
+        }
+    }
+    if mode == "vault_required" && root_key_available {
+        summary = "Identity SecretVault is required and root key is available";
+    }
+    check("identity_vault", status, summary, Some(snapshot))
 }
 
 fn runtime_check(resolved: &Resolved) -> Check {

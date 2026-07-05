@@ -231,7 +231,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartImCoreConfig dco_decode_box_autoadd_dart_im_core_config(dynamic raw);
 
   @protected
+  DartImCoreOpenOptions dco_decode_box_autoadd_dart_im_core_open_options(
+    dynamic raw,
+  );
+
+  @protected
   DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw);
+
+  @protected
+  DartImCoreSecretVaultOptions
+  dco_decode_box_autoadd_dart_im_core_secret_vault_options(dynamic raw);
 
   @protected
   DartInboxAuth dco_decode_box_autoadd_dart_inbox_auth(dynamic raw);
@@ -392,6 +401,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw);
+
+  @protected
   DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(
     dynamic raw,
   );
@@ -507,6 +519,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentitySecretStorageBackend
+  dco_decode_dart_identity_secret_storage_backend(dynamic raw);
+
+  @protected
+  DartIdentitySecretStoragePolicy
+  dco_decode_dart_identity_secret_storage_policy(dynamic raw);
+
+  @protected
   DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw);
 
   @protected
@@ -516,10 +536,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartIdentitySummary dco_decode_dart_identity_summary(dynamic raw);
 
   @protected
+  DartIdentityVaultMigrationReport
+  dco_decode_dart_identity_vault_migration_report(dynamic raw);
+
+  @protected
+  DartIdentityVaultStatus dco_decode_dart_identity_vault_status(dynamic raw);
+
+  @protected
+  DartIdentityVaultVerificationReport
+  dco_decode_dart_identity_vault_verification_report(dynamic raw);
+
+  @protected
   DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw);
 
   @protected
+  DartImCoreOpenOptions dco_decode_dart_im_core_open_options(dynamic raw);
+
+  @protected
   DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw);
+
+  @protected
+  DartImCoreSecretVaultOptions dco_decode_dart_im_core_secret_vault_options(
+    dynamic raw,
+  );
 
   @protected
   DartImError dco_decode_dart_im_error(dynamic raw);
@@ -771,6 +810,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
     dynamic raw,
   );
+
+  @protected
+  DartImCoreOpenOptions? dco_decode_opt_box_autoadd_dart_im_core_open_options(
+    dynamic raw,
+  );
+
+  @protected
+  DartImCoreSecretVaultOptions?
+  dco_decode_opt_box_autoadd_dart_im_core_secret_vault_options(dynamic raw);
 
   @protected
   DartInboxAuth? dco_decode_opt_box_autoadd_dart_inbox_auth(dynamic raw);
@@ -1027,7 +1075,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartImCoreOpenOptions sse_decode_box_autoadd_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartImCoreSecretVaultOptions
+  sse_decode_box_autoadd_dart_im_core_secret_vault_options(
     SseDeserializer deserializer,
   );
 
@@ -1224,6 +1283,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeviceVaultRootKey sse_decode_dart_device_vault_root_key(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDirectSecurePrepareResult sse_decode_dart_direct_secure_prepare_result(
     SseDeserializer deserializer,
   );
@@ -1367,6 +1431,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentitySecretStorageBackend
+  sse_decode_dart_identity_secret_storage_backend(SseDeserializer deserializer);
+
+  @protected
+  DartIdentitySecretStoragePolicy
+  sse_decode_dart_identity_secret_storage_policy(SseDeserializer deserializer);
+
+  @protected
   DartIdentitySelector sse_decode_dart_identity_selector(
     SseDeserializer deserializer,
   );
@@ -1382,10 +1454,35 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentityVaultMigrationReport
+  sse_decode_dart_identity_vault_migration_report(SseDeserializer deserializer);
+
+  @protected
+  DartIdentityVaultStatus sse_decode_dart_identity_vault_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityVaultVerificationReport
+  sse_decode_dart_identity_vault_verification_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartImCoreConfig sse_decode_dart_im_core_config(SseDeserializer deserializer);
 
   @protected
+  DartImCoreOpenOptions sse_decode_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer);
+
+  @protected
+  DartImCoreSecretVaultOptions sse_decode_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartImError sse_decode_dart_im_error(SseDeserializer deserializer);
@@ -1731,6 +1828,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartImCoreOpenOptions? sse_decode_opt_box_autoadd_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartImCoreSecretVaultOptions?
+  sse_decode_opt_box_autoadd_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartInboxAuth? sse_decode_opt_box_autoadd_dart_inbox_auth(
     SseDeserializer deserializer,
   );
@@ -2021,8 +2129,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_im_core_open_options(
+    DartImCoreOpenOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_im_core_paths(
     DartImCorePaths self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions self,
     SseSerializer serializer,
   );
 
@@ -2261,6 +2381,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_device_vault_root_key(
+    DartDeviceVaultRootKey self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_direct_secure_prepare_result(
     DartDirectSecurePrepareResult self,
     SseSerializer serializer,
@@ -2441,6 +2567,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_identity_secret_storage_backend(
+    DartIdentitySecretStorageBackend self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_secret_storage_policy(
+    DartIdentitySecretStoragePolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_identity_selector(
     DartIdentitySelector self,
     SseSerializer serializer,
@@ -2459,14 +2597,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_identity_vault_migration_report(
+    DartIdentityVaultMigrationReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_vault_status(
+    DartIdentityVaultStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_vault_verification_report(
+    DartIdentityVaultVerificationReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_im_core_config(
     DartImCoreConfig self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_dart_im_core_open_options(
+    DartImCoreOpenOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_im_core_paths(
     DartImCorePaths self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions self,
     SseSerializer serializer,
   );
 
@@ -2884,6 +3052,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_dart_identity_summary(
     DartIdentitySummary? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_im_core_open_options(
+    DartImCoreOpenOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions? self,
     SseSerializer serializer,
   );
 

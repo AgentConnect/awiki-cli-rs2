@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartImCoreConfig {
     pub service_base_url: String,
@@ -25,4 +27,39 @@ pub struct DartImCorePaths {
     pub sqlite_path: String,
     pub cache_dir: String,
     pub temp_dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartImCoreOpenOptions {
+    pub identity_secret_storage_policy: DartIdentitySecretStoragePolicy,
+    pub identity_secret_vault: Option<DartImCoreSecretVaultOptions>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartIdentitySecretStoragePolicy {
+    FileCompat,
+    VaultPreferred,
+    VaultRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartImCoreSecretVaultOptions {
+    pub root_key: DartDeviceVaultRootKey,
+    pub vault_dir: String,
+    pub workspace_id: String,
+    pub device_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DartDeviceVaultRootKey {
+    pub bytes: Vec<u8>,
+}
+
+impl fmt::Debug for DartDeviceVaultRootKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DartDeviceVaultRootKey")
+            .field("len", &self.bytes.len())
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
 }

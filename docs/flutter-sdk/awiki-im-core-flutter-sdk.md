@@ -38,6 +38,52 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
+## Identity secret storage
+
+Native hosts can open `AwikiImCore` with explicit identity SecretVault options:
+
+```dart
+final core = await AwikiImCore.open(
+  config: config,
+  paths: paths,
+  openOptions: AwikiImCoreOpenOptions.vaultRequired(
+    identitySecretVault: ImCoreSecretVaultOptions(
+      rootKey: DeviceVaultRootKey.fromList(rootKeyBytes),
+      vaultDir: vaultDir,
+      workspaceId: workspaceId,
+      deviceId: deviceId,
+    ),
+  ),
+);
+```
+
+`AwikiImCoreOpenOptions.fileCompat()` keeps the compatibility default. Use
+`vaultPreferred` only as a migration-period mode; production App safety should
+use `vaultRequired` and fail closed when the host cannot provide the root key or
+matching vault context.
+
+The Dart SDK does not generate, persist, rotate, or back up the host root key.
+The host must get it from its own no-prompt secure storage path and pass it only
+for `open`. `DeviceVaultRootKey.toString()` is redacted, and App code must not
+log generated DTOs or `openOptions` that could contain root key bytes. The SDK
+does not expose generic `open_secret()`, private key, or raw `SecretRef` APIs.
+Auth APIs may still return `bearerToken` in session DTOs for existing flows;
+callers must treat it as sensitive and must not log or persist it outside the
+SDK-owned auth/session storage path.
+
+Identity vault diagnostics are exposed as narrow facade methods:
+
+```dart
+final status = await core.identityVaultStatus(selector);
+final migration = await core.migrateIdentityVault(selector);
+final verification = await core.verifyIdentityVault(selector);
+```
+
+Status/migration/verification DTOs report backend, metadata, warnings, and
+plaintext compatibility retention only. They do not expose root key material,
+JWTs, bearer tokens, or secret refs. Flutter Web remains a stub and cannot run
+the native vault-backed backend.
+
 ## Directory profile metadata
 
 `client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` can return a `DirectoryResolution.profile` populated from the WNS Handle Resolution Document `profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.

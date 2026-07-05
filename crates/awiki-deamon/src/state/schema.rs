@@ -5,7 +5,7 @@ use crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID;
 
 use super::records::DEFAULT_CLI_RECIPIENT_POLICY_JSON;
 
-pub(super) const DAEMON_SCHEMA_VERSION: i64 = 31;
+pub(super) const DAEMON_SCHEMA_VERSION: i64 = 33;
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
     let version = connection.query_row(
@@ -20,6 +20,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
+        PRAGMA secure_delete = ON;
 
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -246,6 +247,9 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             auth_private_key_pem TEXT NOT NULL,
             e2ee_signing_private_key_pem TEXT,
             e2ee_agreement_private_key_pem TEXT,
+            auth_private_key_ref_json TEXT,
+            e2ee_signing_private_key_ref_json TEXT,
+            e2ee_agreement_private_key_ref_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -253,6 +257,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS agent_auth_state (
             agent_did TEXT PRIMARY KEY,
             jwt_token TEXT NOT NULL,
+            jwt_token_ref_json TEXT,
             updated_at_ms INTEGER NOT NULL
         );
 
@@ -418,6 +423,7 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
             daemon_agent_did TEXT NOT NULL,
             public_key_multibase TEXT NOT NULL,
             private_key_material TEXT NOT NULL,
+            private_key_ref_json TEXT,
             allowed_scopes_json TEXT NOT NULL,
             status TEXT NOT NULL,
             expires_at TEXT,
@@ -607,6 +613,8 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_runtime_scope_authority_v29(connection)?;
     migrate_hermes_native_session_stored_ids_v30(connection)?;
     migrate_runtime_profile_preferred_language_v31(connection)?;
+    migrate_agent_identity_vault_refs_v32(connection)?;
+    migrate_user_delegated_identity_vault_refs_v33(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -616,6 +624,37 @@ pub(super) fn initialize_schema(connection: &Connection) -> Result<()> {
         [DAEMON_SCHEMA_VERSION],
     )?;
     Ok(())
+}
+
+fn migrate_agent_identity_vault_refs_v32(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "agent_identity",
+        "auth_private_key_ref_json",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "agent_identity",
+        "e2ee_signing_private_key_ref_json",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "agent_identity",
+        "e2ee_agreement_private_key_ref_json",
+        "TEXT",
+    )?;
+    Ok(())
+}
+
+fn migrate_user_delegated_identity_vault_refs_v33(connection: &Connection) -> Result<()> {
+    add_column_if_missing(
+        connection,
+        "user_delegated_identity",
+        "private_key_ref_json",
+        "TEXT",
+    )
 }
 
 fn migrate_runtime_profile_preferred_language_v31(connection: &Connection) -> Result<()> {
@@ -1659,10 +1698,12 @@ fn migrate_agent_auth_state_v5(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS agent_auth_state (
             agent_did TEXT PRIMARY KEY,
             jwt_token TEXT NOT NULL,
+            jwt_token_ref_json TEXT,
             updated_at_ms INTEGER NOT NULL
         );
         "#,
     )?;
+    add_column_if_missing(connection, "agent_auth_state", "jwt_token_ref_json", "TEXT")?;
     Ok(())
 }
 

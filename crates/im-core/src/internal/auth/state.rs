@@ -95,6 +95,12 @@ pub(crate) fn persist_jwt_token(path: &Path, token: &str) -> crate::ImResult<()>
         })?;
     std::fs::create_dir_all(parent)?;
 
+    let bytes = auth_state_json_for_token(token)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+pub(crate) fn auth_state_json_for_token(token: &str) -> crate::ImResult<Vec<u8>> {
     let trimmed = token.trim();
     let metadata = jwt_metadata(trimmed);
     let mut body = Map::from_iter([
@@ -114,16 +120,12 @@ pub(crate) fn persist_jwt_token(path: &Path, token: &str) -> crate::ImResult<()>
         body.insert("expires_at".to_string(), Value::String(expires_at));
     }
 
-    let bytes = serde_json::to_vec_pretty(&Value::Object(body)).map_err(|err| {
-        crate::ImError::Serialization {
-            detail: err.to_string(),
-        }
-    })?;
-    std::fs::write(path, bytes)?;
-    Ok(())
+    serde_json::to_vec_pretty(&Value::Object(body)).map_err(|err| crate::ImError::Serialization {
+        detail: err.to_string(),
+    })
 }
 
-fn parse_auth_state(raw: &[u8]) -> crate::ImResult<AuthStateSnapshot> {
+pub(crate) fn parse_auth_state(raw: &[u8]) -> crate::ImResult<AuthStateSnapshot> {
     let parsed: AuthStateFile =
         serde_json::from_slice(raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),

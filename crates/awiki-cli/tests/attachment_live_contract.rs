@@ -10,6 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     let workspace = TempDir::new("attachment-live-send").expect("workspace");
@@ -695,6 +699,7 @@ fn register_ready_identity(
     attachment_service_path: &str,
     attachment_service_did: &str,
 ) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -763,6 +768,10 @@ fn register_ready_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {

@@ -3,6 +3,10 @@ use crate::internal::auth::session::SessionProvider;
 use crate::internal::transport::{
     AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
 };
+use crate::vault::{
+    FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretBytes,
+    SecretKind, SecretMetadata, SecretVault,
+};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::fs;
@@ -179,6 +183,63 @@ fn messages_read_runtime_builds_delegated_inbox_auth_and_filters_e2ee() {
         calls[0].params["body"]["inbox_auth_verification_method"],
         delegated.verification_method
     );
+    assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
+        .as_str()
+        .expect("signature input")
+        .contains(&format!("keyid=\"{}\"", delegated.verification_method)));
+}
+
+#[test]
+fn messages_read_runtime_uses_vault_delegated_inbox_key_ref() {
+    install_test_im_core_vault_root_key();
+    let fixture = Fixture::new();
+    let delegated = fixture.write_delegated_identity();
+    let client = fixture.client();
+    let inbox_auth_key_ref = delegated.seal_to_vault_key_ref(&client);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = MessageReadRuntime::new(
+        &client,
+        ReadySessionProvider,
+        RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({
+                "messages": [{
+                    "id": "msg-vault-delegated",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": delegated.user_did,
+                    "content": "plain vault delegated",
+                    "content_type": "text/plain",
+                    "server_seq": 18
+                }],
+                "has_more": false
+            }),
+        },
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .inbox(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: Some(crate::messages::InboxHistoryOptions {
+                    inbox_owner_did: Some(delegated.user_did.clone()),
+                    inbox_auth_verification_method: Some(delegated.verification_method.clone()),
+                    inbox_auth_key_ref: Some(inbox_auth_key_ref),
+                    inbox_auth: None,
+                }),
+            },
+        })
+        .unwrap();
+
+    assert_eq!(result.page.items.len(), 1);
+    assert_eq!(result.page.items[0].id.as_str(), "msg-vault-delegated");
+    let calls = calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].params["meta"]["sender_did"], delegated.user_did);
+    assert_eq!(calls[0].params["body"]["user_did"], delegated.user_did);
     assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
         .as_str()
         .expect("signature input")
@@ -2245,6 +2306,35 @@ struct DelegatedIdentityFixture {
     user_did: String,
     verification_method: String,
     private_key_path: PathBuf,
+    private_key_pem: String,
+}
+
+impl DelegatedIdentityFixture {
+    fn seal_to_vault_key_ref(&self, client: &crate::core::ImClient) -> String {
+        let vault = FileSecretVault::new(
+            crate::internal::secure_direct::secret_store::im_core_vault_root_key_from_env()
+                .unwrap(),
+            FileSecretVaultStore::new(
+                crate::internal::delegated_identity::delegated_vault_dir_for_client(client),
+            ),
+        );
+        let secret_ref = vault
+            .seal(SealSecretRequest {
+                metadata: SecretMetadata {
+                    workspace_id: "awiki-im-core".to_owned(),
+                    device_id: "local-device".to_owned(),
+                    identity_id: Some("alice-id".to_owned()),
+                    did: Some(self.user_did.clone()),
+                    kind: SecretKind::IdentityDaemonPrivate,
+                    key_id: self.verification_method.clone(),
+                    key_version: 1,
+                    policy: SecretAccessPolicy::no_prompt_local_secret(),
+                },
+                plaintext: SecretBytes::from_vec(self.private_key_pem.as_bytes().to_vec()),
+            })
+            .unwrap();
+        crate::internal::delegated_identity::encode_vault_key_ref(&secret_ref).unwrap()
+    }
 }
 
 impl Fixture {
@@ -2468,7 +2558,7 @@ impl Fixture {
         )
         .unwrap();
         let private_key_path = identity_dir.join("daemon-key-1.pem");
-        fs::write(&private_key_path, delegated_private_key).unwrap();
+        fs::write(&private_key_path, &delegated_private_key).unwrap();
         fs::write(
             self.root.join("identities").join("registry.json"),
             json!({
@@ -2489,8 +2579,16 @@ impl Fixture {
             user_did,
             verification_method,
             private_key_path,
+            private_key_pem: delegated_private_key,
         }
     }
+}
+
+fn install_test_im_core_vault_root_key() {
+    std::env::set_var(
+        crate::internal::secure_direct::secret_store::IM_CORE_VAULT_ROOT_KEY_ENV,
+        "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8=",
+    );
 }
 
 fn unique_temp_root() -> PathBuf {

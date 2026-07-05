@@ -71,19 +71,7 @@ where
     if messages.is_empty() || !contains_direct_e2ee_messages(messages) {
         return Vec::new();
     }
-    let runtime = client.runtime();
-    let local_did_document = match read_json_file(&runtime.did_document_path, "did_document") {
-        Ok(value) => value,
-        Err(err) => return decryptor_init_error(messages, err),
-    };
-    let signing_private_pem = match read_text_file(&runtime.private_key_path, "private_key") {
-        Ok(value) => value,
-        Err(err) => return decryptor_init_error(messages, err),
-    };
-    let agreement_private_pem = match read_text_file(
-        &runtime.e2ee_agreement_private_key_path,
-        "e2ee_agreement_private_key",
-    ) {
+    let identity_material = match super::identity_material::local_identity_material(client) {
         Ok(value) => value,
         Err(err) => return decryptor_init_error(messages, err),
     };
@@ -94,7 +82,7 @@ where
         Err(err) => return decryptor_init_error(messages, err),
     };
     let owner_did = client.did().as_str().to_owned();
-    let local_document_for_resolver = local_did_document.clone();
+    let local_document_for_resolver = identity_material.local_did_document.clone();
     let identity_paths = client.core_inner().sdk_paths().identities.clone();
     let resolver = Box::new(move |did: &str| {
         if did == owner_did {
@@ -117,18 +105,14 @@ where
         })
     });
     let prepared = match prepare_direct_secure_client(DirectSecureClientInput {
-        owner_identity_id: client.current_identity().id.as_str().to_owned(),
-        owner_did: client.did().as_str().to_owned(),
-        identity_name: client
-            .current_identity()
-            .local_alias
-            .clone()
-            .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
-        signing_key_id: format!("{}#key-1", client.did().as_str()),
-        agreement_key_id: format!("{}#key-3", client.did().as_str()),
-        signing_private_pem,
-        agreement_private_pem,
-        local_did_document,
+        owner_identity_id: identity_material.owner_identity_id,
+        owner_did: identity_material.owner_did,
+        identity_name: identity_material.identity_name,
+        signing_key_id: identity_material.signing_key_id,
+        agreement_key_id: identity_material.agreement_key_id,
+        signing_private_pem: identity_material.signing_private_pem,
+        agreement_private_pem: identity_material.agreement_private_pem,
+        local_did_document: identity_material.local_did_document,
         local_state: &connection,
     }) {
         Ok(value) => value,
@@ -177,19 +161,7 @@ where
     if !is_direct_e2ee_incoming_notification(&notification) {
         return keep_realtime_notification(notification);
     }
-    let runtime = client.runtime();
-    let local_did_document = match read_json_file(&runtime.did_document_path, "did_document") {
-        Ok(value) => value,
-        Err(err) => return realtime_decryptor_init_error(notification, err),
-    };
-    let signing_private_pem = match read_text_file(&runtime.private_key_path, "private_key") {
-        Ok(value) => value,
-        Err(err) => return realtime_decryptor_init_error(notification, err),
-    };
-    let agreement_private_pem = match read_text_file(
-        &runtime.e2ee_agreement_private_key_path,
-        "e2ee_agreement_private_key",
-    ) {
+    let identity_material = match super::identity_material::local_identity_material(client) {
         Ok(value) => value,
         Err(err) => return realtime_decryptor_init_error(notification, err),
     };
@@ -200,7 +172,7 @@ where
         Err(err) => return realtime_decryptor_init_error(notification, err),
     };
     let owner_did = client.did().as_str().to_owned();
-    let local_document_for_resolver = local_did_document.clone();
+    let local_document_for_resolver = identity_material.local_did_document.clone();
     let identity_paths = client.core_inner().sdk_paths().identities.clone();
     let resolver = Box::new(move |did: &str| {
         if did == owner_did {
@@ -228,18 +200,14 @@ where
         object_result(value)
     });
     let prepared = match prepare_direct_secure_client(DirectSecureClientInput {
-        owner_identity_id: client.current_identity().id.as_str().to_owned(),
-        owner_did: client.did().as_str().to_owned(),
-        identity_name: client
-            .current_identity()
-            .local_alias
-            .clone()
-            .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
-        signing_key_id: format!("{}#key-1", client.did().as_str()),
-        agreement_key_id: format!("{}#key-3", client.did().as_str()),
-        signing_private_pem,
-        agreement_private_pem,
-        local_did_document,
+        owner_identity_id: identity_material.owner_identity_id,
+        owner_did: identity_material.owner_did,
+        identity_name: identity_material.identity_name,
+        signing_key_id: identity_material.signing_key_id,
+        agreement_key_id: identity_material.agreement_key_id,
+        signing_private_pem: identity_material.signing_private_pem,
+        agreement_private_pem: identity_material.agreement_private_pem,
+        local_did_document: identity_material.local_did_document,
         local_state: &connection,
     }) {
         Ok(value) => value,
@@ -1432,8 +1400,7 @@ where
     D: AsyncRpcTransport,
 {
     if did == client.did().as_str() {
-        return read_json_file_async(client.runtime().did_document_path.clone(), "did_document")
-            .await;
+        return super::identity_material::local_did_document(client);
     }
     match resolve_did_document_with_transport_async(directory_transport, did).await {
         Ok(document) => Ok(document),
@@ -1493,36 +1460,6 @@ fn looks_like_did_document(value: &Value) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|value| value.starts_with("did:"))
         && value.get("verificationMethod").is_some()
-}
-
-fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Value> {
-    let raw = std::fs::read(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
-        path_kind: path_kind.to_owned(),
-        detail: err.to_string(),
-    })?;
-    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })
-}
-
-async fn read_json_file_async(path: std::path::PathBuf, path_kind: &str) -> crate::ImResult<Value> {
-    let raw =
-        tokio::fs::read(&path)
-            .await
-            .map_err(|err| crate::ImError::CredentialFileUnreadable {
-                path_kind: path_kind.to_owned(),
-                detail: err.to_string(),
-            })?;
-    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })
-}
-
-fn read_text_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<String> {
-    std::fs::read_to_string(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
-        path_kind: path_kind.to_owned(),
-        detail: err.to_string(),
-    })
 }
 
 fn object_result(value: Value) -> crate::ImResult<Map<String, Value>> {

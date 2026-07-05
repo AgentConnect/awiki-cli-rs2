@@ -127,7 +127,8 @@
 | `m_core_cli_adapter/identity.rs` | id register / bind / recover / profile / resolve / refresh 等到 `im-core` identity API 的适配。 |
 | `m_core_cli_adapter/identity_replace_did_plan.rs` | replace-did 的 dry-run / plan DTO 构造。 |
 | `m_core_cli_adapter/message_result.rs` | message send / inbox / history / mark-read 结果转换和兼容输出。 |
-| `m_core_cli_adapter/messages.rs` | msg 命令主体适配：发送、收件箱、历史、附件、mark-read、secure 策略。 |
+| `m_core_cli_adapter/messages.rs` | msg 命令主体适配：发送、收件箱、历史、附件、mark-read、secure 策略；direct send 返回本地 peer-scope `ThreadRef::Thread` 时仍按 direct delivery 渲染，并从 metadata 恢复目标 handle/DID。 |
+| `m_core_cli_adapter/messages_tests.rs` | `messages.rs` 的 test-only 单元测试实现，避免大段测试夹在业务实现文件中。 |
 | `m_core_cli_adapter/paths.rs` | workspace 路径到 `im-core` path struct 的映射。 |
 | `m_core_cli_adapter/people.rs` | people / contact / follow / profile 类命令到 `im-core` API 的适配。 |
 | `m_core_cli_adapter/realtime.rs` | realtime runner/event 到 host runtime 的适配边界。 |
@@ -257,4 +258,3 @@
 | `workspace_upgrade/legacy_sqlite/types.rs` | legacy SQLite import / rebind / scan 的类型和 error。 |
 | `workspace_upgrade/legacy_sqlite/import_tests.rs` | legacy SQLite import 单元测试。 |
 | `workspace_upgrade/legacy_sqlite/rebind_tests.rs` | legacy SQLite rebind 单元测试。 |
-

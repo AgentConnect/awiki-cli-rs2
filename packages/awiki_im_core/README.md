@@ -15,6 +15,51 @@ scripts/flutter/build-sdk-native.sh --linux-only
 The command writes `packages/awiki_im_core/linux/lib/libawiki_im_core.so`.
 That file is a generated native artifact and is not committed to git.
 
+## Identity SecretVault
+
+The default open path remains file-compatible for legacy identities. Native
+Apps that require encrypted local private-key persistence should pass
+`AwikiImCoreOpenOptions.vaultRequired`:
+
+```dart
+final core = await AwikiImCore.open(
+  config: config,
+  paths: paths,
+  openOptions: AwikiImCoreOpenOptions.vaultRequired(
+    identitySecretVault: ImCoreSecretVaultOptions(
+      rootKey: DeviceVaultRootKey.fromList(rootKeyBytes),
+      vaultDir: vaultDir,
+      workspaceId: workspaceId,
+      deviceId: deviceId,
+    ),
+  ),
+);
+```
+
+The package does not own root-key storage. Hosts must provide a no-prompt root
+key, stable `workspaceId`, stable `deviceId`, and vault directory. Do not store
+the root key in app config, logs, JSON output, or ordinary test fixtures.
+`vaultPreferred` is a migration aid and should not be treated as proof that
+private material is fully protected.
+
+The full client-side identity secret storage design, including CLI, App, daemon,
+Direct E2EE local state, and residual risks, lives in
+`../../docs/architecture/identity-secret-storage.md`.
+
+Identity vault status, migration, and verification are available on
+`AwikiImCore`:
+
+```dart
+final status = await core.identityVaultStatus(selector);
+final migration = await core.migrateIdentityVault(selector);
+final verification = await core.verifyIdentityVault(selector);
+```
+
+These identity vault APIs return redacted status/report DTOs. They do not expose
+private keys, JWTs, bearer tokens, raw `SecretRef` values, or a generic
+secret-open API. Auth APIs may still return `bearerToken` in session DTOs, and
+callers must treat it as sensitive.
+
 Realtime is exposed as transport-agnostic Dart streams:
 
 - `AwikiImClient.events`

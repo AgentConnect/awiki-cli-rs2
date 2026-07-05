@@ -21,6 +21,7 @@ pub struct DaemonConfig {
     pub identity_root_dir: PathBuf,
     pub identity_registry_path: PathBuf,
     pub default_identity_path: Option<PathBuf>,
+    pub secret_vault_dir: PathBuf,
     pub runtime_cache_dir: PathBuf,
     pub runtime_temp_dir: PathBuf,
     pub local_socket_path: PathBuf,
@@ -161,6 +162,7 @@ impl DaemonConfig {
             identity_root_dir: state_root.join("identity"),
             identity_registry_path: state_root.join("identity").join("registry.json"),
             default_identity_path: Some(state_root.join("identity").join("default")),
+            secret_vault_dir: state_root.join("secrets").join("vault"),
             runtime_cache_dir: state_root.join("runtime").join("cache"),
             runtime_temp_dir: state_root.join("runtime").join("tmp"),
             local_socket_path: state_root
@@ -262,6 +264,7 @@ impl DaemonConfig {
         if let Some(path) = self.default_identity_path.as_ref() {
             validate_child_path("default_identity_path", path, &self.state_root)?;
         }
+        validate_child_path("secret_vault_dir", &self.secret_vault_dir, &self.state_root)?;
         validate_child_path(
             "runtime_cache_dir",
             &self.runtime_cache_dir,
@@ -344,11 +347,14 @@ impl DaemonConfig {
     }
 
     pub fn ensure_state_layout(&self) -> Result<()> {
+        let logs_dir = self.state_root.join("logs");
         for dir in [
             &self.state_root,
             &self.identity_root_dir,
+            &self.secret_vault_dir,
             &self.runtime_cache_dir,
             &self.runtime_temp_dir,
+            &logs_dir,
         ] {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("create daemon state directory {}", dir.display()))?;
@@ -649,6 +655,7 @@ mod tests {
             config.identity_registry_path,
             root.join("identity").join("registry.json")
         );
+        assert_eq!(config.secret_vault_dir, root.join("secrets").join("vault"));
         assert_eq!(config.service_base_url, "https://awiki.ai");
         assert_eq!(config.user_service_base_url, "https://awiki.ai");
         assert_eq!(config.message_service_base_url, "https://awiki.ai");
@@ -860,6 +867,12 @@ mod tests {
 
         let error = config.validate().unwrap_err();
         assert!(error.to_string().contains("daemon_db_path"));
+
+        let mut config = DaemonConfig::for_state_root(&root).unwrap();
+        config.secret_vault_dir = std::env::temp_dir().join("outside-vault");
+
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("secret_vault_dir"));
     }
 
     #[test]
@@ -872,8 +885,10 @@ mod tests {
 
         assert!(config.config_file_path.parent().unwrap().is_dir());
         assert!(config.identity_root_dir.is_dir());
+        assert!(config.secret_vault_dir.is_dir());
         assert!(config.runtime_cache_dir.is_dir());
         assert!(config.runtime_temp_dir.is_dir());
+        assert!(root.path().join("logs").is_dir());
         assert!(config.local_socket_path.parent().unwrap().is_dir());
         assert!(config.audit_log_path.parent().unwrap().is_dir());
     }

@@ -645,6 +645,7 @@ pub struct UserDelegatedIdentityRecord {
     pub daemon_agent_did: String,
     pub public_key_multibase: String,
     pub private_key_material: String,
+    pub private_key_ref_json: Option<String>,
     pub allowed_scopes_json: Value,
     pub status: String,
     pub expires_at: Option<String>,
@@ -772,6 +773,7 @@ impl std::fmt::Debug for UserDelegatedIdentityRecord {
             .field("daemon_agent_did", &self.daemon_agent_did)
             .field("public_key_multibase", &self.public_key_multibase)
             .field("private_key_material", &"<redacted-private-key>")
+            .field("private_key_ref_json", &self.private_key_ref_json)
             .field("allowed_scopes_json", &self.allowed_scopes_json)
             .field("status", &self.status)
             .field("expires_at", &self.expires_at)

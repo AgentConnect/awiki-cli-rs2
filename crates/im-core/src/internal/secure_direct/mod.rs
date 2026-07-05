@@ -7,10 +7,13 @@ pub(crate) mod client;
 pub(crate) mod control;
 pub(crate) mod file_runtime;
 #[cfg(feature = "sqlite")]
+pub(crate) mod identity_material;
+#[cfg(feature = "sqlite")]
 pub(crate) mod incoming;
 #[cfg(feature = "sqlite")]
 pub(crate) mod outbox;
 pub(crate) mod prepare;
+pub(crate) mod secret_store;
 #[cfg(feature = "sqlite")]
 pub(crate) mod send;
 #[cfg(feature = "sqlite")]

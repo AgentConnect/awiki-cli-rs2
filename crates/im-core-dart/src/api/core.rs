@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use crate::dto::{
-    config::{DartImCoreConfig, DartImCorePaths},
+    config::{DartImCoreConfig, DartImCoreOpenOptions, DartImCorePaths},
     error::DartImError,
 };
 
@@ -46,12 +46,44 @@ pub async fn open_core(
     config: DartImCoreConfig,
     paths: DartImCorePaths,
 ) -> Result<Arc<DartImCore>, DartImError> {
-    let inner = im_core::ImCore::open(config.try_into()?, paths.try_into()?)
-        .await
-        .map_err(DartImError::from)?;
+    open_core_inner(config, paths, None).await
+}
+
+pub async fn open_core_with_options(
+    config: DartImCoreConfig,
+    paths: DartImCorePaths,
+    options: DartImCoreOpenOptions,
+) -> Result<Arc<DartImCore>, DartImError> {
+    open_core_inner(config, paths, Some(options)).await
+}
+
+async fn open_core_inner(
+    config: DartImCoreConfig,
+    paths: DartImCorePaths,
+    options: Option<DartImCoreOpenOptions>,
+) -> Result<Arc<DartImCore>, DartImError> {
+    let config = config.try_into()?;
+    let paths = paths.try_into()?;
+    let inner = if let Some(options) = options {
+        im_core::ImCore::open_with_options(config, paths, options.try_into()?)
+            .await
+            .map_err(DartImError::from)?
+    } else {
+        im_core::ImCore::open(config, paths)
+            .await
+            .map_err(DartImError::from)?
+    };
     Ok(Arc::new(DartImCore {
         state: Arc::new(RwLock::new(DartImCoreState { inner: Some(inner) })),
     }))
+}
+
+pub async fn open_core_with_optional_options(
+    config: DartImCoreConfig,
+    paths: DartImCorePaths,
+    options: Option<DartImCoreOpenOptions>,
+) -> Result<Arc<DartImCore>, DartImError> {
+    open_core_inner(config, paths, options).await
 }
 
 pub fn close_core(core: &Arc<DartImCore>) -> Result<(), DartImError> {

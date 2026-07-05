@@ -144,13 +144,7 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
                 AsyncDirectSecureReceiveFallback::NoEstablishedSession,
             ));
         };
-        let agreement_private = read_agreement_private_key_async(
-            self.client
-                .runtime()
-                .e2ee_agreement_private_key_path
-                .clone(),
-        )
-        .await?;
+        let agreement_private = super::identity_material::agreement_private_key(self.client)?;
         let owner_identity_id = self.client.current_identity().id.as_str().to_owned();
         let owner_did = self.client.did().as_str().to_owned();
         let agreement_key_id = format!("{owner_did}#key-3");
@@ -557,20 +551,6 @@ fn decrypted_plaintext_result(plaintext: &ApplicationPlaintext) -> Map<String, V
             anp::direct_e2ee::plaintext_to_value(plaintext),
         ),
     ])
-}
-
-async fn read_agreement_private_key_async(
-    path: std::path::PathBuf,
-) -> crate::ImResult<PrivateKeyMaterial> {
-    let raw = tokio::fs::read_to_string(&path).await.map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "e2ee_agreement_private_key".to_owned(),
-            detail: err.to_string(),
-        }
-    })?;
-    PrivateKeyMaterial::from_pem(&raw).map_err(|err| crate::ImError::Serialization {
-        detail: format!("parse direct E2EE agreement private key: {err}"),
-    })
 }
 
 fn expected_x25519_private_key() -> crate::ImError {

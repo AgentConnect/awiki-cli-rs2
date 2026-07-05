@@ -10,6 +10,7 @@ use anp::authentication::verification_methods::extract_public_key;
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
 use im_core::prelude::*;
+use im_core::vault::DeviceVaultRootKey;
 use serde_json::{json, Value};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -366,6 +367,65 @@ async fn register_handle_generates_and_saves_daemon_subkey_package() {
 }
 
 #[tokio::test]
+async fn register_handle_vault_required_persists_identity_without_plaintext() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "user_id": "user-secure",
+        "handle": "secure",
+        "full_handle": "secure.awiki.test",
+        "access_token": "jwt-secure-register"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [42_u8; 32])
+        .await;
+
+    let result = core
+        .identities()
+        .register_handle_async(RegisterHandleRequest {
+            local_alias: Some("secure".to_string()),
+            requested_handle: Handle::parse("secure.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Secure User".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .await
+        .unwrap();
+
+    let identity = result.identity.unwrap();
+    let status = core
+        .identities()
+        .vault_status_async(IdentitySelector::LocalAlias("secure".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(status.selected_backend, IdentitySecretStorageBackend::Vault);
+    assert!(status.vault_metadata_verified);
+    assert_eq!(status.plaintext_compat_retained, Some(false));
+    assert!(status.missing.is_empty(), "{:?}", status.missing);
+
+    let package = core
+        .identities()
+        .load_daemon_subkey_package_async(IdentitySelector::LocalAlias("secure".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(package.user_did, identity.did);
+    assert!(package
+        .private_key_pem
+        .starts_with("-----BEGIN PRIVATE KEY-----"));
+    assert_secure_identity_dir_has_no_plaintext(
+        &fixture.root.join("identities").join(identity.id.as_str()),
+        "jwt-secure-register",
+    );
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
 async fn recover_handle_async_without_otp_sends_recover_otp() {
     let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({ "sent": true }))]);
     let fixture = Fixture::new();
@@ -508,6 +568,54 @@ async fn recover_handle_async_with_otp_persists_daemon_subkey_package() {
         method["publicKeyMultibase"].as_str(),
         Some(package.public_key_multibase.as_str())
     );
+}
+
+#[tokio::test]
+async fn recover_handle_vault_required_persists_identity_without_plaintext() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "user_id": "user-secure-recover",
+        "handle": "secure-recover",
+        "full_handle": "secure-recover.awiki.test",
+        "access_token": "jwt-secure-recover"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url().to_owned();
+    let core = fixture
+        .core_async_with_base_url_vault_required(&base_url, [43_u8; 32])
+        .await;
+
+    let result = core
+        .identities()
+        .recover_handle_async(RecoverHandleRequest {
+            handle: Handle::parse("secure-recover", "").unwrap(),
+            raw_handle: None,
+            phone: "+15551234567".to_string(),
+            otp: Some("654321".to_string()),
+            generated_identity: None,
+            local_finalize: None,
+        })
+        .await
+        .unwrap();
+
+    let recovered = result.recovered_identity.unwrap();
+    let status = core
+        .identities()
+        .vault_status_async(IdentitySelector::LocalAlias("secure-recover".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(status.selected_backend, IdentitySecretStorageBackend::Vault);
+    assert!(status.vault_metadata_verified);
+    assert_eq!(status.plaintext_compat_retained, Some(false));
+    assert_secure_identity_dir_has_no_plaintext(
+        &fixture
+            .root
+            .join("identities")
+            .join(recovered.identity.id.as_str()),
+        "jwt-secure-recover",
+    );
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
 }
 
 #[tokio::test]
@@ -963,6 +1071,28 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn core_async_with_base_url_vault_required(
+        &self,
+        base_url: &str,
+        root_key: [u8; 32],
+    ) -> ImCore {
+        ImCore::open_with_options(
+            self.config(base_url),
+            self.paths(),
+            ImCoreOpenOptions::default().with_identity_secret_vault(
+                IdentitySecretStoragePolicy::VaultRequired,
+                ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes(root_key),
+                    self.root.join("identity-vault"),
+                    "phase1c-workspace",
+                    "phase1c-device",
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+    }
+
     fn write_generated_identity_without_daemon_key(
         &self,
         alias: &str,
@@ -1041,6 +1171,71 @@ fn did_document_references(verification_method: &str, did_document: &Value) -> b
     serde_json::to_string(did_document)
         .unwrap()
         .contains(verification_method)
+}
+
+fn assert_secure_identity_dir_has_no_plaintext(identity_dir: &Path, token_marker: &str) {
+    for name in [
+        "auth.json",
+        "private.key",
+        "key-1-private.pem",
+        "key-3-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+        "daemon-key-1-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(name).exists(),
+            "{} should not exist in secure identity dir",
+            identity_dir.join(name).display()
+        );
+    }
+    let package_path = identity_dir.join("daemon-subkey-package.json");
+    if package_path.exists() {
+        let package_text = fs::read_to_string(&package_path).unwrap();
+        assert!(package_text.contains(r#""private_key_storage": "vault""#));
+        assert!(!package_text.contains("private_key_pem"));
+        assert!(!package_text.contains("private_key_multibase"));
+        assert!(!package_text.contains("-----BEGIN PRIVATE KEY-----"));
+    }
+    let persisted_text = collect_text_files(identity_dir);
+    for marker in [
+        token_marker,
+        "-----BEGIN PRIVATE KEY-----",
+        "private_key_pem",
+        "private_key_multibase",
+    ] {
+        assert!(
+            !persisted_text.contains(marker),
+            "secure identity dir leaked marker {marker}"
+        );
+    }
+}
+
+fn collect_text_files(root: &Path) -> String {
+    let mut out = String::new();
+    collect_text_files_inner(root, &mut out);
+    out
+}
+
+fn collect_text_files_inner(root: &Path, out: &mut String) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_text_files_inner(&path, out);
+        } else if metadata.is_file() {
+            if let Ok(text) = fs::read_to_string(&path) {
+                out.push_str(&text);
+                out.push('\n');
+            }
+        }
+    }
 }
 
 fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str, expires_at: &str) {

@@ -1645,7 +1645,7 @@ fn cli_identity_summaries_from_sdk(
         .collect()
 }
 
-fn cli_identity_summary_from_sdk(
+pub(crate) fn cli_identity_summary_from_sdk(
     summary: &im_core::IdentitySummary,
     known: &[CliIdentitySummary],
 ) -> CliIdentitySummary {

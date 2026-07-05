@@ -126,13 +126,7 @@ where
     T: AuthenticatedRpcTransport,
 {
     session_provider.ensure_session(crate::auth::AuthScope::Messaging)?;
-    let runtime = client.runtime();
-    let local_did_document = read_json_file(&runtime.did_document_path, "did_document")?;
-    let signing_private_pem = read_text_file(&runtime.private_key_path, "private_key")?;
-    let agreement_private_pem = read_text_file(
-        &runtime.e2ee_agreement_private_key_path,
-        "e2ee_agreement_private_key",
-    )?;
+    let identity_material = super::identity_material::local_identity_material(client)?;
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
@@ -145,7 +139,7 @@ where
         )?;
         object_result(value)
     });
-    let local_document_for_resolver = local_did_document.clone();
+    let local_document_for_resolver = identity_material.local_did_document.clone();
     let owner_did = client.did().as_str().to_owned();
     let resolver = Box::new(move |did: &str| {
         if did == owner_did {
@@ -157,21 +151,7 @@ where
         }
     });
     let mut direct_client = MessageServiceDirectSecureClient::new(
-        prepare_direct_secure_client(DirectSecureClientInput {
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            identity_name: client
-                .current_identity()
-                .local_alias
-                .clone()
-                .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
-            signing_key_id: format!("{}#key-1", client.did().as_str()),
-            agreement_key_id: format!("{}#key-3", client.did().as_str()),
-            signing_private_pem,
-            agreement_private_pem,
-            local_did_document,
-            local_state: &connection,
-        })?,
+        prepare_direct_secure_client(identity_material.client_input(&connection))?,
         rpc,
         resolver,
     );
@@ -275,76 +255,17 @@ pub(crate) async fn direct_prekey_prepare_input_from_client(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
 ) -> crate::ImResult<DirectSecurePrekeyPrepareInput> {
-    let runtime = client.runtime();
-    let local_did_document =
-        read_json_file_async(runtime.did_document_path.clone(), "did_document").await?;
-    let signing_private_pem =
-        read_text_file_async(runtime.private_key_path.clone(), "private_key").await?;
-    let agreement_private_pem = read_text_file_async(
-        runtime.e2ee_agreement_private_key_path.clone(),
-        "e2ee_agreement_private_key",
-    )
-    .await?;
+    let identity_material = super::identity_material::local_identity_material(client)?;
     Ok(DirectSecurePrekeyPrepareInput {
-        owner_identity_id: client.current_identity().id.as_str().to_owned(),
-        owner_did: client.did().as_str().to_owned(),
-        identity_name: client
-            .current_identity()
-            .local_alias
-            .clone()
-            .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
-        signing_key_id: format!("{}#key-1", client.did().as_str()),
-        agreement_key_id: format!("{}#key-3", client.did().as_str()),
-        signing_private_pem,
-        agreement_private_pem,
-        local_did_document,
+        owner_identity_id: identity_material.owner_identity_id,
+        owner_did: identity_material.owner_did,
+        identity_name: identity_material.identity_name,
+        signing_key_id: identity_material.signing_key_id,
+        agreement_key_id: identity_material.agreement_key_id,
+        signing_private_pem: identity_material.signing_private_pem,
+        agreement_private_pem: identity_material.agreement_private_pem,
+        local_did_document: identity_material.local_did_document,
         peer,
-    })
-}
-
-#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
-fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Value> {
-    let raw = std::fs::read(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
-        path_kind: path_kind.to_owned(),
-        detail: err.to_string(),
-    })?;
-    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })
-}
-
-#[cfg(feature = "sqlite")]
-async fn read_json_file_async(path: std::path::PathBuf, path_kind: &str) -> crate::ImResult<Value> {
-    let raw =
-        tokio::fs::read(&path)
-            .await
-            .map_err(|err| crate::ImError::CredentialFileUnreadable {
-                path_kind: path_kind.to_owned(),
-                detail: err.to_string(),
-            })?;
-    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })
-}
-
-#[cfg(feature = "sqlite")]
-async fn read_text_file_async(
-    path: std::path::PathBuf,
-    path_kind: &str,
-) -> crate::ImResult<String> {
-    tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|err| crate::ImError::CredentialFileUnreadable {
-            path_kind: path_kind.to_owned(),
-            detail: err.to_string(),
-        })
-}
-
-#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
-fn read_text_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<String> {
-    std::fs::read_to_string(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
-        path_kind: path_kind.to_owned(),
-        detail: err.to_string(),
     })
 }
 

@@ -72,10 +72,15 @@ class AwikiImCore {
   static Future<AwikiImCore> open({
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,
+    AwikiImCoreOpenOptions? openOptions,
   }) async {
     await _ensureRustLibInitialized();
     final inner = await _mapNativeErrors(
-      () => gen_core.openCore(config: config._toGen(), paths: paths._toGen()),
+      () => gen_core.openCoreWithOptionalOptions(
+        config: config._toGen(),
+        paths: paths._toGen(),
+        options: openOptions?._toGen(),
+      ),
     );
     return AwikiImCore._(inner);
   }
@@ -118,6 +123,45 @@ class AwikiImCore {
       ),
     );
     return identity._toModel();
+  }
+
+  Future<IdentityVaultStatus> identityVaultStatus(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_identity_api.identityVaultStatus(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return status._toModel();
+  }
+
+  Future<IdentityVaultMigrationReport> migrateIdentityVault(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final report = await _mapNativeErrors(
+      () => gen_identity_api.migrateIdentityVault(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return report._toModel();
+  }
+
+  Future<IdentityVaultVerificationReport> verifyIdentityVault(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final report = await _mapNativeErrors(
+      () => gen_identity_api.verifyIdentityVault(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return report._toModel();
   }
 
   Future<DeleteLocalIdentityResult> deleteLocalIdentity(
@@ -1277,6 +1321,28 @@ extension on AwikiImCorePaths {
   );
 }
 
+extension on AwikiImCoreOpenOptions {
+  gen_config.DartImCoreOpenOptions _toGen() => gen_config.DartImCoreOpenOptions(
+    identitySecretStoragePolicy: identitySecretStoragePolicy._toGen(),
+    identitySecretVault: identitySecretVault?._toGen(),
+  );
+}
+
+extension on ImCoreSecretVaultOptions {
+  gen_config.DartImCoreSecretVaultOptions _toGen() =>
+      gen_config.DartImCoreSecretVaultOptions(
+        rootKey: rootKey._toGen(),
+        vaultDir: vaultDir,
+        workspaceId: workspaceId,
+        deviceId: deviceId,
+      );
+}
+
+extension on DeviceVaultRootKey {
+  gen_config.DartDeviceVaultRootKey _toGen() =>
+      gen_config.DartDeviceVaultRootKey(bytes: bytes);
+}
+
 extension on MessageTransportPolicy {
   gen_config.DartMessageTransportPolicy _toGen() => switch (this) {
     MessageTransportPolicy.auto => gen_config.DartMessageTransportPolicy.auto,
@@ -1284,6 +1350,28 @@ extension on MessageTransportPolicy {
       gen_config.DartMessageTransportPolicy.httpOnly,
     MessageTransportPolicy.realtimePreferred =>
       gen_config.DartMessageTransportPolicy.realtimePreferred,
+  };
+}
+
+extension on IdentitySecretStoragePolicy {
+  gen_config.DartIdentitySecretStoragePolicy _toGen() => switch (this) {
+    IdentitySecretStoragePolicy.fileCompat =>
+      gen_config.DartIdentitySecretStoragePolicy.fileCompat,
+    IdentitySecretStoragePolicy.vaultPreferred =>
+      gen_config.DartIdentitySecretStoragePolicy.vaultPreferred,
+    IdentitySecretStoragePolicy.vaultRequired =>
+      gen_config.DartIdentitySecretStoragePolicy.vaultRequired,
+  };
+}
+
+extension on gen_config.DartIdentitySecretStoragePolicy {
+  IdentitySecretStoragePolicy _toModel() => switch (this) {
+    gen_config.DartIdentitySecretStoragePolicy.fileCompat =>
+      IdentitySecretStoragePolicy.fileCompat,
+    gen_config.DartIdentitySecretStoragePolicy.vaultPreferred =>
+      IdentitySecretStoragePolicy.vaultPreferred,
+    gen_config.DartIdentitySecretStoragePolicy.vaultRequired =>
+      IdentitySecretStoragePolicy.vaultRequired,
   };
 }
 
@@ -1316,6 +1404,51 @@ extension on gen_identity.DartIdentitySummary {
     readyForAuth: readyForAuth,
     readyForMessaging: readyForMessaging,
     missing: missing,
+  );
+}
+
+extension on gen_identity.DartIdentitySecretStorageBackend {
+  IdentitySecretStorageBackend _toModel() => switch (this) {
+    gen_identity.DartIdentitySecretStorageBackend.fileCompat =>
+      IdentitySecretStorageBackend.fileCompat,
+    gen_identity.DartIdentitySecretStorageBackend.vault =>
+      IdentitySecretStorageBackend.vault,
+  };
+}
+
+extension on gen_identity.DartIdentityVaultStatus {
+  IdentityVaultStatus _toModel() => IdentityVaultStatus(
+    identity: identity._toModel(),
+    storagePolicy: storagePolicy._toModel(),
+    selectedBackend: selectedBackend._toModel(),
+    vaultAvailable: vaultAvailable,
+    vaultMetadataPresent: vaultMetadataPresent,
+    vaultMetadataVerified: vaultMetadataVerified,
+    workspaceId: workspaceId,
+    deviceId: deviceId,
+    plaintextCompatRetained: plaintextCompatRetained,
+    missing: missing,
+    warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartIdentityVaultMigrationReport {
+  IdentityVaultMigrationReport _toModel() => IdentityVaultMigrationReport(
+    identity: identity._toModel(),
+    status: status._toModel(),
+    migrated: migrated,
+    verified: verified,
+    plaintextCompatRetained: plaintextCompatRetained,
+    warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartIdentityVaultVerificationReport {
+  IdentityVaultVerificationReport _toModel() => IdentityVaultVerificationReport(
+    identity: identity._toModel(),
+    status: status._toModel(),
+    verified: verified,
+    warnings: warnings,
   );
 }
 

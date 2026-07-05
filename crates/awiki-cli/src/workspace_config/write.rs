@@ -1,9 +1,9 @@
 use super::{
     normalize_did_domain, read_file_config, FileConfig, HermesConfig, HostNotifyConfig,
     IdentityConfig, LegacyWebhookConfig, ListenerConfig, OpenClawConfig, OutputConfig, Paths,
-    Resolved, RuntimeConfig, ServicesConfig, UpdateConfig, CONFIG_SCHEMA_VERSION,
-    DEFAULT_HOST_NOTIFY_ENABLED, DEFAULT_LISTENER_AUTO_INSTALL, DEFAULT_LISTENER_AUTO_START,
-    DEFAULT_LISTENER_ENABLED,
+    Resolved, RuntimeConfig, SecretStorageConfig, ServicesConfig, UpdateConfig,
+    CONFIG_SCHEMA_VERSION, DEFAULT_HOST_NOTIFY_ENABLED, DEFAULT_LISTENER_AUTO_INSTALL,
+    DEFAULT_LISTENER_AUTO_START, DEFAULT_LISTENER_ENABLED,
 };
 use crate::durable_fs;
 use std::fs::{self, File, OpenOptions};
@@ -47,6 +47,15 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
             format: resolved.output_format.clone(),
             no_color: Some(resolved.no_color),
         },
+        secret_storage: SecretStorageConfig {
+            mode: "vault_required".to_string(),
+            vault_dir: Path::new(&resolved.paths.data_dir)
+                .join("identity-vault")
+                .to_string_lossy()
+                .into_owned(),
+            workspace_id: default_workspace_id(&resolved.paths.workspace_home_dir),
+            device_id: "cli-local-device".to_string(),
+        },
         services: ServicesConfig {
             service_base_url: resolved.service_base_url.clone(),
             user_service_endpoint: resolved.user_service_endpoint.clone(),
@@ -59,12 +68,12 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
         },
         update: UpdateConfig::default(),
     };
-    write_raw_file_config(path, &config)
+    write_raw_file_config(path, config)
 }
 
 pub(crate) fn write_file_config_raw(path: &str, mut config: FileConfig) -> anyhow::Result<()> {
     config.schema_version = CONFIG_SCHEMA_VERSION;
-    write_raw_file_config(path, &config)
+    write_raw_file_config(path, config)
 }
 
 pub fn ensure_config_schema_version(path: &str) -> anyhow::Result<()> {
@@ -76,7 +85,7 @@ pub fn ensure_config_schema_version(path: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     config.schema_version = CONFIG_SCHEMA_VERSION;
-    write_raw_file_config(path, &config)
+    write_raw_file_config(path, config)
 }
 
 pub fn update_runtime_settings(paths: &Paths, mode: &str, socket_path: &str) -> anyhow::Result<()> {
@@ -251,15 +260,38 @@ fn update_file_config(
     }
     mutate(&mut config)?;
     config.schema_version = CONFIG_SCHEMA_VERSION;
-    write_raw_file_config(path, &config)
+    write_raw_file_config(path, config)
 }
 
-fn write_raw_file_config(path: &str, config: &FileConfig) -> anyhow::Result<()> {
+fn write_raw_file_config(path: &str, config: FileConfig) -> anyhow::Result<()> {
+    let config = normalize_config_for_write(path, config);
     write_atomic_file(
         Path::new(path),
-        render_file_config(config).as_bytes(),
+        render_file_config(&config).as_bytes(),
         0o600,
     )
+}
+
+fn normalize_config_for_write(path: &str, mut config: FileConfig) -> FileConfig {
+    config.schema_version = CONFIG_SCHEMA_VERSION;
+    let config_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+    if config.secret_storage.mode.trim().is_empty() {
+        config.secret_storage.mode = "vault_required".to_string();
+    }
+    if config.secret_storage.vault_dir.trim().is_empty() {
+        config.secret_storage.vault_dir = config_dir
+            .join("data")
+            .join("identity-vault")
+            .to_string_lossy()
+            .into_owned();
+    }
+    if config.secret_storage.workspace_id.trim().is_empty() {
+        config.secret_storage.workspace_id = default_workspace_id(&config_dir.to_string_lossy());
+    }
+    if config.secret_storage.device_id.trim().is_empty() {
+        config.secret_storage.device_id = "cli-local-device".to_string();
+    }
+    config
 }
 
 fn write_atomic_file(path: &Path, content: &[u8], mode: u32) -> anyhow::Result<()> {
@@ -392,6 +424,11 @@ fn render_file_config(config: &FileConfig) -> String {
             "output:\n",
             "  format: {}\n",
             "  no_color: {}\n",
+            "secret_storage:\n",
+            "  mode: {}\n",
+            "  vault_dir: {}\n",
+            "  workspace_id: {}\n",
+            "  device_id: {}\n",
             "services:\n",
             "  service_base_url: {}\n",
             "  user_service_endpoint: {}\n",
@@ -442,6 +479,10 @@ fn render_file_config(config: &FileConfig) -> String {
         yaml_scalar(&config.runtime.host_notify.webhook.secret),
         yaml_scalar(&config.output.format),
         config.output.no_color.unwrap_or(false),
+        yaml_scalar(&config.secret_storage.mode),
+        yaml_scalar(&config.secret_storage.vault_dir),
+        yaml_scalar(&config.secret_storage.workspace_id),
+        yaml_scalar(&config.secret_storage.device_id),
         yaml_scalar(&config.services.service_base_url),
         yaml_scalar(&config.services.user_service_endpoint),
         yaml_scalar(&config.services.message_service_endpoint),
@@ -491,4 +532,11 @@ fn needs_yaml_quotes(value: &str) -> bool {
         return true;
     }
     value.contains(['#', '"', '\'', '\\', '\n', '\r', '\t'])
+}
+
+fn default_workspace_id(path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(path.as_bytes());
+    let hex = format!("{digest:x}");
+    format!("cli-workspace-{}", &hex[..16])
 }

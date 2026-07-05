@@ -88,7 +88,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1757337769;
+  int get rustContentHash => 1854205403;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -217,6 +217,11 @@ abstract class RustLibApi extends BaseApi {
     required List<String> peers,
   });
 
+  Future<DartIdentityVaultStatus> crateApiIdentityIdentityVaultStatus({
+    required ArcDartImCore core,
+    required DartIdentitySelector selector,
+  });
+
   Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
     required ArcDartImClient client,
     required String folder,
@@ -327,6 +332,12 @@ abstract class RustLibApi extends BaseApi {
     int? fallbackMaxMessageIds,
   });
 
+  Future<DartIdentityVaultMigrationReport>
+  crateApiIdentityMigrateIdentityVault({
+    required ArcDartImCore core,
+    required DartIdentitySelector selector,
+  });
+
   Future<DartEmailNotificationPage> crateApiEmailNotifications({
     required ArcDartImClient client,
     required int limit,
@@ -335,6 +346,18 @@ abstract class RustLibApi extends BaseApi {
   Future<ArcDartImCore> crateApiCoreOpenCore({
     required DartImCoreConfig config,
     required DartImCorePaths paths,
+  });
+
+  Future<ArcDartImCore> crateApiCoreOpenCoreWithOptionalOptions({
+    required DartImCoreConfig config,
+    required DartImCorePaths paths,
+    DartImCoreOpenOptions? options,
+  });
+
+  Future<ArcDartImCore> crateApiCoreOpenCoreWithOptions({
+    required DartImCoreConfig config,
+    required DartImCorePaths paths,
+    required DartImCoreOpenOptions options,
   });
 
   Future<DartEmailMessage> crateApiEmailRead({
@@ -546,6 +569,12 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<List<String>> crateApiCoreValidatePaths({required ArcDartImCore core});
+
+  Future<DartIdentityVaultVerificationReport>
+  crateApiIdentityVerifyIdentityVault({
+    required ArcDartImCore core,
+    required DartIdentitySelector selector,
+  });
 
   Future<ArcDartConversationPatchSession>
   crateApiMessagesWatchConversationPatches({required ArcDartImClient client});
@@ -1521,6 +1550,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartIdentityVaultStatus> crateApiIdentityIdentityVaultStatus({
+    required ArcDartImCore core,
+    required DartIdentitySelector selector,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
+            core,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 25,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_identity_vault_status,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiIdentityIdentityVaultStatusConstMeta,
+        argValues: [core, selector],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiIdentityIdentityVaultStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "identity_vault_status",
+        argNames: ["core", "selector"],
+      );
+
+  @override
   Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
     required ArcDartImClient client,
     required String folder,
@@ -1543,7 +1610,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1589,7 +1656,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1632,7 +1699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1669,7 +1736,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1710,7 +1777,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1752,7 +1819,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1792,7 +1859,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1834,7 +1901,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1872,7 +1939,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1907,7 +1974,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1939,7 +2006,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1979,7 +2046,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 37,
             port: port_,
           );
         },
@@ -2015,7 +2082,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 38,
             port: port_,
           );
         },
@@ -2050,7 +2117,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 39,
             port: port_,
           );
         },
@@ -2092,7 +2159,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2130,7 +2197,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2170,7 +2237,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2207,7 +2274,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2248,7 +2315,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2270,6 +2337,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartIdentityVaultMigrationReport>
+  crateApiIdentityMigrateIdentityVault({
+    required ArcDartImCore core,
+    required DartIdentitySelector selector,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
+            core,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 45,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_identity_vault_migration_report,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiIdentityMigrateIdentityVaultConstMeta,
+        argValues: [core, selector],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiIdentityMigrateIdentityVaultConstMeta =>
+      const TaskConstMeta(
+        debugName: "migrate_identity_vault",
+        argNames: ["core", "selector"],
+      );
+
+  @override
   Future<DartEmailNotificationPage> crateApiEmailNotifications({
     required ArcDartImClient client,
     required int limit,
@@ -2286,7 +2392,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 46,
             port: port_,
           );
         },
@@ -2320,7 +2426,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 47,
             port: port_,
           );
         },
@@ -2342,6 +2448,85 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<ArcDartImCore> crateApiCoreOpenCoreWithOptionalOptions({
+    required DartImCoreConfig config,
+    required DartImCorePaths paths,
+    DartImCoreOpenOptions? options,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_dart_im_core_config(config, serializer);
+          sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
+          sse_encode_opt_box_autoadd_dart_im_core_open_options(
+            options,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 48,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiCoreOpenCoreWithOptionalOptionsConstMeta,
+        argValues: [config, paths, options],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreOpenCoreWithOptionalOptionsConstMeta =>
+      const TaskConstMeta(
+        debugName: "open_core_with_optional_options",
+        argNames: ["config", "paths", "options"],
+      );
+
+  @override
+  Future<ArcDartImCore> crateApiCoreOpenCoreWithOptions({
+    required DartImCoreConfig config,
+    required DartImCorePaths paths,
+    required DartImCoreOpenOptions options,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_dart_im_core_config(config, serializer);
+          sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
+          sse_encode_box_autoadd_dart_im_core_open_options(options, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 49,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiCoreOpenCoreWithOptionsConstMeta,
+        argValues: [config, paths, options],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreOpenCoreWithOptionsConstMeta =>
+      const TaskConstMeta(
+        debugName: "open_core_with_options",
+        argNames: ["config", "paths", "options"],
+      );
+
+  @override
   Future<DartEmailMessage> crateApiEmailRead({
     required ArcDartImClient client,
     required String messageId,
@@ -2358,7 +2543,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2391,7 +2576,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2427,7 +2612,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2463,7 +2648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 49,
+              funcId: 53,
               port: port_,
             );
           },
@@ -2501,7 +2686,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2539,7 +2724,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2576,7 +2761,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 56,
             port: port_,
           );
         },
@@ -2609,7 +2794,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 57,
             port: port_,
           );
         },
@@ -2648,7 +2833,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 58,
             port: port_,
           );
         },
@@ -2686,7 +2871,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2736,7 +2921,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2804,7 +2989,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2860,7 +3045,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 62,
             port: port_,
           );
         },
@@ -2900,7 +3085,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 63,
             port: port_,
           );
         },
@@ -2936,7 +3121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 64,
             port: port_,
           );
         },
@@ -2976,7 +3161,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 65,
             port: port_,
           );
         },
@@ -3014,7 +3199,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 66,
             port: port_,
           );
         },
@@ -3052,7 +3237,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 67,
             port: port_,
           );
         },
@@ -3090,7 +3275,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 68,
             port: port_,
           );
         },
@@ -3129,7 +3314,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 69,
             port: port_,
           );
         },
@@ -3168,7 +3353,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 70,
             port: port_,
           );
         },
@@ -3206,7 +3391,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 67,
+            funcId: 71,
             port: port_,
           );
         },
@@ -3244,7 +3429,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 72,
             port: port_,
           );
         },
@@ -3282,7 +3467,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 73,
             port: port_,
           );
         },
@@ -3320,7 +3505,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 74,
             port: port_,
           );
         },
@@ -3358,7 +3543,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 71,
+            funcId: 75,
             port: port_,
           );
         },
@@ -3396,7 +3581,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 72,
+            funcId: 76,
             port: port_,
           );
         },
@@ -3432,7 +3617,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 73,
+            funcId: 77,
             port: port_,
           );
         },
@@ -3470,7 +3655,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 74,
+            funcId: 78,
             port: port_,
           );
         },
@@ -3508,7 +3693,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 75,
+            funcId: 79,
             port: port_,
           );
         },
@@ -3546,7 +3731,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 76,
+            funcId: 80,
             port: port_,
           );
         },
@@ -3584,7 +3769,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 77,
+            funcId: 81,
             port: port_,
           );
         },
@@ -3622,7 +3807,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 78,
+            funcId: 82,
             port: port_,
           );
         },
@@ -3657,7 +3842,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 79,
+            funcId: 83,
             port: port_,
           );
         },
@@ -3693,7 +3878,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 80,
+            funcId: 84,
             port: port_,
           );
         },
@@ -3731,7 +3916,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 81,
+            funcId: 85,
             port: port_,
           );
         },
@@ -3771,7 +3956,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 82,
+            funcId: 86,
             port: port_,
           );
         },
@@ -3813,7 +3998,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 83,
+              funcId: 87,
               port: port_,
             );
           },
@@ -3853,7 +4038,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 84,
+            funcId: 88,
             port: port_,
           );
         },
@@ -3881,7 +4066,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 85,
+            funcId: 89,
             port: port_,
           );
         },
@@ -3916,7 +4101,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 86,
+            funcId: 90,
             port: port_,
           );
         },
@@ -3952,7 +4137,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 87,
+            funcId: 91,
             port: port_,
           );
         },
@@ -3971,6 +4156,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "validate_paths", argNames: ["core"]);
 
   @override
+  Future<DartIdentityVaultVerificationReport>
+  crateApiIdentityVerifyIdentityVault({
+    required ArcDartImCore core,
+    required DartIdentitySelector selector,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
+            core,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 92,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_identity_vault_verification_report,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiIdentityVerifyIdentityVaultConstMeta,
+        argValues: [core, selector],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiIdentityVerifyIdentityVaultConstMeta =>
+      const TaskConstMeta(
+        debugName: "verify_identity_vault",
+        argNames: ["core", "selector"],
+      );
+
+  @override
   Future<ArcDartConversationPatchSession>
   crateApiMessagesWatchConversationPatches({required ArcDartImClient client}) {
     return handler.executeNormal(
@@ -3984,7 +4208,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 88,
+            funcId: 93,
             port: port_,
           );
         },
@@ -4025,7 +4249,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 94,
             port: port_,
           );
         },
@@ -4381,9 +4605,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartImCoreOpenOptions dco_decode_box_autoadd_dart_im_core_open_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_im_core_open_options(raw);
+  }
+
+  @protected
   DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_dart_im_core_paths(raw);
+  }
+
+  @protected
+  DartImCoreSecretVaultOptions
+  dco_decode_box_autoadd_dart_im_core_secret_vault_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_im_core_secret_vault_options(raw);
   }
 
   @protected
@@ -4906,6 +5145,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return DartDeviceVaultRootKey(
+      bytes: dco_decode_list_prim_u_8_strict(arr[0]),
+    );
+  }
+
+  @protected
   DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(
     dynamic raw,
   ) {
@@ -5376,6 +5626,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentitySecretStorageBackend
+  dco_decode_dart_identity_secret_storage_backend(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartIdentitySecretStorageBackend.values[raw as int];
+  }
+
+  @protected
+  DartIdentitySecretStoragePolicy
+  dco_decode_dart_identity_secret_storage_policy(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DartIdentitySecretStoragePolicy.values[raw as int];
+  }
+
+  @protected
   DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
@@ -5432,6 +5696,59 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentityVaultMigrationReport
+  dco_decode_dart_identity_vault_migration_report(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return DartIdentityVaultMigrationReport(
+      identity: dco_decode_dart_identity_summary(arr[0]),
+      status: dco_decode_dart_identity_vault_status(arr[1]),
+      migrated: dco_decode_bool(arr[2]),
+      verified: dco_decode_bool(arr[3]),
+      plaintextCompatRetained: dco_decode_bool(arr[4]),
+      warnings: dco_decode_list_String(arr[5]),
+    );
+  }
+
+  @protected
+  DartIdentityVaultStatus dco_decode_dart_identity_vault_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return DartIdentityVaultStatus(
+      identity: dco_decode_dart_identity_summary(arr[0]),
+      storagePolicy: dco_decode_dart_identity_secret_storage_policy(arr[1]),
+      selectedBackend: dco_decode_dart_identity_secret_storage_backend(arr[2]),
+      vaultAvailable: dco_decode_bool(arr[3]),
+      vaultMetadataPresent: dco_decode_bool(arr[4]),
+      vaultMetadataVerified: dco_decode_bool(arr[5]),
+      workspaceId: dco_decode_opt_String(arr[6]),
+      deviceId: dco_decode_opt_String(arr[7]),
+      plaintextCompatRetained: dco_decode_opt_box_autoadd_bool(arr[8]),
+      missing: dco_decode_list_String(arr[9]),
+      warnings: dco_decode_list_String(arr[10]),
+    );
+  }
+
+  @protected
+  DartIdentityVaultVerificationReport
+  dco_decode_dart_identity_vault_verification_report(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartIdentityVaultVerificationReport(
+      identity: dco_decode_dart_identity_summary(arr[0]),
+      status: dco_decode_dart_identity_vault_status(arr[1]),
+      verified: dco_decode_bool(arr[2]),
+      warnings: dco_decode_list_String(arr[3]),
+    );
+  }
+
+  @protected
   DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -5450,6 +5767,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartImCoreOpenOptions dco_decode_dart_im_core_open_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return DartImCoreOpenOptions(
+      identitySecretStoragePolicy:
+          dco_decode_dart_identity_secret_storage_policy(arr[0]),
+      identitySecretVault:
+          dco_decode_opt_box_autoadd_dart_im_core_secret_vault_options(arr[1]),
+    );
+  }
+
+  @protected
   DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -5462,6 +5793,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sqlitePath: dco_decode_String(arr[3]),
       cacheDir: dco_decode_String(arr[4]),
       tempDir: dco_decode_String(arr[5]),
+    );
+  }
+
+  @protected
+  DartImCoreSecretVaultOptions dco_decode_dart_im_core_secret_vault_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartImCoreSecretVaultOptions(
+      rootKey: dco_decode_dart_device_vault_root_key(arr[0]),
+      vaultDir: dco_decode_String(arr[1]),
+      workspaceId: dco_decode_String(arr[2]),
+      deviceId: dco_decode_String(arr[3]),
     );
   }
 
@@ -6405,6 +6752,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartImCoreOpenOptions? dco_decode_opt_box_autoadd_dart_im_core_open_options(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_im_core_open_options(raw);
+  }
+
+  @protected
+  DartImCoreSecretVaultOptions?
+  dco_decode_opt_box_autoadd_dart_im_core_secret_vault_options(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_dart_im_core_secret_vault_options(raw);
+  }
+
+  @protected
   DartInboxAuth? dco_decode_opt_box_autoadd_dart_inbox_auth(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_dart_inbox_auth(raw);
@@ -6874,11 +7240,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartImCoreOpenOptions sse_decode_box_autoadd_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_im_core_open_options(deserializer));
+  }
+
+  @protected
   DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_im_core_paths(deserializer));
+  }
+
+  @protected
+  DartImCoreSecretVaultOptions
+  sse_decode_box_autoadd_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_im_core_secret_vault_options(deserializer));
   }
 
   @protected
@@ -7549,6 +7932,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartDeviceVaultRootKey sse_decode_dart_device_vault_root_key(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+    return DartDeviceVaultRootKey(bytes: var_bytes);
+  }
+
+  @protected
   DartDirectSecurePrepareResult sse_decode_dart_direct_secure_prepare_result(
     SseDeserializer deserializer,
   ) {
@@ -8134,6 +8526,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentitySecretStorageBackend
+  sse_decode_dart_identity_secret_storage_backend(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartIdentitySecretStorageBackend.values[inner];
+  }
+
+  @protected
+  DartIdentitySecretStoragePolicy
+  sse_decode_dart_identity_secret_storage_policy(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DartIdentitySecretStoragePolicy.values[inner];
+  }
+
+  @protected
   DartIdentitySelector sse_decode_dart_identity_selector(
     SseDeserializer deserializer,
   ) {
@@ -8212,6 +8622,83 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartIdentityVaultMigrationReport
+  sse_decode_dart_identity_vault_migration_report(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_identity = sse_decode_dart_identity_summary(deserializer);
+    var var_status = sse_decode_dart_identity_vault_status(deserializer);
+    var var_migrated = sse_decode_bool(deserializer);
+    var var_verified = sse_decode_bool(deserializer);
+    var var_plaintextCompatRetained = sse_decode_bool(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    return DartIdentityVaultMigrationReport(
+      identity: var_identity,
+      status: var_status,
+      migrated: var_migrated,
+      verified: var_verified,
+      plaintextCompatRetained: var_plaintextCompatRetained,
+      warnings: var_warnings,
+    );
+  }
+
+  @protected
+  DartIdentityVaultStatus sse_decode_dart_identity_vault_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_identity = sse_decode_dart_identity_summary(deserializer);
+    var var_storagePolicy = sse_decode_dart_identity_secret_storage_policy(
+      deserializer,
+    );
+    var var_selectedBackend = sse_decode_dart_identity_secret_storage_backend(
+      deserializer,
+    );
+    var var_vaultAvailable = sse_decode_bool(deserializer);
+    var var_vaultMetadataPresent = sse_decode_bool(deserializer);
+    var var_vaultMetadataVerified = sse_decode_bool(deserializer);
+    var var_workspaceId = sse_decode_opt_String(deserializer);
+    var var_deviceId = sse_decode_opt_String(deserializer);
+    var var_plaintextCompatRetained = sse_decode_opt_box_autoadd_bool(
+      deserializer,
+    );
+    var var_missing = sse_decode_list_String(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    return DartIdentityVaultStatus(
+      identity: var_identity,
+      storagePolicy: var_storagePolicy,
+      selectedBackend: var_selectedBackend,
+      vaultAvailable: var_vaultAvailable,
+      vaultMetadataPresent: var_vaultMetadataPresent,
+      vaultMetadataVerified: var_vaultMetadataVerified,
+      workspaceId: var_workspaceId,
+      deviceId: var_deviceId,
+      plaintextCompatRetained: var_plaintextCompatRetained,
+      missing: var_missing,
+      warnings: var_warnings,
+    );
+  }
+
+  @protected
+  DartIdentityVaultVerificationReport
+  sse_decode_dart_identity_vault_verification_report(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_identity = sse_decode_dart_identity_summary(deserializer);
+    var var_status = sse_decode_dart_identity_vault_status(deserializer);
+    var var_verified = sse_decode_bool(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    return DartIdentityVaultVerificationReport(
+      identity: var_identity,
+      status: var_status,
+      verified: var_verified,
+      warnings: var_warnings,
+    );
+  }
+
+  @protected
   DartImCoreConfig sse_decode_dart_im_core_config(
     SseDeserializer deserializer,
   ) {
@@ -8239,6 +8726,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartImCoreOpenOptions sse_decode_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_identitySecretStoragePolicy =
+        sse_decode_dart_identity_secret_storage_policy(deserializer);
+    var var_identitySecretVault =
+        sse_decode_opt_box_autoadd_dart_im_core_secret_vault_options(
+          deserializer,
+        );
+    return DartImCoreOpenOptions(
+      identitySecretStoragePolicy: var_identitySecretStoragePolicy,
+      identitySecretVault: var_identitySecretVault,
+    );
+  }
+
+  @protected
   DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_identityRootDir = sse_decode_String(deserializer);
@@ -8254,6 +8758,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sqlitePath: var_sqlitePath,
       cacheDir: var_cacheDir,
       tempDir: var_tempDir,
+    );
+  }
+
+  @protected
+  DartImCoreSecretVaultOptions sse_decode_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_rootKey = sse_decode_dart_device_vault_root_key(deserializer);
+    var var_vaultDir = sse_decode_String(deserializer);
+    var var_workspaceId = sse_decode_String(deserializer);
+    var var_deviceId = sse_decode_String(deserializer);
+    return DartImCoreSecretVaultOptions(
+      rootKey: var_rootKey,
+      vaultDir: var_vaultDir,
+      workspaceId: var_workspaceId,
+      deviceId: var_deviceId,
     );
   }
 
@@ -9553,6 +10074,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartImCoreOpenOptions? sse_decode_opt_box_autoadd_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_im_core_open_options(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  DartImCoreSecretVaultOptions?
+  sse_decode_opt_box_autoadd_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_dart_im_core_secret_vault_options(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   DartInboxAuth? sse_decode_opt_box_autoadd_dart_inbox_auth(
     SseDeserializer deserializer,
   ) {
@@ -10150,12 +10700,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_im_core_open_options(
+    DartImCoreOpenOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_im_core_open_options(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_im_core_paths(
     DartImCorePaths self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_im_core_paths(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_im_core_secret_vault_options(self, serializer);
   }
 
   @protected
@@ -10715,6 +11283,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_device_vault_root_key(
+    DartDeviceVaultRootKey self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.bytes, serializer);
+  }
+
+  @protected
   void sse_encode_dart_direct_secure_prepare_result(
     DartDirectSecurePrepareResult self,
     SseSerializer serializer,
@@ -11124,6 +11701,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_identity_secret_storage_backend(
+    DartIdentitySecretStorageBackend self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_identity_secret_storage_policy(
+    DartIdentitySecretStoragePolicy self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_dart_identity_selector(
     DartIdentitySelector self,
     SseSerializer serializer,
@@ -11185,6 +11780,57 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_identity_vault_migration_report(
+    DartIdentityVaultMigrationReport self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_identity_summary(self.identity, serializer);
+    sse_encode_dart_identity_vault_status(self.status, serializer);
+    sse_encode_bool(self.migrated, serializer);
+    sse_encode_bool(self.verified, serializer);
+    sse_encode_bool(self.plaintextCompatRetained, serializer);
+    sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_identity_vault_status(
+    DartIdentityVaultStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_identity_summary(self.identity, serializer);
+    sse_encode_dart_identity_secret_storage_policy(
+      self.storagePolicy,
+      serializer,
+    );
+    sse_encode_dart_identity_secret_storage_backend(
+      self.selectedBackend,
+      serializer,
+    );
+    sse_encode_bool(self.vaultAvailable, serializer);
+    sse_encode_bool(self.vaultMetadataPresent, serializer);
+    sse_encode_bool(self.vaultMetadataVerified, serializer);
+    sse_encode_opt_String(self.workspaceId, serializer);
+    sse_encode_opt_String(self.deviceId, serializer);
+    sse_encode_opt_box_autoadd_bool(self.plaintextCompatRetained, serializer);
+    sse_encode_list_String(self.missing, serializer);
+    sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_identity_vault_verification_report(
+    DartIdentityVaultVerificationReport self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_identity_summary(self.identity, serializer);
+    sse_encode_dart_identity_vault_status(self.status, serializer);
+    sse_encode_bool(self.verified, serializer);
+    sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
   void sse_encode_dart_im_core_config(
     DartImCoreConfig self,
     SseSerializer serializer,
@@ -11201,6 +11847,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_im_core_open_options(
+    DartImCoreOpenOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_identity_secret_storage_policy(
+      self.identitySecretStoragePolicy,
+      serializer,
+    );
+    sse_encode_opt_box_autoadd_dart_im_core_secret_vault_options(
+      self.identitySecretVault,
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_dart_im_core_paths(
     DartImCorePaths self,
     SseSerializer serializer,
@@ -11212,6 +11874,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.sqlitePath, serializer);
     sse_encode_String(self.cacheDir, serializer);
     sse_encode_String(self.tempDir, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_device_vault_root_key(self.rootKey, serializer);
+    sse_encode_String(self.vaultDir, serializer);
+    sse_encode_String(self.workspaceId, serializer);
+    sse_encode_String(self.deviceId, serializer);
   }
 
   @protected
@@ -12212,6 +12886,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_dart_identity_summary(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_im_core_open_options(
+    DartImCoreOpenOptions? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_im_core_open_options(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_dart_im_core_secret_vault_options(
+        self,
+        serializer,
+      );
     }
   }
 

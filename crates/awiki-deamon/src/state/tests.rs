@@ -1164,6 +1164,7 @@ fn delegated_identity_fixture() -> (UserDelegatedIdentityRecord, BootstrapReplay
         daemon_agent_did: "did:agent:daemon".to_string(),
         public_key_multibase: "z-public".to_string(),
         private_key_material: "z-private-secret".to_string(),
+        private_key_ref_json: None,
         allowed_scopes_json: serde_json::json!([
             "message.inbox.read.plain",
             "message.history.read.plain",
@@ -1264,7 +1265,7 @@ fn secure_bootstrap_replay_roundtrips_and_rejects_conflicts() {
 fn user_delegated_identity_roundtrips_and_replays_idempotently() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
     state.initialize().unwrap();
     let (identity, replay) = delegated_identity_fixture();
 
@@ -1286,10 +1287,27 @@ fn user_delegated_identity_roundtrips_and_replays_idempotently() {
     assert_eq!(loaded.status, "paired_key_received");
     assert!(!format!("{loaded:?}").contains("z-private-secret"));
 
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    let (stored_private_key_material, private_key_ref_json): (String, Option<String>) = connection
+        .query_row(
+            r#"
+SELECT private_key_material, private_key_ref_json
+FROM user_delegated_identity
+WHERE verification_method = ?1
+"#,
+            [&identity.verification_method],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_private_key_material, "<awiki-secret-vault-ref>");
+    assert!(private_key_ref_json.is_some());
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    assert!(!String::from_utf8_lossy(&raw_db).contains("z-private-secret"));
+
     let replay_loaded = state.load_bootstrap_replay("boot_1").unwrap().unwrap();
     assert_eq!(replay_loaded.payload_hash, "payload-hash-1");
 
-    let reopened = DaemonState::open(&config).unwrap();
+    let reopened = DaemonState::open_with_root_key_bytes(&config, [21_u8; 32]);
     let recovered = reopened
         .load_user_delegated_identity(&identity.verification_method)
         .unwrap()
@@ -1301,7 +1319,7 @@ fn user_delegated_identity_roundtrips_and_replays_idempotently() {
 fn user_delegated_identity_rejects_conflicting_replay() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [22_u8; 32]);
     state.initialize().unwrap();
     let (identity, mut replay) = delegated_identity_fixture();
     state.store_bootstrap_state(&identity, &replay).unwrap();
@@ -1312,6 +1330,119 @@ fn user_delegated_identity_rejects_conflicting_replay() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("replay conflict"));
+}
+
+#[test]
+fn user_delegated_identity_store_requires_secret_vault_root_key() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    state.initialize().unwrap();
+    let (identity, replay) = delegated_identity_fixture();
+
+    let error = state.store_bootstrap_state(&identity, &replay).unwrap_err();
+
+    assert!(error.to_string().contains("refusing plaintext fallback"));
+}
+
+#[test]
+fn user_delegated_identity_plaintext_row_without_vault_ref_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let legacy_state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    legacy_state.initialize().unwrap();
+    let (identity, replay) = delegated_identity_fixture();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO bootstrap_replay (
+    bootstrap_id,
+    idempotency_key,
+    payload_hash,
+    user_did,
+    verification_method,
+    app_instance_id,
+    daemon_agent_did,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+"#,
+            rusqlite::params![
+                &replay.bootstrap_id,
+                &replay.idempotency_key,
+                &replay.payload_hash,
+                &replay.user_did,
+                &replay.verification_method,
+                &replay.app_instance_id,
+                &replay.daemon_agent_did,
+                &replay.status,
+                1700000000000_i64,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO user_delegated_identity (
+    user_did,
+    verification_method,
+    app_instance_id,
+    controller_did,
+    daemon_agent_did,
+    public_key_multibase,
+    private_key_material,
+    allowed_scopes_json,
+    status,
+    expires_at,
+    bootstrap_id,
+    idempotency_key,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+"#,
+            rusqlite::params![
+                &identity.user_did,
+                &identity.verification_method,
+                &identity.app_instance_id,
+                &identity.controller_did,
+                &identity.daemon_agent_did,
+                &identity.public_key_multibase,
+                "legacy-delegated-private-secret",
+                identity.allowed_scopes_json.to_string(),
+                &identity.status,
+                &identity.expires_at,
+                &identity.bootstrap_id,
+                &identity.idempotency_key,
+                1700000000000_i64,
+            ],
+        )
+        .unwrap();
+
+    let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
+    let error = state
+        .load_user_delegated_identity(&identity.verification_method)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("private_key_ref_json is missing a daemon secret vault ref"));
+    let (stored_private_key_material, private_key_ref_json): (String, Option<String>) = connection
+        .query_row(
+            r#"
+SELECT private_key_material, private_key_ref_json
+FROM user_delegated_identity
+WHERE verification_method = ?1
+"#,
+            [&identity.verification_method],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_private_key_material,
+        "legacy-delegated-private-secret"
+    );
+    assert!(private_key_ref_json.is_none());
 }
 
 #[test]
@@ -3188,7 +3319,7 @@ WHERE daemon_agent_did = 'did:agent:daemon'
 fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [11_u8; 32]);
     state.initialize().unwrap();
     let identity = AgentIdentityRecord {
         agent_did: "did:agent:daemon".to_string(),
@@ -3207,6 +3338,68 @@ fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
     let loaded = state.load_agent_identity("did:agent:daemon").unwrap();
     assert_eq!(loaded.agent_did, identity.agent_did);
     assert_eq!(loaded.auth_private_key_pem, "private-secret");
+    assert_eq!(loaded.e2ee_signing_private_key_pem, "signing-secret");
+    assert_eq!(loaded.e2ee_agreement_private_key_pem, "agreement-secret");
+
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    let (
+        auth_private_key_pem,
+        e2ee_signing_private_key_pem,
+        e2ee_agreement_private_key_pem,
+        auth_private_key_ref_json,
+        e2ee_signing_private_key_ref_json,
+        e2ee_agreement_private_key_ref_json,
+    ): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = connection
+        .query_row(
+            r#"
+SELECT
+    auth_private_key_pem,
+    e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem,
+    auth_private_key_ref_json,
+    e2ee_signing_private_key_ref_json,
+    e2ee_agreement_private_key_ref_json
+FROM agent_identity
+WHERE agent_did = ?1
+"#,
+            ["did:agent:daemon"],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(auth_private_key_pem, "<awiki-secret-vault-ref>");
+    assert_eq!(
+        e2ee_signing_private_key_pem.as_deref(),
+        Some("<awiki-secret-vault-ref>")
+    );
+    assert_eq!(
+        e2ee_agreement_private_key_pem.as_deref(),
+        Some("<awiki-secret-vault-ref>")
+    );
+    assert!(auth_private_key_ref_json.is_some());
+    assert!(e2ee_signing_private_key_ref_json.is_some());
+    assert!(e2ee_agreement_private_key_ref_json.is_some());
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    let raw_db_text = String::from_utf8_lossy(&raw_db);
+    assert!(!raw_db_text.contains("private-secret"));
+    assert!(!raw_db_text.contains("signing-secret"));
+    assert!(!raw_db_text.contains("agreement-secret"));
+
     let debug = format!("{loaded:?}");
     assert!(!debug.contains("private-secret"));
     assert!(!debug.contains("signing-secret"));
@@ -3214,10 +3407,100 @@ fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
 }
 
 #[test]
-fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
+fn agent_identity_store_requires_secret_vault_root_key() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_state_root(root.path()).unwrap();
-    let state = DaemonState::open(&config).unwrap();
+    let state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    state.initialize().unwrap();
+    let identity = AgentIdentityRecord {
+        agent_did: "did:agent:daemon".to_string(),
+        handle: "alice-daemon".to_string(),
+        agent_kind: AgentKind::Daemon,
+        did_document: serde_json::json!({ "id": "did:agent:daemon" }),
+        endpoint_url: Some("https://example.test/anp-im/rpc".to_string()),
+        key_algorithm: "JsonWebKey2020".to_string(),
+        public_key: "public".to_string(),
+        auth_private_key_pem: "private-secret".to_string(),
+        e2ee_signing_private_key_pem: "signing-secret".to_string(),
+        e2ee_agreement_private_key_pem: "agreement-secret".to_string(),
+    };
+
+    let error = state.store_agent_identity(&identity).unwrap_err();
+
+    assert!(error.to_string().contains("refusing plaintext fallback"));
+}
+
+#[test]
+fn agent_identity_plaintext_row_without_vault_ref_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let legacy_state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    legacy_state.initialize().unwrap();
+    let connection = Connection::open(&config.daemon_db_path).unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO agent_identity (
+    agent_did,
+    handle,
+    agent_kind,
+    did_document_json,
+    endpoint_url,
+    key_algorithm,
+    public_key,
+    auth_private_key_pem,
+    e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+"#,
+            rusqlite::params![
+                "did:agent:daemon",
+                "alice-daemon",
+                AgentKind::Daemon.as_str(),
+                serde_json::json!({ "id": "did:agent:daemon" }).to_string(),
+                "https://example.test/anp-im/rpc",
+                "JsonWebKey2020",
+                "public",
+                "legacy-private-secret",
+                "legacy-signing-secret",
+                "legacy-agreement-secret",
+                "1700000000000",
+            ],
+        )
+        .unwrap();
+
+    let state = DaemonState::open_with_root_key_bytes(&config, [12_u8; 32]);
+    let error = state
+        .load_agent_identity("did:agent:daemon")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("auth_private_key_ref_json is missing a daemon secret vault ref"));
+    let stored_auth_pem: String = connection
+        .query_row(
+            "SELECT auth_private_key_pem FROM agent_identity WHERE agent_did = ?1",
+            ["did:agent:daemon"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let migrated_auth_ref: Option<String> = connection
+        .query_row(
+            "SELECT auth_private_key_ref_json FROM agent_identity WHERE agent_did = ?1",
+            ["did:agent:daemon"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_auth_pem, "legacy-private-secret");
+    assert!(migrated_auth_ref.is_none());
+}
+
+#[test]
+fn agent_auth_token_roundtrips_from_vault_without_plaintext_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_with_root_key_bytes(&config, [31_u8; 32]);
     state.initialize().unwrap();
 
     state
@@ -3238,6 +3521,19 @@ fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
             "jwt-secret-value".to_string()
         )]
     );
+    let (stored_jwt_token, jwt_token_ref_json): (String, Option<String>) = state
+        .connection()
+        .unwrap()
+        .query_row(
+            "SELECT jwt_token, jwt_token_ref_json FROM agent_auth_state WHERE agent_did = ?1",
+            ["did:agent:daemon"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored_jwt_token, "<awiki-secret-vault-ref>");
+    assert!(jwt_token_ref_json.is_some());
+    let raw_db = std::fs::read(&config.daemon_db_path).unwrap();
+    assert!(!String::from_utf8_lossy(&raw_db).contains("jwt-secret-value"));
 
     let audit_count: i64 = state
         .connection()
@@ -3245,6 +3541,21 @@ fn agent_auth_token_roundtrips_without_audit_log_side_effects() {
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
         .unwrap();
     assert_eq!(audit_count, 0);
+}
+
+#[test]
+fn agent_auth_token_store_requires_secret_vault_root_key() {
+    let root = tempfile::tempdir().unwrap();
+    let config = DaemonConfig::for_state_root(root.path()).unwrap();
+    let state = DaemonState::open_without_secret_vault_for_legacy(&config);
+    state.initialize().unwrap();
+
+    let error = state
+        .store_agent_auth_token("did:agent:daemon", "jwt-secret-value")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("refusing plaintext fallback"));
 }
 
 #[test]

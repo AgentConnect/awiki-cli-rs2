@@ -332,72 +332,26 @@ where
 
 fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json(&runtime.did_document_path)?;
-    let key1_private_pem = std::fs::read_to_string(&runtime.private_key_path).map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        }
-    })?;
+    let did_document = runtime.key_provider.optional_did_document()?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
         key1_private_pem,
     })
-}
-
-fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
 }
 
 async fn load_credentials_async(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json_async(runtime.did_document_path.clone()).await?;
-    let key1_private_pem = tokio::fs::read_to_string(&runtime.private_key_path)
-        .await
-        .map_err(|err| crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        })?;
+    let did_document = runtime.key_provider.optional_did_document()?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
         key1_private_pem,
     })
-}
-
-async fn read_optional_json_async(path: std::path::PathBuf) -> crate::ImResult<Option<Value>> {
-    let raw = match tokio::fs::read(path).await {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
 }
 
 #[cfg(test)]

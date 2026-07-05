@@ -74,6 +74,14 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: transport unavailable: {detail}"),
             "Check the service endpoint, runtime mode, and network connectivity.",
         ),
+        im_core::ImError::LocalStateUnavailable { detail } if detail.contains("secret vault") => {
+            ExitError::new(
+                "vault_root_key_required",
+                3,
+                format!("{context}: {detail}"),
+                crate::m_core_cli_adapter::vault::ROOT_KEY_HINT,
+            )
+        }
         im_core::ImError::LocalStateUnavailable { detail } => ExitError::new(
             "local_state_unavailable",
             5,
@@ -98,6 +106,16 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             format!("{context}: service error: {message}"),
             "Check the remote service response and retry if appropriate.",
         ),
+        im_core::ImError::Serialization { detail }
+            if detail.contains(im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV) =>
+        {
+            ExitError::new(
+                "vault_root_key_invalid",
+                2,
+                format!("{context}: {detail}"),
+                crate::m_core_cli_adapter::vault::ROOT_KEY_HINT,
+            )
+        }
         im_core::ImError::Serialization { detail } => ExitError::new(
             "serialization_error",
             1,

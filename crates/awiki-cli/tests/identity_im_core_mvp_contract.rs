@@ -71,6 +71,10 @@ fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() 
 fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"access_token":"jwt-bob-refreshed"},"id":"req-1"}"#,
+    )]);
+    write_service_config(&workspace_home, &server.base_url());
     write_ready_identity(
         &workspace_home,
         TestIdentityOptions {
@@ -91,6 +95,11 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
             make_default: false,
         },
     );
+    success_json(&awiki_cmd_with_env(
+        &["--identity", "bob", "--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        &[],
+    ));
     std::fs::remove_file(
         workspace_home
             .join("identities")
@@ -99,15 +108,21 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     )
     .expect("remove bob private key");
 
-    let result = awiki_cmd_with_env(
+    let result = success_json(&awiki_cmd_with_env(
         &["--identity", "bob", "id", "refresh-token"],
         workspace.path(),
         &[],
-    );
-    assert_code(&result, 3);
-    let result = error_json(&result);
-    assert_eq!(result["error"]["code"], "auth_required");
-    assert!(result["error"]["message"].as_str().unwrap().contains("bob"));
+    ));
+    assert_eq!(result["summary"], "JWT refreshed for identity bob");
+    assert_eq!(result["data"]["identity"]["identity_name"], "bob");
+    assert_eq!(result["data"]["identity"]["has_jwt"], true);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(body["method"], "get_me");
+    assert_contains_text(&requests[0], "signature-input:");
+    assert_contains_text(&requests[0], "did:wba:awiki.ai:user:bob:");
 }
 
 #[test]
@@ -160,6 +175,66 @@ fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() 
             "method": "get_me",
             "params": {},
         })
+    );
+}
+
+#[test]
+fn identity_register_vault_required_persists_without_plaintext_secret_files() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    write_service_config_with_secret_storage(&workspace_home, &server.base_url(), "vault_required");
+
+    let register = success_json(&awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key)],
+    ));
+    assert_eq!(register["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(register["data"]["identity"]["has_jwt"], true);
+    assert_eq!(register["data"]["identity"]["has_key1_private"], true);
+
+    let identity_dir = workspace_home.join("identities").join("alice");
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required register must not persist plaintext {file}"
+        );
+    }
+    let status = success_json(&awiki_cmd_with_env(
+        &["id", "vault", "status"],
+        workspace.path(),
+        &[("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key)],
+    ));
+    assert_eq!(
+        status["data"]["vault"]["identity"]["selected_backend"],
+        "vault"
+    );
+    assert_eq!(
+        status["data"]["vault"]["identity"]["plaintext_compat_retained"],
+        false
+    );
+    let encoded = serde_json::to_string(&status).expect("status json");
+    assert!(
+        !encoded.contains(root_key)
+            && !encoded.contains("jwt-register")
+            && !encoded.contains("-----BEGIN PRIVATE KEY-----"),
+        "vault status must be redacted: {encoded}"
     );
 }
 
@@ -756,7 +831,8 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64");
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -774,6 +850,27 @@ fn write_service_config(workspace: &Path, base_url: &str) {
     .unwrap();
 }
 
+fn write_service_config_with_secret_storage(workspace: &Path, base_url: &str, mode: &str) {
+    std::fs::create_dir_all(workspace).unwrap();
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!(
+            concat!(
+                "services:\n",
+                "  service_base_url: {}\n",
+                "  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n",
+                "  anp_service_did: did:wba:awiki.ai\n",
+                "secret_storage:\n",
+                "  mode: {}\n",
+                "  workspace_id: test-workspace\n",
+                "  device_id: test-device\n"
+            ),
+            base_url, mode
+        ),
+    )
+    .unwrap();
+}
+
 fn register_alice_response() -> &'static str {
     r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#
 }
@@ -786,16 +883,6 @@ fn success_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("success JSON")
-}
-
-fn error_json(output: &Output) -> Value {
-    assert!(
-        !output.status.success(),
-        "command should fail\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stderr).expect("error JSON")
 }
 
 fn assert_code(output: &Output, expected: i32) {

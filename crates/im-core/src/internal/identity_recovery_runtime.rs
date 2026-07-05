@@ -338,6 +338,7 @@ fn prepare_recover_with_local_finalize(
         &plan,
         &active_before,
         local_finalize.config_file_path.as_deref(),
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?,
     )?;
     Ok(PreparedLocalFinalize {
         plan,
@@ -440,31 +441,40 @@ fn save_recover_with_local_finalize_identity(
             missing: vec!["daemon_subkey_did_mismatch".to_string()],
         });
     }
-    let stored = store.save_identity(crate::internal::identity_store::SaveIdentityInput {
-        local_alias: plan.temp_identity_name.clone(),
-        did,
-        unique_id: generated.unique_id.clone(),
-        user_id: crate::internal::identity_recovery_local::string_value(raw, "user_id", ""),
-        display_name: plan.target.target_local_part.clone(),
-        handle: crate::internal::identity_recovery_local::string_value(
-            raw,
-            "handle",
-            &plan.target.target_local_part,
-        ),
-        full_handle: crate::internal::identity_recovery_local::string_value(
-            raw,
-            "full_handle",
-            plan.target.target_handle.as_str(),
-        ),
-        jwt_token: crate::internal::identity_recovery_local::string_value(raw, "access_token", ""),
-        did_document: Some(generated.did_document.clone()),
-        key1_private_pem: generated.key1_private_pem.clone(),
-        key1_public_pem: generated.key1_public_pem.clone(),
-        e2ee_signing_private_pem: generated.e2ee_signing_private_pem.clone(),
-        e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem.clone(),
-        daemon_subkey_package: Some(daemon_subkey_package),
-        make_default: false,
-    })?;
+    let secret_storage =
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+    let stored = store.save_identity_with_secret_storage(
+        crate::internal::identity_store::SaveIdentityInput {
+            local_alias: plan.temp_identity_name.clone(),
+            did,
+            unique_id: generated.unique_id.clone(),
+            user_id: crate::internal::identity_recovery_local::string_value(raw, "user_id", ""),
+            display_name: plan.target.target_local_part.clone(),
+            handle: crate::internal::identity_recovery_local::string_value(
+                raw,
+                "handle",
+                &plan.target.target_local_part,
+            ),
+            full_handle: crate::internal::identity_recovery_local::string_value(
+                raw,
+                "full_handle",
+                plan.target.target_handle.as_str(),
+            ),
+            jwt_token: crate::internal::identity_recovery_local::string_value(
+                raw,
+                "access_token",
+                "",
+            ),
+            did_document: Some(generated.did_document.clone()),
+            key1_private_pem: generated.key1_private_pem.clone(),
+            key1_public_pem: generated.key1_public_pem.clone(),
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem.clone(),
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem.clone(),
+            daemon_subkey_package: Some(daemon_subkey_package),
+            make_default: false,
+        },
+        secret_storage,
+    )?;
     let identity = crate::internal::identity_recovery_local::identity_summary_from_generated(
         &generated,
         raw,
@@ -633,25 +643,30 @@ pub(crate) fn finalize_recover_handle_result(
             missing: vec!["daemon_subkey_did_mismatch".to_string()],
         });
     }
+    let secret_storage =
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
     let stored =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .save_identity(crate::internal::identity_store::SaveIdentityInput {
-            local_alias: local_store.local_alias,
-            did,
-            unique_id: generated.unique_id,
-            user_id: string_value(&result.raw, "user_id", ""),
-            display_name: string_value(&result.raw, "handle", &target.local_part),
-            handle: string_value(&result.raw, "handle", &target.local_part),
-            full_handle: string_value(&result.raw, "full_handle", target.full_handle.as_str()),
-            jwt_token: string_value(&result.raw, "access_token", ""),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            daemon_subkey_package: Some(daemon_subkey_package),
-            make_default: true,
-        })?;
+            .save_identity_with_secret_storage(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias: local_store.local_alias,
+                did,
+                unique_id: generated.unique_id,
+                user_id: string_value(&result.raw, "user_id", ""),
+                display_name: string_value(&result.raw, "handle", &target.local_part),
+                handle: string_value(&result.raw, "handle", &target.local_part),
+                full_handle: string_value(&result.raw, "full_handle", target.full_handle.as_str()),
+                jwt_token: string_value(&result.raw, "access_token", ""),
+                did_document: Some(generated.did_document),
+                key1_private_pem: generated.key1_private_pem,
+                key1_public_pem: generated.key1_public_pem,
+                e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+                e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+                daemon_subkey_package: Some(daemon_subkey_package),
+                make_default: true,
+            },
+            secret_storage,
+        )?;
     let identity =
         crate::internal::identity_registration_runtime::identity_summary_from_stored(&stored)?;
     let recovered_identity = crate::identity::RecoveredIdentity {

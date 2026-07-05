@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::open_local_state;
+use support::{open_local_state, set_secret_storage_mode};
 
 #[test]
 fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
@@ -259,6 +259,7 @@ fn register_ready_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) -> String {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -316,6 +317,10 @@ fn register_ready_msg_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
     unique_id
 }
 

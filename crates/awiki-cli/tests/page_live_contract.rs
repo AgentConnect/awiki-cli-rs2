@@ -10,6 +10,10 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn page_live_command_dispatches_through_im_core_content_rpc() {
     let workspace = TempDir::new().expect("workspace");
@@ -32,11 +36,7 @@ fn page_live_command_dispatches_through_im_core_content_rpc() {
     assert_eq!(requests.len(), 1, "page list should reach content RPC once");
     assert!(requests[0].contains("POST /content/rpc HTTP/1.1"));
     assert!(requests[0].contains(r#""method":"list""#));
-    assert_eq!(
-        read_identity_auth_token(workspace.path(), "alice-page"),
-        "jwt-page",
-        "page list should not refresh JWT when the first content call succeeds"
-    );
+    assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice-page");
 }
 
 #[test]
@@ -81,6 +81,7 @@ fn page_create_live_command_dispatches_through_im_core_content_rpc() {
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -123,20 +124,52 @@ fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, 
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
+    remove_plaintext_secret_files(&identity_dir);
 }
 
-fn read_identity_auth_token(workspace: &Path, identity_name: &str) -> String {
+fn remove_plaintext_secret_files(identity_dir: &Path) {
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        let path = identity_dir.join(file);
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identity_name: &str) {
     let index_path = workspace.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let vault = &index["credentials"][identity_name]["vault_migration"];
+    assert_eq!(vault["status"], "verified");
+    assert_eq!(vault["backend"], "vault");
+    assert!(
+        vault["refs"]["auth_jwt"].is_object(),
+        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+    );
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let auth_path = workspace
-        .join("identities")
-        .join(dir_name)
-        .join("auth.json");
-    let auth: Value = serde_json::from_slice(&std::fs::read(auth_path).unwrap()).unwrap();
-    auth["jwt_token"].as_str().unwrap_or_default().to_string()
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault-backed fixture must not persist plaintext {file}"
+        );
+    }
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {

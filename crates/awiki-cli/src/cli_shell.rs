@@ -466,6 +466,7 @@ impl App {
             ));
         }
         let resolved = self.resolve_config_for_workspace()?;
+        require_legacy_file_compat_identity_storage(&resolved, "id create")?;
         let manager = self.identity_manager(&resolved);
         if self.globals.dry_run {
             let existing = manager.list().unwrap_or_default();
@@ -621,8 +622,84 @@ impl App {
         self.render_identity_result("awiki-cli id status", &resolved, result)
     }
 
+    pub fn run_id_vault_status(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_status_via_im_core(
+            &resolved, selector,
+        )
+        .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?;
+        self.render_identity_result("awiki-cli id vault status", &resolved, result)
+    }
+
+    pub async fn run_id_vault_status_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_status_via_im_core_async(
+            &resolved, selector,
+        )
+        .await
+        .map_err(crate::m_core_cli_adapter::error::map_identity_boundary_error)?;
+        self.render_identity_result("awiki-cli id vault status", &resolved, result)
+    }
+
+    pub fn run_id_vault_migrate(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_migrate_via_im_core(
+            &resolved,
+            selector,
+            self.globals.dry_run,
+        )?;
+        self.render_identity_result("awiki-cli id vault migrate", &resolved, result)
+    }
+
+    pub async fn run_id_vault_migrate_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result = crate::m_core_cli_adapter::vault::identity_vault_migrate_via_im_core_async(
+            &resolved,
+            selector,
+            self.globals.dry_run,
+        )
+        .await?;
+        self.render_identity_result("awiki-cli id vault migrate", &resolved, result)
+    }
+
+    pub fn run_id_vault_cleanup_plaintext(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result =
+            crate::m_core_cli_adapter::vault::identity_vault_cleanup_plaintext_via_im_core(
+                &resolved,
+                selector,
+                self.globals.dry_run,
+            )?;
+        self.render_identity_result("awiki-cli id vault cleanup-plaintext", &resolved, result)
+    }
+
+    pub async fn run_id_vault_cleanup_plaintext_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let selector =
+            crate::m_core_cli_adapter::identity::cli_identity_selector(&self.globals.identity);
+        let result =
+            crate::m_core_cli_adapter::vault::identity_vault_cleanup_plaintext_via_im_core_async(
+                &resolved,
+                selector,
+                self.globals.dry_run,
+            )
+            .await?;
+        self.render_identity_result("awiki-cli id vault cleanup-plaintext", &resolved, result)
+    }
+
     pub fn run_id_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        require_legacy_file_compat_identity_storage(&resolved, "id import-v1")?;
         let name = command.flags.get("name").cloned().unwrap_or_default();
         let import_all = command
             .flags
@@ -897,8 +974,10 @@ impl App {
         result.map_err(|err| internal_anyhow(anyhow::Error::new(err)))?;
 
         let resolved = self.resolve_config_untraced().map_err(internal_anyhow)?;
-        legacy_identity::ensure_all_identity_private_keys_compatible(&resolved.paths)
-            .map_err(identity_exit)?;
+        if legacy_file_compat_identity_storage_enabled(&resolved)? {
+            legacy_identity::ensure_all_identity_private_keys_compatible(&resolved.paths)
+                .map_err(identity_exit)?;
+        }
         Ok(resolved)
     }
 
@@ -1115,28 +1194,38 @@ fn count_identity_dirs(path: &str) -> usize {
 
 fn sanitize_public_value(value: Value) -> Value {
     match value {
-        Value::Object(mut map) => {
-            for key in [
-                "jwt_token",
-                "key1_private_pem",
-                "key1_public_pem",
-                "e2ee_signing_private_pem",
-                "e2ee_agreement_private_pem",
-                "did_document",
-            ] {
-                if map.contains_key(key) {
-                    map.insert(key.to_string(), Value::String("[redacted]".to_string()));
-                }
-            }
-            Value::Object(
-                map.into_iter()
-                    .map(|(key, value)| (key, sanitize_public_value(value)))
-                    .collect(),
-            )
-        }
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    if is_sensitive_public_key(&key) {
+                        (key, Value::String("[redacted]".to_string()))
+                    } else {
+                        (key, sanitize_public_value(value))
+                    }
+                })
+                .collect(),
+        ),
         Value::Array(items) => Value::Array(items.into_iter().map(sanitize_public_value).collect()),
         other => other,
     }
+}
+
+fn is_sensitive_public_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized == "jwt_token"
+        || normalized == "did_document"
+        || normalized == "key1_public_pem"
+        || normalized == "root_key_material"
+        || normalized.ends_with("_private_pem")
+        || normalized.ends_with("_private_key_pem")
+        || normalized.ends_with("_public_pem")
+        || normalized.ends_with("_token")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_secret_ref")
+        || normalized.ends_with("_secret_ref_json")
+        || normalized.ends_with("_ref_json")
+        || normalized == "secret_ref"
+        || normalized == "secretref"
 }
 
 fn legacy_command_result(result: legacy_identity::CommandResult) -> CommandResult {
@@ -1145,6 +1234,33 @@ fn legacy_command_result(result: legacy_identity::CommandResult) -> CommandResul
         summary: result.summary,
         warnings: result.warnings,
     }
+}
+
+fn legacy_file_compat_identity_storage_enabled(resolved: &Resolved) -> Result<bool, ExitError> {
+    let secret_storage = workspace_config::resolve_secret_storage(resolved).map_err(|err| {
+        ExitError::new(
+            "invalid_config",
+            2,
+            format!("invalid secret_storage config: {err}"),
+            "Use secret_storage.mode=file_compat only for legacy plaintext identity migrations.",
+        )
+    })?;
+    Ok(secret_storage.mode == "file_compat")
+}
+
+fn require_legacy_file_compat_identity_storage(
+    resolved: &Resolved,
+    command: &'static str,
+) -> Result<(), ExitError> {
+    if legacy_file_compat_identity_storage_enabled(resolved)? {
+        return Ok(());
+    }
+    Err(ExitError::new(
+        "legacy_plaintext_identity_storage_disabled",
+        3,
+        format!("{command}: legacy plaintext identity storage is disabled."),
+        "Use `awiki-cli id register` or `awiki-cli id recover` for vault-backed identities. Set secret_storage.mode=file_compat only for explicit legacy migration work.",
+    ))
 }
 
 pub(crate) fn identity_exit(err: IdentityError) -> ExitError {

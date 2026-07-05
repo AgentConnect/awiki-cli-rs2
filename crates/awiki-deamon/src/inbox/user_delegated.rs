@@ -1,14 +1,18 @@
-use std::fs;
-use std::path::PathBuf;
-
 use anyhow::{bail, Context, Result};
+use base64::Engine as _;
 use im_core::messages::{
     InboxHistoryOptions, InboxQuery, InboxScope, Message, MessageBodyView, MessageDeliveryOptions,
     MessageDirection,
 };
+use im_core::vault::{
+    DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
+    SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
+    DEVICE_VAULT_ROOT_KEY_LEN,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::fs;
 
 use crate::app_bridge::action::{APP_ACTION_RESULT_SCHEMA, APP_ACTION_SCHEMA, MVP_ALLOWED_ACTIONS};
 use crate::app_bridge::bootstrap::{
@@ -338,7 +342,7 @@ impl UserDelegatedInboxClient for ImCoreDelegatedInboxClient<'_> {
                 inbox_auth_verification_method: Some(
                     binding.inbox_auth_verification_method.clone(),
                 ),
-                inbox_auth_key_ref: Some(format!("file:{}", key_ref.display())),
+                inbox_auth_key_ref: Some(key_ref),
                 inbox_auth: None,
             }),
         })?;
@@ -1539,27 +1543,31 @@ fn allowed_actions(binding: &AppMessageAgentBindingRecord) -> Vec<String> {
 fn ensure_delegated_inbox_key_ref(
     config: &DaemonConfig,
     identity: &UserDelegatedIdentityRecord,
-) -> Result<PathBuf> {
-    let dir = delegated_identity_dir(config, &identity.user_did);
-    fs::create_dir_all(&dir)?;
-    let path = dir.join("daemon-key-1.pem");
+) -> Result<String> {
     let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
-    fs::write(&path, private_key_pem.as_bytes())?;
-    set_private_key_file_permissions(&path)?;
-    Ok(path)
-}
-
-#[cfg(unix)]
-fn set_private_key_file_permissions(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("restrict delegated key permissions at {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_private_key_file_permissions(_path: &std::path::Path) -> Result<()> {
-    Ok(())
+    let vault = im_core_file_vault(config)?;
+    let secret_ref = vault
+        .seal(SealSecretRequest {
+            metadata: SecretMetadata {
+                workspace_id: "awiki-im-core".to_owned(),
+                device_id: "local-device".to_owned(),
+                identity_id: Some(delegated_identity_alias(&identity.user_did)),
+                did: Some(identity.user_did.clone()),
+                kind: SecretKind::IdentityDaemonPrivate,
+                key_id: identity.verification_method.clone(),
+                key_version: 1,
+                policy: SecretAccessPolicy::no_prompt_local_secret(),
+            },
+            plaintext: SecretBytes::from_vec(private_key_pem.as_bytes().to_vec()),
+        })
+        .context("seal delegated inbox key_ref to im-core vault")?;
+    let opened = vault
+        .open(&secret_ref)
+        .context("verify delegated inbox key_ref vault secret")?;
+    if opened.expose_secret() != private_key_pem.as_bytes() {
+        bail!("delegated inbox key_ref vault verification failed");
+    }
+    Ok(im_core::vault::encode_delegated_key_ref(&secret_ref)?)
 }
 
 fn ensure_delegated_inbox_did_shadow(
@@ -1574,14 +1582,6 @@ fn ensure_delegated_inbox_did_shadow(
         &did_document_path,
         serde_json::to_vec_pretty(&minimal_user_did_document(identity))?,
     )?;
-    let private_key_pem = normalize_delegated_private_key_pem(&identity.private_key_material)?;
-    let private_key_path = identity_dir.join("private.key");
-    fs::write(&private_key_path, private_key_pem.as_bytes())?;
-    set_private_key_file_permissions(&private_key_path)?;
-    let auth_path = identity_dir.join("auth.json");
-    if !auth_path.exists() {
-        fs::write(&auth_path, "{}")?;
-    }
     let mut registry = read_identity_registry(config)?;
     let identities = registry
         .as_object_mut()
@@ -1615,6 +1615,56 @@ fn ensure_delegated_inbox_did_shadow(
     Ok(())
 }
 
+fn im_core_file_vault(config: &DaemonConfig) -> Result<FileSecretVault> {
+    let raw = std::env::var(im_core_vault_root_key_env()).with_context(|| {
+        format!(
+            "{} is required for delegated inbox key_ref vault",
+            im_core_vault_root_key_env()
+        )
+    })?;
+    let root_key = parse_im_core_vault_root_key(&raw)?;
+    let vault_dir = config
+        .im_core_sqlite_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("secrets")
+        .join("vault");
+    Ok(FileSecretVault::new(
+        root_key,
+        FileSecretVaultStore::new(vault_dir),
+    ))
+}
+
+fn parse_im_core_vault_root_key(raw: &str) -> Result<DeviceVaultRootKey> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("{} must not be empty", im_core_vault_root_key_env());
+    }
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(trimmed)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(trimmed))
+        .with_context(|| {
+            format!(
+                "{} must be base64url/base64 encoded",
+                im_core_vault_root_key_env()
+            )
+        })?;
+    if decoded.len() != DEVICE_VAULT_ROOT_KEY_LEN {
+        bail!(
+            "{} must decode to {} bytes",
+            im_core_vault_root_key_env(),
+            DEVICE_VAULT_ROOT_KEY_LEN
+        );
+    }
+    let mut bytes = [0_u8; DEVICE_VAULT_ROOT_KEY_LEN];
+    bytes.copy_from_slice(&decoded);
+    Ok(DeviceVaultRootKey::from_bytes(bytes))
+}
+
+fn im_core_vault_root_key_env() -> &'static str {
+    "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
+}
+
 fn read_identity_registry(config: &DaemonConfig) -> Result<Value> {
     if !config.identity_registry_path.exists() {
         return Ok(json!({
@@ -1644,13 +1694,6 @@ fn minimal_user_did_document(identity: &UserDelegatedIdentityRecord) -> Value {
         }],
         "authentication": [identity.verification_method]
     })
-}
-
-fn delegated_identity_dir(config: &DaemonConfig, user_did: &str) -> PathBuf {
-    config
-        .runtime_cache_dir
-        .join("delegated-inbox")
-        .join(stable_id_suffix(user_did))
 }
 
 fn delegated_identity_alias(user_did: &str) -> String {

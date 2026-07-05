@@ -357,9 +357,25 @@ pub(super) fn control_command_state_record_from_row(
     })
 }
 
-pub(super) fn agent_identity_from_row(
+pub(super) struct AgentIdentityStorageRow {
+    pub(super) agent_did: String,
+    pub(super) handle: String,
+    pub(super) agent_kind: AgentKind,
+    pub(super) did_document: Value,
+    pub(super) endpoint_url: Option<String>,
+    pub(super) key_algorithm: String,
+    pub(super) public_key: String,
+    pub(super) auth_private_key_pem: String,
+    pub(super) e2ee_signing_private_key_pem: Option<String>,
+    pub(super) e2ee_agreement_private_key_pem: Option<String>,
+    pub(super) auth_private_key_ref_json: Option<String>,
+    pub(super) e2ee_signing_private_key_ref_json: Option<String>,
+    pub(super) e2ee_agreement_private_key_ref_json: Option<String>,
+}
+
+pub(super) fn agent_identity_storage_row_from_row(
     row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<AgentIdentityRecord> {
+) -> rusqlite::Result<AgentIdentityStorageRow> {
     let kind_raw: String = row.get(2)?;
     let agent_kind = AgentKind::parse(&kind_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -379,7 +395,7 @@ pub(super) fn agent_identity_from_row(
             Box::new(err),
         )
     })?;
-    Ok(AgentIdentityRecord {
+    Ok(AgentIdentityStorageRow {
         agent_did: row.get(0)?,
         handle: row.get(1)?,
         agent_kind,
@@ -390,13 +406,16 @@ pub(super) fn agent_identity_from_row(
         auth_private_key_pem: row.get(7)?,
         e2ee_signing_private_key_pem: row.get(8)?,
         e2ee_agreement_private_key_pem: row.get(9)?,
+        auth_private_key_ref_json: row.get(10)?,
+        e2ee_signing_private_key_ref_json: row.get(11)?,
+        e2ee_agreement_private_key_ref_json: row.get(12)?,
     })
 }
 
 pub(super) fn user_delegated_identity_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<UserDelegatedIdentityRecord> {
-    let allowed_scopes_json_raw: String = row.get(7)?;
+    let allowed_scopes_json_raw: String = row.get(8)?;
     let allowed_scopes_json = serde_json::from_str(&allowed_scopes_json_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(
             allowed_scopes_json_raw.len(),
@@ -412,13 +431,14 @@ pub(super) fn user_delegated_identity_from_row(
         daemon_agent_did: row.get(4)?,
         public_key_multibase: row.get(5)?,
         private_key_material: row.get(6)?,
+        private_key_ref_json: row.get(7)?,
         allowed_scopes_json,
-        status: row.get(8)?,
-        expires_at: row.get(9)?,
-        bootstrap_id: row.get(10)?,
-        idempotency_key: row.get(11)?,
-        created_at_ms: row.get(12)?,
-        updated_at_ms: row.get(13)?,
+        status: row.get(9)?,
+        expires_at: row.get(10)?,
+        bootstrap_id: row.get(11)?,
+        idempotency_key: row.get(12)?,
+        created_at_ms: row.get(13)?,
+        updated_at_ms: row.get(14)?,
     })
 }
 

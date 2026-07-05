@@ -6,9 +6,7 @@ use crate::internal::auth::session::SessionProvider;
 use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
 
 #[cfg(any(feature = "blocking", test))]
-use super::client::{
-    prepare_direct_secure_client, DirectSecureClientInput, MessageServiceDirectSecureClient,
-};
+use super::client::{prepare_direct_secure_client, MessageServiceDirectSecureClient};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -113,13 +111,7 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)?;
 
-        let runtime = self.client.runtime();
-        let local_did_document = read_json_file(&runtime.did_document_path, "did_document")?;
-        let signing_private_pem = read_text_file(&runtime.private_key_path, "private_key")?;
-        let agreement_private_pem = read_text_file(
-            &runtime.e2ee_agreement_private_key_path,
-            "e2ee_agreement_private_key",
-        )?;
+        let identity_material = super::identity_material::local_identity_material(self.client)?;
         let connection = crate::internal::local_state::open_writable(
             &self.client.core_inner().sdk_paths().local_state.sqlite_path,
         )?;
@@ -161,7 +153,7 @@ where
             object_result(value)
         });
         let mut directory_transport = self.directory_transport;
-        let local_document_for_resolver = local_did_document.clone();
+        let local_document_for_resolver = identity_material.local_did_document.clone();
         let owner_did = self.client.did().as_str().to_owned();
         let identity_paths = self.client.core_inner().sdk_paths().identities.clone();
         let resolver = Box::new(move |did: &str| {
@@ -182,22 +174,7 @@ where
             }
         });
         let mut direct_client = MessageServiceDirectSecureClient::new(
-            prepare_direct_secure_client(DirectSecureClientInput {
-                owner_identity_id: self.client.current_identity().id.as_str().to_owned(),
-                owner_did: self.client.did().as_str().to_owned(),
-                identity_name: self
-                    .client
-                    .current_identity()
-                    .local_alias
-                    .clone()
-                    .unwrap_or_else(|| self.client.current_identity().id.as_str().to_owned()),
-                signing_key_id: format!("{}#key-1", self.client.did().as_str()),
-                agreement_key_id: format!("{}#key-3", self.client.did().as_str()),
-                signing_private_pem,
-                agreement_private_pem,
-                local_did_document,
-                local_state: &connection,
-            })?,
+            prepare_direct_secure_client(identity_material.client_input(&connection))?,
             rpc,
             resolver,
         );
@@ -321,13 +298,7 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)?;
 
-        let runtime = self.client.runtime();
-        let local_did_document = read_json_file(&runtime.did_document_path, "did_document")?;
-        let signing_private_pem = read_text_file(&runtime.private_key_path, "private_key")?;
-        let agreement_private_pem = read_text_file(
-            &runtime.e2ee_agreement_private_key_path,
-            "e2ee_agreement_private_key",
-        )?;
+        let identity_material = super::identity_material::local_identity_material(self.client)?;
         let connection = crate::internal::local_state::open_writable(
             &self.client.core_inner().sdk_paths().local_state.sqlite_path,
         )?;
@@ -369,7 +340,7 @@ where
             object_result(value)
         });
         let mut directory_transport = self.directory_transport;
-        let local_document_for_resolver = local_did_document.clone();
+        let local_document_for_resolver = identity_material.local_did_document.clone();
         let owner_did = self.client.did().as_str().to_owned();
         let identity_paths = self.client.core_inner().sdk_paths().identities.clone();
         let resolver = Box::new(move |did: &str| {
@@ -390,22 +361,7 @@ where
             }
         });
         let mut direct_client = MessageServiceDirectSecureClient::new(
-            prepare_direct_secure_client(DirectSecureClientInput {
-                owner_identity_id: self.client.current_identity().id.as_str().to_owned(),
-                owner_did: self.client.did().as_str().to_owned(),
-                identity_name: self
-                    .client
-                    .current_identity()
-                    .local_alias
-                    .clone()
-                    .unwrap_or_else(|| self.client.current_identity().id.as_str().to_owned()),
-                signing_key_id: format!("{}#key-1", self.client.did().as_str()),
-                agreement_key_id: format!("{}#key-3", self.client.did().as_str()),
-                signing_private_pem,
-                agreement_private_pem,
-                local_did_document,
-                local_state: &connection,
-            })?,
+            prepare_direct_secure_client(identity_material.client_input(&connection))?,
             rpc,
             resolver,
         );
@@ -543,23 +499,6 @@ pub(crate) fn validate_secure_direct_security(
             Err(crate::ImError::unsupported("group-e2ee"))
         }
     }
-}
-
-fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Value> {
-    let raw = std::fs::read(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
-        path_kind: path_kind.to_owned(),
-        detail: err.to_string(),
-    })?;
-    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
-        detail: err.to_string(),
-    })
-}
-
-fn read_text_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<String> {
-    std::fs::read_to_string(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
-        path_kind: path_kind.to_owned(),
-        detail: err.to_string(),
-    })
 }
 
 pub(crate) fn object_result(value: Value) -> crate::ImResult<Map<String, Value>> {

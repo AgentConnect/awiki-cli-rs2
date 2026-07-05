@@ -170,14 +170,14 @@ P1 `AttachmentInput` 只作为 reserved enum 形态存在。不要在 P1 实现 
 |---|---|
 | `logical_sender_did` | 消息业务发送者 DID，MVP 为用户 DID，例如 `did:wba:...:user:e1_xxx`。SDK 会把它写入 `meta.sender_did`。 |
 | `signing_verification_method` | 用于签 `auth.origin_proof` 的 verification method，MVP 为 `user_did#daemon-key-1`。 |
-| `signing_key_ref` | SDK 本地可解析的子私钥引用，例如 `file:/.../daemon-key-1.pem` 或 `local:daemon-key-1`。 |
+| `signing_key_ref` | SDK 本地可解析的子私钥引用。新路径应使用 `vault:<secret-ref>`；`file:/.../daemon-key-1.pem`、`local:daemon-key-1` 和裸路径只作为兼容入口。 |
 | `actor_agent_did` | 可选审计字段，标识实际发起能力调用的 daemon/runtime agent；不改变 ANP proof 结构。 |
 
 SDK 本地校验：
 
 1. `logical_sender_did` 必须与 `signing_verification_method` 的 DID owner 一致。
 2. `signing_verification_method` 必须能在对应 DID Document 的 `authentication` 或兼容 verification method 中找到。
-3. `signing_key_ref` 必须能在本地解析到私钥。
+3. `signing_key_ref` 必须能在本地解析到私钥。`vault:` 失败时不会回退到文件路径，避免 scheme 混淆；`file:` / `local:` 仍按 legacy 兼容读取。
 4. Delegated send 只允许 direct 普通非 E2EE 消息：`DefaultPlain` / `Plain`。
 5. Delegated send 对 group、attachment、`E2eeRequired`、`SecureDirect`、`GroupE2ee` 返回 `UnsupportedCapability`，防止 Agent IM MVP 绕过 E2EE 边界。
 
@@ -629,14 +629,14 @@ MVP DID proof 主路径：
 |---|---|
 | `inbox_owner_did` | 被读取 inbox/history 的用户 DID。 |
 | `inbox_auth_verification_method` | 用于签读取 proof 的用户 DID authentication key，MVP 为 `user_did#daemon-key-1`。 |
-| `inbox_auth_key_ref` | SDK 本地可解析的子私钥引用。 |
+| `inbox_auth_key_ref` | SDK 本地可解析的子私钥引用。新路径应使用 `vault:<secret-ref>`；`file:`、`local:` 和裸路径只作为兼容入口。 |
 | `inbox_auth` | 后续 token 路径预留。MVP 中传 `ScopedInboxToken` 会返回明确 unsupported，不影响 DID proof 主路径。 |
 
 SDK 本地校验：
 
 1. `inbox_owner_did` 必须与 `inbox_auth_verification_method` 的 DID owner 一致。
 2. `inbox_auth_verification_method` 必须在 DID Document `authentication` 中有效。
-3. `inbox_auth_key_ref` 必须能在本地解析到私钥。
+3. `inbox_auth_key_ref` 必须能在本地解析到私钥。`vault:` 失败时不会回退到 legacy 文件引用。
 4. Delegated inbox/history 只投影普通非 E2EE 消息。SDK 会过滤 direct/group E2EE opaque 消息，不返回 E2EE 明文、metadata projection 或 private state。
 5. `ScopedInboxToken` 为后续优化，MVP 不作为主路径。
 

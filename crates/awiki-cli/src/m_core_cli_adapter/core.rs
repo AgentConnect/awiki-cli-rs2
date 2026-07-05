@@ -5,7 +5,9 @@ use crate::cli_output::ExitError;
 pub fn build_im_core(resolved: &crate::workspace_config::Resolved) -> Result<ImCore, ExitError> {
     let config = super::core_config::build_im_core_config(resolved)?;
     let paths = super::paths::build_im_core_paths(resolved)?;
-    ImCore::new(config, paths).map_err(|err| super::error::map_im_error(err, "build im-core"))
+    let options = super::vault::build_im_core_open_options(resolved)?;
+    ImCore::new_with_options(config, paths, options)
+        .map_err(|err| super::error::map_im_error(err, "build im-core"))
 }
 
 pub async fn build_im_core_async(
@@ -13,7 +15,8 @@ pub async fn build_im_core_async(
 ) -> Result<ImCore, ExitError> {
     let config = super::core_config::build_im_core_config(resolved)?;
     let paths = super::paths::build_im_core_paths(resolved)?;
-    ImCore::open(config, paths)
+    let options = super::vault::build_im_core_open_options(resolved)?;
+    ImCore::open_with_options(config, paths, options)
         .await
         .map_err(|err| super::error::map_im_error(err, "build im-core"))
 }

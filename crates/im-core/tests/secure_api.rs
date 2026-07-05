@@ -285,6 +285,7 @@ fn secure_outbox_id_rejects_empty_values() {
 #[cfg(feature = "blocking")]
 #[test]
 fn secure_direct_prepare_initializes_send_state_and_returns_redacted_dto() {
+    install_test_direct_vault_root_key();
     let root = unique_temp_root("im-core-secure-direct-prepare-api");
     let identity = TestIdentity::new("alice.secure-api.example", "alice");
     write_real_identity_fixture(&root, "alice", &identity);
@@ -332,6 +333,7 @@ fn secure_direct_prepare_initializes_send_state_and_returns_redacted_dto() {
 
 #[tokio::test]
 async fn secure_direct_prepare_async_initializes_send_state_and_returns_redacted_dto() {
+    install_test_direct_vault_root_key();
     let root = unique_temp_root("im-core-secure-direct-prepare-async-api");
     let identity = TestIdentity::new("alice.secure-api-async.example", "alice");
     write_real_identity_fixture(&root, "alice", &identity);
@@ -522,6 +524,13 @@ fn test_paths(root: &std::path::Path) -> ImCorePaths {
             temp_dir: root.join("tmp"),
         },
     }
+}
+
+fn install_test_direct_vault_root_key() {
+    std::env::set_var(
+        "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64",
+        "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8=",
+    );
 }
 
 fn write_identity_fixture(root: &std::path::Path, alias: &str, did: &str) {

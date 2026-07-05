@@ -366,6 +366,11 @@ pub(crate) mod macos {
                 )?;
                 let _ = run_status(
                     std::process::Command::new("launchctl")
+                        .arg("enable")
+                        .arg(format!("{domain}/{LABEL}")),
+                )?;
+                let _ = run_status(
+                    std::process::Command::new("launchctl")
                         .arg("bootstrap")
                         .arg(&domain)
                         .arg(&path),

@@ -1574,7 +1574,6 @@ pub(crate) fn spawn_default(
     client: crate::core::ImClient,
     options: super::RealtimeOptions,
 ) -> crate::ImResult<super::RealtimeHandle> {
-    crate::internal::realtime::transport::require_realtime_auth_token(&client)?;
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let control = super::RealtimeControl::default();
     let worker_control = control.clone();
@@ -1625,7 +1624,6 @@ pub(crate) async fn spawn_default_async(
     client: crate::core::ImClient,
     options: super::RealtimeOptions,
 ) -> crate::ImResult<super::RealtimeSession> {
-    crate::internal::realtime::transport::require_realtime_auth_token_async(&client).await?;
     let (event_sender, event_receiver) = tokio_mpsc::channel(options.event_buffer);
     let initial_status = super::session::initial_realtime_status(
         &options,

@@ -805,7 +805,7 @@ fn record_realtime_supervisor_error(
     agent_did: &str,
     error: &anyhow::Error,
 ) {
-    let sanitized = sanitize_error_message(&error.to_string());
+    let sanitized = sanitize_error_message(&format!("{error:#}"));
     eprintln!("warning: {event_type} for agent {agent_did}: {sanitized}");
     if let Err(audit_error) = state.insert_audit_event_json(
         event_type,

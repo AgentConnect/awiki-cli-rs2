@@ -2,8 +2,6 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::internal::auth::state::{persist_jwt_token, read_jwt_token};
-
 pub(crate) trait AuthenticatedRpcTransport {
     fn authenticated_rpc(
         &mut self,
@@ -247,7 +245,7 @@ pub(crate) trait AsyncAuthenticatedRestTransport {
 pub(crate) struct CoreHttpTransport<'a> {
     client: &'a crate::core::ImClient,
     http: crate::internal::http::HttpClient,
-    auth: anp::authentication::DIDWbaAuthHeader,
+    auth: crate::internal::key_provider::ProviderBackedDidAuth,
     jwt_token: Option<String>,
 }
 
@@ -260,10 +258,9 @@ pub(crate) struct CorePlainTransport<'a> {
 impl<'a> CoreHttpTransport<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         let runtime = client.runtime();
-        let jwt_token = read_jwt_token(&runtime.auth_state_path).ok().flatten();
-        let mut auth = anp::authentication::DIDWbaAuthHeader::new(
-            &runtime.did_document_path,
-            &runtime.private_key_path,
+        let jwt_token = runtime.key_provider.valid_auth_token().ok().flatten();
+        let mut auth = crate::internal::key_provider::ProviderBackedDidAuth::new(
+            runtime.key_provider.clone(),
             anp::authentication::AuthMode::HttpSignatures,
         );
         if let Some(token) = jwt_token.as_deref() {
@@ -657,7 +654,10 @@ impl<'a> CoreHttpTransport<'a> {
             .map(ToOwned::to_owned)
             .ok_or(crate::ImError::AuthRequired)?;
         self.jwt_token = Some(token.clone());
-        persist_jwt_token(&self.client.runtime().auth_state_path, &token)?;
+        self.client
+            .runtime()
+            .key_provider
+            .persist_auth_token(&token)?;
         self.auth.update_token(
             &url,
             &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
@@ -696,7 +696,10 @@ impl<'a> CoreHttpTransport<'a> {
             .map(ToOwned::to_owned)
             .ok_or(crate::ImError::AuthRequired)?;
         self.jwt_token = Some(token.clone());
-        persist_jwt_token(&self.client.runtime().auth_state_path, &token)?;
+        self.client
+            .runtime()
+            .key_provider
+            .persist_auth_token(&token)?;
         self.auth.update_token(
             &url,
             &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
@@ -708,7 +711,11 @@ impl<'a> CoreHttpTransport<'a> {
         if let Some(token) = self.auth.update_token(url, headers) {
             if !token.trim().is_empty() {
                 self.jwt_token = Some(token.clone());
-                let _ = persist_jwt_token(&self.client.runtime().auth_state_path, &token);
+                let _ = self
+                    .client
+                    .runtime()
+                    .key_provider
+                    .persist_auth_token(&token);
             }
         }
     }

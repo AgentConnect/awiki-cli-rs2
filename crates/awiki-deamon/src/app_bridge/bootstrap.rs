@@ -267,6 +267,7 @@ pub fn process_bootstrap_envelope(
         daemon_agent_did: daemon_agent_did.to_string(),
         public_key_multibase: package.public_key_multibase.clone(),
         private_key_material: private_key.expose_secret().to_string(),
+        private_key_ref_json: None,
         allowed_scopes_json: json!(package.allowed_scopes),
         status: DAEMON_BOOTSTRAP_STATUS_PAIRED_KEY_RECEIVED.to_string(),
         expires_at: package.expires_at.clone(),

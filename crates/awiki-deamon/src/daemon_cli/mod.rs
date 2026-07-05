@@ -9,9 +9,11 @@ use std::path::PathBuf;
 use crate::agent::{agent_data_paths, generate_product_handle, AgentDefinition, AgentKind};
 use crate::commands::setup_daemon_agent;
 use crate::plugins::hermes::{HermesGateway, HERMES_RUNTIME_PLUGIN_ID};
+#[cfg(test)]
+use crate::registration::DidAuthMaterial;
 use crate::registration::{
     AgentInventoryClient, AgentLatestStatusUpdateItem, AgentRegistrationExchangeRequest,
-    DidAuthMaterial, RegistrationToken, RegistrationTokenMetadata,
+    AgentRegistrationExchangeResult, RegistrationToken, RegistrationTokenMetadata,
     UserServiceAgentRegistrationClient,
 };
 use crate::runtime::RuntimeInstallStatus;
@@ -394,16 +396,34 @@ where
         &exchange.controller_user_id,
         &exchange.controller_full_handle,
     )?;
-    existing.handle = exchange.handle;
-    existing.controller_user_id = exchange.controller_user_id;
-    existing.controller_full_handle = exchange.controller_full_handle;
+    existing.handle = exchange.handle.clone();
+    existing.controller_user_id = exchange.controller_user_id.clone();
+    existing.controller_full_handle = exchange.controller_full_handle.clone();
     existing.controller_scope_key = exchange_scope_key;
-    existing.controller_did = exchange.controller_did;
+    existing.controller_did = exchange.controller_did.clone();
     existing.local_agent_db_path = local_agent_db_path;
     existing.message_db_path = message_db_path;
     existing.status = "active".to_string();
     state.upsert_agent_definition(&existing)?;
+    store_exchange_auth_token(state, &exchange)?;
     Ok(existing)
+}
+
+fn store_exchange_auth_token(
+    state: &DaemonState,
+    exchange: &AgentRegistrationExchangeResult,
+) -> Result<()> {
+    if let Some(token) = exchange
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        state
+            .store_agent_auth_token(&exchange.did, token)
+            .context("store agent auth token from registration exchange")?;
+    }
+    Ok(())
 }
 
 fn existing_daemon_agent(state: &DaemonState) -> Result<Option<AgentDefinition>> {
@@ -622,6 +642,7 @@ mod tests {
                 controller_did: request.controller_did,
                 handle: request.handle,
                 status: "registered".to_string(),
+                access_token: Some("jwt-agent-secret".to_string()),
             })
         }
     }
@@ -708,9 +729,25 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = DaemonConfig::for_state_root(root.path()).unwrap();
         config.ensure_state_layout().unwrap();
-        let state = DaemonState::open(&config).unwrap();
+        let state = DaemonState::open_with_root_key_bytes(&config, [23_u8; 32]);
         state.initialize().unwrap();
         (root, config, state)
+    }
+
+    fn write_status_manifest(root: &std::path::Path, latest: &str) -> PathBuf {
+        let releases = root.join("releases");
+        std::fs::create_dir_all(&releases).unwrap();
+        let manifest = releases.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec_pretty(&json!({
+                "latest": latest,
+                "packages": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        manifest
     }
 
     fn store_existing_daemon(config: &DaemonConfig, state: &DaemonState) -> AgentDefinition {
@@ -793,6 +830,13 @@ mod tests {
         assert_eq!(agent.controller_did, "did:human:alice");
         assert_eq!(agent.handle, "alice-mac-daemon");
         assert_eq!(client.exchange_count(), 1);
+        assert_eq!(
+            state
+                .load_agent_auth_token(&agent.agent_did)
+                .unwrap()
+                .as_deref(),
+            Some("jwt-agent-secret")
+        );
     }
 
     #[test]
@@ -841,6 +885,13 @@ mod tests {
         );
         assert_eq!(agent.agent_did, existing.agent_did);
         let recovered = state.load_agent_definition(&existing.agent_did).unwrap();
+        assert_eq!(
+            state
+                .load_agent_auth_token(&existing.agent_did)
+                .unwrap()
+                .as_deref(),
+            Some("jwt-agent-secret")
+        );
         assert_eq!(recovered.controller_user_id, "user-alice");
         assert_eq!(recovered.controller_full_handle, "alice.anpclaw.com");
         assert_eq!(recovered.controller_did, "did:human:alice");
@@ -993,7 +1044,9 @@ mod tests {
 
     #[test]
     fn latest_status_uses_daemon_did_auth_and_contract_platform() {
-        let (_root, config, state) = fixture();
+        let (root, mut config, state) = fixture();
+        write_status_manifest(root.path(), crate::upgrade::CURRENT_DAEMON_VERSION);
+        config.download_base_url = format!("file://{}", root.path().display());
         let agent = store_existing_daemon(&config, &state);
         let im_core = crate::ImCoreAdapter::open(&config).unwrap();
         sync_one_agent_identity(&config, &state, &im_core, &agent).unwrap();
@@ -1052,12 +1105,7 @@ fn update_daemon_latest_status(
     agent: &AgentDefinition,
     service: &ServiceStatus,
 ) -> Result<()> {
-    let auth_paths = crate::im_core_adapter::agent_identity_auth_paths(config, &agent.agent_did);
-    let auth = DidAuthMaterial {
-        did_document_path: auth_paths.0,
-        private_key_path: auth_paths.1,
-        bearer_token: state.load_agent_auth_token(&agent.agent_did)?,
-    };
+    let auth = crate::controller_scope::daemon_auth_material(config, state, agent)?;
     let release = check_release_status(config);
     let response = client.update_latest_status(
         &agent.agent_did,

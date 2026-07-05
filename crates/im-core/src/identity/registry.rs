@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -166,6 +167,144 @@ impl<'a> IdentityRegistry<'a> {
         self.resolve_from_snapshot(&registry, selector)
     }
 
+    pub fn vault_status(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultStatus> {
+        let registry = self.load_registry()?;
+        if registry.entries.is_empty() {
+            let summary = self.resolve_from_snapshot(&registry, selector)?;
+            return Ok(self.identity_vault_status(&summary, None));
+        }
+        let entry = registry.find_entry(selector)?;
+        Ok(self.identity_vault_status(&entry.summary, Some(entry)))
+    }
+
+    pub async fn vault_status_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultStatus> {
+        let registry = self.load_registry_async().await?;
+        if registry.entries.is_empty() {
+            let summary = self.resolve_from_snapshot(&registry, selector)?;
+            return Ok(self.identity_vault_status(&summary, None));
+        }
+        let entry = registry.find_entry(selector)?;
+        Ok(self.identity_vault_status(&entry.summary, Some(entry)))
+    }
+
+    pub fn migrate_identity_vault(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
+        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "identity vault migration requires identity secret vault open options"
+                    .to_owned(),
+            }
+        })?;
+        let registry = self.load_registry()?;
+        let entry = registry.find_entry(selector)?;
+        let local_alias =
+            entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_owned(),
+                })?;
+        crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        )
+        .migrate_identity_to_vault(
+            &local_alias,
+            context.workspace_id(),
+            context.device_id(),
+            context.vault().as_ref(),
+        )?;
+        let status = self.vault_status(super::IdentitySelector::LocalAlias(local_alias))?;
+        self.verify_identity_vault_status(status, true)
+            .map(|verification| super::IdentityVaultMigrationReport {
+                plaintext_compat_retained: verification
+                    .status
+                    .plaintext_compat_retained
+                    .unwrap_or(false),
+                warnings: verification.warnings,
+                identity: verification.identity,
+                status: verification.status,
+                migrated: true,
+                verified: verification.verified,
+            })
+    }
+
+    pub async fn migrate_identity_vault_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultMigrationReport> {
+        let context = self.core.inner().identity_vault().cloned().ok_or_else(|| {
+            crate::ImError::LocalStateUnavailable {
+                detail: "identity vault migration requires identity secret vault open options"
+                    .to_owned(),
+            }
+        })?;
+        let registry = self.load_registry_async().await?;
+        let entry = registry.find_entry(selector)?;
+        let local_alias =
+            entry
+                .local_alias
+                .clone()
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: entry.summary.id.as_str().to_owned(),
+                })?;
+        let paths = self.core.inner().sdk_paths().identities.clone();
+        let workspace_id = context.workspace_id().to_owned();
+        let device_id = context.device_id().to_owned();
+        let vault = context.vault();
+        let local_alias_for_migration = local_alias.clone();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_store::IdentityStore::new(&paths).migrate_identity_to_vault(
+                &local_alias_for_migration,
+                &workspace_id,
+                &device_id,
+                vault.as_ref(),
+            )
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })??;
+        let status = self
+            .vault_status_async(super::IdentitySelector::LocalAlias(local_alias))
+            .await?;
+        self.verify_identity_vault_status(status, true)
+            .map(|verification| super::IdentityVaultMigrationReport {
+                plaintext_compat_retained: verification
+                    .status
+                    .plaintext_compat_retained
+                    .unwrap_or(false),
+                warnings: verification.warnings,
+                identity: verification.identity,
+                status: verification.status,
+                migrated: true,
+                verified: verification.verified,
+            })
+    }
+
+    pub fn verify_identity_vault(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
+        let status = self.vault_status(selector)?;
+        self.verify_identity_vault_status(status, true)
+    }
+
+    pub async fn verify_identity_vault_async(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
+        let status = self.vault_status_async(selector).await?;
+        self.verify_identity_vault_status(status, true)
+    }
+
     pub fn load_daemon_subkey_package(
         &self,
         selector: super::IdentitySelector,
@@ -181,7 +320,13 @@ impl<'a> IdentityRegistry<'a> {
         crate::internal::identity_store::IdentityStore::new(
             &self.core.inner().sdk_paths().identities,
         )
-        .load_daemon_subkey_package(&dir_name)
+        .load_daemon_subkey_package_vault_aware(
+            &dir_name,
+            &entry.summary.did,
+            entry.vault_migration.as_ref(),
+            self.core.inner().identity_vault(),
+            self.core.inner().identity_secret_storage_policy(),
+        )
     }
 
     pub async fn load_daemon_subkey_package_async(
@@ -196,11 +341,25 @@ impl<'a> IdentityRegistry<'a> {
                 .ok_or_else(|| crate::ImError::IdentityNotFound {
                     selector: entry.summary.id.as_str().to_string(),
                 })?;
-        crate::internal::identity_store::IdentityStore::load_daemon_subkey_package_async(
-            self.core.inner().sdk_paths().identities.clone(),
-            dir_name,
-        )
+        let paths = self.core.inner().sdk_paths().identities.clone();
+        let did = entry.summary.did.clone();
+        let metadata = entry.vault_migration.clone();
+        let context = self.core.inner().identity_vault().cloned();
+        let policy = self.core.inner().identity_secret_storage_policy();
+        crate::internal::runtime::worker::run_blocking(move || {
+            crate::internal::identity_store::IdentityStore::new(&paths)
+                .load_daemon_subkey_package_vault_aware(
+                    &dir_name,
+                    &did,
+                    metadata.as_ref(),
+                    context.as_ref(),
+                    policy,
+                )
+        })
         .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })?
     }
 
     pub fn ensure_daemon_subkey_package(
@@ -214,6 +373,7 @@ impl<'a> IdentityRegistry<'a> {
             EnsureDaemonSubkeyPrepared::Ready { package } => Ok(package),
             EnsureDaemonSubkeyPrepared::UpdateRequired {
                 dir_name,
+                identity_id,
                 did_document,
                 package,
                 selector,
@@ -239,7 +399,14 @@ impl<'a> IdentityRegistry<'a> {
                 crate::internal::identity_store::IdentityStore::new(
                     &self.core.inner().sdk_paths().identities,
                 )
-                .save_daemon_subkey_package(&dir_name, &package)?;
+                .save_daemon_subkey_package_with_secret_storage(
+                    &dir_name,
+                    &identity_id,
+                    &package,
+                    crate::internal::identity_store::SaveIdentitySecretStorage::from_core(
+                        self.core,
+                    )?,
+                )?;
                 Ok(package)
             }
         }
@@ -264,6 +431,7 @@ impl<'a> IdentityRegistry<'a> {
             EnsureDaemonSubkeyPrepared::Ready { package } => Ok(package),
             EnsureDaemonSubkeyPrepared::UpdateRequired {
                 dir_name,
+                identity_id,
                 did_document,
                 package,
                 selector,
@@ -286,10 +454,19 @@ impl<'a> IdentityRegistry<'a> {
                     .await?;
                 let paths = self.core.inner().sdk_paths().identities.clone();
                 let package_to_save = package.clone();
+                let secret_storage =
+                    crate::internal::identity_store::SaveIdentitySecretStorage::from_core(
+                        self.core,
+                    )?;
                 crate::internal::runtime::worker::run_blocking(move || {
                     let store = crate::internal::identity_store::IdentityStore::new(&paths);
                     store.save_did_document(&dir_name, &did_document)?;
-                    store.save_daemon_subkey_package(&dir_name, &package_to_save)?;
+                    store.save_daemon_subkey_package_with_secret_storage(
+                        &dir_name,
+                        &identity_id,
+                        &package_to_save,
+                        secret_storage,
+                    )?;
                     Ok::<(), crate::ImError>(())
                 })
                 .await
@@ -441,9 +618,25 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["did_document_identity_mismatch".to_string()],
             });
         }
-        if let Some(package) =
-            store.load_daemon_subkey_package_or_legacy(&dir_name, &did, &did_document)?
-        {
+        if let Some(package) = match store.load_daemon_subkey_package_vault_aware(
+            &dir_name,
+            &did,
+            entry.vault_migration.as_ref(),
+            self.core.inner().identity_vault(),
+            self.core.inner().identity_secret_storage_policy(),
+        ) {
+            Ok(package) => Some(package),
+            Err(crate::ImError::IdentityNotFound { .. })
+                if !matches!(
+                    self.core.inner().identity_secret_storage_policy(),
+                    crate::core::IdentitySecretStoragePolicy::VaultRequired
+                ) =>
+            {
+                store.load_daemon_subkey_package_or_legacy(&dir_name, &did, &did_document)?
+            }
+            Err(crate::ImError::IdentityNotFound { .. }) => None,
+            Err(err) => return Err(err),
+        } {
             if package.user_did != did {
                 return Err(crate::ImError::IdentityNotReady {
                     identity: did.as_str().to_string(),
@@ -465,17 +658,7 @@ impl<'a> IdentityRegistry<'a> {
                 missing: vec!["daemon_subkey_private_missing".to_string()],
             });
         }
-        let key1_private_pem = store
-            .load_key1_private_pem(&dir_name)
-            .map_err(|err| match err {
-                crate::ImError::CredentialFileUnreadable { .. } => {
-                    crate::ImError::IdentityNotReady {
-                        identity: did.as_str().to_string(),
-                        missing: vec!["key1_private".to_string()],
-                    }
-                }
-                other => other,
-            })?;
+        let key1_private_pem = self.identity_root_private_for_entry(entry, &dir_name, &did)?;
         let subkey = crate::internal::identity_daemon_subkey::generate_for_did(&did);
         crate::internal::identity_daemon_subkey::apply_to_did_document(
             &mut did_document,
@@ -495,6 +678,7 @@ impl<'a> IdentityRegistry<'a> {
         );
         Ok(EnsureDaemonSubkeyPrepared::UpdateRequired {
             dir_name,
+            identity_id: entry.summary.id.as_str().to_string(),
             did_document,
             package,
             selector: super::IdentitySelector::Did(did),
@@ -537,17 +721,7 @@ impl<'a> IdentityRegistry<'a> {
                 verification_method,
             });
         }
-        let key1_private_pem = store
-            .load_key1_private_pem(&dir_name)
-            .map_err(|err| match err {
-                crate::ImError::CredentialFileUnreadable { .. } => {
-                    crate::ImError::IdentityNotReady {
-                        identity: did.as_str().to_string(),
-                        missing: vec!["key1_private".to_string()],
-                    }
-                }
-                other => other,
-            })?;
+        let key1_private_pem = self.identity_root_private_for_entry(entry, &dir_name, &did)?;
         crate::internal::identity_daemon_subkey::resign_did_document_with_key1(
             &mut did_document,
             &did,
@@ -560,6 +734,81 @@ impl<'a> IdentityRegistry<'a> {
             did_document,
             selector: super::IdentitySelector::Did(did),
         })
+    }
+
+    fn identity_root_private_for_entry(
+        &self,
+        entry: &RegistryEntry,
+        dir_name: &str,
+        did: &crate::ids::Did,
+    ) -> crate::ImResult<String> {
+        let store = crate::internal::identity_store::IdentityStore::new(
+            &self.core.inner().sdk_paths().identities,
+        );
+        let policy = self.core.inner().identity_secret_storage_policy();
+        if let Some(metadata) = entry.vault_migration.as_ref() {
+            if vault_metadata_is_verified(metadata) {
+                if let Some(context) = self.core.inner().identity_vault() {
+                    if vault_context_matches_metadata(context, metadata) {
+                        return store.load_key1_private_pem_from_vault(
+                            dir_name,
+                            did,
+                            metadata,
+                            context.workspace_id(),
+                            context.device_id(),
+                            context.vault().as_ref(),
+                        );
+                    }
+                    if matches!(
+                        policy,
+                        crate::core::IdentitySecretStoragePolicy::VaultRequired
+                    ) || !metadata.plaintext_compat_retained
+                    {
+                        return Err(crate::ImError::IdentityNotReady {
+                            identity: did.as_str().to_string(),
+                            missing: vec!["identity_vault_context_mismatch".to_string()],
+                        });
+                    }
+                } else if matches!(
+                    policy,
+                    crate::core::IdentitySecretStoragePolicy::VaultRequired
+                ) || !metadata.plaintext_compat_retained
+                {
+                    return Err(crate::ImError::LocalStateUnavailable {
+                        detail:
+                            "identity root private key is stored in vault but no identity secret vault was provided"
+                                .to_owned(),
+                    });
+                }
+            } else if matches!(
+                policy,
+                crate::core::IdentitySecretStoragePolicy::VaultRequired
+            ) {
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: did.as_str().to_string(),
+                    missing: vec!["identity_vault_metadata_verified".to_string()],
+                });
+            }
+        } else if matches!(
+            policy,
+            crate::core::IdentitySecretStoragePolicy::VaultRequired
+        ) {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: did.as_str().to_string(),
+                missing: vec!["identity_vault_metadata".to_string()],
+            });
+        }
+        store
+            .load_key1_private_pem(dir_name)
+            .map_err(|err| match err {
+                crate::ImError::CredentialFileUnreadable { .. } => {
+                    crate::ImError::IdentityNotReady {
+                        identity: did.as_str().to_string(),
+                        missing: vec!["key1_private".to_string()],
+                    }
+                }
+                other => other,
+            })
     }
 
     fn resolve_from_snapshot(
@@ -824,18 +1073,19 @@ impl IdentityRegistry<'_> {
         selector: super::IdentitySelector,
     ) -> crate::ImResult<crate::internal::identity_runtime::ClientIdentityRuntime> {
         let registry = self.load_registry()?;
-        let summary = if registry.entries.is_empty() {
-            self.resolve(selector)?
+        let (summary, entry) = if registry.entries.is_empty() {
+            (self.resolve_from_snapshot(&registry, selector)?, None)
         } else {
-            resolve_from_registry(&registry, selector)?
+            let entry = registry.find_entry(selector)?;
+            (entry.summary.clone(), Some(entry))
         };
         let identity_root = &self.core.inner().sdk_paths().identities.identity_root_dir;
-        let identity_dir_name = registry
-            .find(|entry| entry.summary == summary)
+        let identity_dir_name = entry
             .and_then(|entry| entry.dir_name.as_deref())
             .or(summary.local_alias.as_deref())
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
+        let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
             did_document_path: first_existing_path(
@@ -851,6 +1101,7 @@ impl IdentityRegistry<'_> {
                 &["e2ee-agreement-private.pem", "key-3-private.pem"],
             ),
             auth_state_path: identity_dir.join("auth.json"),
+            key_provider,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
@@ -863,18 +1114,19 @@ impl IdentityRegistry<'_> {
         selector: super::IdentitySelector,
     ) -> crate::ImResult<crate::internal::identity_runtime::ClientIdentityRuntime> {
         let registry = self.load_registry_async().await?;
-        let summary = if registry.entries.is_empty() {
-            self.resolve_from_snapshot(&registry, selector)?
+        let (summary, entry) = if registry.entries.is_empty() {
+            (self.resolve_from_snapshot(&registry, selector)?, None)
         } else {
-            resolve_from_registry(&registry, selector)?
+            let entry = registry.find_entry(selector)?;
+            (entry.summary.clone(), Some(entry))
         };
         let identity_root = &self.core.inner().sdk_paths().identities.identity_root_dir;
-        let identity_dir_name = registry
-            .find(|entry| entry.summary == summary)
+        let identity_dir_name = entry
             .and_then(|entry| entry.dir_name.as_deref())
             .or(summary.local_alias.as_deref())
             .unwrap_or_else(|| summary.id.as_str());
         let identity_dir = identity_root.join(identity_dir_name);
+        let key_provider = self.key_provider_for_entry(identity_dir.clone(), entry, &summary)?;
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
             did_document_path: first_existing_path_async(
@@ -893,6 +1145,7 @@ impl IdentityRegistry<'_> {
             )
             .await,
             auth_state_path: identity_dir.join("auth.json"),
+            key_provider,
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
@@ -949,6 +1202,164 @@ impl IdentityRegistry<'_> {
         snapshot.apply_default_flags();
         snapshot.validate()?;
         Ok(snapshot)
+    }
+
+    fn key_provider_for_entry(
+        &self,
+        identity_dir: PathBuf,
+        entry: Option<&RegistryEntry>,
+        summary: &super::IdentitySummary,
+    ) -> crate::ImResult<Arc<dyn crate::internal::key_provider::KeyMaterialProvider>> {
+        let policy = self.core.inner().identity_secret_storage_policy();
+        let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
+        if let Some(metadata) = metadata {
+            if vault_metadata_is_verified(metadata) {
+                if let Some(context) = self.core.inner().identity_vault() {
+                    if vault_context_matches_metadata(context, metadata) {
+                        return Ok(Arc::new(
+                            crate::internal::key_provider::vault::VaultBackedKeyMaterialProvider::new(
+                                identity_dir,
+                                context.vault(),
+                                metadata.key_material_refs(),
+                            ),
+                        ));
+                    }
+                    if matches!(
+                        policy,
+                        crate::core::IdentitySecretStoragePolicy::VaultRequired
+                    ) {
+                        return Err(crate::ImError::IdentityNotReady {
+                            identity: summary.did.as_str().to_owned(),
+                            missing: vec!["identity_vault_context_mismatch".to_owned()],
+                        });
+                    }
+                } else if matches!(
+                    policy,
+                    crate::core::IdentitySecretStoragePolicy::VaultRequired
+                ) {
+                    return Err(crate::ImError::LocalStateUnavailable {
+                        detail:
+                            "identity has verified vault metadata but no identity secret vault was provided"
+                                .to_owned(),
+                    });
+                }
+            } else if matches!(
+                policy,
+                crate::core::IdentitySecretStoragePolicy::VaultRequired
+            ) {
+                return Err(crate::ImError::IdentityNotReady {
+                    identity: summary.did.as_str().to_owned(),
+                    missing: vec!["identity_vault_metadata_verified".to_owned()],
+                });
+            }
+        } else if matches!(
+            policy,
+            crate::core::IdentitySecretStoragePolicy::VaultRequired
+        ) {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: summary.did.as_str().to_owned(),
+                missing: vec!["identity_vault_metadata".to_owned()],
+            });
+        }
+        Ok(Arc::new(
+            crate::internal::key_provider::FileBackedKeyMaterialProvider::new(identity_dir),
+        ))
+    }
+
+    fn verify_identity_vault_status(
+        &self,
+        status: super::IdentityVaultStatus,
+        require_vault_backend: bool,
+    ) -> crate::ImResult<super::IdentityVaultVerificationReport> {
+        if require_vault_backend
+            && status.selected_backend != super::IdentitySecretStorageBackend::Vault
+        {
+            return Err(crate::ImError::IdentityNotReady {
+                identity: status.identity.did.as_str().to_owned(),
+                missing: if status.missing.is_empty() {
+                    vec!["identity_vault_backend".to_owned()]
+                } else {
+                    status.missing.clone()
+                },
+            });
+        }
+        let runtime = self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
+        let _ = runtime.key_provider.optional_did_document()?;
+        let _ = runtime.key_provider.default_signing_private_pem()?;
+        let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
+        let _ = runtime.key_provider.auth_state()?;
+        let mut warnings = status.warnings.clone();
+        if status.plaintext_compat_retained.unwrap_or(false) {
+            warnings.push("identity plaintext compatibility files are still retained".to_owned());
+        }
+        Ok(super::IdentityVaultVerificationReport {
+            identity: status.identity.clone(),
+            status,
+            verified: true,
+            warnings,
+        })
+    }
+
+    fn identity_vault_status(
+        &self,
+        summary: &super::IdentitySummary,
+        entry: Option<&RegistryEntry>,
+    ) -> super::IdentityVaultStatus {
+        let policy = self.core.inner().identity_secret_storage_policy();
+        let context = self.core.inner().identity_vault();
+        let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
+        let vault_metadata_present = metadata.is_some();
+        let vault_metadata_verified = metadata.map(vault_metadata_is_verified).unwrap_or(false);
+        let vault_context_matches = metadata
+            .zip(context)
+            .map(|(metadata, context)| vault_context_matches_metadata(context, metadata))
+            .unwrap_or(false);
+        let selected_backend =
+            if vault_metadata_verified && context.is_some() && vault_context_matches {
+                super::IdentitySecretStorageBackend::Vault
+            } else {
+                super::IdentitySecretStorageBackend::FileCompat
+            };
+        let mut missing = Vec::new();
+        let mut warnings = Vec::new();
+        if !vault_metadata_present {
+            missing.push("identity_vault_metadata".to_owned());
+        }
+        if vault_metadata_present && !vault_metadata_verified {
+            missing.push("identity_vault_metadata_verified".to_owned());
+        }
+        if !context.is_some() {
+            missing.push("identity_secret_vault".to_owned());
+        }
+        if vault_metadata_present && context.is_some() && !vault_context_matches {
+            missing.push("identity_vault_context_match".to_owned());
+            warnings.push(
+                "identity vault metadata workspace/device does not match provided vault context"
+                    .to_owned(),
+            );
+        }
+        if metadata
+            .map(|metadata| metadata.plaintext_compat_retained)
+            .unwrap_or(false)
+        {
+            warnings.push("identity plaintext compatibility files are still retained".to_owned());
+        }
+        if matches!(policy, crate::core::IdentitySecretStoragePolicy::FileCompat) {
+            warnings.push("identity secret storage policy is file_compat".to_owned());
+        }
+        super::IdentityVaultStatus {
+            identity: summary.clone(),
+            storage_policy: policy,
+            selected_backend,
+            vault_available: context.is_some(),
+            vault_metadata_present,
+            vault_metadata_verified,
+            workspace_id: metadata.map(|metadata| metadata.workspace_id.clone()),
+            device_id: metadata.map(|metadata| metadata.device_id.clone()),
+            plaintext_compat_retained: metadata.map(|metadata| metadata.plaintext_compat_retained),
+            missing,
+            warnings,
+        }
     }
 }
 
@@ -1164,6 +1575,7 @@ struct RegistryEntry {
     local_alias: Option<String>,
     dir_name: Option<String>,
     summary: super::IdentitySummary,
+    vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -1173,6 +1585,7 @@ enum EnsureDaemonSubkeyPrepared {
     },
     UpdateRequired {
         dir_name: String,
+        identity_id: String,
         did_document: Value,
         package: super::DaemonSubkeyPrivatePackage,
         selector: super::IdentitySelector,
@@ -1242,6 +1655,9 @@ struct SdkIdentityRecord {
     ready_for_messaging: bool,
     #[serde(default)]
     missing: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1272,6 +1688,8 @@ struct LegacyIdentityRecord {
     full_handle: String,
     #[serde(default)]
     is_default: bool,
+    #[serde(default)]
+    vault_migration: Option<crate::internal::identity_store::IdentityVaultMigrationMetadata>,
 }
 
 fn parse_registry(raw: &[u8]) -> crate::ImResult<RegistrySnapshot> {
@@ -1326,6 +1744,7 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
                         .collect(),
                 },
             },
+            vault_migration: record.vault_migration,
         });
     }
     let mut snapshot = RegistrySnapshot {
@@ -1371,6 +1790,7 @@ fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<(
                     .iter()
                     .map(identity_missing_item_to_string)
                     .collect(),
+                vault_migration: entry.vault_migration.clone(),
             })
             .collect(),
     };
@@ -1415,6 +1835,7 @@ async fn write_registry_async(path: &Path, registry: &RegistrySnapshot) -> crate
                     .iter()
                     .map(identity_missing_item_to_string)
                     .collect(),
+                vault_migration: entry.vault_migration.clone(),
             })
             .collect(),
     };
@@ -1511,6 +1932,7 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
                     missing,
                 },
             },
+            vault_migration: record.vault_migration,
         });
     }
     let mut snapshot = RegistrySnapshot {
@@ -1536,6 +1958,22 @@ fn legacy_readiness_missing(
         missing.push(super::IdentityMissingItem::Handle);
     }
     missing
+}
+
+fn vault_metadata_is_verified(
+    metadata: &crate::internal::identity_store::IdentityVaultMigrationMetadata,
+) -> bool {
+    matches!(
+        metadata.status,
+        crate::internal::identity_store::IdentityVaultMigrationStatus::Verified
+    )
+}
+
+fn vault_context_matches_metadata(
+    context: &crate::core::options::IdentityVaultContext,
+    metadata: &crate::internal::identity_store::IdentityVaultMigrationMetadata,
+) -> bool {
+    context.workspace_id() == metadata.workspace_id && context.device_id() == metadata.device_id
 }
 
 fn default_alias_from_file(path: Option<&Path>) -> crate::ImResult<Option<String>> {
@@ -1642,6 +2080,12 @@ fn optional_trimmed_string(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::internal::platform_secret::{DeviceVaultRootKey, SecretBytes};
+    use crate::internal::secret_vault::{
+        FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretKind,
+        SecretMetadata, SecretVault,
+    };
+    use serde_json::json;
 
     #[test]
     fn identity_registry_rejects_duplicate_live_did() {
@@ -1718,6 +2162,262 @@ mod tests {
         assert_registry_error_contains(err, "default identity alias");
     }
 
+    #[test]
+    fn identity_vault_status_and_runtime_use_verified_matching_vault_context() {
+        let root = tempfile::tempdir().unwrap();
+        let identity_dir = root.path().join("identities").join("alice-id");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        std::fs::write(
+            identity_dir.join("did_document.json"),
+            serde_json::to_vec(&json!({"id": "did:example:alice"})).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            identity_dir.join("key-1-private.pem"),
+            "file-signing-secret",
+        )
+        .unwrap();
+        std::fs::write(
+            identity_dir.join("e2ee-agreement-private.pem"),
+            "file-agreement-secret",
+        )
+        .unwrap();
+        std::fs::write(
+            identity_dir.join("auth.json"),
+            serde_json::to_vec(&json!({"jwt_token": "file-token-secret"})).unwrap(),
+        )
+        .unwrap();
+        let vault_dir = root.path().join("vault");
+        let vault = FileSecretVault::new(
+            DeviceVaultRootKey::from_bytes([31_u8; 32]),
+            FileSecretVaultStore::new(&vault_dir),
+        );
+        let signing_ref = vault
+            .seal(SealSecretRequest {
+                metadata: test_secret_metadata(
+                    "workspace-a",
+                    "device-a",
+                    "alice-id",
+                    "did:example:alice",
+                    SecretKind::IdentityRootPrivate,
+                    "key-1",
+                ),
+                plaintext: SecretBytes::from_vec(b"vault-signing-secret".to_vec()),
+            })
+            .unwrap();
+        let agreement_ref = vault
+            .seal(SealSecretRequest {
+                metadata: test_secret_metadata(
+                    "workspace-a",
+                    "device-a",
+                    "alice-id",
+                    "did:example:alice",
+                    SecretKind::IdentityE2eeAgreementPrivate,
+                    "key-3",
+                ),
+                plaintext: SecretBytes::from_vec(b"vault-agreement-secret".to_vec()),
+            })
+            .unwrap();
+        let auth_ref = vault
+            .seal(SealSecretRequest {
+                metadata: test_secret_metadata(
+                    "workspace-a",
+                    "device-a",
+                    "alice-id",
+                    "did:example:alice",
+                    SecretKind::AuthJwt,
+                    "auth.json",
+                ),
+                plaintext: SecretBytes::from_vec(
+                    crate::internal::auth::state::auth_state_json_for_token("vault-token-secret")
+                        .unwrap(),
+                ),
+            })
+            .unwrap();
+        let registry_path = root.path().join("identities").join("registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&json!({
+                "default_credential_name": "alice",
+                "credentials": {
+                    "alice": {
+                        "credential_name": "alice",
+                        "dir_name": "alice-id",
+                        "did": "did:example:alice",
+                        "unique_id": "alice-id",
+                        "user_id": "user-1",
+                        "name": "Alice",
+                        "handle": "alice",
+                        "full_handle": "alice.example",
+                        "is_default": true,
+                        "vault_migration": {
+                            "schema_version": 1,
+                            "status": "verified",
+                            "backend": "vault",
+                            "unlock_policy": "explicit_root_key",
+                            "migrated_at": "2026-07-03T00:00:00Z",
+                            "workspace_id": "workspace-a",
+                            "device_id": "device-a",
+                            "plaintext_compat_retained": true,
+                            "refs": {
+                                "default_signing_private": signing_ref,
+                                "e2ee_agreement_private": agreement_ref,
+                                "auth_jwt": auth_ref
+                            }
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([31_u8; 32]),
+                    vault_dir,
+                    "workspace-a",
+                    "device-a",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let status = core
+            .identities()
+            .vault_status(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert_eq!(
+            status.selected_backend,
+            crate::identity::IdentitySecretStorageBackend::Vault
+        );
+        assert!(status.vault_available);
+        assert!(status.vault_metadata_present);
+        assert!(status.vault_metadata_verified);
+        assert_eq!(status.workspace_id.as_deref(), Some("workspace-a"));
+        assert_eq!(status.device_id.as_deref(), Some("device-a"));
+        assert_eq!(status.plaintext_compat_retained, Some(true));
+        assert!(status.missing.is_empty());
+
+        let runtime = core
+            .identities()
+            .load_runtime(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert_eq!(
+            runtime.key_provider.default_signing_private_pem().unwrap(),
+            "vault-signing-secret"
+        );
+        assert_eq!(
+            runtime.key_provider.e2ee_agreement_private_pem().unwrap(),
+            "vault-agreement-secret"
+        );
+        assert_eq!(
+            runtime.key_provider.valid_auth_token().unwrap().as_deref(),
+            Some("vault-token-secret")
+        );
+
+        let written = parse_registry(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let rewritten = root
+            .path()
+            .join("identities")
+            .join("rewritten-registry.json");
+        write_registry(&rewritten, &written).unwrap();
+        let reparsed = parse_registry(&std::fs::read(rewritten).unwrap()).unwrap();
+        assert!(reparsed.entries[0].vault_migration.is_some());
+    }
+
+    #[test]
+    fn identity_vault_migrate_and_verify_public_api_use_vault_provider() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = crate::internal::identity_store::IdentityStore::new(&paths.identities);
+        store
+            .save_identity(crate::internal::identity_store::SaveIdentityInput {
+                local_alias: "alice".to_owned(),
+                did: crate::ids::Did::parse("did:example:alice").unwrap(),
+                unique_id: "alice-id".to_owned(),
+                user_id: "user-1".to_owned(),
+                display_name: "Alice".to_owned(),
+                handle: "alice".to_owned(),
+                full_handle: "alice.example".to_owned(),
+                jwt_token: "jwt-secret-value".to_owned(),
+                did_document: Some(json!({"id": "did:example:alice"})),
+                key1_private_pem: "signing-private-secret".to_owned(),
+                key1_public_pem: "signing-public".to_owned(),
+                e2ee_signing_private_pem: String::new(),
+                e2ee_agreement_private_pem: "e2ee-agreement-secret".to_owned(),
+                daemon_subkey_package: None,
+                make_default: true,
+            })
+            .unwrap();
+        let vault_dir = root.path().join("vault");
+        let core = crate::ImCore::new_with_options(
+            test_config(),
+            paths,
+            crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                crate::IdentitySecretStoragePolicy::VaultRequired,
+                crate::ImCoreSecretVaultOptions::new(
+                    DeviceVaultRootKey::from_bytes([41_u8; 32]),
+                    &vault_dir,
+                    "workspace-a",
+                    "device-a",
+                ),
+            ),
+        )
+        .unwrap();
+
+        let report = core
+            .identities()
+            .migrate_identity_vault(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+
+        assert!(report.migrated);
+        assert!(report.verified);
+        assert!(report.plaintext_compat_retained);
+        assert_eq!(
+            report.status.selected_backend,
+            crate::identity::IdentitySecretStorageBackend::Vault
+        );
+        assert_eq!(report.identity.did.as_str(), "did:example:alice");
+
+        let verification = core
+            .identities()
+            .verify_identity_vault(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap();
+        assert!(verification.verified);
+        assert_eq!(
+            verification.status.selected_backend,
+            crate::identity::IdentitySecretStorageBackend::Vault
+        );
+    }
+
+    #[test]
+    fn vault_required_without_vault_options_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let err = match crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions {
+                identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultRequired,
+                identity_secret_vault: None,
+            },
+        ) {
+            Ok(_) => panic!("VaultRequired without vault options should fail"),
+            Err(err) => err,
+        };
+
+        let message = err.to_string();
+        assert!(message.contains("VaultRequired"));
+        assert!(!message.contains("root key"));
+    }
+
     fn assert_registry_error_contains(err: crate::ImError, expected: &str) {
         match err {
             crate::ImError::InvalidInput {
@@ -1731,6 +2431,57 @@ mod tests {
                 );
             }
             other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    fn test_secret_metadata(
+        workspace_id: &str,
+        device_id: &str,
+        identity_id: &str,
+        did: &str,
+        kind: SecretKind,
+        key_id: &str,
+    ) -> SecretMetadata {
+        SecretMetadata {
+            workspace_id: workspace_id.to_owned(),
+            device_id: device_id.to_owned(),
+            identity_id: Some(identity_id.to_owned()),
+            did: Some(did.to_owned()),
+            kind,
+            key_id: key_id.to_owned(),
+            key_version: 1,
+            policy: SecretAccessPolicy::no_prompt_local_secret(),
+        }
+    }
+
+    fn test_config() -> crate::ImCoreConfig {
+        crate::ImCoreConfig {
+            service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+            did_domain: "awiki.test".to_owned(),
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: crate::MessageTransportPolicy::HttpOnly,
+        }
+    }
+
+    fn test_paths(root: &Path) -> crate::ImCorePaths {
+        crate::ImCorePaths {
+            identities: crate::IdentityRegistryPaths {
+                identity_root_dir: root.join("identities"),
+                registry_path: root.join("identities").join("registry.json"),
+                default_identity_path: Some(root.join("identities").join("default")),
+            },
+            local_state: crate::LocalStatePaths {
+                sqlite_path: root.join("local").join("im.sqlite"),
+            },
+            runtime: crate::RuntimePaths {
+                cache_dir: root.join("cache"),
+                temp_dir: root.join("tmp"),
+            },
         }
     }
 }

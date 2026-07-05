@@ -173,7 +173,7 @@ fn load_credentials(
     delegated: Option<&crate::messages::DelegatedSigningOptions>,
 ) -> crate::ImResult<DirectTextCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json(&runtime.did_document_path)?;
+    let did_document = runtime.key_provider.optional_did_document()?;
     if let Some(delegated) = delegated {
         return delegated_credentials(client, delegated, did_document);
     }
@@ -192,16 +192,11 @@ async fn load_credentials_async(
     delegated: Option<&crate::messages::DelegatedSigningOptions>,
 ) -> crate::ImResult<DirectTextCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json_async(runtime.did_document_path.clone()).await?;
+    let did_document = runtime.key_provider.optional_did_document()?;
     if let Some(delegated) = delegated {
         return delegated_credentials_async(client, delegated, did_document).await;
     }
-    let key1_private_pem = tokio::fs::read_to_string(&runtime.private_key_path)
-        .await
-        .map_err(|err| crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        })?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -211,49 +206,8 @@ async fn load_credentials_async(
     })
 }
 
-fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
-}
-
-async fn read_optional_json_async(path: std::path::PathBuf) -> crate::ImResult<Option<Value>> {
-    let raw = match tokio::fs::read(path).await {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
-}
-
 fn read_default_private_key(client: &crate::core::ImClient) -> crate::ImResult<String> {
-    std::fs::read_to_string(&client.runtime().private_key_path).map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        }
-    })
+    client.runtime().key_provider.default_signing_private_pem()
 }
 
 fn delegated_credentials(
@@ -670,6 +624,10 @@ mod tests {
     use super::*;
     use crate::internal::auth::session::SessionProvider;
     use crate::internal::transport::AuthenticatedRpcTransport;
+    use crate::vault::{
+        FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretBytes,
+        SecretKind, SecretMetadata, SecretVault,
+    };
     use serde_json::{json, Value};
     use std::cell::RefCell;
     use std::fs;
@@ -1052,6 +1010,117 @@ mod tests {
     }
 
     #[test]
+    fn messages_direct_text_sender_uses_vault_delegated_key_ref() {
+        install_test_im_core_vault_root_key();
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let signing_key_ref = delegated.seal_to_vault_key_ref(&client);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-vault-delegated-direct",
+                    "operation_id": "op-vault-delegated-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello vault delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some(delegated.user_did.clone()),
+            signing_verification_method: Some(delegated.verification_method.clone()),
+            signing_key_ref: Some(signing_key_ref),
+            actor_agent_did: Some("did:example:agent:daemon".to_owned()),
+        });
+
+        let result = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.sdk_result.message.sender.as_str(),
+            delegated.user_did
+        );
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].params["meta"]["sender_did"], delegated.user_did);
+        assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
+            .as_str()
+            .expect("signature input")
+            .contains(&format!("keyid=\"{}\"", delegated.verification_method)));
+    }
+
+    #[test]
+    fn messages_direct_text_sender_rejects_non_delegated_vault_key_ref_kind() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let signing_key_ref =
+            crate::internal::delegated_identity::encode_vault_key_ref(&crate::vault::SecretRef {
+                workspace_id: "awiki-im-core".to_owned(),
+                device_id: "local-device".to_owned(),
+                identity_id: Some("alice-id".to_owned()),
+                did: Some(delegated.user_did.clone()),
+                kind: SecretKind::DirectE2eeSessionState,
+                key_id: "session-state".to_owned(),
+                key_version: 1,
+            })
+            .unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello vault delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some(delegated.user_did),
+            signing_verification_method: Some(delegated.verification_method),
+            signing_key_ref: Some(signing_key_ref),
+            actor_agent_did: None,
+        });
+
+        let error = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::InvalidInput {
+                field: Some(field),
+                ..
+            } if field == "key_ref"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
     fn messages_direct_text_sender_rejects_wrong_delegated_owner_locally() {
         let fixture = Fixture::new();
         let delegated = fixture.write_delegated_identity();
@@ -1226,6 +1295,35 @@ mod tests {
         user_did: String,
         verification_method: String,
         private_key_path: PathBuf,
+        private_key_pem: String,
+    }
+
+    impl DelegatedIdentityFixture {
+        fn seal_to_vault_key_ref(&self, client: &crate::core::ImClient) -> String {
+            let vault = FileSecretVault::new(
+                crate::internal::secure_direct::secret_store::im_core_vault_root_key_from_env()
+                    .unwrap(),
+                FileSecretVaultStore::new(
+                    crate::internal::delegated_identity::delegated_vault_dir_for_client(client),
+                ),
+            );
+            let secret_ref = vault
+                .seal(SealSecretRequest {
+                    metadata: SecretMetadata {
+                        workspace_id: "awiki-im-core".to_owned(),
+                        device_id: "local-device".to_owned(),
+                        identity_id: Some("alice-id".to_owned()),
+                        did: Some(self.user_did.clone()),
+                        kind: SecretKind::IdentityDaemonPrivate,
+                        key_id: self.verification_method.clone(),
+                        key_version: 1,
+                        policy: SecretAccessPolicy::no_prompt_local_secret(),
+                    },
+                    plaintext: SecretBytes::from_vec(self.private_key_pem.as_bytes().to_vec()),
+                })
+                .unwrap();
+            crate::internal::delegated_identity::encode_vault_key_ref(&secret_ref).unwrap()
+        }
     }
 
     impl Fixture {
@@ -1342,7 +1440,7 @@ mod tests {
             )
             .unwrap();
             let private_key_path = identity_dir.join("daemon-key-1.pem");
-            fs::write(&private_key_path, delegated_private_key).unwrap();
+            fs::write(&private_key_path, &delegated_private_key).unwrap();
             fs::write(
                 self.root.join("identities").join("registry.json"),
                 json!({
@@ -1363,8 +1461,16 @@ mod tests {
                 user_did,
                 verification_method,
                 private_key_path,
+                private_key_pem: delegated_private_key,
             }
         }
+    }
+
+    fn install_test_im_core_vault_root_key() {
+        std::env::set_var(
+            crate::internal::secure_direct::secret_store::IM_CORE_VAULT_ROOT_KEY_ENV,
+            "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8=",
+        );
     }
 
     fn direct_text_request(
