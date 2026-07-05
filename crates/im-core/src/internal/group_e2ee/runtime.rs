@@ -908,7 +908,7 @@ fn sdk_attachment_result_from_group_result(
             direction: crate::messages::MessageDirection::Outgoing,
             sender: crate::ids::PeerRef::parse(sender.as_str(), "")?,
             receiver: None,
-            group: Some(group),
+            group: Some(group.clone()),
             body: crate::messages::MessageBodyView::Unsupported {
                 content_type: Some(
                     crate::attachments::manifest::attachment_manifest_content_type().to_string(),
