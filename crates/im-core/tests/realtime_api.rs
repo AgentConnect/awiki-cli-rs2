@@ -33,29 +33,21 @@ fn realtime_options_default_is_async_session_ready() {
 }
 
 #[tokio::test]
-async fn realtime_start_async_refreshes_missing_bearer_at_transport_boundary() {
+async fn realtime_start_async_requires_bearer_before_worker_session() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
 
-    let mut session = client
+    let error = match client
         .realtime()
         .start_async(RealtimeOptions::default())
         .await
-        .expect("missing bearer should not fail before DID-auth refresh boundary");
-    let exit = tokio::time::timeout(std::time::Duration::from_secs(2), session.join())
-        .await
-        .expect("realtime worker should finish against the test endpoint")
-        .expect("realtime worker returns an exit status");
-    assert!(
-        matches!(
-            exit.reason,
-            RealtimeExitReason::TransportUnavailable | RealtimeExitReason::AuthFailed
-        ),
-        "unexpected realtime exit reason: {:?}",
-        exit.reason
-    );
+    {
+        Ok(_) => panic!("missing bearer should fail before creating worker session"),
+        Err(error) => error,
+    };
+    assert_eq!(error, ImError::AuthRequired);
 }
 
 #[tokio::test]
@@ -77,26 +69,15 @@ async fn realtime_start_async_exposes_session_stream_and_keeps_validation() {
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "event_buffer"
     ));
 
-    let mut refreshed_at_boundary = client
+    let missing_bearer = match client
         .realtime()
         .start_async(RealtimeOptions::default())
         .await
-        .expect("missing bearer should create a realtime session before refresh");
-    let exit = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        refreshed_at_boundary.join(),
-    )
-    .await
-    .expect("realtime worker should finish against the test endpoint")
-    .expect("realtime worker returns an exit status");
-    assert!(
-        matches!(
-            exit.reason,
-            RealtimeExitReason::TransportUnavailable | RealtimeExitReason::AuthFailed
-        ),
-        "unexpected realtime exit reason: {:?}",
-        exit.reason
-    );
+    {
+        Ok(_) => panic!("missing bearer should not create a realtime session"),
+        Err(error) => error,
+    };
+    assert_eq!(missing_bearer, ImError::AuthRequired);
 }
 
 #[tokio::test]
