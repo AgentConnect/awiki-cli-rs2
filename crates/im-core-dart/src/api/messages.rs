@@ -5,11 +5,11 @@ use crate::dto::{
     error::DartImError,
     message::{
         DartConversationListSnapshot, DartConversationPage, DartConversationReadRef,
-        DartConversationStorePatch, DartInboxHistoryOptions, DartMarkReadResult,
-        DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult, DartSendPayloadRequest,
-        DartSendTextRequest, DartSyncConversationAfterRequest, DartSyncDeltaRequest,
-        DartSyncDeltaResult, DartSyncThreadAfterRequest, DartSyncThreadAfterResult,
-        DartThreadMessageStorePatch, DartThreadRef,
+        DartConversationStorePatch, DartInboxHistoryOptions, DartMarkConversationReadRequest,
+        DartMarkReadResult, DartMarkThreadReadResult, DartMessagePage, DartSendMessageResult,
+        DartSendPayloadRequest, DartSendTextRequest, DartSyncConversationAfterRequest,
+        DartSyncDeltaRequest, DartSyncDeltaResult, DartSyncThreadAfterRequest,
+        DartSyncThreadAfterResult, DartThreadMessageStorePatch, DartThreadRef,
     },
 };
 use crate::frb_generated::StreamSink;
@@ -291,7 +291,7 @@ pub async fn mark_thread_read(
         .map_err(DartImError::from)
 }
 
-fn read_watermark_to_core(
+pub(crate) fn read_watermark_to_core(
     value: crate::dto::message::DartReadWatermark,
 ) -> im_core::ImResult<im_core::messages::ReadWatermark> {
     Ok(im_core::messages::ReadWatermark {
@@ -311,6 +311,19 @@ fn read_watermark_to_core(
             })
             .transpose()?,
     })
+}
+
+pub async fn mark_conversation_read(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartMarkConversationReadRequest,
+) -> Result<DartMarkThreadReadResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .messages()
+        .mark_conversation_read_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
 pub async fn sync_delta(

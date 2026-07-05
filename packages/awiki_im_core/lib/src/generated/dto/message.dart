@@ -535,6 +535,33 @@ class DartInboxHistoryOptions {
           inboxAuth == other.inboxAuth;
 }
 
+class DartMarkConversationReadRequest {
+  final DartConversationReadRef conversation;
+  final DartReadWatermark? watermark;
+  final int? fallbackMaxMessageIds;
+
+  const DartMarkConversationReadRequest({
+    required this.conversation,
+    this.watermark,
+    this.fallbackMaxMessageIds,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      watermark.hashCode ^
+      fallbackMaxMessageIds.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMarkConversationReadRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          watermark == other.watermark &&
+          fallbackMaxMessageIds == other.fallbackMaxMessageIds;
+}
+
 class DartMarkReadResult {
   final int updatedCount;
   final List<String> messageIds;

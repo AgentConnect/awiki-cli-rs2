@@ -654,6 +654,25 @@ class MessageApi {
     return result._toModel();
   }
 
+  Future<MarkThreadReadResult> markConversationRead(
+    ConversationReadRef conversation, {
+    ReadWatermark? watermark,
+    int? fallbackMaxMessageIds,
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_messages.markConversationRead(
+        client: _client._inner,
+        request: gen_message.DartMarkConversationReadRequest(
+          conversation: conversation._toGen(),
+          watermark: watermark?._toGen(),
+          fallbackMaxMessageIds: fallbackMaxMessageIds,
+        ),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<SyncDeltaResult> syncDelta(SyncDeltaRequest request) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(

@@ -264,6 +264,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
 
   @protected
+  DartMarkConversationReadRequest
+  dco_decode_box_autoadd_dart_mark_conversation_read_request(dynamic raw);
+
+  @protected
   DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
 
   @protected
@@ -613,6 +617,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
+
+  @protected
+  DartMarkConversationReadRequest
+  dco_decode_dart_mark_conversation_read_request(dynamic raw);
 
   @protected
   DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw);
@@ -1171,6 +1179,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartMarkConversationReadRequest
+  sse_decode_box_autoadd_dart_mark_conversation_read_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer);
 
   @protected
@@ -1604,6 +1618,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartInitialProfile sse_decode_dart_initial_profile(
     SseDeserializer deserializer,
   );
+
+  @protected
+  DartMarkConversationReadRequest
+  sse_decode_dart_mark_conversation_read_request(SseDeserializer deserializer);
 
   @protected
   DartMarkReadResult sse_decode_dart_mark_read_result(
@@ -2297,6 +2315,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_mark_conversation_read_request(
+    DartMarkConversationReadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_message(
     DartMessage self,
     SseSerializer serializer,
@@ -2833,6 +2857,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_initial_profile(
     DartInitialProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_mark_conversation_read_request(
+    DartMarkConversationReadRequest self,
     SseSerializer serializer,
   );
 

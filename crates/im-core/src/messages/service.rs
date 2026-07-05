@@ -110,6 +110,78 @@ mod direct_send_result_identity_tests {
     }
 }
 
+#[cfg(test)]
+mod conversation_mark_read_request_tests {
+    #[test]
+    fn mark_conversation_read_request_preserves_canonical_storage_thread() {
+        let request = crate::messages::MarkConversationReadRequest {
+            conversation: crate::messages::ConversationReadRef::new("dm:did:example:bob").unwrap(),
+            watermark: None,
+            fallback_max_message_ids: Some(25),
+        };
+
+        let mapped = super::mark_thread_read_request_for_conversation(request).unwrap();
+
+        match mapped.thread {
+            crate::messages::ThreadRef::Thread(thread) => {
+                assert_eq!(thread.as_str(), "dm:did:example:bob");
+            }
+            other => panic!("expected storage thread ref, got {other:?}"),
+        }
+        assert!(mapped.watermark.is_none());
+        assert_eq!(mapped.fallback_max_message_ids, Some(25));
+    }
+
+    #[test]
+    fn mark_conversation_read_request_preserves_peer_scope_storage_thread() {
+        let request = crate::messages::MarkConversationReadRequest {
+            conversation: crate::messages::ConversationReadRef::new("dm:peer-scope:v1:agent")
+                .unwrap(),
+            watermark: Some(crate::messages::ReadWatermark {
+                last_read_message_id: None,
+                last_read_thread_seq: Some("42".to_owned()),
+                read_at: None,
+            }),
+            fallback_max_message_ids: None,
+        };
+
+        let mapped = super::mark_thread_read_request_for_conversation(request).unwrap();
+
+        match mapped.thread {
+            crate::messages::ThreadRef::Thread(thread) => {
+                assert_eq!(thread.as_str(), "dm:peer-scope:v1:agent");
+            }
+            other => panic!("expected storage thread ref, got {other:?}"),
+        }
+        assert_eq!(
+            mapped
+                .watermark
+                .as_ref()
+                .and_then(|watermark| watermark.last_read_thread_seq.as_deref()),
+            Some("42")
+        );
+    }
+
+    #[test]
+    fn mark_conversation_read_request_preserves_group_storage_thread() {
+        let request = crate::messages::MarkConversationReadRequest {
+            conversation: crate::messages::ConversationReadRef::new("group:did:example:group")
+                .unwrap(),
+            watermark: None,
+            fallback_max_message_ids: None,
+        };
+
+        let mapped = super::mark_thread_read_request_for_conversation(request).unwrap();
+
+        match mapped.thread {
+            crate::messages::ThreadRef::Thread(thread) => {
+                assert_eq!(thread.as_str(), "group:did:example:group");
+            }
+            other => panic!("expected group storage thread ref, got {other:?}"),
+        }
+    }
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod conversation_read_model_tests {
     use serde_json::json;
@@ -1839,6 +1911,21 @@ impl<'a> MessageService<'a> {
         .map(|result| result.sdk_result)
     }
 
+    pub fn mark_conversation_read(
+        &self,
+        request: super::MarkConversationReadRequest,
+    ) -> crate::ImResult<super::MarkThreadReadResult> {
+        self.mark_thread_read(mark_thread_read_request_for_conversation(request)?)
+    }
+
+    pub async fn mark_conversation_read_async(
+        &self,
+        request: super::MarkConversationReadRequest,
+    ) -> crate::ImResult<super::MarkThreadReadResult> {
+        self.mark_thread_read_async(mark_thread_read_request_for_conversation(request)?)
+            .await
+    }
+
     pub fn sync_thread_after(
         &self,
         request: super::SyncThreadAfterRequest,
@@ -2793,6 +2880,16 @@ fn resolve_sync_conversation_thread(
         Some("conversation_id".to_owned()),
         "sync_conversation_after requires a canonical dm: or group: conversation_id",
     ))
+}
+
+fn mark_thread_read_request_for_conversation(
+    request: super::MarkConversationReadRequest,
+) -> crate::ImResult<super::MarkThreadReadRequest> {
+    Ok(super::MarkThreadReadRequest {
+        thread: request.conversation.as_thread_ref()?,
+        watermark: request.watermark,
+        fallback_max_message_ids: request.fallback_max_message_ids,
+    })
 }
 
 async fn resolve_sync_conversation_thread_async(

@@ -393,6 +393,13 @@ pub struct DartConversationReadRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartMarkConversationReadRequest {
+    pub conversation: DartConversationReadRef,
+    pub watermark: Option<DartReadWatermark>,
+    pub fallback_max_message_ids: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartSyncThreadAfterRequest {
     pub thread: DartThreadRef,
     pub after_server_seq: Option<String>,

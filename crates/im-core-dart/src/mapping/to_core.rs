@@ -14,9 +14,10 @@ use crate::dto::{
     identity::DartIdentitySelector,
     message::{
         DartConversationReadRef, DartDelegatedSigningOptions, DartInboxAuth,
-        DartInboxHistoryOptions, DartMessageSecurityMode, DartMessageTarget, DartScopedInboxToken,
-        DartSendPayloadRequest, DartSendTextRequest, DartSyncConversationAfterRequest,
-        DartSyncDeltaRequest, DartSyncThreadAfterRequest, DartThreadRef,
+        DartInboxHistoryOptions, DartMarkConversationReadRequest, DartMessageSecurityMode,
+        DartMessageTarget, DartScopedInboxToken, DartSendPayloadRequest, DartSendTextRequest,
+        DartSyncConversationAfterRequest, DartSyncDeltaRequest, DartSyncThreadAfterRequest,
+        DartThreadRef,
     },
     profile::DartProfilePatch,
     realtime::DartRealtimeOptions,
@@ -520,6 +521,22 @@ impl TryFrom<DartConversationReadRef> for im_core::messages::ConversationReadRef
     }
 }
 
+impl TryFrom<DartMarkConversationReadRequest> for im_core::messages::MarkConversationReadRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartMarkConversationReadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            watermark: value
+                .watermark
+                .map(dart_read_watermark_to_core)
+                .transpose()
+                .map_err(DartImError::from)?,
+            fallback_max_message_ids: value.fallback_max_message_ids,
+        })
+    }
+}
+
 impl TryFrom<DartSyncConversationAfterRequest> for im_core::messages::SyncConversationAfterRequest {
     type Error = DartImError;
 
@@ -530,6 +547,28 @@ impl TryFrom<DartSyncConversationAfterRequest> for im_core::messages::SyncConver
             limit: value.limit,
         })
     }
+}
+
+fn dart_read_watermark_to_core(
+    value: crate::dto::message::DartReadWatermark,
+) -> im_core::ImResult<im_core::messages::ReadWatermark> {
+    Ok(im_core::messages::ReadWatermark {
+        last_read_message_id: value
+            .last_read_message_id
+            .map(im_core::ids::MessageId::parse)
+            .transpose()?,
+        last_read_thread_seq: value.last_read_thread_seq,
+        read_at: value
+            .read_at
+            .map(|value| {
+                chrono::DateTime::parse_from_rfc3339(value.trim())
+                    .map(|value| value.with_timezone(&chrono::Utc))
+                    .map_err(|err| {
+                        im_core::ImError::invalid_input(Some("read_at".to_owned()), err.to_string())
+                    })
+            })
+            .transpose()?,
+    })
 }
 
 impl DartCreateGroupRequest {

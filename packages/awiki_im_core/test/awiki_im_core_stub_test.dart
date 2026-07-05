@@ -172,6 +172,10 @@ void main() {
     expect(_markThreadReadApiShape, isA<Function>());
   });
 
+  test('conversation mark-read API shape remains app-usable', () {
+    expect(_markConversationReadApiShape, isA<Function>());
+  });
+
   test('local history API shape remains app-usable', () {
     expect(_localHistoryApiShape, isA<Function>());
   });
@@ -346,6 +350,14 @@ void main() {
 Future<MarkThreadReadResult> _markThreadReadApiShape(MessageApi api) {
   return api.markThreadRead(
     const ThreadRef.direct('did:example:bob'),
+    watermark: const ReadWatermark(lastReadThreadSeq: '42'),
+    fallbackMaxMessageIds: 100,
+  );
+}
+
+Future<MarkThreadReadResult> _markConversationReadApiShape(MessageApi api) {
+  return api.markConversationRead(
+    const ConversationReadRef(conversationId: 'dm:did:example:bob'),
     watermark: const ReadWatermark(lastReadThreadSeq: '42'),
     fallbackMaxMessageIds: 100,
   );

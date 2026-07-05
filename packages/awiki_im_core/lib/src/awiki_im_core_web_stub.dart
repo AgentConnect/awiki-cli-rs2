@@ -106,6 +106,14 @@ class MessageApi {
     throw _unsupported();
   }
 
+  Future<MarkThreadReadResult> markConversationRead(
+    ConversationReadRef conversation, {
+    ReadWatermark? watermark,
+    int? fallbackMaxMessageIds,
+  }) async {
+    throw _unsupported();
+  }
+
   Future<SyncDeltaResult> syncDelta(SyncDeltaRequest request) async {
     throw _unsupported();
   }

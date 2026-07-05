@@ -392,6 +392,15 @@ pub struct MarkThreadReadRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkConversationReadRequest {
+    pub conversation: ConversationReadRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<ReadWatermark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_max_message_ids: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadWatermark {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_read_message_id: Option<crate::ids::MessageId>,

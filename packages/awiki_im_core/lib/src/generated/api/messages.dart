@@ -100,6 +100,14 @@ Future<DartMarkThreadReadResult> markThreadRead({
   fallbackMaxMessageIds: fallbackMaxMessageIds,
 );
 
+Future<DartMarkThreadReadResult> markConversationRead({
+  required ArcDartImClient client,
+  required DartMarkConversationReadRequest request,
+}) => RustLib.instance.api.crateApiMessagesMarkConversationRead(
+  client: client,
+  request: request,
+);
+
 Future<DartSyncDeltaResult> syncDelta({
   required ArcDartImClient client,
   required DartSyncDeltaRequest request,
