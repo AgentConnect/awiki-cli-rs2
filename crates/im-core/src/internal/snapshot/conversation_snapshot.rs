@@ -351,11 +351,13 @@ mod tests {
         ConversationSnapshotItem {
             thread_kind: "direct".to_owned(),
             thread_id: "did:example:bob".to_owned(),
+            conversation_identity: None,
             participants: vec!["did:example:bob".to_owned()],
             last_message: Some(crate::messages::ConversationSnapshotMessage {
                 id: message_id.to_owned(),
                 thread_kind: "direct".to_owned(),
                 thread_id: "did:example:bob".to_owned(),
+                conversation_identity: None,
                 direction: "incoming".to_owned(),
                 sender: "did:example:bob".to_owned(),
                 receiver: Some("did:example:alice".to_owned()),

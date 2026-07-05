@@ -1179,6 +1179,7 @@ fn attachment_metadata(
         content_type: Some(
             crate::attachments::manifest::attachment_manifest_content_type().to_string(),
         ),
+        conversation_identity: None,
         attributes,
     }
 }

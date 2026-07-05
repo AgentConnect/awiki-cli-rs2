@@ -218,6 +218,13 @@ fn diff_patch(
             owner_did: owner_did.to_owned(),
             version,
             unread_total,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    thread_kind.clone(),
+                    thread_id.clone(),
+                    owner_did,
+                ),
+            ),
             thread_kind,
             thread_id,
         });
@@ -402,11 +409,13 @@ mod tests {
         crate::messages::ConversationSnapshotItem {
             thread_kind: thread_kind.to_owned(),
             thread_id: thread_id.to_owned(),
+            conversation_identity: None,
             participants: Vec::new(),
             last_message: Some(crate::messages::ConversationSnapshotMessage {
                 id: message_id.to_owned(),
                 thread_kind: thread_kind.to_owned(),
                 thread_id: thread_id.to_owned(),
+                conversation_identity: None,
                 direction: "incoming".to_owned(),
                 sender: "did:example:bob".to_owned(),
                 receiver: Some("did:example:alice".to_owned()),

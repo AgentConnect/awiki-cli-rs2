@@ -121,6 +121,13 @@ impl MessageStore {
             owner_identity_id: self.owner_identity_id.clone(),
             owner_did: self.owner_did.clone(),
             version: state.version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    &self.owner_did,
+                ),
+            ),
             thread_kind: key.kind,
             thread_id: key.id,
             reason: reason.to_owned(),
@@ -155,6 +162,13 @@ impl MessageStore {
             owner_identity_id: self.owner_identity_id.clone(),
             owner_did: self.owner_did.clone(),
             version: state.version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    &self.owner_did,
+                ),
+            ),
             thread_kind: key.kind,
             thread_id: key.id,
             items,
@@ -223,6 +237,13 @@ impl MessageStore {
             owner_identity_id: self.owner_identity_id.clone(),
             owner_did: self.owner_did.clone(),
             version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    &self.owner_did,
+                ),
+            ),
             thread_kind: key.kind,
             thread_id: key.id,
             items: next_items,
@@ -248,6 +269,13 @@ impl MessageStore {
             owner_identity_id: self.owner_identity_id.clone(),
             owner_did: self.owner_did.clone(),
             version: state.version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    &self.owner_did,
+                ),
+            ),
             thread_kind: key.kind,
             thread_id: key.id,
             reason: reason.to_owned(),
@@ -303,6 +331,13 @@ fn diff_patch(
             owner_identity_id: owner_identity_id.to_owned(),
             owner_did: owner_did.to_owned(),
             version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    owner_did,
+                ),
+            ),
             thread_kind: key.kind.clone(),
             thread_id: key.id.clone(),
             items: next.to_vec(),
@@ -331,6 +366,13 @@ fn diff_patch(
             owner_identity_id: owner_identity_id.to_owned(),
             owner_did: owner_did.to_owned(),
             version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    owner_did,
+                ),
+            ),
             thread_kind: key.kind.clone(),
             thread_id: key.id.clone(),
             message_id: (*removed[0]).clone(),
@@ -342,6 +384,13 @@ fn diff_patch(
             owner_identity_id: owner_identity_id.to_owned(),
             owner_did: owner_did.to_owned(),
             version,
+            conversation_identity: Some(
+                crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                    key.kind.clone(),
+                    key.id.clone(),
+                    owner_did,
+                ),
+            ),
             thread_kind: key.kind.clone(),
             thread_id: key.id.clone(),
             message: message.clone(),
@@ -418,6 +467,13 @@ mod tests {
                 owner_identity_id: "owner-id".to_owned(),
                 owner_did: "did:example:alice".to_owned(),
                 version: 1,
+                conversation_identity: Some(
+                    crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                        "direct",
+                        "did:example:bob",
+                        "did:example:alice",
+                    )
+                ),
                 thread_kind: "direct".to_owned(),
                 thread_id: "did:example:bob".to_owned(),
                 message: new,
@@ -447,6 +503,13 @@ mod tests {
                 owner_identity_id: "owner-id".to_owned(),
                 owner_did: "did:example:alice".to_owned(),
                 version: 7,
+                conversation_identity: Some(
+                    crate::messages::ConversationIdentity::from_storage_parts_for_owner(
+                        "direct",
+                        "did:example:bob",
+                        "did:example:alice",
+                    )
+                ),
                 thread_kind: "direct".to_owned(),
                 thread_id: "did:example:bob".to_owned(),
                 message_id: "m1".to_owned(),

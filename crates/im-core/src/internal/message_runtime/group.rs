@@ -382,6 +382,9 @@ pub(crate) fn sdk_result_from_group_result(
             Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
             Some(body.retry_target()),
         );
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
+        &crate::messages::ThreadRef::Group(group.clone()),
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -394,6 +397,7 @@ pub(crate) fn sdk_result_from_group_result(
             sent_at: Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
             received_at: None,
             metadata: crate::messages::MessageMetadata {
+                conversation_identity: Some(conversation_identity),
                 operation_id: Some(result.operation_id.clone())
                     .filter(|value| !value.trim().is_empty()),
                 delivery_state: Some(

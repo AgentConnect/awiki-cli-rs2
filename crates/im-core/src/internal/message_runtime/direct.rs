@@ -521,6 +521,9 @@ fn sdk_result_from_direct_result(
             crate::internal::message_runtime::state::send_state_label(&send_state.state).to_string()
         });
     let attributes = resolved_target_attributes(&result.target_did, &peer);
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
+        &crate::messages::ThreadRef::Direct(peer.clone()),
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -533,6 +536,7 @@ fn sdk_result_from_direct_result(
             sent_at: Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
             received_at: None,
             metadata: crate::messages::MessageMetadata {
+                conversation_identity: Some(conversation_identity),
                 operation_id: Some(result.operation_id.clone())
                     .filter(|value| !value.trim().is_empty()),
                 delivery_state: Some(delivery_state),

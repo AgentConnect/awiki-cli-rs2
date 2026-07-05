@@ -4,13 +4,15 @@ mod service;
 
 pub(crate) use self::dto::thread_ref_parts;
 pub use self::dto::{
-    direct_peer_scope_thread_id, Conversation, ConversationListSnapshot, ConversationPatchSession,
-    ConversationQuery, ConversationSnapshotItem, ConversationSnapshotMessage,
-    ConversationSnapshotMessageBody, ConversationStorePatch, DelegatedSigningOptions,
-    DeliveryState, HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope,
-    LocalHistoryQuery, MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult, Message,
-    MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
-    MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
+    direct_peer_scope_thread_id, Conversation, ConversationAlias, ConversationAliasSource,
+    ConversationIdentity, ConversationIdentityScope, ConversationListSnapshot,
+    ConversationMigrationState, ConversationPatchSession, ConversationQuery,
+    ConversationSnapshotItem, ConversationSnapshotMessage, ConversationSnapshotMessageBody,
+    ConversationStorageThreadRef, ConversationStorePatch, DelegatedSigningOptions, DeliveryState,
+    HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope, LocalHistoryQuery,
+    MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult, Message, MessageBody,
+    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind, MessageMetadata,
+    MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
     MessageTarget, ReadWatermark, ScopedInboxToken, SendMessageRequest, SendMessageResult,
     SyncDeltaRequest, SyncDeltaResult, SyncThreadAfterRequest, SyncThreadAfterResult,

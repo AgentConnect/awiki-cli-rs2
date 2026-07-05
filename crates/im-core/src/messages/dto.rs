@@ -150,8 +150,65 @@ pub struct MessageMetadata {
     pub server_sequence: Option<i64>,
     #[serde(default)]
     pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_identity: Option<ConversationIdentity>,
     #[serde(default)]
     pub attributes: Vec<MessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationIdentity {
+    pub conversation_id: String,
+    pub canonical_thread_kind: String,
+    pub canonical_thread_id: String,
+    pub storage_thread_ref: ConversationStorageThreadRef,
+    #[serde(default)]
+    pub aliases: Vec<ConversationAlias>,
+    pub identity_scope: ConversationIdentityScope,
+    pub migration_state: ConversationMigrationState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationStorageThreadRef {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationAlias {
+    pub kind: String,
+    pub id: String,
+    pub source: ConversationAliasSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationAliasSource {
+    LegacyDirectDid,
+    OldFlutterSortedDirect,
+    PeerScopeStorage,
+    GroupStorage,
+    ThreadStorage,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationIdentityScope {
+    Direct,
+    Group,
+    Thread,
+    Mail,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationMigrationState {
+    Canonical,
+    AliasResolved,
+    LegacyInput,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +259,53 @@ pub enum ThreadRef {
     Direct(crate::ids::PeerRef),
     Group(crate::ids::GroupRef),
     Thread(crate::ids::ThreadId),
+}
+
+impl ConversationIdentity {
+    pub fn from_thread_ref(thread: &ThreadRef) -> Self {
+        let (kind, id) = thread_ref_parts(thread);
+        Self::from_storage_parts(kind, id)
+    }
+
+    pub fn from_thread_ref_for_owner(thread: &ThreadRef, owner_did: &str) -> Self {
+        let (kind, id) = thread_ref_parts(thread);
+        Self::from_storage_parts_for_owner(kind, id, owner_did)
+    }
+
+    pub fn from_storage_parts(kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self::from_storage_parts_with_owner(kind, id, None)
+    }
+
+    pub fn from_storage_parts_for_owner(
+        kind: impl Into<String>,
+        id: impl Into<String>,
+        owner_did: &str,
+    ) -> Self {
+        Self::from_storage_parts_with_owner(kind, id, Some(owner_did))
+    }
+
+    fn from_storage_parts_with_owner(
+        kind: impl Into<String>,
+        id: impl Into<String>,
+        owner_did: Option<&str>,
+    ) -> Self {
+        let kind = kind.into();
+        let id = id.into();
+        let conversation_id = canonical_conversation_id_for_storage_parts(&kind, &id, owner_did);
+        let identity_scope = identity_scope_for_kind_id(&kind, &id);
+        let migration_state =
+            migration_state_for_storage_parts(&kind, &id, &conversation_id, &identity_scope);
+        let aliases = aliases_for_storage_parts(&kind, &id, &conversation_id, &identity_scope);
+        Self {
+            conversation_id: conversation_id.clone(),
+            canonical_thread_kind: canonical_thread_kind(&identity_scope).to_owned(),
+            canonical_thread_id: conversation_id,
+            storage_thread_ref: ConversationStorageThreadRef { kind, id },
+            aliases,
+            identity_scope,
+            migration_state,
+        }
+    }
 }
 
 pub fn direct_peer_scope_thread_id(
@@ -387,6 +491,8 @@ pub enum ConversationStorePatch {
         unread_total: u32,
         thread_kind: String,
         thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_identity: Option<ConversationIdentity>,
     },
     Reorder {
         owner_identity_id: String,
@@ -395,6 +501,8 @@ pub enum ConversationStorePatch {
         unread_total: u32,
         thread_kind: String,
         thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_identity: Option<ConversationIdentity>,
         index: u32,
     },
     RepairRequired {
@@ -415,6 +523,8 @@ pub enum ThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_identity: Option<ConversationIdentity>,
         items: Vec<Message>,
     },
     Upsert {
@@ -423,6 +533,8 @@ pub enum ThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_identity: Option<ConversationIdentity>,
         message: Message,
         index: u32,
     },
@@ -432,6 +544,8 @@ pub enum ThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_identity: Option<ConversationIdentity>,
         message_id: String,
     },
     RepairRequired {
@@ -440,6 +554,8 @@ pub enum ThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_identity: Option<ConversationIdentity>,
         reason: String,
     },
 }
@@ -581,10 +697,118 @@ pub(crate) fn thread_ref_parts(thread: &ThreadRef) -> (String, String) {
     }
 }
 
+fn canonical_conversation_id_for_storage_parts(
+    kind: &str,
+    id: &str,
+    owner_did: Option<&str>,
+) -> String {
+    match kind.trim() {
+        "direct" => crate::internal::local_state::owner_scope::direct_conversation_id(id),
+        "group" => crate::internal::local_state::owner_scope::group_conversation_id(id),
+        "thread" if id.trim().starts_with("dm:peer-scope:") => id.trim().to_owned(),
+        "thread" if id.trim().starts_with("dm:") => owner_did
+            .and_then(|owner_did| {
+                crate::internal::local_state::owner_scope::direct_conversation_id_from_thread_alias(
+                    id, owner_did,
+                )
+            })
+            .unwrap_or_else(|| id.trim().to_owned()),
+        "thread" if id.trim().starts_with("group:") => id.trim().to_owned(),
+        "thread" if id.trim().starts_with("mail:") => id.trim().to_owned(),
+        "thread" => id.trim().to_owned(),
+        _ if !id.trim().is_empty() => id.trim().to_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
+fn identity_scope_for_kind_id(kind: &str, id: &str) -> ConversationIdentityScope {
+    match kind.trim() {
+        "direct" => ConversationIdentityScope::Direct,
+        "group" => ConversationIdentityScope::Group,
+        "thread" if id.trim().starts_with("dm:") => ConversationIdentityScope::Direct,
+        "thread" if id.trim().starts_with("group:") => ConversationIdentityScope::Group,
+        "thread" if id.trim().starts_with("mail:") => ConversationIdentityScope::Mail,
+        "thread" => ConversationIdentityScope::Thread,
+        _ => ConversationIdentityScope::Unknown,
+    }
+}
+
+fn canonical_thread_kind(scope: &ConversationIdentityScope) -> &'static str {
+    match scope {
+        ConversationIdentityScope::Direct => "direct",
+        ConversationIdentityScope::Group => "group",
+        ConversationIdentityScope::Mail => "mail",
+        ConversationIdentityScope::Thread => "thread",
+        ConversationIdentityScope::Unknown => "unknown",
+    }
+}
+
+fn migration_state_for_storage_parts(
+    kind: &str,
+    id: &str,
+    conversation_id: &str,
+    scope: &ConversationIdentityScope,
+) -> ConversationMigrationState {
+    match (kind.trim(), scope) {
+        ("direct", ConversationIdentityScope::Direct) => ConversationMigrationState::LegacyInput,
+        ("group", ConversationIdentityScope::Group) => ConversationMigrationState::LegacyInput,
+        ("thread", ConversationIdentityScope::Direct)
+            if id.trim().starts_with("dm:") && !id.trim().starts_with("dm:peer-scope:") =>
+        {
+            ConversationMigrationState::LegacyInput
+        }
+        ("thread", _) if id.trim() == conversation_id => ConversationMigrationState::Canonical,
+        ("thread", _) => ConversationMigrationState::AliasResolved,
+        _ => ConversationMigrationState::Unknown,
+    }
+}
+
+fn aliases_for_storage_parts(
+    kind: &str,
+    id: &str,
+    conversation_id: &str,
+    scope: &ConversationIdentityScope,
+) -> Vec<ConversationAlias> {
+    let source = match (kind.trim(), scope) {
+        ("direct", ConversationIdentityScope::Direct) => ConversationAliasSource::LegacyDirectDid,
+        ("group", ConversationIdentityScope::Group) => ConversationAliasSource::GroupStorage,
+        ("thread", ConversationIdentityScope::Direct)
+            if id.trim().starts_with("dm:peer-scope:") =>
+        {
+            ConversationAliasSource::PeerScopeStorage
+        }
+        ("thread", ConversationIdentityScope::Direct) if is_old_flutter_direct_alias(id) => {
+            ConversationAliasSource::OldFlutterSortedDirect
+        }
+        ("thread", ConversationIdentityScope::Direct) if id.trim().starts_with("dm:") => {
+            ConversationAliasSource::LegacyDirectDid
+        }
+        ("thread", _) => ConversationAliasSource::ThreadStorage,
+        _ => ConversationAliasSource::Unknown,
+    };
+    if id.trim() == conversation_id.trim() && source == ConversationAliasSource::PeerScopeStorage {
+        return Vec::new();
+    }
+    vec![ConversationAlias {
+        kind: kind.trim().to_owned(),
+        id: id.trim().to_owned(),
+        source,
+    }]
+}
+
+fn is_old_flutter_direct_alias(id: &str) -> bool {
+    id.trim()
+        .strip_prefix("dm:")
+        .map(|value| value.contains(":did:"))
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationSnapshotItem {
     pub thread_kind: String,
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_identity: Option<ConversationIdentity>,
     pub participants: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<ConversationSnapshotMessage>,
@@ -603,6 +827,8 @@ pub struct ConversationSnapshotMessage {
     pub id: String,
     pub thread_kind: String,
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_identity: Option<ConversationIdentity>,
     pub direction: String,
     pub sender: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -637,6 +863,8 @@ pub struct ConversationSnapshotMessageBody {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub thread: ThreadRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_identity: Option<ConversationIdentity>,
     pub title: Option<String>,
     pub participants: Vec<crate::ids::PeerRef>,
     pub last_message: Option<Message>,
@@ -657,4 +885,116 @@ pub struct ConversationQuery {
     pub include_groups: bool,
     pub include_direct: bool,
     pub unread_only: bool,
+}
+
+#[cfg(test)]
+mod conversation_identity_tests {
+    use super::*;
+
+    #[test]
+    fn conversation_identity_direct_ref_uses_ownerless_conversation_id() {
+        let peer = crate::ids::PeerRef::parse("did:example:bob", "").unwrap();
+        let identity = ConversationIdentity::from_thread_ref(&ThreadRef::Direct(peer));
+
+        assert_eq!(identity.conversation_id, "dm:did:example:bob");
+        assert_eq!(identity.canonical_thread_kind, "direct");
+        assert_eq!(identity.canonical_thread_id, "dm:did:example:bob");
+        assert_eq!(identity.storage_thread_ref.kind, "direct");
+        assert_eq!(identity.storage_thread_ref.id, "did:example:bob");
+        assert_eq!(identity.identity_scope, ConversationIdentityScope::Direct);
+        assert_eq!(
+            identity.migration_state,
+            ConversationMigrationState::LegacyInput
+        );
+        assert_eq!(identity.aliases.len(), 1);
+        assert_eq!(
+            identity.aliases[0].source,
+            ConversationAliasSource::LegacyDirectDid
+        );
+    }
+
+    #[test]
+    fn conversation_identity_peer_scope_thread_is_canonical_direct_storage() {
+        let thread_id =
+            crate::messages::direct_peer_scope_thread_id("user-1", "alice.anpclaw.com").unwrap();
+        let identity = ConversationIdentity::from_thread_ref(&ThreadRef::Thread(thread_id));
+
+        assert!(identity.conversation_id.starts_with("dm:peer-scope:v1:"));
+        assert_eq!(identity.canonical_thread_kind, "direct");
+        assert_eq!(identity.canonical_thread_id, identity.conversation_id);
+        assert_eq!(identity.storage_thread_ref.kind, "thread");
+        assert_eq!(identity.storage_thread_ref.id, identity.conversation_id);
+        assert_eq!(identity.identity_scope, ConversationIdentityScope::Direct);
+        assert_eq!(
+            identity.migration_state,
+            ConversationMigrationState::Canonical
+        );
+        assert!(identity.aliases.is_empty());
+    }
+
+    #[test]
+    fn conversation_identity_old_flutter_sorted_direct_is_alias_input() {
+        let identity = ConversationIdentity::from_storage_parts(
+            "thread",
+            "dm:did:example:alice:did:example:bob",
+        );
+
+        assert_eq!(
+            identity.conversation_id,
+            "dm:did:example:alice:did:example:bob"
+        );
+        assert_eq!(identity.canonical_thread_kind, "direct");
+        assert_eq!(identity.identity_scope, ConversationIdentityScope::Direct);
+        assert_eq!(
+            identity.migration_state,
+            ConversationMigrationState::LegacyInput
+        );
+        assert_eq!(identity.aliases.len(), 1);
+        assert_eq!(
+            identity.aliases[0].source,
+            ConversationAliasSource::OldFlutterSortedDirect
+        );
+    }
+
+    #[test]
+    fn conversation_identity_old_flutter_sorted_direct_resolves_with_owner() {
+        let identity = ConversationIdentity::from_storage_parts_for_owner(
+            "thread",
+            "dm:did:example:alice:did:example:bob",
+            "did:example:alice",
+        );
+
+        assert_eq!(identity.conversation_id, "dm:did:example:bob");
+        assert_eq!(identity.canonical_thread_kind, "direct");
+        assert_eq!(identity.canonical_thread_id, "dm:did:example:bob");
+        assert_eq!(identity.storage_thread_ref.kind, "thread");
+        assert_eq!(
+            identity.storage_thread_ref.id,
+            "dm:did:example:alice:did:example:bob"
+        );
+        assert_eq!(identity.identity_scope, ConversationIdentityScope::Direct);
+        assert_eq!(
+            identity.migration_state,
+            ConversationMigrationState::LegacyInput
+        );
+        assert_eq!(identity.aliases.len(), 1);
+        assert_eq!(
+            identity.aliases[0].source,
+            ConversationAliasSource::OldFlutterSortedDirect
+        );
+    }
+
+    #[test]
+    fn conversation_identity_group_ref_uses_group_conversation_id() {
+        let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+        let identity = ConversationIdentity::from_thread_ref(&ThreadRef::Group(group));
+
+        assert_eq!(identity.conversation_id, "group:did:example:group");
+        assert_eq!(identity.canonical_thread_kind, "group");
+        assert_eq!(identity.identity_scope, ConversationIdentityScope::Group);
+        assert_eq!(
+            identity.migration_state,
+            ConversationMigrationState::LegacyInput
+        );
+    }
 }

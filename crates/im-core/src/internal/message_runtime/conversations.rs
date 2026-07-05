@@ -101,9 +101,16 @@ pub(crate) fn snapshot_item_from_conversation(
     conversation: &crate::messages::Conversation,
 ) -> ConversationSnapshotItem {
     let (thread_kind, thread_id) = thread_ref_parts(&conversation.thread);
+    let conversation_identity = conversation
+        .conversation_identity
+        .clone()
+        .unwrap_or_else(|| {
+            crate::messages::ConversationIdentity::from_thread_ref(&conversation.thread)
+        });
     ConversationSnapshotItem {
         thread_kind,
         thread_id,
+        conversation_identity: Some(conversation_identity),
         participants: conversation
             .participants
             .iter()
@@ -123,10 +130,16 @@ pub(crate) fn snapshot_item_from_conversation(
 
 fn snapshot_message(message: &crate::messages::Message) -> ConversationSnapshotMessage {
     let (thread_kind, thread_id) = thread_ref_parts(&message.thread);
+    let conversation_identity = message
+        .metadata
+        .conversation_identity
+        .clone()
+        .unwrap_or_else(|| crate::messages::ConversationIdentity::from_thread_ref(&message.thread));
     ConversationSnapshotMessage {
         id: message.id.as_str().to_owned(),
         thread_kind,
         thread_id,
+        conversation_identity: Some(conversation_identity),
         direction: message_direction_name(&message.direction).to_owned(),
         sender: message.sender.as_str().to_owned(),
         receiver: message
@@ -264,9 +277,12 @@ fn conversation_from_record(
 ) -> crate::ImResult<crate::messages::Conversation> {
     let last_message = record.last_message().map(message_from_record).transpose()?;
     let thread = conversation_thread(owner_did, &record, last_message.as_ref())?;
+    let conversation_identity =
+        crate::messages::ConversationIdentity::from_thread_ref_for_owner(&thread, owner_did);
     let participants = conversation_participants(owner_did, &thread, last_message.as_ref())?;
     Ok(crate::messages::Conversation {
         thread,
+        conversation_identity: Some(conversation_identity),
         title: None,
         participants,
         last_message,
@@ -465,6 +481,10 @@ pub(crate) fn message_from_record(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::ImResult<crate::messages::Message> {
     let thread = message_thread(record)?;
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref_for_owner(
+        &thread,
+        &record.owner_did,
+    );
     let content_type = effective_content_type(record);
     let retry_target = retry_target_from_record(record);
     let send_state = crate::internal::message_runtime::state::send_state_from_metadata(
@@ -492,6 +512,7 @@ pub(crate) fn message_from_record(
         sent_at: non_empty_string(&record.sent_at),
         received_at: None,
         metadata: crate::messages::MessageMetadata {
+            conversation_identity: Some(conversation_identity),
             operation_id: metadata_string(&record.metadata, "operation_id"),
             delivery_state: metadata_string(&record.metadata, "delivery_state"),
             send_state,

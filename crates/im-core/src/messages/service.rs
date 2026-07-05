@@ -390,6 +390,7 @@ WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-actor'"#,
                     retry_plan: None,
                     server_sequence,
                     content_type: Some("text/plain".to_owned()),
+                    conversation_identity: None,
                     attributes: vec![crate::messages::MessageMetadataAttribute {
                         key: "security".to_owned(),
                         value: "direct-e2ee".to_owned(),
@@ -432,6 +433,7 @@ WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-actor'"#,
                     content_type: Some(
                         crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
                     ),
+                    conversation_identity: None,
                     attributes: vec![crate::messages::MessageMetadataAttribute {
                         key: "security".to_owned(),
                         value: "direct-e2ee".to_owned(),

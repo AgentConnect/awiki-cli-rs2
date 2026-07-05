@@ -578,6 +578,9 @@ pub(crate) fn sdk_result_from_secure_result(
             Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText),
         );
     let attributes = secure_direct_attributes(target_did, &peer, Vec::new());
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
+        &crate::messages::ThreadRef::Direct(peer.clone()),
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -593,6 +596,7 @@ pub(crate) fn sdk_result_from_secure_result(
             sent_at: optional_string(&accepted_at),
             received_at: None,
             metadata: crate::messages::MessageMetadata {
+                conversation_identity: Some(conversation_identity),
                 operation_id: optional_string(&operation_id),
                 delivery_state: optional_string(&delivery_state).or_else(|| {
                     Some(
@@ -649,6 +653,9 @@ pub(crate) fn sdk_result_from_secure_attachment_result(
             value: crate::attachments::manifest::manifest_content_string(redacted_manifest),
         }],
     );
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
+        &crate::messages::ThreadRef::Direct(peer.clone()),
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -665,6 +672,7 @@ pub(crate) fn sdk_result_from_secure_attachment_result(
             sent_at: optional_string(&accepted_at),
             received_at: None,
             metadata: crate::messages::MessageMetadata {
+                conversation_identity: Some(conversation_identity),
                 operation_id: optional_string(&operation_id),
                 delivery_state: optional_string(&delivery_state).or_else(|| {
                     Some(
@@ -728,6 +736,9 @@ pub(crate) fn queued_sdk_result(
             value: outbox_id.to_owned(),
         }],
     );
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
+        &crate::messages::ThreadRef::Direct(peer.clone()),
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -743,6 +754,7 @@ pub(crate) fn queued_sdk_result(
             sent_at: None,
             received_at: None,
             metadata: crate::messages::MessageMetadata {
+                conversation_identity: Some(conversation_identity),
                 operation_id: Some(operation_id),
                 delivery_state: Some("queued".to_owned()),
                 send_state: Some(send_state),

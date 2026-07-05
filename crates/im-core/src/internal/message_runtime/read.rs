@@ -2327,6 +2327,7 @@ fn message_metadata_from_object(
             .or_else(|| i64_value(object.get("sequence")))
             .or_else(|| i64_value(object.get("group_event_seq"))),
         content_type: content_type.clone(),
+        conversation_identity: None,
         attributes,
     }
 }
