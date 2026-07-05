@@ -335,21 +335,33 @@ fn realtime_service_connect_reads_native_websocket_notification_into_im_event() 
 }
 
 #[tokio::test]
-async fn realtime_service_start_async_requires_realtime_bearer_before_default_transport() {
+async fn realtime_service_start_async_defers_missing_bearer_to_transport_boundary() {
     let fixture = RuntimeFixture::new();
     fixture.write_ready_identity("alice", None);
     let client = fixture.client("alice");
 
-    let error = match client
+    let mut session = client
         .realtime()
         .start_async(RealtimeOptions::default())
         .await
-    {
-        Ok(_) => panic!("missing auth should block transport dial"),
-        Err(error) => error,
-    };
+        .expect("missing auth should still create a worker session");
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(2), session.join())
+        .await
+        .expect("realtime worker should finish against the test endpoint")
+        .expect("realtime worker returns an exit status");
 
-    assert_eq!(error, ImError::AuthRequired);
+    assert!(
+        matches!(
+            exit.reason,
+            RealtimeExitReason::TransportUnavailable | RealtimeExitReason::AuthFailed
+        ),
+        "unexpected realtime exit reason: {:?}",
+        exit.reason
+    );
+    assert!(
+        !exit.warnings.is_empty(),
+        "expected worker boundary warning for failed refresh/dial"
+    );
 }
 
 #[cfg(feature = "blocking")]

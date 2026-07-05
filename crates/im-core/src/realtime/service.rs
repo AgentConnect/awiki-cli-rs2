@@ -40,15 +40,6 @@ impl<'a> RealtimeService<'a> {
         {
             return Err(crate::ImError::unsupported("realtime-runner"));
         }
-        if self
-            .client
-            .runtime()
-            .key_provider
-            .valid_auth_token()?
-            .is_none()
-        {
-            return Err(crate::ImError::AuthRequired);
-        }
         super::runner::spawn_default_async(self.client.clone(), options).await
     }
 
