@@ -162,13 +162,13 @@ return repairRequired(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)?  reset,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)?  upsert,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId)?  remove,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  int index)?  reorder,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)?  repairRequired,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)?  reset,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)?  upsert,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity)?  remove,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  int index)?  reorder,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)?  repairRequired,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case DartConversationStorePatch_Reset() when reset != null:
 return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.items);case DartConversationStorePatch_Upsert() when upsert != null:
 return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.item,_that.index);case DartConversationStorePatch_Remove() when remove != null:
-return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId);case DartConversationStorePatch_Reorder() when reorder != null:
-return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.index);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.conversationIdentity);case DartConversationStorePatch_Reorder() when reorder != null:
+return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.index);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
 return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.reason);case _:
   return orElse();
 
@@ -187,13 +187,13 @@ return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.u
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)  reset,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)  upsert,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId)  remove,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  int index)  reorder,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)  repairRequired,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)  reset,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)  upsert,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity)  remove,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  int index)  reorder,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)  repairRequired,}) {final _that = this;
 switch (_that) {
 case DartConversationStorePatch_Reset():
 return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.items);case DartConversationStorePatch_Upsert():
 return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.item,_that.index);case DartConversationStorePatch_Remove():
-return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId);case DartConversationStorePatch_Reorder():
-return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.index);case DartConversationStorePatch_RepairRequired():
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.conversationIdentity);case DartConversationStorePatch_Reorder():
+return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.index);case DartConversationStorePatch_RepairRequired():
 return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.reason);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -208,13 +208,13 @@ return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.u
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)?  reset,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)?  upsert,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId)?  remove,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  int index)?  reorder,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)?  repairRequired,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  List<DartConversationSnapshotItem> items)?  reset,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  DartConversationSnapshotItem item,  int index)?  upsert,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity)?  remove,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  int index)?  reorder,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  int unreadTotal,  String reason)?  repairRequired,}) {final _that = this;
 switch (_that) {
 case DartConversationStorePatch_Reset() when reset != null:
 return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.items);case DartConversationStorePatch_Upsert() when upsert != null:
 return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.item,_that.index);case DartConversationStorePatch_Remove() when remove != null:
-return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId);case DartConversationStorePatch_Reorder() when reorder != null:
-return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.index);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.conversationIdentity);case DartConversationStorePatch_Reorder() when reorder != null:
+return reorder(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.index);case DartConversationStorePatch_RepairRequired() when repairRequired != null:
 return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.unreadTotal,_that.reason);case _:
   return null;
 
@@ -383,7 +383,7 @@ as int,
 
 
 class DartConversationStorePatch_Remove extends DartConversationStorePatch {
-  const DartConversationStorePatch_Remove({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.threadKind, required this.threadId}): super._();
+  const DartConversationStorePatch_Remove({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.threadKind, required this.threadId, this.conversationIdentity}): super._();
 
 
 @override final  String ownerIdentityId;
@@ -392,6 +392,7 @@ class DartConversationStorePatch_Remove extends DartConversationStorePatch {
 @override final  int unreadTotal;
  final  String threadKind;
  final  String threadId;
+ final  DartConversationIdentity? conversationIdentity;
 
 /// Create a copy of DartConversationStorePatch
 /// with the given fields replaced by the non-null parameter values.
@@ -403,16 +404,16 @@ $DartConversationStorePatch_RemoveCopyWith<DartConversationStorePatch_Remove> ge
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Remove&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Remove&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,threadKind,threadId);
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,threadKind,threadId,conversationIdentity);
 
 @override
 String toString() {
-  return 'DartConversationStorePatch.remove(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, threadKind: $threadKind, threadId: $threadId)';
+  return 'DartConversationStorePatch.remove(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity)';
 }
 
 
@@ -423,7 +424,7 @@ abstract mixin class $DartConversationStorePatch_RemoveCopyWith<$Res> implements
   factory $DartConversationStorePatch_RemoveCopyWith(DartConversationStorePatch_Remove value, $Res Function(DartConversationStorePatch_Remove) _then) = _$DartConversationStorePatch_RemoveCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String threadKind, String threadId
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String threadKind, String threadId, DartConversationIdentity? conversationIdentity
 });
 
 
@@ -440,7 +441,7 @@ class _$DartConversationStorePatch_RemoveCopyWithImpl<$Res>
 
 /// Create a copy of DartConversationStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? threadKind = null,Object? threadId = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,}) {
   return _then(DartConversationStorePatch_Remove(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
@@ -448,7 +449,8 @@ as String,version: null == version ? _self.version : version // ignore: cast_nul
 as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
 as int,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,
   ));
 }
 
@@ -459,7 +461,7 @@ as String,
 
 
 class DartConversationStorePatch_Reorder extends DartConversationStorePatch {
-  const DartConversationStorePatch_Reorder({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.threadKind, required this.threadId, required this.index}): super._();
+  const DartConversationStorePatch_Reorder({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.unreadTotal, required this.threadKind, required this.threadId, this.conversationIdentity, required this.index}): super._();
 
 
 @override final  String ownerIdentityId;
@@ -468,6 +470,7 @@ class DartConversationStorePatch_Reorder extends DartConversationStorePatch {
 @override final  int unreadTotal;
  final  String threadKind;
  final  String threadId;
+ final  DartConversationIdentity? conversationIdentity;
  final  int index;
 
 /// Create a copy of DartConversationStorePatch
@@ -480,16 +483,16 @@ $DartConversationStorePatch_ReorderCopyWith<DartConversationStorePatch_Reorder> 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Reorder&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.index, index) || other.index == index));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartConversationStorePatch_Reorder&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.unreadTotal, unreadTotal) || other.unreadTotal == unreadTotal)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity)&&(identical(other.index, index) || other.index == index));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,threadKind,threadId,index);
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,unreadTotal,threadKind,threadId,conversationIdentity,index);
 
 @override
 String toString() {
-  return 'DartConversationStorePatch.reorder(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, threadKind: $threadKind, threadId: $threadId, index: $index)';
+  return 'DartConversationStorePatch.reorder(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, unreadTotal: $unreadTotal, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity, index: $index)';
 }
 
 
@@ -500,7 +503,7 @@ abstract mixin class $DartConversationStorePatch_ReorderCopyWith<$Res> implement
   factory $DartConversationStorePatch_ReorderCopyWith(DartConversationStorePatch_Reorder value, $Res Function(DartConversationStorePatch_Reorder) _then) = _$DartConversationStorePatch_ReorderCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String threadKind, String threadId, int index
+ String ownerIdentityId, String ownerDid, BigInt version, int unreadTotal, String threadKind, String threadId, DartConversationIdentity? conversationIdentity, int index
 });
 
 
@@ -517,7 +520,7 @@ class _$DartConversationStorePatch_ReorderCopyWithImpl<$Res>
 
 /// Create a copy of DartConversationStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? threadKind = null,Object? threadId = null,Object? index = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? unreadTotal = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,Object? index = null,}) {
   return _then(DartConversationStorePatch_Reorder(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
@@ -525,7 +528,8 @@ as String,version: null == version ? _self.version : version // ignore: cast_nul
 as BigInt,unreadTotal: null == unreadTotal ? _self.unreadTotal : unreadTotal // ignore: cast_nullable_to_non_nullable
 as int,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,index: null == index ? _self.index : index // ignore: cast_nullable_to_non_nullable
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,index: null == index ? _self.index : index // ignore: cast_nullable_to_non_nullable
 as int,
   ));
 }
@@ -1153,7 +1157,7 @@ as String,
 /// @nodoc
 mixin _$DartThreadMessageStorePatch {
 
- String get ownerIdentityId; String get ownerDid; BigInt get version; String get threadKind; String get threadId;
+ String get ownerIdentityId; String get ownerDid; BigInt get version; String get threadKind; String get threadId; DartConversationIdentity? get conversationIdentity;
 /// Create a copy of DartThreadMessageStorePatch
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -1164,16 +1168,16 @@ $DartThreadMessageStorePatchCopyWith<DartThreadMessageStorePatch> get copyWith =
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId);
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,conversationIdentity);
 
 @override
 String toString() {
-  return 'DartThreadMessageStorePatch(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId)';
+  return 'DartThreadMessageStorePatch(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity)';
 }
 
 
@@ -1184,7 +1188,7 @@ abstract mixin class $DartThreadMessageStorePatchCopyWith<$Res>  {
   factory $DartThreadMessageStorePatchCopyWith(DartThreadMessageStorePatch value, $Res Function(DartThreadMessageStorePatch) _then) = _$DartThreadMessageStorePatchCopyWithImpl;
 @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId
+ String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, DartConversationIdentity? conversationIdentity
 });
 
 
@@ -1201,14 +1205,15 @@ class _$DartThreadMessageStorePatchCopyWithImpl<$Res>
 
 /// Create a copy of DartThreadMessageStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,}) {
   return _then(_self.copyWith(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
 as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
 as BigInt,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,
   ));
 }
 
@@ -1299,13 +1304,13 @@ return repairRequired(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  List<DartMessage> items)?  reset,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartMessage message,  int index)?  upsert,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  String messageId)?  remove,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  String reason)?  repairRequired,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  List<DartMessage> items)?  reset,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  DartMessage message,  int index)?  upsert,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  String messageId)?  remove,TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  String reason)?  repairRequired,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case DartThreadMessageStorePatch_Reset() when reset != null:
-return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.items);case DartThreadMessageStorePatch_Upsert() when upsert != null:
-return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.message,_that.index);case DartThreadMessageStorePatch_Remove() when remove != null:
-return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.messageId);case DartThreadMessageStorePatch_RepairRequired() when repairRequired != null:
-return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.reason);case _:
+return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.items);case DartThreadMessageStorePatch_Upsert() when upsert != null:
+return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.message,_that.index);case DartThreadMessageStorePatch_Remove() when remove != null:
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.messageId);case DartThreadMessageStorePatch_RepairRequired() when repairRequired != null:
+return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.reason);case _:
   return orElse();
 
 }
@@ -1323,13 +1328,13 @@ return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.t
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  List<DartMessage> items)  reset,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartMessage message,  int index)  upsert,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  String messageId)  remove,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  String reason)  repairRequired,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  List<DartMessage> items)  reset,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  DartMessage message,  int index)  upsert,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  String messageId)  remove,required TResult Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  String reason)  repairRequired,}) {final _that = this;
 switch (_that) {
 case DartThreadMessageStorePatch_Reset():
-return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.items);case DartThreadMessageStorePatch_Upsert():
-return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.message,_that.index);case DartThreadMessageStorePatch_Remove():
-return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.messageId);case DartThreadMessageStorePatch_RepairRequired():
-return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.reason);}
+return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.items);case DartThreadMessageStorePatch_Upsert():
+return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.message,_that.index);case DartThreadMessageStorePatch_Remove():
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.messageId);case DartThreadMessageStorePatch_RepairRequired():
+return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.reason);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -1343,13 +1348,13 @@ return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.t
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  List<DartMessage> items)?  reset,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartMessage message,  int index)?  upsert,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  String messageId)?  remove,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  String reason)?  repairRequired,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  List<DartMessage> items)?  reset,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  DartMessage message,  int index)?  upsert,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  String messageId)?  remove,TResult? Function( String ownerIdentityId,  String ownerDid,  BigInt version,  String threadKind,  String threadId,  DartConversationIdentity? conversationIdentity,  String reason)?  repairRequired,}) {final _that = this;
 switch (_that) {
 case DartThreadMessageStorePatch_Reset() when reset != null:
-return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.items);case DartThreadMessageStorePatch_Upsert() when upsert != null:
-return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.message,_that.index);case DartThreadMessageStorePatch_Remove() when remove != null:
-return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.messageId);case DartThreadMessageStorePatch_RepairRequired() when repairRequired != null:
-return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.reason);case _:
+return reset(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.items);case DartThreadMessageStorePatch_Upsert() when upsert != null:
+return upsert(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.message,_that.index);case DartThreadMessageStorePatch_Remove() when remove != null:
+return remove(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.messageId);case DartThreadMessageStorePatch_RepairRequired() when repairRequired != null:
+return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.threadKind,_that.threadId,_that.conversationIdentity,_that.reason);case _:
   return null;
 
 }
@@ -1361,7 +1366,7 @@ return repairRequired(_that.ownerIdentityId,_that.ownerDid,_that.version,_that.t
 
 
 class DartThreadMessageStorePatch_Reset extends DartThreadMessageStorePatch {
-  const DartThreadMessageStorePatch_Reset({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, required final  List<DartMessage> items}): _items = items,super._();
+  const DartThreadMessageStorePatch_Reset({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, this.conversationIdentity, required final  List<DartMessage> items}): _items = items,super._();
 
 
 @override final  String ownerIdentityId;
@@ -1369,6 +1374,7 @@ class DartThreadMessageStorePatch_Reset extends DartThreadMessageStorePatch {
 @override final  BigInt version;
 @override final  String threadKind;
 @override final  String threadId;
+@override final  DartConversationIdentity? conversationIdentity;
  final  List<DartMessage> _items;
  List<DartMessage> get items {
   if (_items is EqualUnmodifiableListView) return _items;
@@ -1387,16 +1393,16 @@ $DartThreadMessageStorePatch_ResetCopyWith<DartThreadMessageStorePatch_Reset> ge
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_Reset&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&const DeepCollectionEquality().equals(other._items, _items));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_Reset&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity)&&const DeepCollectionEquality().equals(other._items, _items));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,const DeepCollectionEquality().hash(_items));
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,conversationIdentity,const DeepCollectionEquality().hash(_items));
 
 @override
 String toString() {
-  return 'DartThreadMessageStorePatch.reset(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, items: $items)';
+  return 'DartThreadMessageStorePatch.reset(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity, items: $items)';
 }
 
 
@@ -1407,7 +1413,7 @@ abstract mixin class $DartThreadMessageStorePatch_ResetCopyWith<$Res> implements
   factory $DartThreadMessageStorePatch_ResetCopyWith(DartThreadMessageStorePatch_Reset value, $Res Function(DartThreadMessageStorePatch_Reset) _then) = _$DartThreadMessageStorePatch_ResetCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, List<DartMessage> items
+ String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, DartConversationIdentity? conversationIdentity, List<DartMessage> items
 });
 
 
@@ -1424,14 +1430,15 @@ class _$DartThreadMessageStorePatch_ResetCopyWithImpl<$Res>
 
 /// Create a copy of DartThreadMessageStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? items = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,Object? items = null,}) {
   return _then(DartThreadMessageStorePatch_Reset(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
 as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
 as BigInt,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,items: null == items ? _self._items : items // ignore: cast_nullable_to_non_nullable
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,items: null == items ? _self._items : items // ignore: cast_nullable_to_non_nullable
 as List<DartMessage>,
   ));
 }
@@ -1443,7 +1450,7 @@ as List<DartMessage>,
 
 
 class DartThreadMessageStorePatch_Upsert extends DartThreadMessageStorePatch {
-  const DartThreadMessageStorePatch_Upsert({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, required this.message, required this.index}): super._();
+  const DartThreadMessageStorePatch_Upsert({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, this.conversationIdentity, required this.message, required this.index}): super._();
 
 
 @override final  String ownerIdentityId;
@@ -1451,6 +1458,7 @@ class DartThreadMessageStorePatch_Upsert extends DartThreadMessageStorePatch {
 @override final  BigInt version;
 @override final  String threadKind;
 @override final  String threadId;
+@override final  DartConversationIdentity? conversationIdentity;
  final  DartMessage message;
  final  int index;
 
@@ -1464,16 +1472,16 @@ $DartThreadMessageStorePatch_UpsertCopyWith<DartThreadMessageStorePatch_Upsert> 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_Upsert&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.message, message) || other.message == message)&&(identical(other.index, index) || other.index == index));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_Upsert&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity)&&(identical(other.message, message) || other.message == message)&&(identical(other.index, index) || other.index == index));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,message,index);
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,conversationIdentity,message,index);
 
 @override
 String toString() {
-  return 'DartThreadMessageStorePatch.upsert(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, message: $message, index: $index)';
+  return 'DartThreadMessageStorePatch.upsert(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity, message: $message, index: $index)';
 }
 
 
@@ -1484,7 +1492,7 @@ abstract mixin class $DartThreadMessageStorePatch_UpsertCopyWith<$Res> implement
   factory $DartThreadMessageStorePatch_UpsertCopyWith(DartThreadMessageStorePatch_Upsert value, $Res Function(DartThreadMessageStorePatch_Upsert) _then) = _$DartThreadMessageStorePatch_UpsertCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, DartMessage message, int index
+ String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, DartConversationIdentity? conversationIdentity, DartMessage message, int index
 });
 
 
@@ -1501,14 +1509,15 @@ class _$DartThreadMessageStorePatch_UpsertCopyWithImpl<$Res>
 
 /// Create a copy of DartThreadMessageStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? message = null,Object? index = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,Object? message = null,Object? index = null,}) {
   return _then(DartThreadMessageStorePatch_Upsert(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
 as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
 as BigInt,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as DartMessage,index: null == index ? _self.index : index // ignore: cast_nullable_to_non_nullable
 as int,
   ));
@@ -1521,7 +1530,7 @@ as int,
 
 
 class DartThreadMessageStorePatch_Remove extends DartThreadMessageStorePatch {
-  const DartThreadMessageStorePatch_Remove({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, required this.messageId}): super._();
+  const DartThreadMessageStorePatch_Remove({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, this.conversationIdentity, required this.messageId}): super._();
 
 
 @override final  String ownerIdentityId;
@@ -1529,6 +1538,7 @@ class DartThreadMessageStorePatch_Remove extends DartThreadMessageStorePatch {
 @override final  BigInt version;
 @override final  String threadKind;
 @override final  String threadId;
+@override final  DartConversationIdentity? conversationIdentity;
  final  String messageId;
 
 /// Create a copy of DartThreadMessageStorePatch
@@ -1541,16 +1551,16 @@ $DartThreadMessageStorePatch_RemoveCopyWith<DartThreadMessageStorePatch_Remove> 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_Remove&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.messageId, messageId) || other.messageId == messageId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_Remove&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity)&&(identical(other.messageId, messageId) || other.messageId == messageId));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,messageId);
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,conversationIdentity,messageId);
 
 @override
 String toString() {
-  return 'DartThreadMessageStorePatch.remove(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, messageId: $messageId)';
+  return 'DartThreadMessageStorePatch.remove(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity, messageId: $messageId)';
 }
 
 
@@ -1561,7 +1571,7 @@ abstract mixin class $DartThreadMessageStorePatch_RemoveCopyWith<$Res> implement
   factory $DartThreadMessageStorePatch_RemoveCopyWith(DartThreadMessageStorePatch_Remove value, $Res Function(DartThreadMessageStorePatch_Remove) _then) = _$DartThreadMessageStorePatch_RemoveCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, String messageId
+ String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, DartConversationIdentity? conversationIdentity, String messageId
 });
 
 
@@ -1578,14 +1588,15 @@ class _$DartThreadMessageStorePatch_RemoveCopyWithImpl<$Res>
 
 /// Create a copy of DartThreadMessageStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? messageId = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,Object? messageId = null,}) {
   return _then(DartThreadMessageStorePatch_Remove(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
 as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
 as BigInt,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,messageId: null == messageId ? _self.messageId : messageId // ignore: cast_nullable_to_non_nullable
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,messageId: null == messageId ? _self.messageId : messageId // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }
@@ -1597,7 +1608,7 @@ as String,
 
 
 class DartThreadMessageStorePatch_RepairRequired extends DartThreadMessageStorePatch {
-  const DartThreadMessageStorePatch_RepairRequired({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, required this.reason}): super._();
+  const DartThreadMessageStorePatch_RepairRequired({required this.ownerIdentityId, required this.ownerDid, required this.version, required this.threadKind, required this.threadId, this.conversationIdentity, required this.reason}): super._();
 
 
 @override final  String ownerIdentityId;
@@ -1605,6 +1616,7 @@ class DartThreadMessageStorePatch_RepairRequired extends DartThreadMessageStoreP
 @override final  BigInt version;
 @override final  String threadKind;
 @override final  String threadId;
+@override final  DartConversationIdentity? conversationIdentity;
  final  String reason;
 
 /// Create a copy of DartThreadMessageStorePatch
@@ -1617,16 +1629,16 @@ $DartThreadMessageStorePatch_RepairRequiredCopyWith<DartThreadMessageStorePatch_
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_RepairRequired&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.reason, reason) || other.reason == reason));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is DartThreadMessageStorePatch_RepairRequired&&(identical(other.ownerIdentityId, ownerIdentityId) || other.ownerIdentityId == ownerIdentityId)&&(identical(other.ownerDid, ownerDid) || other.ownerDid == ownerDid)&&(identical(other.version, version) || other.version == version)&&(identical(other.threadKind, threadKind) || other.threadKind == threadKind)&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.conversationIdentity, conversationIdentity) || other.conversationIdentity == conversationIdentity)&&(identical(other.reason, reason) || other.reason == reason));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,reason);
+int get hashCode => Object.hash(runtimeType,ownerIdentityId,ownerDid,version,threadKind,threadId,conversationIdentity,reason);
 
 @override
 String toString() {
-  return 'DartThreadMessageStorePatch.repairRequired(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, reason: $reason)';
+  return 'DartThreadMessageStorePatch.repairRequired(ownerIdentityId: $ownerIdentityId, ownerDid: $ownerDid, version: $version, threadKind: $threadKind, threadId: $threadId, conversationIdentity: $conversationIdentity, reason: $reason)';
 }
 
 
@@ -1637,7 +1649,7 @@ abstract mixin class $DartThreadMessageStorePatch_RepairRequiredCopyWith<$Res> i
   factory $DartThreadMessageStorePatch_RepairRequiredCopyWith(DartThreadMessageStorePatch_RepairRequired value, $Res Function(DartThreadMessageStorePatch_RepairRequired) _then) = _$DartThreadMessageStorePatch_RepairRequiredCopyWithImpl;
 @override @useResult
 $Res call({
- String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, String reason
+ String ownerIdentityId, String ownerDid, BigInt version, String threadKind, String threadId, DartConversationIdentity? conversationIdentity, String reason
 });
 
 
@@ -1654,14 +1666,15 @@ class _$DartThreadMessageStorePatch_RepairRequiredCopyWithImpl<$Res>
 
 /// Create a copy of DartThreadMessageStorePatch
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? reason = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? ownerIdentityId = null,Object? ownerDid = null,Object? version = null,Object? threadKind = null,Object? threadId = null,Object? conversationIdentity = freezed,Object? reason = null,}) {
   return _then(DartThreadMessageStorePatch_RepairRequired(
 ownerIdentityId: null == ownerIdentityId ? _self.ownerIdentityId : ownerIdentityId // ignore: cast_nullable_to_non_nullable
 as String,ownerDid: null == ownerDid ? _self.ownerDid : ownerDid // ignore: cast_nullable_to_non_nullable
 as String,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
 as BigInt,threadKind: null == threadKind ? _self.threadKind : threadKind // ignore: cast_nullable_to_non_nullable
 as String,threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
-as String,reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
+as String,conversationIdentity: freezed == conversationIdentity ? _self.conversationIdentity : conversationIdentity // ignore: cast_nullable_to_non_nullable
+as DartConversationIdentity?,reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }

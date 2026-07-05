@@ -184,6 +184,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartConversationIdentity dco_decode_box_autoadd_dart_conversation_identity(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationListSnapshot
   dco_decode_box_autoadd_dart_conversation_list_snapshot(dynamic raw);
 
@@ -347,7 +352,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartConversation dco_decode_dart_conversation(dynamic raw);
 
   @protected
+  DartConversationAlias dco_decode_dart_conversation_alias(dynamic raw);
+
+  @protected
+  DartConversationAliasSource dco_decode_dart_conversation_alias_source(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationIdentity dco_decode_dart_conversation_identity(dynamic raw);
+
+  @protected
+  DartConversationIdentityScope dco_decode_dart_conversation_identity_scope(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationListSnapshot dco_decode_dart_conversation_list_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationMigrationState dco_decode_dart_conversation_migration_state(
     dynamic raw,
   );
 
@@ -367,6 +393,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartConversationSnapshotMessageBody
   dco_decode_dart_conversation_snapshot_message_body(dynamic raw);
+
+  @protected
+  DartConversationStorageThreadRef
+  dco_decode_dart_conversation_storage_thread_ref(dynamic raw);
 
   @protected
   DartConversationStorePatch dco_decode_dart_conversation_store_patch(
@@ -727,6 +757,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
 
   @protected
+  List<DartConversationAlias> dco_decode_list_dart_conversation_alias(
+    dynamic raw,
+  );
+
+  @protected
   List<DartConversationSnapshotItem>
   dco_decode_list_dart_conversation_snapshot_item(dynamic raw);
 
@@ -784,6 +819,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  DartConversationIdentity?
+  dco_decode_opt_box_autoadd_dart_conversation_identity(dynamic raw);
 
   @protected
   DartConversationListSnapshot?
@@ -1010,6 +1049,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartConversationIdentity sse_decode_box_autoadd_dart_conversation_identity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationListSnapshot
   sse_decode_box_autoadd_dart_conversation_list_snapshot(
     SseDeserializer deserializer,
@@ -1221,7 +1265,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartConversation sse_decode_dart_conversation(SseDeserializer deserializer);
 
   @protected
+  DartConversationAlias sse_decode_dart_conversation_alias(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationAliasSource sse_decode_dart_conversation_alias_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationIdentity sse_decode_dart_conversation_identity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationIdentityScope sse_decode_dart_conversation_identity_scope(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationListSnapshot sse_decode_dart_conversation_list_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationMigrationState sse_decode_dart_conversation_migration_state(
     SseDeserializer deserializer,
   );
 
@@ -1245,6 +1314,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_dart_conversation_snapshot_message_body(
     SseDeserializer deserializer,
   );
+
+  @protected
+  DartConversationStorageThreadRef
+  sse_decode_dart_conversation_storage_thread_ref(SseDeserializer deserializer);
 
   @protected
   DartConversationStorePatch sse_decode_dart_conversation_store_patch(
@@ -1725,6 +1798,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<DartConversationAlias> sse_decode_list_dart_conversation_alias(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<DartConversationSnapshotItem>
   sse_decode_list_dart_conversation_snapshot_item(SseDeserializer deserializer);
 
@@ -1792,6 +1870,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  DartConversationIdentity?
+  sse_decode_opt_box_autoadd_dart_conversation_identity(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartConversationListSnapshot?
@@ -2057,6 +2141,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_conversation_identity(
+    DartConversationIdentity self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_conversation_list_snapshot(
     DartConversationListSnapshot self,
     SseSerializer serializer,
@@ -2309,8 +2399,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_conversation_alias(
+    DartConversationAlias self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_alias_source(
+    DartConversationAliasSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_identity(
+    DartConversationIdentity self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_identity_scope(
+    DartConversationIdentityScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_conversation_list_snapshot(
     DartConversationListSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_migration_state(
+    DartConversationMigrationState self,
     SseSerializer serializer,
   );
 
@@ -2335,6 +2455,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_conversation_snapshot_message_body(
     DartConversationSnapshotMessageBody self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_storage_thread_ref(
+    DartConversationStorageThreadRef self,
     SseSerializer serializer,
   );
 
@@ -2930,6 +3056,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_dart_conversation_alias(
+    List<DartConversationAlias> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_dart_conversation_snapshot_item(
     List<DartConversationSnapshotItem> self,
     SseSerializer serializer,
@@ -3018,6 +3150,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_conversation_identity(
+    DartConversationIdentity? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_dart_conversation_list_snapshot(

@@ -93,7 +93,59 @@ pub struct DartMessageMetadata {
     pub retry_action: Option<String>,
     pub server_sequence: Option<i64>,
     pub content_type: Option<String>,
+    pub conversation_identity: Option<DartConversationIdentity>,
     pub attributes: Vec<DartMessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationIdentity {
+    pub conversation_id: String,
+    pub canonical_thread_kind: String,
+    pub canonical_thread_id: String,
+    pub storage_thread_ref: DartConversationStorageThreadRef,
+    pub aliases: Vec<DartConversationAlias>,
+    pub identity_scope: DartConversationIdentityScope,
+    pub migration_state: DartConversationMigrationState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationStorageThreadRef {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartConversationAlias {
+    pub kind: String,
+    pub id: String,
+    pub source: DartConversationAliasSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartConversationAliasSource {
+    LegacyDirectDid,
+    OldFlutterSortedDirect,
+    PeerScopeStorage,
+    GroupStorage,
+    ThreadStorage,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartConversationIdentityScope {
+    Direct,
+    Group,
+    Thread,
+    Mail,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DartConversationMigrationState {
+    Canonical,
+    AliasResolved,
+    LegacyInput,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +180,7 @@ pub struct DartMessagePage {
 pub struct DartConversation {
     pub thread_kind: String,
     pub thread_id: String,
+    pub conversation_identity: Option<DartConversationIdentity>,
     pub title: Option<String>,
     pub participants: Vec<String>,
     pub last_message: Option<DartMessage>,
@@ -232,6 +285,7 @@ pub enum DartConversationStorePatch {
         unread_total: u32,
         thread_kind: String,
         thread_id: String,
+        conversation_identity: Option<DartConversationIdentity>,
     },
     Reorder {
         owner_identity_id: String,
@@ -240,6 +294,7 @@ pub enum DartConversationStorePatch {
         unread_total: u32,
         thread_kind: String,
         thread_id: String,
+        conversation_identity: Option<DartConversationIdentity>,
         index: u32,
     },
     RepairRequired {
@@ -259,6 +314,7 @@ pub enum DartThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        conversation_identity: Option<DartConversationIdentity>,
         items: Vec<DartMessage>,
     },
     Upsert {
@@ -267,6 +323,7 @@ pub enum DartThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        conversation_identity: Option<DartConversationIdentity>,
         message: DartMessage,
         index: u32,
     },
@@ -276,6 +333,7 @@ pub enum DartThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        conversation_identity: Option<DartConversationIdentity>,
         message_id: String,
     },
     RepairRequired {
@@ -284,6 +342,7 @@ pub enum DartThreadMessageStorePatch {
         version: u64,
         thread_kind: String,
         thread_id: String,
+        conversation_identity: Option<DartConversationIdentity>,
         reason: String,
     },
 }
@@ -292,6 +351,7 @@ pub enum DartThreadMessageStorePatch {
 pub struct DartConversationSnapshotItem {
     pub thread_kind: String,
     pub thread_id: String,
+    pub conversation_identity: Option<DartConversationIdentity>,
     pub participants: Vec<String>,
     pub last_message: Option<DartConversationSnapshotMessage>,
     pub unread_count: u32,
@@ -306,6 +366,7 @@ pub struct DartConversationSnapshotMessage {
     pub id: String,
     pub thread_kind: String,
     pub thread_id: String,
+    pub conversation_identity: Option<DartConversationIdentity>,
     pub direction: String,
     pub sender: String,
     pub receiver: Option<String>,

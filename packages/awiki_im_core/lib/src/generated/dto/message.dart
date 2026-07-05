@@ -11,6 +11,7 @@ part 'message.freezed.dart';
 class DartConversation {
   final String threadKind;
   final String threadId;
+  final DartConversationIdentity? conversationIdentity;
   final String? title;
   final List<String> participants;
   final DartMessage? lastMessage;
@@ -23,6 +24,7 @@ class DartConversation {
   const DartConversation({
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     this.title,
     required this.participants,
     this.lastMessage,
@@ -37,6 +39,7 @@ class DartConversation {
   int get hashCode =>
       threadKind.hashCode ^
       threadId.hashCode ^
+      conversationIdentity.hashCode ^
       title.hashCode ^
       participants.hashCode ^
       lastMessage.hashCode ^
@@ -53,6 +56,7 @@ class DartConversation {
           runtimeType == other.runtimeType &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
+          conversationIdentity == other.conversationIdentity &&
           title == other.title &&
           participants == other.participants &&
           lastMessage == other.lastMessage &&
@@ -62,6 +66,84 @@ class DartConversation {
           messageCount == other.messageCount &&
           lastMessageAt == other.lastMessageAt;
 }
+
+class DartConversationAlias {
+  final String kind;
+  final String id;
+  final DartConversationAliasSource source;
+
+  const DartConversationAlias({
+    required this.kind,
+    required this.id,
+    required this.source,
+  });
+
+  @override
+  int get hashCode => kind.hashCode ^ id.hashCode ^ source.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationAlias &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          id == other.id &&
+          source == other.source;
+}
+
+enum DartConversationAliasSource {
+  legacyDirectDid,
+  oldFlutterSortedDirect,
+  peerScopeStorage,
+  groupStorage,
+  threadStorage,
+  unknown,
+}
+
+class DartConversationIdentity {
+  final String conversationId;
+  final String canonicalThreadKind;
+  final String canonicalThreadId;
+  final DartConversationStorageThreadRef storageThreadRef;
+  final List<DartConversationAlias> aliases;
+  final DartConversationIdentityScope identityScope;
+  final DartConversationMigrationState migrationState;
+
+  const DartConversationIdentity({
+    required this.conversationId,
+    required this.canonicalThreadKind,
+    required this.canonicalThreadId,
+    required this.storageThreadRef,
+    required this.aliases,
+    required this.identityScope,
+    required this.migrationState,
+  });
+
+  @override
+  int get hashCode =>
+      conversationId.hashCode ^
+      canonicalThreadKind.hashCode ^
+      canonicalThreadId.hashCode ^
+      storageThreadRef.hashCode ^
+      aliases.hashCode ^
+      identityScope.hashCode ^
+      migrationState.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationIdentity &&
+          runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
+          canonicalThreadKind == other.canonicalThreadKind &&
+          canonicalThreadId == other.canonicalThreadId &&
+          storageThreadRef == other.storageThreadRef &&
+          aliases == other.aliases &&
+          identityScope == other.identityScope &&
+          migrationState == other.migrationState;
+}
+
+enum DartConversationIdentityScope { direct, group, thread, mail, unknown }
 
 class DartConversationListSnapshot {
   final int formatVersion;
@@ -110,6 +192,13 @@ class DartConversationListSnapshot {
           items == other.items;
 }
 
+enum DartConversationMigrationState {
+  canonical,
+  aliasResolved,
+  legacyInput,
+  unknown,
+}
+
 class DartConversationPage {
   final List<DartConversation> items;
   final String? nextCursor;
@@ -137,6 +226,7 @@ class DartConversationPage {
 class DartConversationSnapshotItem {
   final String threadKind;
   final String threadId;
+  final DartConversationIdentity? conversationIdentity;
   final List<String> participants;
   final DartConversationSnapshotMessage? lastMessage;
   final int unreadCount;
@@ -148,6 +238,7 @@ class DartConversationSnapshotItem {
   const DartConversationSnapshotItem({
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     required this.participants,
     this.lastMessage,
     required this.unreadCount,
@@ -161,6 +252,7 @@ class DartConversationSnapshotItem {
   int get hashCode =>
       threadKind.hashCode ^
       threadId.hashCode ^
+      conversationIdentity.hashCode ^
       participants.hashCode ^
       lastMessage.hashCode ^
       unreadCount.hashCode ^
@@ -176,6 +268,7 @@ class DartConversationSnapshotItem {
           runtimeType == other.runtimeType &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
+          conversationIdentity == other.conversationIdentity &&
           participants == other.participants &&
           lastMessage == other.lastMessage &&
           unreadCount == other.unreadCount &&
@@ -189,6 +282,7 @@ class DartConversationSnapshotMessage {
   final String id;
   final String threadKind;
   final String threadId;
+  final DartConversationIdentity? conversationIdentity;
   final String direction;
   final String sender;
   final String? receiver;
@@ -204,6 +298,7 @@ class DartConversationSnapshotMessage {
     required this.id,
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     required this.direction,
     required this.sender,
     this.receiver,
@@ -221,6 +316,7 @@ class DartConversationSnapshotMessage {
       id.hashCode ^
       threadKind.hashCode ^
       threadId.hashCode ^
+      conversationIdentity.hashCode ^
       direction.hashCode ^
       sender.hashCode ^
       receiver.hashCode ^
@@ -240,6 +336,7 @@ class DartConversationSnapshotMessage {
           id == other.id &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
+          conversationIdentity == other.conversationIdentity &&
           direction == other.direction &&
           sender == other.sender &&
           receiver == other.receiver &&
@@ -283,6 +380,27 @@ class DartConversationSnapshotMessageBody {
           unsupportedContentType == other.unsupportedContentType;
 }
 
+class DartConversationStorageThreadRef {
+  final String kind;
+  final String id;
+
+  const DartConversationStorageThreadRef({
+    required this.kind,
+    required this.id,
+  });
+
+  @override
+  int get hashCode => kind.hashCode ^ id.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationStorageThreadRef &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          id == other.id;
+}
+
 @freezed
 sealed class DartConversationStorePatch with _$DartConversationStorePatch {
   const DartConversationStorePatch._();
@@ -309,6 +427,7 @@ sealed class DartConversationStorePatch with _$DartConversationStorePatch {
     required int unreadTotal,
     required String threadKind,
     required String threadId,
+    DartConversationIdentity? conversationIdentity,
   }) = DartConversationStorePatch_Remove;
   const factory DartConversationStorePatch.reorder({
     required String ownerIdentityId,
@@ -317,6 +436,7 @@ sealed class DartConversationStorePatch with _$DartConversationStorePatch {
     required int unreadTotal,
     required String threadKind,
     required String threadId,
+    DartConversationIdentity? conversationIdentity,
     required int index,
   }) = DartConversationStorePatch_Reorder;
   const factory DartConversationStorePatch.repairRequired({
@@ -571,6 +691,7 @@ class DartMessageMetadata {
   final String? retryAction;
   final PlatformInt64? serverSequence;
   final String? contentType;
+  final DartConversationIdentity? conversationIdentity;
   final List<DartMessageMetadataAttribute> attributes;
 
   const DartMessageMetadata({
@@ -581,6 +702,7 @@ class DartMessageMetadata {
     this.retryAction,
     this.serverSequence,
     this.contentType,
+    this.conversationIdentity,
     required this.attributes,
   });
 
@@ -593,6 +715,7 @@ class DartMessageMetadata {
       retryAction.hashCode ^
       serverSequence.hashCode ^
       contentType.hashCode ^
+      conversationIdentity.hashCode ^
       attributes.hashCode;
 
   @override
@@ -607,6 +730,7 @@ class DartMessageMetadata {
           retryAction == other.retryAction &&
           serverSequence == other.serverSequence &&
           contentType == other.contentType &&
+          conversationIdentity == other.conversationIdentity &&
           attributes == other.attributes;
 }
 
@@ -955,6 +1079,7 @@ sealed class DartThreadMessageStorePatch with _$DartThreadMessageStorePatch {
     required BigInt version,
     required String threadKind,
     required String threadId,
+    DartConversationIdentity? conversationIdentity,
     required List<DartMessage> items,
   }) = DartThreadMessageStorePatch_Reset;
   const factory DartThreadMessageStorePatch.upsert({
@@ -963,6 +1088,7 @@ sealed class DartThreadMessageStorePatch with _$DartThreadMessageStorePatch {
     required BigInt version,
     required String threadKind,
     required String threadId,
+    DartConversationIdentity? conversationIdentity,
     required DartMessage message,
     required int index,
   }) = DartThreadMessageStorePatch_Upsert;
@@ -972,6 +1098,7 @@ sealed class DartThreadMessageStorePatch with _$DartThreadMessageStorePatch {
     required BigInt version,
     required String threadKind,
     required String threadId,
+    DartConversationIdentity? conversationIdentity,
     required String messageId,
   }) = DartThreadMessageStorePatch_Remove;
   const factory DartThreadMessageStorePatch.repairRequired({
@@ -980,6 +1107,7 @@ sealed class DartThreadMessageStorePatch with _$DartThreadMessageStorePatch {
     required BigInt version,
     required String threadKind,
     required String threadId,
+    DartConversationIdentity? conversationIdentity,
     required String reason,
   }) = DartThreadMessageStorePatch_RepairRequired;
 }

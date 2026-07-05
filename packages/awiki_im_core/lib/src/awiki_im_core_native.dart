@@ -2009,6 +2009,73 @@ extension on gen_message.DartMessageMetadataAttribute {
       MessageMetadataAttribute(key: key, value: value);
 }
 
+extension on gen_message.DartConversationAliasSource {
+  ConversationAliasSource _toModel() => switch (this) {
+    gen_message.DartConversationAliasSource.legacyDirectDid =>
+      ConversationAliasSource.legacyDirectDid,
+    gen_message.DartConversationAliasSource.oldFlutterSortedDirect =>
+      ConversationAliasSource.oldFlutterSortedDirect,
+    gen_message.DartConversationAliasSource.peerScopeStorage =>
+      ConversationAliasSource.peerScopeStorage,
+    gen_message.DartConversationAliasSource.groupStorage =>
+      ConversationAliasSource.groupStorage,
+    gen_message.DartConversationAliasSource.threadStorage =>
+      ConversationAliasSource.threadStorage,
+    gen_message.DartConversationAliasSource.unknown =>
+      ConversationAliasSource.unknown,
+  };
+}
+
+extension on gen_message.DartConversationIdentityScope {
+  ConversationIdentityScope _toModel() => switch (this) {
+    gen_message.DartConversationIdentityScope.direct =>
+      ConversationIdentityScope.direct,
+    gen_message.DartConversationIdentityScope.group =>
+      ConversationIdentityScope.group,
+    gen_message.DartConversationIdentityScope.thread =>
+      ConversationIdentityScope.thread,
+    gen_message.DartConversationIdentityScope.mail =>
+      ConversationIdentityScope.mail,
+    gen_message.DartConversationIdentityScope.unknown =>
+      ConversationIdentityScope.unknown,
+  };
+}
+
+extension on gen_message.DartConversationMigrationState {
+  ConversationMigrationState _toModel() => switch (this) {
+    gen_message.DartConversationMigrationState.canonical =>
+      ConversationMigrationState.canonical,
+    gen_message.DartConversationMigrationState.aliasResolved =>
+      ConversationMigrationState.aliasResolved,
+    gen_message.DartConversationMigrationState.legacyInput =>
+      ConversationMigrationState.legacyInput,
+    gen_message.DartConversationMigrationState.unknown =>
+      ConversationMigrationState.unknown,
+  };
+}
+
+extension on gen_message.DartConversationStorageThreadRef {
+  ConversationStorageThreadRef _toModel() =>
+      ConversationStorageThreadRef(kind: kind, id: id);
+}
+
+extension on gen_message.DartConversationAlias {
+  ConversationAlias _toModel() =>
+      ConversationAlias(kind: kind, id: id, source: source._toModel());
+}
+
+extension on gen_message.DartConversationIdentity {
+  ConversationIdentity _toModel() => ConversationIdentity(
+    conversationId: conversationId,
+    canonicalThreadKind: canonicalThreadKind,
+    canonicalThreadId: canonicalThreadId,
+    storageThreadRef: storageThreadRef._toModel(),
+    aliases: aliases.map((alias) => alias._toModel()).toList(),
+    identityScope: identityScope._toModel(),
+    migrationState: migrationState._toModel(),
+  );
+}
+
 extension on gen_message.DartMessageMetadata {
   MessageMetadata _toModel() => MessageMetadata(
     operationId: operationId,
@@ -2018,6 +2085,7 @@ extension on gen_message.DartMessageMetadata {
     retryAction: retryAction,
     serverSequence: serverSequence,
     contentType: contentType,
+    conversationIdentity: conversationIdentity?._toModel(),
     attributes: attributes.map((attribute) => attribute._toModel()).toList(),
   );
 }
@@ -2050,6 +2118,7 @@ extension on gen_message.DartConversation {
   Conversation _toModel() => Conversation(
     threadKind: threadKind,
     threadId: threadId,
+    conversationIdentity: conversationIdentity?._toModel(),
     title: title,
     participants: participants,
     lastMessage: lastMessage?._toModel(),
@@ -2109,6 +2178,7 @@ extension on gen_message.DartConversationStorePatch {
       unreadTotal: value.unreadTotal,
       threadKind: value.threadKind,
       threadId: value.threadId,
+      conversationIdentity: value.conversationIdentity?._toModel(),
     ),
     reorder: (value) => ConversationStorePatch(
       kind: ConversationStorePatchKind.reorder,
@@ -2118,6 +2188,7 @@ extension on gen_message.DartConversationStorePatch {
       unreadTotal: value.unreadTotal,
       threadKind: value.threadKind,
       threadId: value.threadId,
+      conversationIdentity: value.conversationIdentity?._toModel(),
       index: value.index,
     ),
     repairRequired: (value) => ConversationStorePatch(
@@ -2140,6 +2211,7 @@ extension on gen_message.DartThreadMessageStorePatch {
       version: value.version.toInt(),
       threadKind: value.threadKind,
       threadId: value.threadId,
+      conversationIdentity: value.conversationIdentity?._toModel(),
       items: value.items.map((message) => message._toModel()).toList(),
     ),
     upsert: (value) => ThreadMessageStorePatch(
@@ -2149,6 +2221,7 @@ extension on gen_message.DartThreadMessageStorePatch {
       version: value.version.toInt(),
       threadKind: value.threadKind,
       threadId: value.threadId,
+      conversationIdentity: value.conversationIdentity?._toModel(),
       message: value.message._toModel(),
       index: value.index,
     ),
@@ -2159,6 +2232,7 @@ extension on gen_message.DartThreadMessageStorePatch {
       version: value.version.toInt(),
       threadKind: value.threadKind,
       threadId: value.threadId,
+      conversationIdentity: value.conversationIdentity?._toModel(),
       messageId: value.messageId,
     ),
     repairRequired: (value) => ThreadMessageStorePatch(
@@ -2168,6 +2242,7 @@ extension on gen_message.DartThreadMessageStorePatch {
       version: value.version.toInt(),
       threadKind: value.threadKind,
       threadId: value.threadId,
+      conversationIdentity: value.conversationIdentity?._toModel(),
       reason: value.reason,
     ),
   );
@@ -2177,6 +2252,7 @@ extension on gen_message.DartConversationSnapshotItem {
   ConversationSnapshotItem _toModel() => ConversationSnapshotItem(
     threadKind: threadKind,
     threadId: threadId,
+    conversationIdentity: conversationIdentity?._toModel(),
     participants: participants,
     lastMessage: lastMessage?._toModel(),
     unreadCount: unreadCount,
@@ -2192,6 +2268,7 @@ extension on gen_message.DartConversationSnapshotMessage {
     id: id,
     threadKind: threadKind,
     threadId: threadId,
+    conversationIdentity: conversationIdentity?._toModel(),
     direction: direction,
     sender: sender,
     receiver: receiver,

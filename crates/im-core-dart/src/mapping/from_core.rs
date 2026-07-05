@@ -19,9 +19,11 @@ use crate::dto::{
         DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
     },
     message::{
-        DartConversation, DartConversationListSnapshot, DartConversationPage,
-        DartConversationSnapshotItem, DartConversationSnapshotMessage,
-        DartConversationSnapshotMessageBody, DartConversationStorePatch, DartMarkReadResult,
+        DartConversation, DartConversationAlias, DartConversationAliasSource,
+        DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
+        DartConversationMigrationState, DartConversationPage, DartConversationSnapshotItem,
+        DartConversationSnapshotMessage, DartConversationSnapshotMessageBody,
+        DartConversationStorageThreadRef, DartConversationStorePatch, DartMarkReadResult,
         DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
         DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark,
         DartSendMessageResult, DartSyncDeltaResult, DartSyncThreadAfterResult,
@@ -560,7 +562,79 @@ impl From<im_core::messages::MessageMetadata> for DartMessageMetadata {
                 .map(|plan| message_retry_action_to_string(plan.action)),
             server_sequence: value.server_sequence,
             content_type: value.content_type,
+            conversation_identity: value.conversation_identity.map(Into::into),
             attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationIdentity> for DartConversationIdentity {
+    fn from(value: im_core::messages::ConversationIdentity) -> Self {
+        Self {
+            conversation_id: value.conversation_id,
+            canonical_thread_kind: value.canonical_thread_kind,
+            canonical_thread_id: value.canonical_thread_id,
+            storage_thread_ref: value.storage_thread_ref.into(),
+            aliases: value.aliases.into_iter().map(Into::into).collect(),
+            identity_scope: value.identity_scope.into(),
+            migration_state: value.migration_state.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationStorageThreadRef> for DartConversationStorageThreadRef {
+    fn from(value: im_core::messages::ConversationStorageThreadRef) -> Self {
+        Self {
+            kind: value.kind,
+            id: value.id,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationAlias> for DartConversationAlias {
+    fn from(value: im_core::messages::ConversationAlias) -> Self {
+        Self {
+            kind: value.kind,
+            id: value.id,
+            source: value.source.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationAliasSource> for DartConversationAliasSource {
+    fn from(value: im_core::messages::ConversationAliasSource) -> Self {
+        match value {
+            im_core::messages::ConversationAliasSource::LegacyDirectDid => Self::LegacyDirectDid,
+            im_core::messages::ConversationAliasSource::OldFlutterSortedDirect => {
+                Self::OldFlutterSortedDirect
+            }
+            im_core::messages::ConversationAliasSource::PeerScopeStorage => Self::PeerScopeStorage,
+            im_core::messages::ConversationAliasSource::GroupStorage => Self::GroupStorage,
+            im_core::messages::ConversationAliasSource::ThreadStorage => Self::ThreadStorage,
+            im_core::messages::ConversationAliasSource::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationIdentityScope> for DartConversationIdentityScope {
+    fn from(value: im_core::messages::ConversationIdentityScope) -> Self {
+        match value {
+            im_core::messages::ConversationIdentityScope::Direct => Self::Direct,
+            im_core::messages::ConversationIdentityScope::Group => Self::Group,
+            im_core::messages::ConversationIdentityScope::Thread => Self::Thread,
+            im_core::messages::ConversationIdentityScope::Mail => Self::Mail,
+            im_core::messages::ConversationIdentityScope::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationMigrationState> for DartConversationMigrationState {
+    fn from(value: im_core::messages::ConversationMigrationState) -> Self {
+        match value {
+            im_core::messages::ConversationMigrationState::Canonical => Self::Canonical,
+            im_core::messages::ConversationMigrationState::AliasResolved => Self::AliasResolved,
+            im_core::messages::ConversationMigrationState::LegacyInput => Self::LegacyInput,
+            im_core::messages::ConversationMigrationState::Unknown => Self::Unknown,
         }
     }
 }
@@ -657,6 +731,7 @@ impl From<im_core::messages::Conversation> for DartConversation {
         Self {
             thread_kind,
             thread_id,
+            conversation_identity: value.conversation_identity.map(Into::into),
             title: value.title,
             participants: value
                 .participants
@@ -738,6 +813,7 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 unread_total,
                 thread_kind,
                 thread_id,
+                conversation_identity,
             } => DartConversationStorePatch::Remove {
                 owner_identity_id,
                 owner_did,
@@ -745,6 +821,7 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 unread_total,
                 thread_kind,
                 thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
             },
             im_core::messages::ConversationStorePatch::Reorder {
                 owner_identity_id,
@@ -753,6 +830,7 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 unread_total,
                 thread_kind,
                 thread_id,
+                conversation_identity,
                 index,
             } => DartConversationStorePatch::Reorder {
                 owner_identity_id,
@@ -761,6 +839,7 @@ impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePa
                 unread_total,
                 thread_kind,
                 thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
                 index,
             },
             im_core::messages::ConversationStorePatch::RepairRequired {
@@ -789,6 +868,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity,
                 items,
             } => DartThreadMessageStorePatch::Reset {
                 owner_identity_id,
@@ -796,6 +876,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
                 items: items.into_iter().map(Into::into).collect(),
             },
             im_core::messages::ThreadMessageStorePatch::Upsert {
@@ -804,6 +885,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity,
                 message,
                 index,
             } => DartThreadMessageStorePatch::Upsert {
@@ -812,6 +894,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
                 message: message.into(),
                 index,
             },
@@ -821,6 +904,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity,
                 message_id,
             } => DartThreadMessageStorePatch::Remove {
                 owner_identity_id,
@@ -828,6 +912,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
                 message_id,
             },
             im_core::messages::ThreadMessageStorePatch::RepairRequired {
@@ -836,6 +921,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity,
                 reason,
             } => DartThreadMessageStorePatch::RepairRequired {
                 owner_identity_id,
@@ -843,6 +929,7 @@ impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStore
                 version,
                 thread_kind,
                 thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
                 reason,
             },
         }
@@ -854,6 +941,7 @@ impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnaps
         Self {
             thread_kind: value.thread_kind,
             thread_id: value.thread_id,
+            conversation_identity: value.conversation_identity.map(Into::into),
             participants: value.participants,
             last_message: value.last_message.map(Into::into),
             unread_count: value.unread_count,
@@ -871,6 +959,7 @@ impl From<im_core::messages::ConversationSnapshotMessage> for DartConversationSn
             id: value.id,
             thread_kind: value.thread_kind,
             thread_id: value.thread_id,
+            conversation_identity: value.conversation_identity.map(Into::into),
             direction: value.direction,
             sender: value.sender,
             receiver: value.receiver,

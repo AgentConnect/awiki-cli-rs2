@@ -55,6 +55,44 @@ void main() {
     expect(body.payloadJson, payload);
   });
 
+  test('conversation identity surface is additive and SDK-generic', () {
+    const identity = ConversationIdentity(
+      conversationId: 'dm:peer-scope:v1:abc',
+      canonicalThreadKind: 'direct',
+      canonicalThreadId: 'dm:peer-scope:v1:abc',
+      storageThreadRef: ConversationStorageThreadRef(
+        kind: 'thread',
+        id: 'dm:peer-scope:v1:abc',
+      ),
+      aliases: [
+        ConversationAlias(
+          kind: 'thread',
+          id: 'dm:did:example:alice:did:example:bob',
+          source: ConversationAliasSource.oldFlutterSortedDirect,
+        ),
+      ],
+      identityScope: ConversationIdentityScope.direct,
+      migrationState: ConversationMigrationState.canonical,
+    );
+    const metadata = MessageMetadata(conversationIdentity: identity);
+    const legacyMetadata = MessageMetadata();
+
+    expect(
+      metadata.conversationIdentity?.conversationId,
+      'dm:peer-scope:v1:abc',
+    );
+    expect(metadata.conversationIdentity?.storageThreadRef.kind, 'thread');
+    expect(
+      metadata.conversationIdentity?.aliases.single.source,
+      ConversationAliasSource.oldFlutterSortedDirect,
+    );
+    expect(
+      metadata.conversationIdentity?.identityScope,
+      ConversationIdentityScope.direct,
+    );
+    expect(legacyMetadata.conversationIdentity, isNull);
+  });
+
   test('agent control helpers identify command and status payloads', () {
     const commandPayload =
         '{"schema":"awiki.agent.command.v1","command":"runtime.agent.create"}';

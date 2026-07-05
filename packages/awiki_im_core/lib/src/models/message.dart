@@ -167,6 +167,7 @@ class MessageMetadata {
     this.retryAction,
     this.serverSequence,
     this.contentType,
+    this.conversationIdentity,
     this.attributes = const [],
   });
 
@@ -177,7 +178,65 @@ class MessageMetadata {
   final String? retryAction;
   final int? serverSequence;
   final String? contentType;
+  final ConversationIdentity? conversationIdentity;
   final List<MessageMetadataAttribute> attributes;
+}
+
+class ConversationIdentity {
+  const ConversationIdentity({
+    required this.conversationId,
+    required this.canonicalThreadKind,
+    required this.canonicalThreadId,
+    required this.storageThreadRef,
+    this.aliases = const [],
+    required this.identityScope,
+    required this.migrationState,
+  });
+
+  final String conversationId;
+  final String canonicalThreadKind;
+  final String canonicalThreadId;
+  final ConversationStorageThreadRef storageThreadRef;
+  final List<ConversationAlias> aliases;
+  final ConversationIdentityScope identityScope;
+  final ConversationMigrationState migrationState;
+}
+
+class ConversationStorageThreadRef {
+  const ConversationStorageThreadRef({required this.kind, required this.id});
+
+  final String kind;
+  final String id;
+}
+
+class ConversationAlias {
+  const ConversationAlias({
+    required this.kind,
+    required this.id,
+    required this.source,
+  });
+
+  final String kind;
+  final String id;
+  final ConversationAliasSource source;
+}
+
+enum ConversationAliasSource {
+  legacyDirectDid,
+  oldFlutterSortedDirect,
+  peerScopeStorage,
+  groupStorage,
+  threadStorage,
+  unknown,
+}
+
+enum ConversationIdentityScope { direct, group, thread, mail, unknown }
+
+enum ConversationMigrationState {
+  canonical,
+  aliasResolved,
+  legacyInput,
+  unknown,
 }
 
 class Message {
@@ -290,6 +349,7 @@ class ConversationStorePatch {
     this.index,
     this.threadKind,
     this.threadId,
+    this.conversationIdentity,
     this.reason,
   });
 
@@ -303,6 +363,7 @@ class ConversationStorePatch {
   final int? index;
   final String? threadKind;
   final String? threadId;
+  final ConversationIdentity? conversationIdentity;
   final String? reason;
 }
 
@@ -319,6 +380,7 @@ class ThreadMessageStorePatch {
     this.items = const [],
     this.message,
     this.index,
+    this.conversationIdentity,
     this.messageId,
     this.reason,
   });
@@ -332,6 +394,7 @@ class ThreadMessageStorePatch {
   final List<Message> items;
   final Message? message;
   final int? index;
+  final ConversationIdentity? conversationIdentity;
   final String? messageId;
   final String? reason;
 }
@@ -340,6 +403,7 @@ class ConversationSnapshotItem {
   const ConversationSnapshotItem({
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     this.participants = const [],
     this.lastMessage,
     required this.unreadCount,
@@ -351,6 +415,7 @@ class ConversationSnapshotItem {
 
   final String threadKind;
   final String threadId;
+  final ConversationIdentity? conversationIdentity;
   final List<String> participants;
   final ConversationSnapshotMessage? lastMessage;
   final int unreadCount;
@@ -365,6 +430,7 @@ class ConversationSnapshotMessage {
     required this.id,
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     required this.direction,
     required this.sender,
     this.receiver,
@@ -380,6 +446,7 @@ class ConversationSnapshotMessage {
   final String id;
   final String threadKind;
   final String threadId;
+  final ConversationIdentity? conversationIdentity;
   final String direction;
   final String sender;
   final String? receiver;
@@ -436,6 +503,7 @@ class Conversation {
   const Conversation({
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     this.title,
     this.participants = const [],
     this.lastMessage,
@@ -448,6 +516,7 @@ class Conversation {
 
   final String threadKind;
   final String threadId;
+  final ConversationIdentity? conversationIdentity;
   final String? title;
   final List<String> participants;
   final Message? lastMessage;
