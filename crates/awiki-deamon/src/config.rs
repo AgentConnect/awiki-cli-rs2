@@ -410,7 +410,7 @@ impl DaemonConfig {
 }
 
 impl DaemonPersistentConfig {
-    fn read_optional(path: &Path) -> Result<Self> {
+    pub fn read_optional(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }

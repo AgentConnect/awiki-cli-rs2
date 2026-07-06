@@ -30,7 +30,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use crate::config::{DaemonConfig, DaemonConfigFile, IdentitySelectorConfig};
+pub use crate::config::{
+    DaemonConfig, DaemonConfigFile, DaemonPersistentConfig, IdentitySelectorConfig,
+};
 pub use crate::im_core_adapter::ImCoreAdapter;
 pub use crate::state::{DaemonState, StateSummary};
 

@@ -125,6 +125,66 @@ validate_version_segment() {
   esac
 }
 
+check_existing_state_environment() {
+  state_root="$1"
+  base_url="$2"
+  download_base_url="$3"
+  "$PYTHON_BIN" - "$state_root" "$base_url" "$download_base_url" <<'PY'
+import json
+import os
+import sys
+from urllib.parse import urlparse
+
+state_root, base_url, download_base_url = sys.argv[1:4]
+config_path = os.path.join(state_root, "config.json")
+if not os.path.exists(config_path):
+    raise SystemExit(0)
+
+with open(config_path, "r", encoding="utf-8") as fh:
+    config = json.load(fh)
+
+def norm_url(value):
+    return str(value or "").strip().rstrip("/").lower()
+
+def norm_token(value):
+    return str(value or "").strip().lower()
+
+def host_from_url(value):
+    parsed = urlparse(value)
+    return (parsed.hostname or "").strip().lower()
+
+existing_base = norm_url(config.get("base_url") or config.get("service_base_url"))
+if not existing_base:
+    raise SystemExit(0)
+target_base = norm_url(base_url)
+existing_domain = norm_token(config.get("did_domain") or host_from_url(existing_base))
+target_domain = host_from_url(target_base)
+existing_anp_did = norm_token(config.get("anp_service_did") or f"did:wba:{existing_domain}")
+target_anp_did = f"did:wba:{target_domain}"
+
+if (
+    existing_base == target_base
+    and existing_domain == target_domain
+    and existing_anp_did == target_anp_did
+):
+    raise SystemExit(0)
+
+cleanup_base = norm_url(download_base_url) or f"{target_base}/daemon"
+print(
+    "Error: daemon_environment_mismatch\n"
+    "This host already has AWiki Daemon state for another environment, so the install command cannot reuse it.\n\n"
+    f"state-root: {state_root}\n"
+    f"existing environment: {existing_base} / did_domain={existing_domain} / anp_service_did={existing_anp_did}\n"
+    f"install environment: {target_base} / did_domain={target_domain} / anp_service_did={target_anp_did}\n\n"
+    "To switch environments, clean up the host daemon data first, then install again.\n\n"
+    "Cleanup command:\n"
+    f"  curl -fsSL {cleanup_base}/cleanup.sh | sh\n",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+PY
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --token)
@@ -190,6 +250,12 @@ printf '%s\n' "$DOWNLOAD_SOURCE_LIST" | while IFS= read -r download_source; do
   [ -n "$download_source" ] || continue
   validate_download_base_url "$download_source"
 done
+
+PRECHECK_STATE_ROOT="$STATE_ROOT"
+if [ -z "$PRECHECK_STATE_ROOT" ]; then
+  PRECHECK_STATE_ROOT="${HOME}/.awiki-daemon/deamon/state"
+fi
+check_existing_state_environment "$PRECHECK_STATE_ROOT" "$BASE_URL" "$DOWNLOAD_BASE_URL"
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 

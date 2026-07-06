@@ -23,7 +23,7 @@ use crate::service::{
 };
 use crate::state::{controller_scope_key, DaemonState};
 use crate::upgrade::check_release_status;
-use crate::DaemonConfig;
+use crate::{DaemonConfig, DaemonPersistentConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentListOutput {
@@ -242,6 +242,7 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
     config.anp_service_endpoint = format!("{}/anp-im/rpc", config.service_base_url);
     config.anp_service_did = format!("did:wba:{}", config.did_domain);
     config.validate()?;
+    ensure_install_environment_matches_existing_state(&config)?;
     config.ensure_state_layout()?;
     config.write_persistent_config()?;
     crate::cli_runtime_env::capture_and_write(&config)
@@ -291,6 +292,107 @@ pub async fn install_product_daemon(options: InstallOptions) -> Result<InstallOu
         handle: agent.handle,
         service,
     })
+}
+
+fn ensure_install_environment_matches_existing_state(config: &DaemonConfig) -> Result<()> {
+    let existing = DaemonPersistentConfig::read_optional(&config.config_file_path)?;
+    let Some(existing_env) = PersistedEnvironment::from_persistent(&existing) else {
+        return Ok(());
+    };
+    let target_env = PersistedEnvironment::from_config(config);
+    if existing_env.matches_target(&target_env) {
+        return Ok(());
+    }
+    bail!(
+        "daemon_environment_mismatch\n\
+         这个 state-root 已经属于另一个 AWiki 环境，不能直接复用安装。\n\n\
+         state-root: {}\n\
+         本机已有环境: {} / did_domain={} / anp_service_did={}\n\
+         当前安装环境: {} / did_domain={} / anp_service_did={}\n\n\
+         你可以这样处理：\n\
+         1. 如果你想继续使用已有环境，请切换到对应 APP 环境后重新复制安装命令。\n\
+         2. 如果你确实要切换环境，请先清理宿主机上的 AWiki Daemon 数据后再安装。\n\n\
+         清理命令：\n\
+           {}\n\n\
+         注意：清理会删除宿主机上的所有 AWiki Daemon 本地数据，包括身份、数据库、日志、归档、Runtime Profile 和已下载的 Daemon 二进制。此操作不可恢复。",
+        config.state_root.display(),
+        existing_env.service_base_url,
+        existing_env.did_domain,
+        existing_env.anp_service_did,
+        target_env.service_base_url,
+        target_env.did_domain,
+        target_env.anp_service_did,
+        daemon_cleanup_command(&target_env.download_base_url),
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PersistedEnvironment {
+    service_base_url: String,
+    did_domain: String,
+    anp_service_did: String,
+    download_base_url: String,
+}
+
+impl PersistedEnvironment {
+    fn from_config(config: &DaemonConfig) -> Self {
+        Self {
+            service_base_url: normalize_url_for_compare(&config.service_base_url),
+            did_domain: normalize_token_for_compare(&config.did_domain),
+            anp_service_did: normalize_token_for_compare(&config.anp_service_did),
+            download_base_url: normalize_url_for_compare(&config.download_base_url),
+        }
+    }
+
+    fn from_persistent(config: &DaemonPersistentConfig) -> Option<Self> {
+        let service_base_url = config
+            .base_url
+            .as_deref()
+            .map(normalize_url_for_compare)
+            .filter(|value| !value.is_empty())?;
+        let did_domain = config
+            .did_domain
+            .as_deref()
+            .map(normalize_token_for_compare)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                service_host_from_base_url(&service_base_url)
+                    .unwrap_or_else(|_| String::new())
+                    .to_ascii_lowercase()
+            });
+        let anp_service_did = config
+            .anp_service_did
+            .as_deref()
+            .map(normalize_token_for_compare)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("did:wba:{did_domain}"));
+        let download_base_url = config
+            .download_base_url
+            .as_deref()
+            .map(normalize_url_for_compare)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("{service_base_url}/daemon"));
+        Some(Self {
+            service_base_url,
+            did_domain,
+            anp_service_did,
+            download_base_url,
+        })
+    }
+
+    fn matches_target(&self, target: &Self) -> bool {
+        self.service_base_url == target.service_base_url
+            && self.did_domain == target.did_domain
+            && self.anp_service_did == target.anp_service_did
+    }
+}
+
+fn normalize_url_for_compare(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn normalize_token_for_compare(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn service_host_from_base_url(base_url: &str) -> Result<String> {
@@ -1040,6 +1142,65 @@ mod tests {
         assert!(message.contains("daemon_local_state_conflict"));
         assert!(message.contains("2 Daemon records"));
         assert_eq!(client.exchange_count(), 0);
+    }
+
+    #[test]
+    fn product_install_environment_guard_rejects_cross_environment_state() {
+        let (root, mut config, _state) = fixture();
+        config.service_base_url = "https://awiki.ai".to_string();
+        config.user_service_base_url = "https://awiki.ai".to_string();
+        config.message_service_base_url = "https://awiki.ai".to_string();
+        config.mail_service_base_url = "https://awiki.ai".to_string();
+        config.download_base_url = "https://awiki.ai/daemon".to_string();
+        config.did_domain = "awiki.ai".to_string();
+        config.anp_service_endpoint = "https://awiki.ai/anp-im/rpc".to_string();
+        config.anp_service_did = "did:wba:awiki.ai".to_string();
+        config.write_persistent_config().unwrap();
+        let before = std::fs::read_to_string(&config.config_file_path).unwrap();
+
+        let mut target = DaemonConfig::for_state_root(root.path()).unwrap();
+        target.service_base_url = "https://anpclaw.com".to_string();
+        target.user_service_base_url = target.service_base_url.clone();
+        target.message_service_base_url = target.service_base_url.clone();
+        target.mail_service_base_url = target.service_base_url.clone();
+        target.download_base_url = "https://anpclaw.com/daemon".to_string();
+        target.did_domain = "anpclaw.com".to_string();
+        target.anp_service_endpoint = "https://anpclaw.com/anp-im/rpc".to_string();
+        target.anp_service_did = "did:wba:anpclaw.com".to_string();
+
+        let error = ensure_install_environment_matches_existing_state(&target).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("daemon_environment_mismatch"));
+        assert!(message.contains("本机已有环境: https://awiki.ai"));
+        assert!(message.contains("当前安装环境: https://anpclaw.com"));
+        assert!(message.contains("did_domain=awiki.ai"));
+        assert!(message.contains("did_domain=anpclaw.com"));
+        assert!(message.contains("curl -fsSL https://anpclaw.com/daemon/cleanup.sh | sh"));
+        assert_eq!(
+            std::fs::read_to_string(&config.config_file_path).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn product_install_environment_guard_accepts_same_environment() {
+        let (_root, mut config, _state) = fixture();
+        config.service_base_url = "https://awiki.ai".to_string();
+        config.user_service_base_url = "https://awiki.ai".to_string();
+        config.message_service_base_url = "https://awiki.ai".to_string();
+        config.mail_service_base_url = "https://awiki.ai".to_string();
+        config.download_base_url = "https://mirror.example/daemon".to_string();
+        config.did_domain = "awiki.ai".to_string();
+        config.anp_service_endpoint = "https://awiki.ai/anp-im/rpc".to_string();
+        config.anp_service_did = "did:wba:awiki.ai".to_string();
+        config.write_persistent_config().unwrap();
+
+        let mut target = config.clone();
+        target.service_base_url = "https://awiki.ai/".trim_end_matches('/').to_string();
+        target.download_base_url = "https://awiki.ai/daemon".to_string();
+
+        ensure_install_environment_matches_existing_state(&target).unwrap();
     }
 
     #[test]
