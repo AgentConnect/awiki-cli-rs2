@@ -149,6 +149,7 @@ pub fn send_attachment_with_details(
             target,
             request,
             resolved_target_did,
+            client_message_id: None,
             credentials: None,
         },
     )?;
@@ -274,6 +275,8 @@ pub fn build_direct_attachment_send_rpc_params(
         &internal_signing_identity(identity),
         target_did,
         manifest,
+        None,
+        None,
     )
 }
 
@@ -287,6 +290,8 @@ pub fn build_group_attachment_send_rpc_params(
         &internal_signing_identity(identity),
         group_did,
         manifest,
+        None,
+        None,
     )
 }
 

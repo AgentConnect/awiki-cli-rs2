@@ -35,6 +35,7 @@ fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
             Some("caption"),
         ),
         resolved_target_did: None,
+        client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
     .unwrap();
@@ -148,6 +149,7 @@ fn attachments_upload_runtime_local_file_reads_only_explicit_path() {
             security: crate::messages::MessageSecurityMode::DefaultPlain,
         },
         resolved_target_did: None,
+        client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
     .unwrap();
@@ -196,6 +198,7 @@ async fn attachments_upload_runtime_local_file_async_streams_explicit_path() {
             security: crate::messages::MessageSecurityMode::DefaultPlain,
         },
         resolved_target_did: None,
+        client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
     .await
@@ -373,6 +376,7 @@ fn attachments_upload_runtime_group_uses_group_scope_and_wire() {
             None,
         ),
         resolved_target_did: None,
+        client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
     .unwrap();
@@ -427,6 +431,7 @@ fn attachments_upload_runtime_bytes_requires_filename_before_transport() {
         ),
         request: bytes_request(None, None, b"hello".to_vec(), None, None, None),
         resolved_target_did: None,
+        client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
     .expect_err("bytes input without filename should fail");
@@ -459,6 +464,7 @@ fn attachments_upload_runtime_direct_handle_requires_resolved_did() {
         ),
         request: bytes_request(Some("note.txt"), None, b"hello".to_vec(), None, None, None),
         resolved_target_did: None,
+        client_message_id: None,
         credentials: Some(fixture.credentials()),
     })
     .expect_err("unresolved direct handle should fail");

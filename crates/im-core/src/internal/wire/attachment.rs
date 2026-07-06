@@ -266,6 +266,8 @@ pub(crate) fn build_direct_attachment_send_rpc_params(
     identity: &AttachmentSigningIdentity,
     target_did: &str,
     manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
 ) -> crate::ImResult<Value> {
     if target_did.trim().is_empty() {
         return Err(crate::ImError::invalid_input(
@@ -280,6 +282,8 @@ pub(crate) fn build_direct_attachment_send_rpc_params(
         target_did,
         "anp.direct.base.v1",
         manifest,
+        client_message_id,
+        operation_id,
     )
 }
 
@@ -287,6 +291,8 @@ pub(crate) fn build_group_attachment_send_rpc_params(
     identity: &AttachmentSigningIdentity,
     group_did: &str,
     manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
 ) -> crate::ImResult<Value> {
     if group_did.trim().is_empty() {
         return Err(crate::ImError::invalid_input(
@@ -301,6 +307,8 @@ pub(crate) fn build_group_attachment_send_rpc_params(
         group_did,
         "anp.group.base.v1",
         manifest,
+        client_message_id,
+        operation_id,
     )
 }
 
@@ -311,17 +319,30 @@ fn build_signed_attachment_send_rpc_params(
     target_did: &str,
     profile: &str,
     manifest: Value,
+    client_message_id: Option<&crate::ids::MessageId>,
+    operation_id: Option<&str>,
 ) -> crate::ImResult<Value> {
     let body = json!({ "payload": manifest });
+    let mut meta = super::common::signed_message_meta(
+        &identity.did,
+        target_kind,
+        target_did,
+        profile,
+        crate::attachments::manifest::attachment_manifest_content_type(),
+    );
+    if let Some(message_id) = client_message_id {
+        meta["message_id"] = Value::String(message_id.as_str().to_string());
+        meta["operation_id"] = Value::String(format!("op-{}", message_id.as_str()));
+    }
+    if let Some(operation_id) = operation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        meta["operation_id"] = Value::String(operation_id.to_string());
+    }
     let payload = DirectPayload {
         method: method.to_string(),
-        meta: super::common::signed_message_meta(
-            &identity.did,
-            target_kind,
-            target_did,
-            profile,
-            crate::attachments::manifest::attachment_manifest_content_type(),
-        ),
+        meta,
         body,
     };
     let origin_proof = crate::internal::proof::origin::build_origin_proof(

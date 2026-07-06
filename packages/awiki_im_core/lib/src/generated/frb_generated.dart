@@ -88,7 +88,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -656775185;
+  int get rustContentHash => 1605819285;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -541,6 +541,12 @@ abstract class RustLibApi extends BaseApi {
   Future<DartAttachmentSendResult> crateApiAttachmentsSendAttachment({
     required ArcDartImClient client,
     required DartAttachmentSendRequest request,
+  });
+
+  Future<DartAttachmentSendResult>
+  crateApiAttachmentsSendConversationAttachment({
+    required ArcDartImClient client,
+    required DartSendConversationAttachmentRequest request,
   });
 
   Future<DartSendMessageResult> crateApiMessagesSendConversationPayload({
@@ -3924,6 +3930,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartAttachmentSendResult>
+  crateApiAttachmentsSendConversationAttachment({
+    required ArcDartImClient client,
+    required DartSendConversationAttachmentRequest request,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_send_conversation_attachment_request(
+            request,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 84,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_attachment_send_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiAttachmentsSendConversationAttachmentConstMeta,
+        argValues: [client, request],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAttachmentsSendConversationAttachmentConstMeta =>
+      const TaskConstMeta(
+        debugName: "send_conversation_attachment",
+        argNames: ["client", "request"],
+      );
+
+  @override
   Future<DartSendMessageResult> crateApiMessagesSendConversationPayload({
     required ArcDartImClient client,
     required DartSendConversationPayloadRequest request,
@@ -3943,7 +3991,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 84,
+            funcId: 85,
             port: port_,
           );
         },
@@ -3984,7 +4032,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 85,
+            funcId: 86,
             port: port_,
           );
         },
@@ -4022,7 +4070,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 86,
+            funcId: 87,
             port: port_,
           );
         },
@@ -4060,7 +4108,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 87,
+            funcId: 88,
             port: port_,
           );
         },
@@ -4095,7 +4143,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 88,
+            funcId: 89,
             port: port_,
           );
         },
@@ -4131,7 +4179,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 90,
             port: port_,
           );
         },
@@ -4172,7 +4220,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 90,
+            funcId: 91,
             port: port_,
           );
         },
@@ -4210,7 +4258,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 91,
+            funcId: 92,
             port: port_,
           );
         },
@@ -4250,7 +4298,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 92,
+            funcId: 93,
             port: port_,
           );
         },
@@ -4292,7 +4340,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 93,
+              funcId: 94,
               port: port_,
             );
           },
@@ -4332,7 +4380,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 94,
+            funcId: 95,
             port: port_,
           );
         },
@@ -4360,7 +4408,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 95,
+            funcId: 96,
             port: port_,
           );
         },
@@ -4395,7 +4443,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 96,
+            funcId: 97,
             port: port_,
           );
         },
@@ -4431,7 +4479,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 97,
+            funcId: 98,
             port: port_,
           );
         },
@@ -4467,7 +4515,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 98,
+            funcId: 99,
             port: port_,
           );
         },
@@ -4502,7 +4550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 100,
             port: port_,
           );
         },
@@ -4547,7 +4595,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 101,
             port: port_,
           );
         },
@@ -4589,7 +4637,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 102,
             port: port_,
           );
         },
@@ -5060,6 +5108,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_dart_secure_problem(raw);
+  }
+
+  @protected
+  DartSendConversationAttachmentRequest
+  dco_decode_box_autoadd_dart_send_conversation_attachment_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_send_conversation_attachment_request(raw);
   }
 
   @protected
@@ -6761,6 +6818,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSendConversationAttachmentRequest
+  dco_decode_dart_send_conversation_attachment_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    return DartSendConversationAttachmentRequest(
+      conversation: dco_decode_dart_conversation_read_ref(arr[0]),
+      input: dco_decode_dart_attachment_input(arr[1]),
+      caption: dco_decode_opt_String(arr[2]),
+      mentionPayloadJson: dco_decode_opt_String(arr[3]),
+      mimeType: dco_decode_opt_String(arr[4]),
+      filename: dco_decode_opt_String(arr[5]),
+      security: dco_decode_dart_message_security_mode(arr[6]),
+      clientMessageId: dco_decode_opt_String(arr[7]),
+      idempotencyKey: dco_decode_opt_String(arr[8]),
+      waitForFinalAcceptance: dco_decode_bool(arr[9]),
+    );
+  }
+
+  @protected
   DartSendConversationPayloadRequest
   dco_decode_dart_send_conversation_payload_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -7941,6 +8019,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_dart_secure_problem(deserializer));
+  }
+
+  @protected
+  DartSendConversationAttachmentRequest
+  sse_decode_box_autoadd_dart_send_conversation_attachment_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_send_conversation_attachment_request(deserializer));
   }
 
   @protected
@@ -10115,6 +10202,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSendConversationAttachmentRequest
+  sse_decode_dart_send_conversation_attachment_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_conversation = sse_decode_dart_conversation_read_ref(deserializer);
+    var var_input = sse_decode_dart_attachment_input(deserializer);
+    var var_caption = sse_decode_opt_String(deserializer);
+    var var_mentionPayloadJson = sse_decode_opt_String(deserializer);
+    var var_mimeType = sse_decode_opt_String(deserializer);
+    var var_filename = sse_decode_opt_String(deserializer);
+    var var_security = sse_decode_dart_message_security_mode(deserializer);
+    var var_clientMessageId = sse_decode_opt_String(deserializer);
+    var var_idempotencyKey = sse_decode_opt_String(deserializer);
+    var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
+    return DartSendConversationAttachmentRequest(
+      conversation: var_conversation,
+      input: var_input,
+      caption: var_caption,
+      mentionPayloadJson: var_mentionPayloadJson,
+      mimeType: var_mimeType,
+      filename: var_filename,
+      security: var_security,
+      clientMessageId: var_clientMessageId,
+      idempotencyKey: var_idempotencyKey,
+      waitForFinalAcceptance: var_waitForFinalAcceptance,
+    );
+  }
+
+  @protected
   DartSendConversationPayloadRequest
   sse_decode_dart_send_conversation_payload_request(
     SseDeserializer deserializer,
@@ -11701,6 +11818,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_dart_secure_problem(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_conversation_attachment_request(
+    DartSendConversationAttachmentRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_send_conversation_attachment_request(self, serializer);
   }
 
   @protected
@@ -13329,6 +13455,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_send_conversation_attachment_request(
+    DartSendConversationAttachmentRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_conversation_read_ref(self.conversation, serializer);
+    sse_encode_dart_attachment_input(self.input, serializer);
+    sse_encode_opt_String(self.caption, serializer);
+    sse_encode_opt_String(self.mentionPayloadJson, serializer);
+    sse_encode_opt_String(self.mimeType, serializer);
+    sse_encode_opt_String(self.filename, serializer);
+    sse_encode_dart_message_security_mode(self.security, serializer);
+    sse_encode_opt_String(self.clientMessageId, serializer);
+    sse_encode_opt_String(self.idempotencyKey, serializer);
+    sse_encode_bool(self.waitForFinalAcceptance, serializer);
   }
 
   @protected

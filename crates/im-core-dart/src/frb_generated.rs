@@ -44,7 +44,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -656775185;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1605819285;
 
 // Section: executor
 
@@ -5062,6 +5062,71 @@ fn wire__crate__api__attachments__send_attachment_impl(
         },
     )
 }
+fn wire__crate__api__attachments__send_conversation_attachment_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "send_conversation_attachment",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::dto::attachment::DartSendConversationAttachmentRequest>::sse_decode(
+                    &mut deserializer,
+                );
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::dto::error::DartImError>(
+                    (move || async move {
+                        let mut api_client_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_client,
+                                    0,
+                                    false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_client_guard =
+                                        Some(api_client.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_client_guard = api_client_guard.unwrap();
+                        let output_ok = crate::api::attachments::send_conversation_attachment(
+                            &*api_client_guard,
+                            api_request,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__messages__send_conversation_payload_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -8448,6 +8513,36 @@ impl SseDecode for crate::dto::secure::DartSecureProblemCode {
     }
 }
 
+impl SseDecode for crate::dto::attachment::DartSendConversationAttachmentRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_conversation =
+            <crate::dto::message::DartConversationReadRef>::sse_decode(deserializer);
+        let mut var_input = <crate::dto::attachment::DartAttachmentInput>::sse_decode(deserializer);
+        let mut var_caption = <Option<String>>::sse_decode(deserializer);
+        let mut var_mentionPayloadJson = <Option<String>>::sse_decode(deserializer);
+        let mut var_mimeType = <Option<String>>::sse_decode(deserializer);
+        let mut var_filename = <Option<String>>::sse_decode(deserializer);
+        let mut var_security =
+            <crate::dto::message::DartMessageSecurityMode>::sse_decode(deserializer);
+        let mut var_clientMessageId = <Option<String>>::sse_decode(deserializer);
+        let mut var_idempotencyKey = <Option<String>>::sse_decode(deserializer);
+        let mut var_waitForFinalAcceptance = <bool>::sse_decode(deserializer);
+        return crate::dto::attachment::DartSendConversationAttachmentRequest {
+            conversation: var_conversation,
+            input: var_input,
+            caption: var_caption,
+            mention_payload_json: var_mentionPayloadJson,
+            mime_type: var_mimeType,
+            filename: var_filename,
+            security: var_security,
+            client_message_id: var_clientMessageId,
+            idempotency_key: var_idempotencyKey,
+            wait_for_final_acceptance: var_waitForFinalAcceptance,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::message::DartSendConversationPayloadRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -9696,69 +9791,75 @@ fn pde_ffi_dispatcher_primary_impl(
         83 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        84 => wire__crate__api__messages__send_conversation_payload_impl(
+        84 => wire__crate__api__attachments__send_conversation_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        85 => wire__crate__api__messages__send_conversation_text_impl(
+        85 => wire__crate__api__messages__send_conversation_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        86 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
-        87 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        88 => wire__crate__api__messages__stop_conversation_patch_session_impl(
+        86 => wire__crate__api__messages__send_conversation_text_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        89 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
+        87 => wire__crate__api__messages__send_payload_impl(port, ptr, rust_vec_len, data_len),
+        88 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        89 => wire__crate__api__messages__stop_conversation_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        90 => wire__crate__api__messages__sync_conversation_after_impl(
+        90 => wire__crate__api__messages__stop_thread_message_patch_session_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        91 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
-        92 => wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len),
-        93 => wire__crate__api__messages__thread_message_patch_stream_impl(
+        91 => wire__crate__api__messages__sync_conversation_after_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        94 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        95 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        96 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        97 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
-        98 => wire__crate__api__identity__verify_identity_vault_impl(
+        92 => wire__crate__api__messages__sync_delta_impl(port, ptr, rust_vec_len, data_len),
+        93 => wire__crate__api__messages__sync_thread_after_impl(port, ptr, rust_vec_len, data_len),
+        94 => wire__crate__api__messages__thread_message_patch_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        99 => wire__crate__api__messages__watch_conversation_patches_impl(
+        95 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        96 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        97 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        98 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        99 => wire__crate__api__identity__verify_identity_vault_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        100 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+        100 => wire__crate__api__messages__watch_conversation_patches_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        101 => {
+        101 => wire__crate__api__messages__watch_conversation_timeline_patches_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        102 => {
             wire__crate__api__messages__watch_thread_patches_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -12515,6 +12616,38 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::secure::DartSecureProblemCode
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::dto::attachment::DartSendConversationAttachmentRequest
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.conversation.into_into_dart().into_dart(),
+            self.input.into_into_dart().into_dart(),
+            self.caption.into_into_dart().into_dart(),
+            self.mention_payload_json.into_into_dart().into_dart(),
+            self.mime_type.into_into_dart().into_dart(),
+            self.filename.into_into_dart().into_dart(),
+            self.security.into_into_dart().into_dart(),
+            self.client_message_id.into_into_dart().into_dart(),
+            self.idempotency_key.into_into_dart().into_dart(),
+            self.wait_for_final_acceptance.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::attachment::DartSendConversationAttachmentRequest
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<crate::dto::attachment::DartSendConversationAttachmentRequest>
+    for crate::dto::attachment::DartSendConversationAttachmentRequest
+{
+    fn into_into_dart(self) -> crate::dto::attachment::DartSendConversationAttachmentRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSendConversationPayloadRequest {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -14733,6 +14866,22 @@ impl SseEncode for crate::dto::secure::DartSecureProblemCode {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::dto::attachment::DartSendConversationAttachmentRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartConversationReadRef>::sse_encode(self.conversation, serializer);
+        <crate::dto::attachment::DartAttachmentInput>::sse_encode(self.input, serializer);
+        <Option<String>>::sse_encode(self.caption, serializer);
+        <Option<String>>::sse_encode(self.mention_payload_json, serializer);
+        <Option<String>>::sse_encode(self.mime_type, serializer);
+        <Option<String>>::sse_encode(self.filename, serializer);
+        <crate::dto::message::DartMessageSecurityMode>::sse_encode(self.security, serializer);
+        <Option<String>>::sse_encode(self.client_message_id, serializer);
+        <Option<String>>::sse_encode(self.idempotency_key, serializer);
+        <bool>::sse_encode(self.wait_for_final_acceptance, serializer);
     }
 }
 

@@ -60,6 +60,37 @@ fn attachments_input_is_the_canonical_message_body_input() {
 }
 
 #[test]
+fn conversation_attachment_request_is_conversation_first() {
+    let request = SendConversationAttachmentRequest {
+        conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+        input: AttachmentInput::Bytes {
+            filename: Some("note.txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            bytes: b"hello attachment".to_vec(),
+        },
+        caption: Some("caption".to_string()),
+        mention_payload: None,
+        mime_type: Some("text/plain".to_string()),
+        filename: None,
+        security: MessageSecurityMode::DefaultPlain,
+        client_message_id: Some(MessageId::parse("msg-client-attachment").unwrap()),
+        idempotency_key: Some("op-client-attachment".to_string()),
+        wait_for_final_acceptance: true,
+    };
+
+    assert_eq!(request.conversation.conversation_id, "dm:did:example:bob");
+    assert_eq!(
+        request.client_message_id.as_ref().map(MessageId::as_str),
+        Some("msg-client-attachment")
+    );
+    assert_eq!(
+        request.idempotency_key.as_deref(),
+        Some("op-client-attachment")
+    );
+    assert!(request.wait_for_final_acceptance);
+}
+
+#[test]
 fn message_body_attachments_reuse_canonical_attachment_input() {
     let body = MessageBody::Attachment {
         input: AttachmentInput::LocalFile(PathBuf::from("image.png")),

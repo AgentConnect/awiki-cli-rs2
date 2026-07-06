@@ -6,7 +6,7 @@ mod service;
 pub use self::dto::{
     AttachmentDestination, AttachmentInput, AttachmentSendRequest, AttachmentSendResult,
     DownloadAttachmentRequest, DownloadedAttachment, DownloadedAttachmentDestination,
-    UploadedAttachment,
+    SendConversationAttachmentRequest, UploadedAttachment,
 };
 pub use self::manifest::{
     attachment_manifest_content_type, manifest_content_string, AttachmentDescriptor,

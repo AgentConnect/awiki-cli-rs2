@@ -332,6 +332,66 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
 }
 
 #[test]
+fn conversation_attachment_request_maps_to_core_conversation_contract() {
+    let request = awiki_im_core::dto::attachment::DartSendConversationAttachmentRequest {
+        conversation: awiki_im_core::dto::message::DartConversationReadRef {
+            conversation_id: "dm:did:example:bob".to_string(),
+        },
+        input: awiki_im_core::dto::attachment::DartAttachmentInput::Bytes {
+            filename: Some("note.txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            bytes: b"hello".to_vec(),
+        },
+        caption: Some("caption".to_string()),
+        mention_payload_json: Some(
+            serde_json::json!({
+                "text": "@Hermes caption",
+                "mentions": [{
+                    "id": "men_agent",
+                    "range": {"start": 0, "end": 7, "unit": "unicode_code_point"},
+                    "target": {"kind": "agent", "did": "did:agent:hermes"},
+                    "mention_role": "addressee"
+                }]
+            })
+            .to_string(),
+        ),
+        mime_type: Some("text/plain".to_string()),
+        filename: None,
+        security: awiki_im_core::dto::message::DartMessageSecurityMode::DefaultPlain,
+        client_message_id: Some("msg-client-attachment".to_string()),
+        idempotency_key: Some("op-client-attachment".to_string()),
+        wait_for_final_acceptance: true,
+    };
+
+    let core: im_core::attachments::SendConversationAttachmentRequest =
+        request.try_into().expect("conversation attachment maps");
+    assert_eq!(core.conversation.conversation_id, "dm:did:example:bob");
+    assert!(matches!(
+        core.input,
+        im_core::attachments::AttachmentInput::Bytes { bytes, .. } if bytes == b"hello".to_vec()
+    ));
+    assert_eq!(
+        core.client_message_id
+            .as_ref()
+            .map(im_core::ids::MessageId::as_str),
+        Some("msg-client-attachment")
+    );
+    assert_eq!(
+        core.idempotency_key.as_deref(),
+        Some("op-client-attachment")
+    );
+    assert!(core.wait_for_final_acceptance);
+    assert_eq!(
+        core.mention_payload
+            .as_ref()
+            .and_then(|payload| payload.get("mentions"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[test]
 fn attachment_send_result_preserves_upload_metadata_for_dart() {
     let core = im_core::attachments::AttachmentSendResult {
         message: im_core::messages::SendMessageResult {

@@ -1,5 +1,6 @@
 use crate::dto::message::{
-    DartMessageSecurityMode, DartMessageTarget, DartSendMessageResult, DartThreadRef,
+    DartConversationReadRef, DartMessageSecurityMode, DartMessageTarget, DartSendMessageResult,
+    DartThreadRef,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,20 @@ pub struct DartAttachmentSendRequest {
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub security: DartMessageSecurityMode,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSendConversationAttachmentRequest {
+    pub conversation: DartConversationReadRef,
+    pub input: DartAttachmentInput,
+    pub caption: Option<String>,
+    pub mention_payload_json: Option<String>,
+    pub mime_type: Option<String>,
+    pub filename: Option<String>,
+    pub security: DartMessageSecurityMode,
+    pub client_message_id: Option<String>,
     pub idempotency_key: Option<String>,
     pub wait_for_final_acceptance: bool,
 }

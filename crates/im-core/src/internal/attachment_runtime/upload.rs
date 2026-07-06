@@ -18,6 +18,7 @@ pub(crate) struct AttachmentSendInput {
     pub target: crate::messages::MessageTarget,
     pub request: crate::attachments::AttachmentSendRequest,
     pub resolved_target_did: Option<String>,
+    pub client_message_id: Option<crate::ids::MessageId>,
     pub credentials: Option<AttachmentUploadCredentials>,
 }
 
@@ -110,6 +111,7 @@ where
         let service_did = message_service_did(self.client)?;
         self.session_provider.ensure_session(auth_scope(&target))?;
 
+        let operation_id = input.request.delivery.idempotency_key.clone();
         let upload = prepare_request(input.request)?;
         let prepared = upload.prepared;
         let slot = self.create_slot(&target, &service_did, &prepared)?;
@@ -135,7 +137,13 @@ where
             Some(credentials) => credentials,
             None => load_credentials(self.client)?,
         };
-        let send_result = self.send_manifest(&target, manifest.clone(), credentials)?;
+        let send_result = self.send_manifest(
+            &target,
+            manifest.clone(),
+            input.client_message_id.as_ref(),
+            operation_id.as_deref(),
+            credentials,
+        )?;
         let sdk_result = sdk_result_from_raw(
             send_result.raw.clone(),
             &send_result.meta,
@@ -282,6 +290,8 @@ where
         &mut self,
         target: &ResolvedAttachmentTarget,
         manifest: Value,
+        client_message_id: Option<&crate::ids::MessageId>,
+        operation_id: Option<&str>,
         credentials: AttachmentUploadCredentials,
     ) -> crate::ImResult<ManifestSendResult> {
         let identity = crate::internal::wire::attachment::AttachmentSigningIdentity {
@@ -294,7 +304,11 @@ where
             ResolvedAttachmentTarget::Direct { target_did, .. } => (
                 "direct.send",
                 crate::internal::wire::attachment::build_direct_attachment_send_rpc_params(
-                    &identity, target_did, manifest,
+                    &identity,
+                    target_did,
+                    manifest,
+                    client_message_id,
+                    operation_id,
                 )?,
             ),
             ResolvedAttachmentTarget::Group { group } => (
@@ -303,6 +317,8 @@ where
                     &identity,
                     group.as_str(),
                     manifest,
+                    client_message_id,
+                    operation_id,
                 )?,
             ),
         };
@@ -329,6 +345,7 @@ where
             .ensure_session(auth_scope(&target))
             .await?;
 
+        let operation_id = input.request.delivery.idempotency_key.clone();
         let upload = prepare_request_async(input.request).await?;
         let prepared = upload.prepared;
         let slot = self
@@ -361,7 +378,13 @@ where
             None => load_credentials_async(self.client).await?,
         };
         let send_result = self
-            .send_manifest_async(&target, manifest.clone(), credentials)
+            .send_manifest_async(
+                &target,
+                manifest.clone(),
+                input.client_message_id.as_ref(),
+                operation_id.as_deref(),
+                credentials,
+            )
             .await?;
         let sdk_result = sdk_result_from_raw(
             send_result.raw.clone(),
@@ -522,6 +545,8 @@ where
         &mut self,
         target: &ResolvedAttachmentTarget,
         manifest: Value,
+        client_message_id: Option<&crate::ids::MessageId>,
+        operation_id: Option<&str>,
         credentials: AttachmentUploadCredentials,
     ) -> crate::ImResult<ManifestSendResult> {
         let identity = crate::internal::wire::attachment::AttachmentSigningIdentity {
@@ -534,7 +559,11 @@ where
             ResolvedAttachmentTarget::Direct { target_did, .. } => (
                 "direct.send",
                 crate::internal::wire::attachment::build_direct_attachment_send_rpc_params(
-                    &identity, target_did, manifest,
+                    &identity,
+                    target_did,
+                    manifest,
+                    client_message_id,
+                    operation_id,
                 )?,
             ),
             ResolvedAttachmentTarget::Group { group } => (
@@ -543,6 +572,8 @@ where
                     &identity,
                     group.as_str(),
                     manifest,
+                    client_message_id,
+                    operation_id,
                 )?,
             ),
         };

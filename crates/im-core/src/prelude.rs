@@ -1,7 +1,7 @@
 pub use crate::attachments::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
     AttachmentSendResult, AttachmentService, DownloadAttachmentRequest, DownloadedAttachment,
-    DownloadedAttachmentDestination, UploadedAttachment,
+    DownloadedAttachmentDestination, SendConversationAttachmentRequest, UploadedAttachment,
 };
 pub use crate::auth::{AuthScope, AuthService, AuthStatus, SessionBundle, SessionUpdate};
 pub use crate::content::{
@@ -50,14 +50,14 @@ pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
 };
 pub use crate::messages::{
-    Conversation, ConversationQuery, DelegatedSigningOptions, DeliveryState, HistoryQuery,
-    InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope, MarkConversationReadRequest,
-    MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult, Message, MessageBody,
-    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind, MessageMetadata,
-    MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
+    Conversation, ConversationQuery, ConversationReadRef, DelegatedSigningOptions, DeliveryState,
+    HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope,
+    MarkConversationReadRequest, MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult,
+    Message, MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
+    MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
     MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
-    MessageService, MessageTarget, ReadWatermark, ScopedInboxToken, SendMessageRequest,
-    SendMessageResult, ThreadRef,
+    MessageService, MessageTarget, ReadWatermark, ScopedInboxToken, SendConversationPayloadRequest,
+    SendConversationTextRequest, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 #[cfg(feature = "blocking")]

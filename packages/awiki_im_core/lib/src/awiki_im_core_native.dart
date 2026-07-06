@@ -901,6 +901,19 @@ class AttachmentApi {
     return result._toModel();
   }
 
+  Future<AttachmentSendResult> sendConversation(
+    SendConversationAttachmentRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_attachments.sendConversationAttachment(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<DownloadedAttachment> download(
     DownloadAttachmentRequest request,
   ) async {
@@ -1959,6 +1972,22 @@ extension on AttachmentSendRequest {
         mimeType: mimeType,
         filename: filename,
         security: security._toGen(),
+        idempotencyKey: idempotencyKey,
+        waitForFinalAcceptance: waitForFinalAcceptance,
+      );
+}
+
+extension on SendConversationAttachmentRequest {
+  gen_attachment.DartSendConversationAttachmentRequest _toGen() =>
+      gen_attachment.DartSendConversationAttachmentRequest(
+        conversation: conversation._toGen(),
+        input: input._toGen(),
+        caption: caption,
+        mentionPayloadJson: mentionPayloadJson,
+        mimeType: mimeType,
+        filename: filename,
+        security: security._toGen(),
+        clientMessageId: clientMessageId,
         idempotencyKey: idempotencyKey,
         waitForFinalAcceptance: waitForFinalAcceptance,
       );

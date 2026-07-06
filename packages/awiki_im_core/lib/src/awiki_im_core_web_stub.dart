@@ -1,3 +1,4 @@
+import 'models/attachment.dart';
 import 'models/config.dart';
 import 'models/identity.dart';
 import 'models/message.dart';
@@ -73,6 +74,8 @@ class AwikiImCore {
 
 class AwikiImClient {
   MessageApi get messages => MessageApi._();
+
+  AttachmentApi get attachments => AttachmentApi._();
 
   SecureApi get secure => SecureApi._();
 
@@ -191,6 +194,26 @@ class MessageApi {
     ConversationReadRef conversation, {
     int limit = 100,
   }) async {
+    throw _unsupported();
+  }
+}
+
+class AttachmentApi {
+  AttachmentApi._();
+
+  Future<AttachmentSendResult> send(AttachmentSendRequest request) async {
+    throw _unsupported();
+  }
+
+  Future<AttachmentSendResult> sendConversation(
+    SendConversationAttachmentRequest request,
+  ) async {
+    throw _unsupported();
+  }
+
+  Future<DownloadedAttachment> download(
+    DownloadAttachmentRequest request,
+  ) async {
     throw _unsupported();
   }
 }

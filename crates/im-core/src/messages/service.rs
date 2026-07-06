@@ -2904,9 +2904,9 @@ fn conversation_send_request(
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .or_else(|| Some(format!("op-{}", client_message_id.as_str())));
-    let (target, target_did, target_handle, peer_scope) = conversation_send_target(resolved)?;
+    let resolved_target = conversation_send_target(resolved)?;
     let request = super::SendMessageRequest {
-        target,
+        target: resolved_target.target,
         body,
         security,
         client_message_id: Some(client_message_id),
@@ -2918,20 +2918,15 @@ fn conversation_send_request(
     };
     Ok(ResolvedConversationSendRequest {
         request,
-        target_did,
-        target_handle,
-        peer_scope,
+        target_did: resolved_target.target_did,
+        target_handle: resolved_target.target_handle,
+        peer_scope: resolved_target.peer_scope,
     })
 }
 
 fn conversation_send_target(
     resolved: ResolvedConversationServiceThread,
-) -> crate::ImResult<(
-    super::MessageTarget,
-    Option<String>,
-    Option<String>,
-    Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
-)> {
+) -> crate::ImResult<ResolvedConversationSendTarget> {
     match resolved.thread {
         super::ThreadRef::Direct(peer) => {
             let target_did = resolved.resolved_did.clone().or_else(|| {
@@ -2948,21 +2943,31 @@ fn conversation_send_target(
                 .map(|handle| crate::ids::PeerRef::parse(handle, ""))
                 .transpose()?
                 .unwrap_or(peer);
-            Ok((
-                super::MessageTarget::Direct(target_peer),
+            Ok(ResolvedConversationSendTarget {
+                target: super::MessageTarget::Direct(target_peer),
                 target_did,
                 target_handle,
-                resolved.peer_scope,
-            ))
+                peer_scope: resolved.peer_scope,
+            })
         }
-        super::ThreadRef::Group(group) => {
-            Ok((super::MessageTarget::Group(group), None, None, None))
-        }
+        super::ThreadRef::Group(group) => Ok(ResolvedConversationSendTarget {
+            target: super::MessageTarget::Group(group),
+            target_did: None,
+            target_handle: None,
+            peer_scope: None,
+        }),
         super::ThreadRef::Thread(_) => Err(crate::ImError::invalid_input(
             Some("conversation_id".to_owned()),
             "send_conversation requires a canonical dm: or group: conversation_id",
         )),
     }
+}
+
+pub(crate) fn resolve_conversation_send_target(
+    client: &crate::core::ImClient,
+    conversation: &super::ConversationReadRef,
+) -> crate::ImResult<ResolvedConversationSendTarget> {
+    conversation_send_target(resolve_service_conversation_thread(client, conversation)?)
 }
 
 fn validate_plain_conversation_send(request: &super::SendMessageRequest) -> crate::ImResult<()> {
@@ -3272,6 +3277,14 @@ struct ResolvedConversationServiceThread {
     thread: super::ThreadRef,
     resolved_did: Option<String>,
     peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedConversationSendTarget {
+    pub(crate) target: super::MessageTarget,
+    pub(crate) target_did: Option<String>,
+    pub(crate) target_handle: Option<String>,
+    pub(crate) peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
 }
 
 fn resolve_history_thread(

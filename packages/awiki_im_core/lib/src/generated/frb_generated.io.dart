@@ -294,6 +294,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw);
 
   @protected
+  DartSendConversationAttachmentRequest
+  dco_decode_box_autoadd_dart_send_conversation_attachment_request(dynamic raw);
+
+  @protected
   DartSendConversationPayloadRequest
   dco_decode_box_autoadd_dart_send_conversation_payload_request(dynamic raw);
 
@@ -718,6 +722,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSecureProblemCode dco_decode_dart_secure_problem_code(dynamic raw);
+
+  @protected
+  DartSendConversationAttachmentRequest
+  dco_decode_dart_send_conversation_attachment_request(dynamic raw);
 
   @protected
   DartSendConversationPayloadRequest
@@ -1233,6 +1241,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSecureProblem sse_decode_box_autoadd_dart_secure_problem(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationAttachmentRequest
+  sse_decode_box_autoadd_dart_send_conversation_attachment_request(
     SseDeserializer deserializer,
   );
 
@@ -1785,6 +1799,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSecureProblemCode sse_decode_dart_secure_problem_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationAttachmentRequest
+  sse_decode_dart_send_conversation_attachment_request(
     SseDeserializer deserializer,
   );
 
@@ -2401,6 +2421,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_secure_problem(
     DartSecureProblem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_conversation_attachment_request(
+    DartSendConversationAttachmentRequest self,
     SseSerializer serializer,
   );
 
@@ -3082,6 +3108,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_secure_problem_code(
     DartSecureProblemCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_conversation_attachment_request(
+    DartSendConversationAttachmentRequest self,
     SseSerializer serializer,
   );
 

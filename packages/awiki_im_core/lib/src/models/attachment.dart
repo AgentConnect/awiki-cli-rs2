@@ -54,6 +54,32 @@ class AttachmentSendRequest {
   final bool waitForFinalAcceptance;
 }
 
+class SendConversationAttachmentRequest {
+  const SendConversationAttachmentRequest({
+    required this.conversation,
+    required this.input,
+    this.caption,
+    this.mentionPayloadJson,
+    this.mimeType,
+    this.filename,
+    this.security = MessageSecurityMode.defaultPlain,
+    this.clientMessageId,
+    this.idempotencyKey,
+    this.waitForFinalAcceptance = false,
+  });
+
+  final ConversationReadRef conversation;
+  final AttachmentInput input;
+  final String? caption;
+  final String? mentionPayloadJson;
+  final String? mimeType;
+  final String? filename;
+  final MessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+}
+
 class AttachmentSendResult {
   const AttachmentSendResult({
     required this.message,

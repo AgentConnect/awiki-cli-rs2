@@ -207,6 +207,24 @@ void main() {
     expect(_sendConversationPayloadApiShape, isA<Function>());
   });
 
+  test('conversation attachment send API shape remains app-usable', () {
+    const request = SendConversationAttachmentRequest(
+      conversation: ConversationReadRef(conversationId: 'dm:did:example:bob'),
+      input: AttachmentInput.bytes(
+        filename: 'note.txt',
+        mimeType: 'text/plain',
+        bytes: [104, 105],
+      ),
+      caption: 'hello',
+      clientMessageId: 'msg-client-attachment',
+      idempotencyKey: 'op-client-attachment',
+    );
+
+    expect(request.conversation.conversationId, 'dm:did:example:bob');
+    expect(request.security, MessageSecurityMode.defaultPlain);
+    expect(_sendConversationAttachmentApiShape, isA<Function>());
+  });
+
   test('local history API shape remains app-usable', () {
     expect(_localHistoryApiShape, isA<Function>());
   });
@@ -414,6 +432,23 @@ Future<SendMessageResult> _sendConversationPayloadApiShape(MessageApi api) {
       payloadJson: '{"schema":"awiki.agent.mention.v1"}',
       clientMessageId: 'msg-client-payload',
       idempotencyKey: 'op-client-payload',
+    ),
+  );
+}
+
+Future<AttachmentSendResult> _sendConversationAttachmentApiShape(
+  AttachmentApi api,
+) {
+  return api.sendConversation(
+    const SendConversationAttachmentRequest(
+      conversation: ConversationReadRef(conversationId: 'dm:did:example:bob'),
+      input: AttachmentInput.bytes(
+        filename: 'note.txt',
+        mimeType: 'text/plain',
+        bytes: [104, 105],
+      ),
+      clientMessageId: 'msg-client-attachment',
+      idempotencyKey: 'op-client-attachment',
     ),
   );
 }

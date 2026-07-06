@@ -205,6 +205,61 @@ sealed class DartDownloadedAttachmentDestination
   }) = DartDownloadedAttachmentDestination_Memory;
 }
 
+class DartSendConversationAttachmentRequest {
+  final DartConversationReadRef conversation;
+  final DartAttachmentInput input;
+  final String? caption;
+  final String? mentionPayloadJson;
+  final String? mimeType;
+  final String? filename;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+
+  const DartSendConversationAttachmentRequest({
+    required this.conversation,
+    required this.input,
+    this.caption,
+    this.mentionPayloadJson,
+    this.mimeType,
+    this.filename,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      input.hashCode ^
+      caption.hashCode ^
+      mentionPayloadJson.hashCode ^
+      mimeType.hashCode ^
+      filename.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendConversationAttachmentRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          input == other.input &&
+          caption == other.caption &&
+          mentionPayloadJson == other.mentionPayloadJson &&
+          mimeType == other.mimeType &&
+          filename == other.filename &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance;
+}
+
 class DartUploadedAttachment {
   final String attachmentId;
   final String filename;

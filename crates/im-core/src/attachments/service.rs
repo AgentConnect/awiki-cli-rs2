@@ -2,6 +2,16 @@ pub struct AttachmentService<'a> {
     client: &'a crate::core::ImClient,
 }
 
+struct ResolvedConversationAttachmentRequest {
+    target: crate::messages::MessageTarget,
+    request: super::AttachmentSendRequest,
+    client_message_id: crate::ids::MessageId,
+    target_did: Option<String>,
+    target_handle: Option<String>,
+    peer_scope: Option<crate::internal::local_state::owner_scope::DirectPeerScope>,
+    conversation_identity: crate::messages::ConversationIdentity,
+}
+
 impl<'a> AttachmentService<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         Self { client }
@@ -30,6 +40,7 @@ impl<'a> AttachmentService<'a> {
                 target,
                 request,
                 resolved_target_did: resolved_target.target_did.clone(),
+                client_message_id: None,
                 credentials: None,
             },
         )?;
@@ -75,6 +86,125 @@ impl<'a> AttachmentService<'a> {
         Ok(super::AttachmentSendResult::from_upload_result(result))
     }
 
+    pub fn send_conversation(
+        &self,
+        request: super::SendConversationAttachmentRequest,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
+        let resolved = self.resolve_conversation_attachment_request(request)?;
+        if attachment_security_is_secure(&resolved.request.security) {
+            let mut result = attachment_send_result_from_secure_message(
+                self.client.messages().send_secure_attachment(
+                    message_request_from_resolved_conversation_attachment(&resolved)?,
+                )?,
+            )?;
+            result.message.message.metadata.conversation_identity =
+                Some(resolved.conversation_identity);
+            return Ok(result);
+        }
+        let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send(
+            crate::internal::attachment_runtime::upload::AttachmentSendInput {
+                target: resolved.target,
+                request: resolved.request,
+                resolved_target_did: resolved.target_did.clone(),
+                client_message_id: Some(resolved.client_message_id),
+                credentials: None,
+            },
+        )?;
+        apply_conversation_identity(
+            &mut result.sdk_result,
+            resolved.conversation_identity.clone(),
+        );
+        if result.target_kind != "group" {
+            crate::messages::normalize_direct_send_result_for_peer_scope(
+                &mut result.sdk_result,
+                resolved.peer_scope.as_ref(),
+                resolved.target_handle.as_deref(),
+                Some(result.target_did.as_str()),
+            )?;
+            apply_conversation_identity(
+                &mut result.sdk_result,
+                resolved.conversation_identity.clone(),
+            );
+        }
+        persist_attachment_projection_or_fail(
+            self.client,
+            result.target_kind,
+            result.target_did.as_str(),
+            resolved.target_handle.as_deref(),
+            resolved.peer_scope.as_ref(),
+            &result.manifest,
+            &result.sdk_result,
+        )?;
+        Ok(super::AttachmentSendResult::from_upload_result(result))
+    }
+
+    pub async fn send_conversation_async(
+        &self,
+        request: super::SendConversationAttachmentRequest,
+    ) -> crate::ImResult<super::AttachmentSendResult> {
+        let resolved = self.resolve_conversation_attachment_request(request)?;
+        if attachment_security_is_secure(&resolved.request.security) {
+            let mut result = attachment_send_result_from_secure_message(
+                self.client
+                    .messages()
+                    .send_secure_attachment_async(
+                        message_request_from_resolved_conversation_attachment(&resolved)?,
+                    )
+                    .await?,
+            )?;
+            result.message.message.metadata.conversation_identity =
+                Some(resolved.conversation_identity);
+            return Ok(result);
+        }
+        let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .send_async(
+            crate::internal::attachment_runtime::upload::AttachmentSendInput {
+                target: resolved.target,
+                request: resolved.request,
+                resolved_target_did: resolved.target_did.clone(),
+                client_message_id: Some(resolved.client_message_id),
+                credentials: None,
+            },
+        )
+        .await?;
+        apply_conversation_identity(
+            &mut result.sdk_result,
+            resolved.conversation_identity.clone(),
+        );
+        if result.target_kind != "group" {
+            crate::messages::normalize_direct_send_result_for_peer_scope(
+                &mut result.sdk_result,
+                resolved.peer_scope.as_ref(),
+                resolved.target_handle.as_deref(),
+                Some(result.target_did.as_str()),
+            )?;
+            apply_conversation_identity(
+                &mut result.sdk_result,
+                resolved.conversation_identity.clone(),
+            );
+        }
+        persist_attachment_projection_or_fail_async(
+            self.client,
+            result.target_kind,
+            result.target_did.as_str(),
+            resolved.target_handle.as_deref(),
+            resolved.peer_scope.as_ref(),
+            &result.manifest,
+            &result.sdk_result,
+        )
+        .await?;
+        Ok(super::AttachmentSendResult::from_upload_result(result))
+    }
+
     pub async fn send_async(
         &self,
         target: crate::messages::MessageTarget,
@@ -99,6 +229,7 @@ impl<'a> AttachmentService<'a> {
                 target,
                 request,
                 resolved_target_did: resolved_target.target_did.clone(),
+                client_message_id: None,
                 credentials: None,
             },
         )
@@ -186,6 +317,35 @@ impl<'a> AttachmentService<'a> {
         .await
         .map(|result| result.sdk_result)
     }
+
+    fn resolve_conversation_attachment_request(
+        &self,
+        request: super::SendConversationAttachmentRequest,
+    ) -> crate::ImResult<ResolvedConversationAttachmentRequest> {
+        let (conversation, request_client_message_id, mut attachment) =
+            request.into_attachment_send_request();
+        let client_message_id = conversation_client_message_id(request_client_message_id)?;
+        attachment.delivery.idempotency_key = attachment
+            .delivery
+            .idempotency_key
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .or_else(|| Some(format!("op-{}", client_message_id.as_str())));
+        let resolved =
+            crate::messages::resolve_conversation_send_target(self.client, &conversation)?;
+        Ok(ResolvedConversationAttachmentRequest {
+            target: resolved.target,
+            request: attachment,
+            client_message_id,
+            target_did: resolved.target_did,
+            target_handle: resolved.target_handle,
+            peer_scope: resolved.peer_scope,
+            conversation_identity: crate::messages::ConversationIdentity::from_thread_ref_for_owner(
+                &conversation.as_thread_ref()?,
+                self.client.did().as_str(),
+            ),
+        })
+    }
 }
 
 fn attachment_security_is_secure(security: &crate::messages::MessageSecurityMode) -> bool {
@@ -215,6 +375,135 @@ fn message_request_from_attachment(
         delivery: request.delivery,
         delegated_signing: None,
     })
+}
+
+fn message_request_from_resolved_conversation_attachment(
+    resolved: &ResolvedConversationAttachmentRequest,
+) -> crate::ImResult<crate::messages::SendMessageRequest> {
+    Ok(crate::messages::SendMessageRequest {
+        target: resolved.target.clone(),
+        body: crate::messages::MessageBody::Attachment {
+            input: resolved.request.input.clone(),
+            caption: resolved.request.caption.clone(),
+            mention_payload: resolved.request.mention_payload.clone(),
+            mime_type: resolved.request.mime_type.clone(),
+            filename: resolved.request.filename.clone(),
+        },
+        security: resolved.request.security.clone(),
+        client_message_id: Some(resolved.client_message_id.clone()),
+        delivery: resolved.request.delivery.clone(),
+        delegated_signing: None,
+    })
+}
+
+fn conversation_client_message_id(
+    client_message_id: Option<crate::ids::MessageId>,
+) -> crate::ImResult<crate::ids::MessageId> {
+    match client_message_id {
+        Some(id) => Ok(id),
+        None => crate::ids::MessageId::parse(format!(
+            "msg-{}",
+            crate::internal::wire::common::generate_operation_id()
+        )),
+    }
+}
+
+fn apply_conversation_identity(
+    result: &mut crate::messages::SendMessageResult,
+    identity: crate::messages::ConversationIdentity,
+) {
+    result.message.metadata.conversation_identity = Some(identity);
+}
+
+fn persist_attachment_projection_or_fail(
+    client: &crate::core::ImClient,
+    target_kind: &str,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    manifest: &serde_json::Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    #[cfg(feature = "sqlite")]
+    {
+        let projection = if target_kind == "group" {
+            crate::internal::message_runtime::local_projection::persist_group_attachment_outgoing(
+                client, target_did, manifest, sdk_result,
+            )
+        } else {
+            crate::internal::message_runtime::local_projection::persist_direct_attachment_outgoing(
+                client,
+                target_did,
+                target_handle,
+                peer_scope,
+                manifest,
+                sdk_result,
+            )
+        };
+        projection?;
+        client.emit_committed_local_message_projection("local_send");
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (
+            client,
+            target_kind,
+            target_did,
+            target_handle,
+            peer_scope,
+            manifest,
+            sdk_result,
+        );
+    }
+    Ok(())
+}
+
+async fn persist_attachment_projection_or_fail_async(
+    client: &crate::core::ImClient,
+    target_kind: &str,
+    target_did: &str,
+    target_handle: Option<&str>,
+    peer_scope: Option<&crate::internal::local_state::owner_scope::DirectPeerScope>,
+    manifest: &serde_json::Value,
+    sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    #[cfg(feature = "sqlite")]
+    {
+        let projection = if target_kind == "group" {
+            crate::internal::message_runtime::local_projection::persist_group_attachment_outgoing_async(
+                client,
+                target_did,
+                manifest,
+                sdk_result,
+            )
+            .await
+        } else {
+            crate::internal::message_runtime::local_projection::persist_direct_attachment_outgoing_async(
+                client,
+                target_did,
+                target_handle,
+                peer_scope,
+                manifest,
+                sdk_result,
+            )
+            .await
+        };
+        projection?;
+        client.emit_committed_local_message_projection("local_send");
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (
+            client,
+            target_kind,
+            target_did,
+            target_handle,
+            peer_scope,
+            manifest,
+            sdk_result,
+        );
+    }
+    Ok(())
 }
 
 fn attachment_send_result_from_secure_message(

@@ -15,6 +15,48 @@ pub struct AttachmentSendRequest {
     pub security: crate::messages::MessageSecurityMode,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendConversationAttachmentRequest {
+    pub conversation: crate::messages::ConversationReadRef,
+    pub input: AttachmentInput,
+    pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_payload: Option<Value>,
+    pub mime_type: Option<String>,
+    pub filename: Option<String>,
+    pub security: crate::messages::MessageSecurityMode,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+}
+
+impl SendConversationAttachmentRequest {
+    pub(crate) fn into_attachment_send_request(
+        self,
+    ) -> (
+        crate::messages::ConversationReadRef,
+        Option<crate::ids::MessageId>,
+        AttachmentSendRequest,
+    ) {
+        (
+            self.conversation,
+            self.client_message_id,
+            AttachmentSendRequest {
+                input: self.input,
+                caption: self.caption,
+                mention_payload: self.mention_payload,
+                mime_type: self.mime_type,
+                filename: self.filename,
+                delivery: crate::messages::MessageDeliveryOptions {
+                    idempotency_key: self.idempotency_key,
+                    wait_for_final_acceptance: self.wait_for_final_acceptance,
+                },
+                security: self.security,
+            },
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentSendResult {
     pub message: crate::messages::SendMessageResult,

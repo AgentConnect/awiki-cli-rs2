@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::dto::{
     attachment::{
         DartAttachmentDestination, DartAttachmentInput, DartAttachmentSendRequest,
-        DartDownloadAttachmentRequest,
+        DartDownloadAttachmentRequest, DartSendConversationAttachmentRequest,
     },
     auth::DartAuthScope,
     config::{DartImCoreConfig, DartImCorePaths, DartMessageTransportPolicy},
@@ -347,6 +347,33 @@ impl DartAttachmentSendRequest {
                 security: self.security.into(),
             },
         ))
+    }
+}
+
+impl TryFrom<DartSendConversationAttachmentRequest>
+    for im_core::attachments::SendConversationAttachmentRequest
+{
+    type Error = DartImError;
+
+    fn try_from(value: DartSendConversationAttachmentRequest) -> Result<Self, Self::Error> {
+        let mention_payload =
+            parse_optional_json("mention_payload_json", value.mention_payload_json)?;
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            input: value.input.try_into()?,
+            caption: value.caption,
+            mention_payload,
+            mime_type: value.mime_type,
+            filename: value.filename,
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            idempotency_key: value.idempotency_key,
+            wait_for_final_acceptance: value.wait_for_final_acceptance,
+        })
     }
 }
 
