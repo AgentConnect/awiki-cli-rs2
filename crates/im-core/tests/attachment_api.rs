@@ -90,6 +90,245 @@ fn conversation_attachment_request_is_conversation_first() {
     assert!(request.wait_for_final_acceptance);
 }
 
+#[tokio::test]
+async fn attachments_service_send_conversation_direct_uses_canonical_projection() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-conv-direct",
+            "slot_id": "slot-conv-direct",
+            "upload_uri": "__BASE__/objects/slot-conv-direct",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-conv-direct",
+            "commit_token": "commit-token-conv-direct",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-conv-direct",
+            "object_uri": "__BASE__/objects/att-conv-direct",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-conv-attachment-direct",
+            "operation_id": "retry-msg-conv-attachment-direct",
+            "target_did": "did:example:bob",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send_conversation_async(SendConversationAttachmentRequest {
+            conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+            input: AttachmentInput::Bytes {
+                filename: Some("conversation.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                bytes: b"conversation attachment".to_vec(),
+            },
+            caption: Some("conversation caption".to_string()),
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(MessageId::parse("msg-conv-attachment-direct").unwrap()),
+            idempotency_key: Some("retry-msg-conv-attachment-direct".to_string()),
+            wait_for_final_acceptance: true,
+        })
+        .await
+        .expect("conversation attachment send should run upload flow");
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-conv-attachment-direct"
+    );
+    assert_eq!(
+        result
+            .message
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.as_str()),
+        Some("dm:did:example:bob")
+    );
+    assert_eq!(result.target_kind, "agent");
+    assert_eq!(result.target_did, "did:example:bob");
+
+    let rows = local_message_rows(
+        &paths,
+        "SELECT msg_id, conversation_id, thread_id, receiver_did, content_type, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-direct'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["conversation_id"], "dm:did:example:bob");
+    assert_eq!(rows[0]["thread_id"], "dm:did:example:bob");
+    assert_eq!(rows[0]["receiver_did"], "did:example:bob");
+    assert_eq!(
+        rows[0]["content_type"],
+        im_core::attachments::attachment_manifest_content_type()
+    );
+    let stored_manifest: Value =
+        serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_manifest["primary_attachment_id"], "att-conv-direct");
+    assert_eq!(stored_manifest["caption"], "conversation caption");
+    let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
+    assert_eq!(metadata["operation_id"], "retry-msg-conv-attachment-direct");
+    assert_eq!(metadata["attachment_id"], "att-conv-direct");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(
+        requests[0].params()["body"]["intended_target"],
+        json!({ "kind": "agent", "did": "did:example:bob" })
+    );
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(
+        requests[3].params()["meta"]["target"],
+        json!({ "kind": "agent", "did": "did:example:bob" })
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["message_id"],
+        "msg-conv-attachment-direct"
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["operation_id"],
+        "retry-msg-conv-attachment-direct"
+    );
+}
+
+#[tokio::test]
+async fn attachments_service_send_conversation_group_uses_group_route() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-conv-group",
+            "slot_id": "slot-conv-group",
+            "upload_uri": "__BASE__/objects/slot-conv-group",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-conv-group",
+            "commit_token": "commit-token-conv-group",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-conv-group",
+            "object_uri": "__BASE__/objects/att-conv-group",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-conv-attachment-group",
+            "operation_id": "op-msg-conv-attachment-group",
+            "group_id": "did:example:group",
+            "group_did": "did:example:group",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send_conversation_async(SendConversationAttachmentRequest {
+            conversation: ConversationReadRef::new("group:did:example:group").unwrap(),
+            input: AttachmentInput::Bytes {
+                filename: Some("group.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                bytes: b"group attachment".to_vec(),
+            },
+            caption: Some("group caption".to_string()),
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(MessageId::parse("msg-conv-attachment-group").unwrap()),
+            idempotency_key: Some("op-msg-conv-attachment-group".to_string()),
+            wait_for_final_acceptance: true,
+        })
+        .await
+        .expect("conversation group attachment send should run upload flow");
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-conv-attachment-group"
+    );
+    assert_eq!(
+        result
+            .message
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.as_str()),
+        Some("group:did:example:group")
+    );
+    assert_eq!(result.target_kind, "group");
+    assert_eq!(result.target_did, "did:example:group");
+
+    let rows = local_message_rows(
+        &paths,
+        "SELECT msg_id, conversation_id, thread_id, group_did, content_type, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-group'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["conversation_id"], "group:did:example:group");
+    assert_eq!(rows[0]["thread_id"], "group:did:example:group");
+    assert_eq!(rows[0]["group_did"], "did:example:group");
+    assert_eq!(
+        rows[0]["content_type"],
+        im_core::attachments::attachment_manifest_content_type()
+    );
+    let stored_manifest: Value =
+        serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_manifest["primary_attachment_id"], "att-conv-group");
+    assert_eq!(stored_manifest["caption"], "group caption");
+    let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
+    assert_eq!(metadata["operation_id"], "op-msg-conv-attachment-group");
+    assert_eq!(metadata["attachment_id"], "att-conv-group");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(
+        requests[0].params()["body"]["intended_target"],
+        json!({ "kind": "group", "did": "did:example:group" })
+    );
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("group.send"));
+    assert_eq!(
+        requests[3].params()["meta"]["target"],
+        json!({ "kind": "group", "did": "did:example:group" })
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["message_id"],
+        "msg-conv-attachment-group"
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["operation_id"],
+        "op-msg-conv-attachment-group"
+    );
+}
+
 #[test]
 fn message_body_attachments_reuse_canonical_attachment_input() {
     let body = MessageBody::Attachment {
