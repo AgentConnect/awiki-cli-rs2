@@ -2793,6 +2793,7 @@ fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
     let (_root, _config, state) = fixture();
     let direct_message = plain_direct_message("msg_plain");
     let group_message = group_mention_message("did:group:team:11", "did:agent:hermes");
+    let attachment_message = unsupported_attachment_manifest_message("msg_attachment_retryable");
 
     assert!(!runtime_processed_message_blocks_route(
         &state,
@@ -2802,7 +2803,7 @@ fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
     )
     .unwrap());
 
-    record_runtime_processed_message(&state, "did:agent:hermes", "msg_done", true).unwrap();
+    record_runtime_processed_message(&state, "did:agent:hermes", "msg_done", "done").unwrap();
     assert!(runtime_processed_message_blocks_route(
         &state,
         "did:agent:hermes",
@@ -2811,7 +2812,7 @@ fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
     )
     .unwrap());
 
-    record_runtime_processed_message(&state, "did:agent:hermes", "msg_ignored", false).unwrap();
+    record_runtime_processed_message(&state, "did:agent:hermes", "msg_ignored", "ignored").unwrap();
     assert!(
         runtime_processed_message_blocks_route(
             &state,
@@ -2822,6 +2823,29 @@ fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
         .unwrap(),
         "ignored is terminal even for structured group mentions"
     );
+
+    record_runtime_processed_message(
+        &state,
+        "did:agent:hermes",
+        "msg_attachment_retryable",
+        "ignored",
+    )
+    .unwrap();
+    assert!(
+        !runtime_processed_message_blocks_route(
+            &state,
+            "did:agent:hermes",
+            "msg_attachment_retryable",
+            &attachment_message,
+        )
+        .unwrap(),
+        "attachment manifests with recoverable projection gaps must not be terminally ignored"
+    );
+    let recovered_status = state
+        .load_processed_message("did:agent:hermes", "msg_attachment_retryable")
+        .unwrap()
+        .expect("processed message");
+    assert_eq!(recovered_status.status, "failed");
 
     state
         .try_insert_processed_message(&crate::state::ProcessedMessageRecord {
@@ -2840,7 +2864,7 @@ fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
     )
     .unwrap());
 
-    record_runtime_processed_message(&state, "did:agent:hermes", "msg_failed", true).unwrap();
+    record_runtime_processed_message(&state, "did:agent:hermes", "msg_failed", "done").unwrap();
     assert!(runtime_processed_message_blocks_route(
         &state,
         "did:agent:hermes",
@@ -2848,6 +2872,59 @@ fn runtime_processed_message_terminal_statuses_are_persisted_dedupe_keys() {
         &direct_message,
     )
     .unwrap());
+}
+
+#[test]
+fn unsupported_attachment_manifest_projection_is_retryable_not_ignored() {
+    let (_root, _config, state) = fixture();
+    let message = unsupported_attachment_manifest_message("msg_attachment_unsupported");
+
+    assert!(is_recoverable_attachment_manifest_projection(&message));
+    assert_eq!(runtime_processed_message_status(&message, false), "failed");
+    record_runtime_processed_message(
+        &state,
+        "did:agent:hermes",
+        message.id.as_str(),
+        runtime_processed_message_status(&message, false),
+    )
+    .unwrap();
+
+    let record = state
+        .load_processed_message("did:agent:hermes", message.id.as_str())
+        .unwrap()
+        .expect("processed message");
+    assert_eq!(record.status, "failed");
+    assert!(!runtime_processed_message_blocks_route(
+        &state,
+        "did:agent:hermes",
+        message.id.as_str(),
+        &message,
+    )
+    .unwrap());
+}
+
+fn unsupported_attachment_manifest_message(message_id: &str) -> Message {
+    Message {
+        id: im_core::ids::MessageId::parse(message_id).unwrap(),
+        thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+        direction: MessageDirection::Incoming,
+        sender: PeerRef::parse("did:human:alice", "").unwrap(),
+        receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+        group: None,
+        body: MessageBodyView::Unsupported {
+            content_type: Some(
+                im_core::attachments::attachment_manifest_content_type().to_string(),
+            ),
+        },
+        sent_at: None,
+        received_at: None,
+        metadata: im_core::messages::MessageMetadata {
+            content_type: Some(
+                im_core::attachments::attachment_manifest_content_type().to_string(),
+            ),
+            ..im_core::messages::MessageMetadata::default()
+        },
+    }
 }
 
 #[test]
@@ -2934,7 +3011,7 @@ async fn realtime_message_event_uses_runtime_processed_dedupe() {
     let mut processed = HashSet::new();
     let message = plain_direct_message("msg_realtime_dedupe");
 
-    record_runtime_processed_message(&state, &created.agent_did, "msg_realtime_dedupe", true)
+    record_runtime_processed_message(&state, &created.agent_did, "msg_realtime_dedupe", "done")
         .unwrap();
 
     let processed_count = process_realtime_message_for_test(

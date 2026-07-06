@@ -23,6 +23,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         ("table", "attachment_manifest_cache"),
         ("table", "sync_state"),
         ("table", "thread_read_state"),
+        ("table", "message_identity_aliases"),
         ("view", "threads"),
         ("view", "inbox"),
         ("view", "outbox"),
@@ -44,6 +45,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
     assert_index_exists(&db, "idx_sync_state_owner_kind");
     assert_index_exists(&db, "idx_thread_read_state_owner_pending");
     assert_index_exists(&db, "idx_thread_read_state_owner_conversation");
+    assert_index_exists(&db, "idx_message_identity_aliases_owner_canonical");
     for table in [
         "contacts",
         "contact_handle_bindings",
@@ -60,6 +62,7 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         "attachment_manifest_cache",
         "sync_state",
         "thread_read_state",
+        "message_identity_aliases",
     ] {
         assert_column_exists(&db, table, "owner_identity_id");
     }
@@ -98,6 +101,10 @@ fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         (
             "thread_read_state",
             vec!["owner_identity_id", "thread_scope", "thread_id"],
+        ),
+        (
+            "message_identity_aliases",
+            vec!["owner_identity_id", "alias_msg_id"],
         ),
     ] {
         assert_primary_key_columns(&db, table, &key_columns);
@@ -171,6 +178,44 @@ WHERE owner_identity_id = 'alice-id' AND conversation_id = 'dm:did:bob'"#,
         )
         .unwrap();
     assert_eq!(summary, (2, 1, "new".to_owned(), "new".to_owned()));
+}
+
+#[test]
+fn local_state_schema_repairs_group_message_aliases_during_upgrade() {
+    let db = Connection::open_in_memory().unwrap();
+    create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
+    db.execute(
+        r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction,
+     sender_did, receiver_did, group_id, group_did, content_type, content, server_seq,
+     sent_at, stored_at, metadata, is_read)
+VALUES
+    ('did:example:group:5', 'alice-id', 'did:example:alice',
+     'group:did:example:group', 'group:did:example:group', 0,
+     'did:example:bob', 'did:example:alice',
+     'did:example:group', 'did:example:group',
+     'text/plain', 'hello group', 5,
+     '2026-05-02T00:00:00Z', '2026-05-02T00:00:00Z',
+     '{"raw_message_id":"msg-local-5"}', 0)"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", IDENTITY_OWNED_SCHEMA_VERSION)
+        .unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    let classification =
+        crate::internal::local_state::messages::classify_mark_read_ids_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:example:alice",
+            &["msg-local-5".to_owned()],
+        )
+        .unwrap();
+    assert_eq!(classification.group_ids, vec!["msg-local-5"]);
+    assert!(classification.direct_ids.is_empty());
 }
 
 #[test]

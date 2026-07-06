@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 21;
+pub(crate) const SCHEMA_VERSION: i64 = 22;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
@@ -287,6 +287,20 @@ ON thread_read_state(owner_identity_id, pending_remote_ack, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_thread_read_state_owner_conversation
 ON thread_read_state(owner_identity_id, conversation_id);
+"#;
+
+pub(crate) const MESSAGE_IDENTITY_ALIASES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS message_identity_aliases (
+    owner_identity_id TEXT NOT NULL,
+    alias_msg_id      TEXT NOT NULL,
+    canonical_msg_id  TEXT NOT NULL,
+    source            TEXT NOT NULL DEFAULT '',
+    stored_at         TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, alias_msg_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_identity_aliases_owner_canonical
+ON message_identity_aliases(owner_identity_id, canonical_msg_id);
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -926,6 +940,9 @@ fn create_schema(
     connection
         .execute_batch(THREAD_READ_STATE_SQL)
         .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
+        .map_err(super::local_state_unavailable)?;
     let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
     if ensure_message_projection_columns(connection)? {
         backfill_message_mention_projection(connection)?;
@@ -946,6 +963,9 @@ fn create_schema(
         should_rebuild_conversation_summaries = true;
     }
     if super::messages::repair_thread_read_state_alias_projection(connection)? > 0 {
+        should_rebuild_conversation_summaries = true;
+    }
+    if super::messages::repair_group_message_identity_projection(connection)? > 0 {
         should_rebuild_conversation_summaries = true;
     }
     if should_rebuild_conversation_summaries {

@@ -422,6 +422,7 @@ foreground 的调度模型是事件驱动，而不是固定 250ms 扫描所有 a
 - WebSocket `sync` hint、gap、disconnect、reconnect、unknown notification、session ended 和 channel pressure 只会标记 dirty work，不会被当成 reliable checkpoint。
 - reliable checkpoint 仍由 `im-core` 的 `sync_delta_async` 事务推进；daemon 只调度 `sync_delta_async`、`sync_thread_after_async` 和 targeted group fetch。
 - direct message event 可以直接进入 runtime dispatcher；group message event 默认先进入 targeted group fetch，避免缺少 recent group context 时提前写入 processed-message dedupe。
+- 附件 manifest 必须在 `im-core` realtime/read/sync 投影中保持为 `MessageBodyView::Payload`，daemon runtime inbox 复用同一条附件下载和 prompt 渲染路径。若 realtime 事件临时缺少 manifest payload，只能记录为可重试状态，不能写入终态 `ignored`。
 - message sync outbox、runtime final outbox、CLI route queue 和 runtime retry queue 使用 `Notify + due timer + low-frequency reconciliation`，不会依赖 250ms 固定循环。
 - WebSocket 不可用或发生未知事件时进入 degraded fallback。fallback 间隔明显大于 250ms，按 reason 记录 audit，并用 backoff/jitter 防止 event storm。
 - `snapshot_required` 表示本地 checkpoint 不可信，daemon fail-closed 并记录 audit，不自行写 checkpoint 或盲目继续处理旧 projection。

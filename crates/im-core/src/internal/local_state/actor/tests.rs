@@ -236,7 +236,7 @@ async fn db_actor_groups_projection_commands_use_existing_sql_helpers() {
         .await
         .unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0]["msg_id"], "group-msg-1");
+    assert_eq!(messages[0]["msg_id"], "did:example:group:1:7");
 
     let active_refs = db
         .list_active_group_refs("alice-id", "did:example:alice", 10)

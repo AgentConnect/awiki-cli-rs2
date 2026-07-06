@@ -336,7 +336,7 @@ pub fn realtime_sync_gap_detected(
 }
 
 fn message_body_view(content_type: &str, body: Option<&Map<String, Value>>) -> MessageBodyView {
-    if content_type == "application/json" {
+    if is_payload_content_type(content_type) {
         if let Some(payload) = value_from_object(body, "payload").filter(|value| value.is_object())
         {
             return MessageBodyView::Payload {
@@ -357,6 +357,11 @@ fn message_body_view(content_type: &str, body: Option<&Map<String, Value>>) -> M
     MessageBodyView::Unsupported {
         content_type: none_if_empty(content_type.to_string()),
     }
+}
+
+fn is_payload_content_type(content_type: &str) -> bool {
+    content_type == "application/json"
+        || content_type == crate::attachments::attachment_manifest_content_type()
 }
 
 fn message_metadata<const N: usize>(

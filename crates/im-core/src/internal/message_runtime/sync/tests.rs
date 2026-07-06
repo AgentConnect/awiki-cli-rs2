@@ -186,12 +186,15 @@ async fn sync_delta_preserves_attachment_manifest_content_type() {
         .unwrap();
 
     assert_eq!(result.events_applied, 1);
+    let canonical_message_id = "did:example:group:1";
     assert_eq!(
-        fixture.message_content_type("msg-attachment-1").as_deref(),
+        fixture
+            .message_content_type(canonical_message_id)
+            .as_deref(),
         Some(crate::attachments::manifest::attachment_manifest_content_type())
     );
     let content = fixture
-        .message_content("msg-attachment-1")
+        .message_content(canonical_message_id)
         .expect("stored attachment manifest");
     let stored: Value = serde_json::from_str(&content).unwrap();
     assert_eq!(stored["attachments"][0]["attachment_id"], "att-sync-1");

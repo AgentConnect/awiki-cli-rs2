@@ -1280,7 +1280,7 @@ async fn process_runtime_inbox_message(
         return Ok(None);
     }
     let message_key = format!("{agent_did}:{processed_message_id}");
-    if !processed.insert(message_key) {
+    if !processed.insert(message_key.clone()) {
         return Ok(None);
     }
     match route_message(
@@ -1297,10 +1297,15 @@ async fn process_runtime_inbox_message(
     .await
     {
         Ok(routed) => {
-            record_runtime_processed_message(state, agent_did, &processed_message_id, routed)?;
+            let status = runtime_processed_message_status(message, routed);
+            record_runtime_processed_message(state, agent_did, &processed_message_id, status)?;
+            if is_retryable_runtime_processed_message_status(status) {
+                processed.remove(&message_key);
+            }
             Ok(Some(routed))
         }
         Err(error) => {
+            processed.remove(&message_key);
             let sanitized = sanitize_error_message(&error.to_string());
             eprintln!("warning: daemon inbox message route failed: {sanitized}");
             if let Err(audit_error) = record_inbox_route_error(state, agent_did, message, &error) {
@@ -1333,9 +1338,8 @@ fn record_runtime_processed_message(
     state: &DaemonState,
     agent_did: &str,
     processed_message_id: &str,
-    routed: bool,
+    status: &str,
 ) -> Result<()> {
-    let status = if routed { "done" } else { "ignored" };
     let inserted = state.try_insert_processed_message(&crate::state::ProcessedMessageRecord {
         owner_did: agent_did.to_string(),
         message_id: processed_message_id.to_string(),
@@ -1349,15 +1353,33 @@ fn record_runtime_processed_message(
     Ok(())
 }
 
+fn runtime_processed_message_status(message: &Message, routed: bool) -> &'static str {
+    if routed {
+        "done"
+    } else if is_recoverable_attachment_manifest_projection(message) {
+        "failed"
+    } else {
+        "ignored"
+    }
+}
+
+fn is_retryable_runtime_processed_message_status(status: &str) -> bool {
+    status == "failed"
+}
+
 fn runtime_processed_message_blocks_route(
     state: &DaemonState,
     agent_did: &str,
     processed_message_id: &str,
-    _message: &Message,
+    message: &Message,
 ) -> Result<bool> {
     let Some(record) = state.load_processed_message(agent_did, processed_message_id)? else {
         return Ok(false);
     };
+    if record.status == "ignored" && is_recoverable_attachment_manifest_projection(message) {
+        state.mark_processed_message_status(agent_did, processed_message_id, "failed")?;
+        return Ok(false);
+    }
     Ok(matches!(record.status.as_str(), "done" | "ignored"))
 }
 
@@ -2107,7 +2129,16 @@ async fn route_message(
             )?;
             Ok(true)
         }
-        MessageBodyView::Unsupported { .. } => Ok(false),
+        MessageBodyView::Unsupported { .. } => {
+            if is_recoverable_attachment_manifest_projection(message) {
+                record_recoverable_attachment_manifest_projection(
+                    state,
+                    target_agent_did,
+                    message,
+                )?;
+            }
+            Ok(false)
+        }
     }
 }
 
@@ -2128,6 +2159,45 @@ fn is_attachment_manifest_message(message: &Message, content_type: &str, payload
             .get("attachments")
             .and_then(Value::as_array)
             .is_some()
+}
+
+fn is_recoverable_attachment_manifest_projection(message: &Message) -> bool {
+    matches!(message.body, MessageBodyView::Unsupported { .. })
+        && message_content_type_matches(
+            message,
+            im_core::attachments::attachment_manifest_content_type(),
+        )
+}
+
+fn message_content_type_matches(message: &Message, expected: &str) -> bool {
+    message
+        .metadata
+        .content_type
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|content_type| content_type == expected)
+        || message.metadata.attributes.iter().any(|attribute| {
+            attribute.key.trim() == "content_type" && attribute.value.trim() == expected
+        })
+}
+
+fn record_recoverable_attachment_manifest_projection(
+    state: &DaemonState,
+    target_agent_did: &str,
+    message: &Message,
+) -> Result<()> {
+    state.insert_audit_event_json(
+        "daemon.inbox.attachment_manifest.retryable",
+        Some(target_agent_did),
+        Some(message.sender.as_str()),
+        None,
+        Some(message.id.as_str()),
+        json!({
+            "reason": "attachment_manifest_projection_missing_payload",
+            "thread": thread_ref_audit_label(&message.thread),
+            "content_type": im_core::attachments::attachment_manifest_content_type(),
+        }),
+    )
 }
 
 fn is_opaque_group_e2ee_message(message: &Message) -> bool {

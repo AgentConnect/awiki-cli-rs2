@@ -439,6 +439,12 @@ Flutter Web still receives a stub and does not support native realtime.
 
 `client.attachments.sendConversation(SendConversationAttachmentRequest(...))` is the conversationId-first attachment send API for apps that already have a selected conversation. `client.attachments.send(AttachmentSendRequest(...))` remains a high-level target-first compatibility facade for CLI, daemon, legacy callers, or surfaces that do not yet hold a canonical `ConversationReadRef`. `AttachmentSendRequest.security` defaults to `MessageSecurityMode.defaultPlain`; callers can set `MessageSecurityMode.e2eeRequired` for direct or group E2EE attachment messages.
 
+Plain attachment messages use `application/anp-attachment-manifest+json` with a JSON
+manifest payload. Realtime, read, sync, conversation snapshots, and local
+projection paths must expose that manifest as `MessageBodyView.payload`, while
+also attaching the attachment summary and download action when available. The
+manifest content type is not an unsupported body type.
+
 Secure attachment sends do not expose P7 control-plane calls, download tickets, object keys, nonces, raw ciphertext, secure session state, or MLS provider paths to Dart. `AttachmentSendResult.manifestJson` is the public redacted manifest projection. For E2EE attachments it may include `encryption_info.mode = object-e2ee`, `object_cipher`, and `plaintext_size`, but must not contain `object_key_b64u` or `nonce_b64u`.
 
 `UploadedAttachment.sizeBytes` / `size` describe the uploaded object bytes. For `object-e2ee` this is ciphertext size. `UploadedAttachment.plaintextSizeBytes` carries the original plaintext size when available.

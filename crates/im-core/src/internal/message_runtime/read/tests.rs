@@ -920,7 +920,7 @@ fn messages_read_runtime_group_history_merges_committed_local_projection() {
 
     assert_eq!(result.page.items.len(), 1);
     let message = &result.page.items[0];
-    assert_eq!(message.id.as_str(), "msg-local-group-send");
+    assert_eq!(message.id.as_str(), "did:example:group:77");
     assert_eq!(
         message
             .metadata

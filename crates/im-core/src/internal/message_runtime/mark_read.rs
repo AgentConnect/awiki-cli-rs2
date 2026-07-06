@@ -1322,7 +1322,7 @@ mod tests {
         assert_eq!(result.group_ids, vec!["group-1"]);
         assert_eq!(result.local_only_ids, vec!["mail-1"]);
         assert!(calls.borrow().is_empty());
-        assert_eq!(fixture.is_read(&client, "group-1"), 1);
+        assert_eq!(fixture.is_read(&client, "did:example:group:1"), 1);
         assert_eq!(fixture.is_read(&client, "mail-1"), 1);
     }
 

@@ -191,8 +191,8 @@ fn realtime_attachment_projection_direct_manifest_enriches_message_event() {
     assert_eq!(message.id.as_str(), "msg-attachment");
     assert_eq!(
         message.body,
-        MessageBodyView::Unsupported {
-            content_type: Some("application/anp-attachment-manifest+json".to_string()),
+        MessageBodyView::Payload {
+            payload: attachment_manifest(),
         }
     );
     assert_eq!(summary.attachment_id.as_deref(), Some("att-1"));
@@ -241,6 +241,7 @@ fn realtime_attachment_projection_partial_manifest_warns_without_blocking_event(
         NotificationProjectionRoute::DirectIncoming
     );
     let ImEvent::MessageReceived(MessageReceivedEvent {
+        message,
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
@@ -249,6 +250,17 @@ fn realtime_attachment_projection_partial_manifest_warns_without_blocking_event(
     else {
         panic!("expected attachment-enriched message received");
     };
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: json!({
+                "attachments": [{
+                    "attachment_id": "att-1"
+                }],
+                "primary_attachment_id": "att-1"
+            }),
+        }
+    );
     assert_eq!(summary.attachment_id.as_deref(), Some("att-1"));
     assert!(summary.filename.is_none());
     assert!(summary.mime_type.is_none());
@@ -289,6 +301,7 @@ fn realtime_attachment_projection_missing_attachment_id_uses_selection_fallback_
     }));
 
     let ImEvent::MessageReceived(MessageReceivedEvent {
+        message,
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
@@ -297,6 +310,18 @@ fn realtime_attachment_projection_missing_attachment_id_uses_selection_fallback_
     else {
         panic!("expected attachment-enriched message received");
     };
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: json!({
+                "attachments": [{
+                    "filename": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "size": "1234"
+                }]
+            }),
+        }
+    );
     assert!(summary.attachment_id.is_none());
     assert_eq!(summary.filename.as_deref(), Some("report.pdf"));
     assert!(download_action.attachment_id.is_none());
@@ -387,8 +412,19 @@ fn realtime_attachment_projection_encrypted_manifest_warns_without_enrichment() 
     };
     assert_eq!(
         message.body,
-        MessageBodyView::Unsupported {
-            content_type: Some("application/anp-attachment-manifest+json".to_string()),
+        MessageBodyView::Payload {
+            payload: json!({
+                "attachments": [{
+                    "attachment_id": "att-1",
+                    "filename": "secret.pdf",
+                    "mime_type": "application/pdf",
+                    "size": "1234",
+                    "encryption_info": {
+                        "mode": "group-e2ee"
+                    }
+                }],
+                "primary_attachment_id": "att-1"
+            }),
         }
     );
     assert!(attachment_summary.is_none());
@@ -508,6 +544,12 @@ fn realtime_attachment_projection_group_manifest_enriches_message_event() {
     assert_eq!(download_action.message_id.as_str(), "did:example:group:43");
     assert_eq!(download_action.attachment_id.as_deref(), Some("att-1"));
     assert_eq!(summary.filename.as_deref(), Some("report.pdf"));
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: attachment_manifest(),
+        }
+    );
     assert_eq!(message.metadata.server_sequence, Some(43));
     assert!(message.metadata.attributes.iter().any(|attribute| {
         attribute.key == "raw_message_id" && attribute.value == "group-msg-attachment"
