@@ -368,7 +368,9 @@ client.messages().send(SendMessageRequest {
 
 direct 目标映射到 `direct-e2ee`，group 目标映射到 `group-e2ee`。附件对象在 SDK 内部先做 `object-e2ee` 加密，完整 manifest 只进入 E2EE 内层 plaintext；public `SendMessageResult.metadata.attributes["attachment_manifest"]` 和 `AttachmentSendResult.manifest` 只保存 redacted manifest，不包含 `object_key_b64u` 或 `nonce_b64u`。
 
-CLI、Dart 和其他 facade 可以继续使用 `attachments().send(target, AttachmentSendRequest { security, ... })` 作为便捷入口；当 `security` 为 secure required 时，该入口内部复用上述 message high-level 路径，不拼 P7/P5/P6 wire。
+Conversation UI 附件发送应使用 `attachments().send_conversation(SendConversationAttachmentRequest { conversation, ... })` 或 Dart `client.attachments.sendConversation(...)`。该入口接收 `ConversationReadRef.conversation_id`，由 SDK resolver 映射到 direct / group storage route，再复用同一 attachment upload runtime 和 local projection。plain/default 附件路径在 projection 写入失败时返回错误，避免 App 用 presentation fallback 补 list/detail correctness。
+
+CLI、Dart legacy caller 和其他还没有 canonical conversation 的 facade 可以继续使用 `attachments().send(target, AttachmentSendRequest { security, ... })` 作为兼容入口；当 `security` 为 secure required 时，该入口内部复用上述 message high-level 路径，不拼 P7/P5/P6 wire。AWiki Me conversation UI 不应再通过 target DID、handle、display thread id 或 legacy thread API 发送/重试附件。
 
 ## 4. Message DTO
 
@@ -763,7 +765,7 @@ SDK 本地校验：
 1. 校验 body。
    - Text 不能为空。
    - Payload 必须是合法 JSON value。
-   - Attachment 通过 attachment/object-E2EE 路径处理。
+   - Attachment 通过 attachment/object-E2EE 路径处理；conversation UI 附件发送使用 `attachments.send_conversation`，不通过 generic `messages.send_conversation_*` 传 `MessageBody::Attachment`。
 2. 校验 security。
    - `DefaultPlain` / `Plain` 走普通发送。
    - `E2eeRequired` / `SecureDirect` / `GroupE2ee` 走 secure/E2EE 能力或 fail closed。
@@ -843,11 +845,28 @@ await client.messages.markConversationRead(
     conversationId: 'dm:peer-scope:v1:alice:bob',
   ),
 );
+
+await client.attachments.sendConversation(
+  SendConversationAttachmentRequest(
+    conversation: const ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    input: const AttachmentInput.bytes(
+      filename: 'note.txt',
+      mimeType: 'text/plain',
+      bytes: [104, 101, 108, 108, 111],
+    ),
+    caption: 'hello',
+    clientMessageId: 'msg-app-attachment-001',
+    idempotencyKey: 'op-msg-app-attachment-001',
+  ),
+);
 ```
 
 兼容性要求：
 
 - `SendTextRequest` / `SendPayloadRequest` 的 `delegatedSigning` 默认 `null`。
 - `SendConversationTextRequest` / `SendConversationPayloadRequest` 是 AWiki Me conversation UI send 主路径；target-first send 保留给 CLI、legacy 和没有 canonical conversation 的调用面。
+- `SendConversationAttachmentRequest` / `AttachmentApi.sendConversation` 是 AWiki Me conversation UI 附件 send/retry 主路径；`AttachmentApi.send` 保留给 CLI、legacy 和没有 canonical conversation 的调用面。
 - `MessageApi.inbox` / `MessageApi.history` 的 `inboxHistoryOptions` 默认 `null`。
 - 老 Dart 调用不需要补参数；FRB 生成 DTO/API 只增加 nullable 字段和 nullable 函数参数。

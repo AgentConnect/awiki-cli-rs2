@@ -490,6 +490,11 @@ Reliable sync 补充：
 - `send_conversation_text` / `send_conversation_payload` 是 conversation-surface send 主路径。
   `im-core` 先写 durable pending projection，再按网络结果更新 `MessageMetadata.send_state` /
   retry plan 并发 committed patch；App 不应维护第二套 durable optimistic message truth。
+- `attachments().send_conversation` / Dart `client.attachments.sendConversation(...)` 是
+  conversation-surface attachment send 主路径。AWiki Me 已选中会话的附件发送和重试必须传
+  `ConversationReadRef.conversation_id`，不能用 target DID、handle、display thread id 或
+  memory pending 决定发送归属。旧 `attachments().send(target, ...)` 只保留给 CLI、daemon、
+  legacy caller 和尚未持有 canonical conversation 的兼容入口。
 - `mark_conversation_read` 是 conversationId-first read watermark API。local read-state 使用
   canonical `conversation_id` storage key，远端 `read_state.mark_read` 由 core resolver 转成
   direct / group service thread；旧服务端 fallback 到本地 unread ids +
@@ -693,16 +698,38 @@ pub struct AttachmentService<'a> {
 
 impl AttachmentService<'_> {
     pub fn send(&self, target: MessageTarget, request: AttachmentSendRequest) -> ImResult<AttachmentSendResult>;
+    pub fn send_conversation(
+        &self,
+        request: SendConversationAttachmentRequest,
+    ) -> ImResult<AttachmentSendResult>;
+    pub async fn send_conversation_async(
+        &self,
+        request: SendConversationAttachmentRequest,
+    ) -> ImResult<AttachmentSendResult>;
     pub fn download(&self, request: DownloadAttachmentRequest) -> ImResult<DownloadedAttachment>;
 }
 
 pub struct AttachmentSendRequest {
     pub input: AttachmentInput,
     pub caption: Option<String>,
+    pub mention_payload: Option<serde_json::Value>,
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub delivery: MessageDeliveryOptions,
     pub security: MessageSecurityMode,
+}
+
+pub struct SendConversationAttachmentRequest {
+    pub conversation: ConversationReadRef,
+    pub input: AttachmentInput,
+    pub caption: Option<String>,
+    pub mention_payload: Option<serde_json::Value>,
+    pub mime_type: Option<String>,
+    pub filename: Option<String>,
+    pub security: MessageSecurityMode,
+    pub client_message_id: Option<MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
 }
 
 pub struct UploadedAttachment {
@@ -734,6 +761,11 @@ pub enum AttachmentDestination {
 
 `AttachmentSendRequest.security = DefaultPlain | Plain` 保持 `transport-protected + encryption_info.mode=none`。
 `E2eeRequired | SecureDirect | GroupE2ee` 复用 `messages().send(MessageBody::Attachment, security)` 的高层 secure attachment 路径：对象上传前本地加密，返回的 `AttachmentSendResult.manifest` 是 redacted manifest。
+
+`SendConversationAttachmentRequest` 复用同一上传 runtime，但入口是 `ConversationReadRef`。
+SDK resolver 先把 canonical `conversation_id` 映射到 direct / group storage route，再写入
+durable projection 并 emit committed patch。plain/default 附件路径在 projection 失败时返回错误；
+App 不再需要 presentation fallback 来补 conversation list/detail correctness。
 
 默认 public API 不暴露 `object_key_b64u`、`nonce_b64u`、download ticket、raw ciphertext、secure session state 或 MLS provider path。
 

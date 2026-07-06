@@ -216,6 +216,35 @@ the same durable row to accepted/sent/failed after network send. Apps render
 `Message.metadata.sendState` / retry data from the SDK message DTO. They must not
 create a second durable optimistic message store for text or payload sends.
 
+Conversation UI attachment sends use the attachment namespace with the same
+conversation identity rule:
+
+```dart
+final attachment = await client.attachments.sendConversation(
+  SendConversationAttachmentRequest(
+    conversation: const ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    input: const AttachmentInput.bytes(
+      filename: 'note.txt',
+      mimeType: 'text/plain',
+      bytes: [104, 101, 108, 108, 111],
+    ),
+    caption: 'hello',
+    clientMessageId: 'msg-app-attachment-001',
+    idempotencyKey: 'op-msg-app-attachment-001',
+  ),
+);
+```
+
+`client.attachments.sendConversation(...)` resolves the canonical
+`ConversationReadRef.conversationId` inside `im-core`, writes the durable message
+projection, and returns the same `AttachmentSendResult` shape as the legacy
+target API. AWiki Me conversation UI should use this API for initial attachment
+sends and retries. Local file previews may be rendered as transient UI state
+while upload is in progress, but list/detail/send correctness must come from the
+SDK projection and patch stream.
+
 ## Conversation read watermark
 
 Conversation-level mark-read is exposed as a watermark-first message API:
@@ -408,7 +437,7 @@ Flutter Web still receives a stub and does not support native realtime.
 
 ## Attachments And E2EE
 
-`client.attachments.send(AttachmentSendRequest(...))` is a high-level facade over `im-core` attachment sending. `AttachmentSendRequest.security` defaults to `MessageSecurityMode.defaultPlain`; callers can set `MessageSecurityMode.e2eeRequired` for direct or group E2EE attachment messages.
+`client.attachments.sendConversation(SendConversationAttachmentRequest(...))` is the conversationId-first attachment send API for apps that already have a selected conversation. `client.attachments.send(AttachmentSendRequest(...))` remains a high-level target-first compatibility facade for CLI, daemon, legacy callers, or surfaces that do not yet hold a canonical `ConversationReadRef`. `AttachmentSendRequest.security` defaults to `MessageSecurityMode.defaultPlain`; callers can set `MessageSecurityMode.e2eeRequired` for direct or group E2EE attachment messages.
 
 Secure attachment sends do not expose P7 control-plane calls, download tickets, object keys, nonces, raw ciphertext, secure session state, or MLS provider paths to Dart. `AttachmentSendResult.manifestJson` is the public redacted manifest projection. For E2EE attachments it may include `encryption_info.mode = object-e2ee`, `object_cipher`, and `plaintext_size`, but must not contain `object_key_b64u` or `nonce_b64u`.
 
