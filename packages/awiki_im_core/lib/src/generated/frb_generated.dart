@@ -6343,14 +6343,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImError dco_decode_dart_im_error(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return DartImError(
       code: dco_decode_String(arr[0]),
       message: dco_decode_String(arr[1]),
       field: dco_decode_opt_String(arr[2]),
       statusCode: dco_decode_opt_box_autoadd_u_16(arr[3]),
       capability: dco_decode_opt_String(arr[4]),
+      serviceCode: dco_decode_opt_String(arr[5]),
+      serviceDataJson: dco_decode_opt_String(arr[6]),
     );
   }
 
@@ -9597,12 +9599,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_field = sse_decode_opt_String(deserializer);
     var var_statusCode = sse_decode_opt_box_autoadd_u_16(deserializer);
     var var_capability = sse_decode_opt_String(deserializer);
+    var var_serviceCode = sse_decode_opt_String(deserializer);
+    var var_serviceDataJson = sse_decode_opt_String(deserializer);
     return DartImError(
       code: var_code,
       message: var_message,
       field: var_field,
       statusCode: var_statusCode,
       capability: var_capability,
+      serviceCode: var_serviceCode,
+      serviceDataJson: var_serviceDataJson,
     );
   }
 
@@ -13027,6 +13033,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.field, serializer);
     sse_encode_opt_box_autoadd_u_16(self.statusCode, serializer);
     sse_encode_opt_String(self.capability, serializer);
+    sse_encode_opt_String(self.serviceCode, serializer);
+    sse_encode_opt_String(self.serviceDataJson, serializer);
   }
 
   @protected

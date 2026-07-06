@@ -5,6 +5,8 @@ class AwikiImCoreException implements Exception {
     this.field,
     this.statusCode,
     this.capability,
+    this.serviceCode,
+    this.serviceDataJson,
   });
 
   final String code;
@@ -12,6 +14,8 @@ class AwikiImCoreException implements Exception {
   final String? field;
   final int? statusCode;
   final String? capability;
+  final String? serviceCode;
+  final String? serviceDataJson;
 
   @override
   String toString() => 'AwikiImCoreException($code): $message';

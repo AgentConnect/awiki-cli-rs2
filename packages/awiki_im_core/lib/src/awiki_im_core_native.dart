@@ -59,6 +59,8 @@ Future<T> _mapNativeErrors<T>(Future<T> Function() action) async {
       field: error.field,
       statusCode: error.statusCode,
       capability: error.capability,
+      serviceCode: error.serviceCode,
+      serviceDataJson: error.serviceDataJson,
     );
   }
 }

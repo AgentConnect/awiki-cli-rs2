@@ -7899,12 +7899,16 @@ impl SseDecode for crate::dto::error::DartImError {
         let mut var_field = <Option<String>>::sse_decode(deserializer);
         let mut var_statusCode = <Option<u16>>::sse_decode(deserializer);
         let mut var_capability = <Option<String>>::sse_decode(deserializer);
+        let mut var_serviceCode = <Option<String>>::sse_decode(deserializer);
+        let mut var_serviceDataJson = <Option<String>>::sse_decode(deserializer);
         return crate::dto::error::DartImError {
             code: var_code,
             message: var_message,
             field: var_field,
             status_code: var_statusCode,
             capability: var_capability,
+            service_code: var_serviceCode,
+            service_data_json: var_serviceDataJson,
         };
     }
 }
@@ -11799,6 +11803,8 @@ impl flutter_rust_bridge::IntoDart for crate::dto::error::DartImError {
             self.field.into_into_dart().into_dart(),
             self.status_code.into_into_dart().into_dart(),
             self.capability.into_into_dart().into_dart(),
+            self.service_code.into_into_dart().into_dart(),
+            self.service_data_json.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -14432,6 +14438,8 @@ impl SseEncode for crate::dto::error::DartImError {
         <Option<String>>::sse_encode(self.field, serializer);
         <Option<u16>>::sse_encode(self.status_code, serializer);
         <Option<String>>::sse_encode(self.capability, serializer);
+        <Option<String>>::sse_encode(self.service_code, serializer);
+        <Option<String>>::sse_encode(self.service_data_json, serializer);
     }
 }
 

@@ -152,6 +152,20 @@ void main() {
     expect(err.capability, 'realtime-runner');
   });
 
+  test('service error details are available to app callers', () {
+    const err = AwikiImCoreException(
+      code: 'service_error',
+      message: 'target did is inactive',
+      statusCode: 409,
+      serviceCode: '1007',
+      serviceDataJson: '{"did":"did:example:old","handle":"alice"}',
+    );
+
+    expect(err.statusCode, 409);
+    expect(err.serviceCode, '1007');
+    expect(err.serviceDataJson, '{"did":"did:example:old","handle":"alice"}');
+  });
+
   test('thread mark-read model exposes best-effort state', () {
     const result = MarkThreadReadResult(
       updatedCount: 1,

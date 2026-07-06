@@ -16,6 +16,27 @@ fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
 }
 
 #[test]
+fn service_error_preserves_server_code_and_data_for_dart() {
+    let err = awiki_im_core::dto::error::DartImError::from(im_core::ImError::Service {
+        status_code: Some(409),
+        code: Some("1007".to_string()),
+        message: "target did is inactive".to_string(),
+        data: Some(serde_json::json!({
+            "did": "did:example:old",
+            "handle": "alice",
+        })),
+    });
+
+    assert_eq!(err.code, "service_error");
+    assert_eq!(err.status_code, Some(409));
+    assert_eq!(err.service_code.as_deref(), Some("1007"));
+    assert_eq!(
+        err.service_data_json.as_deref(),
+        Some(r#"{"did":"did:example:old","handle":"alice"}"#)
+    );
+}
+
+#[test]
 fn thread_mark_read_result_preserves_best_effort_state_for_dart() {
     let core = im_core::messages::MarkThreadReadResult {
         updated_count: 1,

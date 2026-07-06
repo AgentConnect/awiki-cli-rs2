@@ -12,6 +12,8 @@ class DartImError implements FrbException {
   final String? field;
   final int? statusCode;
   final String? capability;
+  final String? serviceCode;
+  final String? serviceDataJson;
 
   const DartImError({
     required this.code,
@@ -19,6 +21,8 @@ class DartImError implements FrbException {
     this.field,
     this.statusCode,
     this.capability,
+    this.serviceCode,
+    this.serviceDataJson,
   });
 
   @override
@@ -27,7 +31,9 @@ class DartImError implements FrbException {
       message.hashCode ^
       field.hashCode ^
       statusCode.hashCode ^
-      capability.hashCode;
+      capability.hashCode ^
+      serviceCode.hashCode ^
+      serviceDataJson.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -38,5 +44,7 @@ class DartImError implements FrbException {
           message == other.message &&
           field == other.field &&
           statusCode == other.statusCode &&
-          capability == other.capability;
+          capability == other.capability &&
+          serviceCode == other.serviceCode &&
+          serviceDataJson == other.serviceDataJson;
 }
