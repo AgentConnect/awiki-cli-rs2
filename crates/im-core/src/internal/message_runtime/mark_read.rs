@@ -1203,6 +1203,7 @@ fn is_read_state_unsupported_error(error: &crate::ImError) -> bool {
             status_code,
             code,
             message,
+            ..
         } => {
             let code = code.as_deref().unwrap_or_default();
             let message = message.to_ascii_lowercase();
@@ -1803,6 +1804,7 @@ mod tests {
                     status_code: None,
                     code: Some("-32601".to_owned()),
                     message: "method not found".to_owned(),
+                    data: None,
                 });
             }
             Ok(json!({"updated_count": 1}))

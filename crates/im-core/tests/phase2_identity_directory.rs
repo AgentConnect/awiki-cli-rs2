@@ -1297,6 +1297,7 @@ impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryTransp
                     status_code: None,
                     code: Some("-32002".to_string()),
                     message: "profile missing".to_string(),
+                    data: None,
                 })
             }
             (_, method) => Err(ImError::Internal {

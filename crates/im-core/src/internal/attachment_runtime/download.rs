@@ -674,6 +674,7 @@ fn attachment_service_error(code: &str, message: impl Into<String>) -> crate::Im
         status_code: None,
         code: Some(code.to_string()),
         message: message.into(),
+        data: None,
     }
 }
 

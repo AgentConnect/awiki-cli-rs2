@@ -1005,6 +1005,7 @@ mod tests {
                 status_code: None,
                 code: Some("missing_test_response".to_owned()),
                 message: format!("missing response for {method}"),
+                data: None,
             })
         }
     }

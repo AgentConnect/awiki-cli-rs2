@@ -951,6 +951,7 @@ where
             status_code: None,
             code: Some("group_e2ee_not_accepted".to_owned()),
             message: "group E2EE service response did not accept the prepared commit".to_owned(),
+            data: None,
         });
     }
     let finalized = mls_provider.finalize_commit(FinalizeCommitInput {

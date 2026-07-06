@@ -9,6 +9,8 @@ const JSON_RPC_ID: &str = "req-1";
 struct JsonRpcResponseError {
     code: i64,
     message: String,
+    #[serde(default)]
+    data: Option<Value>,
 }
 
 pub(crate) fn build_payload(method: &str, params: Value) -> Value {
@@ -34,6 +36,7 @@ pub(crate) fn decode_response(raw: &[u8]) -> crate::ImResult<Value> {
             status_code: None,
             code: Some(error.code.to_string()),
             message: error.message,
+            data: error.data,
         });
     }
     Ok(envelope.get("result").cloned().unwrap_or(Value::Null))

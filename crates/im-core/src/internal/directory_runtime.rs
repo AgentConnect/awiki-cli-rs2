@@ -429,6 +429,7 @@ fn service_error_is_not_found(err: &crate::ImError) -> bool {
         status_code,
         code,
         message,
+        ..
     } = err
     else {
         return false;

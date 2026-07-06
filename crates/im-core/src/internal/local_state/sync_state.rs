@@ -394,6 +394,7 @@ fn invalid_page(message: impl Into<String>) -> crate::ImError {
         status_code: None,
         code: Some("sync.invalid_page".to_owned()),
         message: message.into(),
+        data: None,
     }
 }
 

@@ -123,8 +123,12 @@ impl<'a> DirectoryService<'a> {
     where
         T: crate::internal::transport::RpcTransport,
     {
-        crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
-            .lookup_handle(handle)
+        let result =
+            crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
+                .lookup_handle(handle)?;
+        #[cfg(feature = "sqlite")]
+        project_handle_lookup(self.client, &result);
+        Ok(result)
     }
 
     pub(crate) async fn lookup_handle_with_runtime_async<T>(
@@ -135,9 +139,13 @@ impl<'a> DirectoryService<'a> {
     where
         T: crate::internal::transport::AsyncRpcTransport,
     {
-        crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
-            .lookup_handle_async(handle)
-            .await
+        let result =
+            crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
+                .lookup_handle_async(handle)
+                .await?;
+        #[cfg(feature = "sqlite")]
+        project_handle_lookup_async(self.client, &result).await?;
+        Ok(result)
     }
 
     pub fn public_profile(
@@ -1016,6 +1024,37 @@ fn validate_identity_subject(subject: &super::IdentitySubject) -> crate::ImResul
             crate::ImError::invalid_input(Some("subject".to_string()), "subject must not be empty"),
         ),
         _ => Ok(()),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn project_handle_lookup(client: &crate::core::ImClient, lookup: &super::HandleLookupResult) {
+    crate::internal::contact_store::projection::project_directory_resolution(
+        client,
+        &handle_lookup_resolution(lookup),
+    );
+}
+
+#[cfg(feature = "sqlite")]
+async fn project_handle_lookup_async(
+    client: &crate::core::ImClient,
+    lookup: &super::HandleLookupResult,
+) -> crate::ImResult<()> {
+    crate::internal::contact_store::projection::project_directory_resolution_async(
+        client,
+        &handle_lookup_resolution(lookup),
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite")]
+fn handle_lookup_resolution(lookup: &super::HandleLookupResult) -> super::DirectoryResolution {
+    super::DirectoryResolution {
+        input: lookup.handle.as_str().to_owned(),
+        did: lookup.did.clone(),
+        handle: Some(lookup.handle.clone()),
+        profile: lookup.profile.clone(),
+        warnings: lookup.warnings.clone(),
     }
 }
 

@@ -50,6 +50,7 @@ pub enum ImError {
         status_code: Option<u16>,
         code: Option<String>,
         message: String,
+        data: Option<serde_json::Value>,
     },
     Serialization {
         detail: String,
@@ -123,6 +124,7 @@ impl fmt::Display for ImError {
                 status_code,
                 code,
                 message,
+                data: _,
             } => match (status_code, code) {
                 (Some(status), Some(code)) => {
                     write!(f, "service error {status} ({code}): {message}")

@@ -465,6 +465,7 @@ mod tests {
                     status_code: Some(404),
                     code: None,
                     message: "not found".to_string(),
+                    data: None,
                 })],
                 posts: vec![serde_json::json!({"sent": true})],
             },

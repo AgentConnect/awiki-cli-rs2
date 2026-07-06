@@ -231,6 +231,17 @@ same durable row with accepted/sent/failed state. AWiki Me renders
 `MessageMetadata.send_state` / retry fields from SDK DTOs; it must not create a
 second durable optimistic message source.
 
+Direct conversation send keeps a stable peer scope when the conversation is bound
+to a Handle/user identity. The normal send path uses the resolved DID already
+stored for the conversation and does not perform a Handle lookup before every
+message. If message-service rejects the send with JSON-RPC `1406` and
+`error.data.reason = "stale_did"`, `im-core` treats that as an authoritative
+target-rotation signal from user-service: it reads `current_did` /
+`full_handle` / `user_id` from `error.data`, fills missing data with one Handle
+lookup when a Handle is available, updates the retry target, and retries the
+network send once. Other `1406` reasons and all non-`stale_did` errors are not
+retargeted automatically and are persisted as failed local send state.
+
 ### 2.1 Delegated Signing Optional 扩展
 
 当前 Agent IM MVP 在不改变 ANP `origin_proof` 结构的前提下，为普通 direct/default plain 发送增加 `delegated_signing` optional 参数。调用方不传该字段时，SDK 继续使用当前 identity/session 默认 sender 与默认 authentication key，老 Rust/Dart 调用行为不变。

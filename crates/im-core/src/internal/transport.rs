@@ -1531,6 +1531,7 @@ fn service_error_from_http(status_code: u16, body: &[u8]) -> crate::ImError {
         status_code: Some(status_code),
         code: None,
         message: String::from_utf8_lossy(body).trim().to_string(),
+        data: None,
     }
 }
 

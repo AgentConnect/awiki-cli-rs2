@@ -108,6 +108,7 @@ fn decrypt_failed() -> crate::ImError {
         status_code: None,
         code: Some("anp.attachment.decrypt_failed".to_string()),
         message: "object-e2ee object decryption failed".to_string(),
+        data: None,
     }
 }
 

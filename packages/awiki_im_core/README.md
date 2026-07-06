@@ -108,6 +108,13 @@ are core-only and must not include `awiki-me` App presentation fields such as
 `hidden`, `pinned`, `muted`, `customTitle`, `avatarSeed`, `peerLifecycleState`,
 `ConversationSummary`, or `ChatMessage`.
 
+Direct conversation sends are Handle-scope aware. The SDK does not resolve a
+Handle before every send; it uses the conversation's current target DID and only
+does one recovery path when message-service returns JSON-RPC `1406` with
+`error.data.reason = "stale_did"`. In that case it retargets to the
+`current_did` / `full_handle` provided by user-service and retries the send once.
+Other failures remain failed local send state and are not silently retargeted.
+
 Thread-level mark-read is exposed through a watermark-first message API:
 
 ```dart
