@@ -40,7 +40,7 @@ use crate::local_rpc::{
 use crate::outbox::{
     AgentManagementOutbox, AgentStatusResponse, ImCoreAgentOutbox, RuntimeAttachmentSend,
     RuntimeAttachmentSendResult, RuntimeMessageSecurity, RuntimeMessageSend,
-    RuntimeMessageSendResult, RuntimeOutbox,
+    RuntimeMessageSendResult, RuntimeMessageTarget, RuntimeOutbox,
 };
 use crate::plugins::generic_cli::{GenericCliDriverRegistry, GENERIC_CLI_RUNTIME_PLUGIN_ID};
 use crate::plugins::hermes::{
@@ -51,6 +51,9 @@ use crate::registration::{AgentInventoryClient, UserServiceAgentRegistrationClie
 use crate::runtime::host::{
     flush_runtime_final_outbox, run_controller_text_task_with_config,
     run_controller_text_task_with_verified_sender_config, run_existing_runtime_task_with_config,
+};
+use crate::runtime::reply_payload::{
+    group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
 };
 use crate::runtime::{
     is_group_conversation_id, runtime_task_matches_profile_controller_scope, RuntimeInstallStatus,
@@ -99,6 +102,7 @@ use state_root_owner::StateRootOwnerGuard;
 const GENERIC_CLI_ROUTE_RUNNING_STALE_MS: i64 = 10 * 60 * 1000;
 const RUNTIME_INBOX_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 const FOREGROUND_CONTROL_TICK_INTERVAL: Duration = Duration::from_secs(1);
+const AGENT_INVOCATION_DENIED_FEEDBACK: &str = "我现在不能响应这条请求：你没有权限控制这个智能体。";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundOptions {
@@ -2265,14 +2269,18 @@ where
         &auth,
     )?;
     if !authorization.allowed {
+        let message_sender =
+            runtime_message_sender_for_agent(config, state, im_core, target_agent_did)?;
         emit_group_agent_mention_rejection(
             state,
+            &message_sender,
             &status_sender,
             target_agent_did,
             message,
             &binding.daemon_agent_did,
             &binding.controller_scope_key,
             &mention_context,
+            authorization.sender_full_handle.as_deref(),
             authorization.reason.as_str(),
             authorization.active_mode.as_str(),
         )?;
@@ -2365,12 +2373,14 @@ where
 
 fn emit_group_agent_mention_rejection(
     state: &DaemonState,
+    message_sender: &ControllerOutboxSender,
     status_sender: &RuntimeStatusSender,
     target_agent_did: &str,
     message: &Message,
     daemon_agent_did: &str,
     controller_scope_key: &str,
     mention_context: &GroupAgentMentionContext,
+    sender_full_handle: Option<&str>,
     reason: &str,
     active_mode: &str,
 ) -> Result<()> {
@@ -2431,6 +2441,56 @@ fn emit_group_agent_mention_rejection(
             "match_kind": mention_context.match_kind,
         }),
     )?;
+    send_group_invocation_denied_feedback(
+        message_sender,
+        target_agent_did,
+        message,
+        conversation_id.as_deref(),
+        mention_context,
+        sender_full_handle,
+        &run_id,
+    )?;
+    Ok(())
+}
+
+fn send_group_invocation_denied_feedback(
+    message_sender: &ControllerOutboxSender,
+    target_agent_did: &str,
+    message: &Message,
+    conversation_id: Option<&str>,
+    mention_context: &GroupAgentMentionContext,
+    sender_full_handle: Option<&str>,
+    run_id: &str,
+) -> Result<()> {
+    let group_did = conversation_id
+        .and_then(group_did_from_conversation_id)
+        .ok_or_else(|| anyhow::anyhow!("group invocation denied feedback missing group id"))?;
+    let reply = structured_group_reply(StructuredGroupReplyInput {
+        run_id,
+        agent_did: target_agent_did,
+        requester_did: message.sender.as_str(),
+        requester_full_handle: sender_full_handle,
+        source_message_id: Some(message.id.as_str()),
+        reply_text: AGENT_INVOCATION_DENIED_FEEDBACK,
+    })
+    .ok_or_else(|| anyhow::anyhow!("group invocation denied feedback missing reply payload"))?;
+    let feedback = RuntimeMessageSend {
+        target: RuntimeMessageTarget::Group {
+            group: group_did.to_string(),
+        },
+        text: reply.text,
+        payload: Some(reply.payload),
+        file_path: None,
+        display_filename: None,
+        mime_type: None,
+        idempotency_key: Some(invocation_denied_idempotency_key(
+            target_agent_did,
+            message.id.as_str(),
+            Some(&mention_context.mention_id),
+        )),
+        security: RuntimeMessageSecurity::DefaultPlain,
+    };
+    message_sender.send_runtime_message(&feedback)?;
     Ok(())
 }
 
@@ -2657,6 +2717,22 @@ fn external_direct_task_message_id(message_id: &str, target_agent_did: &str) -> 
     )
 }
 
+fn invocation_denied_idempotency_key(
+    target_agent_did: &str,
+    source_message_id: &str,
+    mention_id: Option<&str>,
+) -> String {
+    format!(
+        "agent-invocation-denied:{}",
+        foreground_stable_id_suffix(&format!(
+            "{}:{}:{}",
+            target_agent_did,
+            source_message_id,
+            mention_id.unwrap_or("")
+        ))
+    )
+}
+
 fn foreground_content_hash(text: &str) -> String {
     let digest = sha2::Sha256::digest(text.as_bytes());
     format!("{digest:x}")
@@ -2843,8 +2919,11 @@ where
     if !authorization.allowed {
         let status_sender =
             runtime_status_sender_for_agent(config, state, im_core, target_agent_did)?;
+        let message_sender =
+            runtime_message_sender_for_agent(config, state, im_core, target_agent_did)?;
         emit_external_direct_invocation_rejection(
             state,
+            &message_sender,
             &status_sender,
             target_agent_did,
             &binding.daemon_agent_did,
@@ -2919,6 +2998,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn emit_external_direct_invocation_rejection(
     state: &DaemonState,
+    message_sender: &ControllerOutboxSender,
     status_sender: &RuntimeStatusSender,
     target_agent_did: &str,
     daemon_agent_did: &str,
@@ -2989,6 +3069,40 @@ fn emit_external_direct_invocation_rejection(
         Some("agent_invocation_denied"),
         Some(reason),
     )?;
+    send_direct_invocation_denied_feedback(
+        message_sender,
+        target_agent_did,
+        source_message_id,
+        sender_did,
+    )?;
+    Ok(())
+}
+
+fn send_direct_invocation_denied_feedback(
+    message_sender: &ControllerOutboxSender,
+    target_agent_did: &str,
+    source_message_id: &str,
+    sender_did: &str,
+) -> Result<()> {
+    let feedback = RuntimeMessageSend {
+        target: RuntimeMessageTarget::Direct {
+            recipient: sender_did.to_string(),
+            raw_recipient: sender_did.to_string(),
+            resolved_did: Some(sender_did.to_string()),
+        },
+        text: AGENT_INVOCATION_DENIED_FEEDBACK.to_string(),
+        payload: None,
+        file_path: None,
+        display_filename: None,
+        mime_type: None,
+        idempotency_key: Some(invocation_denied_idempotency_key(
+            target_agent_did,
+            source_message_id,
+            None,
+        )),
+        security: RuntimeMessageSecurity::DefaultPlain,
+    };
+    message_sender.send_runtime_message(&feedback)?;
     Ok(())
 }
 

@@ -220,7 +220,7 @@ impl ControllerOutboxSender {
         }
     }
 
-    fn send_runtime_message(&self, message: &RuntimeMessageSend) -> Result<String> {
+    pub(super) fn send_runtime_message(&self, message: &RuntimeMessageSend) -> Result<String> {
         match self {
             Self::ImCore(outbox) => Ok(outbox
                 .send_runtime_message(message.clone())?
@@ -297,6 +297,7 @@ pub(super) struct ControllerOutboxCall {
     pub(super) state: Option<String>,
     pub(super) text: Option<String>,
     pub(super) security: Option<RuntimeMessageSecurity>,
+    pub(super) idempotency_key: Option<String>,
     pub(super) payload: Option<Value>,
 }
 
@@ -325,6 +326,7 @@ impl ControllerOutboxRecorder {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             None,
+            None,
             Some(payload),
         )
     }
@@ -336,6 +338,7 @@ impl ControllerOutboxRecorder {
             None,
             Some(message.text.clone()),
             Some(message.security),
+            message.idempotency_key.clone(),
             message.payload.clone(),
         )
     }
@@ -351,6 +354,7 @@ impl ControllerOutboxRecorder {
             None,
             attachment.caption.clone(),
             Some(RuntimeMessageSecurity::DefaultPlain),
+            None,
             None,
         )?;
         Ok(RuntimeAttachmentSendResult {
@@ -380,6 +384,7 @@ impl ControllerOutboxRecorder {
         state: Option<String>,
         text: Option<String>,
         security: Option<RuntimeMessageSecurity>,
+        idempotency_key: Option<String>,
         payload: Option<Value>,
     ) -> Result<String> {
         let mut calls = self
@@ -394,6 +399,7 @@ impl ControllerOutboxRecorder {
             state,
             text,
             security,
+            idempotency_key,
             payload,
         });
         Ok(format!("recording-{}-{kind}-{next}", self.sender_id))

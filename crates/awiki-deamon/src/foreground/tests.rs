@@ -2228,34 +2228,80 @@ fn group_agent_mention_ignores_group_selectors_and_other_agents() {
 }
 
 #[test]
-fn denied_group_agent_mention_emits_failed_status_without_runtime_task() {
+fn denied_group_agent_mention_emits_feedback_and_failed_status_without_runtime_task() {
     let (root, _config, state) = fixture();
     register_runtime_family(root.path(), &state);
     let message = group_mention_message("msg_group_denied", "did:agent:hermes");
     let payload = group_mention_payload("did:agent:hermes");
     let mention_context = group_agent_mention_context("did:agent:hermes", &payload).unwrap();
     let (status_sender, calls) = recording_status_sender("daemon-status");
+    let message_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime-message",
+        Arc::clone(&calls),
+    ));
 
     emit_group_agent_mention_rejection(
         &state,
+        &message_sender,
         &status_sender,
         "did:agent:hermes",
         &message,
         "did:agent:daemon",
         "controller-scope:v1:test-alice-anpclaw-com",
         &mention_context,
+        Some("bob.anpclaw.com"),
         "not_in_whitelist",
         "whitelist",
     )
     .unwrap();
 
     let calls = calls.lock().expect("recorded calls lock poisoned");
-    assert_eq!(calls.len(), 1);
-    let call = &calls[0];
-    assert_eq!(call.sender_id, "daemon-status");
-    assert_eq!(call.kind, "payload");
-    assert_eq!(call.recipient_did, "did:human:bob");
-    let payload = call.payload.as_ref().expect("status payload");
+    assert_eq!(calls.len(), 2);
+    let feedback = calls
+        .iter()
+        .find(|call| call.sender_id == "runtime-message" && call.kind == "message")
+        .expect("visible rejection feedback message");
+    assert_eq!(feedback.recipient_did, "did:group:team");
+    assert_eq!(
+        feedback.security,
+        Some(RuntimeMessageSecurity::DefaultPlain)
+    );
+    assert_eq!(
+        feedback.text.as_deref(),
+        Some("@bob 我现在不能响应这条请求：你没有权限控制这个智能体。")
+    );
+    assert_eq!(
+        feedback.idempotency_key.as_deref(),
+        Some(
+            invocation_denied_idempotency_key(
+                "did:agent:hermes",
+                "msg_group_denied",
+                Some("men_agent")
+            )
+            .as_str()
+        )
+    );
+    let feedback_payload = feedback.payload.as_ref().expect("feedback payload");
+    assert_eq!(feedback_payload["text"], feedback.text.as_deref().unwrap());
+    assert_eq!(
+        feedback_payload["mentions"][0]["target"]["did"],
+        "did:human:bob"
+    );
+    assert_eq!(
+        feedback_payload["annotations"]["awiki_reply_to_message_id"],
+        "msg_group_denied"
+    );
+    assert_eq!(
+        feedback_payload["annotations"]["awiki_reply_from_agent_did"],
+        "did:agent:hermes"
+    );
+
+    let status = calls
+        .iter()
+        .find(|call| call.sender_id == "daemon-status" && call.kind == "payload")
+        .expect("failed status payload");
+    assert_eq!(status.recipient_did, "did:human:bob");
+    let payload = status.payload.as_ref().expect("status payload");
     assert_eq!(payload["schema"], "awiki.agent.status.v1");
     assert_eq!(payload["status_scope"], "run");
     assert_eq!(payload["state"], "failed");
@@ -2285,13 +2331,18 @@ fn denied_group_agent_mention_emits_failed_status_without_runtime_task() {
 }
 
 #[test]
-fn denied_external_direct_invocation_emits_failed_status_without_runtime_task() {
+fn denied_external_direct_invocation_emits_feedback_and_failed_status_without_runtime_task() {
     let (root, _config, state) = fixture();
     register_runtime_family(root.path(), &state);
     let (status_sender, calls) = recording_status_sender("daemon-status");
+    let message_sender = ControllerOutboxSender::Recording(ControllerOutboxRecorder::new(
+        "runtime-message",
+        Arc::clone(&calls),
+    ));
 
     emit_external_direct_invocation_rejection(
         &state,
+        &message_sender,
         &status_sender,
         "did:agent:hermes",
         "did:agent:daemon",
@@ -2306,12 +2357,35 @@ fn denied_external_direct_invocation_emits_failed_status_without_runtime_task() 
     .unwrap();
 
     let calls = calls.lock().expect("recorded calls lock poisoned");
-    assert_eq!(calls.len(), 1);
-    let call = &calls[0];
-    assert_eq!(call.sender_id, "daemon-status");
-    assert_eq!(call.kind, "payload");
-    assert_eq!(call.recipient_did, "did:human:bob");
-    let payload = call.payload.as_ref().expect("status payload");
+    assert_eq!(calls.len(), 2);
+    let feedback = calls
+        .iter()
+        .find(|call| call.sender_id == "runtime-message" && call.kind == "message")
+        .expect("visible rejection feedback message");
+    assert_eq!(feedback.recipient_did, "did:human:bob");
+    assert_eq!(
+        feedback.security,
+        Some(RuntimeMessageSecurity::DefaultPlain)
+    );
+    assert_eq!(
+        feedback.text.as_deref(),
+        Some("我现在不能响应这条请求：你没有权限控制这个智能体。")
+    );
+    assert_eq!(feedback.payload, None);
+    assert_eq!(
+        feedback.idempotency_key.as_deref(),
+        Some(
+            invocation_denied_idempotency_key("did:agent:hermes", "msg_direct_denied", None)
+                .as_str()
+        )
+    );
+
+    let status = calls
+        .iter()
+        .find(|call| call.sender_id == "daemon-status" && call.kind == "payload")
+        .expect("failed status payload");
+    assert_eq!(status.recipient_did, "did:human:bob");
+    let payload = status.payload.as_ref().expect("status payload");
     assert_eq!(payload["schema"], "awiki.agent.status.v1");
     assert_eq!(payload["status_scope"], "run");
     assert_eq!(payload["state"], "failed");

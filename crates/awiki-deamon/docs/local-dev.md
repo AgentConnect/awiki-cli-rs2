@@ -187,7 +187,7 @@ cargo test -p awiki-deamon --locked mention
 cargo test -p awiki-deamon --locked user_delegated -- --nocapture
 ```
 
-该路径验证 daemon 会拉取 direct + group inbox；只有合法 P9 `text + mentions` 群 payload 中的 `target.kind = agent` 精确命中 runtime agent DID 时才创建 RuntimeTask。`target.kind = group_selector`（包括 `@agents` / `@all` / `@humans`）、`target.kind = human`、纯文本 `@AgentName`、invalid range 和 E2EE opaque 都不能触发 runtime。mention 只是注意力信号，不是授权；daemon 仍会通过 user-service invocation policy 做硬权限判断，并且 task 只携带群内回复 allowlist。
+该路径验证 daemon 会拉取 direct + group inbox；只有合法 P9 `text + mentions` 群 payload 中的 `target.kind = agent` 精确命中 runtime agent DID 时才创建 RuntimeTask。`target.kind = group_selector`（包括 `@agents` / `@all` / `@humans`）、`target.kind = human`、纯文本 `@AgentName`、invalid range 和 E2EE opaque 都不能触发 runtime。mention 只是注意力信号，不是授权；daemon 仍会通过 user-service invocation policy 做硬权限判断，并且 task 只携带群内回复 allowlist。权限拒绝时 daemon 不创建 RuntimeTask，但会用 runtime agent 身份向当前私聊或群聊发送一条幂等的可见反馈；具体拒绝原因只进入 failed status payload 和 audit，不暴露给普通聊天消息。
 
 步骤 01 不启动真实 runtime，也不连接远端 message-service。
 
