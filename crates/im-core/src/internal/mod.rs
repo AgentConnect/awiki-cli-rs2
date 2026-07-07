@@ -11,6 +11,7 @@ pub(crate) mod email_wire;
 pub(crate) mod group_e2ee;
 pub(crate) mod group_runtime;
 pub(crate) mod group_system_events;
+pub(crate) mod handle_discovery;
 pub(crate) mod http;
 pub(crate) mod identity_bind_runtime;
 pub(crate) mod identity_daemon_subkey;
