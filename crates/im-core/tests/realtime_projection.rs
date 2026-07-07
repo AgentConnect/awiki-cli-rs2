@@ -586,6 +586,13 @@ fn realtime_projection_group_state_changed_becomes_group_updated() {
         ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:example:group").unwrap(),
             update_kind: GroupUpdateKind::MemberAdded,
+            event_type: None,
+            group_event_seq: Some(7),
+            group_state_version: None,
+            actor_did: None,
+            subject_did: Some("did:example:bob".to_owned()),
+            membership_status: Some("active".to_owned()),
+            changed_at: None,
             sync: None,
         })
     );

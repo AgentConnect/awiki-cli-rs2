@@ -577,6 +577,7 @@ fn site_exit(
             status_code,
             code,
             message,
+            ..
         } => service_exit(context, hint, status_code, code, message),
         err => crate::m_core_cli_adapter::map_im_error(err, context),
     }
@@ -615,6 +616,7 @@ fn service_exit(
                 status_code,
                 code,
                 message,
+                data: None,
             },
             context,
         ),

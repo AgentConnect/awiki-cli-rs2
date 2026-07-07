@@ -208,6 +208,13 @@ fn project_group_state_changed(notification: &Value) -> NotificationProjection {
         event: ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: parse_group(&group_did),
             update_kind,
+            event_type: none_if_empty(string_from_object(body, "event_type")),
+            group_event_seq: int64_value(value_from_object(body, "group_event_seq")),
+            group_state_version: none_if_empty(string_from_object(body, "group_state_version")),
+            actor_did: none_if_empty(string_from_object(body, "actor_did")),
+            subject_did: none_if_empty(string_from_object(body, "subject_did")),
+            membership_status: none_if_empty(string_from_object(body, "membership_status")),
+            changed_at: none_if_empty(string_from_object(body, "changed_at")),
             sync: sync_hint(notification),
         }),
     }

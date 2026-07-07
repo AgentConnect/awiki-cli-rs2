@@ -111,6 +111,13 @@ fn im_event_group_message_and_update_dispatch_host_notifications_only() {
         ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:wba:groups.example:groups:demo:e1_group").unwrap(),
             update_kind: GroupUpdateKind::Updated,
+            event_type: None,
+            group_event_seq: None,
+            group_state_version: None,
+            actor_did: None,
+            subject_did: None,
+            membership_status: None,
+            changed_at: None,
             sync: None,
         }),
         None,

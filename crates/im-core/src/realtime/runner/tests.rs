@@ -173,6 +173,13 @@ fn realtime_local_state_projector_stores_group_update() {
                 super::super::GroupUpdatedEvent {
                     group: crate::ids::GroupRef::parse("did:example:group:blue").unwrap(),
                     update_kind: super::super::GroupUpdateKind::Updated,
+                    event_type: None,
+                    group_event_seq: None,
+                    group_state_version: None,
+                    actor_did: None,
+                    subject_did: None,
+                    membership_status: None,
+                    changed_at: None,
                     sync: None,
                 },
             )),

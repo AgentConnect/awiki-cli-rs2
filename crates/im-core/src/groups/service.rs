@@ -376,6 +376,7 @@ impl<'a> GroupService<'a> {
         )?;
         result.resolved_member = Some(resolved_member.clone());
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        project_group_system_event_best_effort(self.client, &group, &mut result);
         self.refresh_group_state_for(&mut result, &group, true);
         #[cfg(feature = "group-e2ee")]
         if let Some(secure_provider) = secure_provider {
@@ -399,6 +400,7 @@ impl<'a> GroupService<'a> {
             )?;
             result = super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
             result.resolved_member = Some(resolved_member.clone());
+            project_group_system_event_best_effort(self.client, &group, &mut result);
             self.refresh_group_state_for(&mut result, &group, true);
         }
         Ok(result)
@@ -452,6 +454,7 @@ impl<'a> GroupService<'a> {
             &result,
         )
         .await;
+        project_group_system_event_best_effort_async(self.client, &group, &mut result).await;
         self.refresh_group_state_for_async(&mut result, &group, true)
             .await;
         #[cfg(feature = "group-e2ee")]
@@ -477,6 +480,7 @@ impl<'a> GroupService<'a> {
             .await?;
             result = super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
             result.resolved_member = Some(resolved_member.clone());
+            project_group_system_event_best_effort_async(self.client, &group, &mut result).await;
             self.refresh_group_state_for_async(&mut result, &group, true)
                 .await;
         }
@@ -1772,6 +1776,31 @@ fn resolved_group_member_request(
         reason_text: request.reason_text,
         leave_request_id: request.leave_request_id,
         security: request.security,
+    }
+}
+
+fn project_group_system_event_best_effort(
+    client: &crate::core::ImClient,
+    group: &str,
+    result: &mut super::GroupReadResult,
+) {
+    if let Err(error) =
+        crate::internal::group_system_events::persist_group_read_result(client, group, result)
+    {
+        result.push_warning(format!("group_system_event_projection_failed:{error}"));
+    }
+}
+
+async fn project_group_system_event_best_effort_async(
+    client: &crate::core::ImClient,
+    group: &str,
+    result: &mut super::GroupReadResult,
+) {
+    if let Err(error) =
+        crate::internal::group_system_events::persist_group_read_result_async(client, group, result)
+            .await
+    {
+        result.push_warning(format!("group_system_event_projection_failed:{error}"));
     }
 }
 

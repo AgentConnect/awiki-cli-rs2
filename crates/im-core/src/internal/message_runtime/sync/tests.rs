@@ -201,6 +201,53 @@ async fn sync_delta_preserves_attachment_manifest_content_type() {
 }
 
 #[tokio::test]
+async fn sync_delta_group_member_changed_projects_system_timeline_message() {
+    let fixture = Fixture::new("sync-delta-group-system-event");
+    let client = fixture.client();
+    fixture.store_checkpoint("9");
+    let runtime = MessageSyncRuntime::new(
+        &client,
+        ReadyAnySessionProvider,
+        RecordingTransport::queued(
+            Rc::new(RefCell::new(Vec::new())),
+            vec![delta_page(
+                vec![group_member_changed_event("sev-10", "10", 7)],
+                "10",
+                false,
+            )],
+        ),
+        NoopDirectoryTransport,
+    );
+
+    let result = runtime
+        .sync_delta_async(SyncDeltaInput {
+            request: crate::messages::SyncDeltaRequest {
+                limit: Some(50),
+                device_id: None,
+                reason: Some("test".to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.events_applied, 1);
+    let msg_id = "did:example:group:7";
+    assert_eq!(fixture.message_server_seq(msg_id), Some(7));
+    assert_eq!(
+        fixture.message_content_type(msg_id).as_deref(),
+        Some("application/json")
+    );
+    let content = fixture.message_content(msg_id).unwrap();
+    let payload = serde_json::from_str::<Value>(&content).unwrap();
+    assert_eq!(payload["schema"], "awiki.group.system_event.v1");
+    assert_eq!(payload["type"], "member_added");
+    assert_eq!(payload["actor_did"], "did:example:alice");
+    assert_eq!(payload["subject_did"], "did:example:bob");
+    assert_eq!(payload["group_event_seq"], "7");
+    assert_eq!(fixture.message_is_read(msg_id), Some(true));
+}
+
+#[tokio::test]
 async fn sync_delta_has_more_reads_committed_checkpoint_for_next_page() {
     let fixture = Fixture::new("sync-delta-has-more");
     let client = fixture.client();
@@ -985,6 +1032,17 @@ impl Fixture {
         .flatten()
     }
 
+    fn message_is_read(&self, msg_id: &str) -> Option<bool> {
+        let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
+        db.query_row(
+            "SELECT is_read FROM messages WHERE owner_identity_id = 'alice-id' AND msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+        .map(|value| value != 0)
+    }
+
     fn conversation_last_content(&self, conversation_id: &str) -> Option<String> {
         let db = rusqlite::Connection::open(self.sqlite_path()).unwrap();
         db.query_row(
@@ -1134,6 +1192,35 @@ fn attachment_manifest_message_created_event(
                     "primary_attachment_id": "att-sync-1"
                 },
                 "sent_at": "2026-06-27T00:00:00Z"
+            }
+        }
+    })
+}
+
+fn group_member_changed_event(event_id: &str, event_seq: &str, group_event_seq: i64) -> Value {
+    json!({
+        "event_id": event_id,
+        "event_seq": event_seq,
+        "event_type": "group.member_changed",
+        "aggregate_kind": "group",
+        "aggregate_id": "did:example:group",
+        "owner_subject_id": "did:example:alice",
+        "created_at": "2026-07-07T00:00:00Z",
+        "payload": {
+            "thread_kind": "group",
+            "thread": {
+                "kind": "group",
+                "group_did": "did:example:group"
+            },
+            "group": {
+                "group_did": "did:example:group",
+                "group_state_version": "3",
+                "group_event_seq": group_event_seq.to_string()
+            },
+            "membership": {
+                "actor_did": "did:example:alice",
+                "subject_did": "did:example:bob",
+                "status": "active"
             }
         }
     })

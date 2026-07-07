@@ -591,8 +591,18 @@ fn sync_delta_apply_event(
                 )?,
             );
         }
-        "group.member_changed" | "group.profile_updated" => {
+        "group.member_changed" => {
+            let group_record = sync_delta_group_record(client, event)?;
+            apply.groups.push(group_record);
+            if let Some(record) = sync_delta_group_system_message_record(client, event)? {
+                apply.messages.push(record);
+            }
+        }
+        "group.profile_updated" => {
             apply.groups.push(sync_delta_group_record(client, event)?);
+            if let Some(record) = sync_delta_group_profile_system_message_record(client, event)? {
+                apply.messages.push(record);
+            }
         }
         unsupported => {
             return Err(sync_invalid_page(format!(
@@ -602,6 +612,90 @@ fn sync_delta_apply_event(
     }
 
     Ok(apply)
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_group_system_message_record(
+    client: &crate::core::ImClient,
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> crate::ImResult<Option<crate::internal::local_state::messages::MessageRecord>> {
+    let payload = event
+        .payload
+        .as_object()
+        .ok_or_else(|| sync_invalid_page("event payload must be an object"))?;
+    let thread = map_value(payload.get("thread"));
+    let group = map_value(payload.get("group"));
+    let membership = map_value(payload.get("membership"));
+    let group_did = string_from_object(group, "group_did")
+        .or_else(|| string_from_object(thread, "group_did"))
+        .or_else(|| event.aggregate_id.clone())
+        .ok_or_else(|| sync_invalid_page("group event missing group_did"))?;
+    let Some(group_event_seq) = decimal_i64_from_object_opt(group, "group_event_seq") else {
+        return Ok(None);
+    };
+    let membership_status = string_from_object(membership, "status");
+    let event_type = match membership_status.as_deref().unwrap_or_default() {
+        "active" | "activated" => "member_added",
+        "removed" => "member_removed",
+        "left" => "member_left",
+        _ => "member_changed",
+    }
+    .to_owned();
+    Ok(crate::internal::group_system_events::record_from_input(
+        client,
+        crate::internal::group_system_events::GroupSystemEventInput {
+            event_type,
+            group_did,
+            group_event_seq,
+            group_state_version: string_from_object(group, "group_state_version"),
+            actor_did: string_from_object(membership, "actor_did")
+                .or_else(|| string_from_object(Some(payload), "actor_did")),
+            subject_did: string_from_object(membership, "subject_did"),
+            membership_status,
+            changed_at: event.created_at.clone(),
+            sync_event_id: Some(event.event_id.clone()),
+            sync_event_seq: Some(event.event_seq.clone()),
+            sync_event_type: Some(event.event_type.clone()),
+            source: "im-core.sync_delta".to_owned(),
+        },
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_delta_group_profile_system_message_record(
+    client: &crate::core::ImClient,
+    event: &crate::internal::wire::sync::SyncDeltaEvent,
+) -> crate::ImResult<Option<crate::internal::local_state::messages::MessageRecord>> {
+    let payload = event
+        .payload
+        .as_object()
+        .ok_or_else(|| sync_invalid_page("event payload must be an object"))?;
+    let thread = map_value(payload.get("thread"));
+    let group = map_value(payload.get("group"));
+    let group_did = string_from_object(group, "group_did")
+        .or_else(|| string_from_object(thread, "group_did"))
+        .or_else(|| event.aggregate_id.clone())
+        .ok_or_else(|| sync_invalid_page("group event missing group_did"))?;
+    let Some(group_event_seq) = decimal_i64_from_object_opt(group, "group_event_seq") else {
+        return Ok(None);
+    };
+    Ok(crate::internal::group_system_events::record_from_input(
+        client,
+        crate::internal::group_system_events::GroupSystemEventInput {
+            event_type: "group_profile_updated".to_owned(),
+            group_did,
+            group_event_seq,
+            group_state_version: string_from_object(group, "group_state_version"),
+            actor_did: string_from_object(Some(payload), "actor_did"),
+            subject_did: None,
+            membership_status: None,
+            changed_at: event.created_at.clone(),
+            sync_event_id: Some(event.event_id.clone()),
+            sync_event_seq: Some(event.event_seq.clone()),
+            sync_event_type: Some(event.event_type.clone()),
+            source: "im-core.sync_delta".to_owned(),
+        },
+    ))
 }
 
 #[cfg(feature = "sqlite")]

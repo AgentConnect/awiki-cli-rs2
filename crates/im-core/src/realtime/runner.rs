@@ -909,7 +909,11 @@ fn project_realtime_group_updated(
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::groups::upsert_group(&connection, record)
+    crate::internal::local_state::groups::upsert_group(&connection, record)?;
+    if let Some(message) = realtime_group_system_message_record(client, event) {
+        crate::internal::local_state::messages::upsert_message(&connection, &message)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]
@@ -921,7 +925,11 @@ async fn project_realtime_group_updated_async(
         return Ok(());
     };
     let db = client.core_inner().local_state_db().await?;
-    db.upsert_group(record).await
+    db.upsert_group(record).await?;
+    if let Some(message) = realtime_group_system_message_record(client, event) {
+        db.store_messages(vec![message]).await?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]
@@ -964,6 +972,43 @@ fn group_update_kind_label(kind: &super::GroupUpdateKind) -> &'static str {
         super::GroupUpdateKind::MessageAdded => "message_added",
         super::GroupUpdateKind::Unknown => "unknown",
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn realtime_group_system_message_record(
+    client: &crate::core::ImClient,
+    event: &super::GroupUpdatedEvent,
+) -> Option<crate::internal::local_state::messages::MessageRecord> {
+    let group_event_seq = event.group_event_seq?;
+    if !matches!(
+        event.update_kind,
+        super::GroupUpdateKind::MemberAdded
+            | super::GroupUpdateKind::MemberRemoved
+            | super::GroupUpdateKind::Updated
+    ) {
+        return None;
+    }
+    let event_type = event
+        .event_type
+        .clone()
+        .unwrap_or_else(|| group_update_kind_label(&event.update_kind).to_owned());
+    crate::internal::group_system_events::record_from_input(
+        client,
+        crate::internal::group_system_events::GroupSystemEventInput {
+            event_type,
+            group_did: event.group.as_str().to_owned(),
+            group_event_seq,
+            group_state_version: event.group_state_version.clone(),
+            actor_did: event.actor_did.clone(),
+            subject_did: event.subject_did.clone(),
+            membership_status: event.membership_status.clone(),
+            changed_at: event.changed_at.clone(),
+            sync_event_id: event.sync.as_ref().and_then(|sync| sync.event_id.clone()),
+            sync_event_seq: event.sync.as_ref().and_then(|sync| sync.event_seq.clone()),
+            sync_event_type: event.sync.as_ref().and_then(|sync| sync.event_type.clone()),
+            source: "im-core.realtime".to_owned(),
+        },
+    )
 }
 
 #[cfg(feature = "sqlite")]

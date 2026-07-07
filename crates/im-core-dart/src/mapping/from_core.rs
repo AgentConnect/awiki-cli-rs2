@@ -1621,6 +1621,13 @@ mod tests {
         let group = realtime_event_to_dart(ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:example:group").unwrap(),
             update_kind: GroupUpdateKind::MessageAdded,
+            event_type: None,
+            group_event_seq: None,
+            group_state_version: None,
+            actor_did: None,
+            subject_did: None,
+            membership_status: None,
+            changed_at: None,
             sync: None,
         }));
         assert_eq!(group.kind, "group_updated");

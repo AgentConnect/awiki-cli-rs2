@@ -73,6 +73,20 @@ pub struct GroupUpdatedEvent {
     pub group: crate::ids::GroupRef,
     pub update_kind: GroupUpdateKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_event_seq: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_state_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<RealtimeSyncHint>,
 }
 

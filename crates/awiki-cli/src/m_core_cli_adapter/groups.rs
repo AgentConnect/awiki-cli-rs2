@@ -1687,6 +1687,7 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             status_code,
             code,
             message,
+            ..
         } => {
             let rpc_code = code
                 .and_then(|value| value.parse().ok())
