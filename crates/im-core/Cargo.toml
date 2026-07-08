@@ -1,5 +1,5 @@
 [package]
-name = "im-core"
+name = "awiki-im-core"
 version = "0.1.0"
 description = "Rust IM SDK for Awiki clients built on Agent Network Protocol (ANP)"
 readme = "README.md"
@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository = "https://github.com/AgentConnect/awiki-cli-rs2"
-documentation = "https://docs.rs/im-core"
+documentation = "https://docs.rs/awiki-im-core"
 keywords = ["awiki", "im", "anp", "did", "messaging"]
 categories = ["api-bindings", "authentication", "network-programming"]
 

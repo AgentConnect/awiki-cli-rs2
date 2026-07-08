@@ -193,7 +193,7 @@ dependencies = [
  "anp",
  "anyhow",
  "base64",
- "im-core",
+ "awiki-im-core",
  "rand 0.8.6",
  "rusqlite",
  "rustls",
@@ -216,7 +216,7 @@ dependencies = [
  "bs58",
  "chacha20poly1305",
  "futures-util",
- "im-core",
+ "awiki-im-core",
  "libc",
  "rand 0.8.6",
  "reqwest",
@@ -1410,7 +1410,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "im-core"
+name = "awiki-im-core"
 version = "0.1.0"
 dependencies = [
  "anp",
@@ -1445,7 +1445,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "flutter_rust_bridge",
- "im-core",
+ "awiki-im-core",
  "serde",
  "serde_json",
  "tempfile",
