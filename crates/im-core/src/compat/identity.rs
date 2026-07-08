@@ -1,6 +1,6 @@
 pub use crate::internal::identity_wire::{
     ProfileUpdateCall, RecoverHandleRpcParams, RegisterRpcParams, ReplaceDidRpcParams, RestCall,
-    RpcCall, TransportProfile, UpdateProfileParams,
+    RpcCall, TransportProfile, UpdateDocumentRpcParams, UpdateProfileParams,
 };
 
 pub const DID_AUTH_RPC_ENDPOINT: &str = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
@@ -42,6 +42,10 @@ pub fn build_recover_handle_rpc_call(params: RecoverHandleRpcParams) -> crate::I
 
 pub fn build_replace_did_rpc_call(params: ReplaceDidRpcParams) -> RpcCall {
     crate::internal::identity_wire::replace_did::build_replace_did_rpc_call(params)
+}
+
+pub fn build_update_document_rpc_call(params: UpdateDocumentRpcParams) -> RpcCall {
+    crate::internal::identity_wire::update_document::build_update_document_rpc_call(params)
 }
 
 pub fn build_email_send_rest_call(
@@ -187,8 +191,9 @@ pub trait BridgeReplaceDidExecution {
 
     fn rebind_local_identity_state(
         &mut self,
-        old_owner_did: &crate::ids::Did,
-        new_owner_did: &crate::ids::Did,
+        owner_identity_id: &crate::ids::IdentityId,
+        old_did: &crate::ids::Did,
+        new_did: &crate::ids::Did,
     ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState>;
 }
 
@@ -423,10 +428,11 @@ where
 
     fn rebind_local_state(
         &mut self,
-        old_owner_did: &crate::ids::Did,
-        new_owner_did: &crate::ids::Did,
+        owner_identity_id: &crate::ids::IdentityId,
+        old_did: &crate::ids::Did,
+        new_did: &crate::ids::Did,
     ) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
         self.0
-            .rebind_local_identity_state(old_owner_did, new_owner_did)
+            .rebind_local_identity_state(owner_identity_id, old_did, new_did)
     }
 }

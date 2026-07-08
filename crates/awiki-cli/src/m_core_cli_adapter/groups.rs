@@ -1,6 +1,6 @@
 use im_core::groups::{
-    GroupAdmissionMode, GroupDiscoverability, GroupMemberLimit, GroupMemberRole,
-    GroupMessageSecurityProfile, GroupReadResult, GroupSecurityRequirement,
+    GroupAdmissionMode, GroupDiscoverability, GroupKeyPackagePurpose, GroupMemberLimit,
+    GroupMemberRole, GroupMessageSecurityProfile, GroupReadResult, GroupSecurityRequirement,
 };
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
@@ -23,6 +23,7 @@ pub struct GroupCreateRequest {
     pub identity_name: String,
     pub name: String,
     pub description: String,
+    pub avatar_uri: String,
     pub discoverability: String,
     pub admission_mode: String,
     pub message_security_profile: String,
@@ -73,6 +74,7 @@ pub struct GroupUpdateRequest {
     pub group: String,
     pub name: String,
     pub description: String,
+    pub avatar_uri: String,
     pub discoverability: String,
     pub admission_mode: String,
     pub slug: String,
@@ -84,6 +86,31 @@ pub struct GroupUpdateRequest {
     pub max_members: String,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupKeyPackagePublishRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub purpose: String,
+    pub device: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeProcessLeaveRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub leave_request_id: String,
+    pub reason_text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeMemberKeyRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub device: String,
 }
 
 fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
@@ -101,6 +128,36 @@ pub fn create_group_via_im_core(
     let result = client
         .groups()
         .create(group_create_request(request)?)
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
+    let warnings = group_control_warnings(resolved, result.warnings.clone());
+    let snapshot = group_snapshot_result_json(&result, &raw).unwrap_or(Value::Null);
+    let members = group_members_to_cli_json(&result, &raw);
+    Ok(CommandResult {
+        data: json!({
+            "group": snapshot,
+            "members": members,
+            "delivery": raw,
+            "source": group_control_source(&raw),
+        }),
+        summary: format!("Created group {group_did}"),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub async fn create_group_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupCreateRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.name.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    let result = client
+        .groups()
+        .create_async(group_create_request(request)?)
+        .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&result, &raw).unwrap_or_default();
@@ -151,6 +208,39 @@ pub fn join_group_via_im_core(
     })
 }
 
+pub async fn join_group_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupJoinRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    let requested_group = request.group.clone();
+    let result = client
+        .groups()
+        .join_async(SdkGroupJoinRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            reason_text: optional_string(&request.reason_text),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let group_did = group_did_from_result(&result, &raw).unwrap_or(requested_group);
+    let warnings = group_control_warnings(resolved, result.warnings.clone());
+    let snapshot = group_snapshot_result_json(&result, &raw)
+        .unwrap_or_else(|| json!({ "group_did": group_did }));
+    Ok(CommandResult {
+        data: json!({
+            "group": snapshot,
+            "delivery": raw,
+            "source": group_control_source(&raw),
+        }),
+        summary: format!("Joined group {group_did}"),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 pub fn leave_group_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -179,6 +269,35 @@ pub fn leave_group_via_im_core(
     })
 }
 
+pub async fn leave_group_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupLeaveRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    let result = client
+        .groups()
+        .leave_async(SdkGroupLeaveRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            reason_text: optional_string(&request.reason_text),
+            security: group_security_requirement(request.secure_required || request.e2ee),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let warnings = group_control_warnings(resolved, result.warnings);
+    Ok(CommandResult {
+        data: json!({
+            "delivery": raw,
+            "group": request.group,
+        }),
+        summary: format!("Left group {}", request.group),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 pub fn add_group_member_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -187,12 +306,28 @@ pub fn add_group_member_via_im_core(
     mutate_group_member_via_im_core(resolved, client, request, "add")
 }
 
+pub async fn add_group_member_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupMemberRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    mutate_group_member_via_im_core_async(resolved, client, request, "add").await
+}
+
 pub fn remove_group_member_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
     request: GroupMemberRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     mutate_group_member_via_im_core(resolved, client, request, "remove")
+}
+
+pub async fn remove_group_member_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupMemberRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    mutate_group_member_via_im_core_async(resolved, client, request, "remove").await
 }
 
 fn mutate_group_member_via_im_core(
@@ -214,12 +349,59 @@ fn mutate_group_member_via_im_core(
         member,
         role: GroupMemberRole::parse_optional(&request.role).map_err(im_error_to_message_error)?,
         reason_text: optional_string(&request.reason_text),
+        leave_request_id: optional_string(&request.leave_request_id),
         security: group_security_requirement(request.secure_required || request.e2ee),
     };
     let result = if action == "add" {
         client.groups().add_member(sdk_request)
     } else {
         client.groups().remove_member(sdk_request)
+    }
+    .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let warnings = group_control_warnings(resolved, result.warnings.clone());
+    let snapshot = group_snapshot_result_json(&result, &raw)
+        .unwrap_or_else(|| json!({ "group_did": request.group }));
+    let members = group_members_to_cli_json(&result, &raw);
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref());
+    Ok(CommandResult {
+        data: json!({
+            "group": snapshot,
+            "members": members,
+            "delivery": raw,
+            "member": resolved_member,
+        }),
+        summary: format!("Updated group membership via {action}"),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+async fn mutate_group_member_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupMemberRequest,
+    action: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let member = GroupMemberRef::parse(&request.member, &resolved.did_domain)
+        .map_err(im_error_to_message_error)?;
+    let sdk_request = GroupMemberMutationRequest {
+        group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+        member,
+        role: GroupMemberRole::parse_optional(&request.role).map_err(im_error_to_message_error)?,
+        reason_text: optional_string(&request.reason_text),
+        leave_request_id: optional_string(&request.leave_request_id),
+        security: group_security_requirement(request.secure_required || request.e2ee),
+    };
+    let result = if action == "add" {
+        client.groups().add_member_async(sdk_request).await
+    } else {
+        client.groups().remove_member_async(sdk_request).await
     }
     .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -291,6 +473,58 @@ pub fn update_group_via_im_core(
     })
 }
 
+pub async fn update_group_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupUpdateRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    let profile_patch = group_profile_patch(&request)?;
+    let policy_patch = group_policy_patch(&request)?;
+    if profile_patch == GroupProfilePatch::default() && policy_patch == GroupPolicyPatch::default()
+    {
+        return Err(MessageAdapterError::Internal(
+            "group update requires at least one mutable field".to_string(),
+        ));
+    }
+    let group = GroupRef::parse(&request.group).map_err(im_error_to_message_error)?;
+    let result = client
+        .groups()
+        .update_async(SdkGroupUpdateRequest {
+            group,
+            profile_patch,
+            policy_patch,
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    let responses = result
+        .deliveries
+        .iter()
+        .map(group_raw_response)
+        .collect::<Vec<_>>();
+    let warnings = group_control_warnings(resolved, result.warnings.clone());
+    let refreshed_raw = result
+        .refreshed
+        .as_ref()
+        .map(group_raw_response)
+        .unwrap_or(Value::Null);
+    let snapshot = result
+        .refreshed
+        .as_ref()
+        .and_then(|result| group_snapshot_result_json(result, &refreshed_raw))
+        .unwrap_or_else(|| json!({ "group_did": request.group }));
+    Ok(CommandResult {
+        data: json!({
+            "group": snapshot,
+            "delivery": responses,
+        }),
+        summary: format!("Updated group {}", request.group),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 pub fn get_group_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -300,6 +534,29 @@ pub fn get_group_via_im_core(
     let result = client
         .groups()
         .get(group_ref)
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let snapshot = group_snapshot_result_json(&result, &raw).unwrap_or(Value::Null);
+    Ok(CommandResult {
+        data: json!({
+            "group": snapshot,
+            "source": group_read_source(&result, &raw),
+        }),
+        summary: "Loaded group snapshot".to_string(),
+        warnings: group_control_warnings(resolved, result.warnings),
+    })
+}
+
+pub async fn get_group_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    group: String,
+) -> Result<CommandResult, MessageAdapterError> {
+    let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
+    let result = client
+        .groups()
+        .get_async(group_ref)
+        .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let snapshot = group_snapshot_result_json(&result, &raw).unwrap_or(Value::Null);
@@ -339,6 +596,33 @@ pub fn list_groups_via_im_core(
     })
 }
 
+pub async fn list_groups_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    limit: i64,
+) -> Result<CommandResult, MessageAdapterError> {
+    let request = GroupListRequest {
+        limit: page_limit(limit, 50)?,
+    };
+    let result = client
+        .groups()
+        .list_async(request)
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let groups = groups_to_cli_json(&result);
+    let total = group_read_total(&result, groups.len());
+    Ok(CommandResult {
+        data: json!({
+            "groups": groups,
+            "total": total,
+            "source": group_read_source(&result, &raw),
+        }),
+        summary: format!("Loaded {total} groups"),
+        warnings: group_control_warnings(resolved, result.warnings),
+    })
+}
+
 pub fn group_members_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -352,6 +636,36 @@ pub fn group_members_via_im_core(
     let result = client
         .groups()
         .members(request)
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let members = group_members_to_cli_json(&result, &raw);
+    let total = group_read_total(&result, members.len());
+    Ok(CommandResult {
+        data: json!({
+            "group": group,
+            "members": members,
+            "total": total,
+            "source": group_read_source(&result, &raw),
+        }),
+        summary: format!("Loaded {total} group members"),
+        warnings: group_control_warnings(resolved, result.warnings),
+    })
+}
+
+pub async fn group_members_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    group: String,
+    limit: i64,
+) -> Result<CommandResult, MessageAdapterError> {
+    let request = GroupMembersRequest {
+        group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
+        limit: page_limit(limit, 100)?,
+    };
+    let result = client
+        .groups()
+        .members_async(request)
+        .await
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
     let members = group_members_to_cli_json(&result, &raw);
@@ -403,6 +717,42 @@ pub fn group_messages_via_im_core(
     })
 }
 
+pub async fn group_messages_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    group: String,
+    limit: i64,
+    cursor: String,
+) -> Result<CommandResult, MessageAdapterError> {
+    let request = GroupMessagesRequest {
+        group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
+        limit: page_limit(limit, 50)?,
+        cursor: optional_cursor(&cursor)?,
+    };
+    let result = client
+        .groups()
+        .messages_async(request)
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    let result_source_mode = host_runtime::bridge::MODE_HTTP;
+
+    let messages = group_messages_to_cli_json(&result, &raw);
+    let total = group_read_total(&result, messages.len());
+    Ok(CommandResult {
+        data: json!({
+            "group": group,
+            "messages": messages,
+            "total": total,
+            "has_more": bool_value(raw.get("has_more")),
+            "next_since_seq": raw.get("next_since_seq").cloned().unwrap_or(Value::Null),
+            "source": source_with_default_for_mode(&raw, result_source_mode),
+        }),
+        summary: format!("Loaded {total} group messages"),
+        warnings: group_control_warnings(resolved, result.warnings),
+    })
+}
+
 pub fn group_secure_status_via_im_core(
     client: &im_core::ImClient,
     group: String,
@@ -412,6 +762,27 @@ pub fn group_secure_status_via_im_core(
         .secure()
         .group(group_ref)
         .status()
+        .map_err(im_error_to_message_error)?;
+    let warnings = status.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "status": serde_json::to_value(&status).unwrap_or(Value::Null),
+        }),
+        summary: "Loaded group secure status".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub async fn group_secure_status_via_im_core_async(
+    client: &im_core::ImClient,
+    group: String,
+) -> Result<CommandResult, MessageAdapterError> {
+    let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
+    let status = client
+        .secure()
+        .group(group_ref)
+        .status_async()
+        .await
         .map_err(im_error_to_message_error)?;
     let warnings = status.warnings.clone();
     Ok(CommandResult {
@@ -443,6 +814,307 @@ pub fn group_secure_repair_via_im_core(
     })
 }
 
+pub async fn group_secure_repair_via_im_core_async(
+    client: &im_core::ImClient,
+    group: String,
+) -> Result<CommandResult, MessageAdapterError> {
+    let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
+    let repair = client
+        .secure()
+        .group(group_ref)
+        .repair_async()
+        .await
+        .map_err(im_error_to_message_error)?;
+    let warnings = repair.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
+        }),
+        summary: "Repaired group secure state".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub fn publish_group_key_package_via_im_core(
+    client: &im_core::ImClient,
+    request: GroupKeyPackagePublishRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    let purpose = GroupKeyPackagePurpose::parse(if request.purpose.trim().is_empty() {
+        "normal"
+    } else {
+        &request.purpose
+    })
+    .map_err(im_error_to_message_error)?;
+    let group = if request.group.trim().is_empty() {
+        None
+    } else {
+        Some(GroupRef::parse(&request.group).map_err(im_error_to_message_error)?)
+    };
+    let result = client
+        .groups()
+        .publish_key_package(im_core::groups::GroupKeyPackagePublishRequest {
+            purpose,
+            group,
+            device_id: optional_string(&request.device),
+            key_package_id: None,
+        })
+        .map_err(im_error_to_message_error)?;
+    let group = result
+        .group
+        .as_ref()
+        .map(|group| Value::String(group.as_str().to_owned()))
+        .unwrap_or(Value::Null);
+    Ok(CommandResult {
+        data: json!({
+            "published": true,
+            "owner_did": result.owner_did.as_str(),
+            "device_id": result.device_id,
+            "key_package_id": result.key_package_id,
+            "purpose": result.purpose.as_str(),
+            "group": group,
+            "delivery": result.raw_response,
+        }),
+        summary: "Published group E2EE KeyPackage".to_owned(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub async fn publish_group_key_package_via_im_core_async(
+    client: &im_core::ImClient,
+    request: GroupKeyPackagePublishRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    let purpose = GroupKeyPackagePurpose::parse(if request.purpose.trim().is_empty() {
+        "normal"
+    } else {
+        &request.purpose
+    })
+    .map_err(im_error_to_message_error)?;
+    let group = if request.group.trim().is_empty() {
+        None
+    } else {
+        Some(GroupRef::parse(&request.group).map_err(im_error_to_message_error)?)
+    };
+    let result = client
+        .groups()
+        .publish_key_package_async(im_core::groups::GroupKeyPackagePublishRequest {
+            purpose,
+            group,
+            device_id: optional_string(&request.device),
+            key_package_id: None,
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    let group = result
+        .group
+        .as_ref()
+        .map(|group| Value::String(group.as_str().to_owned()))
+        .unwrap_or(Value::Null);
+    Ok(CommandResult {
+        data: json!({
+            "published": true,
+            "owner_did": result.owner_did.as_str(),
+            "device_id": result.device_id,
+            "key_package_id": result.key_package_id,
+            "purpose": result.purpose.as_str(),
+            "group": group,
+            "delivery": result.raw_response,
+        }),
+        summary: "Published group E2EE KeyPackage".to_owned(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub fn process_group_e2ee_leave_request_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeProcessLeaveRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    if request.leave_request_id.trim().is_empty() {
+        return Err(MessageAdapterError::Internal(
+            "group e2ee process-leave-request requires leave_request_id".to_string(),
+        ));
+    }
+    let result = client
+        .groups()
+        .process_e2ee_leave_request(im_core::groups::GroupE2eeProcessLeaveRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            leave_request_id: request.leave_request_id,
+            reason_text: optional_string(&request.reason_text),
+        })
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    Ok(CommandResult {
+        data: json!({
+            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
+            "members": group_members_to_cli_json(&result, &raw),
+            "delivery": raw,
+            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+        }),
+        summary: "Processed group E2EE leave request".to_string(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub async fn process_group_e2ee_leave_request_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeProcessLeaveRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    if request.leave_request_id.trim().is_empty() {
+        return Err(MessageAdapterError::Internal(
+            "group e2ee process-leave-request requires leave_request_id".to_string(),
+        ));
+    }
+    let result = client
+        .groups()
+        .process_e2ee_leave_request_async(im_core::groups::GroupE2eeProcessLeaveRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            leave_request_id: request.leave_request_id,
+            reason_text: optional_string(&request.reason_text),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    Ok(CommandResult {
+        data: json!({
+            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
+            "members": group_members_to_cli_json(&result, &raw),
+            "delivery": raw,
+            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+        }),
+        summary: "Processed group E2EE leave request".to_string(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub fn update_group_e2ee_key_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeMemberKeyRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let result = client
+        .groups()
+        .update_member_key(im_core::groups::GroupE2eeUpdateKeyRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            device_id: optional_string(&request.device),
+        })
+        .map_err(im_error_to_message_error)?;
+    group_e2ee_key_command_result("Updated group E2EE member key", request.group, result)
+}
+
+pub async fn update_group_e2ee_key_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeMemberKeyRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let result = client
+        .groups()
+        .update_member_key_async(im_core::groups::GroupE2eeUpdateKeyRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            device_id: optional_string(&request.device),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    group_e2ee_key_command_result("Updated group E2EE member key", request.group, result)
+}
+
+pub fn recover_group_e2ee_member_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeMemberKeyRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let result = client
+        .groups()
+        .recover_member(im_core::groups::GroupE2eeRecoverMemberRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            device_id: optional_string(&request.device),
+        })
+        .map_err(im_error_to_message_error)?;
+    group_e2ee_key_command_result("Recovered group E2EE member", request.group, result)
+}
+
+pub async fn recover_group_e2ee_member_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeMemberKeyRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let result = client
+        .groups()
+        .recover_member_async(im_core::groups::GroupE2eeRecoverMemberRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            device_id: optional_string(&request.device),
+        })
+        .await
+        .map_err(im_error_to_message_error)?;
+    group_e2ee_key_command_result("Recovered group E2EE member", request.group, result)
+}
+
+fn group_e2ee_key_command_result(
+    summary: &str,
+    group: String,
+    result: im_core::groups::GroupReadResult,
+) -> Result<CommandResult, MessageAdapterError> {
+    let raw = group_raw_response(&result);
+    Ok(CommandResult {
+        data: json!({
+            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": group })),
+            "members": group_members_to_cli_json(&result, &raw),
+            "delivery": raw,
+            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+        }),
+        summary: summary.to_string(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
 fn group_create_request(
     request: GroupCreateRequest,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
@@ -452,6 +1124,7 @@ fn group_create_request(
     Ok(SdkGroupCreateRequest {
         name: request.name,
         description: optional_string(&request.description),
+        avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
             .map_err(im_error_to_message_error)?,
         admission_mode: GroupAdmissionMode::parse_optional(&request.admission_mode)
@@ -491,6 +1164,7 @@ fn group_profile_patch(
     Ok(GroupProfilePatch {
         name: optional_string(&request.name),
         description: optional_string(&request.description),
+        avatar_uri: optional_string(&request.avatar_uri),
         discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
             .map_err(im_error_to_message_error)?,
         slug: optional_string(&request.slug),
@@ -575,12 +1249,25 @@ fn group_messages_to_cli_json(result: &GroupReadResult, raw: &Value) -> Vec<Valu
 
 fn group_snapshot_to_cli_json(snapshot: Option<&GroupSnapshot>) -> Option<Value> {
     let snapshot = snapshot?;
+    let display_name = snapshot
+        .display_name
+        .clone()
+        .or_else(|| snapshot.name.clone());
+    let group_profile = group_profile_json(
+        display_name.clone(),
+        snapshot.description.clone(),
+        snapshot.avatar_uri.clone(),
+    );
     Some(json!({
         "id": snapshot.id,
         "group_did": snapshot.did.as_str(),
         "did": snapshot.did.as_str(),
-        "name": snapshot.name,
+        "name": display_name,
+        "display_name": display_name,
         "description": snapshot.description,
+        "avatar_uri": snapshot.avatar_uri,
+        "avatar": snapshot.avatar_uri,
+        "group_profile": group_profile,
         "member_role": snapshot.my_role,
         "my_role": snapshot.my_role,
         "member_status": snapshot.membership_status,
@@ -610,11 +1297,17 @@ fn merge_group_snapshot_raw(mut snapshot: Value, raw: &Value) -> Value {
 }
 
 fn group_summary_to_json(group: &GroupSummary) -> Value {
+    let display_name = group.display_name.clone().or_else(|| group.name.clone());
+    let group_profile = group_profile_json(display_name.clone(), None, group.avatar_uri.clone());
     json!({
         "id": group.id,
         "group_did": group.did.as_str(),
         "did": group.did.as_str(),
-        "name": group.name,
+        "name": display_name,
+        "display_name": display_name,
+        "avatar_uri": group.avatar_uri,
+        "avatar": group.avatar_uri,
+        "group_profile": group_profile,
         "member_role": group.my_role,
         "my_role": group.my_role,
         "member_status": group.membership_status,
@@ -710,7 +1403,7 @@ fn group_message_to_json(message: &Message) -> Value {
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
         "is_read": false,
-        "secure": false,
+        "secure": group_message_is_secure(message),
         "direction": match message.direction {
             im_core::prelude::MessageDirection::Outgoing => 1,
             im_core::prelude::MessageDirection::Incoming => 0,
@@ -726,13 +1419,19 @@ fn group_message_to_json(message: &Message) -> Value {
     if let Some(delivery_state) = &message.metadata.delivery_state {
         value["delivery_state"] = json!(delivery_state);
     }
+    for attribute in &message.metadata.attributes {
+        if !attribute.key.trim().is_empty() {
+            value[attribute.key.as_str()] = json!(attribute.value);
+        }
+    }
     value
 }
 
-fn message_body_content(body: &im_core::prelude::MessageBodyView) -> String {
+fn message_body_content(body: &im_core::prelude::MessageBodyView) -> Value {
     match body {
-        im_core::prelude::MessageBodyView::Text { text, .. } => text.clone(),
-        im_core::prelude::MessageBodyView::Unsupported { .. } => String::new(),
+        im_core::prelude::MessageBodyView::Text { text, .. } => json!(text),
+        im_core::prelude::MessageBodyView::Payload { payload } => payload.clone(),
+        im_core::prelude::MessageBodyView::Unsupported { .. } => json!(""),
     }
 }
 
@@ -743,8 +1442,17 @@ fn message_content_type(body: &im_core::prelude::MessageBodyView) -> &'static st
             ..
         } => "text/markdown",
         im_core::prelude::MessageBodyView::Text { .. } => "text/plain",
+        im_core::prelude::MessageBodyView::Payload { .. } => "application/json",
         im_core::prelude::MessageBodyView::Unsupported { .. } => "application/octet-stream",
     }
+}
+
+fn group_message_is_secure(message: &Message) -> bool {
+    message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee")
 }
 
 fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
@@ -815,6 +1523,24 @@ fn default_string(value: &str, fallback: &str) -> String {
     }
 }
 
+fn group_profile_json(
+    display_name: Option<String>,
+    description: Option<String>,
+    avatar_uri: Option<String>,
+) -> Value {
+    let mut profile = serde_json::Map::new();
+    if let Some(display_name) = display_name.filter(|value| !value.trim().is_empty()) {
+        profile.insert("display_name".to_string(), Value::String(display_name));
+    }
+    if let Some(description) = description.filter(|value| !value.trim().is_empty()) {
+        profile.insert("description".to_string(), Value::String(description));
+    }
+    if let Some(avatar_uri) = avatar_uri.filter(|value| !value.trim().is_empty()) {
+        profile.insert("avatar_uri".to_string(), Value::String(avatar_uri));
+    }
+    Value::Object(profile)
+}
+
 fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
     if raw.is_null() {
         return None;
@@ -827,12 +1553,19 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
         return None;
     }
     if let Some(profile) = raw.get("group_profile").filter(|value| value.is_object()) {
+        let display_name = string_value(profile.get("display_name"));
+        let avatar_uri = string_value(profile.get("avatar_uri"))
+            .or_else_nonempty(|| string_value(profile.get("avatar_url")))
+            .or_else_nonempty(|| string_value(profile.get("avatar")));
         return Some(json!({
             "group_did": group_did,
             "did": group_did,
             "group_state_version": raw.get("group_state_version").cloned().unwrap_or(Value::Null),
-            "name": string_value(profile.get("display_name")),
+            "name": display_name,
+            "display_name": display_name,
             "description": profile.get("description").cloned().unwrap_or(Value::Null),
+            "avatar_uri": avatar_uri,
+            "avatar": avatar_uri,
             "discoverability": profile.get("discoverability").cloned().unwrap_or(Value::Null),
             "slug": profile.get("slug").cloned().unwrap_or(Value::Null),
             "goal": profile.get("goal").cloned().unwrap_or(Value::Null),
@@ -954,17 +1687,33 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             status_code,
             code,
             message,
-        } => MessageAdapterError::Service(ServiceError {
-            status_code: status_code.unwrap_or_default(),
-            rpc_code: code
+            ..
+        } => {
+            let rpc_code = code
                 .and_then(|value| value.parse().ok())
-                .unwrap_or_default(),
-            message,
-            data: None,
-        }),
+                .unwrap_or_default();
+            if group_e2ee_service_unsupported(rpc_code, &message) {
+                return MessageAdapterError::GroupNotSupported;
+            }
+            MessageAdapterError::Service(ServiceError {
+                status_code: status_code.unwrap_or_default(),
+                rpc_code,
+                message,
+                data: None,
+            })
+        }
         im_core::ImError::TransportUnavailable { detail } => {
             MessageAdapterError::TransportUnavailable(detail)
         }
         err => MessageAdapterError::Internal(err.to_string()),
     }
+}
+
+fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
+    if rpc_code != 1405 {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("group e2ee contract-test apis are disabled")
+        || message.contains("group e2ee p6 apis are disabled")
 }

@@ -6,8 +6,8 @@ use im_core::prelude::*;
 mod app_sandbox_paths {
     use super::*;
 
-    #[test]
-    fn app_can_construct_core_with_explicit_paths() {
+    #[tokio::test]
+    async fn app_can_construct_core_with_explicit_paths() {
         let fixture = AppSandboxFixture::new();
         let core = fixture.core();
 
@@ -25,7 +25,11 @@ mod app_sandbox_paths {
         assert_path_check(&report, "temp_dir", fixture.temp_dir(), true);
         assert!(report.warnings.is_empty());
 
-        let status = core.bootstrap().initialize_local_state().unwrap();
+        let status = core
+            .bootstrap()
+            .initialize_local_state_async()
+            .await
+            .unwrap();
         assert_eq!(
             status.sqlite_path,
             fixture.sqlite_path().display().to_string()
@@ -42,6 +46,38 @@ mod app_sandbox_paths {
         assert!(identities
             .iter()
             .all(|identity| identity.readiness.ready_for_auth));
+    }
+
+    #[cfg(not(feature = "blocking"))]
+    #[test]
+    fn sync_local_state_bootstrap_fails_closed_by_default() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let result = core.bootstrap().initialize_local_state();
+        assert!(matches!(
+            result,
+            Err(ImError::UnsupportedCapability { capability }) if capability == "sync-bootstrap-local-state"
+        ));
+    }
+
+    #[cfg(feature = "blocking")]
+    #[test]
+    fn sync_local_state_bootstrap_initializes_when_blocking_feature_is_enabled() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let status = core.bootstrap().initialize_local_state().unwrap();
+        assert_eq!(
+            status.sqlite_path,
+            fixture.sqlite_path().display().to_string()
+        );
+        assert!(status.initialized);
+        assert_eq!(
+            status.schema_version,
+            Some(im_core::compat::local_state::SCHEMA_VERSION as u32)
+        );
+        assert!(fixture.sqlite_path().exists());
     }
 
     #[test]
@@ -121,6 +157,90 @@ mod app_sandbox_paths {
             default_client.current_identity().local_alias.as_deref(),
             Some("alice")
         );
+    }
+
+    #[test]
+    fn deleting_default_local_identity_removes_files_and_promotes_next_identity() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let result = core
+            .identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("alice".to_string()))
+            .unwrap();
+
+        assert_eq!(result.deleted.local_alias.as_deref(), Some("alice"));
+        assert!(result.was_default);
+        assert_eq!(
+            result.next_default.unwrap().local_alias.as_deref(),
+            Some("bob")
+        );
+        assert!(result.warnings.is_empty());
+        assert!(!fixture.identity_dir("alice").exists());
+        assert!(fixture.identity_dir("bob").exists());
+        assert_eq!(fs::read_to_string(fixture.default_path()).unwrap(), "bob\n");
+
+        let identities = core.identities().list().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].local_alias.as_deref(), Some("bob"));
+        assert!(identities[0].is_default);
+        let default = core.identities().default_identity().unwrap().unwrap();
+        assert_eq!(default.local_alias.as_deref(), Some("bob"));
+        assert!(core
+            .identities()
+            .resolve(IdentitySelector::LocalAlias("alice".to_string()))
+            .is_err());
+    }
+
+    #[test]
+    fn deleting_non_default_local_identity_preserves_current_default() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let result = core
+            .identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("bob".to_string()))
+            .unwrap();
+
+        assert_eq!(result.deleted.local_alias.as_deref(), Some("bob"));
+        assert!(!result.was_default);
+        assert_eq!(
+            result.next_default.unwrap().local_alias.as_deref(),
+            Some("alice")
+        );
+        assert!(fixture.identity_dir("alice").exists());
+        assert!(!fixture.identity_dir("bob").exists());
+        assert_eq!(
+            fs::read_to_string(fixture.default_path()).unwrap(),
+            "alice\n"
+        );
+
+        let identities = core.identities().list().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].local_alias.as_deref(), Some("alice"));
+        assert!(identities[0].is_default);
+    }
+
+    #[test]
+    fn deleting_last_local_identity_removes_default_pointer() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        core.identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("bob".to_string()))
+            .unwrap();
+        let result = core
+            .identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("alice".to_string()))
+            .unwrap();
+
+        assert!(result.was_default);
+        assert!(result.next_default.is_none());
+        assert!(!fixture.identity_dir("alice").exists());
+        assert!(!fixture.identity_dir("bob").exists());
+        assert!(!fixture.default_path().exists());
+        assert!(core.identities().list().unwrap().is_empty());
+        assert!(core.identities().default_identity().unwrap().is_none());
     }
 
     struct AppSandboxFixture {

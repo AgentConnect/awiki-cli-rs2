@@ -1,0 +1,2447 @@
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::agent::{CLAUDE_CODE_CLI_DRIVER_ID, CODEX_CLI_DRIVER_ID};
+use crate::controller_scope::VerifiedControllerSender;
+use crate::inbox::{
+    route_controller_text_task, route_controller_text_task_with_verified_sender,
+    ControllerTextMessage,
+};
+use crate::local_rpc::execute_runtime_rpc_request_with_outbox;
+use crate::outbox::{
+    RuntimeMessageSecurity, RuntimeMessageSend, RuntimeMessageTarget, RuntimeOutbox,
+};
+use crate::plugins::generic_cli::{
+    sanitize_cli_output_bytes, validate_native_session_id, validate_native_session_source,
+    DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+};
+use crate::plugins::hermes::HermesRuntimeEventKind;
+use crate::runtime::reply_payload::{
+    group_did_from_conversation_id, structured_group_reply, StructuredGroupReplyInput,
+};
+use crate::runtime::{
+    runtime_task_matches_profile_controller_scope, RuntimeAgentProfile, RuntimeInvocationAuthority,
+    RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin, RuntimeRun, RuntimeRunStatus,
+    RuntimeTask, RuntimeTaskTriggerKind,
+};
+use crate::security::runtime_token::{
+    current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
+    ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE, ANY_DIRECT_RECIPIENT_SCOPE, ANY_GROUP_RECIPIENT_SCOPE,
+};
+use crate::state::{
+    canonical_cli_conversation_id, cli_route_session_key, AuthorizedRuntimeContext,
+    CliDriverRunRecord, CreateCliRouteMessageQueueReference, CreateCliRouteSession, DaemonState,
+    RuntimeFinalOutboxRecord,
+};
+use crate::workspace::{
+    prepare_workspace_instance, route_workspace_paths, WorkspaceBindingConfig, WorkspaceInstance,
+    WorkspaceMode,
+};
+use crate::DaemonConfig;
+
+const GENERIC_CLI_BUSY_RETRY_AFTER_MS: i64 = 10_000;
+const GENERIC_CLI_BUSY_NEXT_ACTION: &str = "retry_later";
+const GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID: &str = "runtime.busy.auto-deferred";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecipientPolicy {
+    allowed_recipients: Vec<String>,
+    allowed_message_security: Vec<String>,
+}
+
+impl RecipientPolicy {
+    fn controller_only(controller_did: &str) -> Self {
+        Self {
+            allowed_recipients: vec![controller_did.to_string()],
+            allowed_message_security: vec!["default_plain".to_string()],
+        }
+    }
+
+    fn hermes_default(controller_did: &str) -> Self {
+        Self {
+            allowed_recipients: vec![
+                controller_did.to_string(),
+                ACTIVE_HANDLE_LOOKUP_RECIPIENT_SCOPE.to_string(),
+                ANY_DIRECT_RECIPIENT_SCOPE.to_string(),
+                ANY_GROUP_RECIPIENT_SCOPE.to_string(),
+            ],
+            allowed_message_security: vec!["default_plain".to_string()],
+        }
+    }
+
+    fn app_message_handler(user_did: &str) -> Self {
+        Self {
+            allowed_recipients: vec![user_did.to_string()],
+            allowed_message_security: vec!["default_plain".to_string()],
+        }
+    }
+
+    fn from_json(value: &Value, controller_did: &str) -> Result<Self> {
+        let Some(object) = value.as_object() else {
+            anyhow::bail!("recipient_policy_json must be a JSON object");
+        };
+        let allow_controller = object
+            .get("allow_controller")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                object
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .map(|mode| mode == "controller-only")
+            })
+            .unwrap_or(false);
+        let mut allowed_recipients = Vec::new();
+        if allow_controller {
+            allowed_recipients.push(controller_did.to_string());
+        }
+        collect_string_array(object.get("allowed_dids"), &mut allowed_recipients)?;
+        collect_string_array(object.get("allowed_handles"), &mut allowed_recipients)?;
+        collect_string_array(object.get("allow"), &mut allowed_recipients)?;
+        let mut allowed_message_security = Vec::new();
+        collect_string_array(
+            object.get("allowed_security"),
+            &mut allowed_message_security,
+        )?;
+        if allowed_message_security.is_empty() {
+            allowed_message_security.push("default_plain".to_string());
+        }
+        if allowed_recipients.is_empty() {
+            anyhow::bail!("recipient policy must allow at least one recipient");
+        }
+        Ok(Self {
+            allowed_recipients,
+            allowed_message_security,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTaskRunResult {
+    pub run: RuntimeRun,
+    pub launch_outcome: RuntimeLaunchOutcome,
+    pub token_id: String,
+}
+
+pub fn run_controller_text_task<P, O>(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    run_controller_text_task_with_socket(state, profile, plugin, outbox, message, None, None)
+}
+
+pub fn run_controller_text_task_with_config<P, O>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    run_controller_text_task_with_socket(
+        state,
+        profile,
+        plugin,
+        outbox,
+        message,
+        Some(config.local_socket_path.clone()),
+        Some(config.runtime_temp_dir.clone()),
+    )
+}
+
+pub fn run_controller_text_task_with_verified_sender_config<P, O>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    verified_sender: &VerifiedControllerSender,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    run_controller_text_task_with_verified_sender_socket(
+        state,
+        profile,
+        verified_sender,
+        plugin,
+        outbox,
+        message,
+        Some(config.local_socket_path.clone()),
+        Some(config.runtime_temp_dir.clone()),
+    )
+}
+
+fn run_controller_text_task_with_socket<P, O>(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+    local_socket_path: Option<std::path::PathBuf>,
+    runtime_temp_dir: Option<std::path::PathBuf>,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    profile.validate()?;
+    let task = route_controller_text_task(profile, message)?;
+    let run_id = format!("run_{}", task.task_id);
+    run_existing_runtime_task_with_socket(
+        state,
+        profile,
+        plugin,
+        outbox,
+        task,
+        run_id,
+        local_socket_path,
+        runtime_temp_dir,
+    )
+}
+
+fn run_controller_text_task_with_verified_sender_socket<P, O>(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    verified_sender: &VerifiedControllerSender,
+    plugin: &P,
+    outbox: &O,
+    message: ControllerTextMessage,
+    local_socket_path: Option<std::path::PathBuf>,
+    runtime_temp_dir: Option<std::path::PathBuf>,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    profile.validate()?;
+    let task = route_controller_text_task_with_verified_sender(profile, verified_sender, message)?;
+    let run_id = format!("run_{}", task.task_id);
+    run_existing_runtime_task_with_socket(
+        state,
+        profile,
+        plugin,
+        outbox,
+        task,
+        run_id,
+        local_socket_path,
+        runtime_temp_dir,
+    )
+}
+
+pub fn run_existing_runtime_task_with_config<P, O>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    task: RuntimeTask,
+    run_id: impl Into<String>,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    run_existing_runtime_task_with_socket(
+        state,
+        profile,
+        plugin,
+        outbox,
+        task,
+        run_id.into(),
+        Some(config.local_socket_path.clone()),
+        Some(config.runtime_temp_dir.clone()),
+    )
+}
+
+fn run_existing_runtime_task_with_socket<P, O>(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    plugin: &P,
+    outbox: &O,
+    task: RuntimeTask,
+    run_id: String,
+    local_socket_path: Option<std::path::PathBuf>,
+    runtime_temp_dir: Option<std::path::PathBuf>,
+) -> Result<RuntimeTaskRunResult>
+where
+    P: RuntimePlugin,
+    O: RuntimeOutbox,
+{
+    profile.validate()?;
+    task.validate()?;
+    if !runtime_task_matches_profile_controller_scope(&task, profile) {
+        anyhow::bail!("runtime task does not match profile controller scope");
+    }
+    if run_id.trim().is_empty() {
+        anyhow::bail!("run_id must not be empty");
+    }
+
+    let run = RuntimeRun {
+        run_id,
+        task_id: task.task_id.clone(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        runtime_plugin_id: profile.runtime_plugin_id.clone(),
+        workspace_id: profile.workspace_id.clone(),
+        status: RuntimeRunStatus::Pending,
+    };
+    if let Some(existing) = existing_runtime_run(state, &run)? {
+        return Ok(existing);
+    }
+    state.upsert_runtime_agent_profile(profile)?;
+    state.insert_runtime_task(&task)?;
+    if !state.try_insert_runtime_run(&run)? {
+        if let Some(existing) = existing_runtime_run(state, &run)? {
+            return Ok(existing);
+        }
+    }
+    let task_conversation_id = task.conversation_id.clone();
+    let task_controller_did = task.controller_did.clone();
+    let task_reply_recipient_did = task.reply_recipient_did.clone();
+    let task_source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .unwrap_or(&task.task_id)
+        .to_string();
+    let recipient_policy = runtime_recipient_policy(
+        state,
+        profile,
+        &task_reply_recipient_did,
+        task.invocation_authority,
+    )?;
+    let allowed_methods = runtime_allowed_methods(task.invocation_authority);
+    let mut scope = RuntimeTokenScope::new(
+        profile.agent_did.clone(),
+        profile.runtime_profile_id.clone(),
+        run.run_id.clone(),
+        allowed_methods,
+        Some(recipient_policy.allowed_recipients),
+        Duration::from_secs(5 * 60),
+    )?;
+    scope.allowed_message_security = Some(recipient_policy.allowed_message_security);
+    let issued = issue_runtime_token(scope)?;
+    state.store_runtime_token(&issued)?;
+
+    let install_status = plugin.check_install_status()?;
+    if !install_status.installed {
+        if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+            let detail = install_status
+                .detail
+                .as_deref()
+                .unwrap_or("Hermes gateway command is not configured");
+            let (error_code, error_summary) = hermes_launch_error_detail(detail);
+            emit_hermes_failure_outputs(
+                state,
+                outbox,
+                profile,
+                &task_reply_recipient_did,
+                &run,
+                error_code,
+                error_summary.as_str(),
+            )?;
+        } else if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+            let error_summary = install_status
+                .detail
+                .as_deref()
+                .map(sanitize_user_visible_error_summary)
+                .unwrap_or_else(|| "generic-cli driver is not installed".to_string());
+            let metadata =
+                generic_cli_failed_status_metadata("runtime_not_installed", "setup_required");
+            if mark_active_runtime_run_failed(state, &run.run_id)? {
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime setup is required"),
+                    Some("runtime_not_installed"),
+                    Some(&error_summary),
+                    Some(&metadata),
+                )?;
+            }
+        }
+        anyhow::bail!("runtime plugin {} is not installed", plugin.plugin_id());
+    }
+    let cli_route_session = if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        match prepare_generic_cli_route_session(state, profile, &task, &run) {
+            Ok(session) => session,
+            Err(error) => {
+                let failed = mark_active_runtime_run_failed(state, &run.run_id)?;
+                let deferred = maybe_enqueue_generic_cli_busy_retry(
+                    state,
+                    profile,
+                    &task,
+                    &run,
+                    error.code,
+                    &error.summary,
+                )?;
+                let metadata = error.status_metadata();
+                if failed {
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        if deferred.is_some() {
+                            "queued"
+                        } else {
+                            "failed"
+                        },
+                        Some(error.user_message()),
+                        Some(error.code),
+                        Some(&error.summary),
+                        metadata.as_ref(),
+                    )?;
+                }
+                return Err(error.into_error()).context("prepare generic-cli route session");
+            }
+        }
+    } else {
+        None
+    };
+    let mut cli_runtime_locks = CliRuntimeLeaseGuard::default();
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        match acquire_generic_cli_runtime_locks(state, profile, &run) {
+            Ok(locks) => {
+                cli_runtime_locks = locks;
+            }
+            Err(error) => {
+                if let Some(route_session) = cli_route_session.as_ref() {
+                    let _ = state.release_cli_route_session_lease(
+                        &route_session.route_key,
+                        &run.run_id,
+                        "failed",
+                        None,
+                        Some(error.code),
+                        Some(&error.summary),
+                    );
+                }
+                let failed = mark_active_runtime_run_failed(state, &run.run_id)?;
+                let deferred = maybe_enqueue_generic_cli_busy_retry(
+                    state,
+                    profile,
+                    &task,
+                    &run,
+                    error.code,
+                    &error.summary,
+                )?;
+                let metadata = error.status_metadata();
+                if failed {
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        if deferred.is_some() {
+                            "queued"
+                        } else {
+                            "failed"
+                        },
+                        Some(error.user_message()),
+                        Some(error.code),
+                        Some(&error.summary),
+                        metadata.as_ref(),
+                    )?;
+                }
+                return Err(error.into_error()).context("acquire generic-cli runtime lock");
+            }
+        }
+    }
+    let workspace_instance = match (
+        profile.workspace_id.as_ref(),
+        profile.workspace_root.as_ref(),
+        profile.workspace_mode,
+        local_socket_path.is_some(),
+        plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID,
+    ) {
+        (Some(workspace_id), Some(workspace_root), Some(workspace_mode), true, true) => Some({
+            let run_or_route_id = cli_route_session
+                .as_ref()
+                .map(|session| session.route_key_hash.as_str())
+                .unwrap_or(run.run_id.as_str());
+            let prepared = prepare_workspace_instance(
+                runtime_temp_dir
+                    .as_ref()
+                    .context("runtime temp dir is unavailable without daemon config")?,
+                &WorkspaceBindingConfig {
+                    workspace_id: workspace_id.clone(),
+                    workspace_root: workspace_root.clone(),
+                    workspace_mode,
+                },
+                run_or_route_id,
+            );
+            match prepared {
+                Ok(instance) => instance,
+                Err(error) => {
+                    if let Some(route_session) = cli_route_session.as_ref() {
+                        let _ = state.release_cli_route_session_lease(
+                            &route_session.route_key,
+                            &run.run_id,
+                            "failed",
+                            None,
+                            Some("workspace_preparation_failed"),
+                            Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                        );
+                    }
+                    cli_runtime_locks.release_all();
+                    let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                    let metadata = generic_cli_failed_status_metadata(
+                        "workspace_preparation_failed",
+                        "manual_review_required",
+                    );
+                    if mark_active_runtime_run_failed(state, &run.run_id)? {
+                        emit_runtime_status_with_metadata(
+                            outbox,
+                            &run,
+                            "failed",
+                            Some("Runtime workspace preparation failed"),
+                            Some("workspace_preparation_failed"),
+                            Some(&error_summary),
+                            Some(&metadata),
+                        )?;
+                    }
+                    return Err(error).context("prepare runtime workspace instance");
+                }
+            }
+        }),
+        _ => None,
+    };
+
+    let launch_context = RuntimeLaunchContext {
+        run: run.clone(),
+        task,
+        preferred_language: profile.preferred_language.clone(),
+        workspace_root: profile.workspace_root.clone(),
+        workspace_instance: workspace_instance.clone(),
+        cli_route_session: cli_route_session.clone(),
+        runtime_temp_dir,
+        runtime_rpc_token: issued.token.clone(),
+        local_socket_path,
+    };
+    let launch_outcome = match plugin.launch_run(launch_context) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if let Some(route_session) = cli_route_session.as_ref() {
+                let _ = state.release_cli_route_session_lease(
+                    &route_session.route_key,
+                    &run.run_id,
+                    "failed",
+                    None,
+                    Some("launch_failed"),
+                    Some(&sanitize_user_visible_error_summary(&error.to_string())),
+                );
+            }
+            cli_runtime_locks.release_all();
+            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+                let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                let metadata =
+                    generic_cli_failed_status_metadata("launch_failed", "manual_review_required");
+                if mark_active_runtime_run_failed(state, &run.run_id)? {
+                    emit_runtime_status_with_metadata(
+                        outbox,
+                        &run,
+                        "failed",
+                        Some("Runtime launch failed"),
+                        Some("launch_failed"),
+                        Some(&error_summary),
+                        Some(&metadata),
+                    )?;
+                }
+            } else if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+                let (error_code, error_summary) = hermes_launch_error_detail(&error.to_string());
+                emit_hermes_failure_outputs(
+                    state,
+                    outbox,
+                    profile,
+                    &task_reply_recipient_did,
+                    &run,
+                    error_code,
+                    error_summary.as_str(),
+                )?;
+            }
+            return Err(error).context("launch runtime run");
+        }
+    };
+    let mut generic_cli_late_callback_rejected = false;
+    for callback in launch_outcome.callbacks.iter().cloned() {
+        match execute_runtime_rpc_request_with_outbox(state, outbox, callback) {
+            Ok(_) => {}
+            Err(error)
+                if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+                    && error.to_string().contains("late_callback_rejected") =>
+            {
+                generic_cli_late_callback_rejected = true;
+                if state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed {
+                    let metadata = generic_cli_late_callback_rejected_status_metadata();
+                    if mark_active_runtime_run_failed(state, &run.run_id)? {
+                        emit_runtime_status_with_metadata(
+                            outbox,
+                            &run,
+                            "failed",
+                            Some("Runtime callback arrived after route reset"),
+                            Some("late_callback_rejected"),
+                            Some("Route session no longer belongs to this run"),
+                            Some(&metadata),
+                        )?;
+                    }
+                }
+                break;
+            }
+            Err(error) => return Err(error).context("apply runtime callback"),
+        }
+    }
+    let generic_cli_route_still_locked = if plugin.plugin_id()
+        == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && cli_route_session.is_some()
+    {
+        state.generic_cli_route_session_locked_for_run(&run.run_id)?
+    } else {
+        true
+    };
+
+    if generic_cli_route_still_locked
+        && state.update_runtime_run_status_if_status_in(
+            &run.run_id,
+            &[RuntimeRunStatus::Pending],
+            RuntimeRunStatus::Running,
+        )?
+    {
+        try_emit_runtime_status(
+            state,
+            outbox,
+            &run,
+            "running",
+            Some("Runtime started"),
+            None,
+            None,
+        )?;
+    }
+
+    if plugin.plugin_id() == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        let hermes_failed = hermes_has_error(&launch_outcome.metadata)?;
+        if hermes_failed {
+            let error = hermes_structured_error(&launch_outcome.metadata);
+            let error_code = error
+                .as_ref()
+                .map(|error| error.0.clone())
+                .unwrap_or_else(|| "hermes_error".to_string());
+            let error_summary = error
+                .as_ref()
+                .map(|error| error.1.clone())
+                .or_else(|| hermes_error_summary(&launch_outcome.metadata))
+                .unwrap_or_else(|| "Hermes run failed".to_string());
+            emit_hermes_failure_outputs(
+                state,
+                outbox,
+                profile,
+                &task_reply_recipient_did,
+                &run,
+                &error_code,
+                &error_summary,
+            )?;
+        } else {
+            let final_text = hermes_final_text(&launch_outcome.metadata)?;
+            if let Some(final_text) = final_text.as_deref() {
+                let final_record = runtime_final_outbox_record(
+                    profile,
+                    &task_controller_did,
+                    &task_reply_recipient_did,
+                    &run,
+                    task_conversation_id.as_deref(),
+                    final_text,
+                    "hermes_final_text",
+                )?;
+                state.upsert_runtime_final_outbox_pending(&final_record)?;
+                flush_runtime_final_outbox(state, outbox, 8)
+                    .context("send Hermes final text as runtime message")?;
+                let refreshed = state
+                    .load_runtime_final_outbox_by_run(&run.run_id)?
+                    .context("Hermes final outbox record missing after flush")?;
+                if refreshed.status != "sent" {
+                    try_emit_runtime_status(
+                        state,
+                        outbox,
+                        &run,
+                        "running",
+                        Some("Hermes response is ready; delivery is retrying"),
+                        refreshed.last_error_code.as_deref(),
+                        refreshed.last_error_summary.as_deref(),
+                    )?;
+                }
+            } else {
+                let error_summary = "Hermes run completed without final text";
+                emit_hermes_failure_outputs(
+                    state,
+                    outbox,
+                    profile,
+                    &task_reply_recipient_did,
+                    &run,
+                    "final_text_missing",
+                    error_summary,
+                )?;
+                anyhow::bail!("{error_summary}");
+            }
+        }
+    }
+
+    let mut fallback_final_source = None;
+    let mut fallback_final_sanitizer = None;
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && launch_outcome.status == RuntimeRunStatus::Finished
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Finished
+        && generic_cli_route_still_locked
+    {
+        if let Some(fallback_final) =
+            fallback_final_text(&launch_outcome.metadata, issued.token.as_str())?
+        {
+            let fallback_driver_id = launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("generic-cli");
+            let final_source = format!("{fallback_driver_id}_output_last_message");
+            let final_record = runtime_final_outbox_record(
+                profile,
+                &task_controller_did,
+                &task_reply_recipient_did,
+                &run,
+                task_conversation_id.as_deref(),
+                &fallback_final.text,
+                final_source.as_str(),
+            )?;
+            state.upsert_runtime_final_outbox_pending(&final_record)?;
+            flush_runtime_final_outbox(state, outbox, 8)
+                .context("send generic-cli fallback final text as runtime message")?;
+            let refreshed = state
+                .load_runtime_final_outbox_by_run(&run.run_id)?
+                .context("generic-cli fallback final outbox record missing after flush")?;
+            if refreshed.status != "sent" {
+                try_emit_runtime_status(
+                    state,
+                    outbox,
+                    &run,
+                    "running",
+                    Some("Generic CLI response is ready; delivery is retrying"),
+                    refreshed.last_error_code.as_deref(),
+                    refreshed.last_error_summary.as_deref(),
+                )?;
+            }
+            fallback_final_source = Some(final_source);
+            fallback_final_sanitizer = Some(fallback_final.sanitizer_metadata);
+        }
+    }
+
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+        && launch_outcome.status == RuntimeRunStatus::Finished
+        && cli_route_session.is_some()
+        && !generic_cli_route_still_locked
+        && !generic_cli_late_callback_rejected
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+    {
+        let metadata = generic_cli_late_callback_rejected_status_metadata();
+        if mark_active_runtime_run_failed(state, &run.run_id)? {
+            emit_runtime_status_with_metadata(
+                outbox,
+                &run,
+                "failed",
+                Some("Runtime callback arrived after route reset"),
+                Some("late_callback_rejected"),
+                Some("Route session no longer belongs to this run"),
+                Some(&metadata),
+            )?;
+        }
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let current = state.load_cli_route_session(&route_session.route_key)?;
+            state.insert_audit_event_json(
+                "runtime.run.late_callback_rejected",
+                Some(&run.agent_did),
+                Some(&run.runtime_profile_id),
+                Some(&run.run_id),
+                None,
+                json!({
+                    "route_key_hash": route_session.route_key_hash.as_str(),
+                    "route_status": current.as_ref().map(|session| session.status.as_str()),
+                    "route_version": current.as_ref().map(|session| session.version),
+                    "route_lock_present": current
+                        .as_ref()
+                        .and_then(|session| session.lock_run_id.as_ref())
+                        .is_some(),
+                    "route_lock_matches_run": current
+                        .as_ref()
+                        .and_then(|session| session.lock_run_id.as_deref())
+                        == Some(run.run_id.as_str()),
+                }),
+            )?;
+        }
+    }
+
+    if launch_outcome.status == RuntimeRunStatus::Failed
+        && state.load_runtime_run(&run.run_id)?.status != RuntimeRunStatus::Failed
+    {
+        if mark_active_runtime_run_failed(state, &run.run_id)? {
+            if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+                let failure = generic_cli_failure_detail(&launch_outcome);
+                let metadata = failure.metadata_json();
+                emit_runtime_status_with_metadata(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime failed"),
+                    Some(failure.error_code.as_str()),
+                    Some(failure.error_summary.as_str()),
+                    Some(&metadata),
+                )?;
+            } else {
+                let failure_summary = runtime_launch_failure_summary(&launch_outcome);
+                emit_runtime_status(
+                    outbox,
+                    &run,
+                    "failed",
+                    Some("Runtime failed"),
+                    Some("runtime_failed"),
+                    Some(&failure_summary),
+                )?;
+            }
+        }
+    }
+    if plugin.plugin_id() == crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID {
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let driver_id = launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("generic-cli");
+            let native_session =
+                trusted_native_session_metadata(driver_id, &launch_outcome.metadata);
+            let final_status = state.load_runtime_run(&run.run_id)?.status;
+            if final_status == RuntimeRunStatus::Finished
+                && launch_outcome.status == RuntimeRunStatus::Finished
+                && native_session.is_some()
+                && state.generic_cli_route_session_locked_for_run(&run.run_id)?
+            {
+                let (native_session_id, native_session_source) = native_session
+                    .as_ref()
+                    .expect("native_session checked above");
+                state.update_cli_route_session_native_id_if_locked(
+                    &route_session.route_key,
+                    &run.run_id,
+                    Some(native_session_id.as_str()),
+                    Some(native_session_source.as_str()),
+                    Some(&route_session.route_key),
+                )?;
+            }
+        }
+        persist_cli_driver_run(
+            state,
+            profile,
+            &run,
+            &launch_outcome,
+            workspace_instance.as_ref(),
+            fallback_final_source.as_deref(),
+            fallback_final_sanitizer.as_ref(),
+            if generic_cli_late_callback_rejected || !generic_cli_route_still_locked {
+                Some("failed")
+            } else {
+                None
+            },
+        )?;
+        if let Some(route_session) = cli_route_session.as_ref() {
+            let final_status = state.load_runtime_run(&run.run_id)?.status;
+            if state.generic_cli_route_session_locked_for_run(&run.run_id)? {
+                let next_status = if final_status == RuntimeRunStatus::Failed
+                    || launch_outcome.status == RuntimeRunStatus::Failed
+                {
+                    "failed"
+                } else {
+                    "active"
+                };
+                let failure_summary = if next_status == "failed" {
+                    Some(generic_cli_failure_detail(&launch_outcome))
+                } else {
+                    None
+                };
+                state.release_cli_route_session_lease(
+                    &route_session.route_key,
+                    &run.run_id,
+                    next_status,
+                    if next_status == "active" {
+                        Some(&task_source_message_id)
+                    } else {
+                        None
+                    },
+                    if next_status == "failed" {
+                        failure_summary
+                            .as_ref()
+                            .map(|failure| failure.error_code.as_str())
+                    } else {
+                        None
+                    },
+                    if next_status == "failed" {
+                        failure_summary
+                            .as_ref()
+                            .map(|failure| failure.error_summary.as_str())
+                    } else {
+                        None
+                    },
+                )?;
+            }
+        }
+        cli_runtime_locks.release_all();
+    }
+
+    Ok(RuntimeTaskRunResult {
+        run: state.load_runtime_run(&run.run_id)?,
+        launch_outcome,
+        token_id: issued.token_id,
+    })
+}
+
+#[derive(Default)]
+struct CliRuntimeLeaseGuard {
+    state: Option<DaemonState>,
+    runtime_profile_id: Option<String>,
+    host_home_driver_id: Option<String>,
+    run_id: Option<String>,
+}
+
+impl CliRuntimeLeaseGuard {
+    fn profile(state: DaemonState, runtime_profile_id: String, run_id: String) -> Self {
+        Self {
+            state: Some(state),
+            runtime_profile_id: Some(runtime_profile_id),
+            host_home_driver_id: None,
+            run_id: Some(run_id),
+        }
+    }
+
+    fn mark_host_home(&mut self, driver_id: String) {
+        self.host_home_driver_id = Some(driver_id);
+    }
+
+    fn release_profile(&mut self) {
+        if let (Some(state), Some(runtime_profile_id), Some(run_id)) = (
+            self.state.as_ref(),
+            self.runtime_profile_id.take(),
+            self.run_id.as_deref(),
+        ) {
+            let _ = state.release_cli_runtime_profile_lock(&runtime_profile_id, run_id);
+        }
+    }
+
+    fn release_host_home(&mut self) {
+        if let (Some(state), Some(driver_id), Some(run_id)) = (
+            self.state.as_ref(),
+            self.host_home_driver_id.take(),
+            self.run_id.as_deref(),
+        ) {
+            let _ = state.release_cli_host_home_lock(&driver_id, run_id);
+        }
+    }
+
+    fn release_all(&mut self) {
+        self.release_host_home();
+        self.release_profile();
+    }
+}
+
+impl Drop for CliRuntimeLeaseGuard {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GenericCliRuntimeLockError {
+    code: &'static str,
+    message: String,
+    summary: String,
+}
+
+impl GenericCliRuntimeLockError {
+    fn profile_busy(runtime_profile_id: &str) -> Self {
+        Self::new(
+            "profile_busy",
+            format!("generic-cli runtime profile is busy: {runtime_profile_id}"),
+        )
+    }
+
+    fn host_home_busy(driver_id: &str) -> Self {
+        Self::new(
+            "host_home_busy",
+            format!("generic-cli host home is busy: {driver_id}"),
+        )
+    }
+
+    fn new(code: &'static str, message: String) -> Self {
+        let summary = sanitize_user_visible_error_summary(&message);
+        Self {
+            code,
+            message,
+            summary,
+        }
+    }
+
+    fn user_message(&self) -> &'static str {
+        match self.code {
+            "host_home_busy" => "Runtime host home concurrency limit is busy",
+            "runtime_lock_unavailable" => "Runtime concurrency lock is unavailable",
+            _ => "Runtime profile concurrency limit is busy",
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::anyhow!(self.message)
+    }
+
+    fn status_metadata(&self) -> Option<Value> {
+        generic_cli_status_metadata(self.code)
+    }
+}
+
+impl From<anyhow::Error> for GenericCliRuntimeLockError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(
+            "runtime_lock_unavailable",
+            format!("generic-cli runtime lock unavailable: {error}"),
+        )
+    }
+}
+
+#[derive(Debug)]
+struct GenericCliRouteSessionPreparationError {
+    code: &'static str,
+    message: String,
+    summary: String,
+}
+
+impl GenericCliRouteSessionPreparationError {
+    fn route_busy(route_key_hash: &str) -> Self {
+        Self::new(
+            "route_busy",
+            format!("generic-cli route session is busy: {route_key_hash}"),
+        )
+    }
+
+    fn new(code: &'static str, message: String) -> Self {
+        let summary = sanitize_user_visible_error_summary(&message);
+        Self {
+            code,
+            message,
+            summary,
+        }
+    }
+
+    fn user_message(&self) -> &'static str {
+        match self.code {
+            "route_busy" => "Runtime route session is busy",
+            _ => "Runtime route session preparation failed",
+        }
+    }
+
+    fn status_metadata(&self) -> Option<Value> {
+        generic_cli_status_metadata(self.code)
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        anyhow::anyhow!(self.message)
+    }
+}
+
+impl From<anyhow::Error> for GenericCliRouteSessionPreparationError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::new(
+            "route_session_preparation_failed",
+            format!("generic-cli route session preparation failed: {error}"),
+        )
+    }
+}
+
+fn generic_cli_status_metadata(code: &str) -> Option<Value> {
+    match code {
+        "route_busy" | "profile_busy" | "host_home_busy" => Some(json!({
+            "retryable": true,
+            "deferred": true,
+            "next_action": GENERIC_CLI_BUSY_NEXT_ACTION,
+            "retry_after_ms": GENERIC_CLI_BUSY_RETRY_AFTER_MS,
+            "retry_after_seconds": GENERIC_CLI_BUSY_RETRY_AFTER_MS / 1000,
+            "busy_reason": code,
+        })),
+        _ => Some(generic_cli_failed_status_metadata(
+            code,
+            "manual_review_required",
+        )),
+    }
+}
+
+fn generic_cli_failed_status_metadata(error_code: &str, next_action: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "runtime_family": "generic-cli",
+        "error_code": error_code,
+        "next_action": next_action,
+        "retryable": false,
+        "deferred": false,
+        "failed_message_recovery": "unsupported",
+    })
+}
+
+fn generic_cli_late_callback_rejected_status_metadata() -> Value {
+    let mut metadata =
+        generic_cli_failed_status_metadata("late_callback_rejected", "manual_review_required");
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("source".to_string(), json!("route_lease_guard"));
+        object.insert("retryable".to_string(), json!(false));
+        object.insert("deferred".to_string(), json!(false));
+    }
+    metadata
+}
+
+fn acquire_generic_cli_runtime_locks(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+) -> std::result::Result<CliRuntimeLeaseGuard, GenericCliRuntimeLockError> {
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let expires_at_ms = current_time_millis()? + 10 * 60 * 1000;
+    let acquired_profile = state.try_acquire_cli_runtime_profile_lock(
+        &profile.runtime_profile_id,
+        &cli_profile.driver_id,
+        &run.run_id,
+        "runtime.host",
+        expires_at_ms,
+    )?;
+    if !acquired_profile {
+        return Err(GenericCliRuntimeLockError::profile_busy(
+            &profile.runtime_profile_id,
+        ));
+    }
+
+    let mut guard = CliRuntimeLeaseGuard::profile(
+        state.clone(),
+        profile.runtime_profile_id.clone(),
+        run.run_id.clone(),
+    );
+    let needs_host_home_lock =
+        cli_profile.driver_id == "claude-code" && cli_profile.config_home.is_none();
+    if needs_host_home_lock {
+        let acquired_host_home = state.try_acquire_cli_host_home_lock(
+            &cli_profile.driver_id,
+            &run.run_id,
+            "runtime.host",
+            expires_at_ms,
+        )?;
+        if !acquired_host_home {
+            guard.release_profile();
+            return Err(GenericCliRuntimeLockError::host_home_busy(
+                &cli_profile.driver_id,
+            ));
+        }
+        guard.mark_host_home(cli_profile.driver_id);
+    }
+    Ok(guard)
+}
+
+fn maybe_enqueue_generic_cli_busy_retry(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<Option<crate::state::RuntimeRetryQueueRecord>> {
+    if !matches!(error_code, "route_busy" | "profile_busy" | "host_home_busy") {
+        return Ok(None);
+    }
+    if run.run_id.starts_with("run_retry_") {
+        return Ok(None);
+    }
+    let failed_run = state.load_runtime_run(&run.run_id)?;
+    if failed_run.status != RuntimeRunStatus::Failed {
+        return Ok(None);
+    }
+    if task.agent_did != profile.agent_did
+        || failed_run.runtime_profile_id != profile.runtime_profile_id
+        || failed_run.runtime_plugin_id != crate::agent::GENERIC_CLI_RUNTIME_PLUGIN_ID
+    {
+        return Ok(None);
+    }
+    let next_attempt_at_ms = current_time_millis()? + GENERIC_CLI_BUSY_RETRY_AFTER_MS;
+    let retry = state.insert_runtime_retry_request_due_at(
+        &failed_run,
+        GENERIC_CLI_AUTO_DEFERRED_COMMAND_ID,
+        next_attempt_at_ms,
+    )?;
+    let queued_message = maybe_enqueue_cli_route_message_reference(
+        state,
+        profile,
+        task,
+        run,
+        error_code,
+        error_summary,
+        next_attempt_at_ms,
+    )?;
+    if error_code != "route_busy" {
+        if let Ok(route_key) = generic_cli_route_key_for_task(profile, task) {
+            let _ = state.mark_cli_route_session_deferred(
+                &route_key,
+                Some(&run.run_id),
+                error_code,
+                error_summary,
+            );
+        }
+    }
+    state.insert_audit_event_json(
+        "runtime.run.retry.auto_deferred",
+        Some(&failed_run.agent_did),
+        Some(&failed_run.runtime_profile_id),
+        Some(&failed_run.run_id),
+        None,
+        json!({
+            "retry_id": retry.retry_id.as_str(),
+            "queue_id": queued_message.as_ref().map(|record| record.queue_id.as_str()),
+            "task_id": failed_run.task_id.as_str(),
+            "busy_reason": error_code,
+            "next_attempt_at_ms": retry.next_attempt_at_ms,
+        }),
+    )?;
+    Ok(Some(retry))
+}
+
+fn maybe_enqueue_cli_route_message_reference(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+    next_attempt_at_ms: i64,
+) -> Result<Option<crate::state::CliRouteMessageQueueRecord>> {
+    let Ok(conversation_id) = generic_cli_route_conversation_id_for_task(task) else {
+        return Ok(None);
+    };
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    if state.load_cli_route_session(&route_key)?.is_none() {
+        return Ok(None);
+    }
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    if !matches!(
+        cli_profile.driver_id.as_str(),
+        CODEX_CLI_DRIVER_ID | CLAUDE_CODE_CLI_DRIVER_ID
+    ) {
+        return Ok(None);
+    }
+    let source_message_id = task
+        .task_id
+        .strip_prefix("task_")
+        .unwrap_or(&task.task_id)
+        .to_string();
+    let record =
+        state.enqueue_cli_route_message_reference(CreateCliRouteMessageQueueReference {
+            agent_did: profile.agent_did.clone(),
+            runtime_profile_id: profile.runtime_profile_id.clone(),
+            driver_id: cli_profile.driver_id,
+            controller_user_id: profile.controller_user_id.clone(),
+            controller_full_handle: profile.controller_full_handle.clone(),
+            controller_scope_key: profile.controller_scope_key.clone(),
+            controller_did: task.controller_did.clone(),
+            conversation_id,
+            source_message_id,
+            task_id: Some(task.task_id.clone()),
+            run_id: Some(run.run_id.clone()),
+            enqueue_reason: error_code.to_string(),
+            next_attempt_at_ms,
+            last_error_code: Some(error_code.to_string()),
+            last_error_summary: Some(error_summary.to_string()),
+        })?;
+    Ok(Some(record))
+}
+
+fn existing_runtime_run(
+    state: &DaemonState,
+    expected: &RuntimeRun,
+) -> Result<Option<RuntimeTaskRunResult>> {
+    let existing = match state.load_runtime_run(&expected.run_id) {
+        Ok(run) => run,
+        Err(_) => return Ok(None),
+    };
+    if existing.task_id != expected.task_id
+        || existing.agent_did != expected.agent_did
+        || existing.runtime_profile_id != expected.runtime_profile_id
+        || existing.runtime_plugin_id != expected.runtime_plugin_id
+        || existing.workspace_id != expected.workspace_id
+    {
+        anyhow::bail!(
+            "runtime run id collision for {} does not match expected binding",
+            expected.run_id
+        );
+    }
+    Ok(Some(RuntimeTaskRunResult {
+        launch_outcome: RuntimeLaunchOutcome {
+            run_id: existing.run_id.clone(),
+            status: existing.status.clone(),
+            exit_code: None,
+            callbacks: Vec::new(),
+            metadata: serde_json::json!({
+                "deduplicated": true,
+                "reason": "runtime_run_already_exists",
+            }),
+        },
+        run: existing,
+        token_id: String::new(),
+    }))
+}
+
+fn prepare_generic_cli_route_session(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+    run: &RuntimeRun,
+) -> std::result::Result<
+    Option<crate::state::CliRouteSessionRecord>,
+    GenericCliRouteSessionPreparationError,
+> {
+    if profile.workspace_mode != Some(WorkspaceMode::RouteRoot) {
+        return Ok(None);
+    }
+    if task.conversation_id.is_none() {
+        return Err(anyhow::anyhow!("generic-cli RouteRoot requires conversation_id").into());
+    }
+    let conversation_id = generic_cli_route_conversation_id_for_task(task)?;
+    let cli_profile = state.load_cli_runtime_profile(&profile.runtime_profile_id)?;
+    let workspace_root = profile
+        .workspace_root
+        .as_ref()
+        .context("generic-cli RouteRoot requires workspace_root")?;
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    let session_root = workspace_root
+        .parent()
+        .map(|runtime_workspaces_root| {
+            runtime_workspaces_root
+                .parent()
+                .unwrap_or(runtime_workspaces_root)
+                .join("sessions")
+                .join(&profile.runtime_profile_id)
+        })
+        .unwrap_or_else(|| workspace_root.join("sessions"));
+    let (workspace_path, session_dir) =
+        if let Some(existing) = state.load_cli_route_session(&route_key)? {
+            (existing.workspace_path, existing.session_dir)
+        } else {
+            let route_key_hash = state.cli_route_key_hash(&route_key)?;
+            let paths = route_workspace_paths(workspace_root, &session_root, &route_key_hash)?;
+            (paths.workspace_path, paths.session_dir)
+        };
+    let mut session = state.get_or_create_cli_route_session(CreateCliRouteSession {
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        driver_id: cli_profile.driver_id,
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: task.controller_did.clone(),
+        conversation_id,
+        workspace_path,
+        session_dir,
+    })?;
+    let legacy_route_keys = generic_cli_legacy_route_keys_for_task(profile, task)?;
+    if state.adopt_cli_route_session_native_pointer_from_aliases(
+        &session.route_key,
+        &legacy_route_keys,
+    )? {
+        session = state
+            .load_cli_route_session(&session.route_key)?
+            .context("load adopted generic-cli route session")?;
+    }
+    if let Err(error) = std::fs::create_dir_all(&session.workspace_path).with_context(|| {
+        format!(
+            "create generic-cli route workspace {}",
+            session.workspace_path.display()
+        )
+    }) {
+        let summary = sanitize_user_visible_error_summary(&error.to_string());
+        let _ = state.mark_cli_route_session_failed(
+            &session.route_key,
+            Some(&run.run_id),
+            "route_workspace_create_failed",
+            &summary,
+        );
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::create_dir_all(&session.session_dir).with_context(|| {
+        format!(
+            "create generic-cli route session dir {}",
+            session.session_dir.display()
+        )
+    }) {
+        let summary = sanitize_user_visible_error_summary(&error.to_string());
+        let _ = state.mark_cli_route_session_failed(
+            &session.route_key,
+            Some(&run.run_id),
+            "route_session_dir_create_failed",
+            &summary,
+        );
+        return Err(error.into());
+    }
+    if !state.try_acquire_cli_route_session_lease(
+        &session.route_key,
+        &run.run_id,
+        "runtime.host",
+        current_time_millis()? + 10 * 60 * 1000,
+    )? {
+        return Err(GenericCliRouteSessionPreparationError::route_busy(
+            &session.route_key_hash,
+        ));
+    }
+    Ok(Some(session))
+}
+
+pub fn flush_runtime_final_outbox(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    limit: usize,
+) -> Result<usize> {
+    let now = current_time_millis()?;
+    state.recover_stale_runtime_final_outbox_sending(
+        now - RUNTIME_FINAL_OUTBOX_SENDING_STALE_MS,
+        now,
+    )?;
+    let records = state.list_due_runtime_final_outbox(now, limit)?;
+    let mut sent_count = 0;
+    for record in records {
+        if record.status != "pending" {
+            continue;
+        }
+        if !state.mark_runtime_final_outbox_sending(&record.idempotency_key)? {
+            continue;
+        }
+        let context = AuthorizedRuntimeContext {
+            token_id: "host-runtime-final-outbox".to_string(),
+            agent_did: record.agent_did.clone(),
+            runtime_profile_id: record.runtime_profile_id.clone(),
+            run_id: record.run_id.clone(),
+            method: RpcMethod::MsgSend,
+        };
+        let security = RuntimeMessageSecurity::parse(Some(record.security.as_str()))?;
+        let message = RuntimeMessageSend {
+            target: runtime_final_message_target(&record)?,
+            text: record.final_text.clone(),
+            payload: runtime_final_payload(state, &record)?,
+            file_path: None,
+            display_filename: None,
+            mime_type: None,
+            idempotency_key: Some(record.idempotency_key.clone()),
+            security,
+        };
+        match outbox.send_message(&context, &message) {
+            Ok(result) => {
+                mark_runtime_final_delivered(state, outbox, &record, result.message_id.as_deref())?;
+                state.insert_audit_event_json(
+                    "runtime.final_outbox.sent",
+                    Some(&record.agent_did),
+                    Some(&record.runtime_profile_id),
+                    Some(&record.run_id),
+                    None,
+                    serde_json::json!({
+                        "idempotency_key": record.idempotency_key,
+                        "message_id": result.message_id,
+                        "attempt_count": record.attempt_count + 1,
+                        "final_source": record.final_source,
+                        "final_body_hash": record.final_body_hash,
+                        "final_text_bytes": record.final_text.len(),
+                    }),
+                )?;
+                sent_count += 1;
+            }
+            Err(error) => {
+                let error_summary = sanitize_user_visible_error_summary(&error.to_string());
+                let attempts = record.attempt_count + 1;
+                if attempts >= MAX_RUNTIME_FINAL_OUTBOX_ATTEMPTS {
+                    let failed_terminal = state.mark_runtime_final_outbox_failed_terminal(
+                        &record.idempotency_key,
+                        "final_delivery_failed",
+                        &error_summary,
+                    )?;
+                    if failed_terminal {
+                        let run = state.load_runtime_run(&record.run_id)?;
+                        mark_runtime_run_failed_with_status(
+                            state,
+                            outbox,
+                            &run,
+                            "智能体回复发送失败",
+                            "final_delivery_failed",
+                            &error_summary,
+                        )?;
+                        state.insert_audit_event_json(
+                            "runtime.final_outbox.failed_terminal",
+                            Some(&record.agent_did),
+                            Some(&record.runtime_profile_id),
+                            Some(&record.run_id),
+                            None,
+                            serde_json::json!({
+                                "idempotency_key": record.idempotency_key,
+                                "attempt_count": attempts,
+                                "reason": error_summary,
+                            }),
+                        )?;
+                    }
+                } else {
+                    let next_attempt_at_ms = now + runtime_final_retry_delay_ms(attempts);
+                    state.mark_runtime_final_outbox_retry(
+                        &record.idempotency_key,
+                        next_attempt_at_ms,
+                        "final_delivery_retry",
+                        &error_summary,
+                    )?;
+                    state.insert_audit_event_json(
+                        "runtime.final_outbox.retry_scheduled",
+                        Some(&record.agent_did),
+                        Some(&record.runtime_profile_id),
+                        Some(&record.run_id),
+                        None,
+                        serde_json::json!({
+                            "idempotency_key": record.idempotency_key,
+                            "attempt_count": attempts,
+                            "next_attempt_at_ms": next_attempt_at_ms,
+                            "reason": error_summary,
+                        }),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(sent_count)
+}
+
+fn runtime_final_message_target(record: &RuntimeFinalOutboxRecord) -> Result<RuntimeMessageTarget> {
+    if let Some(group_did) = record
+        .conversation_id
+        .as_deref()
+        .and_then(group_did_from_conversation_id)
+    {
+        return Ok(RuntimeMessageTarget::Group {
+            group: group_did.to_string(),
+        });
+    }
+    Ok(RuntimeMessageTarget::Direct {
+        recipient: record.recipient_did.clone(),
+        raw_recipient: record.recipient_did.clone(),
+        resolved_did: Some(record.recipient_did.clone()),
+    })
+}
+
+fn runtime_final_payload(
+    state: &DaemonState,
+    record: &RuntimeFinalOutboxRecord,
+) -> Result<Option<serde_json::Value>> {
+    let Some(_) = record
+        .conversation_id
+        .as_deref()
+        .and_then(group_did_from_conversation_id)
+    else {
+        return Ok(None);
+    };
+    let task = match state.load_runtime_task_for_run(&record.run_id) {
+        Ok(task) => task,
+        Err(_) => return Ok(None),
+    };
+    let payload = match serde_json::from_str::<serde_json::Value>(&task.text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    if payload.get("mention_context").is_none() {
+        return Ok(None);
+    }
+    let Some(sender_did) = payload
+        .get("source_sender_did")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(structured_group_reply(StructuredGroupReplyInput {
+        run_id: &record.run_id,
+        agent_did: &record.agent_did,
+        requester_did: sender_did,
+        requester_full_handle: payload
+            .get("source_sender_full_handle")
+            .and_then(serde_json::Value::as_str),
+        source_message_id: payload
+            .get("source_message_id")
+            .and_then(serde_json::Value::as_str),
+        reply_text: &record.final_text,
+    })
+    .map(|reply| reply.payload))
+}
+
+fn mark_runtime_final_delivered(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    record: &RuntimeFinalOutboxRecord,
+    message_id: Option<&str>,
+) -> Result<()> {
+    if !state.mark_runtime_final_outbox_sent(&record.idempotency_key, message_id)? {
+        return Ok(());
+    }
+    let run = state.load_runtime_run(&record.run_id)?;
+    let updated = state
+        .finish_active_runtime_run(&record.run_id)
+        .context("mark runtime run finished after final delivery")?;
+    if updated {
+        try_emit_runtime_status(
+            state,
+            outbox,
+            &run,
+            "succeeded",
+            Some("Runtime response sent"),
+            None,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+fn runtime_final_outbox_record(
+    profile: &RuntimeAgentProfile,
+    controller_did: &str,
+    recipient_did: &str,
+    run: &RuntimeRun,
+    conversation_id: Option<&str>,
+    final_text: &str,
+    final_source: &str,
+) -> Result<RuntimeFinalOutboxRecord> {
+    let final_text = final_text.trim();
+    if final_text.is_empty() {
+        anyhow::bail!("runtime final text is empty");
+    }
+    let now = current_time_millis()?;
+    Ok(RuntimeFinalOutboxRecord {
+        idempotency_key: runtime_final_idempotency_key(
+            &profile.agent_did,
+            &run.run_id,
+            &profile.controller_scope_key,
+        ),
+        run_id: run.run_id.clone(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: controller_did.to_string(),
+        recipient_did: recipient_did.to_string(),
+        conversation_id: conversation_id.map(str::to_string),
+        final_text: final_text.to_string(),
+        final_source: final_source.to_string(),
+        final_body_hash: final_body_hash(final_text),
+        security: "default_plain".to_string(),
+        status: "pending".to_string(),
+        attempt_count: 0,
+        next_attempt_at_ms: now,
+        last_error_code: None,
+        last_error_summary: None,
+        message_id: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        sent_at_ms: None,
+    })
+}
+
+fn final_body_hash(final_text: &str) -> String {
+    let digest = Sha256::digest(final_text.as_bytes());
+    format!("sha256:{}", hex_lower(&digest))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn runtime_final_idempotency_key(
+    runtime_agent_did: &str,
+    run_id: &str,
+    controller_scope_key: &str,
+) -> String {
+    format!("runtime-final:{runtime_agent_did}:{run_id}:{controller_scope_key}")
+}
+
+const MAX_RUNTIME_FINAL_OUTBOX_ATTEMPTS: i64 = 5;
+const RUNTIME_FINAL_OUTBOX_SENDING_STALE_MS: i64 = 5 * 60 * 1000;
+
+fn runtime_final_retry_delay_ms(attempts: i64) -> i64 {
+    match attempts {
+        0 | 1 => 10_000,
+        2 => 30_000,
+        3 => 120_000,
+        4 => 300_000,
+        _ => 900_000,
+    }
+}
+
+fn hermes_launch_error_detail(error: &str) -> (&'static str, String) {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("awiki_hermes_gateway_cmd is required")
+        || lower.contains("hermes gateway command is not configured")
+        || lower.contains("awiki_hermes_bin is not set")
+    {
+        return (
+            "gateway_command_missing",
+            "Hermes gateway command is not configured".to_string(),
+        );
+    }
+    if lower.contains("spawn awiki_hermes_gateway_cmd")
+        || lower.contains("awiki_hermes_gateway_cmd has an unclosed quote")
+        || lower.contains("awiki_hermes_gateway_cmd must not be empty")
+        || lower.contains("gateway_command_unavailable")
+    {
+        return (
+            "gateway_command_unavailable",
+            "Hermes gateway command is unavailable".to_string(),
+        );
+    }
+    if lower.contains("gateway.ready")
+        || lower.contains("gateway not ready")
+        || lower.contains("gateway timed out")
+        || lower.contains("gateway exited")
+    {
+        return (
+            "gateway_not_ready",
+            "Hermes gateway did not become ready".to_string(),
+        );
+    }
+    ("launch_failed", error.to_string())
+}
+
+fn emit_hermes_failure_outputs(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    profile: &RuntimeAgentProfile,
+    controller_did: &str,
+    run: &RuntimeRun,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<()> {
+    let sanitized = sanitize_user_visible_error_summary(error_summary);
+    let context = runtime_output_context(state, profile, run, RpcMethod::MsgSend)?;
+    let failure_text = format!("Hermes 运行失败：{sanitized}");
+    let _ = outbox.send_message(
+        &context,
+        &crate::outbox::RuntimeMessageSend {
+            target: crate::outbox::RuntimeMessageTarget::Direct {
+                recipient: controller_did.to_string(),
+                raw_recipient: controller_did.to_string(),
+                resolved_did: Some(controller_did.to_string()),
+            },
+            text: failure_text,
+            payload: None,
+            file_path: None,
+            display_filename: None,
+            mime_type: None,
+            idempotency_key: None,
+            security: RuntimeMessageSecurity::DefaultPlain,
+        },
+    );
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some("Hermes run failed"),
+            Some(error_code),
+            Some(&sanitized),
+        )?;
+    }
+    Ok(())
+}
+
+fn mark_runtime_run_failed_with_status(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    message: &str,
+    error_code: &str,
+    error_summary: &str,
+) -> Result<()> {
+    if mark_active_runtime_run_failed(state, &run.run_id)? {
+        emit_runtime_status(
+            outbox,
+            run,
+            "failed",
+            Some(message),
+            Some(error_code),
+            Some(&sanitize_user_visible_error_summary(error_summary)),
+        )?;
+    }
+    Ok(())
+}
+
+fn mark_active_runtime_run_failed(state: &DaemonState, run_id: &str) -> Result<bool> {
+    state.fail_active_runtime_run(run_id)
+}
+
+fn emit_runtime_status(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    status: &str,
+    message: Option<&str>,
+    last_error_code: Option<&str>,
+    last_error_summary: Option<&str>,
+) -> Result<()> {
+    emit_runtime_status_with_metadata(
+        outbox,
+        run,
+        status,
+        message,
+        last_error_code,
+        last_error_summary,
+        None,
+    )
+}
+
+fn try_emit_runtime_status(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    status: &str,
+    message: Option<&str>,
+    last_error_code: Option<&str>,
+    last_error_summary: Option<&str>,
+) -> Result<()> {
+    if let Err(error) = emit_runtime_status(
+        outbox,
+        run,
+        status,
+        message,
+        last_error_code,
+        last_error_summary,
+    ) {
+        state.insert_audit_event_json(
+            "runtime.status.best_effort.failed",
+            Some(&run.agent_did),
+            Some(&run.runtime_profile_id),
+            Some(&run.run_id),
+            None,
+            json!({
+                "status": status,
+                "error": sanitize_user_visible_error_summary(&error.to_string()),
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+fn emit_runtime_status_with_metadata(
+    outbox: &impl RuntimeOutbox,
+    run: &RuntimeRun,
+    status: &str,
+    message: Option<&str>,
+    last_error_code: Option<&str>,
+    last_error_summary: Option<&str>,
+    metadata: Option<&Value>,
+) -> Result<()> {
+    let context = crate::state::AuthorizedRuntimeContext {
+        token_id: "host-run-status".to_string(),
+        agent_did: run.agent_did.clone(),
+        runtime_profile_id: run.runtime_profile_id.clone(),
+        run_id: run.run_id.clone(),
+        method: RpcMethod::TaskStatus,
+    };
+    outbox.send_status_with_metadata(
+        &context,
+        status,
+        message,
+        last_error_code,
+        last_error_summary,
+        metadata,
+    )?;
+    Ok(())
+}
+
+fn runtime_launch_failure_summary(launch_outcome: &RuntimeLaunchOutcome) -> String {
+    if let Some(summary) = launch_outcome
+        .metadata
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return sanitize_user_visible_error_summary(summary);
+    }
+    launch_outcome
+        .exit_code
+        .map(|code| format!("Runtime exited with status {code}"))
+        .unwrap_or_else(|| "Runtime failed".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GenericCliFailureDetail {
+    error_code: String,
+    error_summary: String,
+    next_action: String,
+}
+
+impl GenericCliFailureDetail {
+    fn metadata_json(&self) -> Value {
+        json!({
+            "schema_version": 1,
+            "runtime_family": "generic-cli",
+            "error_code": self.error_code,
+            "next_action": self.next_action,
+            "retryable": false,
+            "deferred": false,
+            "failed_message_recovery": "unsupported",
+            "source": "driver_exit",
+        })
+    }
+}
+
+fn generic_cli_failure_detail(launch_outcome: &RuntimeLaunchOutcome) -> GenericCliFailureDetail {
+    let error_code = launch_outcome
+        .metadata
+        .get("error_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| generic_cli_failure_code_is_safe(value))
+        .unwrap_or("generic_cli_failed")
+        .to_string();
+    let fallback_summary = runtime_launch_failure_summary(launch_outcome);
+    let error_summary = launch_outcome
+        .metadata
+        .get("error_summary")
+        .and_then(Value::as_str)
+        .map(sanitize_user_visible_error_summary)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_summary);
+    let next_action = launch_outcome
+        .metadata
+        .get("next_action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| generic_cli_next_action_is_safe(value))
+        .unwrap_or("manual_review_required")
+        .to_string();
+    GenericCliFailureDetail {
+        error_code,
+        error_summary,
+        next_action,
+    }
+}
+
+fn generic_cli_failure_code_is_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn generic_cli_next_action_is_safe(value: &str) -> bool {
+    matches!(
+        value,
+        "manual_review_required" | "setup_required" | "retry_later" | "contact_admin" | "none"
+    )
+}
+
+fn runtime_output_context(
+    _state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+    method: RpcMethod,
+) -> Result<crate::state::AuthorizedRuntimeContext> {
+    Ok(crate::state::AuthorizedRuntimeContext {
+        token_id: "host-runtime-output".to_string(),
+        agent_did: profile.agent_did.clone(),
+        runtime_profile_id: profile.runtime_profile_id.clone(),
+        run_id: run.run_id.clone(),
+        method,
+    })
+}
+
+fn sanitize_user_visible_error_summary(message: &str) -> String {
+    let mut sanitized = message
+        .split_whitespace()
+        .map(|part| {
+            let lower = part.to_ascii_lowercase();
+            if lower.contains("token")
+                || lower.contains("secret")
+                || lower.contains("jwt")
+                || lower.contains("key")
+                || lower.contains("bearer")
+            {
+                "<redacted>"
+            } else if part.starts_with('/') || part.starts_with("file://") {
+                "<path>"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if sanitized.trim().is_empty() {
+        sanitized = "Hermes run failed".to_string();
+    }
+    if sanitized.chars().count() > 160 {
+        sanitized = sanitized.chars().take(160).collect();
+    }
+    sanitized
+}
+
+fn hermes_error_summary(metadata: &Value) -> Option<String> {
+    metadata
+        .get("events")
+        .and_then(Value::as_array)?
+        .iter()
+        .rev()
+        .find_map(|event| {
+            let is_error = event
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| {
+                    kind == serde_json::to_value(HermesRuntimeEventKind::Error)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .as_deref()
+                        .unwrap_or("error")
+                });
+            if !is_error {
+                return None;
+            }
+            event
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn hermes_structured_error(metadata: &Value) -> Option<(String, String)> {
+    let error = metadata.get("error")?;
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|code| !code.is_empty())?;
+    let summary = error
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or("Hermes run failed");
+    Some((code.to_string(), summary.to_string()))
+}
+
+fn hermes_has_error(metadata: &Value) -> Result<bool> {
+    if metadata.get("error").is_some_and(|value| !value.is_null()) {
+        return Ok(true);
+    }
+    let Some(events) = metadata.get("events").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    let error_kind = serde_json::to_value(HermesRuntimeEventKind::Error)?
+        .as_str()
+        .unwrap_or("error")
+        .to_string();
+    Ok(events.iter().any(|event| {
+        event
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == error_kind)
+    }))
+}
+
+fn hermes_final_text(metadata: &Value) -> Result<Option<String>> {
+    if let Some(text) = metadata
+        .get("final_text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+    {
+        return Ok(Some(text));
+    }
+    let Some(events) = metadata.get("events").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    for event in events.iter().rev() {
+        let Some(kind) = event.get("kind").and_then(Value::as_str) else {
+            continue;
+        };
+        if kind
+            != serde_json::to_value(HermesRuntimeEventKind::MessageComplete)?
+                .as_str()
+                .unwrap_or("message_complete")
+        {
+            continue;
+        }
+        let text = event
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+        if text.is_some() {
+            return Ok(text);
+        }
+    }
+    Ok(None)
+}
+
+fn persist_cli_driver_run(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    run: &RuntimeRun,
+    launch_outcome: &RuntimeLaunchOutcome,
+    workspace_instance: Option<&WorkspaceInstance>,
+    fallback_final_source: Option<&str>,
+    fallback_final_sanitizer: Option<&Value>,
+    status_override: Option<&str>,
+) -> Result<()> {
+    let task = state.load_runtime_task(&run.task_id)?;
+    let Some(driver_id) = state
+        .load_cli_runtime_profile(&profile.runtime_profile_id)
+        .map(|profile| profile.driver_id)
+        .or_else(|_| {
+            launch_outcome
+                .metadata
+                .get("driver_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .context("generic-cli run metadata does not include driver_id")
+        })
+        .ok()
+    else {
+        return Ok(());
+    };
+    let mut output_json = launch_outcome
+        .metadata
+        .get("output")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(fallback_final_sanitizer) = fallback_final_sanitizer {
+        if let Some(object) = output_json.as_object_mut() {
+            object.insert(
+                "fallback_final_sanitizer".to_string(),
+                fallback_final_sanitizer.clone(),
+            );
+        }
+    }
+    let command_json = launch_outcome
+        .metadata
+        .get("command")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let route_key = if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
+        generic_cli_route_key_for_task(profile, &task)?
+    } else {
+        generic_cli_route_key(
+            &run.agent_did,
+            &profile.controller_scope_key,
+            task.conversation_id.as_deref(),
+        )
+    };
+    let route_can_accept_native_session =
+        if profile.workspace_mode == Some(WorkspaceMode::RouteRoot) {
+            state.generic_cli_route_session_locked_for_run(&run.run_id)?
+        } else {
+            true
+        };
+    let native_session_id = if route_can_accept_native_session {
+        trusted_native_session_metadata(&driver_id, &launch_outcome.metadata)
+            .map(|metadata| metadata.0)
+    } else {
+        None
+    };
+    state.upsert_cli_driver_run(&CliDriverRunRecord {
+        run_id: run.run_id.clone(),
+        agent_did: run.agent_did.clone(),
+        runtime_profile_id: run.runtime_profile_id.clone(),
+        driver_id,
+        controller_user_id: profile.controller_user_id.clone(),
+        controller_full_handle: profile.controller_full_handle.clone(),
+        controller_scope_key: profile.controller_scope_key.clone(),
+        controller_did: task.controller_did.clone(),
+        conversation_id: task.conversation_id.clone(),
+        route_key: route_key.clone(),
+        workspace_id: profile.workspace_id.clone(),
+        workspace_root: workspace_instance
+            .map(|instance| instance.workspace_root.clone())
+            .or_else(|| canonicalize_optional_path(profile.workspace_root.as_ref())),
+        workspace_instance_path: workspace_instance
+            .map(|instance| instance.workspace_instance_path.clone())
+            .or_else(|| canonicalize_optional_path(profile.workspace_root.as_ref())),
+        workspace_mode: workspace_instance
+            .map(|instance| instance.workspace_mode)
+            .or(profile.workspace_mode),
+        is_security_boundary: workspace_instance
+            .map(|instance| instance.is_security_boundary)
+            .unwrap_or(false),
+        command_json,
+        output_json,
+        final_output_path: launch_outcome
+            .metadata
+            .get("final_output_path")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from),
+        native_session_id,
+        synthetic_session_id: Some(route_key),
+        status: status_override
+            .unwrap_or_else(|| launch_outcome.status.as_str())
+            .to_string(),
+        fallback_final_source: fallback_final_source.map(str::to_string),
+    })?;
+    Ok(())
+}
+
+fn canonicalize_optional_path(path: Option<&std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    path.map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+}
+
+fn trusted_native_session_metadata(driver_id: &str, metadata: &Value) -> Option<(String, String)> {
+    let native_session_id = metadata
+        .get("native_session_id")
+        .and_then(Value::as_str)
+        .filter(|value| validate_native_session_id(driver_id, value))?;
+    let native_session_source = metadata
+        .get("native_session_source")
+        .and_then(Value::as_str)
+        .filter(|value| validate_native_session_source(driver_id, value))?;
+    Some((
+        native_session_id.to_string(),
+        native_session_source.to_string(),
+    ))
+}
+
+fn generic_cli_route_key(
+    agent_did: &str,
+    controller_scope_key: &str,
+    conversation_id: Option<&str>,
+) -> String {
+    format!(
+        "cli:{agent_did}:{controller_scope_key}:{}:message-run",
+        conversation_id.unwrap_or("no-conversation")
+    )
+}
+
+fn generic_cli_route_conversation_id_for_task(task: &RuntimeTask) -> Result<String> {
+    task.conversation_scope.generic_cli_route_conversation_id()
+}
+
+fn generic_cli_route_key_for_task(
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+) -> Result<String> {
+    let conversation_id = generic_cli_route_conversation_id_for_task(task)?;
+    cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )
+}
+
+fn generic_cli_legacy_route_keys_for_task(
+    profile: &RuntimeAgentProfile,
+    task: &RuntimeTask,
+) -> Result<Vec<String>> {
+    let mut aliases = Vec::new();
+    let canonical_conversation_id = generic_cli_route_conversation_id_for_task(task)?;
+    push_legacy_cli_route_key(
+        &mut aliases,
+        profile,
+        Some(canonical_conversation_id.as_str()),
+    )?;
+    push_legacy_cli_route_key(&mut aliases, profile, task.conversation_id.as_deref())?;
+    if task.trigger_kind == RuntimeTaskTriggerKind::ControllerDirect {
+        push_legacy_cli_route_key(
+            &mut aliases,
+            profile,
+            Some(format!("direct:{}", task.controller_did).as_str()),
+        )?;
+        push_legacy_cli_route_key(
+            &mut aliases,
+            profile,
+            Some(format!("direct:{}", task.controller_scope_key).as_str()),
+        )?;
+        if let Some(peer_scope_key) =
+            controller_scope_to_legacy_peer_scope(&task.controller_scope_key)
+        {
+            push_legacy_cli_route_key(
+                &mut aliases,
+                profile,
+                Some(format!("direct:{peer_scope_key}").as_str()),
+            )?;
+        }
+    }
+    Ok(aliases)
+}
+
+fn controller_scope_to_legacy_peer_scope(controller_scope_key: &str) -> Option<String> {
+    controller_scope_key
+        .strip_prefix("controller-scope:")
+        .map(|suffix| format!("peer-scope:{suffix}"))
+}
+
+fn push_legacy_cli_route_key(
+    aliases: &mut Vec<String>,
+    profile: &RuntimeAgentProfile,
+    conversation_id: Option<&str>,
+) -> Result<()> {
+    let Some(conversation_id) = conversation_id else {
+        return Ok(());
+    };
+    let Ok(conversation_id) = canonical_cli_conversation_id(conversation_id) else {
+        return Ok(());
+    };
+    let route_key = cli_route_session_key(
+        &profile.agent_did,
+        &profile.controller_scope_key,
+        &conversation_id,
+    )?;
+    if !aliases.contains(&route_key) {
+        aliases.push(route_key);
+    }
+    Ok(())
+}
+
+struct FallbackFinalText {
+    text: String,
+    sanitizer_metadata: Value,
+}
+
+fn fallback_final_text(
+    metadata: &Value,
+    runtime_rpc_token: &str,
+) -> Result<Option<FallbackFinalText>> {
+    let Some(path) = metadata
+        .get("final_output_path")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("read fallback final output {}", path.display()))?;
+    let sanitized = sanitize_cli_output_bytes(
+        &bytes,
+        runtime_rpc_token,
+        DEFAULT_SANITIZED_OUTPUT_MAX_BYTES,
+    );
+    std::fs::write(&path, sanitized.text.as_bytes())
+        .with_context(|| format!("write sanitized fallback final output {}", path.display()))?;
+    let text = sanitized.text.trim();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(FallbackFinalText {
+            text: text.to_string(),
+            sanitizer_metadata: sanitized.metadata_json(),
+        }))
+    }
+}
+
+fn runtime_recipient_policy(
+    state: &DaemonState,
+    profile: &RuntimeAgentProfile,
+    controller_did: &str,
+    authority: RuntimeInvocationAuthority,
+) -> Result<RecipientPolicy> {
+    if let Some(binding) =
+        state.load_active_app_message_agent_binding_by_runtime(&profile.agent_did)?
+    {
+        return Ok(RecipientPolicy::app_message_handler(&binding.user_did));
+    }
+    if profile.runtime_plugin_id == crate::plugins::hermes::HERMES_RUNTIME_PLUGIN_ID {
+        return match authority {
+            RuntimeInvocationAuthority::Controller => {
+                Ok(RecipientPolicy::hermes_default(controller_did))
+            }
+            RuntimeInvocationAuthority::Requester => {
+                Ok(RecipientPolicy::controller_only(controller_did))
+            }
+        };
+    }
+    match state.load_cli_runtime_profile(&profile.runtime_profile_id) {
+        Ok(cli_profile) => {
+            RecipientPolicy::from_json(&cli_profile.recipient_policy_json, controller_did)
+        }
+        Err(_) => Ok(RecipientPolicy::controller_only(controller_did)),
+    }
+}
+
+fn runtime_allowed_methods(authority: RuntimeInvocationAuthority) -> Vec<RpcMethod> {
+    let mut methods = vec![
+        RpcMethod::RpcPing,
+        RpcMethod::TaskStatus,
+        RpcMethod::TaskFinish,
+        RpcMethod::ArtifactCreated,
+        RpcMethod::AppActionRequest,
+    ];
+    if authority.can_send_outbound() {
+        methods.push(RpcMethod::MsgSend);
+        methods.push(RpcMethod::SendAttachment);
+    }
+    methods
+}
+
+fn collect_string_array(value: Option<&Value>, output: &mut Vec<String>) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(items) = value.as_array() else {
+        anyhow::bail!("recipient policy entries must be arrays");
+    };
+    for item in items {
+        let item = item
+            .as_str()
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .context("recipient policy entries must be non-empty strings")?;
+        output.push(item.to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_requester_authority_cannot_call_outbound_send_methods() {
+        let methods = runtime_allowed_methods(RuntimeInvocationAuthority::Requester);
+
+        assert!(methods.contains(&RpcMethod::RpcPing));
+        assert!(methods.contains(&RpcMethod::TaskStatus));
+        assert!(methods.contains(&RpcMethod::TaskFinish));
+        assert!(!methods.contains(&RpcMethod::MsgSend));
+        assert!(!methods.contains(&RpcMethod::SendAttachment));
+    }
+
+    #[test]
+    fn runtime_controller_authority_can_call_outbound_send_methods() {
+        let methods = runtime_allowed_methods(RuntimeInvocationAuthority::Controller);
+
+        assert!(methods.contains(&RpcMethod::MsgSend));
+        assert!(methods.contains(&RpcMethod::SendAttachment));
+    }
+}

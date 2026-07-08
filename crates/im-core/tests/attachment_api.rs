@@ -45,7 +45,9 @@ fn attachments_input_is_the_canonical_message_body_input() {
     let body = MessageBody::Attachment {
         input: input.clone(),
         caption: Some("caption".to_string()),
+        mention_payload: None,
         mime_type: Some("text/plain".to_string()),
+        filename: None,
     };
 
     assert!(matches!(
@@ -58,11 +60,283 @@ fn attachments_input_is_the_canonical_message_body_input() {
 }
 
 #[test]
+fn conversation_attachment_request_is_conversation_first() {
+    let request = SendConversationAttachmentRequest {
+        conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+        input: AttachmentInput::Bytes {
+            filename: Some("note.txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            bytes: b"hello attachment".to_vec(),
+        },
+        caption: Some("caption".to_string()),
+        mention_payload: None,
+        mime_type: Some("text/plain".to_string()),
+        filename: None,
+        security: MessageSecurityMode::DefaultPlain,
+        client_message_id: Some(MessageId::parse("msg-client-attachment").unwrap()),
+        idempotency_key: Some("op-client-attachment".to_string()),
+        wait_for_final_acceptance: true,
+    };
+
+    assert_eq!(request.conversation.conversation_id, "dm:did:example:bob");
+    assert_eq!(
+        request.client_message_id.as_ref().map(MessageId::as_str),
+        Some("msg-client-attachment")
+    );
+    assert_eq!(
+        request.idempotency_key.as_deref(),
+        Some("op-client-attachment")
+    );
+    assert!(request.wait_for_final_acceptance);
+}
+
+#[tokio::test]
+async fn attachments_service_send_conversation_direct_uses_canonical_projection() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-conv-direct",
+            "slot_id": "slot-conv-direct",
+            "upload_uri": "__BASE__/objects/slot-conv-direct",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-conv-direct",
+            "commit_token": "commit-token-conv-direct",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-conv-direct",
+            "object_uri": "__BASE__/objects/att-conv-direct",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-conv-attachment-direct",
+            "operation_id": "retry-msg-conv-attachment-direct",
+            "target_did": "did:example:bob",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send_conversation_async(SendConversationAttachmentRequest {
+            conversation: ConversationReadRef::new("dm:did:example:bob").unwrap(),
+            input: AttachmentInput::Bytes {
+                filename: Some("conversation.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                bytes: b"conversation attachment".to_vec(),
+            },
+            caption: Some("conversation caption".to_string()),
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(MessageId::parse("msg-conv-attachment-direct").unwrap()),
+            idempotency_key: Some("retry-msg-conv-attachment-direct".to_string()),
+            wait_for_final_acceptance: true,
+        })
+        .await
+        .expect("conversation attachment send should run upload flow");
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-conv-attachment-direct"
+    );
+    assert_eq!(
+        result
+            .message
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.as_str()),
+        Some("dm:did:example:bob")
+    );
+    assert_eq!(result.target_kind, "agent");
+    assert_eq!(result.target_did, "did:example:bob");
+
+    let rows = local_message_rows(
+        &paths,
+        "SELECT msg_id, conversation_id, thread_id, receiver_did, content_type, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-direct'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["conversation_id"], "dm:did:example:bob");
+    assert_eq!(rows[0]["thread_id"], "dm:did:example:bob");
+    assert_eq!(rows[0]["receiver_did"], "did:example:bob");
+    assert_eq!(
+        rows[0]["content_type"],
+        im_core::attachments::attachment_manifest_content_type()
+    );
+    let stored_manifest: Value =
+        serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_manifest["primary_attachment_id"], "att-conv-direct");
+    assert_eq!(stored_manifest["caption"], "conversation caption");
+    let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
+    assert_eq!(metadata["operation_id"], "retry-msg-conv-attachment-direct");
+    assert_eq!(metadata["attachment_id"], "att-conv-direct");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(
+        requests[0].params()["body"]["intended_target"],
+        json!({ "kind": "agent", "did": "did:example:bob" })
+    );
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(
+        requests[3].params()["meta"]["target"],
+        json!({ "kind": "agent", "did": "did:example:bob" })
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["message_id"],
+        "msg-conv-attachment-direct"
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["operation_id"],
+        "retry-msg-conv-attachment-direct"
+    );
+}
+
+#[tokio::test]
+async fn attachments_service_send_conversation_group_uses_group_route() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-conv-group",
+            "slot_id": "slot-conv-group",
+            "upload_uri": "__BASE__/objects/slot-conv-group",
+            "upload_headers": {},
+            "object_uri": "__BASE__/objects/att-conv-group",
+            "commit_token": "commit-token-conv-group",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-conv-group",
+            "object_uri": "__BASE__/objects/att-conv-group",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-conv-attachment-group",
+            "operation_id": "op-msg-conv-attachment-group",
+            "group_id": "did:example:group",
+            "group_did": "did:example:group",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send_conversation_async(SendConversationAttachmentRequest {
+            conversation: ConversationReadRef::new("group:did:example:group").unwrap(),
+            input: AttachmentInput::Bytes {
+                filename: Some("group.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+                bytes: b"group attachment".to_vec(),
+            },
+            caption: Some("group caption".to_string()),
+            mention_payload: None,
+            mime_type: None,
+            filename: None,
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: Some(MessageId::parse("msg-conv-attachment-group").unwrap()),
+            idempotency_key: Some("op-msg-conv-attachment-group".to_string()),
+            wait_for_final_acceptance: true,
+        })
+        .await
+        .expect("conversation group attachment send should run upload flow");
+
+    assert_eq!(
+        result.message.message.id.as_str(),
+        "msg-conv-attachment-group"
+    );
+    assert_eq!(
+        result
+            .message
+            .message
+            .metadata
+            .conversation_identity
+            .as_ref()
+            .map(|identity| identity.conversation_id.as_str()),
+        Some("group:did:example:group")
+    );
+    assert_eq!(result.target_kind, "group");
+    assert_eq!(result.target_did, "did:example:group");
+
+    let rows = local_message_rows(
+        &paths,
+        "SELECT msg_id, conversation_id, thread_id, group_did, content_type, content, metadata FROM messages WHERE msg_id = 'msg-conv-attachment-group'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["conversation_id"], "group:did:example:group");
+    assert_eq!(rows[0]["thread_id"], "group:did:example:group");
+    assert_eq!(rows[0]["group_did"], "did:example:group");
+    assert_eq!(
+        rows[0]["content_type"],
+        im_core::attachments::attachment_manifest_content_type()
+    );
+    let stored_manifest: Value =
+        serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_manifest["primary_attachment_id"], "att-conv-group");
+    assert_eq!(stored_manifest["caption"], "group caption");
+    let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
+    assert_eq!(metadata["operation_id"], "op-msg-conv-attachment-group");
+    assert_eq!(metadata["attachment_id"], "att-conv-group");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(
+        requests[0].params()["body"]["intended_target"],
+        json!({ "kind": "group", "did": "did:example:group" })
+    );
+    assert_eq!(requests[3].rpc_method().as_deref(), Some("group.send"));
+    assert_eq!(
+        requests[3].params()["meta"]["target"],
+        json!({ "kind": "group", "did": "did:example:group" })
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["message_id"],
+        "msg-conv-attachment-group"
+    );
+    assert_eq!(
+        requests[3].params()["meta"]["operation_id"],
+        "op-msg-conv-attachment-group"
+    );
+}
+
+#[test]
 fn message_body_attachments_reuse_canonical_attachment_input() {
     let body = MessageBody::Attachment {
         input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
         caption: Some("caption".to_string()),
+        mention_payload: None,
         mime_type: Some("image/png".to_string()),
+        filename: Some("override.png".to_string()),
     };
 
     match body {
@@ -70,10 +344,13 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
             input: AttachmentInput::LocalFile(path),
             caption,
             mime_type,
+            filename,
+            ..
         } => {
             assert_eq!(path, PathBuf::from("image.png"));
             assert_eq!(caption.as_deref(), Some("caption"));
             assert_eq!(mime_type.as_deref(), Some("image/png"));
+            assert_eq!(filename.as_deref(), Some("override.png"));
         }
         _ => panic!("expected attachment body"),
     }
@@ -95,9 +372,11 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
                 bytes: b"png".to_vec(),
             },
             caption: Some("caption".to_string()),
+            mention_payload: None,
             mime_type: Some("image/png".to_string()),
             filename: None,
             delivery: MessageDeliveryOptions::default(),
+            security: MessageSecurityMode::DefaultPlain,
         },
     );
     assert!(matches!(
@@ -116,8 +395,8 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
     assert!(matches!(download, Err(ImError::AuthRequired)));
 }
 
-#[test]
-fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
+#[tokio::test]
+async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(handle_lookup_result()),
         ExpectedHttp::rpc_result(json!({
@@ -158,7 +437,7 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
 
     let result = client
         .attachments()
-        .send(
+        .send_async(
             MessageTarget::Direct(PeerRef::parse("bob.awiki.info", "").unwrap()),
             AttachmentSendRequest {
                 input: AttachmentInput::Bytes {
@@ -167,11 +446,14 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
                     bytes: b"hello".to_vec(),
                 },
                 caption: Some("caption".to_string()),
+                mention_payload: None,
                 mime_type: Some("application/custom".to_string()),
                 filename: Some("override.bin".to_string()),
                 delivery: MessageDeliveryOptions::default(),
+                security: MessageSecurityMode::DefaultPlain,
             },
         )
+        .await
         .expect("public attachment send should resolve handle and run upload");
 
     assert_eq!(result.message.message.id.as_str(), "msg-attachment-send-1");
@@ -281,8 +563,8 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     );
 }
 
-#[test]
-fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
+#[tokio::test]
+async fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(handle_lookup_result()),
         ExpectedHttp::rpc_result(json!({
@@ -313,13 +595,14 @@ fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
 
     let err = client
         .attachments()
-        .download(DownloadAttachmentRequest {
+        .download_async(DownloadAttachmentRequest {
             thread: ThreadRef::Direct(PeerRef::parse("bob.awiki.info", "").unwrap()),
             message_id: MessageId::parse("msg-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
             destination: AttachmentDestination::Memory,
             overwrite: false,
         })
+        .await
         .expect_err("unsupported sender DID should stop after resolved history lookup");
     assert!(matches!(
         err,
@@ -433,6 +716,120 @@ fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
 }
 
 #[test]
+fn attachment_manifest_object_e2ee_redacted_and_grant_ref_contract() {
+    let descriptor = im_core::compat::attachments::AttachmentDescriptor {
+        attachment_id: "att-e2ee-1".to_string(),
+        filename: "secret.pdf".to_string(),
+        mime_type: "application/pdf".to_string(),
+        size: "33".to_string(),
+        digest_b64u: "ciphertext-digest".to_string(),
+        object_uri: "https://objects.example/att-e2ee-1".to_string(),
+        encryption_mode: "object-e2ee".to_string(),
+        object_cipher: Some("chacha20-poly1305".to_string()),
+        plaintext_size: Some("16".to_string()),
+    };
+
+    let redacted =
+        im_core::compat::attachments::build_attachment_manifest_internal(&descriptor, "secret");
+    assert_eq!(redacted["primary_attachment_id"], "att-e2ee-1");
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"]["mode"],
+        "object-e2ee"
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"]["object_cipher"],
+        "chacha20-poly1305"
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"]["plaintext_size"],
+        "16"
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"].get("object_key_b64u"),
+        None
+    );
+    assert_eq!(
+        redacted["attachments"][0]["encryption_info"].get("nonce_b64u"),
+        None
+    );
+
+    let default_public =
+        im_core::compat::attachments::build_attachment_manifest(&descriptor, "secret");
+    assert_eq!(default_public, redacted);
+
+    let parsed = im_core::compat::attachments::parse_attachment_manifest(&redacted)
+        .expect("manifest parses");
+    let parsed_descriptor = &parsed.attachments[0];
+    assert_eq!(parsed_descriptor.encryption_mode, "object-e2ee");
+    assert_eq!(parsed_descriptor.plaintext_size.as_deref(), Some("16"));
+
+    let grant_ref =
+        im_core::compat::attachments::build_attachment_grant_ref(&descriptor).expect("grant ref");
+    assert_eq!(grant_ref["attachment_id"], "att-e2ee-1");
+    assert_eq!(
+        grant_ref["object_uri"],
+        "https://objects.example/att-e2ee-1"
+    );
+    assert_eq!(grant_ref["object_encryption_mode"], "object-e2ee");
+    assert_eq!(grant_ref["plaintext_size"], "16");
+    assert_eq!(grant_ref["digest"]["value_b64u"], "ciphertext-digest");
+    assert_eq!(grant_ref.get("object_key_b64u"), None);
+    assert_eq!(grant_ref.get("nonce_b64u"), None);
+}
+
+#[test]
+fn attachment_manifest_plain_mode_remains_redacted_compatible() {
+    let prepared = im_core::compat::attachments::prepare_attachment_payload(
+        "hello.txt",
+        "",
+        b"hello".to_vec(),
+    )
+    .expect("plain prepared");
+    let descriptor = im_core::compat::attachments::AttachmentDescriptor::from_prepared(
+        &prepared,
+        "att-plain-1",
+        "https://objects.example/att-plain-1",
+    );
+
+    let manifest =
+        im_core::compat::attachments::build_attachment_manifest_internal(&descriptor, "hello");
+    assert_eq!(
+        manifest["attachments"][0]["encryption_info"],
+        json!({"mode": "none"})
+    );
+    assert_eq!(
+        im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello"),
+        manifest
+    );
+    let grant_ref =
+        im_core::compat::attachments::build_attachment_grant_ref(&descriptor).expect("grant ref");
+    assert_eq!(grant_ref["object_encryption_mode"], "none");
+    assert_eq!(grant_ref.get("plaintext_size"), None);
+}
+
+#[test]
+fn attachment_api_uploaded_attachment_public_dto_never_exposes_key_nonce() {
+    let attachment = UploadedAttachment {
+        attachment_id: "att-e2ee-1".to_string(),
+        filename: "secret.pdf".to_string(),
+        mime_type: "application/pdf".to_string(),
+        size_bytes: 33,
+        size: "33".to_string(),
+        digest_b64u: "ciphertext-digest".to_string(),
+        object_uri: "https://objects.example/att-e2ee-1".to_string(),
+        object_encryption_mode: "object-e2ee".to_string(),
+        plaintext_size_bytes: Some(16),
+    };
+
+    let value = serde_json::to_value(&attachment).expect("uploaded attachment serializes");
+    assert_eq!(value["object_encryption_mode"], "object-e2ee");
+    assert_eq!(value["plaintext_size_bytes"], 16);
+    assert_eq!(value.get("object_key_b64u"), None);
+    assert_eq!(value.get("nonce_b64u"), None);
+    assert!(!value.to_string().contains("BASE64URL_32_BYTES_OBJECT_KEY"));
+}
+
+#[test]
 fn attachments_selection_matches_visible_or_raw_message_id() {
     let messages = vec![json!({
         "id": "did:wba:awiki.ai:groups:test:e1_group:7",
@@ -472,6 +869,50 @@ fn attachments_selection_matches_visible_or_raw_message_id() {
             .expect("selection by raw id");
     assert_eq!(by_raw_id.object_uri, "http://127.0.0.1:8080/objects/obj-1");
     assert_eq!(by_raw_id.digest_b64u, "digest");
+}
+
+#[test]
+fn attachments_selection_parses_object_e2ee_metadata_but_redacts_key_nonce() {
+    let messages = vec![json!({
+        "id": "msg-e2ee-1",
+        "sender_did": "did:wba:awiki.ai:user:alice:e1",
+        "security": "secure-direct",
+        "content": {
+            "attachments": [{
+                "attachment_id": "att-e2ee-1",
+                "filename": "secret.pdf",
+                "mime_type": "application/pdf",
+                "size": "33",
+                "digest": { "alg": "sha-256", "value_b64u": "ciphertext-digest" },
+                "access_info": { "object_uri": "https://objects.example/att-e2ee-1" },
+                "encryption_info": {
+                    "mode": "object-e2ee",
+                    "object_cipher": "chacha20-poly1305",
+                    "object_key_b64u": "BASE64URL_OBJECT_KEY",
+                    "nonce_b64u": "BASE64URL_NONCE",
+                    "plaintext_size": "16"
+                }
+            }],
+            "primary_attachment_id": "att-e2ee-1"
+        }
+    })];
+
+    let selection =
+        im_core::compat::attachments::find_attachment_selection(&messages, "msg-e2ee-1", "")
+            .expect("public selection");
+    assert_eq!(selection.message_security_profile, "direct-e2ee");
+    assert_eq!(selection.object_encryption_mode, "object-e2ee");
+    assert_eq!(
+        selection.object_cipher.as_deref(),
+        Some("chacha20-poly1305")
+    );
+    assert_eq!(selection.plaintext_size.as_deref(), Some("16"));
+
+    let public_json = serde_json::to_string(&selection).expect("selection serializes");
+    assert!(!public_json.contains("object_key_b64u"));
+    assert!(!public_json.contains("nonce_b64u"));
+    assert!(!public_json.contains("BASE64URL_OBJECT_KEY"));
+    assert!(!public_json.contains("BASE64URL_NONCE"));
 }
 
 #[test]
@@ -705,6 +1146,9 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     assert_eq!(commit["body"]["commit_token"], "commit-token");
     assert_eq!(commit["body"]["size"], "5");
     assert_eq!(commit["body"]["digest"]["value_b64u"], "digest");
+    assert_eq!(commit["body"]["object_encryption_mode"], "none");
+    assert_eq!(commit["body"].get("object_key_b64u"), None);
+    assert_eq!(commit["body"].get("nonce_b64u"), None);
 
     let selection = im_core::compat::attachments::AttachmentSelection {
         attachment_id: "att-1".to_string(),
@@ -733,6 +1177,52 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         "did:wba:awiki.ai:user:alice:e1_alice"
     );
     assert_eq!(ticket.get("auth"), None);
+
+    let direct_e2ee_selection = im_core::compat::attachments::AttachmentSelection {
+        attachment_id: "att-e2ee-1".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/e2ee-1".to_string(),
+        object_encryption_mode: "object-e2ee".to_string(),
+        ..im_core::compat::attachments::AttachmentSelection::default()
+    };
+    let direct_e2ee_ticket =
+        im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+            "did:wba:awiki.ai:user:alice:e1_alice",
+            "did:wba:awiki.ai",
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "msg-e2ee-1",
+            "",
+            &direct_e2ee_selection,
+        )
+        .expect("direct e2ee ticket params");
+    assert_eq!(
+        direct_e2ee_ticket["body"]["message_security_profile"],
+        "direct-e2ee"
+    );
+    assert_eq!(
+        direct_e2ee_ticket["body"]["message_target_did"],
+        "did:wba:awiki.ai:user:alice:e1_alice"
+    );
+    assert_eq!(direct_e2ee_ticket["body"].get("group_did"), None);
+
+    let group_e2ee_ticket =
+        im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+            "did:wba:awiki.ai:user:alice:e1_alice",
+            "did:wba:awiki.ai",
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "msg-e2ee-1",
+            "did:wba:awiki.ai:groups:test:e1_group",
+            &direct_e2ee_selection,
+        )
+        .expect("group e2ee ticket params");
+    assert_eq!(
+        group_e2ee_ticket["body"]["message_security_profile"],
+        "group-e2ee"
+    );
+    assert_eq!(
+        group_e2ee_ticket["body"]["group_did"],
+        "did:wba:awiki.ai:groups:test:e1_group"
+    );
+    assert_eq!(group_e2ee_ticket["body"].get("message_target_did"), None);
 
     let identity = generated_attachment_wire_identity();
     let manifest = json!({
@@ -782,6 +1272,81 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         group["auth"]["scheme"],
         im_core::compat::proof::ORIGIN_PROOF_SCHEME
     );
+}
+
+#[test]
+fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
+    let prepared = im_core::compat::attachments::PreparedAttachment {
+        filename: "hello.txt".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_bytes: 33,
+        size_string: "33".to_string(),
+        digest_b64u: "ciphertext-digest".to_string(),
+        payload: b"ciphertext bytes with auth tag".to_vec(),
+        object_encryption_mode: "object-e2ee".to_string(),
+        object_cipher: Some("chacha20-poly1305".to_string()),
+        plaintext_size_bytes: Some(12),
+        plaintext_size_string: Some("12".to_string()),
+    };
+
+    let err = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        "agent",
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        &prepared,
+    )
+    .expect_err("plain control profile should reject object-e2ee");
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "message_security_profile" && message.contains("object-e2ee")
+    ));
+
+    let create_slot =
+        im_core::compat::attachments::build_attachment_create_slot_rpc_params_with_security_profile(
+            "did:wba:awiki.ai:user:alice:e1_alice",
+            "did:wba:awiki.ai:services:message:e1",
+            "agent",
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "direct-e2ee",
+            &prepared,
+        )
+        .expect("e2ee create-slot params");
+    assert_eq!(
+        create_slot["body"]["intended_message_security_profile"],
+        "direct-e2ee"
+    );
+    assert_eq!(create_slot["body"]["object_encryption_mode"], "object-e2ee");
+    assert_eq!(create_slot["body"]["expected_size"], prepared.size_string);
+    assert_eq!(
+        create_slot["body"]["expected_digest"]["value_b64u"],
+        prepared.digest_b64u
+    );
+    assert_eq!(create_slot["body"].get("object_key_b64u"), None);
+    assert_eq!(create_slot["body"].get("nonce_b64u"), None);
+
+    let slot = im_core::compat::attachments::AttachmentCreateSlotResult {
+        attachment_id: "att-1".to_string(),
+        slot_id: "slot-1".to_string(),
+        commit_token: "commit-token".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
+        ..im_core::compat::attachments::AttachmentCreateSlotResult::default()
+    };
+    let commit = im_core::compat::attachments::build_attachment_commit_object_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        &prepared,
+        &slot,
+    )
+    .expect("e2ee commit params");
+    assert_eq!(commit["body"]["object_encryption_mode"], "object-e2ee");
+    assert_eq!(
+        commit["body"]["plaintext_size"],
+        prepared.plaintext_size_string.as_deref().unwrap()
+    );
+    assert_eq!(commit["body"].get("object_key_b64u"), None);
+    assert_eq!(commit["body"].get("nonce_b64u"), None);
 }
 
 #[test]
@@ -1011,6 +1576,7 @@ fn handle_lookup_result() -> Value {
         "handle": "bob",
         "full_handle": "bob.awiki.info",
         "did": "did:example:bob",
+        "user_id": "user-bob",
         "domain": "awiki.info",
         "status": "active",
     })
@@ -1114,7 +1680,10 @@ impl CapturedHttp {
 fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(Instant::now() < deadline, "timed out waiting for request");
                 thread::sleep(Duration::from_millis(10));

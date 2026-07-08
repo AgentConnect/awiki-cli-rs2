@@ -43,6 +43,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 LIB_NAME="awiki_im_core"
+IOS_DEPLOYMENT_TARGET="${AWIKI_IOS_DEPLOYMENT_TARGET:-12.0}"
+MACOS_X86_64_DEPLOYMENT_TARGET="${AWIKI_MACOS_X86_64_DEPLOYMENT_TARGET:-10.15}"
+MACOS_ARM64_DEPLOYMENT_TARGET="${AWIKI_MACOS_ARM64_DEPLOYMENT_TARGET:-11.0}"
 IOS_FRAMEWORK_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/Frameworks"
 MACOS_FRAMEWORK_DIR="${ROOT_DIR}/packages/awiki_im_core/macos/Frameworks"
 IOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/include"
@@ -68,6 +71,8 @@ fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "Would rustup target add: ${TARGETS[*]}"
+  echo "Would use iOS deployment target: ${IOS_DEPLOYMENT_TARGET}"
+  echo "Would use macOS deployment targets: arm64=${MACOS_ARM64_DEPLOYMENT_TARGET}, x86_64=${MACOS_X86_64_DEPLOYMENT_TARGET}"
   if [[ "${BUILD_IOS}" == "1" && "${BUILD_MACOS}" == "1" ]]; then
     echo "Would build staticlibs and create iOS/macOS XCFrameworks"
   elif [[ "${BUILD_IOS}" == "1" ]]; then
@@ -112,7 +117,7 @@ for target in "${IOS_TARGETS[@]}"; do
   if [[ "${BUILD_IOS}" != "1" ]]; then
     continue
   fi
-  cargo build \
+  IPHONEOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET}" cargo build \
     -p im-core-dart \
     --release \
     --target "${target}" \
@@ -124,7 +129,11 @@ for target in "${MACOS_TARGETS[@]}"; do
   if [[ "${BUILD_MACOS}" != "1" ]]; then
     continue
   fi
-  cargo build \
+  macos_deployment_target="${MACOS_X86_64_DEPLOYMENT_TARGET}"
+  if [[ "${target}" == "aarch64-apple-darwin" ]]; then
+    macos_deployment_target="${MACOS_ARM64_DEPLOYMENT_TARGET}"
+  fi
+  MACOSX_DEPLOYMENT_TARGET="${macos_deployment_target}" cargo build \
     -p im-core-dart \
     --release \
     --target "${target}" \

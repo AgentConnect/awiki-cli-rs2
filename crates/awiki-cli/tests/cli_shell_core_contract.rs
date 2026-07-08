@@ -2,6 +2,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -152,7 +153,7 @@ fn config_show_reports_resolved_configuration_snapshot() {
     );
     assert_eq!(
         envelope["data"]["workspace_upgrade"]["detection"]["latest_version"],
-        3
+        4
     );
     assert_ne!(
         envelope["data"]["workspace_upgrade"]["detection"]["current_version"],
@@ -277,7 +278,7 @@ fn config_set_migrates_legacy_config_json_before_writing_like_go() {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
     assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
     let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
@@ -458,6 +459,12 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
     assert_eq!(contacts_save["implemented"], true);
     assert_eq!(contacts_save["handler"], "people.contacts.save");
     assert_eq!(schema_flag(contacts_save, "did")["required"], true);
+    assert_eq!(
+        schema_flag(contacts_save, "display-name")["usage"],
+        "Contact display name"
+    );
+    let contacts_save_all = schema_all_command("people.contacts.save");
+    assert_eq!(schema_flag(&contacts_save_all, "name")["deprecated"], true);
 
     let raw = schema_for(&["debug", "raw"]);
     assert_eq!(schema_command(&raw)["implemented"], false);
@@ -592,6 +599,15 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
         schema_flag(schema_command(&profile_set), "display-name")["usage"],
         "Profile display name"
     );
+    assert_eq!(
+        schema_flag(schema_command(&profile_set), "avatar-uri")["usage"],
+        "Profile avatar URI"
+    );
+    let profile_set_all = schema_all_command("id.profile.set");
+    assert_eq!(
+        schema_flag(&profile_set_all, "avatar-url")["deprecated"],
+        true
+    );
 
     let msg_send = schema_for(&["msg", "send"]);
     assert_eq!(
@@ -614,6 +630,10 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
         "deprecated message-security-profile should stay off the default schema surface: {group_create:?}"
     );
     let group_create_all = schema_all_command("group.create");
+    assert_eq!(
+        schema_flag(&group_create_all, "avatar-uri")["usage"],
+        "Group avatar URI"
+    );
     assert_eq!(
         schema_flag(&group_create_all, "message-security-profile")["choices"],
         serde_json::json!(["transport-protected", "group-e2ee"])
@@ -877,6 +897,8 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
             "did:example:alice",
             "--handle",
             "alice",
+            "--display-name",
+            "Alice",
             "--reason",
             "migration smoke",
         ],
@@ -895,6 +917,8 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
     );
     assert_eq!(envelope["data"]["plan"]["did"], "did:example:alice");
     assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.ai");
+    assert_eq!(envelope["data"]["plan"]["display_name"], "Alice");
+    assert_eq!(envelope["data"]["plan"]["name"], "Alice");
     assert_eq!(envelope["data"]["plan"]["note"], "migration smoke");
     assert_ne!(
         envelope["error"]["code"], "unsupported_capability",
@@ -1064,6 +1088,8 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", Path::new(workspace).join("home"))
+        .env("USERPROFILE", Path::new(workspace).join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -1079,6 +1105,8 @@ fn awiki_trace_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", Path::new(workspace).join("home"))
+        .env("USERPROFILE", Path::new(workspace).join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")
@@ -1312,12 +1340,20 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("awiki-cli-rs2-test-{}-{nanos}", std::process::id()));
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-test-{}-{nanos}-{thread_id}-{counter}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&path)?;
         Ok(Self { path })
     }

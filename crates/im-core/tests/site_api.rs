@@ -10,7 +10,54 @@ use im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]
-fn site_public_api_dispatches_authenticated_site_rpc() {
+#[cfg(not(feature = "blocking"))]
+fn site_public_sync_api_fails_closed_by_default() {
+    let fixture = Fixture::new();
+    let core = fixture.core("https://example.test".to_owned());
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .unwrap();
+
+    let err = client
+        .site()
+        .get_root(SiteDomain::parse("tenant.example").unwrap())
+        .expect_err("sync site API should fail closed in async cutover build");
+    assert!(matches!(
+        err,
+        ImError::UnsupportedCapability { capability } if capability == "sync-http"
+    ));
+}
+
+#[test]
+#[cfg(feature = "blocking")]
+fn site_public_sync_api_dispatches_when_blocking_feature_is_enabled() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![json!({
+        "domain": "tenant.example",
+        "body": "# Home"
+    })]);
+    let core = fixture.core(server.base_url());
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .unwrap();
+
+    let root = client
+        .site()
+        .get_root(SiteDomain::parse("tenant.example").unwrap())
+        .unwrap();
+    assert_eq!(root.domain.as_str(), "tenant.example");
+    assert_eq!(root.body.as_deref(), Some("# Home"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/site/rpc");
+    assert_eq!(requests[0].rpc_method, "get_root");
+    assert_eq!(requests[0].params, json!({ "domain": "tenant.example" }));
+}
+
+#[tokio::test]
+async fn site_public_async_api_dispatches_authenticated_site_rpc() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         json!({
@@ -30,21 +77,23 @@ fn site_public_api_dispatches_authenticated_site_rpc() {
     let domain = SiteDomain::parse("tenant.example").unwrap();
     let root = client
         .site()
-        .set_root(SiteRootDraft {
+        .set_root_async(SiteRootDraft {
             domain: domain.clone(),
             body: "# Home".to_owned(),
         })
+        .await
         .unwrap();
     assert_eq!(root.domain.as_str(), "tenant.example");
     assert_eq!(root.body.as_deref(), Some("# Home"));
 
     let page = client
         .site()
-        .create_page(SitePageDraft {
+        .create_page_async(SitePageDraft {
             domain: domain.clone(),
             slug: PageSlug::parse("about").unwrap(),
             body: "About".to_owned(),
         })
+        .await
         .unwrap();
     assert_eq!(page.domain.as_str(), "tenant.example");
     assert_eq!(page.slug.as_str(), "about");
@@ -75,8 +124,8 @@ fn site_public_api_dispatches_authenticated_site_rpc() {
     );
 }
 
-#[test]
-fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
+#[tokio::test]
+async fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         RpcResponse::success(json!({
@@ -109,39 +158,42 @@ fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     let domain = SiteDomain::parse("tenant.example").unwrap();
     let page = SitePageRef::new(domain.clone(), PageSlug::parse("about").unwrap());
 
-    let root = client.site().get_root(domain.clone()).unwrap();
+    let root = client.site().get_root_async(domain.clone()).await.unwrap();
     assert_eq!(root.domain.as_str(), "tenant.example");
 
     let listed = client
         .site()
-        .list_pages(SitePageQuery {
+        .list_pages_async(SitePageQuery {
             domain: domain.clone(),
             ..Default::default()
         })
+        .await
         .unwrap();
     assert_eq!(listed.items.len(), 1);
 
-    let fetched = client.site().get_page(page.clone()).unwrap();
+    let fetched = client.site().get_page_async(page.clone()).await.unwrap();
     assert_eq!(fetched.slug.as_str(), "about");
 
     let updated = client
         .site()
-        .update_page(
+        .update_page_async(
             page.clone(),
             SitePageUpdate {
                 body: "Updated".to_owned(),
             },
         )
+        .await
         .unwrap();
     assert_eq!(updated.body.as_deref(), Some("Updated"));
 
     let renamed = client
         .site()
-        .rename_page(page.clone(), PageSlug::parse("team").unwrap())
+        .rename_page_async(page.clone(), PageSlug::parse("team").unwrap())
+        .await
         .unwrap();
     assert_eq!(renamed.slug.as_str(), "team");
 
-    let deleted = client.site().delete_page(page).unwrap();
+    let deleted = client.site().delete_page_async(page).await.unwrap();
     assert!(deleted.deleted);
 
     let requests = server.join();
@@ -185,8 +237,8 @@ fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     );
 }
 
-#[test]
-fn site_public_api_maps_remote_error_statuses() {
+#[tokio::test]
+async fn site_public_api_maps_remote_error_statuses() {
     for status in [400, 401, 403, 404, 409] {
         let fixture = Fixture::new();
         let mut responses = vec![RpcResponse::http_error(
@@ -204,7 +256,8 @@ fn site_public_api_maps_remote_error_statuses() {
 
         let err = client
             .site()
-            .get_root(SiteDomain::parse("tenant.example").unwrap())
+            .get_root_async(SiteDomain::parse("tenant.example").unwrap())
+            .await
             .expect_err("remote status should map to service error");
         assert_service_status(err, status);
         let expected_requests = if status == 401 { 2 } else { 1 };
@@ -434,7 +487,10 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
 fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {

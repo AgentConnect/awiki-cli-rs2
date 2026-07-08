@@ -140,7 +140,7 @@ fn register_generated_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) -> TestIdentity {
-    write_ready_identity(
+    let identity = write_ready_identity(
         workspace,
         TestIdentityOptions {
             identity_name,
@@ -149,7 +149,20 @@ fn register_generated_msg_identity(
             jwt_token,
             make_default: true,
         },
-    )
+    );
+    migrate_identity_to_vault(workspace);
+    identity
+}
+
+fn migrate_identity_to_vault(workspace: &Path) {
+    let output = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vault migration failed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
@@ -165,6 +178,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -324,7 +339,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -366,7 +386,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

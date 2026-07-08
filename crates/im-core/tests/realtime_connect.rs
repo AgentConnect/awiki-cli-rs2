@@ -1,14 +1,19 @@
+#[cfg(feature = "blocking")]
 use std::io::{Read, Write};
+#[cfg(feature = "blocking")]
 use std::net::TcpListener;
 use std::path::PathBuf;
+#[cfg(feature = "blocking")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "blocking")]
 use std::time::Duration;
 
 use im_core::prelude::*;
+#[cfg(feature = "blocking")]
+use im_core::realtime::{connect_realtime_with_transport, RealtimeAuthProvider, RealtimeTransport};
 use im_core::realtime::{
-    connect_realtime_with_transport, realtime_client_construction_plan, realtime_client_endpoints,
-    simulate_realtime_connect, RealtimeAuthProvider, RealtimeConnectAction, RealtimeDialOutcome,
-    RealtimeRefreshOutcome, RealtimeTransport,
+    realtime_client_construction_plan, realtime_client_endpoints, simulate_realtime_connect,
+    RealtimeConnectAction, RealtimeDialOutcome, RealtimeRefreshOutcome,
 };
 
 #[test]
@@ -115,6 +120,7 @@ fn realtime_connect_simulation_returns_first_non_401_dial_error_without_refresh(
 }
 
 #[test]
+#[cfg(feature = "blocking")]
 fn realtime_connect_with_fake_transport_emits_initial_connection_events() {
     let endpoints = realtime_client_endpoints("https://example.test").unwrap();
     let mut transport = FakeRealtimeTransport::new(vec![RealtimeDialOutcome::Connected]);
@@ -149,6 +155,7 @@ fn realtime_connect_with_fake_transport_emits_initial_connection_events() {
 }
 
 #[test]
+#[cfg(feature = "blocking")]
 fn realtime_connect_with_fake_transport_refreshes_after_401_and_retries() {
     let endpoints = realtime_client_endpoints("https://example.test").unwrap();
     let mut transport = FakeRealtimeTransport::new(vec![
@@ -201,6 +208,7 @@ fn realtime_connect_with_fake_transport_refreshes_after_401_and_retries() {
 }
 
 #[test]
+#[cfg(feature = "blocking")]
 fn realtime_service_connect_starts_native_transport_worker_without_exposing_websocket() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock websocket listener");
     let addr = listener.local_addr().expect("listener addr");
@@ -261,6 +269,7 @@ fn realtime_service_connect_starts_native_transport_worker_without_exposing_webs
 }
 
 #[test]
+#[cfg(feature = "blocking")]
 fn realtime_service_connect_reads_native_websocket_notification_into_im_event() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock websocket listener");
     let addr = listener.local_addr().expect("listener addr");
@@ -325,20 +334,37 @@ fn realtime_service_connect_reads_native_websocket_notification_into_im_event() 
     ));
 }
 
-#[test]
-fn realtime_service_connect_requires_realtime_bearer_before_default_transport() {
+#[tokio::test]
+async fn realtime_service_start_async_defers_missing_bearer_to_transport_boundary() {
     let fixture = RuntimeFixture::new();
     fixture.write_ready_identity("alice", None);
     let client = fixture.client("alice");
 
-    let error = match client.realtime().connect(RealtimeOptions::default()) {
-        Ok(_) => panic!("missing auth should block transport dial"),
-        Err(error) => error,
-    };
+    let mut session = client
+        .realtime()
+        .start_async(RealtimeOptions::default())
+        .await
+        .expect("missing auth should still create a worker session");
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(2), session.join())
+        .await
+        .expect("realtime worker should finish against the test endpoint")
+        .expect("realtime worker returns an exit status");
 
-    assert_eq!(error, ImError::AuthRequired);
+    assert!(
+        matches!(
+            exit.reason,
+            RealtimeExitReason::TransportUnavailable | RealtimeExitReason::AuthFailed
+        ),
+        "unexpected realtime exit reason: {:?}",
+        exit.reason
+    );
+    assert!(
+        !exit.warnings.is_empty(),
+        "expected worker boundary warning for failed refresh/dial"
+    );
 }
 
+#[cfg(feature = "blocking")]
 fn recv_events(receiver: &std::sync::mpsc::Receiver<ImEvent>, count: usize) -> Vec<ImEvent> {
     (0..count)
         .map(|_| {
@@ -349,6 +375,7 @@ fn recv_events(receiver: &std::sync::mpsc::Receiver<ImEvent>, count: usize) -> V
         .collect()
 }
 
+#[cfg(feature = "blocking")]
 fn read_handshake_request(stream: &mut std::net::TcpStream) -> String {
     let mut raw = Vec::new();
     let mut byte = [0_u8; 1];
@@ -365,6 +392,7 @@ fn read_handshake_request(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8(raw).expect("handshake utf8")
 }
 
+#[cfg(feature = "blocking")]
 fn write_unmasked_text_frame(stream: &mut std::net::TcpStream, text: &str) {
     let bytes = text.as_bytes();
     if bytes.len() < 126 {
@@ -381,6 +409,7 @@ fn write_unmasked_text_frame(stream: &mut std::net::TcpStream, text: &str) {
     stream.write_all(bytes).expect("write frame payload");
 }
 
+#[cfg(feature = "blocking")]
 fn websocket_accept(key: &str) -> String {
     const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -390,6 +419,7 @@ fn websocket_accept(key: &str) -> String {
     BASE64_STANDARD.encode(sha1_digest(&raw))
 }
 
+#[cfg(feature = "blocking")]
 fn sha1_digest(input: &[u8]) -> [u8; 20] {
     let mut h0: u32 = 0x67452301;
     let mut h1: u32 = 0xEFCDAB89;
@@ -469,11 +499,13 @@ fn dial_action(token: &str) -> RealtimeConnectAction {
     }
 }
 
+#[cfg(feature = "blocking")]
 struct FakeRealtimeTransport {
     outcomes: Vec<RealtimeDialOutcome>,
     dialed: Vec<(String, String)>,
 }
 
+#[cfg(feature = "blocking")]
 impl FakeRealtimeTransport {
     fn new(outcomes: Vec<RealtimeDialOutcome>) -> Self {
         Self {
@@ -483,6 +515,7 @@ impl FakeRealtimeTransport {
     }
 }
 
+#[cfg(feature = "blocking")]
 impl RealtimeTransport for FakeRealtimeTransport {
     fn dial_bearer(&mut self, websocket_url: &str, bearer_token: &str) -> RealtimeDialOutcome {
         self.dialed
@@ -498,11 +531,13 @@ impl RealtimeTransport for FakeRealtimeTransport {
     }
 }
 
+#[cfg(feature = "blocking")]
 struct FakeRealtimeAuthProvider {
     outcomes: Vec<RealtimeRefreshOutcome>,
     refresh_urls: Vec<String>,
 }
 
+#[cfg(feature = "blocking")]
 impl FakeRealtimeAuthProvider {
     fn new(outcomes: Vec<RealtimeRefreshOutcome>) -> Self {
         Self {
@@ -512,6 +547,7 @@ impl FakeRealtimeAuthProvider {
     }
 }
 
+#[cfg(feature = "blocking")]
 impl RealtimeAuthProvider for FakeRealtimeAuthProvider {
     fn refresh_realtime_bearer(&mut self, did_auth_url: &str) -> ImResult<RealtimeRefreshOutcome> {
         self.refresh_urls.push(did_auth_url.to_string());

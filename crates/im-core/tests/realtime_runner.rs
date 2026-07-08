@@ -1,3 +1,5 @@
+#![cfg(feature = "blocking")]
+
 use std::collections::VecDeque;
 
 use im_core::prelude::*;
@@ -391,7 +393,7 @@ impl FakeRunnerTransport {
 
 impl RealtimeRunnerTransport for FakeRunnerTransport {
     fn connect(&mut self) -> ImResult<()> {
-        let result = self.connect_results.pop_front().unwrap_or_else(|| Ok(()));
+        let result = self.connect_results.pop_front().unwrap_or(Ok(()));
         self.connect_attempts += 1;
         result
     }

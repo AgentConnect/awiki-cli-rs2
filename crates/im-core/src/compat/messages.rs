@@ -119,6 +119,8 @@ where
                 identity_name: request.credentials.identity_name,
                 did_document: request.credentials.did_document,
                 key1_private_pem: request.credentials.key1_private_pem,
+                verification_method: None,
+                logical_sender_did: None,
             },
         ),
     })?;
@@ -178,6 +180,7 @@ where
         thread: request.thread,
         query: request.query,
         resolved_peer_did: request.resolved_peer_did,
+        peer_scope: None,
     })?;
     Ok(ReadBridgeResult {
         page: result.page,

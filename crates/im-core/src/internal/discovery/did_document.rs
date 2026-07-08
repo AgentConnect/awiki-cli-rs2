@@ -28,6 +28,41 @@ where
     Ok(document)
 }
 
+pub(crate) async fn resolve_did_document_async<T>(
+    transport: &mut T,
+    did: &str,
+) -> crate::ImResult<Value>
+where
+    T: crate::internal::transport::AsyncRawJsonTransport,
+{
+    let url = did_document_url(did)?;
+    let document = transport
+        .get_json_url(
+            &url,
+            BTreeMap::from([("Accept".to_string(), "application/json".to_string())]),
+        )
+        .await?;
+    validate_resolved_did_document(did, document)
+}
+
+fn validate_resolved_did_document(did: &str, document: Value) -> crate::ImResult<Value> {
+    if document.get("id").and_then(Value::as_str) != Some(did) {
+        return Err(crate::ImError::invalid_input(
+            Some("did_document".to_string()),
+            "resolved DID document id does not match requested DID",
+        ));
+    }
+    if did.starts_with("did:wba:")
+        && !anp::authentication::validate_did_document_binding(&document, true)
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("did_document".to_string()),
+            "resolved DID document binding is invalid",
+        ));
+    }
+    Ok(document)
+}
+
 pub(crate) fn did_document_url(did: &str) -> crate::ImResult<String> {
     let (scheme, rest) = did
         .split_once(':')

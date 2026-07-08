@@ -15,15 +15,26 @@ struct MsgSendPlan<'a> {
     group: &'a str,
     text: &'a str,
     message_type: &'a str,
+    payload: Option<&'a Value>,
     file_path: &'a str,
     mime_type: &'a str,
     has_attachment: bool,
     secure: bool,
 }
 
+struct MsgSendPlanBody<'a> {
+    text: String,
+    message_type: &'static str,
+    payload: Option<&'a Value>,
+}
+
 impl App {
     pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         self.run_msg_send_im_core(command)
+    }
+
+    pub async fn run_msg_send_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_msg_send_im_core_async(command).await
     }
 
     fn run_msg_send_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -49,16 +60,17 @@ impl App {
                 &resolved.did_domain,
             )?;
         let secure = message_security_is_required(&request.security);
-        let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
+            let body = send_message_plan_body(&request)?;
             return self.render_msg_send_plan(
                 &resolved,
                 MsgSendPlan {
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
-                    text: &text,
-                    message_type,
+                    text: &body.text,
+                    message_type: body.message_type,
+                    payload: body.payload,
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
@@ -72,14 +84,78 @@ impl App {
             &resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let mut result =
-            crate::m_core_cli_adapter::messages::send_text_via_im_core(&resolved, &client, request)
-                .map_err(|err| {
-                    message_exit(
-                        err,
-                        "Ensure the active identity is ready and the message service is reachable.",
-                    )
-                })?;
+        let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core(
+            &resolved, &client, request,
+        )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and the message service is reachable.",
+            )
+        })?;
+        result.warnings.extend(request_warnings);
+        self.render_message_result("awiki-cli msg send", &resolved, result)
+    }
+
+    async fn run_msg_send_im_core_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let file_path = string_flag(command, "file");
+        let mime_type = string_flag(command, "mime-type");
+        if file_path.trim().is_empty() && !mime_type.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mime_type requires an attachment file",
+                "Use --mime-type only together with --file.",
+            ));
+        }
+
+        let resolved = self.resolve_config_for_workspace()?;
+        if !file_path.trim().is_empty() {
+            return self
+                .run_msg_attachment_send_im_core_async(command, &resolved, &file_path, &mime_type)
+                .await;
+        }
+        let (request, request_warnings) =
+            crate::m_core_cli_adapter::messages::send_message_request(
+                command,
+                &resolved.did_domain,
+            )?;
+        let secure = message_security_is_required(&request.security);
+        if self.globals.dry_run {
+            let body = send_message_plan_body(&request)?;
+            return self.render_msg_send_plan(
+                &resolved,
+                MsgSendPlan {
+                    identity: &self.globals.identity,
+                    to: &string_flag(command, "to"),
+                    group: &string_flag(command, "group"),
+                    text: &body.text,
+                    message_type: body.message_type,
+                    payload: body.payload,
+                    file_path: "",
+                    mime_type: "",
+                    has_attachment: false,
+                    secure,
+                },
+                request_warnings,
+            );
+        }
+
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let mut result = crate::m_core_cli_adapter::messages::send_message_via_im_core_async(
+            &resolved, &client, request,
+        )
+        .await
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and the message service is reachable.",
+            )
+        })?;
         result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", &resolved, result)
     }
@@ -91,11 +167,18 @@ impl App {
         file_path: &str,
         mime_type: &str,
     ) -> Result<(), ExitError> {
-        let (target, request) = crate::m_core_cli_adapter::messages::send_attachment_request(
-            command,
-            &resolved.did_domain,
-        )?;
+        let (target, request, request_warnings) =
+            crate::m_core_cli_adapter::messages::send_attachment_request(
+                command,
+                &resolved.did_domain,
+            )?;
         let caption = request.caption.clone().unwrap_or_default();
+        let secure = matches!(
+            request.security,
+            im_core::prelude::MessageSecurityMode::E2eeRequired
+                | im_core::prelude::MessageSecurityMode::SecureDirect
+                | im_core::prelude::MessageSecurityMode::GroupE2ee
+        );
         if self.globals.dry_run {
             return self.render_msg_send_plan(
                 resolved,
@@ -105,12 +188,13 @@ impl App {
                     group: &string_flag(command, "group"),
                     text: &caption,
                     message_type: "",
+                    payload: None,
                     file_path,
                     mime_type,
                     has_attachment: true,
-                    secure: false,
+                    secure,
                 },
-                Vec::new(),
+                request_warnings,
             );
         }
 
@@ -118,7 +202,7 @@ impl App {
             resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
+        let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core(
             resolved, &client, target, request,
         )
         .map_err(|err| {
@@ -127,6 +211,64 @@ impl App {
                 "Ensure the active identity is ready and the attachment service is reachable.",
             )
         })?;
+        result.warnings.extend(request_warnings);
+        self.render_message_result("awiki-cli msg send", resolved, result)
+    }
+
+    async fn run_msg_attachment_send_im_core_async(
+        &self,
+        command: &ParsedCommand,
+        resolved: &Resolved,
+        file_path: &str,
+        mime_type: &str,
+    ) -> Result<(), ExitError> {
+        let (target, request, request_warnings) =
+            crate::m_core_cli_adapter::messages::send_attachment_request(
+                command,
+                &resolved.did_domain,
+            )?;
+        let caption = request.caption.clone().unwrap_or_default();
+        let secure = matches!(
+            request.security,
+            im_core::prelude::MessageSecurityMode::E2eeRequired
+                | im_core::prelude::MessageSecurityMode::SecureDirect
+                | im_core::prelude::MessageSecurityMode::GroupE2ee
+        );
+        if self.globals.dry_run {
+            return self.render_msg_send_plan(
+                resolved,
+                MsgSendPlan {
+                    identity: &self.globals.identity,
+                    to: &string_flag(command, "to"),
+                    group: &string_flag(command, "group"),
+                    text: &caption,
+                    message_type: "",
+                    payload: None,
+                    file_path,
+                    mime_type,
+                    has_attachment: true,
+                    secure,
+                },
+                request_warnings,
+            );
+        }
+
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let mut result = crate::m_core_cli_adapter::messages::send_attachment_via_im_core_async(
+            resolved, &client, target, request,
+        )
+        .await
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and the attachment service is reachable.",
+            )
+        })?;
+        result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", resolved, result)
     }
 
@@ -194,6 +336,9 @@ impl App {
                 }),
             );
         }
+        if let Some(payload) = input.payload {
+            plan.insert("payload".to_string(), payload.clone());
+        }
 
         self.render_success(
             "awiki-cli msg send",
@@ -221,6 +366,37 @@ impl App {
         let result = crate::m_core_cli_adapter::messages::download_attachment_via_im_core(
             &resolved, &client, request,
         )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the message id, attachment id, and attachment service are reachable.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg attachment download", &resolved, result)
+    }
+
+    pub async fn run_msg_attachment_download_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let request = crate::m_core_cli_adapter::messages::download_attachment_request(
+            command,
+            &resolved.did_domain,
+        )?;
+        if self.globals.dry_run {
+            return self.render_msg_attachment_download_plan(command, &resolved);
+        }
+
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::messages::download_attachment_via_im_core_async(
+            &resolved, &client, request,
+        )
+        .await
         .map_err(|err| {
             message_exit(
                 err,
@@ -291,6 +467,26 @@ impl App {
         self.run_msg_inbox_im_core(command)
     }
 
+    pub async fn run_msg_inbox_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if !string_flag(command, "with").trim().is_empty()
+            || !string_flag(command, "group").trim().is_empty()
+        {
+            return Err(super::unsupported::unsupported_cutover_command(
+                "msg.inbox",
+                "inbox-target-filters",
+                "Phase 3",
+            ));
+        }
+        if bool_flag(command, "mark-read") {
+            return Err(super::unsupported::unsupported_cutover_command(
+                "msg.inbox",
+                "inbox-mark-read-side-effect",
+                "Phase 3",
+            ));
+        }
+        self.run_msg_inbox_im_core_async(command).await
+    }
+
     fn run_msg_inbox_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::m_core_cli_adapter::messages::inbox_query(command)?;
@@ -302,6 +498,30 @@ impl App {
             let result = crate::m_core_cli_adapter::messages::read_inbox_via_im_core(
                 &resolved, &client, query,
             )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the active identity is ready and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg inbox", &resolved, result);
+        }
+        self.render_msg_inbox_plan(command, &resolved)
+    }
+
+    async fn run_msg_inbox_im_core_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let query = crate::m_core_cli_adapter::messages::inbox_query(command)?;
+        if !self.globals.dry_run {
+            let client = crate::m_core_cli_adapter::build_im_client_async(
+                &resolved,
+                crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+            )
+            .await?;
+            let result = crate::m_core_cli_adapter::messages::read_inbox_via_im_core_async(
+                &resolved, &client, query,
+            )
+            .await
             .map_err(|err| {
                 message_exit(
                     err,
@@ -357,6 +577,10 @@ impl App {
         self.run_msg_history_im_core(command)
     }
 
+    pub async fn run_msg_history_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_msg_history_im_core_async(command).await
+    }
+
     fn run_msg_history_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let (thread, query) =
@@ -369,6 +593,34 @@ impl App {
             let result = crate::m_core_cli_adapter::messages::read_history_via_im_core(
                 &resolved, &client, thread, query,
             )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the peer is valid and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg history", &resolved, result);
+        }
+        self.render_msg_history_plan(command, &resolved)
+    }
+
+    async fn run_msg_history_im_core_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let (thread, query) =
+            crate::m_core_cli_adapter::messages::history_request(command, &resolved.did_domain)?;
+        if !self.globals.dry_run {
+            let client = crate::m_core_cli_adapter::build_im_client_async(
+                &resolved,
+                crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+            )
+            .await?;
+            let result = crate::m_core_cli_adapter::messages::read_history_via_im_core_async(
+                &resolved, &client, thread, query,
+            )
+            .await
             .map_err(|err| {
                 message_exit(
                     err,
@@ -491,6 +743,52 @@ impl App {
         )
     }
 
+    pub async fn run_msg_mark_read_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if command.args.is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "msg mark-read requires at least one message id.",
+                "Usage: awiki-cli msg mark-read <MESSAGE_ID...>",
+            ));
+        }
+        let resolved = self.resolve_config_for_workspace()?;
+        if !self.globals.dry_run {
+            let client = crate::m_core_cli_adapter::build_im_client_async(
+                &resolved,
+                crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+            )
+            .await?;
+            let result = crate::m_core_cli_adapter::messages::mark_read_via_im_core_async(
+                &resolved,
+                &client,
+                command.args.clone(),
+            )
+            .await
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the message ids are valid and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg mark-read", &resolved, result);
+        }
+        self.render_success(
+            "awiki-cli msg mark-read",
+            &resolved,
+            json!({
+                "plan": {
+                    "action": "inbox.mark_read",
+                    "identity": self.globals.identity,
+                    "runtime_mode": resolved.runtime_mode,
+                    "message_ids": command.args,
+                }
+            }),
+            "Dry run: mark-read planned",
+            Vec::new(),
+        )
+    }
+
     pub fn run_msg_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let peer = required_peer_flag(command, "msg secure status")?;
@@ -512,6 +810,41 @@ impl App {
             peer,
             &resolved.did_domain,
         )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and local secure state is available.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg secure status", &resolved, result)
+    }
+
+    pub async fn run_msg_secure_status_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let peer = required_peer_flag(command, "msg secure status")?;
+        if self.globals.dry_run {
+            return self.render_msg_secure_plan(
+                "awiki-cli msg secure status",
+                &resolved,
+                "secure.direct.status",
+                &peer,
+                "Dry run: direct secure status planned",
+            );
+        }
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::messages::direct_secure_status_via_im_core_async(
+            &client,
+            peer,
+            &resolved.did_domain,
+        )
+        .await
         .map_err(|err| {
             message_exit(
                 err,
@@ -546,6 +879,41 @@ impl App {
             peer,
             &resolved.did_domain,
         )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and local secure state is available.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg secure repair", &resolved, result)
+    }
+
+    pub async fn run_msg_secure_repair_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let peer = required_peer_flag(command, "msg secure repair")?;
+        if self.globals.dry_run {
+            return self.render_msg_secure_plan(
+                "awiki-cli msg secure repair",
+                &resolved,
+                "secure.direct.repair",
+                &peer,
+                "Dry run: direct secure repair planned",
+            );
+        }
+        let client = crate::m_core_cli_adapter::build_im_client_async(
+            &resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await?;
+        let result = crate::m_core_cli_adapter::messages::direct_secure_repair_via_im_core_async(
+            &client,
+            peer,
+            &resolved.did_domain,
+        )
+        .await
         .map_err(|err| {
             message_exit(
                 err,
@@ -680,11 +1048,20 @@ fn default_string(value: &str, fallback: &str) -> String {
     }
 }
 
-fn send_text_plan_fields(
+fn send_message_plan_body(
     request: &im_core::prelude::SendMessageRequest,
-) -> Result<(String, &'static str), ExitError> {
+) -> Result<MsgSendPlanBody<'_>, ExitError> {
     match &request.body {
-        MessageBody::Text { text, kind } => Ok((text.clone(), message_type_for_kind(kind))),
+        MessageBody::Text { text, kind } => Ok(MsgSendPlanBody {
+            text: text.clone(),
+            message_type: message_type_for_kind(kind),
+            payload: None,
+        }),
+        MessageBody::Payload { payload } => Ok(MsgSendPlanBody {
+            text: String::new(),
+            message_type: "application/json",
+            payload: Some(payload),
+        }),
         MessageBody::Attachment { .. } => Err(ExitError::new(
             "unsupported_capability",
             2,

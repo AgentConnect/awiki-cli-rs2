@@ -5,6 +5,8 @@ pub struct DartImError {
     pub field: Option<String>,
     pub status_code: Option<u16>,
     pub capability: Option<String>,
+    pub service_code: Option<String>,
+    pub service_data_json: Option<String>,
 }
 
 impl DartImError {
@@ -15,6 +17,8 @@ impl DartImError {
             field,
             status_code: None,
             capability: None,
+            service_code: None,
+            service_data_json: None,
         }
     }
 
@@ -26,6 +30,8 @@ impl DartImError {
             field: None,
             status_code: None,
             capability: Some(capability),
+            service_code: None,
+            service_data_json: None,
         }
     }
 
@@ -37,6 +43,8 @@ impl DartImError {
             field: None,
             status_code: None,
             capability: None,
+            service_code: None,
+            service_data_json: None,
         }
     }
 
@@ -47,6 +55,8 @@ impl DartImError {
             field: None,
             status_code: None,
             capability: None,
+            service_code: None,
+            service_data_json: None,
         }
     }
 }
@@ -101,14 +111,17 @@ impl From<im_core::ImError> for DartImError {
             ),
             im_core::ImError::Service {
                 status_code,
-                code: _,
+                code,
                 message,
+                data,
             } => Self {
                 code: "service_error".to_string(),
                 message,
                 field: None,
                 status_code,
                 capability: None,
+                service_code: code,
+                service_data_json: data.map(|value| value.to_string()),
             },
             im_core::ImError::Serialization { detail } => Self::simple(
                 "serialization_error",
@@ -130,6 +143,8 @@ impl DartImError {
             field: None,
             status_code: None,
             capability: None,
+            service_code: None,
+            service_data_json: None,
         }
     }
 }

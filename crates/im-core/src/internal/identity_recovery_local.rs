@@ -211,6 +211,7 @@ pub(crate) fn create_recover_backup(
     plan: &RecoverLocalPlan,
     active_before: &str,
     config_file: Option<&Path>,
+    secret_storage: crate::internal::identity_store::SaveIdentitySecretStorage,
 ) -> crate::ImResult<RecoverBackupResult> {
     fs::create_dir_all(&paths.identity_root_dir)?;
     set_private_dir_mode(&paths.identity_root_dir)?;
@@ -263,7 +264,11 @@ pub(crate) fn create_recover_backup(
         if target_name.trim().is_empty() {
             target_name = format!("{:02}-{}", idx + 1, sanitize_component(&summary.dir_name));
         }
-        copy_dir(&source, &backup_dir.join("identities").join(target_name))?;
+        copy_dir(
+            &source,
+            &backup_dir.join("identities").join(target_name),
+            secret_storage.writes_secrets_to_vault(),
+        )?;
     }
 
     let manifest = RecoverBackupManifest {
@@ -573,7 +578,7 @@ fn unique_backup_dir(base: PathBuf) -> PathBuf {
     ))
 }
 
-fn copy_dir(source: &Path, target: &Path) -> crate::ImResult<()> {
+fn copy_dir(source: &Path, target: &Path, omit_secret_files: bool) -> crate::ImResult<()> {
     fs::create_dir_all(target)?;
     set_private_dir_mode(target)?;
     for entry in fs::read_dir(source)? {
@@ -582,13 +587,33 @@ fn copy_dir(source: &Path, target: &Path) -> crate::ImResult<()> {
         let target_path = target.join(entry.file_name());
         let metadata = entry.metadata()?;
         if metadata.is_dir() {
-            copy_dir(&source_path, &target_path)?;
+            copy_dir(&source_path, &target_path, omit_secret_files)?;
         } else if metadata.is_file() {
+            if omit_secret_files && is_identity_secret_file(&source_path) {
+                continue;
+            }
             fs::copy(&source_path, &target_path)?;
             set_private_file_mode(&target_path)?;
         }
     }
     Ok(())
+}
+
+fn is_identity_secret_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        "auth.json"
+            | "private.key"
+            | "key-1-private.pem"
+            | "key-3-private.pem"
+            | "e2ee-signing-private.pem"
+            | "e2ee-agreement-private.pem"
+            | "daemon-key-1-private.pem"
+            | "daemon-subkey-package.json"
+    )
 }
 
 fn write_secure_json(path: &Path, payload: &impl Serialize) -> crate::ImResult<()> {
@@ -707,12 +732,11 @@ fn compare_rfc3339(left: &str, right: &str) -> Ordering {
         (false, true) => return Ordering::Less,
         (false, false) => {}
     }
-    match (
+    if let (Ok(left_time), Ok(right_time)) = (
         OffsetDateTime::parse(left, &Rfc3339),
         OffsetDateTime::parse(right, &Rfc3339),
     ) {
-        (Ok(left_time), Ok(right_time)) => return left_time.cmp(&right_time),
-        _ => {}
+        return left_time.cmp(&right_time);
     }
     left.cmp(right)
 }
@@ -752,5 +776,127 @@ mod tests {
         assert_eq!(target.target_local_part, "alice");
         assert_eq!(target.effective_domain, "tenant.example");
         assert!(!target.explicit_domain);
+    }
+
+    #[test]
+    fn recover_backup_omits_secret_files_when_vault_storage_is_used() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let identities = &paths.identity_root_dir;
+        std::fs::create_dir_all(identities.join("alice-id")).unwrap();
+        std::fs::write(
+            &paths.registry_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 3,
+                "default_credential_name": "alice",
+                "credentials": {
+                    "alice": {
+                        "credential_name": "alice",
+                        "dir_name": "alice-id",
+                        "did": "did:wba:awiki.test:alice:e1_old",
+                        "unique_id": "alice-id",
+                        "user_id": "user-alice",
+                        "name": "Alice",
+                        "handle": "alice",
+                        "full_handle": "alice.awiki.test",
+                        "created_at": "2026-05-21T00:00:00Z",
+                        "is_default": true
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for (name, text) in [
+            (
+                "identity.json",
+                r#"{"did":"did:wba:awiki.test:alice:e1_old"}"#,
+            ),
+            (
+                "did_document.json",
+                r#"{"id":"did:wba:awiki.test:alice:e1_old"}"#,
+            ),
+            ("auth.json", r#"{"jwt_token":"test-token-for-alice"}"#),
+            ("private.key", "test-private-key-for-alice"),
+            ("key-1-private.pem", "-----BEGIN PRIVATE KEY-----\nsecret\n"),
+            (
+                "daemon-subkey-package.json",
+                r#"{"private_key_pem":"daemon-secret"}"#,
+            ),
+        ] {
+            std::fs::write(identities.join("alice-id").join(name), text).unwrap();
+        }
+        let plan = plan_recover_handle(
+            &paths,
+            &crate::ids::Handle::parse("alice.awiki.test", "").unwrap(),
+            None,
+            "awiki.test",
+        )
+        .unwrap();
+
+        let backup = create_recover_backup(
+            &paths,
+            &plan,
+            "alice",
+            None,
+            crate::internal::identity_store::SaveIdentitySecretStorage::Vault {
+                workspace_id: "workspace-a".to_string(),
+                device_id: "device-a".to_string(),
+                vault: std::sync::Arc::new(crate::internal::secret_vault::FileSecretVault::new(
+                    crate::internal::platform_secret::DeviceVaultRootKey::from_bytes([16_u8; 32]),
+                    crate::internal::secret_vault::FileSecretVaultStore::new(
+                        root.path().join("vault"),
+                    ),
+                )),
+            },
+        )
+        .unwrap();
+
+        let backup_text = collect_text_files(std::path::Path::new(&backup.backup_path));
+        assert!(backup_text.contains("did:wba:awiki.test:alice:e1_old"));
+        for marker in [
+            "test-token-for-alice",
+            "test-private-key-for-alice",
+            "-----BEGIN PRIVATE KEY-----",
+            "private_key_pem",
+            "daemon-secret",
+        ] {
+            assert!(!backup_text.contains(marker), "backup leaked {marker}");
+        }
+    }
+
+    fn test_paths(root: &Path) -> crate::paths::IdentityRegistryPaths {
+        crate::paths::IdentityRegistryPaths {
+            identity_root_dir: root.join("identities"),
+            registry_path: root.join("identities").join("registry.json"),
+            default_identity_path: Some(root.join("identities").join("default")),
+        }
+    }
+
+    fn collect_text_files(root: &Path) -> String {
+        let mut out = String::new();
+        collect_text_files_inner(root, &mut out);
+        out
+    }
+
+    fn collect_text_files_inner(root: &Path, out: &mut String) {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                collect_text_files_inner(&path, out);
+            } else if metadata.is_file() {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    out.push_str(&text);
+                    out.push('\n');
+                }
+            }
+        }
     }
 }

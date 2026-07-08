@@ -165,8 +165,9 @@ fn msg_attachment_validation_stays_at_cli_boundary() {
         "mime_type requires an attachment file",
     );
 
-    let secure_attachment = awiki_cmd(
+    let secure_attachment = success_json(&awiki_cmd(
         &[
+            "--dry-run",
             "--identity",
             "alice",
             "msg",
@@ -176,14 +177,24 @@ fn msg_attachment_validation_stays_at_cli_boundary() {
             "--file",
             attachment.to_str().expect("attachment path"),
             "--secure",
-            "on",
+            "required",
         ],
         workspace.path(),
+    ));
+    assert_eq!(
+        secure_attachment["data"]["plan"]["action"],
+        "attachment.send"
     );
-    assert_code(&secure_attachment, 2);
-    let envelope = error_json(&secure_attachment);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_contains(&envelope["error"]["message"], "secure attachment");
+    assert_eq!(secure_attachment["data"]["plan"]["secure"], true);
+    assert_eq!(secure_attachment["data"]["plan"]["security"], "required");
+    assert_eq!(
+        secure_attachment["data"]["plan"]["message_type"],
+        "attachment_manifest"
+    );
+    let serialized = serde_json::to_string(&secure_attachment).expect("serialize envelope");
+    assert!(!serialized.contains("object_key_b64u"));
+    assert!(!serialized.contains("nonce_b64u"));
+    assert!(!serialized.contains("download_ticket"));
 
     let missing_file = awiki_cmd(
         &[
@@ -260,6 +271,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

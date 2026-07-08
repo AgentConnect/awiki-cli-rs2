@@ -1,7 +1,10 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::{AttachmentObjectTransport, AuthenticatedRpcTransport};
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{
+    AsyncAttachmentObjectBody, AsyncAttachmentObjectTransport, AsyncAuthenticatedRpcTransport,
+    AttachmentObjectTransport, AuthenticatedRpcTransport,
+};
 
 const MESSAGE_RPC_ENDPOINT: &str = crate::internal::message_runtime::direct::MESSAGE_RPC_ENDPOINT;
 
@@ -15,7 +18,15 @@ pub(crate) struct AttachmentSendInput {
     pub target: crate::messages::MessageTarget,
     pub request: crate::attachments::AttachmentSendRequest,
     pub resolved_target_did: Option<String>,
+    pub client_message_id: Option<crate::ids::MessageId>,
     pub credentials: Option<AttachmentUploadCredentials>,
+}
+
+pub(crate) struct AttachmentPrepareObjectInput {
+    pub target: crate::messages::MessageTarget,
+    pub request: crate::attachments::AttachmentSendRequest,
+    pub resolved_target_did: Option<String>,
+    pub message_security_profile: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,14 +47,43 @@ pub struct AttachmentUploadResult {
     pub raw: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedCommittedAttachment {
+    pub target_kind: &'static str,
+    pub target_did: String,
+    pub prepared: crate::attachments::manifest::PreparedAttachment,
+    pub slot: crate::internal::wire::attachment::AttachmentCreateSlotResult,
+    pub descriptor: crate::attachments::manifest::AttachmentDescriptor,
+    pub redacted_manifest: Value,
+    pub full_manifest: Value,
+    pub grant_ref: Value,
+}
+
 struct PreparedAttachmentUpload {
     prepared: crate::attachments::manifest::PreparedAttachment,
     caption: String,
+    mention_payload: Option<Value>,
+    body: PreparedAttachmentBody,
+    object_e2ee_secrets: Option<crate::attachments::manifest::ObjectE2eeAttachmentSecrets>,
 }
 
 struct ManifestSendResult {
     raw: Value,
     meta: Value,
+}
+
+enum PreparedAttachmentBody {
+    Bytes(Vec<u8>),
+    File(std::path::PathBuf),
+}
+
+impl PreparedAttachmentBody {
+    fn clone_for_sync(&self) -> Vec<u8> {
+        match self {
+            Self::Bytes(bytes) => bytes.clone(),
+            Self::File(_) => Vec::new(),
+        }
+    }
 }
 
 impl<'a, P, T> AttachmentUploadRuntime<'a, P, T>
@@ -71,13 +111,14 @@ where
         let service_did = message_service_did(self.client)?;
         self.session_provider.ensure_session(auth_scope(&target))?;
 
+        let operation_id = input.request.delivery.idempotency_key.clone();
         let upload = prepare_request(input.request)?;
         let prepared = upload.prepared;
         let slot = self.create_slot(&target, &service_did, &prepared)?;
         self.transport.put_attachment_object(
             slot.upload_uri.as_str(),
             upload_headers(&slot.upload_headers),
-            prepared.payload.clone(),
+            upload.body.clone_for_sync(),
         )?;
         self.commit_object(&service_did, &prepared, &slot)?;
 
@@ -87,12 +128,22 @@ where
             slot.object_uri.clone(),
         );
         let manifest =
-            crate::attachments::manifest::build_attachment_manifest(&descriptor, &upload.caption);
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials(self.client)?,
         };
-        let send_result = self.send_manifest(&target, manifest.clone(), credentials)?;
+        let send_result = self.send_manifest(
+            &target,
+            manifest.clone(),
+            input.client_message_id.as_ref(),
+            operation_id.as_deref(),
+            credentials,
+        )?;
         let sdk_result = sdk_result_from_raw(
             send_result.raw.clone(),
             &send_result.meta,
@@ -112,19 +163,92 @@ where
         })
     }
 
+    pub(crate) fn prepare_and_commit_object(
+        mut self,
+        input: AttachmentPrepareObjectInput,
+    ) -> crate::ImResult<PreparedCommittedAttachment> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        let service_did = message_service_did(self.client)?;
+        self.session_provider.ensure_session(auth_scope(&target))?;
+
+        let upload = prepare_request_object_e2ee(input.request)?;
+        let prepared = upload.prepared;
+        let slot = self.create_slot_with_security_profile(
+            &target,
+            &service_did,
+            input.message_security_profile,
+            &prepared,
+        )?;
+        self.transport.put_attachment_object(
+            slot.upload_uri.as_str(),
+            upload_headers(&slot.upload_headers),
+            upload.body.clone_for_sync(),
+        )?;
+        self.commit_object(&service_did, &prepared, &slot)?;
+
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared,
+            slot.attachment_id.clone(),
+            slot.object_uri.clone(),
+        );
+        let redacted_manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
+        let secrets =
+            upload
+                .object_e2ee_secrets
+                .as_ref()
+                .ok_or_else(|| crate::ImError::Internal {
+                    message: "object-e2ee attachment secrets missing after encryption".to_owned(),
+                })?;
+        let full_manifest = crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets_and_mention_payload(
+            &descriptor,
+            &upload.caption,
+            secrets,
+            upload.mention_payload.as_ref(),
+        )?;
+        let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)?;
+
+        Ok(PreparedCommittedAttachment {
+            target_kind: target.kind(),
+            target_did: target.did().to_string(),
+            prepared,
+            slot,
+            descriptor,
+            redacted_manifest,
+            full_manifest,
+            grant_ref,
+        })
+    }
+
     fn create_slot(
         &mut self,
         target: &ResolvedAttachmentTarget,
         service_did: &str,
         prepared: &crate::attachments::manifest::PreparedAttachment,
     ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
-        let params = crate::internal::wire::attachment::build_attachment_create_slot_rpc_params(
-            self.client.did().as_str(),
-            service_did,
-            target.kind(),
-            target.did(),
-            prepared,
-        )?;
+        self.create_slot_with_security_profile(target, service_did, "transport-protected", prepared)
+    }
+
+    fn create_slot_with_security_profile(
+        &mut self,
+        target: &ResolvedAttachmentTarget,
+        service_did: &str,
+        message_security_profile: &str,
+        prepared: &crate::attachments::manifest::PreparedAttachment,
+    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+        let params =
+            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_security_profile(
+                self.client.did().as_str(),
+                service_did,
+                target.kind(),
+                target.did(),
+                message_security_profile,
+                prepared,
+            )?;
         let raw = self.transport.authenticated_rpc(
             MESSAGE_RPC_ENDPOINT,
             "attachment.create_slot",
@@ -166,6 +290,8 @@ where
         &mut self,
         target: &ResolvedAttachmentTarget,
         manifest: Value,
+        client_message_id: Option<&crate::ids::MessageId>,
+        operation_id: Option<&str>,
         credentials: AttachmentUploadCredentials,
     ) -> crate::ImResult<ManifestSendResult> {
         let identity = crate::internal::wire::attachment::AttachmentSigningIdentity {
@@ -178,7 +304,11 @@ where
             ResolvedAttachmentTarget::Direct { target_did, .. } => (
                 "direct.send",
                 crate::internal::wire::attachment::build_direct_attachment_send_rpc_params(
-                    &identity, target_did, manifest,
+                    &identity,
+                    target_did,
+                    manifest,
+                    client_message_id,
+                    operation_id,
                 )?,
             ),
             ResolvedAttachmentTarget::Group { group } => (
@@ -187,6 +317,8 @@ where
                     &identity,
                     group.as_str(),
                     manifest,
+                    client_message_id,
+                    operation_id,
                 )?,
             ),
         };
@@ -194,6 +326,262 @@ where
         let raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)?;
+        Ok(ManifestSendResult { raw, meta })
+    }
+}
+
+impl<'a, P, T> AttachmentUploadRuntime<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport + AsyncAttachmentObjectTransport,
+{
+    pub(crate) async fn send_async(
+        mut self,
+        input: AttachmentSendInput,
+    ) -> crate::ImResult<AttachmentUploadResult> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        let service_did = message_service_did(self.client)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+
+        let operation_id = input.request.delivery.idempotency_key.clone();
+        let upload = prepare_request_async(input.request).await?;
+        let prepared = upload.prepared;
+        let slot = self
+            .create_slot_async(&target, &service_did, &prepared)
+            .await?;
+        let body = async_object_body(&prepared, upload.body)?;
+        self.transport
+            .put_attachment_object_stream(
+                slot.upload_uri.as_str(),
+                upload_headers(&slot.upload_headers),
+                body,
+            )
+            .await?;
+        self.commit_object_async(&service_did, &prepared, &slot)
+            .await?;
+
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared,
+            slot.attachment_id.clone(),
+            slot.object_uri.clone(),
+        );
+        let manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let send_result = self
+            .send_manifest_async(
+                &target,
+                manifest.clone(),
+                input.client_message_id.as_ref(),
+                operation_id.as_deref(),
+                credentials,
+            )
+            .await?;
+        let sdk_result = sdk_result_from_raw(
+            send_result.raw.clone(),
+            &send_result.meta,
+            self.client.did().clone(),
+            &target,
+            &manifest,
+        )?;
+
+        Ok(AttachmentUploadResult {
+            sdk_result,
+            target_kind: target.kind(),
+            target_did: target.did().to_string(),
+            prepared,
+            slot,
+            manifest,
+            raw: send_result.raw,
+        })
+    }
+
+    pub(crate) async fn prepare_and_commit_object_async(
+        mut self,
+        input: AttachmentPrepareObjectInput,
+    ) -> crate::ImResult<PreparedCommittedAttachment> {
+        let target = send_target(&input.target, input.resolved_target_did)?;
+        let service_did = message_service_did(self.client)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+
+        let upload = prepare_request_object_e2ee_async(input.request).await?;
+        let prepared = upload.prepared;
+        let slot = self
+            .create_slot_with_security_profile_async(
+                &target,
+                &service_did,
+                input.message_security_profile,
+                &prepared,
+            )
+            .await?;
+        let body = async_object_body(&prepared, upload.body)?;
+        self.transport
+            .put_attachment_object_stream(
+                slot.upload_uri.as_str(),
+                upload_headers(&slot.upload_headers),
+                body,
+            )
+            .await?;
+        self.commit_object_async(&service_did, &prepared, &slot)
+            .await?;
+
+        let descriptor = crate::attachments::manifest::AttachmentDescriptor::from_prepared(
+            &prepared,
+            slot.attachment_id.clone(),
+            slot.object_uri.clone(),
+        );
+        let redacted_manifest =
+            crate::attachments::manifest::build_attachment_manifest_with_mention_payload(
+                &descriptor,
+                &upload.caption,
+                upload.mention_payload.as_ref(),
+            )?;
+        let secrets =
+            upload
+                .object_e2ee_secrets
+                .as_ref()
+                .ok_or_else(|| crate::ImError::Internal {
+                    message: "object-e2ee attachment secrets missing after encryption".to_owned(),
+                })?;
+        let full_manifest = crate::attachments::manifest::build_attachment_manifest_with_object_e2ee_secrets_and_mention_payload(
+            &descriptor,
+            &upload.caption,
+            secrets,
+            upload.mention_payload.as_ref(),
+        )?;
+        let grant_ref = crate::attachments::manifest::build_attachment_grant_ref(&descriptor)?;
+
+        Ok(PreparedCommittedAttachment {
+            target_kind: target.kind(),
+            target_did: target.did().to_string(),
+            prepared,
+            slot,
+            descriptor,
+            redacted_manifest,
+            full_manifest,
+            grant_ref,
+        })
+    }
+
+    async fn create_slot_async(
+        &mut self,
+        target: &ResolvedAttachmentTarget,
+        service_did: &str,
+        prepared: &crate::attachments::manifest::PreparedAttachment,
+    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+        self.create_slot_with_security_profile_async(
+            target,
+            service_did,
+            "transport-protected",
+            prepared,
+        )
+        .await
+    }
+
+    async fn create_slot_with_security_profile_async(
+        &mut self,
+        target: &ResolvedAttachmentTarget,
+        service_did: &str,
+        message_security_profile: &str,
+        prepared: &crate::attachments::manifest::PreparedAttachment,
+    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentCreateSlotResult> {
+        let params =
+            crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_security_profile(
+                self.client.did().as_str(),
+                service_did,
+                target.kind(),
+                target.did(),
+                message_security_profile,
+                prepared,
+            )?;
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "attachment.create_slot", params)
+            .await?;
+        let mut slot: crate::internal::wire::attachment::AttachmentCreateSlotResult =
+            serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        slot.request_service_did = service_did.to_string();
+        Ok(slot)
+    }
+
+    async fn commit_object_async(
+        &mut self,
+        service_did: &str,
+        prepared: &crate::attachments::manifest::PreparedAttachment,
+        slot: &crate::internal::wire::attachment::AttachmentCreateSlotResult,
+    ) -> crate::ImResult<()> {
+        let params = crate::internal::wire::attachment::build_attachment_commit_object_rpc_params(
+            self.client.did().as_str(),
+            service_did,
+            prepared,
+            slot,
+        )?;
+        let _: crate::internal::wire::attachment::AttachmentCommitObjectResult =
+            serde_json::from_value(
+                self.transport
+                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "attachment.commit_object", params)
+                    .await?,
+            )
+            .map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        Ok(())
+    }
+
+    async fn send_manifest_async(
+        &mut self,
+        target: &ResolvedAttachmentTarget,
+        manifest: Value,
+        client_message_id: Option<&crate::ids::MessageId>,
+        operation_id: Option<&str>,
+        credentials: AttachmentUploadCredentials,
+    ) -> crate::ImResult<ManifestSendResult> {
+        let identity = crate::internal::wire::attachment::AttachmentSigningIdentity {
+            identity_name: credentials.identity_name,
+            did: self.client.did().as_str().to_string(),
+            did_document: credentials.did_document,
+            key1_private_pem: credentials.key1_private_pem,
+        };
+        let (method, params) = match target {
+            ResolvedAttachmentTarget::Direct { target_did, .. } => (
+                "direct.send",
+                crate::internal::wire::attachment::build_direct_attachment_send_rpc_params(
+                    &identity,
+                    target_did,
+                    manifest,
+                    client_message_id,
+                    operation_id,
+                )?,
+            ),
+            ResolvedAttachmentTarget::Group { group } => (
+                "group.send",
+                crate::internal::wire::attachment::build_group_attachment_send_rpc_params(
+                    &identity,
+                    group.as_str(),
+                    manifest,
+                    client_message_id,
+                    operation_id,
+                )?,
+            ),
+        };
+        let meta = params.get("meta").cloned().unwrap_or(Value::Null);
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)
+            .await?;
         Ok(ManifestSendResult { raw, meta })
     }
 }
@@ -244,6 +632,7 @@ fn prepare_request(
     request: crate::attachments::AttachmentSendRequest,
 ) -> crate::ImResult<PreparedAttachmentUpload> {
     let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
     let request_filename = request.filename;
     let request_mime = request.mime_type;
     let source = crate::internal::blob::source::attachment_input_to_blob_source(request.input)?;
@@ -292,7 +681,275 @@ fn prepare_request(
             "attachment filename is required",
         ));
     };
-    Ok(PreparedAttachmentUpload { prepared, caption })
+    let body = PreparedAttachmentBody::Bytes(prepared.payload.clone());
+    Ok(PreparedAttachmentUpload {
+        prepared,
+        caption,
+        mention_payload,
+        body,
+        object_e2ee_secrets: None,
+    })
+}
+
+fn prepare_request_object_e2ee(
+    request: crate::attachments::AttachmentSendRequest,
+) -> crate::ImResult<PreparedAttachmentUpload> {
+    let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
+    let request_filename = request.filename;
+    let request_mime = request.mime_type;
+    let source = crate::internal::blob::source::attachment_input_to_blob_source(request.input)?;
+    let filename = request_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            source
+                .filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        });
+    let mime_type = request_mime
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            source
+                .mime_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_default();
+    let e2ee = if let Some(filename) = filename {
+        crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+            &filename,
+            &mime_type,
+            source.bytes,
+        )?
+    } else if let Some(path) = source.path.as_deref() {
+        let prepared = crate::attachments::manifest::prepare_attachment_payload_from_path(
+            path,
+            &mime_type,
+            source.bytes,
+        )?;
+        crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+            &prepared.filename,
+            &prepared.mime_type,
+            prepared.payload,
+        )?
+    } else {
+        return Err(crate::ImError::invalid_input(
+            Some("filename".to_string()),
+            "attachment filename is required",
+        ));
+    };
+    let body = PreparedAttachmentBody::Bytes(e2ee.prepared.payload.clone());
+    Ok(PreparedAttachmentUpload {
+        prepared: e2ee.prepared,
+        caption,
+        mention_payload,
+        body,
+        object_e2ee_secrets: Some(e2ee.secrets),
+    })
+}
+
+async fn prepare_request_async(
+    request: crate::attachments::AttachmentSendRequest,
+) -> crate::ImResult<PreparedAttachmentUpload> {
+    let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
+    let request_filename = request.filename;
+    let request_mime = request.mime_type;
+    let source =
+        crate::internal::blob::source::attachment_input_to_async_blob_source(request.input)?;
+    let prepared = match source {
+        crate::internal::blob::source::AsyncBlobSource::Memory {
+            filename,
+            mime_type,
+            bytes,
+        } => {
+            let filename = request_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    filename
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                });
+            let mime_type = request_mime
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    mime_type
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_default();
+            let Some(filename) = filename else {
+                return Err(crate::ImError::invalid_input(
+                    Some("filename".to_string()),
+                    "attachment filename is required",
+                ));
+            };
+            let prepared = crate::attachments::manifest::prepare_attachment_payload(
+                &filename, &mime_type, bytes,
+            )?;
+            let body = PreparedAttachmentBody::Bytes(prepared.payload.clone());
+            PreparedAttachmentUpload {
+                prepared,
+                caption,
+                mention_payload: mention_payload.clone(),
+                body,
+                object_e2ee_secrets: None,
+            }
+        }
+        crate::internal::blob::source::AsyncBlobSource::LocalFile { path } => {
+            let filename = request_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            let mime_type = request_mime
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_default();
+            let mut prepared = crate::attachments::manifest::prepare_attachment_metadata_from_path(
+                &path, &mime_type,
+            )
+            .await?;
+            if let Some(filename) = filename {
+                prepared.filename = filename;
+            }
+            PreparedAttachmentUpload {
+                prepared,
+                caption,
+                mention_payload: mention_payload.clone(),
+                body: PreparedAttachmentBody::File(path),
+                object_e2ee_secrets: None,
+            }
+        }
+    };
+    Ok(prepared)
+}
+
+async fn prepare_request_object_e2ee_async(
+    request: crate::attachments::AttachmentSendRequest,
+) -> crate::ImResult<PreparedAttachmentUpload> {
+    let caption = request.caption.unwrap_or_default();
+    let mention_payload = validated_mention_payload(request.mention_payload)?;
+    let request_filename = request.filename;
+    let request_mime = request.mime_type;
+    let source =
+        crate::internal::blob::source::attachment_input_to_async_blob_source(request.input)?;
+    let (filename, mime_type, plaintext) = match source {
+        crate::internal::blob::source::AsyncBlobSource::Memory {
+            filename,
+            mime_type,
+            bytes,
+        } => {
+            let filename = request_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    filename
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .ok_or_else(|| {
+                    crate::ImError::invalid_input(
+                        Some("filename".to_string()),
+                        "attachment filename is required",
+                    )
+                })?;
+            let mime_type = request_mime
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    mime_type
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_default();
+            (filename, mime_type, bytes)
+        }
+        crate::internal::blob::source::AsyncBlobSource::LocalFile { path } => {
+            let mut prepared = crate::attachments::manifest::prepare_attachment_metadata_from_path(
+                &path,
+                request_mime.as_deref().unwrap_or_default(),
+            )
+            .await?;
+            if let Some(filename) = request_filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+            {
+                prepared.filename = filename;
+            }
+            let plaintext = tokio::fs::read(&path)
+                .await
+                .map_err(|err| crate::ImError::Io {
+                    detail: format!("read attachment file {}: {err}", path.display()),
+                })?;
+            (prepared.filename, prepared.mime_type, plaintext)
+        }
+    };
+    let e2ee = crate::attachments::manifest::prepare_object_e2ee_attachment_payload(
+        &filename, &mime_type, plaintext,
+    )?;
+    let body = PreparedAttachmentBody::Bytes(e2ee.prepared.payload.clone());
+    Ok(PreparedAttachmentUpload {
+        prepared: e2ee.prepared,
+        caption,
+        mention_payload,
+        body,
+        object_e2ee_secrets: Some(e2ee.secrets),
+    })
+}
+
+fn validated_mention_payload(payload: Option<Value>) -> crate::ImResult<Option<Value>> {
+    if let Some(payload) = payload.as_ref() {
+        crate::messages::validate_message_mention_payload(payload)?;
+    }
+    Ok(payload)
+}
+
+fn async_object_body(
+    prepared: &crate::attachments::manifest::PreparedAttachment,
+    body: PreparedAttachmentBody,
+) -> crate::ImResult<AsyncAttachmentObjectBody> {
+    match body {
+        PreparedAttachmentBody::Bytes(bytes) => Ok(AsyncAttachmentObjectBody::Bytes(bytes)),
+        PreparedAttachmentBody::File(path) => Ok(AsyncAttachmentObjectBody::File {
+            path,
+            len: prepared.size_bytes,
+            content_type: Some(prepared.mime_type.clone()),
+        }),
+    }
 }
 
 fn message_service_did(client: &crate::core::ImClient) -> crate::ImResult<String> {
@@ -324,13 +981,8 @@ fn load_credentials(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<AttachmentUploadCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json(&runtime.did_document_path)?;
-    let key1_private_pem = std::fs::read_to_string(&runtime.private_key_path).map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        }
-    })?;
+    let did_document = runtime.key_provider.optional_did_document()?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
     Ok(AttachmentUploadCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -338,22 +990,17 @@ fn load_credentials(
     })
 }
 
-fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
+async fn load_credentials_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<AttachmentUploadCredentials> {
+    let runtime = client.runtime();
+    let did_document = runtime.key_provider.optional_did_document()?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    Ok(AttachmentUploadCredentials {
+        identity_name: runtime.owner.identity_id.as_str().to_string(),
+        did_document,
+        key1_private_pem,
+    })
 }
 
 fn sdk_result_from_raw(
@@ -550,11 +1197,10 @@ fn attachment_metadata(
     server_sequence: Option<i64>,
     manifest: &Value,
 ) -> crate::messages::MessageMetadata {
-    let mut attributes = Vec::new();
-    attributes.push(crate::messages::MessageMetadataAttribute {
+    let attributes = vec![crate::messages::MessageMetadataAttribute {
         key: "attachment_manifest".to_string(),
         value: crate::attachments::manifest::manifest_content_string(manifest),
-    });
+    }];
     crate::messages::MessageMetadata {
         operation_id: operation_id.filter(|value| !value.trim().is_empty()),
         delivery_state: delivery_state.filter(|value| !value.trim().is_empty()),
@@ -564,6 +1210,7 @@ fn attachment_metadata(
         content_type: Some(
             crate::attachments::manifest::attachment_manifest_content_type().to_string(),
         ),
+        conversation_identity: None,
         attributes,
     }
 }
@@ -729,575 +1376,4 @@ struct GroupAttachmentRpcResult {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::internal::transport::{AttachmentObjectTransport, AuthenticatedRpcTransport};
-    use serde_json::{json, Value};
-    use std::cell::RefCell;
-    use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::rc::Rc;
-
-    #[test]
-    fn attachments_upload_runtime_bytes_direct_runs_create_put_commit_and_send() {
-        let fixture = Fixture::new(Some("did:example:message-service"));
-        let client = fixture.client();
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let sessions = Rc::new(RefCell::new(Vec::new()));
-        let result = AttachmentUploadRuntime::new(
-            &client,
-            ReadySessionProvider {
-                scopes: Rc::clone(&sessions),
-            },
-            RecordingTransport {
-                calls: Rc::clone(&calls),
-            },
-        )
-        .send(AttachmentSendInput {
-            target: crate::messages::MessageTarget::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
-            ),
-            request: bytes_request(
-                Some("input.txt"),
-                Some("text/plain"),
-                b"hello".to_vec(),
-                Some("override.bin"),
-                Some("application/custom"),
-                Some("caption"),
-            ),
-            resolved_target_did: None,
-            credentials: Some(fixture.credentials()),
-        })
-        .unwrap();
-
-        assert_eq!(
-            sessions.borrow().as_slice(),
-            &[crate::auth::AuthScope::Messaging]
-        );
-        assert_eq!(result.target_kind, "agent");
-        assert_eq!(result.target_did, "did:example:bob");
-        assert_eq!(result.prepared.filename, "override.bin");
-        assert_eq!(result.prepared.mime_type, "application/custom");
-        assert_eq!(result.prepared.payload, b"hello".to_vec());
-        assert_eq!(result.manifest["caption"], "caption");
-        assert_eq!(
-            result.sdk_result.message.metadata.content_type.as_deref(),
-            Some(crate::attachments::manifest::attachment_manifest_content_type())
-        );
-        assert!(matches!(
-            result.sdk_result.message.body,
-            crate::messages::MessageBodyView::Unsupported { content_type }
-                if content_type.as_deref()
-                    == Some(crate::attachments::manifest::attachment_manifest_content_type())
-        ));
-        assert_eq!(
-            result.sdk_result.message.receiver.unwrap().as_str(),
-            "did:example:bob"
-        );
-
-        let calls = calls.borrow();
-        assert_eq!(calls.len(), 4);
-        let create = calls[0].rpc("attachment.create_slot");
-        assert_eq!(create.endpoint, MESSAGE_RPC_ENDPOINT);
-        assert_eq!(
-            create.params["meta"]["target"],
-            json!({"kind": "service", "did": "did:example:message-service"})
-        );
-        assert_eq!(create.params["body"]["filename"], "override.bin");
-        assert_eq!(create.params["body"]["mime_type"], "application/custom");
-        assert_eq!(create.params["body"]["expected_size"], "5");
-        assert_eq!(
-            create.params["body"]["intended_target"],
-            json!({"kind": "agent", "did": "did:example:bob"})
-        );
-
-        let put = calls[1].put("https://upload.example/slot-1");
-        assert_eq!(
-            put.headers.get("X-Upload-Token").map(String::as_str),
-            Some("token-1")
-        );
-        assert_eq!(put.headers.get("Ignored-Number"), None);
-        assert_eq!(put.body.as_slice(), b"hello");
-
-        let commit = calls[2].rpc("attachment.commit_object");
-        assert_eq!(commit.params["body"]["attachment_id"], "att-1");
-        assert_eq!(commit.params["body"]["slot_id"], "slot-1");
-        assert_eq!(
-            commit.params["body"]["digest"]["value_b64u"],
-            result.prepared.digest_b64u
-        );
-
-        let send = calls[3].rpc("direct.send");
-        assert_eq!(
-            send.params["meta"]["content_type"],
-            crate::attachments::manifest::attachment_manifest_content_type()
-        );
-        assert_eq!(
-            send.params["body"]["payload"]["primary_attachment_id"],
-            "att-1"
-        );
-        assert_eq!(send.params["body"]["payload"]["caption"], "caption");
-        assert_eq!(
-            result.sdk_result.message.id.as_str(),
-            send.params["meta"]["message_id"].as_str().unwrap()
-        );
-        assert_eq!(
-            result.sdk_result.message.metadata.operation_id.as_deref(),
-            send.params["meta"]["operation_id"].as_str()
-        );
-    }
-
-    #[test]
-    fn attachments_upload_runtime_local_file_reads_only_explicit_path() {
-        let fixture = Fixture::new(Some("did:example:message-service"));
-        let client = fixture.client();
-        let file = fixture.root.join("explicit").join("report.txt");
-        fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, b"file bytes").unwrap();
-
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let result = AttachmentUploadRuntime::new(
-            &client,
-            ReadySessionProvider {
-                scopes: Rc::new(RefCell::new(Vec::new())),
-            },
-            RecordingTransport {
-                calls: Rc::clone(&calls),
-            },
-        )
-        .send(AttachmentSendInput {
-            target: crate::messages::MessageTarget::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
-            ),
-            request: crate::attachments::AttachmentSendRequest {
-                input: crate::attachments::AttachmentInput::LocalFile(file.clone()),
-                caption: None,
-                mime_type: None,
-                filename: None,
-                delivery: crate::messages::MessageDeliveryOptions::default(),
-            },
-            resolved_target_did: None,
-            credentials: Some(fixture.credentials()),
-        })
-        .unwrap();
-
-        assert_eq!(result.prepared.filename, "report.txt");
-        assert_eq!(result.prepared.mime_type, "text/plain; charset=utf-8");
-        let calls = calls.borrow();
-        assert_eq!(
-            calls[1]
-                .put("https://upload.example/slot-1")
-                .body
-                .as_slice(),
-            b"file bytes"
-        );
-    }
-
-    #[test]
-    fn attachments_upload_runtime_group_uses_group_scope_and_wire() {
-        let fixture = Fixture::new(Some("did:example:message-service"));
-        let client = fixture.client();
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let sessions = Rc::new(RefCell::new(Vec::new()));
-
-        let result = AttachmentUploadRuntime::new(
-            &client,
-            ReadySessionProvider {
-                scopes: Rc::clone(&sessions),
-            },
-            RecordingTransport {
-                calls: Rc::clone(&calls),
-            },
-        )
-        .send(AttachmentSendInput {
-            target: crate::messages::MessageTarget::Group(
-                crate::ids::GroupRef::parse("did:example:group").unwrap(),
-            ),
-            request: bytes_request(
-                Some("group.txt"),
-                None,
-                b"group attachment".to_vec(),
-                None,
-                None,
-                None,
-            ),
-            resolved_target_did: None,
-            credentials: Some(fixture.credentials()),
-        })
-        .unwrap();
-
-        assert_eq!(
-            sessions.borrow().as_slice(),
-            &[crate::auth::AuthScope::GroupMessaging]
-        );
-        assert_eq!(result.target_kind, "group");
-        assert_eq!(result.target_did, "did:example:group");
-        assert_eq!(result.sdk_result.message.id.as_str(), "did:example:group:7");
-        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(7));
-        assert!(result
-            .sdk_result
-            .message
-            .metadata
-            .attributes
-            .iter()
-            .any(|attribute| attribute.key == "group_event_seq" && attribute.value == "7"));
-
-        let calls = calls.borrow();
-        let create = calls[0].rpc("attachment.create_slot");
-        assert_eq!(
-            create.params["body"]["intended_target"],
-            json!({"kind": "group", "did": "did:example:group"})
-        );
-        let send = calls[3].rpc("group.send");
-        assert_eq!(
-            send.params["meta"]["target"],
-            json!({"kind": "group", "did": "did:example:group"})
-        );
-    }
-
-    #[test]
-    fn attachments_upload_runtime_bytes_requires_filename_before_transport() {
-        let fixture = Fixture::new(Some("did:example:message-service"));
-        let client = fixture.client();
-        let calls = Rc::new(RefCell::new(Vec::new()));
-
-        let err = AttachmentUploadRuntime::new(
-            &client,
-            ReadySessionProvider {
-                scopes: Rc::new(RefCell::new(Vec::new())),
-            },
-            RecordingTransport {
-                calls: Rc::clone(&calls),
-            },
-        )
-        .send(AttachmentSendInput {
-            target: crate::messages::MessageTarget::Direct(
-                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
-            ),
-            request: bytes_request(None, None, b"hello".to_vec(), None, None, None),
-            resolved_target_did: None,
-            credentials: Some(fixture.credentials()),
-        })
-        .expect_err("bytes input without filename should fail");
-
-        assert!(matches!(
-            err,
-            crate::ImError::InvalidInput { field: Some(field), message }
-                if field == "filename" && message == "attachment filename is required"
-        ));
-        assert!(calls.borrow().is_empty());
-    }
-
-    #[test]
-    fn attachments_upload_runtime_direct_handle_requires_resolved_did() {
-        let fixture = Fixture::new(Some("did:example:message-service"));
-        let client = fixture.client();
-
-        let err = AttachmentUploadRuntime::new(
-            &client,
-            ReadySessionProvider {
-                scopes: Rc::new(RefCell::new(Vec::new())),
-            },
-            RecordingTransport {
-                calls: Rc::new(RefCell::new(Vec::new())),
-            },
-        )
-        .send(AttachmentSendInput {
-            target: crate::messages::MessageTarget::Direct(
-                crate::ids::PeerRef::parse("bob.awiki.test", "").unwrap(),
-            ),
-            request: bytes_request(Some("note.txt"), None, b"hello".to_vec(), None, None, None),
-            resolved_target_did: None,
-            credentials: Some(fixture.credentials()),
-        })
-        .expect_err("unresolved direct handle should fail");
-
-        assert!(matches!(
-            err,
-            crate::ImError::PeerNotFound { peer } if peer == "bob.awiki.test"
-        ));
-    }
-
-    #[derive(Clone)]
-    struct ReadySessionProvider {
-        scopes: Rc<RefCell<Vec<crate::auth::AuthScope>>>,
-    }
-
-    impl SessionProvider for ReadySessionProvider {
-        fn ensure_session(
-            &self,
-            scope: crate::auth::AuthScope,
-        ) -> crate::ImResult<crate::auth::SessionBundle> {
-            self.scopes.borrow_mut().push(scope);
-            Ok(crate::auth::SessionBundle {
-                subject: crate::ids::Did::parse("did:example:alice")?,
-                scope,
-                expires_at: None,
-                refreshed: false,
-            })
-        }
-
-        fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
-            unreachable!("attachment upload runtime should not refresh through the test provider")
-        }
-
-        fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
-            unreachable!("attachment upload runtime should not read status")
-        }
-    }
-
-    struct RecordingTransport {
-        calls: Rc<RefCell<Vec<RecordedCall>>>,
-    }
-
-    impl AuthenticatedRpcTransport for RecordingTransport {
-        fn authenticated_rpc(
-            &mut self,
-            endpoint: &str,
-            method: &str,
-            params: Value,
-        ) -> crate::ImResult<Value> {
-            self.calls.borrow_mut().push(RecordedCall::Rpc {
-                endpoint: endpoint.to_string(),
-                method: method.to_string(),
-                params: params.clone(),
-            });
-            match method {
-                "attachment.create_slot" => Ok(json!({
-                    "attachment_id": "att-1",
-                    "slot_id": "slot-1",
-                    "upload_uri": "https://upload.example/slot-1",
-                    "upload_headers": {
-                        "X-Upload-Token": "token-1",
-                        "Ignored-Number": 7
-                    },
-                    "object_uri": "https://objects.example/att-1",
-                    "commit_token": "commit-token-1",
-                    "expires_at": "2026-05-23T01:00:00Z"
-                })),
-                "attachment.commit_object" => Ok(json!({
-                    "committed": true,
-                    "attachment_id": "att-1",
-                    "object_uri": "https://objects.example/att-1",
-                    "committed_at": "2026-05-23T00:00:01Z"
-                })),
-                "direct.send" => Ok(json!({
-                    "accepted": true,
-                    "accepted_at": "2026-05-23T00:00:02Z",
-                    "delivery_state": "accepted"
-                })),
-                "group.send" => Ok(json!({
-                    "accepted": true,
-                    "group_did": "did:example:group",
-                    "message_id": "group-raw-message-7",
-                    "operation_id": "group-op-7",
-                    "group_event_seq": "7",
-                    "group_state_version": "3",
-                    "accepted_at": "2026-05-23T00:00:03Z"
-                })),
-                _ => Err(crate::ImError::TransportUnavailable {
-                    detail: format!("unexpected method {method} at {endpoint}"),
-                }),
-            }
-        }
-    }
-
-    impl AttachmentObjectTransport for RecordingTransport {
-        fn put_attachment_object(
-            &mut self,
-            upload_uri: &str,
-            headers: BTreeMap<String, String>,
-            body: Vec<u8>,
-        ) -> crate::ImResult<()> {
-            self.calls.borrow_mut().push(RecordedCall::Put {
-                upload_uri: upload_uri.to_string(),
-                headers,
-                body,
-            });
-            Ok(())
-        }
-
-        fn get_attachment_object(
-            &mut self,
-            _object_uri: &str,
-            _download_ticket: &str,
-        ) -> crate::ImResult<crate::internal::transport::AttachmentObjectResponse> {
-            unreachable!("upload runtime should not download objects")
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    enum RecordedCall {
-        Rpc {
-            endpoint: String,
-            method: String,
-            params: Value,
-        },
-        Put {
-            upload_uri: String,
-            headers: BTreeMap<String, String>,
-            body: Vec<u8>,
-        },
-    }
-
-    impl RecordedCall {
-        fn rpc(&self, expected_method: &str) -> RecordedRpc<'_> {
-            match self {
-                Self::Rpc {
-                    endpoint,
-                    method,
-                    params,
-                } => {
-                    assert_eq!(method, expected_method);
-                    RecordedRpc { endpoint, params }
-                }
-                Self::Put { .. } => panic!("expected rpc call {expected_method}, got put call"),
-            }
-        }
-
-        fn put(&self, expected_uri: &str) -> RecordedPut<'_> {
-            match self {
-                Self::Put {
-                    upload_uri,
-                    headers,
-                    body,
-                } => {
-                    assert_eq!(upload_uri, expected_uri);
-                    RecordedPut { headers, body }
-                }
-                Self::Rpc { method, .. } => panic!("expected put call, got rpc call {method}"),
-            }
-        }
-    }
-
-    struct RecordedRpc<'a> {
-        endpoint: &'a str,
-        params: &'a Value,
-    }
-
-    struct RecordedPut<'a> {
-        headers: &'a BTreeMap<String, String>,
-        body: &'a Vec<u8>,
-    }
-
-    struct Fixture {
-        root: PathBuf,
-        service_did: Option<&'static str>,
-    }
-
-    impl Fixture {
-        fn new(service_did: Option<&'static str>) -> Self {
-            let root = unique_temp_root();
-            let identities = root.join("identities");
-            fs::create_dir_all(identities.join("alice")).unwrap();
-            fs::write(identities.join("default"), "alice\n").unwrap();
-            fs::write(
-                identities.join("registry.json"),
-                r#"{
-                  "default_identity": "alice",
-                  "identities": [{
-                    "id": "alice-id",
-                    "did": "did:example:alice",
-                    "local_alias": "alice",
-                    "ready_for_auth": true,
-                    "ready_for_messaging": true,
-                    "missing": []
-                  }]
-                }"#,
-            )
-            .unwrap();
-            Self { root, service_did }
-        }
-
-        fn client(&self) -> crate::core::ImClient {
-            crate::core::ImCore::new(
-                crate::ImCoreConfig {
-                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
-                        .unwrap(),
-                    did_domain: "awiki.test".to_string(),
-                    user_service_endpoint: None,
-                    message_service_endpoint: None,
-                    mail_service_endpoint: None,
-                    anp_service_endpoint: None,
-                    anp_service_did: self
-                        .service_did
-                        .map(crate::ids::Did::parse)
-                        .transpose()
-                        .unwrap(),
-                    ca_bundle: None,
-                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
-                },
-                crate::ImCorePaths {
-                    identities: crate::paths::IdentityRegistryPaths {
-                        identity_root_dir: self.root.join("identities"),
-                        registry_path: self.root.join("identities").join("registry.json"),
-                        default_identity_path: Some(self.root.join("identities").join("default")),
-                    },
-                    local_state: crate::paths::LocalStatePaths {
-                        sqlite_path: self.root.join("local").join("im.sqlite"),
-                    },
-                    runtime: crate::paths::RuntimePaths {
-                        cache_dir: self.root.join("cache"),
-                        temp_dir: self.root.join("tmp"),
-                    },
-                },
-            )
-            .unwrap()
-            .client(crate::identity::IdentitySelector::LocalAlias(
-                "alice".to_string(),
-            ))
-            .unwrap()
-        }
-
-        fn credentials(&self) -> AttachmentUploadCredentials {
-            let bundle = anp::authentication::create_did_wba_document(
-                "awiki.test",
-                anp::authentication::DidDocumentOptions {
-                    path_segments: vec!["user".to_string()],
-                    domain: Some("awiki.test".to_string()),
-                    challenge: Some("attachment-upload-runtime-test".to_string()),
-                    ..anp::authentication::DidDocumentOptions::default()
-                },
-            )
-            .unwrap();
-            AttachmentUploadCredentials {
-                identity_name: "alice".to_string(),
-                key1_private_pem: bundle.private_key_pem("key-1").unwrap().to_string(),
-                did_document: Some(bundle.did_document),
-            }
-        }
-    }
-
-    fn bytes_request(
-        input_filename: Option<&str>,
-        input_mime: Option<&str>,
-        bytes: Vec<u8>,
-        request_filename: Option<&str>,
-        request_mime: Option<&str>,
-        caption: Option<&str>,
-    ) -> crate::attachments::AttachmentSendRequest {
-        crate::attachments::AttachmentSendRequest {
-            input: crate::attachments::AttachmentInput::Bytes {
-                filename: input_filename.map(ToOwned::to_owned),
-                mime_type: input_mime.map(ToOwned::to_owned),
-                bytes,
-            },
-            caption: caption.map(ToOwned::to_owned),
-            mime_type: request_mime.map(ToOwned::to_owned),
-            filename: request_filename.map(ToOwned::to_owned),
-            delivery: crate::messages::MessageDeliveryOptions::default(),
-        }
-    }
-
-    fn unique_temp_root() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "im-core-attachment-upload-runtime-{}-{nanos}",
-            std::process::id()
-        ))
-    }
-}
+mod tests;

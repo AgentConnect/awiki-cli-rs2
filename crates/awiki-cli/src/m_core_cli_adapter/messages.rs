@@ -29,13 +29,19 @@ pub fn send_message_request(
     let target = message_target(command, default_domain)?;
     let body = message_body(command)?;
     let (security, warnings) = message_security(command, &target)?;
+    let client_message_id = optional_message_id_flag(command, "client-message-id")?;
+    let idempotency_key = optional_string_flag(command, "idempotency-key");
     Ok((
         SendMessageRequest {
             target,
             body,
             security,
-            client_message_id: None,
-            delivery: MessageDeliveryOptions::default(),
+            client_message_id,
+            delivery: MessageDeliveryOptions {
+                idempotency_key,
+                wait_for_final_acceptance: false,
+            },
+            delegated_signing: None,
         },
         warnings,
     ))
@@ -44,9 +50,9 @@ pub fn send_message_request(
 pub fn send_attachment_request(
     command: &ParsedCommand,
     default_domain: &str,
-) -> Result<(MessageTarget, AttachmentSendRequest), ExitError> {
+) -> Result<(MessageTarget, AttachmentSendRequest, Vec<String>), ExitError> {
     let target = message_target(command, default_domain)?;
-    validate_attachment_security(command, &target)?;
+    let (security, warnings) = message_security(command, &target)?;
     let file_path = string_flag(command, "file");
     if file_path.trim().is_empty() {
         return Err(ExitError::new(
@@ -66,11 +72,14 @@ pub fn send_attachment_request(
         AttachmentSendRequest {
             input: AttachmentInput::LocalFile(file_path),
             caption: Some(text).filter(|value| !value.trim().is_empty()),
+            mention_payload: None,
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
             filename: None,
             delivery: MessageDeliveryOptions::default(),
+            security,
         },
+        warnings,
     ))
 }
 
@@ -134,6 +143,7 @@ pub fn inbox_query(command: &ParsedCommand) -> Result<InboxQuery, ExitError> {
         limit: page_limit(command, "limit", 20)?,
         cursor: optional_cursor(command)?,
         unread_only: bool_flag(command, "unread"),
+        inbox_history_options: None,
     })
 }
 
@@ -168,11 +178,12 @@ pub fn history_request(
         HistoryQuery {
             limit: page_limit(command, "limit", 50)?,
             cursor: optional_cursor(command)?,
+            inbox_history_options: None,
         },
     ))
 }
 
-pub fn send_text_via_im_core(
+pub fn send_message_via_im_core(
     _resolved: &Resolved,
     client: &im_core::ImClient,
     request: SendMessageRequest,
@@ -191,14 +202,38 @@ pub fn send_text_via_im_core(
     })?;
     rpc_phase.finish();
     match &result.message.thread {
-        ThreadRef::Direct(_) => {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_result(&result);
             render_send_result(&target, &result, secure)
         }
         ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
-        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
-            "thread send results are not supported by the CLI renderer".to_string(),
-        )),
+    }
+}
+
+pub async fn send_message_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: SendMessageRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let mut rpc_phase = crate::cli_trace::rpc_phase(sdk_send_trace_operation(&request));
+    let secure = matches!(
+        request.security,
+        MessageSecurityMode::E2eeRequired
+            | MessageSecurityMode::SecureDirect
+            | MessageSecurityMode::GroupE2ee
+    );
+    let result = client.messages().send_async(request).await.map_err(|err| {
+        rpc_phase.finish();
+        im_error_to_message_error(err)
+    })?;
+    rpc_phase.finish();
+    match &result.message.thread {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
+            let target = direct_target_from_result(&result);
+            render_send_result(&target, &result, secure)
+        }
+        ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
     }
 }
 
@@ -214,16 +249,36 @@ pub fn send_attachment_via_im_core(
         .send(target, request)
         .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
-        ThreadRef::Direct(_) => {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
             let target = direct_target_from_attachment_result(&result);
             render_direct_attachment_result(resolved, &target, &result)
         }
         ThreadRef::Group(group) => {
             render_group_attachment_result(resolved, group.as_str(), &result)
         }
-        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
-            "thread attachment send results are not supported by the CLI renderer".to_string(),
-        )),
+    }
+}
+
+pub async fn send_attachment_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    target: MessageTarget,
+    request: AttachmentSendRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let result = client
+        .attachments()
+        .send_async(target, request)
+        .await
+        .map_err(im_error_to_message_error)?;
+    match &result.message.message.thread {
+        ThreadRef::Direct(_) | ThreadRef::Thread(_) => {
+            let target = direct_target_from_attachment_result(&result);
+            render_direct_attachment_result(resolved, &target, &result)
+        }
+        ThreadRef::Group(group) => {
+            render_group_attachment_result(resolved, group.as_str(), &result)
+        }
     }
 }
 
@@ -238,6 +293,52 @@ pub fn download_attachment_via_im_core(
     let downloaded = client
         .attachments()
         .download(request)
+        .map_err(im_error_to_message_error)?;
+    let output_path = match &downloaded.destination {
+        DownloadedAttachmentDestination::LocalFile(path) => path.clone(),
+        DownloadedAttachmentDestination::Memory(_) => {
+            return Err(MessageAdapterError::Internal(
+                "attachment download expected local-file destination".to_string(),
+            ));
+        }
+    };
+    apply_private_download_permissions(&output_path)?;
+    let output_path_string = output_path.to_string_lossy().into_owned();
+    let mut warnings = attachment_transport_warnings(resolved, true);
+    warnings.extend(downloaded.warnings);
+    let selection = downloaded
+        .selection
+        .ok_or(MessageAdapterError::AttachmentMessageInvalid)?;
+    let target = download_target_value(&thread, Some(&selection));
+    Ok(CommandResult {
+        data: json!({
+            "action": "download_attachment",
+            "message_id": selection.message_id,
+            "target": target,
+            "attachment": attachment_selection_value(&selection),
+            "output": {
+                "path": output_path_string,
+                "size_bytes": downloaded.size_bytes.unwrap_or_default(),
+                "content_type": downloaded.mime_type.unwrap_or_default(),
+            },
+        }),
+        summary: format!("Downloaded attachment to {output_path_string}"),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub async fn download_attachment_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: DownloadAttachmentRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    prepare_download_destination(&request)?;
+    let thread = request.thread.clone();
+    let downloaded = client
+        .attachments()
+        .download_async(request)
+        .await
         .map_err(im_error_to_message_error)?;
     let output_path = match &downloaded.destination {
         DownloadedAttachmentDestination::LocalFile(path) => path.clone(),
@@ -366,6 +467,47 @@ pub fn read_inbox_via_im_core(
     })
 }
 
+pub async fn read_inbox_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    query: InboxQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let mut rpc_phase = crate::cli_trace::rpc_phase("inbox.get");
+    let page = client
+        .messages()
+        .inbox_with_metadata_async(query.clone())
+        .await
+        .map_err(|err| {
+            rpc_phase.finish();
+            im_error_to_message_error(err)
+        })?;
+    rpc_phase.finish();
+    let raw = message_page_to_cli_raw(&page);
+    let mut messages = messages_from_raw(&raw);
+    let source = source_with_default(&raw);
+    messages = apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
+    let total = messages.len();
+    let data = match query.scope {
+        InboxScope::DirectOnly => json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "with": "",
+        }),
+        InboxScope::All | InboxScope::GroupOnly => json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+        }),
+    };
+    Ok(CommandResult {
+        data,
+        summary: format!("Loaded {total} inbox messages"),
+        warnings: Vec::new(),
+    })
+}
+
 pub fn read_history_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -375,6 +517,25 @@ pub fn read_history_via_im_core(
     match thread {
         ThreadRef::Direct(peer) => read_direct_history_via_im_core(resolved, client, peer, query),
         ThreadRef::Group(group) => read_group_history_via_im_core(resolved, client, group, query),
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
+            "thread history is not supported by the CLI renderer".to_string(),
+        )),
+    }
+}
+
+pub async fn read_history_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    thread: ThreadRef,
+    query: HistoryQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    match thread {
+        ThreadRef::Direct(peer) => {
+            read_direct_history_via_im_core_async(resolved, client, peer, query).await
+        }
+        ThreadRef::Group(group) => {
+            read_group_history_via_im_core_async(resolved, client, group, query).await
+        }
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread history is not supported by the CLI renderer".to_string(),
         )),
@@ -392,6 +553,38 @@ fn read_direct_history_via_im_core(
     let page = client
         .messages()
         .history_with_metadata(ThreadRef::Direct(peer.clone()), query.clone())
+        .map_err(im_error_to_message_error)?;
+    let raw = message_page_to_cli_raw(&page);
+    let messages = messages_from_raw(&raw);
+    let source = source_with_default(&raw);
+    let resolved_dids = resolved_dids_value(&raw);
+    let target = history_target_from_page(&peer, &resolved_dids, target_is_handle);
+    let total = messages.len();
+    Ok(CommandResult {
+        data: json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "with": peer_handle_or_did(&target),
+            "resolved_dids": resolved_dids,
+        }),
+        summary: format!("Loaded {total} direct history messages"),
+        warnings: Vec::new(),
+    })
+}
+
+async fn read_direct_history_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    peer: PeerRef,
+    query: HistoryQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let target_is_handle = !peer.as_str().trim().starts_with("did:");
+    let page = client
+        .messages()
+        .history_with_metadata_async(ThreadRef::Direct(peer.clone()), query.clone())
+        .await
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
@@ -439,6 +632,34 @@ fn read_group_history_via_im_core(
     })
 }
 
+async fn read_group_history_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    group: GroupRef,
+    query: HistoryQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let page = client
+        .messages()
+        .history_with_metadata_async(ThreadRef::Group(group.clone()), query.clone())
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = message_page_to_cli_raw(&page);
+    let messages = messages_from_raw(&raw);
+    let source = source_with_default(&raw);
+    let total = messages.len();
+    Ok(CommandResult {
+        data: json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "group": group.as_str(),
+        }),
+        summary: format!("Loaded {total} group history messages"),
+        warnings: Vec::new(),
+    })
+}
+
 pub fn mark_read_via_im_core(
     _resolved: &Resolved,
     client: &im_core::ImClient,
@@ -456,6 +677,37 @@ pub fn mark_read_via_im_core(
     let result = client
         .messages()
         .mark_read(ids)
+        .map_err(im_error_to_message_error)?;
+    let updated_count = result.updated_count;
+    Ok(CommandResult {
+        data: json!({
+            "action": "mark_read",
+            "updated_count": updated_count,
+            "message_ids": message_ids,
+        }),
+        summary: format!("Marked {updated_count} messages as read"),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub async fn mark_read_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    message_ids: Vec<String>,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    if message_ids.is_empty() {
+        return Err(MessageAdapterError::MessageNotFound);
+    }
+    let ids = message_ids
+        .iter()
+        .map(MessageId::parse)
+        .collect::<im_core::ImResult<Vec<_>>>()
+        .map_err(im_error_to_message_error)?;
+    let result = client
+        .messages()
+        .mark_read_async(ids)
+        .await
         .map_err(im_error_to_message_error)?;
     let updated_count = result.updated_count;
     Ok(CommandResult {
@@ -491,6 +743,29 @@ pub fn direct_secure_status_via_im_core(
     })
 }
 
+pub async fn direct_secure_status_via_im_core_async(
+    client: &im_core::ImClient,
+    peer: String,
+    default_domain: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
+    let status = client
+        .secure()
+        .direct(peer_ref)
+        .status_async()
+        .await
+        .map_err(im_error_to_message_error)?;
+    let warnings = status.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "status": serde_json::to_value(&status).unwrap_or(Value::Null),
+        }),
+        summary: "Loaded direct secure status".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 pub fn direct_secure_repair_via_im_core(
     client: &im_core::ImClient,
     peer: String,
@@ -502,6 +777,29 @@ pub fn direct_secure_repair_via_im_core(
         .secure()
         .direct(peer_ref)
         .repair()
+        .map_err(im_error_to_message_error)?;
+    let warnings = repair.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
+        }),
+        summary: "Repaired direct secure state".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub async fn direct_secure_repair_via_im_core_async(
+    client: &im_core::ImClient,
+    peer: String,
+    default_domain: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
+    let repair = client
+        .secure()
+        .direct(peer_ref)
+        .repair_async()
+        .await
         .map_err(im_error_to_message_error)?;
     let warnings = repair.warnings.clone();
     Ok(CommandResult {
@@ -538,14 +836,22 @@ fn message_target(
 }
 
 fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
+    if has_payload_input(command) {
+        reject_payload_conflicts(command)?;
+        return Ok(MessageBody::Payload {
+            payload: message_payload(command)?,
+        });
+    }
     let file_path = string_flag(command, "file");
     if !file_path.trim().is_empty() {
         let text = message_text(command, true)?;
         return Ok(MessageBody::Attachment {
             input: AttachmentInput::LocalFile(PathBuf::from(file_path.trim())),
             caption: Some(text).filter(|value| !value.trim().is_empty()),
+            mention_payload: None,
             mime_type: Some(string_flag(command, "mime-type"))
                 .filter(|value| !value.trim().is_empty()),
+            filename: None,
         });
     }
     let text = message_text(command, false)?;
@@ -553,6 +859,85 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
         text,
         kind: message_kind(&string_flag(command, "type"))?,
     })
+}
+
+fn has_payload_input(command: &ParsedCommand) -> bool {
+    !string_flag(command, "payload").trim().is_empty()
+        || !string_flag(command, "payload-file").trim().is_empty()
+}
+
+fn reject_payload_conflicts(command: &ParsedCommand) -> Result<(), ExitError> {
+    for flag in ["text", "text-file", "file"] {
+        if !string_flag(command, flag).trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "--payload/--payload-file cannot be combined with text or attachment inputs.",
+                "Use payload input by itself, or use --text/--text-file/--file for non-payload messages.",
+            ));
+        }
+    }
+    if !string_flag(command, "mime-type").trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--mime-type requires an attachment file",
+            "Use --mime-type only together with --file.",
+        ));
+    }
+    let message_type = string_flag(command, "type");
+    let message_type = message_type.trim();
+    if !message_type.is_empty() && !message_type.eq_ignore_ascii_case("text") {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "--type cannot be used with payload messages.",
+            "Payload messages always use application/json.",
+        ));
+    }
+    Ok(())
+}
+
+fn message_payload(command: &ParsedCommand) -> Result<Value, ExitError> {
+    let inline = string_flag(command, "payload");
+    let payload_file = string_flag(command, "payload-file");
+    if !inline.trim().is_empty() && !payload_file.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "Use either --payload or --payload-file, not both.",
+            "Choose one JSON payload source.",
+        ));
+    }
+    let raw = if !payload_file.trim().is_empty() {
+        fs::read_to_string(payload_file.trim()).map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                format!("read payload file {:?}: {err}", payload_file.trim()),
+                "Check the --payload-file path and permissions.",
+            )
+        })?
+    } else {
+        inline
+    };
+    let payload = serde_json::from_str::<Value>(&raw).map_err(|err| {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            format!("payload must be valid JSON: {err}"),
+            "Pass a JSON object with --payload or --payload-file.",
+        )
+    })?;
+    if !payload.is_object() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "payload must be a JSON object.",
+            "Pass an object such as '{\"text\":\"hello\"}'.",
+        ));
+    }
+    Ok(payload)
 }
 
 fn message_text(command: &ParsedCommand, allow_empty: bool) -> Result<String, ExitError> {
@@ -585,53 +970,6 @@ fn message_text(command: &ParsedCommand, allow_empty: bool) -> Result<String, Ex
         ));
     }
     Ok(text)
-}
-
-fn validate_attachment_security(
-    command: &ParsedCommand,
-    target: &MessageTarget,
-) -> Result<(), ExitError> {
-    match string_flag(command, "secure")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "" | "default" | "plain" | "off" | "false" => Ok(()),
-        "direct" | "secure-direct" | "on" | "true" | "required" => match target {
-            MessageTarget::Direct(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "secure attachment messages are not supported by the Phase 4 IM Core adapter.",
-                "Use --secure off for attachment messages.",
-            )),
-            MessageTarget::Group(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
-                "Use --secure off for attachment messages.",
-            )),
-        },
-        "group-e2ee" | "e2ee" => match target {
-            MessageTarget::Direct(_) => Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "--secure group-e2ee can only be used with --group.",
-                "Use --secure required for direct E2EE text messages.",
-            )),
-            MessageTarget::Group(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
-                "Use --secure off for attachment messages.",
-            )),
-        },
-        value => Err(ExitError::new(
-            "invalid_argument",
-            2,
-            format!("unsupported --secure value {value:?}."),
-            "Use --secure plain, --secure off, or leave it unset for Phase 4 attachments.",
-        )),
-    }
 }
 
 fn message_kind(raw: &str) -> Result<MessageKind, ExitError> {
@@ -741,7 +1079,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
         "is_read": false,
-        "secure": false,
+        "secure": message_is_secure(message),
         "direction": match message.direction {
             MessageDirection::Outgoing => 1,
             MessageDirection::Incoming => 0,
@@ -774,6 +1112,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
 fn message_body_content(message: &im_core::prelude::Message) -> Value {
     match &message.body {
         MessageBodyView::Text { text, .. } => Value::String(text.clone()),
+        MessageBodyView::Payload { payload } => payload.clone(),
         MessageBodyView::Unsupported { .. } => {
             raw_content_value(&message.metadata.attributes).unwrap_or(Value::Null)
         }
@@ -796,6 +1135,7 @@ fn message_content_type(message: &im_core::prelude::Message) -> String {
             ..
         } => "text/markdown".to_string(),
         MessageBodyView::Text { .. } => "text/plain".to_string(),
+        MessageBodyView::Payload { .. } => "application/json".to_string(),
         MessageBodyView::Unsupported { content_type } => content_type
             .as_ref()
             .map(|value| value.trim())
@@ -803,6 +1143,11 @@ fn message_content_type(message: &im_core::prelude::Message) -> String {
             .unwrap_or("application/octet-stream")
             .to_string(),
     }
+}
+
+fn message_is_secure(message: &im_core::prelude::Message) -> bool {
+    message_attribute(&message.metadata.attributes, "security")
+        .is_some_and(|value| matches!(value.as_str(), "direct-e2ee" | "group-e2ee"))
 }
 
 fn sdk_send_trace_operation(request: &SendMessageRequest) -> &'static str {
@@ -832,15 +1177,25 @@ fn direct_target_from_result(result: &SendMessageResult) -> TargetResolution {
         .or_else(|| direct_thread_peer(result))
         .map(|peer| peer.as_str())
         .unwrap_or_default();
+    let target_handle = message_attribute(&result.message.metadata.attributes, "target_handle")
+        .or_else(|| message_attribute(&result.message.metadata.attributes, "peer_full_handle"));
     let did = message_attribute(&result.message.metadata.attributes, "resolved_target_did")
-        .unwrap_or_else(|| raw_peer.to_string());
+        .unwrap_or_else(|| {
+            if raw_peer.starts_with("did:") {
+                raw_peer.to_string()
+            } else {
+                String::new()
+            }
+        });
     TargetResolution {
         did,
-        handle: if raw_peer.starts_with("did:") {
-            String::new()
-        } else {
-            raw_peer.to_string()
-        },
+        handle: target_handle.unwrap_or_else(|| {
+            if raw_peer.starts_with("did:") {
+                String::new()
+            } else {
+                raw_peer.to_string()
+            }
+        }),
     }
 }
 
@@ -881,9 +1236,11 @@ fn history_target_from_page(
         .to_string();
     TargetResolution {
         did,
-        handle: target_is_handle
-            .then(|| peer.as_str().to_string())
-            .unwrap_or_default(),
+        handle: if target_is_handle {
+            peer.as_str().to_string()
+        } else {
+            String::new()
+        },
     }
 }
 
@@ -947,7 +1304,7 @@ fn raw_content_value(attributes: &[MessageMetadataAttribute]) -> Option<Value> {
     let raw = message_attribute(attributes, "raw_content")?;
     serde_json::from_str::<Value>(&raw)
         .ok()
-        .or_else(|| Some(Value::String(raw)))
+        .or(Some(Value::String(raw)))
 }
 
 fn message_text_and_type(
@@ -955,6 +1312,9 @@ fn message_text_and_type(
 ) -> Result<(&str, &'static str), MessageAdapterError> {
     match body {
         MessageBodyView::Text { text, kind } => Ok((text.as_str(), message_type_for_kind(kind))),
+        MessageBodyView::Payload { .. } => Err(MessageAdapterError::Internal(
+            "payload message body returned by im-core where text was required".to_string(),
+        )),
         MessageBodyView::Unsupported { content_type } => {
             Err(MessageAdapterError::Internal(format!(
                 "unsupported message body returned by im-core: {}",
@@ -1012,7 +1372,12 @@ fn render_direct_attachment_result(
                 "handle": target.handle,
                 "kind": "direct",
             },
-            "message": attachment_message_value(&result.message_id, &result.accepted_at, &caption),
+            "message": attachment_message_value(
+                &result.message_id,
+                &result.accepted_at,
+                &caption,
+                attachment_result_is_secure(attachment_result),
+            ),
             "attachment": uploaded_attachment_value(&attachment_result.attachment),
             "delivery": result,
         }),
@@ -1043,7 +1408,12 @@ fn render_group_attachment_result(
                 "kind": "group",
                 "did": group_did,
             },
-            "message": attachment_message_value(&message_id, &result.accepted_at, &caption),
+            "message": attachment_message_value(
+                &message_id,
+                &result.accepted_at,
+                &caption,
+                attachment_result_is_secure(attachment_result),
+            ),
             "attachment": uploaded_attachment_value(&attachment_result.attachment),
             "delivery": result,
         }),
@@ -1052,13 +1422,13 @@ fn render_group_attachment_result(
     })
 }
 
-fn attachment_message_value(message_id: &str, sent_at: &str, caption: &str) -> Value {
+fn attachment_message_value(message_id: &str, sent_at: &str, caption: &str, secure: bool) -> Value {
     json!({
         "id": message_id,
         "type": "attachment_manifest",
         "content_type": im_core::attachments::attachment_manifest_content_type(),
         "caption": caption,
-        "secure": false,
+        "secure": secure,
         "sent_at": sent_at,
     })
 }
@@ -1074,6 +1444,8 @@ fn uploaded_attachment_value(attachment: &UploadedAttachment) -> Value {
             "value_b64u": attachment.digest_b64u,
         },
         "object_uri": attachment.object_uri,
+        "object_encryption_mode": attachment.object_encryption_mode,
+        "plaintext_size_bytes": attachment.plaintext_size_bytes,
     })
 }
 
@@ -1090,7 +1462,23 @@ fn attachment_selection_value(selection: &AttachmentSelection) -> Value {
         "object_uri": selection.object_uri,
         "sender_did": selection.sender_did,
         "caption": selection.caption,
+        "message_security_profile": selection.message_security_profile,
+        "object_encryption_mode": selection.object_encryption_mode,
+        "object_cipher": selection.object_cipher,
+        "plaintext_size": selection.plaintext_size,
     })
+}
+
+fn attachment_result_is_secure(attachment_result: &AttachmentSendResult) -> bool {
+    attachment_result
+        .message
+        .message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| {
+            attribute.key == "security" && attribute.value.to_ascii_lowercase().contains("e2ee")
+        })
 }
 
 fn clean_output_path(output_path: &str) -> PathBuf {
@@ -1477,14 +1865,21 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             status_code,
             code,
             message,
-        } => MessageAdapterError::Service(ServiceError {
-            status_code: status_code.unwrap_or_default(),
-            rpc_code: code
+            ..
+        } => {
+            let rpc_code = code
                 .and_then(|value| value.parse().ok())
-                .unwrap_or_default(),
-            message,
-            data: None,
-        }),
+                .unwrap_or_default();
+            if group_e2ee_service_unsupported(rpc_code, &message) {
+                return MessageAdapterError::GroupNotSupported;
+            }
+            MessageAdapterError::Service(ServiceError {
+                status_code: status_code.unwrap_or_default(),
+                rpc_code,
+                message,
+                data: None,
+            })
+        }
         im_core::ImError::TransportUnavailable { detail } => {
             MessageAdapterError::TransportUnavailable(detail)
         }
@@ -1494,6 +1889,15 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::Io { detail } => MessageAdapterError::PathUnavailable(detail),
         err => MessageAdapterError::Internal(err.to_string()),
     }
+}
+
+fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
+    if rpc_code != 1405 {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("group e2ee contract-test apis are disabled")
+        || message.contains("group e2ee p6 apis are disabled")
 }
 
 fn im_error_to_exit_error(err: im_core::ImError) -> ExitError {
@@ -1582,102 +1986,33 @@ fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn attachment_transport_warnings_match_legacy_websocket_contract() {
-        assert_eq!(
-            attachment_transport_warnings_for_mode("websocket", false),
-            vec!["Attachment messages use HTTP transport even when runtime.mode is websocket."]
-        );
-        assert_eq!(
-            attachment_transport_warnings_for_mode("websocket", true),
-            vec!["Attachment downloads use HTTP transport even when runtime.mode is websocket."]
-        );
-        assert!(attachment_transport_warnings_for_mode("http", false).is_empty());
-    }
-
-    #[test]
-    fn direct_attachment_download_target_uses_resolved_did() {
-        let thread = ThreadRef::Direct(PeerRef::parse("bob", "").expect("peer"));
-        let selection = AttachmentSelection {
-            sender_did: "did:wba:example:bob".to_string(),
-            ..AttachmentSelection::default()
-        };
-
-        assert_eq!(
-            download_target_value(&thread, Some(&selection)),
-            json!({"kind": "direct", "did": "did:wba:example:bob"})
-        );
-    }
-
-    #[test]
-    fn attachment_output_preparation_errors_map_to_cli_path_errors() {
-        let root = unique_temp_root("attachment-output-path-error");
-        std::fs::create_dir_all(&root).unwrap();
-        let parent_file = root.join("not-a-directory");
-        std::fs::write(&parent_file, b"file").unwrap();
-        let request = DownloadAttachmentRequest {
-            thread: ThreadRef::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
-            message_id: MessageId::parse("msg-1").unwrap(),
-            attachment_id: Some("att-1".to_string()),
-            destination: AttachmentDestination::LocalFile(parent_file.join("out.bin")),
-            overwrite: true,
-        };
-
-        let err = prepare_download_destination(&request).unwrap_err();
-
-        assert!(matches!(err, MessageAdapterError::PathUnavailable(message)
-            if message.contains("create attachment output directory")
-                && message.contains("not-a-directory")));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn attachment_destination_errors_map_to_cli_path_errors() {
-        assert_eq!(
-            im_error_to_message_error(im_core::ImError::invalid_input(
-                Some("destination".to_string()),
-                "destination already exists and overwrite is false: out.bin",
-            )),
-            MessageAdapterError::PathUnavailable(
-                "destination already exists and overwrite is false: out.bin".to_string()
-            )
-        );
-        assert_eq!(
-            im_error_to_message_error(im_core::ImError::PathUnavailable {
-                path_kind: "attachment_output".to_string(),
-                detail: "parent is not writable".to_string(),
-            }),
-            MessageAdapterError::PathUnavailable(
-                "attachment_output path unavailable: parent is not writable".to_string()
-            )
-        );
-        assert_eq!(
-            im_error_to_message_error(im_core::ImError::Io {
-                detail: "write temp file failed".to_string(),
-            }),
-            MessageAdapterError::PathUnavailable("write temp file failed".to_string())
-        );
-    }
-
-    fn unique_temp_root(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("awiki-cli-{name}-{}-{nanos}", std::process::id()))
-    }
-
-    #[test]
-    fn secure_attachment_unsupported_maps_to_specific_adapter_error() {
-        let err = im_error_to_message_error(im_core::ImError::UnsupportedCapability {
-            capability: "secure-attachments".to_string(),
-        });
-
-        assert_eq!(err, MessageAdapterError::SecureAttachmentNotSupported);
+fn optional_string_flag(command: &ParsedCommand, name: &str) -> Option<String> {
+    let value = string_flag(command, name);
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
+
+fn optional_message_id_flag(
+    command: &ParsedCommand,
+    name: &str,
+) -> Result<Option<MessageId>, ExitError> {
+    optional_string_flag(command, name)
+        .map(MessageId::parse)
+        .transpose()
+        .map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                format!("invalid --{name}: {err}"),
+                "Use a non-empty message id value.",
+            )
+        })
+}
+
+#[cfg(test)]
+#[path = "messages_tests.rs"]
+mod tests;

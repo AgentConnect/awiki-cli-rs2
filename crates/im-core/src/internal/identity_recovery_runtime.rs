@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::internal::transport::RpcTransport;
+use crate::internal::transport::{AsyncRpcTransport, RpcTransport};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IdentityRecoveryRuntimeResult {
@@ -15,6 +15,7 @@ pub(crate) struct PreparedRecoverHandleRequest {
 
 pub(crate) struct GeneratedRecoveryLocalStore {
     generated: crate::internal::identity_generation::GeneratedIdentity,
+    daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
     local_alias: String,
 }
 
@@ -23,10 +24,7 @@ pub(crate) struct IdentityRecoveryRuntime<T> {
     transport: T,
 }
 
-impl<T> IdentityRecoveryRuntime<T>
-where
-    T: RpcTransport,
-{
+impl<T> IdentityRecoveryRuntime<T> {
     pub(crate) fn new(transport: T) -> Self {
         Self {
             core: None,
@@ -40,7 +38,12 @@ where
             transport,
         }
     }
+}
 
+impl<T> IdentityRecoveryRuntime<T>
+where
+    T: RpcTransport,
+{
     pub(crate) fn recover_handle(
         mut self,
         request: crate::identity::RecoverHandleRequest,
@@ -98,7 +101,7 @@ where
         let raw = self
             .transport
             .rpc(call.endpoint, call.method, call.params.clone())?;
-        let identity = recovered_identity_summary(&request, &generated, &raw)?;
+        let identity = recovered_identity_summary(&request, generated, &raw)?;
         let recovered_identity = crate::identity::RecoveredIdentity {
             identity,
             user_id: raw
@@ -131,120 +134,82 @@ where
         let core = self.core.clone().ok_or_else(|| crate::ImError::Internal {
             message: "recover local finalize requires an ImCore runtime".to_string(),
         })?;
-        let plan = crate::internal::identity_recovery_local::plan_recover_handle(
-            &core.inner().sdk_paths().identities,
-            &request.handle,
-            request
-                .local_finalize
-                .as_ref()
-                .and_then(|local| local.raw_handle.as_deref())
-                .or(request.raw_handle.as_deref()),
-            &core.inner().sdk_config().did_domain,
+        let prepared = prepare_recover_with_local_finalize(&core, &request, &phone, &otp)?;
+        let raw = self.transport.rpc(
+            prepared.call.endpoint,
+            prepared.call.method,
+            prepared.call.params.clone(),
         )?;
-        let local_finalize = request.local_finalize.clone().unwrap_or_default();
-        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
-            &plan.target.effective_domain,
-            [plan.target.target_local_part.as_str()],
-            core.inner().sdk_config().anp_service_endpoint.as_ref(),
-            core.inner().sdk_config().anp_service_did.as_ref(),
-        )?;
+        finish_recover_with_local_finalize(&core, phone, raw, prepared)
+    }
+}
+
+impl<T> IdentityRecoveryRuntime<T>
+where
+    T: AsyncRpcTransport,
+{
+    pub(crate) async fn recover_handle_async(
+        mut self,
+        request: crate::identity::RecoverHandleRequest,
+    ) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
+        validate_request(&request)?;
+        let phone = crate::internal::identity_wire::normalize_phone(&request.phone)?;
+        if let Some(otp) = request
+            .otp
+            .as_deref()
+            .map(str::trim)
+            .filter(|otp| !otp.is_empty())
+            .map(str::to_string)
+        {
+            return self.recover_with_otp_async(request, phone, otp).await;
+        }
+        let call = crate::internal::identity_wire::directory::build_send_otp_rpc_call(&phone)?;
+        let raw = self
+            .transport
+            .rpc(call.endpoint, call.method, call.params.clone())
+            .await?;
+        let sdk_result = crate::identity::RecoverHandleResult::with_raw_response(
+            request.handle,
+            phone,
+            crate::identity::RecoverHandleState::OtpSent,
+            None,
+            None,
+            Some(raw.clone()),
+            Vec::new(),
+        );
+        Ok(IdentityRecoveryRuntimeResult { sdk_result, raw })
+    }
+
+    async fn recover_with_otp_async(
+        &mut self,
+        request: crate::identity::RecoverHandleRequest,
+        phone: String,
+        otp: String,
+    ) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
+        if request.local_finalize.is_some() {
+            return self
+                .recover_with_local_finalize_async(request, phone, otp)
+                .await;
+        }
+        let generated = request.generated_identity.as_ref().ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("generated_identity".to_string()),
+                "generated identity is required when otp is provided",
+            )
+        })?;
         let call = crate::internal::identity_wire::recovery::build_recover_handle_rpc_call(
             crate::internal::identity_wire::RecoverHandleRpcParams {
                 did_document: generated.did_document.clone(),
-                handle: plan.target.target_handle.as_str().to_string(),
+                handle: request.handle.as_str().to_string(),
                 phone: phone.clone(),
                 otp_code: otp,
             },
         )?;
-        let active_before = local_finalize
-            .active_identity_name
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let backup = crate::internal::identity_recovery_local::create_recover_backup(
-            &core.inner().sdk_paths().identities,
-            &plan,
-            &active_before,
-            local_finalize.config_file_path.as_deref(),
-        )?;
         let raw = self
             .transport
-            .rpc(call.endpoint, call.method, call.params.clone())?;
-        let store = crate::internal::identity_store::IdentityStore::new(
-            &core.inner().sdk_paths().identities,
-        );
-        let stored = store.save_identity(crate::internal::identity_store::SaveIdentityInput {
-            local_alias: plan.temp_identity_name.clone(),
-            did: did_from_raw(&raw).unwrap_or_else(|| generated.did.clone()),
-            unique_id: generated.unique_id.clone(),
-            user_id: crate::internal::identity_recovery_local::string_value(&raw, "user_id", ""),
-            display_name: plan.target.target_local_part.clone(),
-            handle: crate::internal::identity_recovery_local::string_value(
-                &raw,
-                "handle",
-                &plan.target.target_local_part,
-            ),
-            full_handle: crate::internal::identity_recovery_local::string_value(
-                &raw,
-                "full_handle",
-                plan.target.target_handle.as_str(),
-            ),
-            jwt_token: crate::internal::identity_recovery_local::string_value(
-                &raw,
-                "access_token",
-                "",
-            ),
-            did_document: Some(generated.did_document.clone()),
-            key1_private_pem: generated.key1_private_pem.clone(),
-            key1_public_pem: generated.key1_public_pem.clone(),
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem.clone(),
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem.clone(),
-            make_default: false,
-        })?;
-        let identity = crate::internal::identity_recovery_local::identity_summary_from_generated(
-            &generated,
-            &raw,
-            &plan.target,
-            &plan.temp_identity_name,
-        )?;
-        let old_dids = plan.old_owner_dids_in_merge_order();
-        let new_did = stored.did.as_str().to_string();
-        let (store_merge_counts, e2ee_cleanup_counts) =
-            crate::internal::identity_recover_local_state::merge_recovered_handle_local_state(
-                &core.inner().sdk_paths().local_state.sqlite_path,
-                &old_dids,
-                &new_did,
-                &plan.final_identity_name,
-            )?;
-        let archived_identity_names = plan.archived_identity_names();
-        let promoted = store.promote_recovered_handle(
-            &plan.final_identity_name,
-            &plan.temp_identity_name,
-            &archived_identity_names,
-        )?;
-        let active_was_archived = archived_identity_names
-            .iter()
-            .any(|name| name.trim() == active_before && !name.trim().is_empty());
-        let active_config_updated = if active_was_archived {
-            if let Some(config_file) = local_finalize.config_file_path.as_deref() {
-                crate::internal::identity_recovery_local::update_active_identity_in_config(
-                    config_file,
-                    &plan.final_identity_name,
-                )?
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        let mut summary_stored = stored.clone();
-        summary_stored.local_alias = plan.final_identity_name.clone();
-        summary_stored.is_default = promoted.default_updated;
-        let final_summary =
-            crate::internal::identity_recovery_local::local_identity_summary_from_stored(
-                &summary_stored,
-            );
+            .rpc(call.endpoint, call.method, call.params.clone())
+            .await?;
+        let identity = recovered_identity_summary(&request, generated, &raw)?;
         let recovered_identity = crate::identity::RecoveredIdentity {
             identity,
             user_id: raw
@@ -256,36 +221,354 @@ where
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty()),
         };
-        let local_recovery = crate::identity::RecoverHandleLocalResult {
-            identity: final_summary,
-            backup_path: backup.backup_path,
-            archived_identities: archived_identity_names,
-            archived_dids: plan.archived_dids(),
-            full_handle: plan.target.target_handle.as_str().to_string(),
-            final_identity_name: plan.final_identity_name,
-            store_merge_counts,
-            e2ee_cleanup_counts,
-            default_updated: promoted.default_updated,
-            active_config_updated,
-        };
-        let mut warnings = Vec::new();
-        if !local_recovery.archived_identities.is_empty() {
-            warnings.push(format!(
-                "Archived {} same-handle local identities; they were removed from the live index, while their original directories and the recover backup were kept.",
-                local_recovery.archived_identities.len()
-            ));
-        }
         let sdk_result = crate::identity::RecoverHandleResult::with_raw_response(
-            plan.target.target_handle,
+            request.handle,
             phone,
             crate::identity::RecoverHandleState::Recovered,
             Some(recovered_identity),
-            Some(local_recovery),
+            None,
             Some(raw.clone()),
-            warnings,
+            Vec::new(),
         );
         Ok(IdentityRecoveryRuntimeResult { sdk_result, raw })
     }
+
+    async fn recover_with_local_finalize_async(
+        &mut self,
+        request: crate::identity::RecoverHandleRequest,
+        phone: String,
+        otp: String,
+    ) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
+        let core = self.core.clone().ok_or_else(|| crate::ImError::Internal {
+            message: "recover local finalize requires an ImCore runtime".to_string(),
+        })?;
+        let core_for_prepare = core.clone();
+        let request_for_prepare = request.clone();
+        let phone_for_prepare = phone.clone();
+        let otp_for_prepare = otp.clone();
+        let prepared = crate::internal::runtime::worker::run_blocking(move || {
+            prepare_recover_with_local_finalize(
+                &core_for_prepare,
+                &request_for_prepare,
+                &phone_for_prepare,
+                &otp_for_prepare,
+            )
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })??;
+        let raw = self
+            .transport
+            .rpc(
+                prepared.call.endpoint,
+                prepared.call.method,
+                prepared.call.params.clone(),
+            )
+            .await?;
+        finish_recover_with_local_finalize_async(core, phone, raw, prepared).await
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PreparedLocalFinalize {
+    plan: crate::internal::identity_recovery_local::RecoverLocalPlan,
+    local_finalize: crate::identity::RecoverHandleLocalFinalizeRequest,
+    generated: crate::internal::identity_generation::GeneratedIdentity,
+    daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
+    active_before: String,
+    backup: crate::internal::identity_recovery_local::RecoverBackupResult,
+    call: crate::internal::identity_wire::RpcCall,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedLocalFinalizeSaved {
+    plan: crate::internal::identity_recovery_local::RecoverLocalPlan,
+    local_finalize: crate::identity::RecoverHandleLocalFinalizeRequest,
+    active_before: String,
+    backup: crate::internal::identity_recovery_local::RecoverBackupResult,
+    stored: crate::internal::identity_store::StoredIdentity,
+    recovered_identity: crate::identity::RecoveredIdentity,
+}
+
+fn prepare_recover_with_local_finalize(
+    core: &crate::core::ImCore,
+    request: &crate::identity::RecoverHandleRequest,
+    phone: &str,
+    otp: &str,
+) -> crate::ImResult<PreparedLocalFinalize> {
+    let plan = crate::internal::identity_recovery_local::plan_recover_handle(
+        &core.inner().sdk_paths().identities,
+        &request.handle,
+        request
+            .local_finalize
+            .as_ref()
+            .and_then(|local| local.raw_handle.as_deref())
+            .or(request.raw_handle.as_deref()),
+        &core.inner().sdk_config().did_domain,
+    )?;
+    let local_finalize = request.local_finalize.clone().unwrap_or_default();
+    let generated_with_daemon =
+        crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+            &plan.target.effective_domain,
+            [plan.target.target_local_part.as_str()],
+            core.inner().sdk_config().anp_service_endpoint.as_ref(),
+            core.inner().sdk_config().anp_service_did.as_ref(),
+        )?;
+    let crate::internal::identity_generation::GeneratedIdentityWithDaemonSubkey {
+        identity: generated,
+        daemon_subkey_package,
+    } = generated_with_daemon;
+    let call = crate::internal::identity_wire::recovery::build_recover_handle_rpc_call(
+        crate::internal::identity_wire::RecoverHandleRpcParams {
+            did_document: generated.did_document.clone(),
+            handle: plan.target.target_handle.as_str().to_string(),
+            phone: phone.to_string(),
+            otp_code: otp.to_string(),
+        },
+    )?;
+    let active_before = local_finalize
+        .active_identity_name
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let backup = crate::internal::identity_recovery_local::create_recover_backup(
+        &core.inner().sdk_paths().identities,
+        &plan,
+        &active_before,
+        local_finalize.config_file_path.as_deref(),
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?,
+    )?;
+    Ok(PreparedLocalFinalize {
+        plan,
+        local_finalize,
+        generated,
+        daemon_subkey_package,
+        active_before,
+        backup,
+        call,
+    })
+}
+
+async fn finish_recover_with_local_finalize_async(
+    core: crate::core::ImCore,
+    phone: String,
+    raw: Value,
+    prepared: PreparedLocalFinalize,
+) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
+    let core_for_save = core.clone();
+    let raw_for_save = raw.clone();
+    let saved = crate::internal::runtime::worker::run_blocking(move || {
+        save_recover_with_local_finalize_identity(&core_for_save, &raw_for_save, prepared)
+    })
+    .await
+    .map_err(|err| crate::ImError::Internal {
+        message: err.to_string(),
+    })??;
+    let old_dids = saved.plan.old_owner_dids_in_merge_order();
+    let new_did = saved.stored.did.as_str().to_string();
+    let final_owner_identity_id = saved.stored.unique_id.clone();
+    let final_identity_name = saved.plan.final_identity_name.clone();
+    let (store_merge_counts, e2ee_cleanup_counts) = core
+        .inner()
+        .local_state_db()
+        .await?
+        .merge_recovered_handle_local_state(
+            old_dids,
+            new_did,
+            final_owner_identity_id,
+            final_identity_name,
+        )
+        .await?;
+    crate::internal::runtime::worker::run_blocking(move || {
+        finish_saved_recover_with_local_finalize(
+            &core,
+            phone,
+            raw,
+            saved,
+            store_merge_counts,
+            e2ee_cleanup_counts,
+        )
+    })
+    .await
+    .map_err(|err| crate::ImError::Internal {
+        message: err.to_string(),
+    })?
+}
+
+fn finish_recover_with_local_finalize(
+    core: &crate::core::ImCore,
+    phone: String,
+    raw: Value,
+    prepared: PreparedLocalFinalize,
+) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
+    let saved = save_recover_with_local_finalize_identity(core, &raw, prepared)?;
+    let old_dids = saved.plan.old_owner_dids_in_merge_order();
+    let new_did = saved.stored.did.as_str().to_string();
+    let (store_merge_counts, e2ee_cleanup_counts) =
+        crate::internal::identity_recover_local_state::merge_recovered_handle_local_state(
+            &core.inner().sdk_paths().local_state.sqlite_path,
+            &old_dids,
+            &new_did,
+            &saved.stored.unique_id,
+            &saved.plan.final_identity_name,
+        )?;
+    finish_saved_recover_with_local_finalize(
+        core,
+        phone,
+        raw,
+        saved,
+        store_merge_counts,
+        e2ee_cleanup_counts,
+    )
+}
+
+fn save_recover_with_local_finalize_identity(
+    core: &crate::core::ImCore,
+    raw: &Value,
+    prepared: PreparedLocalFinalize,
+) -> crate::ImResult<PreparedLocalFinalizeSaved> {
+    let plan = prepared.plan;
+    let generated = prepared.generated;
+    let daemon_subkey_package = prepared.daemon_subkey_package;
+    let store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let did = did_from_raw(raw).unwrap_or_else(|| generated.did.clone());
+    if did != daemon_subkey_package.user_did {
+        return Err(crate::ImError::IdentityNotReady {
+            identity: did.as_str().to_string(),
+            missing: vec!["daemon_subkey_did_mismatch".to_string()],
+        });
+    }
+    let secret_storage =
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
+    let stored = store.save_identity_with_secret_storage(
+        crate::internal::identity_store::SaveIdentityInput {
+            local_alias: plan.temp_identity_name.clone(),
+            did,
+            unique_id: generated.unique_id.clone(),
+            user_id: crate::internal::identity_recovery_local::string_value(raw, "user_id", ""),
+            display_name: plan.target.target_local_part.clone(),
+            handle: crate::internal::identity_recovery_local::string_value(
+                raw,
+                "handle",
+                &plan.target.target_local_part,
+            ),
+            full_handle: crate::internal::identity_recovery_local::string_value(
+                raw,
+                "full_handle",
+                plan.target.target_handle.as_str(),
+            ),
+            jwt_token: crate::internal::identity_recovery_local::string_value(
+                raw,
+                "access_token",
+                "",
+            ),
+            did_document: Some(generated.did_document.clone()),
+            key1_private_pem: generated.key1_private_pem.clone(),
+            key1_public_pem: generated.key1_public_pem.clone(),
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem.clone(),
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem.clone(),
+            daemon_subkey_package: Some(daemon_subkey_package),
+            make_default: false,
+        },
+        secret_storage,
+    )?;
+    let identity = crate::internal::identity_recovery_local::identity_summary_from_generated(
+        &generated,
+        raw,
+        &plan.target,
+        &plan.temp_identity_name,
+    )?;
+    let recovered_identity = crate::identity::RecoveredIdentity {
+        identity: identity.clone(),
+        user_id: raw
+            .get("user_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        access_token_present: raw
+            .get("access_token")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+    };
+    Ok(PreparedLocalFinalizeSaved {
+        plan,
+        local_finalize: prepared.local_finalize,
+        active_before: prepared.active_before,
+        backup: prepared.backup,
+        stored,
+        recovered_identity,
+    })
+}
+
+fn finish_saved_recover_with_local_finalize(
+    core: &crate::core::ImCore,
+    phone: String,
+    raw: Value,
+    saved: PreparedLocalFinalizeSaved,
+    store_merge_counts: std::collections::BTreeMap<String, i64>,
+    e2ee_cleanup_counts: std::collections::BTreeMap<String, i64>,
+) -> crate::ImResult<IdentityRecoveryRuntimeResult> {
+    let store =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities);
+    let archived_identity_names = saved.plan.archived_identity_names();
+    let promoted = store.promote_recovered_handle(
+        &saved.plan.final_identity_name,
+        &saved.plan.temp_identity_name,
+        &archived_identity_names,
+    )?;
+    let active_was_archived = archived_identity_names
+        .iter()
+        .any(|name| name.trim() == saved.active_before && !name.trim().is_empty());
+    let active_config_updated = if active_was_archived {
+        if let Some(config_file) = saved.local_finalize.config_file_path.as_deref() {
+            crate::internal::identity_recovery_local::update_active_identity_in_config(
+                config_file,
+                &saved.plan.final_identity_name,
+            )?
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let mut summary_stored = saved.stored.clone();
+    summary_stored.local_alias = saved.plan.final_identity_name.clone();
+    summary_stored.is_default = promoted.default_updated;
+    let final_summary =
+        crate::internal::identity_recovery_local::local_identity_summary_from_stored(
+            &summary_stored,
+        );
+    let local_recovery = crate::identity::RecoverHandleLocalResult {
+        identity: final_summary,
+        backup_path: saved.backup.backup_path,
+        archived_identities: archived_identity_names,
+        archived_dids: saved.plan.archived_dids(),
+        full_handle: saved.plan.target.target_handle.as_str().to_string(),
+        final_identity_name: saved.plan.final_identity_name,
+        store_merge_counts,
+        e2ee_cleanup_counts,
+        default_updated: promoted.default_updated,
+        active_config_updated,
+    };
+    let mut warnings = Vec::new();
+    if !local_recovery.archived_identities.is_empty() {
+        warnings.push(format!(
+            "Archived {} same-handle local identities; they were removed from the live index, while their original directories and the recover backup were kept.",
+            local_recovery.archived_identities.len()
+        ));
+    }
+    let sdk_result = crate::identity::RecoverHandleResult::with_raw_response(
+        saved.plan.target.target_handle,
+        phone,
+        crate::identity::RecoverHandleState::Recovered,
+        Some(saved.recovered_identity),
+        Some(local_recovery),
+        Some(raw.clone()),
+        warnings,
+    );
+    Ok(IdentityRecoveryRuntimeResult { sdk_result, raw })
 }
 
 pub(crate) fn prepare_recover_handle_request(
@@ -299,12 +582,17 @@ pub(crate) fn prepare_recover_handle_request(
     let mut local_store = None;
     if otp_present && request.local_finalize.is_none() && request.generated_identity.is_none() {
         let target = recovery_target(&request.handle, &core.inner().sdk_config().did_domain)?;
-        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
-            &target.effective_domain,
-            [target.local_part.as_str()],
-            core.inner().sdk_config().anp_service_endpoint.as_ref(),
-            core.inner().sdk_config().anp_service_did.as_ref(),
-        )?;
+        let generated_with_daemon =
+            crate::internal::identity_generation::generate_identity_with_default_daemon_subkey(
+                &target.effective_domain,
+                [target.local_part.as_str()],
+                core.inner().sdk_config().anp_service_endpoint.as_ref(),
+                core.inner().sdk_config().anp_service_did.as_ref(),
+            )?;
+        let crate::internal::identity_generation::GeneratedIdentityWithDaemonSubkey {
+            identity: generated,
+            daemon_subkey_package,
+        } = generated_with_daemon;
         request.generated_identity = Some(crate::identity::RecoverGeneratedIdentity {
             did: generated.did.clone(),
             unique_id: generated.unique_id.clone(),
@@ -313,6 +601,7 @@ pub(crate) fn prepare_recover_handle_request(
         request.handle = target.full_handle;
         local_store = Some(GeneratedRecoveryLocalStore {
             generated,
+            daemon_subkey_package,
             local_alias: if target.explicit_domain {
                 request.handle.as_str().to_string()
             } else {
@@ -346,25 +635,38 @@ pub(crate) fn finalize_recover_handle_result(
         &core.inner().sdk_config().did_domain,
     )?;
     let generated = local_store.generated;
+    let daemon_subkey_package = local_store.daemon_subkey_package;
     let did = did_from_raw(&result.raw).unwrap_or_else(|| generated.did.clone());
+    if did != daemon_subkey_package.user_did {
+        return Err(crate::ImError::IdentityNotReady {
+            identity: did.as_str().to_string(),
+            missing: vec!["daemon_subkey_did_mismatch".to_string()],
+        });
+    }
+    let secret_storage =
+        crate::internal::identity_store::SaveIdentitySecretStorage::from_core(core)?;
     let stored =
         crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
-            .save_identity(crate::internal::identity_store::SaveIdentityInput {
-            local_alias: local_store.local_alias,
-            did,
-            unique_id: generated.unique_id,
-            user_id: string_value(&result.raw, "user_id", ""),
-            display_name: string_value(&result.raw, "handle", &target.local_part),
-            handle: string_value(&result.raw, "handle", &target.local_part),
-            full_handle: string_value(&result.raw, "full_handle", target.full_handle.as_str()),
-            jwt_token: string_value(&result.raw, "access_token", ""),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            make_default: true,
-        })?;
+            .save_identity_with_secret_storage(
+            crate::internal::identity_store::SaveIdentityInput {
+                local_alias: local_store.local_alias,
+                did,
+                unique_id: generated.unique_id,
+                user_id: string_value(&result.raw, "user_id", ""),
+                display_name: string_value(&result.raw, "handle", &target.local_part),
+                handle: string_value(&result.raw, "handle", &target.local_part),
+                full_handle: string_value(&result.raw, "full_handle", target.full_handle.as_str()),
+                jwt_token: string_value(&result.raw, "access_token", ""),
+                did_document: Some(generated.did_document),
+                key1_private_pem: generated.key1_private_pem,
+                key1_public_pem: generated.key1_public_pem,
+                e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+                e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+                daemon_subkey_package: Some(daemon_subkey_package),
+                make_default: true,
+            },
+            secret_storage,
+        )?;
     let identity =
         crate::internal::identity_registration_runtime::identity_summary_from_stored(&stored)?;
     let recovered_identity = crate::identity::RecoveredIdentity {
@@ -644,13 +946,10 @@ mod tests {
             .generated_identity
             .as_ref()
             .expect("generated identity");
-        assert_eq!(
-            generated
-                .did
-                .as_str()
-                .starts_with("did:wba:awiki.test:alice:"),
-            true
-        );
+        assert!(generated
+            .did
+            .as_str()
+            .starts_with("did:wba:awiki.test:alice:"));
         assert_eq!(prepared.request.handle.as_str(), "alice.awiki.test");
         assert_eq!(
             prepared
@@ -733,19 +1032,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(default.handle.unwrap().as_str(), "alice.awiki.test");
-        assert_eq!(
-            std::fs::read_to_string(
-                fixture
-                    .root
-                    .path()
-                    .join("identities")
-                    .join(&generated.unique_id)
-                    .join("auth.json")
-            )
-            .unwrap()
-            .contains("jwt-recover"),
-            true
-        );
+        assert!(std::fs::read_to_string(
+            fixture
+                .root
+                .path()
+                .join("identities")
+                .join(&generated.unique_id)
+                .join("auth.json")
+        )
+        .unwrap()
+        .contains("jwt-recover"));
     }
 
     struct TestTransport {

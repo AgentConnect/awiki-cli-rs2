@@ -4,6 +4,7 @@ pub(crate) mod profile;
 pub(crate) mod recovery;
 pub(crate) mod relationships;
 pub(crate) mod replace_did;
+pub(crate) mod update_document;
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -85,12 +86,23 @@ pub struct ReplaceDidRpcParams {
     pub endpoint_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateDocumentRpcParams {
+    pub did_document: Value,
+    pub is_public: Option<bool>,
+    pub is_agent: Option<bool>,
+    pub role: Option<String>,
+    pub endpoint_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpdateProfileParams {
     pub display_name: String,
     pub bio: String,
     pub tags_csv: String,
     pub markdown: String,
+    pub avatar_uri: String,
+    pub avatar_url: String,
     pub preserve_markdown: bool,
 }
 

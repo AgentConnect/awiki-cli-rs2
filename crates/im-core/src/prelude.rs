@@ -1,7 +1,7 @@
 pub use crate::attachments::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
     AttachmentSendResult, AttachmentService, DownloadAttachmentRequest, DownloadedAttachment,
-    DownloadedAttachmentDestination, UploadedAttachment,
+    DownloadedAttachmentDestination, SendConversationAttachmentRequest, UploadedAttachment,
 };
 pub use crate::auth::{AuthScope, AuthService, AuthStatus, SessionBundle, SessionUpdate};
 pub use crate::content::{
@@ -9,13 +9,14 @@ pub use crate::content::{
     PageUpdate, Visibility,
 };
 pub use crate::core::{
-    CoreBootstrap, ImClient, ImCore, LocalStateStatus, MigrationReport, PathCheck,
-    PathValidationReport,
+    CoreBootstrap, IdentitySecretStoragePolicy, ImClient, ImCore, ImCoreOpenOptions,
+    ImCoreSecretVaultOptions, LocalStateStatus, MigrationReport, PathCheck, PathValidationReport,
 };
 pub use crate::directory::{
-    Contact, ContactListQuery, DirectoryResolution, DirectoryService, FollowRequest, FollowResult,
-    HandleLookupResult, IdentitySubject, PublicProfile, RelationStatus, RelationshipListItem,
-    RelationshipListQuery, RelationshipStatus, SaveContactRequest, UnfollowRequest, UnfollowResult,
+    Contact, ContactListQuery, DirectoryResolution, DirectoryService, DisplayProfile,
+    DisplayProfileBatchRequest, FollowRequest, FollowResult, HandleLookupResult, IdentitySubject,
+    PublicProfile, RelationStatus, RelationshipListItem, RelationshipListQuery, RelationshipStatus,
+    SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
 pub use crate::email::{
     EmailAccount, EmailAddress, EmailAttachmentContent, EmailAttachmentDownloadRequest,
@@ -25,7 +26,9 @@ pub use crate::email::{
 };
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::{
-    GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupJoinRequest,
+    GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupE2eeProcessLeaveRequest,
+    GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupJoinRequest,
+    GroupKeyPackagePublishRequest, GroupKeyPackagePublishResult, GroupKeyPackagePurpose,
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRef, GroupMemberResolution, GroupMemberRole, GroupMembersRequest,
     GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch,
@@ -33,34 +36,42 @@ pub use crate::groups::{
     GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use crate::identity::{
-    ContactBindingMethod, ContactBindingRequest, ContactBindingState, DefaultIdentityChange,
-    HandleRegistrationResult, HandleRegistrationState, IdentityMissingItem, IdentityReadiness,
-    IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary, InitialProfile, Profile,
-    ProfileAttribute, ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan,
-    RecoverHandlePlanRequest, RecoverHandleRequest, RecoverHandleState,
-    RecoverLocalIdentitySummary, RecoverLocalUserState, RecoveredIdentity, RegisterHandleRequest,
-    RegistrationMethod, VerificationInput,
+    ContactBindingMethod, ContactBindingRequest, ContactBindingState, DaemonSubkeyPrivatePackage,
+    DefaultIdentityChange, DeleteLocalIdentityResult, HandleRegistrationResult,
+    HandleRegistrationState, HostedIdentityMaterial, IdentityMissingItem, IdentityReadiness,
+    IdentityRegistry, IdentitySecretStorageBackend, IdentitySelector, IdentityService,
+    IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
+    IdentityVaultVerificationReport, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
+    RecoverHandleLocalFinalizeRequest, RecoverHandlePlan, RecoverHandlePlanRequest,
+    RecoverHandleRequest, RecoverHandleState, RecoverLocalIdentitySummary, RecoverLocalUserState,
+    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
 };
 pub use crate::messages::{
-    Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery, InboxScope,
-    MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
-    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
-    MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
-    MessageSendState, MessageSendStateKind, MessageService, MessageTarget, SendMessageRequest,
-    SendMessageResult, ThreadRef,
+    Conversation, ConversationQuery, ConversationReadRef, DelegatedSigningOptions, DeliveryState,
+    HistoryQuery, InboxAuth, InboxHistoryOptions, InboxQuery, InboxScope,
+    MarkConversationReadRequest, MarkReadResult, MarkThreadReadRequest, MarkThreadReadResult,
+    Message, MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
+    MessageMetadata, MessageMetadataAttribute, MessagePage, MessageRetryAction, MessageRetryPlan,
+    MessageSecurityMode, MessageSecurityPolicy, MessageSendState, MessageSendStateKind,
+    MessageService, MessageTarget, ReadWatermark, ScopedInboxToken, SendConversationPayloadRequest,
+    SendConversationTextRequest, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
+#[cfg(feature = "blocking")]
 pub use crate::realtime::{
     run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
+    RealtimeEventReceiver, RealtimeHandle, RealtimeRunnerEventSink, RealtimeRunnerOutcome,
+    RealtimeRunnerTransport,
+};
+pub use crate::realtime::{
     AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupUpdateKind,
     GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
     LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
-    RealtimeConnectionState, RealtimeControl, RealtimeEventReceiver, RealtimeExit,
-    RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeRunnerEventSink,
-    RealtimeRunnerOutcome, RealtimeRunnerTransport, RealtimeService, RealtimeStatus,
+    RealtimeConnectionState, RealtimeControl, RealtimeEventStream, RealtimeExit,
+    RealtimeExitReason, RealtimeOptions, RealtimeService, RealtimeSession, RealtimeStatus,
     RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
 };
 pub use crate::secure::{

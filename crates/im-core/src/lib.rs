@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 pub mod attachments;
 pub mod auth;
 pub mod config;
@@ -15,6 +20,7 @@ pub mod prelude;
 pub mod realtime;
 pub mod secure;
 pub mod site;
+pub mod vault;
 
 #[doc(hidden)]
 pub mod compat;
@@ -24,12 +30,19 @@ mod internal;
 pub use self::config::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
 pub use crate::attachments::AttachmentService;
 pub use crate::content::ContentService;
-pub use crate::core::{CoreBootstrap, ImClient, ImCore};
+pub use crate::core::{
+    CoreBootstrap, IdentitySecretStoragePolicy, ImClient, ImCore, ImCoreOpenOptions,
+    ImCoreSecretVaultOptions,
+};
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::GroupService;
-pub use crate::identity::{IdentitySelector, IdentitySummary};
+pub use crate::identity::{
+    DeleteLocalIdentityResult, HostedIdentityMaterial, IdentitySecretStorageBackend,
+    IdentitySelector, IdentitySummary, IdentityVaultMigrationReport, IdentityVaultStatus,
+    IdentityVaultVerificationReport,
+};
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;
 pub use crate::secure::SecureService;

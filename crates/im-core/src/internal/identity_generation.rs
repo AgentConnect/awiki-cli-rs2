@@ -1,6 +1,7 @@
 use anp::authentication::{
-    build_anp_message_service, create_did_wba_document, AnpMessageServiceOptions,
-    DidDocumentOptions, DidProfile, VM_KEY_AUTH, VM_KEY_E2EE_AGREEMENT, VM_KEY_E2EE_SIGNING,
+    build_anp_message_service, create_did_wba_document_with_creation_options,
+    AnpMessageServiceOptions, DidDocumentCreationOptions, DidDocumentOptions, DidProfile,
+    VM_KEY_AUTH, VM_KEY_E2EE_AGREEMENT, VM_KEY_E2EE_SIGNING,
 };
 use rand::RngCore;
 use serde_json::Value;
@@ -24,11 +25,89 @@ pub(crate) struct GeneratedIdentity {
     pub(crate) e2ee_agreement_private_pem: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GeneratedIdentityWithDaemonSubkey {
+    pub(crate) identity: GeneratedIdentity,
+    pub(crate) daemon_subkey_package: crate::identity::DaemonSubkeyPrivatePackage,
+}
+
+pub(crate) fn generate_identity_with_default_daemon_subkey<I, S>(
+    hostname: &str,
+    path_segments: I,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedIdentityWithDaemonSubkey>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let daemon_subkey = crate::internal::identity_daemon_subkey::generate_material();
+    let generated = generate_identity_with_path_segments_and_daemon_subkey(
+        hostname,
+        path_segments,
+        service_endpoint,
+        service_did,
+        &daemon_subkey,
+    )?;
+    let daemon_subkey_package = crate::internal::identity_daemon_subkey::package_from_material(
+        generated.did.clone(),
+        daemon_subkey,
+    );
+    crate::internal::identity_daemon_subkey::validate_package_against_did_document(
+        &daemon_subkey_package,
+        &generated.did_document,
+    )?;
+    Ok(GeneratedIdentityWithDaemonSubkey {
+        identity: generated,
+        daemon_subkey_package,
+    })
+}
+
 pub(crate) fn generate_identity_with_path_segments<I, S>(
     hostname: &str,
     path_segments: I,
     service_endpoint: Option<&crate::config::ServiceEndpoint>,
     service_did: Option<&crate::ids::Did>,
+) -> crate::ImResult<GeneratedIdentity>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    generate_identity_with_path_segments_internal(
+        hostname,
+        path_segments,
+        service_endpoint,
+        service_did,
+        None,
+    )
+}
+
+fn generate_identity_with_path_segments_and_daemon_subkey<I, S>(
+    hostname: &str,
+    path_segments: I,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+    daemon_subkey: &crate::internal::identity_daemon_subkey::GeneratedDaemonSubkeyMaterial,
+) -> crate::ImResult<GeneratedIdentity>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    generate_identity_with_path_segments_internal(
+        hostname,
+        path_segments,
+        service_endpoint,
+        service_did,
+        Some(daemon_subkey),
+    )
+}
+
+fn generate_identity_with_path_segments_internal<I, S>(
+    hostname: &str,
+    path_segments: I,
+    service_endpoint: Option<&crate::config::ServiceEndpoint>,
+    service_did: Option<&crate::ids::Did>,
+    daemon_subkey: Option<&crate::internal::identity_daemon_subkey::GeneratedDaemonSubkeyMaterial>,
 ) -> crate::ImResult<GeneratedIdentity>
 where
     I: IntoIterator<Item = S>,
@@ -70,8 +149,20 @@ where
         did_profile: DidProfile::E1,
         ..DidDocumentOptions::default()
     };
-    let bundle =
-        create_did_wba_document(hostname, options).map_err(|err| crate::ImError::Internal {
+    let creation_options = daemon_subkey.map_or_else(
+        || DidDocumentCreationOptions::from(options.clone()),
+        |subkey| {
+            DidDocumentCreationOptions::new(options.clone())
+                .with_additional_verification_method(
+                    crate::internal::identity_daemon_subkey::creation_verification_method(subkey),
+                )
+                .with_additional_authentication(
+                    crate::internal::identity_daemon_subkey::creation_authentication_reference(),
+                )
+        },
+    );
+    let bundle = create_did_wba_document_with_creation_options(hostname, creation_options)
+        .map_err(|err| crate::ImError::Internal {
             message: format!("generate did document: {err}"),
         })?;
     let did = bundle

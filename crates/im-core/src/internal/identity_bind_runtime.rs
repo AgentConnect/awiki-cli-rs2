@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRestTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRestTransport, AuthenticatedRestTransport};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ContactBindingRuntimeResult {
@@ -16,11 +16,7 @@ pub(crate) struct ContactBindingRuntime<'a, P, T> {
     transport: T,
 }
 
-impl<'a, P, T> ContactBindingRuntime<'a, P, T>
-where
-    P: SessionProvider,
-    T: AuthenticatedRestTransport,
-{
+impl<'a, P, T> ContactBindingRuntime<'a, P, T> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
         session_provider: P,
@@ -32,7 +28,13 @@ where
             transport,
         }
     }
+}
 
+impl<'a, P, T> ContactBindingRuntime<'a, P, T>
+where
+    P: SessionProvider,
+    T: AuthenticatedRestTransport,
+{
     pub(crate) fn bind_contact(
         mut self,
         request: crate::identity::ContactBindingRequest,
@@ -192,6 +194,174 @@ where
     }
 }
 
+impl<'a, P, T> ContactBindingRuntime<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRestTransport,
+{
+    pub(crate) async fn bind_contact_async(
+        mut self,
+        request: crate::identity::ContactBindingRequest,
+    ) -> crate::ImResult<ContactBindingRuntimeResult> {
+        validate_request(&request)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::UserProfile)
+            .await?;
+        match request.method {
+            crate::identity::ContactBindingMethod::Phone { phone, otp } => {
+                self.bind_phone_async(phone, otp).await
+            }
+            crate::identity::ContactBindingMethod::Email { email } => {
+                self.bind_email_async(email, request.wait_for_email_verification)
+                    .await
+            }
+        }
+    }
+
+    pub(crate) async fn email_status_async(
+        mut self,
+        email: String,
+    ) -> crate::ImResult<ContactBindingRuntimeResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::UserProfile)
+            .await?;
+        let email = crate::internal::identity_wire::required_normalized_email(&email)?;
+        let status = self.email_status_value_async(&email).await?;
+        let state = if status.as_ref().is_some_and(email_verified) {
+            crate::identity::ContactBindingState::Completed
+        } else {
+            crate::identity::ContactBindingState::Pending
+        };
+        let sdk_result = binding_result(
+            crate::identity::ContactBindingMethodKind::Email,
+            email,
+            state,
+            status.clone(),
+        );
+        Ok(ContactBindingRuntimeResult {
+            sdk_result,
+            raw_status: status,
+            raw_send: None,
+        })
+    }
+
+    async fn bind_phone_async(
+        &mut self,
+        phone: String,
+        otp: Option<String>,
+    ) -> crate::ImResult<ContactBindingRuntimeResult> {
+        let phone = crate::internal::identity_wire::normalize_phone(&phone)?;
+        if let Some(otp) = otp.filter(|otp| !otp.trim().is_empty()) {
+            let call = crate::internal::identity_wire::bind::build_phone_bind_verify_rest_call(
+                &phone, &otp,
+            )?;
+            let raw = self
+                .transport
+                .authenticated_rest_post(call.endpoint, call.method, call.body)
+                .await?;
+            let sdk_result = binding_result(
+                crate::identity::ContactBindingMethodKind::Phone,
+                phone,
+                crate::identity::ContactBindingState::Completed,
+                Some(raw.clone()),
+            );
+            return Ok(ContactBindingRuntimeResult {
+                sdk_result,
+                raw_status: None,
+                raw_send: Some(raw),
+            });
+        }
+        let call = crate::internal::identity_wire::bind::build_phone_bind_send_rest_call(&phone)?;
+        let raw = self
+            .transport
+            .authenticated_rest_post(call.endpoint, call.method, call.body)
+            .await?;
+        let sdk_result = binding_result(
+            crate::identity::ContactBindingMethodKind::Phone,
+            phone,
+            crate::identity::ContactBindingState::OtpSent,
+            Some(raw.clone()),
+        );
+        Ok(ContactBindingRuntimeResult {
+            sdk_result,
+            raw_status: None,
+            raw_send: Some(raw),
+        })
+    }
+
+    async fn bind_email_async(
+        &mut self,
+        email: String,
+        wait_for_email_verification: bool,
+    ) -> crate::ImResult<ContactBindingRuntimeResult> {
+        let email = crate::internal::identity_wire::required_normalized_email(&email)?;
+        let status = self.email_status_value_async(&email).await?;
+        if status.as_ref().is_some_and(email_verified) {
+            let sdk_result = binding_result(
+                crate::identity::ContactBindingMethodKind::Email,
+                email,
+                crate::identity::ContactBindingState::Completed,
+                status.clone(),
+            );
+            return Ok(ContactBindingRuntimeResult {
+                sdk_result,
+                raw_status: status,
+                raw_send: None,
+            });
+        }
+
+        let send_call =
+            crate::internal::identity_wire::bind::build_email_send_rest_call(&email, None, true)?;
+        let send = self
+            .transport
+            .authenticated_rest_post(send_call.endpoint, send_call.method, send_call.body)
+            .await?;
+
+        if wait_for_email_verification {
+            let sdk_result = binding_result(
+                crate::identity::ContactBindingMethodKind::Email,
+                email,
+                crate::identity::ContactBindingState::Pending,
+                Some(send.clone()),
+            );
+            return Ok(ContactBindingRuntimeResult {
+                sdk_result,
+                raw_status: status,
+                raw_send: Some(send),
+            });
+        }
+
+        let sdk_result = binding_result(
+            crate::identity::ContactBindingMethodKind::Email,
+            email,
+            crate::identity::ContactBindingState::EmailSent,
+            Some(send.clone()),
+        );
+        Ok(ContactBindingRuntimeResult {
+            sdk_result,
+            raw_status: status,
+            raw_send: Some(send),
+        })
+    }
+
+    async fn email_status_value_async(&mut self, email: &str) -> crate::ImResult<Option<Value>> {
+        let status_call =
+            crate::internal::identity_wire::bind::build_email_status_rest_call(email, None, true)?;
+        match self
+            .transport
+            .authenticated_rest_get(status_call.endpoint, status_call.method, &status_call.query)
+            .await
+        {
+            Ok(status) => Ok(Some(status)),
+            Err(crate::ImError::Service {
+                status_code: Some(404),
+                ..
+            }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
+
 pub(crate) fn validate_request(
     request: &crate::identity::ContactBindingRequest,
 ) -> crate::ImResult<()> {
@@ -295,6 +465,7 @@ mod tests {
                     status_code: Some(404),
                     code: None,
                     message: "not found".to_string(),
+                    data: None,
                 })],
                 posts: vec![serde_json::json!({"sent": true})],
             },
@@ -366,6 +537,7 @@ mod tests {
                 scope,
                 expires_at: None,
                 refreshed: false,
+                bearer_token: None,
             })
         }
 

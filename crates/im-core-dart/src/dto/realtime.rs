@@ -46,4 +46,14 @@ pub struct DartRealtimeEvent {
     pub host_kind: Option<String>,
     pub content_type: Option<String>,
     pub notification_type: Option<String>,
+    pub sync: Option<DartRealtimeSyncHint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartRealtimeSyncHint {
+    pub event_id: Option<String>,
+    pub event_seq: Option<String>,
+    pub event_type: Option<String>,
+    pub sync_dirty: bool,
+    pub gap_detected: bool,
 }

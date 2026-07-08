@@ -11,20 +11,26 @@ part 'message.freezed.dart';
 class DartConversation {
   final String threadKind;
   final String threadId;
+  final DartConversationIdentity? conversationIdentity;
   final String? title;
   final List<String> participants;
   final DartMessage? lastMessage;
   final int unreadCount;
+  final int unreadMentionCount;
+  final String? firstUnreadMentionMessageId;
   final int messageCount;
   final String? lastMessageAt;
 
   const DartConversation({
     required this.threadKind,
     required this.threadId,
+    this.conversationIdentity,
     this.title,
     required this.participants,
     this.lastMessage,
     required this.unreadCount,
+    required this.unreadMentionCount,
+    this.firstUnreadMentionMessageId,
     required this.messageCount,
     this.lastMessageAt,
   });
@@ -33,10 +39,13 @@ class DartConversation {
   int get hashCode =>
       threadKind.hashCode ^
       threadId.hashCode ^
+      conversationIdentity.hashCode ^
       title.hashCode ^
       participants.hashCode ^
       lastMessage.hashCode ^
       unreadCount.hashCode ^
+      unreadMentionCount.hashCode ^
+      firstUnreadMentionMessageId.hashCode ^
       messageCount.hashCode ^
       lastMessageAt.hashCode;
 
@@ -47,12 +56,147 @@ class DartConversation {
           runtimeType == other.runtimeType &&
           threadKind == other.threadKind &&
           threadId == other.threadId &&
+          conversationIdentity == other.conversationIdentity &&
           title == other.title &&
           participants == other.participants &&
           lastMessage == other.lastMessage &&
           unreadCount == other.unreadCount &&
+          unreadMentionCount == other.unreadMentionCount &&
+          firstUnreadMentionMessageId == other.firstUnreadMentionMessageId &&
           messageCount == other.messageCount &&
           lastMessageAt == other.lastMessageAt;
+}
+
+class DartConversationAlias {
+  final String kind;
+  final String id;
+  final DartConversationAliasSource source;
+
+  const DartConversationAlias({
+    required this.kind,
+    required this.id,
+    required this.source,
+  });
+
+  @override
+  int get hashCode => kind.hashCode ^ id.hashCode ^ source.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationAlias &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          id == other.id &&
+          source == other.source;
+}
+
+enum DartConversationAliasSource {
+  legacyDirectDid,
+  oldFlutterSortedDirect,
+  peerScopeStorage,
+  groupStorage,
+  threadStorage,
+  unknown,
+}
+
+class DartConversationIdentity {
+  final String conversationId;
+  final String canonicalThreadKind;
+  final String canonicalThreadId;
+  final DartConversationStorageThreadRef storageThreadRef;
+  final List<DartConversationAlias> aliases;
+  final DartConversationIdentityScope identityScope;
+  final DartConversationMigrationState migrationState;
+
+  const DartConversationIdentity({
+    required this.conversationId,
+    required this.canonicalThreadKind,
+    required this.canonicalThreadId,
+    required this.storageThreadRef,
+    required this.aliases,
+    required this.identityScope,
+    required this.migrationState,
+  });
+
+  @override
+  int get hashCode =>
+      conversationId.hashCode ^
+      canonicalThreadKind.hashCode ^
+      canonicalThreadId.hashCode ^
+      storageThreadRef.hashCode ^
+      aliases.hashCode ^
+      identityScope.hashCode ^
+      migrationState.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationIdentity &&
+          runtimeType == other.runtimeType &&
+          conversationId == other.conversationId &&
+          canonicalThreadKind == other.canonicalThreadKind &&
+          canonicalThreadId == other.canonicalThreadId &&
+          storageThreadRef == other.storageThreadRef &&
+          aliases == other.aliases &&
+          identityScope == other.identityScope &&
+          migrationState == other.migrationState;
+}
+
+enum DartConversationIdentityScope { direct, group, thread, mail, unknown }
+
+class DartConversationListSnapshot {
+  final int formatVersion;
+  final PlatformInt64 imSchemaVersion;
+  final String ownerIdentityId;
+  final String ownerDid;
+  final PlatformInt64 generatedAtMs;
+  final String? summaryVersion;
+  final int unreadTotal;
+  final List<DartConversationSnapshotItem> items;
+
+  const DartConversationListSnapshot({
+    required this.formatVersion,
+    required this.imSchemaVersion,
+    required this.ownerIdentityId,
+    required this.ownerDid,
+    required this.generatedAtMs,
+    this.summaryVersion,
+    required this.unreadTotal,
+    required this.items,
+  });
+
+  @override
+  int get hashCode =>
+      formatVersion.hashCode ^
+      imSchemaVersion.hashCode ^
+      ownerIdentityId.hashCode ^
+      ownerDid.hashCode ^
+      generatedAtMs.hashCode ^
+      summaryVersion.hashCode ^
+      unreadTotal.hashCode ^
+      items.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationListSnapshot &&
+          runtimeType == other.runtimeType &&
+          formatVersion == other.formatVersion &&
+          imSchemaVersion == other.imSchemaVersion &&
+          ownerIdentityId == other.ownerIdentityId &&
+          ownerDid == other.ownerDid &&
+          generatedAtMs == other.generatedAtMs &&
+          summaryVersion == other.summaryVersion &&
+          unreadTotal == other.unreadTotal &&
+          items == other.items;
+}
+
+enum DartConversationMigrationState {
+  canonical,
+  aliasResolved,
+  legacyInput,
+  unknown,
 }
 
 class DartConversationPage {
@@ -79,6 +223,345 @@ class DartConversationPage {
           hasMore == other.hasMore;
 }
 
+class DartConversationReadRef {
+  final String conversationId;
+
+  const DartConversationReadRef({required this.conversationId});
+
+  @override
+  int get hashCode => conversationId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationReadRef &&
+          runtimeType == other.runtimeType &&
+          conversationId == other.conversationId;
+}
+
+class DartConversationSnapshotItem {
+  final String threadKind;
+  final String threadId;
+  final DartConversationIdentity? conversationIdentity;
+  final List<String> participants;
+  final DartConversationSnapshotMessage? lastMessage;
+  final int unreadCount;
+  final int unreadMentionCount;
+  final String? firstUnreadMentionMessageId;
+  final int messageCount;
+  final String? lastMessageAt;
+
+  const DartConversationSnapshotItem({
+    required this.threadKind,
+    required this.threadId,
+    this.conversationIdentity,
+    required this.participants,
+    this.lastMessage,
+    required this.unreadCount,
+    required this.unreadMentionCount,
+    this.firstUnreadMentionMessageId,
+    required this.messageCount,
+    this.lastMessageAt,
+  });
+
+  @override
+  int get hashCode =>
+      threadKind.hashCode ^
+      threadId.hashCode ^
+      conversationIdentity.hashCode ^
+      participants.hashCode ^
+      lastMessage.hashCode ^
+      unreadCount.hashCode ^
+      unreadMentionCount.hashCode ^
+      firstUnreadMentionMessageId.hashCode ^
+      messageCount.hashCode ^
+      lastMessageAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationSnapshotItem &&
+          runtimeType == other.runtimeType &&
+          threadKind == other.threadKind &&
+          threadId == other.threadId &&
+          conversationIdentity == other.conversationIdentity &&
+          participants == other.participants &&
+          lastMessage == other.lastMessage &&
+          unreadCount == other.unreadCount &&
+          unreadMentionCount == other.unreadMentionCount &&
+          firstUnreadMentionMessageId == other.firstUnreadMentionMessageId &&
+          messageCount == other.messageCount &&
+          lastMessageAt == other.lastMessageAt;
+}
+
+class DartConversationSnapshotMessage {
+  final String id;
+  final String threadKind;
+  final String threadId;
+  final DartConversationIdentity? conversationIdentity;
+  final String direction;
+  final String sender;
+  final String? receiver;
+  final String? group;
+  final DartConversationSnapshotMessageBody body;
+  final String? sentAt;
+  final String? receivedAt;
+  final PlatformInt64? serverSequence;
+  final String? contentType;
+  final List<DartMessageMetadataAttribute> attributes;
+
+  const DartConversationSnapshotMessage({
+    required this.id,
+    required this.threadKind,
+    required this.threadId,
+    this.conversationIdentity,
+    required this.direction,
+    required this.sender,
+    this.receiver,
+    this.group,
+    required this.body,
+    this.sentAt,
+    this.receivedAt,
+    this.serverSequence,
+    this.contentType,
+    required this.attributes,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      threadKind.hashCode ^
+      threadId.hashCode ^
+      conversationIdentity.hashCode ^
+      direction.hashCode ^
+      sender.hashCode ^
+      receiver.hashCode ^
+      group.hashCode ^
+      body.hashCode ^
+      sentAt.hashCode ^
+      receivedAt.hashCode ^
+      serverSequence.hashCode ^
+      contentType.hashCode ^
+      attributes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationSnapshotMessage &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          threadKind == other.threadKind &&
+          threadId == other.threadId &&
+          conversationIdentity == other.conversationIdentity &&
+          direction == other.direction &&
+          sender == other.sender &&
+          receiver == other.receiver &&
+          group == other.group &&
+          body == other.body &&
+          sentAt == other.sentAt &&
+          receivedAt == other.receivedAt &&
+          serverSequence == other.serverSequence &&
+          contentType == other.contentType &&
+          attributes == other.attributes;
+}
+
+class DartConversationSnapshotMessageBody {
+  final String? text;
+  final String? kind;
+  final String? payloadJson;
+  final String? unsupportedContentType;
+
+  const DartConversationSnapshotMessageBody({
+    this.text,
+    this.kind,
+    this.payloadJson,
+    this.unsupportedContentType,
+  });
+
+  @override
+  int get hashCode =>
+      text.hashCode ^
+      kind.hashCode ^
+      payloadJson.hashCode ^
+      unsupportedContentType.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationSnapshotMessageBody &&
+          runtimeType == other.runtimeType &&
+          text == other.text &&
+          kind == other.kind &&
+          payloadJson == other.payloadJson &&
+          unsupportedContentType == other.unsupportedContentType;
+}
+
+class DartConversationStorageThreadRef {
+  final String kind;
+  final String id;
+
+  const DartConversationStorageThreadRef({
+    required this.kind,
+    required this.id,
+  });
+
+  @override
+  int get hashCode => kind.hashCode ^ id.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartConversationStorageThreadRef &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          id == other.id;
+}
+
+@freezed
+sealed class DartConversationStorePatch with _$DartConversationStorePatch {
+  const DartConversationStorePatch._();
+
+  const factory DartConversationStorePatch.reset({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required List<DartConversationSnapshotItem> items,
+  }) = DartConversationStorePatch_Reset;
+  const factory DartConversationStorePatch.upsert({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required DartConversationSnapshotItem item,
+    required int index,
+  }) = DartConversationStorePatch_Upsert;
+  const factory DartConversationStorePatch.remove({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required String threadKind,
+    required String threadId,
+    DartConversationIdentity? conversationIdentity,
+  }) = DartConversationStorePatch_Remove;
+  const factory DartConversationStorePatch.reorder({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required String threadKind,
+    required String threadId,
+    DartConversationIdentity? conversationIdentity,
+    required int index,
+  }) = DartConversationStorePatch_Reorder;
+  const factory DartConversationStorePatch.repairRequired({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required int unreadTotal,
+    required String reason,
+  }) = DartConversationStorePatch_RepairRequired;
+}
+
+class DartDelegatedSigningOptions {
+  final String? logicalSenderDid;
+  final String? signingVerificationMethod;
+  final String? signingKeyRef;
+  final String? actorAgentDid;
+
+  const DartDelegatedSigningOptions({
+    this.logicalSenderDid,
+    this.signingVerificationMethod,
+    this.signingKeyRef,
+    this.actorAgentDid,
+  });
+
+  @override
+  int get hashCode =>
+      logicalSenderDid.hashCode ^
+      signingVerificationMethod.hashCode ^
+      signingKeyRef.hashCode ^
+      actorAgentDid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDelegatedSigningOptions &&
+          runtimeType == other.runtimeType &&
+          logicalSenderDid == other.logicalSenderDid &&
+          signingVerificationMethod == other.signingVerificationMethod &&
+          signingKeyRef == other.signingKeyRef &&
+          actorAgentDid == other.actorAgentDid;
+}
+
+@freezed
+sealed class DartInboxAuth with _$DartInboxAuth {
+  const DartInboxAuth._();
+
+  const factory DartInboxAuth.scopedInboxToken({
+    required DartScopedInboxToken token,
+  }) = DartInboxAuth_ScopedInboxToken;
+}
+
+class DartInboxHistoryOptions {
+  final String? inboxOwnerDid;
+  final String? inboxAuthVerificationMethod;
+  final String? inboxAuthKeyRef;
+  final DartInboxAuth? inboxAuth;
+
+  const DartInboxHistoryOptions({
+    this.inboxOwnerDid,
+    this.inboxAuthVerificationMethod,
+    this.inboxAuthKeyRef,
+    this.inboxAuth,
+  });
+
+  @override
+  int get hashCode =>
+      inboxOwnerDid.hashCode ^
+      inboxAuthVerificationMethod.hashCode ^
+      inboxAuthKeyRef.hashCode ^
+      inboxAuth.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartInboxHistoryOptions &&
+          runtimeType == other.runtimeType &&
+          inboxOwnerDid == other.inboxOwnerDid &&
+          inboxAuthVerificationMethod == other.inboxAuthVerificationMethod &&
+          inboxAuthKeyRef == other.inboxAuthKeyRef &&
+          inboxAuth == other.inboxAuth;
+}
+
+class DartMarkConversationReadRequest {
+  final DartConversationReadRef conversation;
+  final DartReadWatermark? watermark;
+  final int? fallbackMaxMessageIds;
+
+  const DartMarkConversationReadRequest({
+    required this.conversation,
+    this.watermark,
+    this.fallbackMaxMessageIds,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      watermark.hashCode ^
+      fallbackMaxMessageIds.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMarkConversationReadRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          watermark == other.watermark &&
+          fallbackMaxMessageIds == other.fallbackMaxMessageIds;
+}
+
 class DartMarkReadResult {
   final int updatedCount;
   final List<String> messageIds;
@@ -101,6 +584,53 @@ class DartMarkReadResult {
           runtimeType == other.runtimeType &&
           updatedCount == other.updatedCount &&
           messageIds == other.messageIds &&
+          warnings == other.warnings;
+}
+
+class DartMarkThreadReadResult {
+  final int updatedCount;
+  final bool remoteAcknowledged;
+  final bool partial;
+  final bool fallbackUsed;
+  final bool pendingRemoteAck;
+  final DartReadWatermark? effectiveWatermark;
+  final List<String> legacyMessageIds;
+  final List<String> warnings;
+
+  const DartMarkThreadReadResult({
+    required this.updatedCount,
+    required this.remoteAcknowledged,
+    required this.partial,
+    required this.fallbackUsed,
+    required this.pendingRemoteAck,
+    this.effectiveWatermark,
+    required this.legacyMessageIds,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      updatedCount.hashCode ^
+      remoteAcknowledged.hashCode ^
+      partial.hashCode ^
+      fallbackUsed.hashCode ^
+      pendingRemoteAck.hashCode ^
+      effectiveWatermark.hashCode ^
+      legacyMessageIds.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartMarkThreadReadResult &&
+          runtimeType == other.runtimeType &&
+          updatedCount == other.updatedCount &&
+          remoteAcknowledged == other.remoteAcknowledged &&
+          partial == other.partial &&
+          fallbackUsed == other.fallbackUsed &&
+          pendingRemoteAck == other.pendingRemoteAck &&
+          effectiveWatermark == other.effectiveWatermark &&
+          legacyMessageIds == other.legacyMessageIds &&
           warnings == other.warnings;
 }
 
@@ -166,17 +696,22 @@ class DartMessage {
 class DartMessageBodyView {
   final String? text;
   final String? kind;
+  final String? payloadJson;
   final String? unsupportedContentType;
 
   const DartMessageBodyView({
     this.text,
     this.kind,
+    this.payloadJson,
     this.unsupportedContentType,
   });
 
   @override
   int get hashCode =>
-      text.hashCode ^ kind.hashCode ^ unsupportedContentType.hashCode;
+      text.hashCode ^
+      kind.hashCode ^
+      payloadJson.hashCode ^
+      unsupportedContentType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -185,6 +720,7 @@ class DartMessageBodyView {
           runtimeType == other.runtimeType &&
           text == other.text &&
           kind == other.kind &&
+          payloadJson == other.payloadJson &&
           unsupportedContentType == other.unsupportedContentType;
 }
 
@@ -198,6 +734,7 @@ class DartMessageMetadata {
   final String? retryAction;
   final PlatformInt64? serverSequence;
   final String? contentType;
+  final DartConversationIdentity? conversationIdentity;
   final List<DartMessageMetadataAttribute> attributes;
 
   const DartMessageMetadata({
@@ -208,6 +745,7 @@ class DartMessageMetadata {
     this.retryAction,
     this.serverSequence,
     this.contentType,
+    this.conversationIdentity,
     required this.attributes,
   });
 
@@ -220,6 +758,7 @@ class DartMessageMetadata {
       retryAction.hashCode ^
       serverSequence.hashCode ^
       contentType.hashCode ^
+      conversationIdentity.hashCode ^
       attributes.hashCode;
 
   @override
@@ -234,6 +773,7 @@ class DartMessageMetadata {
           retryAction == other.retryAction &&
           serverSequence == other.serverSequence &&
           contentType == other.contentType &&
+          conversationIdentity == other.conversationIdentity &&
           attributes == other.attributes;
 }
 
@@ -297,6 +837,137 @@ sealed class DartMessageTarget with _$DartMessageTarget {
       DartMessageTarget_Group;
 }
 
+class DartReadWatermark {
+  final String? lastReadMessageId;
+  final String? lastReadThreadSeq;
+  final String? readAt;
+
+  const DartReadWatermark({
+    this.lastReadMessageId,
+    this.lastReadThreadSeq,
+    this.readAt,
+  });
+
+  @override
+  int get hashCode =>
+      lastReadMessageId.hashCode ^ lastReadThreadSeq.hashCode ^ readAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartReadWatermark &&
+          runtimeType == other.runtimeType &&
+          lastReadMessageId == other.lastReadMessageId &&
+          lastReadThreadSeq == other.lastReadThreadSeq &&
+          readAt == other.readAt;
+}
+
+class DartScopedInboxToken {
+  final String token;
+
+  const DartScopedInboxToken({required this.token});
+
+  @override
+  int get hashCode => token.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartScopedInboxToken &&
+          runtimeType == other.runtimeType &&
+          token == other.token;
+}
+
+class DartSendConversationPayloadRequest {
+  final DartConversationReadRef conversation;
+  final String payloadJson;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
+
+  const DartSendConversationPayloadRequest({
+    required this.conversation,
+    required this.payloadJson,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+    this.delegatedSigning,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      payloadJson.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendConversationPayloadRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          payloadJson == other.payloadJson &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
+}
+
+class DartSendConversationTextRequest {
+  final DartConversationReadRef conversation;
+  final String text;
+  final bool markdown;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
+
+  const DartSendConversationTextRequest({
+    required this.conversation,
+    required this.text,
+    required this.markdown,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+    this.delegatedSigning,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      text.hashCode ^
+      markdown.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendConversationTextRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          text == other.text &&
+          markdown == other.markdown &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
+}
+
 class DartSendMessageResult {
   final DartMessage message;
   final String deliveryState;
@@ -322,6 +993,49 @@ class DartSendMessageResult {
           warnings == other.warnings;
 }
 
+class DartSendPayloadRequest {
+  final DartMessageTarget target;
+  final String payloadJson;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
+
+  const DartSendPayloadRequest({
+    required this.target,
+    required this.payloadJson,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+    this.delegatedSigning,
+  });
+
+  @override
+  int get hashCode =>
+      target.hashCode ^
+      payloadJson.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendPayloadRequest &&
+          runtimeType == other.runtimeType &&
+          target == other.target &&
+          payloadJson == other.payloadJson &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
+}
+
 class DartSendTextRequest {
   final DartMessageTarget target;
   final String text;
@@ -330,6 +1044,7 @@ class DartSendTextRequest {
   final String? clientMessageId;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
+  final DartDelegatedSigningOptions? delegatedSigning;
 
   const DartSendTextRequest({
     required this.target,
@@ -339,6 +1054,7 @@ class DartSendTextRequest {
     this.clientMessageId,
     this.idempotencyKey,
     required this.waitForFinalAcceptance,
+    this.delegatedSigning,
   });
 
   @override
@@ -349,7 +1065,8 @@ class DartSendTextRequest {
       security.hashCode ^
       clientMessageId.hashCode ^
       idempotencyKey.hashCode ^
-      waitForFinalAcceptance.hashCode;
+      waitForFinalAcceptance.hashCode ^
+      delegatedSigning.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -362,7 +1079,195 @@ class DartSendTextRequest {
           security == other.security &&
           clientMessageId == other.clientMessageId &&
           idempotencyKey == other.idempotencyKey &&
-          waitForFinalAcceptance == other.waitForFinalAcceptance;
+          waitForFinalAcceptance == other.waitForFinalAcceptance &&
+          delegatedSigning == other.delegatedSigning;
+}
+
+class DartSyncConversationAfterRequest {
+  final DartConversationReadRef conversation;
+  final String? afterServerSeq;
+  final int? limit;
+
+  const DartSyncConversationAfterRequest({
+    required this.conversation,
+    this.afterServerSeq,
+    this.limit,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^ afterServerSeq.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncConversationAfterRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          afterServerSeq == other.afterServerSeq &&
+          limit == other.limit;
+}
+
+class DartSyncDeltaRequest {
+  final int? limit;
+  final String? deviceId;
+  final String? reason;
+
+  const DartSyncDeltaRequest({this.limit, this.deviceId, this.reason});
+
+  @override
+  int get hashCode => limit.hashCode ^ deviceId.hashCode ^ reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncDeltaRequest &&
+          runtimeType == other.runtimeType &&
+          limit == other.limit &&
+          deviceId == other.deviceId &&
+          reason == other.reason;
+}
+
+class DartSyncDeltaResult {
+  final int eventsApplied;
+  final int pagesFetched;
+  final String? lastAppliedEventSeq;
+  final bool hasMore;
+  final bool snapshotRequired;
+  final String? retentionFloorEventSeq;
+  final List<String> warnings;
+
+  const DartSyncDeltaResult({
+    required this.eventsApplied,
+    required this.pagesFetched,
+    this.lastAppliedEventSeq,
+    required this.hasMore,
+    required this.snapshotRequired,
+    this.retentionFloorEventSeq,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      eventsApplied.hashCode ^
+      pagesFetched.hashCode ^
+      lastAppliedEventSeq.hashCode ^
+      hasMore.hashCode ^
+      snapshotRequired.hashCode ^
+      retentionFloorEventSeq.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncDeltaResult &&
+          runtimeType == other.runtimeType &&
+          eventsApplied == other.eventsApplied &&
+          pagesFetched == other.pagesFetched &&
+          lastAppliedEventSeq == other.lastAppliedEventSeq &&
+          hasMore == other.hasMore &&
+          snapshotRequired == other.snapshotRequired &&
+          retentionFloorEventSeq == other.retentionFloorEventSeq &&
+          warnings == other.warnings;
+}
+
+class DartSyncThreadAfterRequest {
+  final DartThreadRef thread;
+  final String? afterServerSeq;
+  final int? limit;
+
+  const DartSyncThreadAfterRequest({
+    required this.thread,
+    this.afterServerSeq,
+    this.limit,
+  });
+
+  @override
+  int get hashCode =>
+      thread.hashCode ^ afterServerSeq.hashCode ^ limit.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncThreadAfterRequest &&
+          runtimeType == other.runtimeType &&
+          thread == other.thread &&
+          afterServerSeq == other.afterServerSeq &&
+          limit == other.limit;
+}
+
+class DartSyncThreadAfterResult {
+  final List<DartMessage> messages;
+  final String? nextAfterServerSeq;
+  final bool hasMore;
+  final List<String> warnings;
+
+  const DartSyncThreadAfterResult({
+    required this.messages,
+    this.nextAfterServerSeq,
+    required this.hasMore,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      messages.hashCode ^
+      nextAfterServerSeq.hashCode ^
+      hasMore.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSyncThreadAfterResult &&
+          runtimeType == other.runtimeType &&
+          messages == other.messages &&
+          nextAfterServerSeq == other.nextAfterServerSeq &&
+          hasMore == other.hasMore &&
+          warnings == other.warnings;
+}
+
+@freezed
+sealed class DartThreadMessageStorePatch with _$DartThreadMessageStorePatch {
+  const DartThreadMessageStorePatch._();
+
+  const factory DartThreadMessageStorePatch.reset({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    DartConversationIdentity? conversationIdentity,
+    required List<DartMessage> items,
+  }) = DartThreadMessageStorePatch_Reset;
+  const factory DartThreadMessageStorePatch.upsert({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    DartConversationIdentity? conversationIdentity,
+    required DartMessage message,
+    required int index,
+  }) = DartThreadMessageStorePatch_Upsert;
+  const factory DartThreadMessageStorePatch.remove({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    DartConversationIdentity? conversationIdentity,
+    required String messageId,
+  }) = DartThreadMessageStorePatch_Remove;
+  const factory DartThreadMessageStorePatch.repairRequired({
+    required String ownerIdentityId,
+    required String ownerDid,
+    required BigInt version,
+    required String threadKind,
+    required String threadId,
+    DartConversationIdentity? conversationIdentity,
+    required String reason,
+  }) = DartThreadMessageStorePatch_RepairRequired;
 }
 
 @freezed

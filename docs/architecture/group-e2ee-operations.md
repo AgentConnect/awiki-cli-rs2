@@ -25,7 +25,9 @@ Key boundaries:
 
 The default supported path is `im-core` native group E2EE runtime/storage. Historical CLI exec-provider controls such as `AWIKI_ANP_MLS_BINARY` are not part of the default supported product path.
 
-The CLI business store may cache group/message indexes and high-level secure summaries. Private MLS state and secure outbox internals are owned by `im-core`.
+The CLI business store may cache group/message indexes and high-level secure summaries. Active SQLite rows use `owner_identity_id` keys. Private MLS state and secure outbox internals are owned by `im-core`; provider state/path selection remains scoped by `owner_identity_id + device_id`.
+
+Diagnostics and user-facing output may report high-level readiness, problem codes, repair summaries, and counts. They must not report raw MLS artifacts, provider stdout/stderr, provider binary paths, provider state paths, raw SQLite rows, backup contents, or secure outbox plaintext.
 
 ## User-facing command surface
 
@@ -51,6 +53,12 @@ Blocked/internal commands:
 
 - `group secure diagnostics` and `group secure repair --explain` are stable unsupported in this version.
 - `group e2ee publish-key-package/pending/process-leave-request/recover-member/update-key/rejoin` are hidden/internal or stable unsupported and must not appear in the default surface.
+
+## Discovery posture
+
+Group E2EE public discovery remains disabled. Default DID/service discovery must
+not advertise `anp.group.e2ee.v1` or `group-e2ee` unless a separate security
+review approves an explicit enablement plan.
 
 ## Orchestration flows
 
@@ -91,12 +99,12 @@ Focused CLI checks:
 
 ```bash
 cargo fmt --all
-cargo +stable check -p im-core --features group-e2ee --locked
-cargo +stable check -p awiki-cli --locked
-cargo +stable test -p im-core --features group-e2ee --locked lifecycle_
-cargo +stable test -p awiki-cli --locked msg_secure
-cargo +stable test -p awiki-cli --locked group_secure
-cargo +stable test -p awiki-cli --locked e2ee
+cargo check -p im-core --features group-e2ee --locked
+cargo check -p awiki-cli --locked
+cargo test -p im-core --features group-e2ee --locked lifecycle_
+cargo test -p awiki-cli --locked msg_secure
+cargo test -p awiki-cli --locked group_secure
+cargo test -p awiki-cli --locked e2ee
 ```
 
 Cross-service validation is owned by [awiki-system-test Group E2EE system tests](../../../awiki-system-test/docs/group-e2ee-system-tests.md). Local CLI work does not require connecting to real domains during unit/contract validation.

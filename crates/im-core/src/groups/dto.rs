@@ -18,7 +18,8 @@ pub struct GroupReadResult {
 
 impl GroupReadResult {
     pub(crate) fn from_raw_response(raw: Value, warnings: Vec<String>) -> Self {
-        let group = group_snapshot_from_value(raw.get("group").unwrap_or(&raw));
+        let warnings = merge_raw_warnings(raw.get("warnings"), warnings);
+        let group = group_snapshot_from_response(&raw);
         let groups = values_from_array(raw.get("groups"))
             .into_iter()
             .filter_map(group_summary_from_value)
@@ -77,12 +78,20 @@ impl GroupReadResult {
     pub(crate) fn push_warning(&mut self, warning: impl Into<String>) {
         self.warnings.push(warning.into());
     }
+
+    pub(crate) fn replace_messages(
+        &mut self,
+        messages: crate::ids::Page<crate::messages::Message>,
+    ) {
+        self.messages = messages;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupCreateRequest {
     pub name: String,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub discoverability: Option<GroupDiscoverability>,
     pub admission_mode: Option<GroupAdmissionMode>,
     pub message_security_profile: Option<GroupMessageSecurityProfile>,
@@ -98,6 +107,30 @@ pub struct GroupCreateRequest {
     pub max_members: Option<GroupMemberLimit>,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
+}
+
+impl GroupCreateRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            avatar_uri: None,
+            discoverability: None,
+            admission_mode: None,
+            message_security_profile: None,
+            security: GroupSecurityRequirement::default(),
+            e2ee: false,
+            slug: None,
+            goal: None,
+            rules: None,
+            message_prompt: None,
+            doc_url: None,
+            attachments_allowed: None,
+            max_members: None,
+            member_max_messages: None,
+            member_max_total_chars: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,8 +153,85 @@ pub struct GroupMemberMutationRequest {
     pub member: GroupMemberRef,
     pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leave_request_id: Option<String>,
     #[serde(default)]
     pub security: GroupSecurityRequirement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupKeyPackagePublishRequest {
+    pub purpose: GroupKeyPackagePurpose,
+    pub group: Option<crate::ids::GroupRef>,
+    pub device_id: Option<String>,
+    pub key_package_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupKeyPackagePublishResult {
+    pub owner_did: crate::ids::Did,
+    pub device_id: String,
+    pub key_package_id: String,
+    pub purpose: GroupKeyPackagePurpose,
+    pub group: Option<crate::ids::GroupRef>,
+    pub raw_response: Value,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeProcessLeaveRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub leave_request_id: String,
+    pub reason_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeUpdateKeyRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeRecoverMemberRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupKeyPackagePurpose {
+    Normal,
+    Recovery,
+    Update,
+    Custom(String),
+}
+
+impl GroupKeyPackagePurpose {
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        parse_group_token(input, "purpose", |value| match value {
+            "normal" => Self::Normal,
+            "recovery" => Self::Recovery,
+            "update" => Self::Update,
+            custom => Self::Custom(custom.to_string()),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Normal => "normal",
+            Self::Recovery => "recovery",
+            Self::Update => "update",
+            Self::Custom(value) => value.as_str(),
+        }
+    }
+}
+
+impl Default for GroupKeyPackagePurpose {
+    fn default() -> Self {
+        Self::Normal
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -184,6 +294,7 @@ pub struct GroupMemberResolution {
 pub struct GroupProfilePatch {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub discoverability: Option<GroupDiscoverability>,
     pub slug: Option<String>,
     pub goal: Option<String>,
@@ -511,6 +622,24 @@ impl<'de> Deserialize<'de> for GroupMemberRole {
     }
 }
 
+impl Serialize for GroupKeyPackagePurpose {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupKeyPackagePurpose {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Serialize for GroupMemberLimit {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -645,7 +774,9 @@ pub struct GroupSnapshot {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
     pub name: Option<String>,
+    pub display_name: Option<String>,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -657,6 +788,8 @@ pub struct GroupSummary {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
     pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -670,19 +803,63 @@ pub struct GroupMember {
     pub role: Option<String>,
     pub status: Option<String>,
     pub joined_at: Option<String>,
+    pub subject_type: Option<String>,
+}
+
+fn group_snapshot_from_response(raw: &Value) -> Option<GroupSnapshot> {
+    if let Some(group) = raw.get("group") {
+        return group_snapshot_from_value(group);
+    }
+    if let Some(group) = raw.get("group_snapshot") {
+        return group_snapshot_from_value(group);
+    }
+    if raw_is_group_snapshot(raw) {
+        return group_snapshot_from_value(raw);
+    }
+    None
+}
+
+fn raw_is_group_snapshot(raw: &Value) -> bool {
+    let Some(object) = raw.as_object() else {
+        return false;
+    };
+    if object.contains_key("accepted")
+        || object.contains_key("final_acceptance")
+        || object.contains_key("operation_id")
+        || object.contains_key("group_receipt")
+        || object.contains_key("member_did")
+        || object.contains_key("leaver_did")
+    {
+        return false;
+    }
+    object.contains_key("group_profile")
+        || object.contains_key("name")
+        || object.contains_key("display_name")
+        || object.contains_key("description")
+        || object.contains_key("member_role")
+        || object.contains_key("my_role")
+        || object.contains_key("actor_membership_role")
+        || object.contains_key("member_status")
+        || object.contains_key("actor_membership_status")
 }
 
 fn group_snapshot_from_value(value: &Value) -> Option<GroupSnapshot> {
     let object = value.as_object()?;
     let did = group_ref_from_object(object)?;
+    let display_name = optional_string(object.get("display_name"))
+        .or_else(|| nested_string(object.get("group_profile"), "display_name"))
+        .or_else(|| optional_string(object.get("name")));
     Some(GroupSnapshot {
         id: optional_string(object.get("id")).or_else(|| optional_string(object.get("group_id"))),
         did,
-        name: optional_string(object.get("name"))
-            .or_else(|| optional_string(object.get("display_name")))
-            .or_else(|| nested_string(object.get("group_profile"), "display_name")),
+        name: display_name.clone(),
+        display_name,
         description: optional_string(object.get("description"))
             .or_else(|| nested_string(object.get("group_profile"), "description")),
+        avatar_uri: optional_string(object.get("avatar_uri"))
+            .or_else(|| nested_string(object.get("group_profile"), "avatar_uri"))
+            .or_else(|| optional_string(object.get("avatar_url")))
+            .or_else(|| optional_string(object.get("avatar"))),
         my_role: optional_string(object.get("my_role"))
             .or_else(|| optional_string(object.get("member_role")))
             .or_else(|| optional_string(object.get("actor_membership_role"))),
@@ -698,12 +875,18 @@ fn group_snapshot_from_value(value: &Value) -> Option<GroupSnapshot> {
 fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
     let object = value.as_object()?;
     let did = group_ref_from_object(object)?;
+    let display_name = optional_string(object.get("display_name"))
+        .or_else(|| nested_string(object.get("group_profile"), "display_name"))
+        .or_else(|| optional_string(object.get("name")));
     Some(GroupSummary {
         id: optional_string(object.get("id")).or_else(|| optional_string(object.get("group_id"))),
         did,
-        name: optional_string(object.get("name"))
-            .or_else(|| optional_string(object.get("display_name")))
-            .or_else(|| nested_string(object.get("group_profile"), "display_name")),
+        name: display_name.clone(),
+        display_name,
+        avatar_uri: optional_string(object.get("avatar_uri"))
+            .or_else(|| nested_string(object.get("group_profile"), "avatar_uri"))
+            .or_else(|| optional_string(object.get("avatar_url")))
+            .or_else(|| optional_string(object.get("avatar"))),
         my_role: optional_string(object.get("my_role"))
             .or_else(|| optional_string(object.get("member_role")))
             .or_else(|| optional_string(object.get("actor_membership_role"))),
@@ -717,19 +900,66 @@ fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
 
 fn group_member_from_value(value: Value) -> Option<GroupMember> {
     let object = value.as_object()?;
+    let explicit_member_did =
+        optional_string(object.get("did")).or_else(|| optional_string(object.get("member_did")));
+    let did_source_is_agent = explicit_member_did.is_none();
+    let did = explicit_member_did
+        .or_else(|| optional_string(object.get("agent_did")))
+        .and_then(|value| crate::ids::Did::parse(value).ok());
+    let subject_type = optional_string(object.get("subject_type"))
+        .or_else(|| optional_string(object.get("subjectType")))
+        .or_else(|| optional_string(object.get("member_subject_type")))
+        .or_else(|| {
+            did_source_is_agent
+                .then(|| optional_string(object.get("agent_subject_type")))
+                .flatten()
+        })
+        .or_else(|| inferred_subject_type(did.as_ref(), object));
+    let use_agent_handle =
+        did_source_is_agent || subject_type.as_deref().is_some_and(is_agent_subject_type);
     Some(GroupMember {
-        did: optional_string(object.get("did"))
-            .or_else(|| optional_string(object.get("member_did")))
-            .or_else(|| optional_string(object.get("agent_did")))
-            .and_then(|value| crate::ids::Did::parse(value).ok()),
+        did,
         handle: optional_string(object.get("handle"))
             .or_else(|| optional_string(object.get("member_handle")))
-            .or_else(|| optional_string(object.get("agent_handle")))
+            .or_else(|| {
+                use_agent_handle
+                    .then(|| optional_string(object.get("agent_handle")))
+                    .flatten()
+            })
             .and_then(|value| crate::ids::Handle::parse(value, "").ok()),
         role: optional_string(object.get("role")),
         status: optional_string(object.get("status")),
         joined_at: optional_string(object.get("joined_at")),
+        subject_type,
     })
+}
+
+fn inferred_subject_type(
+    did: Option<&crate::ids::Did>,
+    object: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    if let Some(did) = did {
+        let did = did.as_str().trim();
+        if did.starts_with("did:agent:") || did.contains(":agent:") {
+            return Some("agent".to_string());
+        }
+        if did.starts_with("did:") {
+            return Some("human".to_string());
+        }
+    }
+    if optional_string(object.get("agent_did")).is_some()
+        || optional_string(object.get("agent_handle")).is_some()
+    {
+        return Some("agent".to_string());
+    }
+    None
+}
+
+fn is_agent_subject_type(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "agent" | "runtime_agent" | "bot"
+    )
 }
 
 fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
@@ -743,7 +973,24 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
     let sender = optional_string(object.get("sender_did"))
         .unwrap_or_else(|| "did:unknown:sender".to_string());
     let content_type = optional_string(object.get("content_type"));
-    let body = if let Some(text) = optional_string(object.get("text"))
+    let secure = object
+        .get("secure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let is_attachment_manifest = content_type.as_deref()
+        == Some(crate::attachments::manifest::attachment_manifest_content_type());
+    let body = if content_type.as_deref() == Some("application/json") || is_attachment_manifest {
+        object
+            .get("payload")
+            .or_else(|| object.get("content"))
+            .or_else(|| object.get("body").and_then(|body| body.get("payload")))
+            .cloned()
+            .filter(Value::is_object)
+            .map(|payload| crate::messages::MessageBodyView::Payload { payload })
+            .unwrap_or(crate::messages::MessageBodyView::Unsupported {
+                content_type: content_type.clone(),
+            })
+    } else if let Some(text) = optional_string(object.get("text"))
         .or_else(|| optional_string(object.get("content")))
         .or_else(|| nested_string(object.get("body"), "text"))
     {
@@ -775,9 +1022,54 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
                 .or_else(|| i64_value(object.get("sequence")))
                 .or_else(|| i64_value(object.get("group_event_seq"))),
             content_type,
+            attributes: group_message_attributes(object, secure),
             ..crate::messages::MessageMetadata::default()
         },
     })
+}
+
+fn group_message_attributes(
+    object: &serde_json::Map<String, Value>,
+    secure: bool,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    let mut attributes = Vec::new();
+    if secure {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "group-e2ee".to_owned(),
+        });
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "message_security_profile".to_owned(),
+            value: "group-e2ee".to_owned(),
+        });
+    }
+    for key in [
+        "decryption_state",
+        "secure_wire_content_type",
+        "type",
+        "message_security_profile",
+        "security_profile",
+    ] {
+        if let Some(value) = optional_string(object.get(key)) {
+            if attributes
+                .iter()
+                .any(|attribute| attribute.key == key && attribute.value == value)
+            {
+                continue;
+            }
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: key.to_owned(),
+                value,
+            });
+        }
+    }
+    if let Some(content_type) = optional_string(object.get("content_type")) {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "content_type".to_owned(),
+            value: content_type,
+        });
+    }
+    attributes
 }
 
 fn group_ref_from_object(object: &serde_json::Map<String, Value>) -> Option<crate::ids::GroupRef> {
@@ -826,6 +1118,25 @@ fn bool_value(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool).unwrap_or(false)
 }
 
+fn merge_raw_warnings(raw_warnings: Option<&Value>, mut warnings: Vec<String>) -> Vec<String> {
+    let Some(items) = raw_warnings.and_then(Value::as_array) else {
+        return warnings;
+    };
+    for item in items {
+        if let Some(warning) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let warning = warning.to_owned();
+            if !warnings.iter().any(|known| known == &warning) {
+                warnings.push(warning);
+            }
+        }
+    }
+    warnings
+}
+
 fn message_kind(content_type: Option<&str>) -> crate::messages::MessageKind {
     match content_type.map(str::trim) {
         Some("text/markdown" | "markdown" | "text/x-markdown") => {
@@ -839,6 +1150,20 @@ fn message_kind(content_type: Option<&str>) -> crate::messages::MessageKind {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn group_create_request_new_sets_only_required_name() {
+        let request = GroupCreateRequest::new("Demo Group");
+
+        assert_eq!(request.name, "Demo Group");
+        assert_eq!(request.description, None);
+        assert_eq!(request.avatar_uri, None);
+        assert_eq!(request.security, GroupSecurityRequirement::default());
+        assert!(!request.e2ee);
+        assert_eq!(request.discoverability, None);
+        assert_eq!(request.admission_mode, None);
+        assert_eq!(request.message_security_profile, None);
+    }
 
     #[test]
     fn group_result_projects_domain_fields_and_keeps_raw_response() {
@@ -890,5 +1215,228 @@ mod tests {
             result.raw_response().and_then(|raw| raw.get("group_did")),
             Some(&json!("did:example:group"))
         );
+    }
+
+    #[test]
+    fn group_member_subject_type_ignores_empty_agent_fields() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "name": "Demo",
+                "members": [{
+                    "member_did": "did:wba:awiki.info:user:zhuocheng:e1",
+                    "handle": "zhuocheng",
+                    "agent_handle": "",
+                    "role": "member",
+                    "status": "active"
+                }, {
+                    "agent_did": "did:wba:awiki.info:agent:runtime:hermes:e1",
+                    "agent_handle": "hermes.awiki.info",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        assert_eq!(result.members.len(), 2);
+        assert_eq!(result.members[0].subject_type.as_deref(), Some("human"));
+        assert_eq!(result.members[1].subject_type.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn group_member_subject_type_prefers_member_did_over_auxiliary_agent_fields() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "members": [{
+                    "member_did": "did:wba:anpclaw.com:zhuocheng:e1_human",
+                    "agent_did": "did:wba:anpclaw.com:agent:runtime:helper:e1_agent",
+                    "handle": "zhuocheng",
+                    "agent_handle": "helper.anpclaw.com",
+                    "agent_subject_type": "agent",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        assert_eq!(result.members.len(), 1);
+        assert_eq!(
+            result.members[0].did.as_ref().map(|did| did.as_str()),
+            Some("did:wba:anpclaw.com:zhuocheng:e1_human")
+        );
+        assert_eq!(
+            result.members[0]
+                .handle
+                .as_ref()
+                .map(|handle| handle.as_str()),
+            Some("zhuocheng")
+        );
+        assert_eq!(result.members[0].subject_type.as_deref(), Some("human"));
+    }
+
+    #[test]
+    fn group_result_does_not_treat_member_mutation_response_as_viewer_snapshot() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "accepted": true,
+                "final_acceptance": true,
+                "group_did": "did:example:group",
+                "group_state_version": "12",
+                "group_event_seq": "7",
+                "operation_id": "op-remove-bob",
+                "member_did": "did:example:bob",
+                "membership_status": "removed"
+            }),
+            Vec::new(),
+        );
+
+        assert!(
+            result.group.is_none(),
+            "target member status in a group.remove response must not be read as the viewer membership status"
+        );
+        assert_eq!(
+            result
+                .raw_response()
+                .and_then(|raw| raw.get("membership_status")),
+            Some(&json!("removed"))
+        );
+    }
+
+    #[test]
+    fn group_result_still_projects_explicit_group_snapshot_wrapper() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "owner",
+                    "membership_status": "active",
+                    "member_count": 2
+                }
+            }),
+            Vec::new(),
+        );
+
+        let group = result.group.as_ref().expect("group snapshot");
+        assert_eq!(group.did.as_str(), "did:example:group");
+        assert_eq!(group.my_role.as_deref(), Some("owner"));
+        assert_eq!(group.membership_status.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn group_result_still_projects_local_group_snapshot_wrapper() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "admin",
+                    "member_status": "active",
+                    "member_count": 3
+                }
+            }),
+            Vec::new(),
+        );
+
+        let group = result.group.as_ref().expect("group snapshot");
+        assert_eq!(group.did.as_str(), "did:example:group");
+        assert_eq!(group.my_role.as_deref(), Some("admin"));
+        assert_eq!(group.membership_status.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn group_result_merges_raw_warnings() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "messages": [],
+                "warnings": [
+                    "Failed to decrypt group E2EE message did:example:group:3: aad_mismatch",
+                    "",
+                    42
+                ],
+                "has_more": false
+            }),
+            vec![
+                "existing warning".to_owned(),
+                "Failed to decrypt group E2EE message did:example:group:3: aad_mismatch".to_owned(),
+            ],
+        );
+
+        assert_eq!(
+            result.warnings,
+            vec![
+                "existing warning",
+                "Failed to decrypt group E2EE message did:example:group:3: aad_mismatch",
+            ]
+        );
+    }
+
+    #[test]
+    fn group_result_projects_secure_attachment_manifest_payload() {
+        let result = GroupReadResult::from_raw_response(
+            json!({
+                "messages": [{
+                    "id": "msg-secure-attachment",
+                    "group_did": "did:example:group",
+                    "sender_did": "did:example:alice",
+                    "type": "attachment_manifest",
+                    "content_type": crate::attachments::manifest::attachment_manifest_content_type(),
+                    "secure": true,
+                    "content": {
+                        "attachments": [{
+                            "attachment_id": "att-group-secure",
+                            "size": "48",
+                            "digest": {
+                                "alg": "sha-256",
+                                "value_b64u": "digest"
+                            },
+                            "mime_type": "text/plain",
+                            "encryption_info": {
+                                "mode": "object-e2ee",
+                                "alg": "chacha20-poly1305",
+                                "plaintext_size": "31",
+                                "object_uri": "https://objects.example/secure"
+                            }
+                        }],
+                        "caption": "secure attachment",
+                        "primary_attachment_id": "att-group-secure"
+                    },
+                    "sent_at": "2026-01-01T00:00:00Z"
+                }],
+                "has_more": false
+            }),
+            Vec::new(),
+        );
+
+        let message = &result.messages.items[0];
+        assert!(matches!(
+            &message.body,
+            crate::messages::MessageBodyView::Payload { payload }
+                if payload["attachments"][0]["attachment_id"] == "att-group-secure"
+                    && payload["attachments"][0]["encryption_info"]["mode"] == "object-e2ee"
+                    && payload["attachments"][0]["encryption_info"].get("object_key_b64u").is_none()
+                    && payload["attachments"][0]["encryption_info"].get("nonce_b64u").is_none()
+        ));
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee"));
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "message_security_profile" && attribute.value == "group-e2ee"
+        }));
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "type" && attribute.value == "attachment_manifest"));
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "content_type"
+                && attribute.value
+                    == crate::attachments::manifest::attachment_manifest_content_type()
+        }));
     }
 }

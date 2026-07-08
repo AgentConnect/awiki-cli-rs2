@@ -1,10 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone)]
 pub struct ImClient {
     core: Arc<super::ImCoreInner>,
     identity: crate::identity::IdentitySummary,
     runtime: Arc<crate::internal::identity_runtime::ClientIdentityRuntime>,
+    conversation_store:
+        Arc<OnceLock<Arc<crate::internal::runtime_store::conversation_store::ConversationStore>>>,
+    message_store: Arc<OnceLock<Arc<crate::internal::runtime_store::message_store::MessageStore>>>,
 }
 
 impl ImClient {
@@ -17,6 +20,8 @@ impl ImClient {
             core,
             identity,
             runtime: Arc::new(runtime),
+            conversation_store: Arc::new(OnceLock::new()),
+            message_store: Arc::new(OnceLock::new()),
         }
     }
 
@@ -30,6 +35,10 @@ impl ImClient {
 
     pub fn handle(&self) -> Option<&crate::ids::Handle> {
         self.identity.handle.as_ref()
+    }
+
+    pub fn did_domain(&self) -> &str {
+        self.core.sdk_config().did_domain.as_str()
     }
 
     pub fn auth(&self) -> crate::auth::AuthService<'_> {
@@ -82,5 +91,56 @@ impl ImClient {
 
     pub(crate) fn core_inner(&self) -> &super::ImCoreInner {
         &self.core
+    }
+
+    pub(crate) fn conversation_store(
+        &self,
+    ) -> Arc<crate::internal::runtime_store::conversation_store::ConversationStore> {
+        self.conversation_store
+            .get_or_init(|| {
+                crate::internal::runtime_store::conversation_store::ConversationStore::new_for_client(
+                    self,
+                )
+            })
+            .clone()
+    }
+
+    pub(crate) fn emit_committed_conversation_projection(&self, reason: &str) {
+        let Some(store) = self.conversation_store.get() else {
+            return;
+        };
+        store.on_committed_local_projection(self, reason);
+    }
+
+    pub(crate) fn emit_committed_local_message_projection(&self, reason: &str) {
+        self.emit_committed_conversation_projection(reason);
+        self.emit_committed_message_projection(reason);
+    }
+
+    pub(crate) fn message_store(
+        &self,
+    ) -> Arc<crate::internal::runtime_store::message_store::MessageStore> {
+        self.message_store
+            .get_or_init(|| {
+                crate::internal::runtime_store::message_store::MessageStore::new_for_client(self)
+            })
+            .clone()
+    }
+
+    pub(crate) fn emit_committed_message_projection(&self, reason: &str) {
+        let Some(store) = self.message_store.get() else {
+            return;
+        };
+        store.on_committed_local_projection(self, reason);
+    }
+
+    pub(crate) fn emit_committed_message_sync_invalidation_if_initialized(
+        &self,
+        invalidation: &crate::internal::local_state::sync_state::SyncDeltaInvalidation,
+    ) {
+        let Some(store) = self.message_store.get() else {
+            return;
+        };
+        store.on_committed_sync_invalidation(self, invalidation);
     }
 }

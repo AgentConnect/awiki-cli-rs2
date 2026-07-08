@@ -32,6 +32,18 @@ impl DartImClient {
         f(inner)
     }
 
+    pub(crate) fn clone_inner(&self) -> Result<im_core::ImClient, DartImError> {
+        let guard = self
+            .state
+            .read()
+            .map_err(|_| DartImError::internal("client lock poisoned"))?;
+        guard
+            .inner
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| DartImError::object_closed("DartImClient"))
+    }
+
     pub(crate) fn close(&self) -> Result<(), DartImError> {
         let mut guard = self
             .state
@@ -42,24 +54,25 @@ impl DartImClient {
     }
 }
 
-pub fn core_client(
+pub async fn core_client(
     core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
 ) -> Result<Arc<DartImClient>, DartImError> {
-    core.with_inner(|inner| {
-        let client = inner
-            .client(selector.try_into()?)
-            .map_err(DartImError::from)?;
-        Ok(Arc::new(DartImClient::new(client)))
-    })
+    let inner = core.clone_inner()?;
+    let client = inner
+        .client_async(selector.try_into()?)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(Arc::new(DartImClient::new(client)))
 }
 
 pub fn close_client(client: &Arc<DartImClient>) -> Result<(), DartImError> {
     client.close()
 }
 
-pub fn current_identity(
+pub async fn current_identity(
     client: &Arc<DartImClient>,
 ) -> Result<crate::dto::identity::DartIdentitySummary, DartImError> {
-    client.with_inner(|inner| Ok(inner.current_identity().clone().into()))
+    let inner = client.clone_inner()?;
+    Ok(inner.current_identity().clone().into())
 }

@@ -5,9 +5,14 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod support;
+
+use support::set_secret_storage_mode;
 
 #[test]
 fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
@@ -115,6 +120,14 @@ fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
     assert_eq!(
         envelope["data"]["attachment"]["object_uri"],
         format!("{}/objects/att-live-1", server.base_url())
+    );
+    assert_eq!(
+        envelope["data"]["attachment"]["object_encryption_mode"],
+        "none"
+    );
+    assert_eq!(
+        envelope["data"]["attachment"]["plaintext_size_bytes"],
+        Value::Null
     );
     assert_eq!(
         envelope["data"]["attachment"]["digest"]["value_b64u"],
@@ -686,6 +699,7 @@ fn register_ready_identity(
     attachment_service_path: &str,
     attachment_service_did: &str,
 ) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -754,6 +768,10 @@ fn register_ready_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
@@ -785,6 +803,8 @@ fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -881,6 +901,20 @@ fn request_body_bytes(raw: &[u8]) -> &[u8] {
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {
+    if let Some((header_name, expected_value)) = needle
+        .strip_suffix("\r\n")
+        .and_then(|line| line.split_once(':'))
+    {
+        let header_name = header_name.trim();
+        let expected_value = expected_value.trim();
+        if haystack.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(header_name) && value.trim() == expected_value
+            })
+        }) {
+            return;
+        }
+    }
     assert!(
         haystack.contains(needle),
         "expected request to contain {needle:?}, got:\n{haystack}"
@@ -972,7 +1006,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -1051,12 +1090,18 @@ struct TempDir {
 
 impl TempDir {
     fn new(prefix: &str) -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-{prefix}-{}-{nanos}",
+            "awiki-cli-rs2-{prefix}-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

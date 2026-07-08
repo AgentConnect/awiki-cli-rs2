@@ -89,7 +89,10 @@ fn wire_inbox_history_and_mark_read_params_match_go_contracts() {
 
     let inbox = compat::wire::build_inbox_rpc_params(
         &identity,
-        compat::wire::InboxWireRequest { limit: 0 },
+        compat::wire::InboxWireRequest {
+            limit: 0,
+            auth: None,
+        },
     );
     assert_eq!(inbox["meta"]["profile"], "anp.inbox.local.v1");
     assert_eq!(inbox["meta"]["security_profile"], "transport-protected");
@@ -105,6 +108,7 @@ fn wire_inbox_history_and_mark_read_params_match_go_contracts() {
             limit: 0,
             cursor: Some("42".to_string()),
             skip: 3,
+            auth: None,
         },
     )
     .expect("history params");
@@ -133,6 +137,64 @@ fn wire_inbox_history_and_mark_read_params_match_go_contracts() {
     .expect("mark-read params");
     assert_eq!(mark_read["meta"]["profile"], "anp.inbox.local.v1");
     assert_eq!(mark_read["body"]["message_ids"], json!(["msg-1", "msg-2"]));
+}
+
+#[test]
+fn wire_delegated_inbox_history_params_include_inbox_auth_fields() {
+    let identity = compat::wire::WireIdentity {
+        did: "did:wba:awiki.ai:agent:daemon:e1_daemon".to_string(),
+    };
+    let inbox_owner_did = "did:wba:awiki.ai:user:alice:e1_alice".to_string();
+    let inbox_auth_verification_method =
+        "did:wba:awiki.ai:user:alice:e1_alice#daemon-key-1".to_string();
+
+    let inbox = compat::wire::build_inbox_rpc_params(
+        &identity,
+        compat::wire::InboxWireRequest {
+            limit: 7,
+            auth: Some(compat::wire::InboxWireAuth {
+                inbox_owner_did: inbox_owner_did.clone(),
+                inbox_auth_verification_method: inbox_auth_verification_method.clone(),
+            }),
+        },
+    );
+    assert_eq!(inbox["meta"]["sender_did"], inbox_owner_did);
+    assert_eq!(
+        inbox["meta"]["target"],
+        json!({"kind": "service", "did": "did:awiki:message-service"})
+    );
+    assert_eq!(inbox["body"]["user_did"], inbox_owner_did);
+    assert_eq!(inbox["body"]["inbox_owner_did"], inbox_owner_did);
+    assert_eq!(
+        inbox["body"]["inbox_auth_verification_method"],
+        inbox_auth_verification_method
+    );
+
+    let history = compat::wire::build_history_rpc_params(
+        &identity,
+        compat::wire::HistoryWireRequest {
+            peer_did: "did:wba:awiki.ai:user:bob:e1_bob".to_string(),
+            limit: 3,
+            cursor: None,
+            skip: 0,
+            auth: Some(compat::wire::HistoryWireAuth {
+                inbox_owner_did: inbox_owner_did.clone(),
+                inbox_auth_verification_method: inbox_auth_verification_method.clone(),
+            }),
+        },
+    )
+    .expect("delegated history params");
+    assert_eq!(history["meta"]["sender_did"], inbox_owner_did);
+    assert_eq!(
+        history["meta"]["target"],
+        json!({"kind": "service", "did": "did:awiki:message-service"})
+    );
+    assert_eq!(history["body"]["user_did"], inbox_owner_did);
+    assert_eq!(history["body"]["inbox_owner_did"], inbox_owner_did);
+    assert_eq!(
+        history["body"]["inbox_auth_verification_method"],
+        inbox_auth_verification_method
+    );
 }
 
 fn assert_has_generated_meta(meta: &serde_json::Value) {

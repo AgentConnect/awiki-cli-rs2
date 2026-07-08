@@ -29,8 +29,11 @@ pub struct PublicProfile {
 pub struct HandleLookupResult {
     pub handle: crate::ids::Handle,
     pub did: crate::ids::Did,
+    pub user_id: String,
     pub domain: Option<String>,
     pub status: Option<String>,
+    pub profile: Option<crate::identity::Profile>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,11 +41,33 @@ pub struct Contact {
     pub did: crate::ids::Did,
     pub handle: Option<crate::ids::Handle>,
     pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_url: Option<String>,
+    pub profile_uri: Option<String>,
+    pub subject_type: Option<String>,
     pub relationship: Option<String>,
     pub followed: bool,
     pub messaged: bool,
     pub note: Option<String>,
     pub last_seen_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayProfile {
+    pub did: Option<crate::ids::Did>,
+    pub handle: Option<crate::ids::Handle>,
+    pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_url: Option<String>,
+    pub profile_uri: Option<String>,
+    pub subject_type: Option<String>,
+    pub cache_hit: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DisplayProfileBatchRequest {
+    pub peers: Vec<crate::ids::PeerRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

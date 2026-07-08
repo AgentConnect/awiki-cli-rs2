@@ -3,6 +3,9 @@ pub struct DartGroupSummary {
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
     pub last_message_at: Option<String>,
@@ -13,7 +16,9 @@ pub struct DartGroupSnapshot {
     pub id: Option<String>,
     pub did: String,
     pub name: Option<String>,
+    pub display_name: Option<String>,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
@@ -27,12 +32,14 @@ pub struct DartGroupMember {
     pub role: Option<String>,
     pub status: Option<String>,
     pub joined_at: Option<String>,
+    pub subject_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartCreateGroupRequest {
     pub name: String,
     pub description: Option<String>,
+    pub avatar_uri: Option<String>,
     pub discoverability: Option<String>,
     pub admission_mode: Option<String>,
     pub message_security_profile: Option<String>,

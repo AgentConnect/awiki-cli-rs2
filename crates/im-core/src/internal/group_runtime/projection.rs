@@ -1,11 +1,17 @@
 use serde_json::Value;
 
 #[cfg(feature = "sqlite")]
+use crate::internal::local_state::owner_scope::OwnerScope;
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_snapshot(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
 ) {
-    let Some(record) = group_record(client, result) else {
+    let Ok(scope) = OwnerScope::for_client(client) else {
+        return;
+    };
+    let Some(record) = group_record(&scope, result) else {
         return;
     };
     let Ok(connection) = crate::internal::local_state::open_writable(
@@ -16,6 +22,13 @@ pub(crate) fn project_group_snapshot(
     let _ = crate::internal::local_state::groups::upsert_group(&connection, record);
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_snapshot(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) {
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn project_group_snapshot(
     _client: &crate::core::ImClient,
@@ -24,11 +37,39 @@ pub(crate) fn project_group_snapshot(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_snapshot_async(
+    client: &crate::core::ImClient,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let scope = OwnerScope::for_client(client)?;
+    let Some(record) = group_record(&scope, result) else {
+        return Ok(());
+    };
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .upsert_group(record)
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_snapshot_async(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_summaries(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
 ) {
-    let records = group_summary_records(client, result);
+    let Ok(scope) = OwnerScope::for_client(client) else {
+        return;
+    };
+    let records = group_summary_records(&scope, result);
     if records.is_empty() {
         return;
     }
@@ -42,6 +83,13 @@ pub(crate) fn project_group_summaries(
     }
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_summaries(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) {
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn project_group_summaries(
     _client: &crate::core::ImClient,
@@ -50,12 +98,40 @@ pub(crate) fn project_group_summaries(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_summaries_async(
+    client: &crate::core::ImClient,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let scope = OwnerScope::for_client(client)?;
+    let records = group_summary_records(&scope, result);
+    if records.is_empty() {
+        return Ok(());
+    }
+    let db = client.core_inner().local_state_db().await?;
+    for record in records {
+        db.upsert_group(record).await?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_summaries_async(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_members(
     client: &crate::core::ImClient,
     group_did: &str,
     result: &crate::groups::GroupReadResult,
 ) {
-    let members = group_member_records(client, group_did, result);
+    let Ok(scope) = OwnerScope::for_client(client) else {
+        return;
+    };
+    let members = group_member_records(&scope, group_did, result);
     let raw_has_members = result
         .raw_response()
         .and_then(|raw| raw.get("members"))
@@ -70,11 +146,20 @@ pub(crate) fn project_group_members(
     };
     let _ = crate::internal::local_state::groups::replace_group_members(
         &mut connection,
-        client.did().as_str(),
+        scope.owner_identity_id.as_str(),
+        scope.owner_did.as_str(),
         &group_storage_key(group_did),
         &members,
-        client.current_identity().id.as_str(),
+        credential_name(&scope).as_str(),
     );
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_members(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) {
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -86,12 +171,53 @@ pub(crate) fn project_group_members(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_members_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let scope = OwnerScope::for_client(client)?;
+    let members = group_member_records(&scope, group_did, result);
+    let raw_has_members = result
+        .raw_response()
+        .and_then(|raw| raw.get("members"))
+        .is_some();
+    if members.is_empty() && !raw_has_members {
+        return Ok(());
+    }
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .replace_group_members(
+            scope.owner_identity_id.as_str(),
+            scope.owner_did.as_str(),
+            group_storage_key(group_did),
+            members,
+            credential_name(&scope),
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_members_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_messages(
     client: &crate::core::ImClient,
     group_did: &str,
     result: &crate::groups::GroupReadResult,
 ) {
-    let records = group_message_records(client, group_did, result);
+    let Ok(scope) = OwnerScope::for_client(client) else {
+        return;
+    };
+    let records = group_message_records(&scope, group_did, result);
     if records.is_empty() {
         return;
     }
@@ -103,6 +229,14 @@ pub(crate) fn project_group_messages(
     let _ = crate::internal::local_state::messages::upsert_messages(&connection, &records);
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_messages(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) {
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn project_group_messages(
     _client: &crate::core::ImClient,
@@ -112,7 +246,38 @@ pub(crate) fn project_group_messages(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_messages_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let scope = OwnerScope::for_client(client)?;
+    let records = group_message_records(&scope, group_did, result);
+    if records.is_empty() {
+        return Ok(());
+    }
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(records)
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_messages_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str) {
+    let Ok(scope) = OwnerScope::for_client(client) else {
+        return;
+    };
     let Ok(mut connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     ) else {
@@ -120,23 +285,56 @@ pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str
     };
     let _ = crate::internal::local_state::groups::mark_group_left(
         &mut connection,
-        client.did().as_str(),
+        scope.owner_identity_id.as_str(),
+        scope.owner_did.as_str(),
         &group_storage_key(group_did),
         group_did,
-        client.current_identity().id.as_str(),
+        credential_name(&scope).as_str(),
     );
 }
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_left(_client: &crate::core::ImClient, _group_did: &str) {}
 
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn project_group_left(_client: &crate::core::ImClient, _group_did: &str) {}
 
 #[cfg(feature = "sqlite")]
-fn group_record(
+pub(crate) async fn project_group_left_async(
     client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<()> {
+    let scope = OwnerScope::for_client(client)?;
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .mark_group_left(
+            scope.owner_identity_id.as_str(),
+            scope.owner_did.as_str(),
+            group_storage_key(group_did),
+            group_did,
+            credential_name(&scope),
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_left_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn group_record(
+    scope: &OwnerScope,
     result: &crate::groups::GroupReadResult,
 ) -> Option<crate::internal::local_state::groups::GroupRecord> {
     let raw = result.raw_response().cloned().unwrap_or(Value::Null);
-    let snapshot = snapshot_from_result(result).or_else(|| normalize_group_snapshot(&raw))?;
+    let snapshot =
+        snapshot_from_result(result).or_else(|| group_snapshot_from_raw_response(&raw))?;
     let group_did = string_value(snapshot.get("group_did"));
     if group_did.trim().is_empty() {
         return None;
@@ -144,8 +342,8 @@ fn group_record(
     let last_synced_seq = i64_option(snapshot.get("group_event_seq"))
         .or_else(|| i64_option(snapshot.get("last_synced_seq")));
     Some(crate::internal::local_state::groups::GroupRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         group_id: group_storage_key(&group_did),
         group_did,
         name: string_value(snapshot.get("name")),
@@ -170,14 +368,14 @@ fn group_record(
         remote_created_at: string_value(snapshot.get("created_at")),
         remote_updated_at: string_value(snapshot.get("updated_at")),
         metadata: metadata_string(snapshot),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(scope),
         ..crate::internal::local_state::groups::GroupRecord::default()
     })
 }
 
 #[cfg(feature = "sqlite")]
 fn group_member_records(
-    client: &crate::core::ImClient,
+    scope: &OwnerScope,
     group_did: &str,
     result: &crate::groups::GroupReadResult,
 ) -> Vec<crate::internal::local_state::groups::GroupMemberRecord> {
@@ -185,13 +383,13 @@ fn group_member_records(
     let members = members_from_result(result, &raw);
     members
         .iter()
-        .filter_map(|member| group_member_record(client, group_did, member))
+        .filter_map(|member| group_member_record(scope, group_did, member))
         .collect()
 }
 
 #[cfg(feature = "sqlite")]
 fn group_summary_records(
-    client: &crate::core::ImClient,
+    scope: &OwnerScope,
     result: &crate::groups::GroupReadResult,
 ) -> Vec<crate::internal::local_state::groups::GroupRecord> {
     let raw = result.raw_response().cloned().unwrap_or(Value::Null);
@@ -201,7 +399,7 @@ fn group_summary_records(
             .iter()
             .filter_map(|group| {
                 group_record_from_snapshot(
-                    client,
+                    scope,
                     serde_json::json!({
                         "id": group.id,
                         "group_did": group.did.as_str(),
@@ -222,37 +420,40 @@ fn group_summary_records(
         .into_iter()
         .filter_map(|group| {
             let snapshot = normalize_group_snapshot(&group).unwrap_or(group);
-            group_record_from_snapshot(client, snapshot)
+            group_record_from_snapshot(scope, snapshot)
         })
         .collect()
 }
 
 #[cfg(feature = "sqlite")]
 fn group_member_record(
-    client: &crate::core::ImClient,
+    scope: &OwnerScope,
     group_did: &str,
     member: &Value,
 ) -> Option<crate::internal::local_state::groups::GroupMemberRecord> {
     let member_did = default_string(
-        &string_value(member.get("agent_did")),
+        &string_value(member.get("did")),
         &default_string(
             &string_value(member.get("member_did")),
-            &string_value(member.get("did")),
+            &string_value(member.get("agent_did")),
         ),
     );
     if member_did.trim().is_empty() {
         return None;
     }
+    let use_agent_handle = member_identity_uses_agent_fields(member);
     let member_handle = normalize_handle_value(&default_string(
         &string_value(member.get("handle")),
         &default_string(
             &string_value(member.get("member_handle")),
-            &string_value(member.get("agent_handle")),
+            &use_agent_handle
+                .then(|| string_value(member.get("agent_handle")))
+                .unwrap_or_default(),
         ),
     ));
     Some(crate::internal::local_state::groups::GroupMemberRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         group_id: group_storage_key(group_did),
         user_id: member_did.clone(),
         member_did,
@@ -261,14 +462,14 @@ fn group_member_record(
         status: string_value(member.get("status")),
         joined_at: string_value(member.get("joined_at")),
         metadata: metadata_string(member.clone()),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(scope),
         ..crate::internal::local_state::groups::GroupMemberRecord::default()
     })
 }
 
 #[cfg(feature = "sqlite")]
 fn group_message_records(
-    client: &crate::core::ImClient,
+    scope: &OwnerScope,
     group_did: &str,
     result: &crate::groups::GroupReadResult,
 ) -> Vec<crate::internal::local_state::messages::MessageRecord> {
@@ -276,13 +477,13 @@ fn group_message_records(
         .messages
         .items
         .iter()
-        .map(|message| group_message_record(client, group_did, message))
+        .map(|message| group_message_record(scope, group_did, message))
         .collect()
 }
 
 #[cfg(feature = "sqlite")]
 fn group_message_record(
-    client: &crate::core::ImClient,
+    scope: &OwnerScope,
     group_did: &str,
     message: &crate::messages::Message,
 ) -> crate::internal::local_state::messages::MessageRecord {
@@ -291,11 +492,13 @@ fn group_message_record(
         .as_ref()
         .map(crate::ids::GroupRef::as_str)
         .unwrap_or(group_did);
+    let conversation_id = group_conversation_id(group_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: message.id.as_str().to_string(),
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
-        thread_id: group_thread_id(group_did),
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: match message.direction {
             crate::messages::MessageDirection::Outgoing => 1,
             crate::messages::MessageDirection::Incoming => 0,
@@ -317,7 +520,7 @@ fn group_message_record(
         is_e2ee: false,
         is_read: false,
         metadata: message_metadata_string(message),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(scope),
         ..crate::internal::local_state::messages::MessageRecord::default()
     }
 }
@@ -342,7 +545,7 @@ fn snapshot_from_result(result: &crate::groups::GroupReadResult) -> Option<Value
 
 #[cfg(feature = "sqlite")]
 fn group_record_from_snapshot(
-    client: &crate::core::ImClient,
+    scope: &OwnerScope,
     snapshot: Value,
 ) -> Option<crate::internal::local_state::groups::GroupRecord> {
     let group_did = string_value(snapshot.get("group_did"));
@@ -350,8 +553,8 @@ fn group_record_from_snapshot(
         return None;
     }
     Some(crate::internal::local_state::groups::GroupRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         group_id: group_storage_key(&group_did),
         group_did,
         name: string_value(snapshot.get("name")),
@@ -377,7 +580,7 @@ fn group_record_from_snapshot(
         remote_created_at: string_value(snapshot.get("created_at")),
         remote_updated_at: string_value(snapshot.get("updated_at")),
         metadata: metadata_string(snapshot),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(scope),
         ..crate::internal::local_state::groups::GroupRecord::default()
     })
 }
@@ -405,6 +608,7 @@ fn members_from_result(result: &crate::groups::GroupReadResult, raw: &Value) -> 
                     "did": did,
                     "member_handle": handle,
                     "handle": handle,
+                    "subject_type": member.subject_type,
                     "role": member.role,
                     "status": member.status,
                     "joined_at": member.joined_at,
@@ -456,7 +660,45 @@ fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
             "updated_at": raw.get("updated_at").cloned().unwrap_or(Value::Null),
         }));
     }
-    Some(raw.clone())
+    if raw_is_group_snapshot(raw) {
+        Some(raw.clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn group_snapshot_from_raw_response(raw: &Value) -> Option<Value> {
+    if let Some(group) = raw.get("group").filter(|value| value.is_object()) {
+        return normalize_group_snapshot(group);
+    }
+    normalize_group_snapshot(raw)
+}
+
+#[cfg(feature = "sqlite")]
+fn raw_is_group_snapshot(raw: &Value) -> bool {
+    let Some(object) = raw.as_object() else {
+        return false;
+    };
+    if object.contains_key("accepted")
+        || object.contains_key("final_acceptance")
+        || object.contains_key("operation_id")
+        || object.contains_key("group_receipt")
+        || object.contains_key("member_did")
+        || object.contains_key("leaver_did")
+    {
+        return false;
+    }
+    object.contains_key("group_snapshot")
+        || object.contains_key("group_profile")
+        || object.contains_key("name")
+        || object.contains_key("display_name")
+        || object.contains_key("description")
+        || object.contains_key("member_role")
+        || object.contains_key("my_role")
+        || object.contains_key("actor_membership_role")
+        || object.contains_key("member_status")
+        || object.contains_key("actor_membership_status")
 }
 
 #[cfg(feature = "sqlite")]
@@ -464,11 +706,12 @@ fn normalize_group_member_json(mut member: Value) -> Value {
     let Some(object) = member.as_object_mut() else {
         return member;
     };
+    let use_agent_handle = member_identity_uses_agent_fields_object(object);
     let did = default_string(
-        &string_value(object.get("agent_did")),
+        &string_value(object.get("did")),
         &default_string(
             &string_value(object.get("member_did")),
-            &string_value(object.get("did")),
+            &string_value(object.get("agent_did")),
         ),
     );
     if !did.trim().is_empty() {
@@ -483,7 +726,9 @@ fn normalize_group_member_json(mut member: Value) -> Value {
         &string_value(object.get("handle")),
         &default_string(
             &string_value(object.get("member_handle")),
-            &string_value(object.get("agent_handle")),
+            &use_agent_handle
+                .then(|| string_value(object.get("agent_handle")))
+                .unwrap_or_default(),
         ),
     ));
     if !handle.is_empty() {
@@ -493,6 +738,36 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .or_insert_with(|| Value::String(handle));
     }
     member
+}
+
+#[cfg(feature = "sqlite")]
+fn member_identity_uses_agent_fields(member: &Value) -> bool {
+    let Some(object) = member.as_object() else {
+        return false;
+    };
+    member_identity_uses_agent_fields_object(object)
+}
+
+#[cfg(feature = "sqlite")]
+fn member_identity_uses_agent_fields_object(object: &serde_json::Map<String, Value>) -> bool {
+    let explicit_member_did =
+        string_value(object.get("did")).or_else_nonempty(|| string_value(object.get("member_did")));
+    if explicit_member_did.trim().is_empty() {
+        return true;
+    }
+    if let Some(subject_type) = object
+        .get("subject_type")
+        .or_else(|| object.get("subjectType"))
+        .or_else(|| object.get("member_subject_type"))
+        .and_then(Value::as_str)
+    {
+        return matches!(
+            subject_type.trim().to_ascii_lowercase().as_str(),
+            "agent" | "runtime_agent" | "bot"
+        );
+    }
+    let normalized_did = explicit_member_did.trim().to_ascii_lowercase();
+    normalized_did.starts_with("did:agent:") || normalized_did.contains(":agent:")
 }
 
 #[cfg(feature = "sqlite")]
@@ -508,13 +783,95 @@ fn group_did_from_result(raw: &Value) -> String {
         .or_else_nonempty(|| string_value(raw.get("did")))
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn scope() -> OwnerScope {
+        OwnerScope::new("owner-identity", "did:example:alice").expect("owner scope")
+    }
+
+    #[test]
+    fn group_record_ignores_member_mutation_receipt_status() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "accepted": true,
+                "final_acceptance": true,
+                "group_did": "did:example:group",
+                "group_state_version": "12",
+                "group_event_seq": "7",
+                "operation_id": "op-remove-bob",
+                "member_did": "did:example:bob",
+                "membership_status": "removed"
+            }),
+            Vec::new(),
+        );
+
+        assert!(
+            group_record(&scope(), &result).is_none(),
+            "target member removal status must not be projected as the viewer's group membership status"
+        );
+    }
+
+    #[test]
+    fn group_record_accepts_explicit_local_group_snapshot() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_snapshot": {
+                    "group_did": "did:example:group",
+                    "name": "Demo",
+                    "member_role": "owner",
+                    "member_status": "active",
+                    "member_count": 2
+                }
+            }),
+            Vec::new(),
+        );
+
+        let record = group_record(&scope(), &result).expect("group record");
+        assert_eq!(record.group_did, "did:example:group");
+        assert_eq!(record.my_role, "owner");
+        assert_eq!(record.membership_status, "active");
+    }
+
+    #[test]
+    fn group_member_record_prefers_member_identity_over_auxiliary_agent_fields() {
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "members": [{
+                    "member_did": "did:wba:anpclaw.com:zhuocheng:e1_human",
+                    "agent_did": "did:wba:anpclaw.com:agent:runtime:helper:e1_agent",
+                    "handle": "zhuocheng",
+                    "agent_handle": "helper.anpclaw.com",
+                    "agent_subject_type": "agent",
+                    "role": "member",
+                    "status": "active"
+                }]
+            }),
+            Vec::new(),
+        );
+
+        let records = group_member_records(&scope(), "did:example:group", &result);
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].member_did,
+            "did:wba:anpclaw.com:zhuocheng:e1_human"
+        );
+        assert_eq!(records[0].user_id, records[0].member_did);
+        assert_eq!(records[0].member_handle, "zhuocheng");
+    }
+}
+
 #[cfg(feature = "sqlite")]
 fn group_storage_key(group_did: &str) -> String {
     group_did.trim().to_string()
 }
 
 #[cfg(feature = "sqlite")]
-fn group_thread_id(group_did: &str) -> String {
+fn group_conversation_id(group_did: &str) -> String {
     let value = group_did.trim();
     if value.is_empty() {
         "group:unknown".to_string()
@@ -524,9 +881,20 @@ fn group_thread_id(group_did: &str) -> String {
 }
 
 #[cfg(feature = "sqlite")]
+fn credential_name(scope: &OwnerScope) -> String {
+    scope
+        .credential_name
+        .clone()
+        .unwrap_or_else(|| scope.owner_identity_id.clone())
+}
+
+#[cfg(feature = "sqlite")]
 fn message_content(message: &crate::messages::Message) -> String {
     match &message.body {
         crate::messages::MessageBodyView::Text { text, .. } => text.clone(),
+        crate::messages::MessageBodyView::Payload { payload } => {
+            serde_json::to_string(payload).unwrap_or_default()
+        }
         crate::messages::MessageBodyView::Unsupported { .. } => String::new(),
     }
 }
@@ -543,6 +911,7 @@ fn message_content_type(message: &crate::messages::Message) -> String {
                 ..
             } => "text/markdown".to_string(),
             crate::messages::MessageBodyView::Text { .. } => "text/plain".to_string(),
+            crate::messages::MessageBodyView::Payload { .. } => "application/json".to_string(),
             crate::messages::MessageBodyView::Unsupported { content_type } => content_type
                 .clone()
                 .unwrap_or_else(|| "application/octet-stream".to_string()),

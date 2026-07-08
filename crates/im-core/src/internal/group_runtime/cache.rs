@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn cached_group_snapshot(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -23,8 +23,45 @@ pub(crate) fn cached_group_snapshot(
     Ok(None)
 }
 
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn cached_group_snapshot(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    Ok(None)
+}
+
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn cached_group_snapshot(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    Ok(None)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn cached_group_snapshot_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    let db = client.core_inner().local_state_db().await?;
+    for owner_identity_id in owner_identity_ids(client) {
+        if let Some(snapshot) = db
+            .get_group_snapshot(
+                owner_identity_id,
+                client.did().as_str(),
+                group_storage_key(group_did),
+            )
+            .await?
+        {
+            return Ok(Some(enrich_cached_group_snapshot(snapshot)));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn cached_group_snapshot_async(
     _client: &crate::core::ImClient,
     _group_did: &str,
 ) -> crate::ImResult<Option<Value>> {

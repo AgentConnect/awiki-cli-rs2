@@ -1,5 +1,6 @@
 use awiki_cli::host_runtime::{self, bridge};
 use awiki_cli::workspace_config::{Paths, Resolved};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -323,8 +324,8 @@ fn bridge_prepare_and_available_match_go_local_endpoint_helpers() {
 #[cfg(unix)]
 #[test]
 fn call_local_bridge_uses_health_probe_then_request_connection() {
-    let workspace = TempDir::new().expect("temp workspace");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let socket_dir = TempDir::new_short("abr").expect("temp socket dir");
+    let socket_path = socket_dir.path().join("s.sock");
     let (_server, events) = spawn_two_connection_bridge_server(
         &socket_path,
         serde_json::json!({
@@ -371,8 +372,8 @@ fn call_local_bridge_uses_health_probe_then_request_connection() {
 #[cfg(unix)]
 #[test]
 fn call_local_bridge_failure_response_uses_bridge_error_message() {
-    let workspace = TempDir::new().expect("temp workspace");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let socket_dir = TempDir::new_short("abr").expect("temp socket dir");
+    let socket_path = socket_dir.path().join("s.sock");
     let (_server, _events) = spawn_two_connection_bridge_server(
         &socket_path,
         serde_json::json!({
@@ -401,8 +402,8 @@ fn call_local_bridge_failure_response_uses_bridge_error_message() {
 #[cfg(unix)]
 #[test]
 fn call_local_bridge_failure_without_error_details_matches_go_message() {
-    let workspace = TempDir::new().expect("temp workspace");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let socket_dir = TempDir::new_short("abr").expect("temp socket dir");
+    let socket_path = socket_dir.path().join("s.sock");
     let (_server, _events) = spawn_two_connection_bridge_server(
         &socket_path,
         serde_json::json!({ "ok": false }).to_string(),
@@ -424,8 +425,8 @@ fn call_local_bridge_failure_without_error_details_matches_go_message() {
 #[cfg(unix)]
 #[test]
 fn call_local_bridge_invalid_json_response_reports_decode_error() {
-    let workspace = TempDir::new().expect("temp workspace");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let socket_dir = TempDir::new_short("abr").expect("temp socket dir");
+    let socket_path = socket_dir.path().join("s.sock");
     let (_server, _events) =
         spawn_two_connection_bridge_server(&socket_path, "not-json\n".to_string());
 
@@ -485,8 +486,8 @@ fn bridge_health_probe_reports_unavailable_unix_socket() {
 #[cfg(unix)]
 #[test]
 fn listen_bridge_removes_stale_socket_path_before_binding() {
-    let workspace = TempDir::new().expect("temp workspace");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let socket_dir = TempDir::new_short("abr").expect("temp socket dir");
+    let socket_path = socket_dir.path().join("s.sock");
     std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
         .expect("create runtime dir");
     std::fs::write(&socket_path, b"stale socket placeholder").expect("write stale path");
@@ -712,6 +713,8 @@ fn test_resolved() -> Resolved {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: "https://awiki.ai".to_string(),
+        user_service_endpoint: "https://awiki.ai".to_string(),
+        message_service_endpoint: "https://awiki.ai".to_string(),
         did_domain: "awiki.ai".to_string(),
         anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
         anp_service_did: "did:wba:awiki.ai".to_string(),
@@ -749,12 +752,27 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        Self::new_under(&std::env::temp_dir(), "awiki-cli-rs2-runtime-bridge-test")
+    }
+
+    #[cfg(unix)]
+    fn new_short(prefix: &str) -> std::io::Result<Self> {
+        Self::new_under(std::path::Path::new("/tmp"), prefix)
+    }
+
+    fn new_under(root: &std::path::Path, prefix: &str) -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-runtime-bridge-test-{}-{nonce}",
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
+        let path = root.join(format!(
+            "{prefix}-{}-{nonce}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

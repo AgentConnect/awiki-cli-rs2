@@ -11,13 +11,14 @@ name = "awiki_im_core"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-default = ["blocking", "sqlite", "http"]
+default = ["sqlite", "http"]
 blocking = ["im-core/blocking"]
 sqlite = ["im-core/sqlite"]
 http = ["im-core/http"]
 android = []
 ios = []
 macos = []
+linux = []
 attachments = ["im-core/attachments"]
 realtime = ["im-core/realtime"]
 secure-direct = ["im-core/secure-direct"]
@@ -25,10 +26,12 @@ group-e2ee = ["im-core/group-e2ee"]
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 im-core = { path = "../im-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 flutter_rust_bridge = "=2.12.0"
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile = "=3.3.0"

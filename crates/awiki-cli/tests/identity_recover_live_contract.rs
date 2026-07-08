@@ -3,9 +3,12 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn identity_recover_phone_without_otp_live_posts_send_otp_and_does_not_create_identity_like_go() {
@@ -152,7 +155,7 @@ fn identity_recover_migrates_legacy_config_json_before_send_otp_like_go() {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
     assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
     let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
@@ -209,14 +212,21 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_recovered","user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
         ),
     ]);
     write_service_config(workspace.path(), &server.base_url());
     register_alice(workspace.path());
     let old = read_stored_identity(workspace.path(), "alice");
     let old_dir_name = old.index["dir_name"].as_str().unwrap().to_string();
-    assert_eq!(old.index["did"], "did:wba:awiki.ai:alice:e1_remote");
+    let old_did = old.index["did"]
+        .as_str()
+        .expect("old identity did")
+        .to_string();
+    assert!(
+        old_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "registration should persist the locally generated key-bound DID: {old_did}"
+    );
 
     let output = awiki_cmd(
         &[
@@ -242,10 +252,7 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     assert_eq!(envelope["data"]["full_handle"], "alice.awiki.ai");
     assert_eq!(envelope["data"]["final_identity_name"], "alice");
     assert_eq!(envelope["data"]["archived_identities"], json!(["alice"]));
-    assert_eq!(
-        envelope["data"]["archived_dids"],
-        json!(["did:wba:awiki.ai:alice:e1_remote"])
-    );
+    assert_eq!(envelope["data"]["archived_dids"], json!([old_did]));
     assert!(envelope["data"].get("temp_identity_name").is_none());
     assert!(envelope["data"].get("active_before").is_none());
     assert!(envelope["data"].get("old_dids").is_none());
@@ -276,9 +283,12 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
         .unwrap()
         .contains("alice.awiki.ai"));
     assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
-    assert_eq!(
-        envelope["data"]["identity"]["did"],
-        "did:wba:awiki.ai:alice:e1_recovered"
+    let recovered_did = envelope["data"]["identity"]["did"]
+        .as_str()
+        .expect("recovered identity did");
+    assert!(
+        recovered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "recovery should persist the locally generated key-bound DID: {recovered_did}"
     );
     assert_eq!(envelope["data"]["identity"]["handle"], "alice");
     assert_eq!(
@@ -308,24 +318,21 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     assert_eq!(body["params"]["phone"], "+8613800138000");
     assert_eq!(body["params"]["otp_code"], "654321");
     assert!(body["params"]["did_document"].is_object());
-    assert!(body["params"]["did_document"]["id"]
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("did:wba:awiki.ai:alice:"));
+    assert_eq!(
+        body["params"]["did_document"]["id"].as_str(),
+        Some(recovered_did)
+    );
 
     let stored = read_stored_identity(workspace.path(), "alice");
     assert_eq!(stored.index["handle"], "alice");
     assert_eq!(stored.index["full_handle"], "alice.awiki.ai");
-    assert_eq!(stored.index["did"], "did:wba:awiki.ai:alice:e1_recovered");
+    assert_eq!(stored.index["did"], recovered_did);
     assert_eq!(stored.index["user_id"], "user-alice-recovered");
     assert_eq!(stored.identity["handle"], "alice");
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
-    assert_eq!(
-        stored.identity["did"],
-        "did:wba:awiki.ai:alice:e1_recovered"
-    );
+    assert_eq!(stored.identity["did"], recovered_did);
     assert_eq!(stored.identity["user_id"], "user-alice-recovered");
-    assert_eq!(stored.auth["jwt_token"], "jwt-recover");
+    assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
 
     let index_path = workspace.path().join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
@@ -427,7 +434,6 @@ fn request_body(raw: &str) -> &str {
 struct StoredIdentity {
     index: Value,
     identity: Value,
-    auth: Value,
 }
 
 fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity {
@@ -442,8 +448,36 @@ fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity
             &std::fs::read(identity_dir.join("identity.json")).unwrap(),
         )
         .unwrap(),
-        auth: serde_json::from_slice(&std::fs::read(identity_dir.join("auth.json")).unwrap())
-            .unwrap(),
+    }
+}
+
+fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
+    workspace: &Path,
+    identity_name: &str,
+) {
+    let index_path = workspace.join("identities").join("index.json");
+    let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let entry = &index["credentials"][identity_name];
+    let vault = &entry["vault_migration"];
+    assert_eq!(vault["status"], "verified");
+    assert_eq!(vault["backend"], "vault");
+    assert_eq!(vault["plaintext_compat_retained"], false);
+    assert!(
+        vault["refs"]["auth_jwt"].is_object(),
+        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+    );
+    let dir_name = entry["dir_name"].as_str().unwrap();
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required identity must not persist plaintext {file}"
+        );
     }
 }
 
@@ -514,7 +548,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -556,7 +595,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;
@@ -589,9 +634,10 @@ impl TempDir {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-identity-recover-live-test-{}-{nanos}",
-            std::process::id()
+            "awiki-cli-rs2-identity-recover-live-test-{}-{counter}-{nanos}",
+            std::process::id(),
         ));
         std::fs::create_dir_all(&path)?;
         Ok(Self { path })

@@ -1,301 +1,316 @@
 # awiki-cli 发布与回滚手册
 
-本文档描述 awiki-cli 的发布主链路、预发布/回滚脚本，以及在出现坏版本时的处理建议。目标是让日常发版在几条标准命令内完成，并且可以安全地撤回。
+本文档描述当前有效的发布方式：在本地或服务器构建 release 产物，然后由维护者把产物放到实际文件服务目录。
 
-当前发布只使用以下脚本：
+## 1. 版本号约定
 
-- `scripts/release/release-one-click.sh`
-- `scripts/release/build-release-artifact.sh`
-- `scripts/release/release-tag-stable.sh`
-- `scripts/release/release-tag-prerelease.sh`
-- `scripts/release/publish-gitee-release.sh`
+- 公开版本真相是仓库根目录的 `package.json.version`。
+- `package.json.awikiCli.minSupportedVersion` 当前必须与 `package.json.version` 一致。
+- `crates/awiki-cli/Cargo.toml` 的 `[package].version` 必须与 `package.json.version` 一致。
+- `Cargo.lock` 中的 `awiki-cli` package 版本必须同步。
+- Daemon 版本来自 `crates/awiki-deamon/Cargo.toml`。
 
-## 1. 版本号与 Tag 约定
-
-- 单一公开版本真相：仓库根目录的 `package.json.version`，npm 包名为 `@awiki/cli`。
-- Rust crate 版本：`crates/awiki-cli/Cargo.toml` 的 `[package].version` 必须与 `package.json.version` 一致，`Cargo.lock` 中的 `awiki-cli` package 版本也必须同步。
-- npm 支持策略：`package.json.awikiCli.minSupportedVersion` 当前必须与 `package.json.version` 一致；如果未来引入兼容矩阵，需要先调整 `xtask check-version` 规则。
-- Git Tag 规则：
-  - 正式版：`vX.Y.Z`（例如 `v0.1.0`）。
-  - 预发布版：`vX.Y.Z-<pre>`（例如 `v0.2.0-beta.1` / `v0.2.0-rc.1`）。
-- Rust buildinfo 注入：release/build 脚本通过 `AWIKI_CLI_VERSION`、`AWIKI_CLI_COMMIT`、`AWIKI_CLI_BUILD_DATE` 注入构建信息；未注入 `AWIKI_CLI_VERSION` 的本地测试/开发构建显示为 `dev`，以保留 dev-build update 策略。
-- 一致性检查：`cargo run -p xtask -- check-version` 必须通过，确认 package version、minSupportedVersion、crate version 三者一致。release artifact 构建还会运行 `cargo run -p xtask -- check-version --expect "${VERSION}"`，确认 tag/build 参数与版本真相一致。
-
-**注意**：推荐用 `scripts/release/release-one-click.sh <version>` 修改版本号；它会同步 `package.json.version`、`package.json.awikiCli.minSupportedVersion`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock`。如果手动修改版本号，也必须同步这四处并提交到当前分支。任何 Tag 都必须是 `v${package.json.version}`。
-
-## 2. 正式发布（stable）
-
-### 2.1 前置检查
-
-1. 确保当前分支已经包含所有要发布的改动，并推送到远端：
-
-   ```bash
-   git status
-   git push
-   ```
-
-2. 确认目标版本为标准 semver（不带 `-beta` / `-rc` 等）。推荐直接使用一键脚本：
-
-   ```bash
-   scripts/release/release-one-click.sh X.Y.Z --channel stable
-   ```
-
-   如果只想预览本地版本文件修改，可以先运行：
-
-   ```bash
-   scripts/release/release-one-click.sh X.Y.Z --channel stable --no-commit
-   ```
-
-3. 如果走手动版本修改和 tag 路径，必须先运行：
-
-   ```bash
-   cargo run -p xtask -- check-version
-   ```
-
-4. 在 GitHub 仓库的 workflow secrets 中配置 npm 凭据：
-
-   - `NPM_TOKEN`：具有发布 `@awiki/cli` 的权限。
-
-5. 添加 secrets 的位置：
-
-   - 打开 GitHub 仓库页面。
-   - 进入 `Settings`。
-   - 进入 `Secrets and variables` -> `Actions`。
-   - 点击 `New repository secret`，创建 `NPM_TOKEN`。
-
-### 2.2 创建并推送 Tag
-
-推荐使用 `scripts/release/release-one-click.sh` 完成版本更新、测试、提交、推送、tag、GitHub Release 等待、Gitee 同步和 npm 发布/校验。它会在提交前运行 `xtask check-version --expect`，并在 commit 中同时包含 npm 与 Cargo 版本文件。
-
-低层 tag 脚本仍可用于手动流程。在 awiki-cli 仓库根目录执行：
+修改版本后运行：
 
 ```bash
-scripts/release/release-tag-stable.sh
+cargo run -p xtask -- check-version
 ```
 
-该脚本会：
-
-- 从 `package.json.version` 读取版本，生成 `vX.Y.Z`；
-- 要求工作区干净、当前分支已设置 upstream 且完全 push；
-- 检查本地和远端是否已有同名 Tag；
-- 创建 `vX.Y.Z` 的 annotated tag 并 push 到 origin。
-
-这是正式版的低层 tag 入口；使用它之前必须已经提交并推送同步后的 `package.json`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock`。
-
-### 2.3 CI 行为
-
-推送 `vX.Y.Z` Tag 后，`.github/workflows/release.yml` 会自动执行：
-
-1. 使用 Rust release 构建脚本构建多平台二进制，并创建 GitHub Release；
-2. 对稳定 Tag（`vX.Y.Z` 且不包含 `-`）执行一次 npm 发布：
-
-   ```bash
-   npm publish --access public
-   ```
-
-发布完成后可以做一个最小自检：
+构建 CLI release artifact 时，`scripts/release/build-release-artifact.sh` 还会运行：
 
 ```bash
-npm view @awiki/cli version
+cargo run -p xtask -- check-version --expect <version>
 ```
 
-确认 registry 上的版本号与刚刚发布的一致。
+## 2. 前置环境
 
-### 2.3.1 E2EE release gate
+在构建机器上准备：
 
-- Linux/macOS artifact 构建必须经过 `scripts/release/build-release-artifact.sh`；脚本会在构建前检查 feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。
-- 该检查只验证本地构建依赖图和 artifact 构建入口，不连接真实 E2EE 服务。
-- Windows E2EE package/release 验收本阶段暂缓；Windows artifact 构建可以继续，但 Windows E2EE package 验收不阻塞 Linux/macOS E2EE 打开。
-- 默认 CLI surface 只开放高层 E2EE 产品命令；`msg secure outbox *`、`group secure diagnostics`、低层 `group e2ee *` 仍为 hidden/internal 或 stable unsupported。
+- Rust toolchain：仓库根目录 `rust-toolchain.toml` 固定版本，当前发布脚本默认使用 `1.88.0`。
+- Node.js 18+：用于读取 `package.json` 和生成 daemon manifest。
+- 同级 ANP Rust SDK：`../anp/anp/rust/Cargo.toml` 必须存在。
+- Linux release 建议在 Ubuntu 或兼容 Linux build 机上构建，避免 macOS 交叉编译 Linux 目标带来的 linker 和 libc 差异。
 
-### 2.4 在本地同步 Gitee Release
-
-> Gitee Release 产物同步不再放在 GitHub hosted runner 上执行，避免跨境上传导致的长时间阻塞。
-> 推荐在你自己的 Mac 或国内网络环境更稳定的机器上执行以下脚本。
-
-先准备本地环境变量：
+检查：
 
 ```bash
-export GITEE_USERNAME=<你的 Gitee 登录用户名>
-export GITEE_TOKEN=<你的 Gitee 个人访问令牌>
+rustc --version
+cargo --version
+node --version
+ls ../anp/anp/rust/Cargo.toml
 ```
 
-然后执行：
+## 3. 构建 awiki-cli 产物
+
+在 `awiki-cli-rs2` 仓库根目录执行：
 
 ```bash
-scripts/release/publish-gitee-release.sh vX.Y.Z
+scripts/release/build-release-artifact.sh \
+  --version <version> \
+  --os linux \
+  --arch amd64 \
+  --target x86_64-unknown-linux-gnu
 ```
 
-示例：
+常用目标：
 
 ```bash
-scripts/release/publish-gitee-release.sh v0.1.0
-scripts/release/publish-gitee-release.sh v0.2.0-beta.1
+# Linux x86_64
+scripts/release/build-release-artifact.sh \
+  --version <version> \
+  --os linux \
+  --arch amd64 \
+  --target x86_64-unknown-linux-gnu
+
+# macOS arm64
+scripts/release/build-release-artifact.sh \
+  --version <version> \
+  --os darwin \
+  --arch arm64 \
+  --target aarch64-apple-darwin
 ```
 
-脚本会：
+产物默认写入 `dist/`，命名格式：
 
-- 从 GitHub Release 按 tag 拉取 release 元数据和已构建好的附件；
-- 确保同名 tag 已推送到 Gitee；
-- 在 Gitee 上创建或复用同名 Release；
-- 将 GitHub Release 附件上传到 Gitee Release。
+```text
+awiki-cli-<version>-<os>-<arch>.tar.gz
+awiki-cli-<version>-windows-<arch>.zip
+```
 
-脚本路径：`scripts/release/publish-gitee-release.sh`
+脚本会注入构建信息：
 
-支持的可选环境变量：
+- `AWIKI_CLI_VERSION`
+- `AWIKI_CLI_COMMIT`
+- `AWIKI_CLI_BUILD_DATE`
 
-- `GITEE_OWNER`：默认 `agentconnect`
-- `GITEE_REPO`：默认 `awiki-cli`
-- `GITHUB_OWNER`：默认 `AgentConnect`
-- `GITHUB_REPO`：默认 `awiki-cli`
-- `GITHUB_TOKEN`：可选；公开仓库通常不需要，遇到 GitHub API rate limit 时可配置
+Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。
 
-正式版的一键操作顺序就是：
+## 4. 发布 awiki-deamon 包
 
-1. 配置本地 release 环境和必要 token。
-2. 运行 `scripts/release/release-one-click.sh X.Y.Z --channel stable`。
-3. 等脚本完成 GitHub Release、Gitee mirror 和 npm 发布/校验。
-
-正式版的手动操作顺序是：
-
-1. 同步修改 `package.json.version`、`package.json.awikiCli.minSupportedVersion`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock` 并提交。
-2. 运行 `cargo run -p xtask -- check-version`。
-3. 运行 `scripts/release/release-tag-stable.sh`。
-4. 等 GitHub Actions 完成 GitHub Release 和 npm 发布。
-5. 在本地运行 `scripts/release/publish-gitee-release.sh vX.Y.Z`。
-
-## 3. 预发布版本（beta/rc）
-
-> 预发布用于内测 / 灰度，不会自动覆盖 npm 的 `latest`，而是挂在指定 dist-tag（例如 `beta`）。
-
-### 3.1 调整版本号
-
-推荐直接使用一键脚本，它会同步 npm 与 Cargo 版本文件：
+Daemon release 包用于客户端安装/升级。当前统一在目标服务器上执行高层发布脚本，
+由 GitHub Actions 构建 Linux amd64、macOS arm64 和 macOS amd64 三个平台包，
+再发布到本机 Nginx daemon 静态目录：
 
 ```bash
-scripts/release/release-one-click.sh 0.2.0-beta.1 --channel beta --dist-tag beta
+scripts/release/daemon/publish-multi-platform.sh
 ```
 
-如果走手动流程，将版本同步修改为带预发布后缀的版本，例如：
-
-- `0.2.0-beta.1`
-- `0.2.0-rc.1`
-
-提交并推送修改。
-
-### 3.2 使用预发布脚本创建 Tag
-
-运行：
+脚本不接受参数，也不依赖外部环境变量。发布前复制并填写同级配置文件：
 
 ```bash
-scripts/release/release-tag-prerelease.sh <dist-tag>
+cp scripts/release/daemon/publish-multi-platform.toml.template \
+  scripts/release/daemon/publish-multi-platform.toml
 ```
 
-示例：
-
-```bash
-scripts/release/release-tag-prerelease.sh beta
-```
+配置文件只保存发布环境和触发构建所需的信息：`base_url`、`download_base_url`、
+`download_mirror_urls`、`source_ref` 和 `github_token`。
+它不配置当前版本号或最低可用版本号。当前发布版本固定来自
+`crates/awiki-deamon/Cargo.toml`，并由 `Cargo.lock` 做一致性校验；第一版发布流程中，
+manifest 的 `min_supported` 自动等于当前 Daemon 版本。`base_url` 是后端服务/API 根地址；
+`download_base_url` 是当前发布机器提供的 daemon 静态下载根地址，省略时默认使用
+`<base_url>/daemon`；`download_mirror_urls` 是可选镜像下载源列表，只写入安装脚本，
+发布脚本不会主动推送或校验这些镜像。
+其中 `source_ref` 是实际要构建的源码 ref，可以是分支、tag 或 commit SHA。GitHub
+`workflow_dispatch` 入口本身需要存在于仓库默认分支；发布脚本固定从默认分支触发 workflow，
+再把 `source_ref` 传给 workflow checkout。
 
 脚本行为：
 
-- 读取 `package.json.version`，要求版本中包含 `-`（预发布后缀）；
-- 检查工作区干净、当前分支已 push 且没有同名 Tag；
-- 创建并推送 Tag：`v<package.json.version>`（例如 `v0.2.0-beta.1`）；
-- 打印后续建议，包括如何发布带 dist-tag 的 npm 预发布包。
+- 从 `crates/awiki-deamon/Cargo.toml` 读取发布版本。
+- 校验 `Cargo.lock` 中的 `awiki-deamon` 版本一致。
+- 校验本次版本高于 Nginx daemon 静态目录中 `releases/manifest.json` 的 `latest`。
+- 使用配置中的 GitHub token 触发 GitHub Actions，从配置中的 `source_ref` 构建三平台 release 包。
+- 生成 `install.sh`、`releases/manifest.json` 和版本化 release 目录。
+- 发布到本机 Nginx daemon 静态目录 `/var/www/awiki-web/daemon`。
+- 通过 HTTP 校验 manifest、安装脚本和三个平台 tar 包可访问。
 
-当前版本的 CI release workflow 只对稳定 Tag 自动执行 `npm publish`。预发布包的 npm 发布需要你在本地手动执行：
+manifest 中的包条目只保存相对 `path` 和 `sha256`，不保存完整 URL。安装脚本会从
+`download_base_url` 和 `download_mirror_urls` 中选择可用且较快的下载源，下载包后用
+manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下一个源。Daemon 自升级也按
+持久化的 `download_base_url + package.path` 下载并校验。
 
-```bash
-NODE_AUTH_TOKEN=... npm publish --access public --tag <dist-tag>
-```
+脚本不会修改版本号、提交代码或推送代码。发布前需要先在
+`crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。
 
-```bash
-export GITEE_USERNAME=<你的 Gitee 登录用户名>
-export GITEE_TOKEN=<你的 Gitee 个人访问令牌>
-scripts/release/publish-gitee-release.sh vX.Y.Z-<pre>
-```
+## 5. 手工准备 daemon 下载目录
 
-预发布的一键操作顺序就是：
+一般发布不需要手工执行底层脚本。只有在本地调试 release 包或下载目录结构时，才直接使用下面两个脚本。
 
-1. 配置本地 release 环境和必要 token。
-2. 运行 `scripts/release/release-one-click.sh X.Y.Z-<pre> --channel beta --dist-tag <dist-tag>`。
-3. 等脚本完成 GitHub pre-release、Gitee mirror 和 npm 发布/校验。
-
-预发布的手动操作顺序是：
-
-1. 同步修改 `package.json.version`、`package.json.awikiCli.minSupportedVersion`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock` 并提交。
-2. 运行 `cargo run -p xtask -- check-version`。
-3. 运行 `scripts/release/release-tag-prerelease.sh <dist-tag>`。
-4. 等 GitHub Actions 完成 GitHub pre-release。
-5. 在本地运行 `NODE_AUTH_TOKEN=... npm publish --access public --tag <dist-tag>`。
-6. 如需同步 Gitee Release，再运行：
+先构建三个平台包：
 
 ```bash
-scripts/release/publish-gitee-release.sh vX.Y.Z-<pre>
+scripts/release/daemon/_build-artifact.sh \
+  --os linux \
+  --arch amd64 \
+  --target x86_64-unknown-linux-gnu \
+  --dist dist/daemon
+
+scripts/release/daemon/_build-artifact.sh \
+  --os darwin \
+  --arch arm64 \
+  --target aarch64-apple-darwin \
+  --dist dist/daemon
+
+scripts/release/daemon/_build-artifact.sh \
+  --os darwin \
+  --arch amd64 \
+  --target x86_64-apple-darwin \
+  --dist dist/daemon
 ```
 
-## 4. 回滚/撤回发布
-
-> 回滚操作具有破坏性，仅在明确确认为 “坏版本” 时使用。脚本默认只打印推荐命令，只有在显式开启时才真正执行。
-
-### 4.1 withdraw-release.sh 概览
-
-脚本路径：`scripts/release/withdraw-release.sh`
-
-用法：
+再生成安装脚本、manifest 和版本化下载目录：
 
 ```bash
-scripts/release/withdraw-release.sh <version>
+scripts/release/daemon/_stage-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --download-base-url https://example.com/daemon
 ```
 
-示例：
+参数含义：
+
+- `--download-base-url`：主静态下载根地址。安装脚本会优先从这里读取 `releases/manifest.json` 和 release tar 包。
+- `--download-mirror-url`：可重复传入的镜像静态下载根地址。生成的安装脚本会把主源和镜像源一起作为候选下载源。
+- `--base-url`：daemon 持久配置中的后端服务根地址，默认派生 user-service、message-service、mail-service、DID domain 和 ANP service。标准线上路由下可省略；如果下载域名和后端 API 域名不同，或者使用 `file://` / 本地路径测试，则必须显式传入。
+
+manifest 的包条目保存相对路径：
+
+```json
+{
+  "version": "1.2.3",
+  "os": "darwin",
+  "arch": "arm64",
+  "path": "releases/1.2.3/awiki-deamon-darwin-arm64.tar.gz",
+  "sha256": "..."
+}
+```
+
+标准域名手工 staging 使用：
 
 ```bash
-scripts/release/withdraw-release.sh 0.1.0
-scripts/release/withdraw-release.sh 0.2.0-beta.1
+scripts/release/daemon/_stage-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --download-base-url https://example.com/daemon
 ```
 
-脚本会：
+如果后续采用 CDN/API 分离部署，则同时传两个 URL，避免发布脚本按 `/daemon` 路由推导：
 
-- 计算 Tag 名：`v<version>`；
-- 检查本地和远端是否存在该 Tag；
-- 打印一组推荐的回滚命令，包括：
-  - 删除 Git Tag（本地 + origin）；
-  - 使用 GitHub CLI 草拟/删除 Release；
-  - 使用 `npm deprecate` 和/或 `npm dist-tag` 调整 npm 状态；
-- **只在设置环境变量 `AWIKI_CLI_WITHDRAW_EXECUTE=1` 时真正执行这些命令**，否则仅打印提示，方便人工审阅后复制执行。
+```bash
+scripts/release/daemon/_stage-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --base-url https://api.example.com \
+  --download-base-url https://cdn.example.com/daemon
+```
 
-典型撤回流程可以是：
+如果需要把多个下载源写入安装脚本：
 
-1. 先在命令行预览脚本给出的建议：
+```bash
+scripts/release/daemon/_stage-downloads.sh \
+  --version <version> \
+  --source-dir dist/daemon \
+  --output-dir dist/daemon-downloads \
+  --base-url https://api.example.com \
+  --download-base-url https://primary.example.com/daemon \
+  --download-mirror-url https://mirror-a.example.com/daemon \
+  --download-mirror-url https://mirror-b.example.com/daemon
+```
 
-   ```bash
-   scripts/release/withdraw-release.sh 0.1.0
-   ```
+输出目录结构：
 
-2. 确认无误后，显式开启执行开关：
+```text
+dist/daemon-downloads/
+  install.sh
+  releases/
+    manifest.json
+    <version>/
+      awiki-deamon-linux-amd64.tar.gz
+      awiki-deamon-darwin-arm64.tar.gz
+      awiki-deamon-darwin-amd64.tar.gz
+      checksums.txt
+```
 
-   ```bash
-   AWIKI_CLI_WITHDRAW_EXECUTE=1 scripts/release/withdraw-release.sh 0.1.0
-   ```
+把 `dist/daemon-downloads/` 发布到文件服务的 `/daemon` 路径后，安装入口就是：
 
-3. 根据实际情况适当调整 `npm deprecate` 文案和保留的 dist-tag。
+```bash
+curl -fsSL https://example.com/daemon/install.sh | sh -s -- --token <install-token>
+```
 
-## 5. 与版本策略/强制升级的关系
+如果当前阶段只做本地联调，也可以直接使用 tar 包或 `file://` 方式验证安装脚本，不需要公网 CDN。
 
-awiki-cli 内部通过 Rust `update` 模块和配置项：
+## 6. 同步 daemon 下载镜像
 
-- `update.disable_strict_version`
-- `update.metadata_cache_ttl_seconds`
-- 环境变量 `AWIKI_CLI_DISABLE_STRICT_VERSION` / `AWIKI_CLI_UPDATE_CACHE_TTL` / `AWIKI_CLI_UPDATE_CACHE_ONLY`
+镜像服务器不需要主发布服务器的 SSH 权限。每个镜像节点只需要能通过 HTTP(S) 访问主下载源，
+然后在镜像节点本机执行同步脚本：
 
-来决定：
+```bash
+cp scripts/release/daemon/sync-download-mirror.toml.template \
+  scripts/release/daemon/sync-download-mirror.toml
+```
 
-- 哪个版本是最新版本（latest）；
-- 哪个版本是最小支持版本（minSupportedVersion）；
-- 何时对过旧版本执行强制升级拦截。
+配置示例：
 
-一旦通过正式发布或预发布调整了 npm 上的 `version` 和 `awikiCli.minSupportedVersion`，客户端的版本策略会在缓存 TTL 过期或手动刷新后自动生效。坏版本被回滚或标记为 deprecated 后，也建议同步更新 `minSupportedVersion`，确保新版本的强制升级逻辑与发布状态一致。
+```toml
+source_base_url = "https://anpclaw.com/daemon"
+target_dir = "/var/www/awiki-web/daemon"
+keep_versions = "3"
+```
 
-在 CI、离线调试或 air-gapped 环境下，如果你希望 `awiki-cli upgrade` 只读取本地缓存、完全不访问 npm registry，可以临时设置 `AWIKI_CLI_UPDATE_CACHE_ONLY=1`。
+执行：
+
+```bash
+scripts/release/daemon/sync-download-mirror.sh
+```
+
+同步脚本不接受命令行参数，所有配置都来自 `sync-download-mirror.toml`。它会拉取主源的
+`install.sh`、`releases/manifest.json` 和 manifest 中列出的 release 包，逐个校验
+`sha256`，校验通过后再写入目标静态目录。`manifest.json` 最后替换，避免用户读到半同步状态。
+`keep_versions` 用于清理未被当前 manifest 引用的旧版本目录，当前 `latest`、`min_supported`
+和 manifest 中的 package 版本总会保留。
+
+## 7. 建议发布检查
+
+发布前至少执行：
+
+```bash
+cargo fmt --all --check
+cargo test -p awiki-cli --locked
+cargo test -p awiki-deamon --locked
+python3 scripts/test_daemon_release_contract.py
+```
+
+如果修改了 Flutter SDK：
+
+```bash
+scripts/flutter/build-sdk-native.sh
+```
+
+该脚本依次执行 bridge 生成一致性检查、Apple XCFramework 构建和 Android jniLibs 构建。只需要检查执行计划时可使用 `--dry-run`。
+
+如果只发布 daemon，可以至少执行：
+
+```bash
+cargo fmt --all --check
+cargo test -p awiki-deamon --locked
+python3 scripts/test_daemon_release_contract.py
+```
+
+## 8. 回滚
+
+文件服务发布采用目录和 manifest 管理。回滚时按实际发布目录操作：
+
+1. 保留旧版本 tar 包和 `checksums.txt`。
+2. 将 `releases/manifest.json` 指回上一个可用版本。
+3. 如已下发坏版本，删除或隔离坏版本目录，避免新客户端继续下载。
+4. 如版本策略依赖 `package.json.awikiCli.minSupportedVersion` 或服务端配置，同步回调到可用版本范围。
+
+回滚后重新执行安装命令，确认新安装拿到的是预期版本：
+
+```bash
+curl -fsSL https://example.com/daemon/install.sh | sh -s -- --token <install-token>
+awiki-deamon --version
+```

@@ -13,16 +13,24 @@ use crate::dto::{
     },
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
     identity::{
-        DartDefaultIdentityChange, DartHandleRegistrationResult, DartIdentitySummary,
-        DartRecoverHandleResult,
+        DartDaemonSubkeyAuthorizationRevokeResult, DartDaemonSubkeyPrivatePackage,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
+        DartIdentitySecretStorageBackend, DartIdentitySummary, DartIdentityVaultMigrationReport,
+        DartIdentityVaultStatus, DartIdentityVaultVerificationReport, DartRecoverHandleResult,
     },
     message::{
-        DartConversation, DartConversationPage, DartMarkReadResult, DartMessage,
-        DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
-        DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
+        DartConversation, DartConversationAlias, DartConversationAliasSource,
+        DartConversationIdentity, DartConversationIdentityScope, DartConversationListSnapshot,
+        DartConversationMigrationState, DartConversationPage, DartConversationSnapshotItem,
+        DartConversationSnapshotMessage, DartConversationSnapshotMessageBody,
+        DartConversationStorageThreadRef, DartConversationStorePatch, DartMarkReadResult,
+        DartMarkThreadReadResult, DartMessage, DartMessageBodyView, DartMessageDirection,
+        DartMessageMetadata, DartMessageMetadataAttribute, DartMessagePage, DartReadWatermark,
+        DartSendMessageResult, DartSyncDeltaResult, DartSyncThreadAfterResult,
+        DartThreadMessageStorePatch,
     },
     profile::DartUserProfile,
-    realtime::{DartRealtimeEvent, DartRealtimeStatus},
+    realtime::{DartRealtimeEvent, DartRealtimeStatus, DartRealtimeSyncHint},
     secure::{
         DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
         DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
@@ -50,6 +58,71 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::IdentitySecretStoragePolicy>
+    for crate::dto::config::DartIdentitySecretStoragePolicy
+{
+    fn from(value: im_core::IdentitySecretStoragePolicy) -> Self {
+        match value {
+            im_core::IdentitySecretStoragePolicy::FileCompat => Self::FileCompat,
+            im_core::IdentitySecretStoragePolicy::VaultPreferred => Self::VaultPreferred,
+            im_core::IdentitySecretStoragePolicy::VaultRequired => Self::VaultRequired,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentitySecretStorageBackend> for DartIdentitySecretStorageBackend {
+    fn from(value: im_core::identity::IdentitySecretStorageBackend) -> Self {
+        match value {
+            im_core::identity::IdentitySecretStorageBackend::FileCompat => Self::FileCompat,
+            im_core::identity::IdentitySecretStorageBackend::Vault => Self::Vault,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityVaultStatus> for DartIdentityVaultStatus {
+    fn from(value: im_core::identity::IdentityVaultStatus) -> Self {
+        Self {
+            identity: value.identity.into(),
+            storage_policy: value.storage_policy.into(),
+            selected_backend: value.selected_backend.into(),
+            vault_available: value.vault_available,
+            vault_metadata_present: value.vault_metadata_present,
+            vault_metadata_verified: value.vault_metadata_verified,
+            workspace_id: value.workspace_id,
+            device_id: value.device_id,
+            plaintext_compat_retained: value.plaintext_compat_retained,
+            missing: value.missing,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityVaultMigrationReport> for DartIdentityVaultMigrationReport {
+    fn from(value: im_core::identity::IdentityVaultMigrationReport) -> Self {
+        Self {
+            identity: value.identity.into(),
+            status: value.status.into(),
+            migrated: value.migrated,
+            verified: value.verified,
+            plaintext_compat_retained: value.plaintext_compat_retained,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::IdentityVaultVerificationReport>
+    for DartIdentityVaultVerificationReport
+{
+    fn from(value: im_core::identity::IdentityVaultVerificationReport) -> Self {
+        Self {
+            identity: value.identity.into(),
+            status: value.status.into(),
+            verified: value.verified,
+            warnings: value.warnings,
         }
     }
 }
@@ -209,6 +282,45 @@ impl From<im_core::identity::DefaultIdentityChange> for DartDefaultIdentityChang
     }
 }
 
+impl From<im_core::identity::DeleteLocalIdentityResult> for DartDeleteLocalIdentityResult {
+    fn from(value: im_core::identity::DeleteLocalIdentityResult) -> Self {
+        Self {
+            deleted: value.deleted.into(),
+            was_default: value.was_default,
+            next_default: value.next_default.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::DaemonSubkeyPrivatePackage> for DartDaemonSubkeyPrivatePackage {
+    fn from(value: im_core::identity::DaemonSubkeyPrivatePackage) -> Self {
+        Self {
+            schema: value.schema,
+            user_did: value.user_did.as_str().to_string(),
+            verification_method: value.verification_method,
+            key_type: value.key_type,
+            key_algorithm: value.key_algorithm,
+            public_key_multibase: value.public_key_multibase,
+            private_key_encoding: value.private_key_encoding,
+            private_key_pem: value.private_key_pem,
+            private_key_multibase: value.private_key_multibase,
+        }
+    }
+}
+
+impl From<im_core::identity::DaemonSubkeyAuthorizationRevokeResult>
+    for DartDaemonSubkeyAuthorizationRevokeResult
+{
+    fn from(value: im_core::identity::DaemonSubkeyAuthorizationRevokeResult) -> Self {
+        Self {
+            user_did: value.user_did.as_str().to_string(),
+            verification_method: value.verification_method,
+            updated: value.updated,
+        }
+    }
+}
+
 impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistrationResult {
     fn from(value: im_core::identity::HandleRegistrationResult) -> Self {
         Self {
@@ -310,6 +422,7 @@ impl From<im_core::auth::SessionBundle> for DartSessionBundle {
             scope: value.scope.into(),
             expires_at: value.expires_at,
             refreshed: value.refreshed,
+            bearer_token: value.bearer_token,
         }
     }
 }
@@ -321,21 +434,30 @@ impl From<im_core::auth::SessionUpdate> for DartSessionUpdate {
             previous_expires_at: value.previous_expires_at,
             new_expires_at: value.new_expires_at,
             refreshed: value.refreshed,
+            bearer_token: value.bearer_token,
         }
     }
 }
 
 impl From<im_core::identity::Profile> for DartUserProfile {
     fn from(value: im_core::identity::Profile) -> Self {
+        let full_handle = value.handle.map(|handle| handle.as_str().to_string());
         Self {
             subject: value.subject.as_str().to_string(),
-            handle: value.handle.map(|handle| handle.as_str().to_string()),
+            handle: full_handle.clone(),
+            full_handle,
             display_name: value.display_name,
             bio: value.bio,
+            description: value.description,
             tags: value.tags,
             markdown: value.markdown,
+            avatar_uri: value.avatar_uri,
             avatar_url: value.avatar_url,
+            profile_uri: value.profile_uri,
+            subject_type: value.subject_type,
             updated_at: value.updated_at,
+            version_id: value.version_id,
+            ttl: value.ttl,
         }
     }
 }
@@ -353,6 +475,22 @@ impl From<im_core::directory::DirectoryResolution> for DartDirectoryResolution {
             did: value.did.as_str().to_string(),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
             profile: value.profile.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::directory::DisplayProfile> for crate::dto::directory::DartDisplayProfile {
+    fn from(value: im_core::directory::DisplayProfile) -> Self {
+        Self {
+            did: value.did.map(|did| did.as_str().to_string()),
+            handle: value.handle.map(|handle| handle.as_str().to_string()),
+            display_name: value.display_name,
+            avatar_uri: value.avatar_uri,
+            avatar_url: value.avatar_url,
+            profile_uri: value.profile_uri,
+            subject_type: value.subject_type,
+            cache_hit: value.cache_hit,
             warnings: value.warnings,
         }
     }
@@ -384,11 +522,19 @@ impl From<im_core::messages::MessageBodyView> for DartMessageBodyView {
             im_core::messages::MessageBodyView::Text { text, kind } => Self {
                 text: Some(text),
                 kind: Some(message_kind_to_string(kind)),
+                payload_json: None,
+                unsupported_content_type: None,
+            },
+            im_core::messages::MessageBodyView::Payload { payload } => Self {
+                text: None,
+                kind: Some("payload".to_string()),
+                payload_json: Some(payload.to_string()),
                 unsupported_content_type: None,
             },
             im_core::messages::MessageBodyView::Unsupported { content_type } => Self {
                 text: None,
                 kind: None,
+                payload_json: None,
                 unsupported_content_type: content_type,
             },
         }
@@ -416,13 +562,86 @@ impl From<im_core::messages::MessageMetadata> for DartMessageMetadata {
                 .map(|plan| message_retry_action_to_string(plan.action)),
             server_sequence: value.server_sequence,
             content_type: value.content_type,
+            conversation_identity: value.conversation_identity.map(Into::into),
             attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationIdentity> for DartConversationIdentity {
+    fn from(value: im_core::messages::ConversationIdentity) -> Self {
+        Self {
+            conversation_id: value.conversation_id,
+            canonical_thread_kind: value.canonical_thread_kind,
+            canonical_thread_id: value.canonical_thread_id,
+            storage_thread_ref: value.storage_thread_ref.into(),
+            aliases: value.aliases.into_iter().map(Into::into).collect(),
+            identity_scope: value.identity_scope.into(),
+            migration_state: value.migration_state.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationStorageThreadRef> for DartConversationStorageThreadRef {
+    fn from(value: im_core::messages::ConversationStorageThreadRef) -> Self {
+        Self {
+            kind: value.kind,
+            id: value.id,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationAlias> for DartConversationAlias {
+    fn from(value: im_core::messages::ConversationAlias) -> Self {
+        Self {
+            kind: value.kind,
+            id: value.id,
+            source: value.source.into(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationAliasSource> for DartConversationAliasSource {
+    fn from(value: im_core::messages::ConversationAliasSource) -> Self {
+        match value {
+            im_core::messages::ConversationAliasSource::LegacyDirectDid => Self::LegacyDirectDid,
+            im_core::messages::ConversationAliasSource::OldFlutterSortedDirect => {
+                Self::OldFlutterSortedDirect
+            }
+            im_core::messages::ConversationAliasSource::PeerScopeStorage => Self::PeerScopeStorage,
+            im_core::messages::ConversationAliasSource::GroupStorage => Self::GroupStorage,
+            im_core::messages::ConversationAliasSource::ThreadStorage => Self::ThreadStorage,
+            im_core::messages::ConversationAliasSource::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationIdentityScope> for DartConversationIdentityScope {
+    fn from(value: im_core::messages::ConversationIdentityScope) -> Self {
+        match value {
+            im_core::messages::ConversationIdentityScope::Direct => Self::Direct,
+            im_core::messages::ConversationIdentityScope::Group => Self::Group,
+            im_core::messages::ConversationIdentityScope::Thread => Self::Thread,
+            im_core::messages::ConversationIdentityScope::Mail => Self::Mail,
+            im_core::messages::ConversationIdentityScope::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationMigrationState> for DartConversationMigrationState {
+    fn from(value: im_core::messages::ConversationMigrationState) -> Self {
+        match value {
+            im_core::messages::ConversationMigrationState::Canonical => Self::Canonical,
+            im_core::messages::ConversationMigrationState::AliasResolved => Self::AliasResolved,
+            im_core::messages::ConversationMigrationState::LegacyInput => Self::LegacyInput,
+            im_core::messages::ConversationMigrationState::Unknown => Self::Unknown,
         }
     }
 }
 
 fn message_send_state_to_string(value: im_core::messages::MessageSendStateKind) -> String {
     match value {
+        im_core::messages::MessageSendStateKind::Pending => "pending".to_string(),
         im_core::messages::MessageSendStateKind::Accepted => "accepted".to_string(),
         im_core::messages::MessageSendStateKind::Sent => "sent".to_string(),
         im_core::messages::MessageSendStateKind::StoredLocally => "stored_locally".to_string(),
@@ -435,6 +654,12 @@ fn message_retry_action_to_string(value: im_core::messages::MessageRetryAction) 
         im_core::messages::MessageRetryAction::None => "none".to_string(),
         im_core::messages::MessageRetryAction::RetryDirectText => "retry_direct_text".to_string(),
         im_core::messages::MessageRetryAction::RetryGroupText => "retry_group_text".to_string(),
+        im_core::messages::MessageRetryAction::RetryDirectPayload => {
+            "retry_direct_payload".to_string()
+        }
+        im_core::messages::MessageRetryAction::RetryGroupPayload => {
+            "retry_group_payload".to_string()
+        }
     }
 }
 
@@ -507,6 +732,7 @@ impl From<im_core::messages::Conversation> for DartConversation {
         Self {
             thread_kind,
             thread_id,
+            conversation_identity: value.conversation_identity.map(Into::into),
             title: value.title,
             participants: value
                 .participants
@@ -515,6 +741,10 @@ impl From<im_core::messages::Conversation> for DartConversation {
                 .collect(),
             last_message: value.last_message.map(Into::into),
             unread_count: value.unread_count,
+            unread_mention_count: value.unread_mention_count,
+            first_unread_mention_message_id: value
+                .first_unread_mention_message_id
+                .map(|message_id| message_id.as_str().to_string()),
             message_count: value.message_count,
             last_message_at: value.last_message_at,
         }
@@ -527,6 +757,233 @@ impl From<im_core::ids::Page<im_core::messages::Conversation>> for DartConversat
             items: value.items.into_iter().map(Into::into).collect(),
             next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_string()),
             has_more: value.has_more,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationListSnapshot> for DartConversationListSnapshot {
+    fn from(value: im_core::messages::ConversationListSnapshot) -> Self {
+        Self {
+            format_version: value.format_version,
+            im_schema_version: value.im_schema_version,
+            owner_identity_id: value.owner_identity_id,
+            owner_did: value.owner_did,
+            generated_at_ms: value.generated_at_ms,
+            summary_version: value.summary_version,
+            unread_total: value.unread_total,
+            items: value.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationStorePatch> for DartConversationStorePatch {
+    fn from(value: im_core::messages::ConversationStorePatch) -> Self {
+        match value {
+            im_core::messages::ConversationStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                items,
+            } => DartConversationStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                items: items.into_iter().map(Into::into).collect(),
+            },
+            im_core::messages::ConversationStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                item,
+                index,
+            } => DartConversationStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                item: item.into(),
+                index,
+            },
+            im_core::messages::ConversationStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+                conversation_identity,
+            } => DartConversationStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
+            },
+            im_core::messages::ConversationStorePatch::Reorder {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+                conversation_identity,
+                index,
+            } => DartConversationStorePatch::Reorder {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                thread_kind,
+                thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
+                index,
+            },
+            im_core::messages::ConversationStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                reason,
+            } => DartConversationStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                unread_total,
+                reason,
+            },
+        }
+    }
+}
+
+impl From<im_core::messages::ThreadMessageStorePatch> for DartThreadMessageStorePatch {
+    fn from(value: im_core::messages::ThreadMessageStorePatch) -> Self {
+        match value {
+            im_core::messages::ThreadMessageStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity,
+                items,
+            } => DartThreadMessageStorePatch::Reset {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
+                items: items.into_iter().map(Into::into).collect(),
+            },
+            im_core::messages::ThreadMessageStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity,
+                message,
+                index,
+            } => DartThreadMessageStorePatch::Upsert {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
+                message: message.into(),
+                index,
+            },
+            im_core::messages::ThreadMessageStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity,
+                message_id,
+            } => DartThreadMessageStorePatch::Remove {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
+                message_id,
+            },
+            im_core::messages::ThreadMessageStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity,
+                reason,
+            } => DartThreadMessageStorePatch::RepairRequired {
+                owner_identity_id,
+                owner_did,
+                version,
+                thread_kind,
+                thread_id,
+                conversation_identity: conversation_identity.map(Into::into),
+                reason,
+            },
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationSnapshotItem> for DartConversationSnapshotItem {
+    fn from(value: im_core::messages::ConversationSnapshotItem) -> Self {
+        Self {
+            thread_kind: value.thread_kind,
+            thread_id: value.thread_id,
+            conversation_identity: value.conversation_identity.map(Into::into),
+            participants: value.participants,
+            last_message: value.last_message.map(Into::into),
+            unread_count: value.unread_count,
+            unread_mention_count: value.unread_mention_count,
+            first_unread_mention_message_id: value.first_unread_mention_message_id,
+            message_count: value.message_count,
+            last_message_at: value.last_message_at,
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationSnapshotMessage> for DartConversationSnapshotMessage {
+    fn from(value: im_core::messages::ConversationSnapshotMessage) -> Self {
+        Self {
+            id: value.id,
+            thread_kind: value.thread_kind,
+            thread_id: value.thread_id,
+            conversation_identity: value.conversation_identity.map(Into::into),
+            direction: value.direction,
+            sender: value.sender,
+            receiver: value.receiver,
+            group: value.group,
+            body: value.body.into(),
+            sent_at: value.sent_at,
+            received_at: value.received_at,
+            server_sequence: value.server_sequence,
+            content_type: value.content_type,
+            attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::messages::ConversationSnapshotMessageBody>
+    for DartConversationSnapshotMessageBody
+{
+    fn from(value: im_core::messages::ConversationSnapshotMessageBody) -> Self {
+        Self {
+            text: value.text,
+            kind: value.kind,
+            payload_json: value.payload_json,
+            unsupported_content_type: value.unsupported_content_type,
         }
     }
 }
@@ -551,6 +1008,8 @@ impl From<im_core::attachments::UploadedAttachment> for DartUploadedAttachment {
             size: value.size,
             digest_b64u: value.digest_b64u,
             object_uri: value.object_uri,
+            object_encryption_mode: value.object_encryption_mode,
+            plaintext_size_bytes: value.plaintext_size_bytes,
         }
     }
 }
@@ -562,6 +1021,8 @@ impl From<im_core::attachments::AttachmentSendResult> for DartAttachmentSendResu
             target_kind: value.target_kind,
             target_did: value.target_did,
             attachment: value.attachment.into(),
+            // `AttachmentSendResult.manifest` is already redacted by im-core for
+            // E2EE attachments; keep exposing only that public projection.
             manifest_json: value.manifest.to_string(),
         }
     }
@@ -818,12 +1279,69 @@ impl From<im_core::messages::MarkReadResult> for DartMarkReadResult {
     }
 }
 
+impl From<im_core::messages::MarkThreadReadResult> for DartMarkThreadReadResult {
+    fn from(value: im_core::messages::MarkThreadReadResult) -> Self {
+        Self {
+            updated_count: value.updated_count,
+            remote_acknowledged: value.remote_acknowledged,
+            partial: value.partial,
+            fallback_used: value.fallback_used,
+            pending_remote_ack: value.pending_remote_ack,
+            effective_watermark: value.effective_watermark.map(Into::into),
+            legacy_message_ids: value
+                .legacy_message_ids
+                .into_iter()
+                .map(|id| id.as_str().to_string())
+                .collect(),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::ReadWatermark> for DartReadWatermark {
+    fn from(value: im_core::messages::ReadWatermark) -> Self {
+        Self {
+            last_read_message_id: value.last_read_message_id.map(|id| id.as_str().to_string()),
+            last_read_thread_seq: value.last_read_thread_seq,
+            read_at: value.read_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+impl From<im_core::messages::SyncDeltaResult> for DartSyncDeltaResult {
+    fn from(value: im_core::messages::SyncDeltaResult) -> Self {
+        Self {
+            events_applied: value.events_applied,
+            pages_fetched: value.pages_fetched,
+            last_applied_event_seq: value.last_applied_event_seq,
+            has_more: value.has_more,
+            snapshot_required: value.snapshot_required,
+            retention_floor_event_seq: value.retention_floor_event_seq,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::messages::SyncThreadAfterResult> for DartSyncThreadAfterResult {
+    fn from(value: im_core::messages::SyncThreadAfterResult) -> Self {
+        Self {
+            messages: value.messages.into_iter().map(Into::into).collect(),
+            next_after_server_seq: value.next_after_server_seq,
+            has_more: value.has_more,
+            warnings: value.warnings,
+        }
+    }
+}
+
 impl From<im_core::groups::GroupSummary> for DartGroupSummary {
     fn from(value: im_core::groups::GroupSummary) -> Self {
         Self {
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
+            display_name: value.display_name,
+            avatar_uri: value.avatar_uri,
+            my_role: value.my_role,
             membership_status: value.membership_status,
             member_count: value.member_count,
             last_message_at: value.last_message_at,
@@ -837,7 +1355,9 @@ impl From<im_core::groups::GroupSnapshot> for DartGroupSnapshot {
             id: value.id,
             did: value.did.as_str().to_string(),
             name: value.name,
+            display_name: value.display_name,
             description: value.description,
+            avatar_uri: value.avatar_uri,
             my_role: value.my_role,
             membership_status: value.membership_status,
             member_count: value.member_count,
@@ -854,6 +1374,7 @@ impl From<im_core::groups::GroupMember> for DartGroupMember {
             role: value.role,
             status: value.status,
             joined_at: value.joined_at,
+            subject_type: value.subject_type,
         }
     }
 }
@@ -908,6 +1429,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
         host_kind: None,
         content_type: None,
         notification_type: None,
+        sync: None,
     };
 
     match value {
@@ -922,6 +1444,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             let mut out = empty();
             out.kind = "message_received".to_string();
             out.message = Some(event.message.into());
+            out.sync = event.sync.map(Into::into);
             out
         }
         ImEvent::MessageUpdated(event) => {
@@ -939,6 +1462,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
                 }
                 .to_string(),
             );
+            out.sync = event.sync.map(Into::into);
             out
         }
         ImEvent::GroupUpdated(event) => {
@@ -956,6 +1480,7 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
                 }
                 .to_string(),
             );
+            out.sync = event.sync.map(Into::into);
             out
         }
         ImEvent::LocalNotification(event) => {
@@ -995,7 +1520,20 @@ pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartR
             out.reason = Some(event.reason);
             out.content_type = event.content_type;
             out.notification_type = event.notification_type;
+            out.sync = event.sync.map(Into::into);
             out
+        }
+    }
+}
+
+impl From<im_core::realtime::RealtimeSyncHint> for DartRealtimeSyncHint {
+    fn from(value: im_core::realtime::RealtimeSyncHint) -> Self {
+        Self {
+            event_id: value.event_id,
+            event_seq: value.event_seq,
+            event_type: value.event_type,
+            sync_dirty: value.sync_dirty,
+            gap_detected: value.gap_detected,
         }
     }
 }
@@ -1034,7 +1572,7 @@ mod tests {
         realtime::{
             ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
             HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent,
-            MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState,
+            MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState, RealtimeSyncHint,
             UnknownNotificationEvent,
         },
     };
@@ -1068,6 +1606,7 @@ mod tests {
             },
             attachment_summary: None,
             download_action: None,
+            sync: None,
             warnings: Vec::new(),
         }));
         assert_eq!(event.kind, "message_received");
@@ -1082,6 +1621,14 @@ mod tests {
         let group = realtime_event_to_dart(ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:example:group").unwrap(),
             update_kind: GroupUpdateKind::MessageAdded,
+            event_type: None,
+            group_event_seq: None,
+            group_state_version: None,
+            actor_did: None,
+            subject_did: None,
+            membership_status: None,
+            changed_at: None,
+            sync: None,
         }));
         assert_eq!(group.kind, "group_updated");
         assert_eq!(group.group.as_deref(), Some("did:example:group"));
@@ -1091,6 +1638,7 @@ mod tests {
             message_id: MessageId::parse("msg-dart-map-2").unwrap(),
             thread: ThreadRef::Thread(ThreadId::parse("thread-1").unwrap()),
             update_kind: MessageUpdateKind::DeliveryStateChanged,
+            sync: None,
         }));
         assert_eq!(message_update.kind, "message_updated");
         assert_eq!(message_update.message_id.as_deref(), Some("msg-dart-map-2"));
@@ -1128,10 +1676,37 @@ mod tests {
                 content_type: Some("application/json".to_string()),
                 notification_type: Some("custom.event".to_string()),
                 reason: "unsupported notification".to_string(),
+                sync: None,
             }));
         assert_eq!(unknown.kind, "unknown_notification");
         assert_eq!(unknown.content_type.as_deref(), Some("application/json"));
         assert_eq!(unknown.notification_type.as_deref(), Some("custom.event"));
         assert_eq!(unknown.reason.as_deref(), Some("unsupported notification"));
+    }
+
+    #[test]
+    fn realtime_event_mapping_preserves_sync_hint_without_checkpoint_control() {
+        let sync = RealtimeSyncHint {
+            event_id: Some("sev-1".to_string()),
+            event_seq: Some("42".to_string()),
+            event_type: Some("message.created".to_string()),
+            sync_dirty: true,
+            gap_detected: true,
+        };
+
+        let event =
+            realtime_event_to_dart(ImEvent::UnknownNotification(UnknownNotificationEvent {
+                content_type: Some("application/json".to_string()),
+                notification_type: Some("direct.incoming".to_string()),
+                reason: "unsupported notification".to_string(),
+                sync: Some(sync),
+            }));
+
+        let hint = event.sync.expect("sync hint is preserved");
+        assert_eq!(hint.event_id.as_deref(), Some("sev-1"));
+        assert_eq!(hint.event_seq.as_deref(), Some("42"));
+        assert_eq!(hint.event_type.as_deref(), Some("message.created"));
+        assert!(hint.sync_dirty);
+        assert!(hint.gap_detected);
     }
 }

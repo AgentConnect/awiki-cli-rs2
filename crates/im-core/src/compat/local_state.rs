@@ -122,6 +122,14 @@ pub struct ConversationRecord {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerInvariantViolation {
+    pub table: String,
+    pub invariant: String,
+    pub row_count: i64,
+}
+
+#[cfg(feature = "sqlite")]
 #[doc(hidden)]
 pub fn ensure_schema(connection: &rusqlite::Connection) -> crate::ImResult<()> {
     crate::internal::local_state::schema::ensure_schema(connection)
@@ -131,6 +139,49 @@ pub fn ensure_schema(connection: &rusqlite::Connection) -> crate::ImResult<()> {
 #[doc(hidden)]
 pub fn current_schema_version(connection: &rusqlite::Connection) -> crate::ImResult<i64> {
     crate::internal::local_state::schema::current_schema_version(connection)
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn ensure_identity_owned_schema(connection: &rusqlite::Connection) -> crate::ImResult<()> {
+    crate::internal::local_state::schema::ensure_schema(connection)
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn identity_owned_owner_invariants(
+    connection: &rusqlite::Connection,
+) -> crate::ImResult<Vec<OwnerInvariantViolation>> {
+    crate::internal::local_state::schema::identity_owned_owner_invariants(
+        connection,
+        crate::internal::local_state::schema::IdentityOwnedSchemaTableMode::Final,
+    )
+    .map(|violations| {
+        violations
+            .into_iter()
+            .map(|violation| OwnerInvariantViolation {
+                table: violation.table.to_string(),
+                invariant: violation.invariant.to_string(),
+                row_count: violation.row_count,
+            })
+            .collect()
+    })
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn record_identity_did_history_transition<S: AsRef<str>>(
+    connection: &mut rusqlite::Connection,
+    owner_identity_id: &str,
+    current_did: &str,
+    previous_dids: &[S],
+) -> crate::ImResult<BTreeMap<String, i64>> {
+    crate::internal::local_state::schema::record_identity_did_history_transition(
+        connection,
+        owner_identity_id,
+        current_did,
+        previous_dids,
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -171,6 +222,7 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             msg_id: record.msg_id,
             owner_identity_id: record.owner_identity_id,
             owner_did: record.owner_did,
+            conversation_id: String::new(),
             thread_id: record.thread_id,
             direction: record.direction,
             sender_did: record.sender_did,
@@ -187,6 +239,7 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             is_read: record.is_read,
             sender_name: record.sender_name,
             metadata: record.metadata,
+            mentions_current_user: false,
             credential_name: record.credential_name,
         }
     }

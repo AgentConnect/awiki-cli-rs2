@@ -3,6 +3,7 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import '../dto/config.dart';
 import '../dto/error.dart';
 import '../dto/identity.dart';
 import '../frb_generated.dart';
@@ -22,6 +23,63 @@ Future<DartIdentitySummary> resolveIdentity({
   required ArcDartImCore core,
   required DartIdentitySelector selector,
 }) => RustLib.instance.api.crateApiIdentityResolveIdentity(
+  core: core,
+  selector: selector,
+);
+
+Future<DartIdentityVaultStatus> identityVaultStatus({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityIdentityVaultStatus(
+  core: core,
+  selector: selector,
+);
+
+Future<DartIdentityVaultMigrationReport> migrateIdentityVault({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityMigrateIdentityVault(
+  core: core,
+  selector: selector,
+);
+
+Future<DartIdentityVaultVerificationReport> verifyIdentityVault({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityVerifyIdentityVault(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDeleteLocalIdentityResult> deleteLocalIdentity({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityDeleteLocalIdentity(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDaemonSubkeyPrivatePackage> loadDaemonSubkeyPackage({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityLoadDaemonSubkeyPackage(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDaemonSubkeyPrivatePackage> ensureDaemonSubkeyPackage({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityEnsureDaemonSubkeyPackage(
+  core: core,
+  selector: selector,
+);
+
+Future<DartDaemonSubkeyAuthorizationRevokeResult>
+revokeDaemonSubkeyAuthorization({
+  required ArcDartImCore core,
+  required DartIdentitySelector selector,
+}) => RustLib.instance.api.crateApiIdentityRevokeDaemonSubkeyAuthorization(
   core: core,
   selector: selector,
 );

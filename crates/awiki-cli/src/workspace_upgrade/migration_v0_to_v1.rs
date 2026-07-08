@@ -161,22 +161,45 @@ pub fn apply_workspace_v0_to_v1_legacy_imports_optional(
     let mut imported_legacy = identity::ImportResult::default();
 
     if !detection.has_workspace && detection.has_legacy {
-        let manager = identity::Manager::new(context.resolved.paths.clone());
-        let legacy_scan = manager.scan_legacy()?;
-        if legacy_scan.has_legacy {
-            imported_legacy = manager.import_all_legacy()?;
-        }
-
-        let legacy_db = store::scan_legacy_database(&context.resolved.paths)?;
-        if legacy_db.exists {
-            let mut db = store::open(&context.resolved.paths)?;
-            store::ensure_schema(&db)?;
-            let owners = legacy_owner_lookup(&manager);
-            store::import_legacy_database(&mut db, &context.resolved.paths, &owners)?;
-        }
+        imported_legacy = import_legacy_identities(context)?;
+        import_legacy_sqlite(context)?;
     }
 
     Ok(imported_legacy)
+}
+
+pub(crate) fn import_legacy_identities(
+    context: &Context,
+) -> Result<identity::ImportResult, MigrationError> {
+    let manager = identity::Manager::new(context.resolved.paths.clone());
+    let legacy_scan = manager.scan_legacy()?;
+    if legacy_scan.has_legacy {
+        return manager.import_all_legacy().map_err(MigrationError::from);
+    }
+    Ok(identity::ImportResult::default())
+}
+
+pub(crate) fn import_legacy_sqlite(context: &Context) -> Result<(), MigrationError> {
+    import_legacy_sqlite_with_historical_dids(context, std::iter::empty::<(String, String)>())
+}
+
+pub(crate) fn import_legacy_sqlite_with_historical_dids<I>(
+    context: &Context,
+    historical_dids: I,
+) -> Result<(), MigrationError>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let legacy_db = store::scan_legacy_database(&context.resolved.paths)?;
+    if legacy_db.exists {
+        let manager = identity::Manager::new(context.resolved.paths.clone());
+        let mut db = store::open(&context.resolved.paths)?;
+        store::ensure_schema(&db)?;
+        let mut owners = legacy_owner_lookup(&manager);
+        add_historical_owner_did_aliases(&manager, &mut owners, historical_dids);
+        store::import_legacy_database(&mut db, &context.resolved.paths, &owners)?;
+    }
+    Ok(())
 }
 
 pub fn apply_workspace_v0_to_v1_local_state(
@@ -347,8 +370,40 @@ fn legacy_owner_lookup(manager: &identity::Manager) -> store::LegacyOwnerLookup 
         .list()
         .unwrap_or_default()
         .into_iter()
-        .map(|summary| (summary.identity_name, summary.did, summary.is_default));
-    store::LegacyOwnerLookup::from_entries(entries)
+        .map(|summary| {
+            (
+                summary.unique_id,
+                summary.identity_name,
+                summary.did,
+                summary.is_default,
+            )
+        });
+    store::LegacyOwnerLookup::from_identity_entries(entries)
+}
+
+fn add_historical_owner_did_aliases<I>(
+    manager: &identity::Manager,
+    owners: &mut store::LegacyOwnerLookup,
+    historical_dids: I,
+) where
+    I: IntoIterator<Item = (String, String)>,
+{
+    for (identity_name, legacy_did) in historical_dids {
+        let identity_name = identity_name.trim();
+        let legacy_did = legacy_did.trim();
+        if identity_name.is_empty() || legacy_did.is_empty() {
+            continue;
+        }
+        let Ok(summary) = manager.load(identity_name) else {
+            continue;
+        };
+        owners.add_owner_did_alias(
+            legacy_did,
+            &summary.unique_id,
+            &summary.did,
+            &summary.identity_name,
+        );
+    }
 }
 
 #[cfg(test)]

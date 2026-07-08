@@ -4,6 +4,8 @@ use serde_json::Value;
 pub(crate) enum MessageRetryTarget {
     DirectText,
     GroupText,
+    DirectPayload,
+    GroupPayload,
 }
 
 pub(crate) fn send_state_from_delivery(
@@ -51,6 +53,7 @@ pub(crate) fn send_state_from_delivery(
 
 pub(crate) fn send_state_label(state: &crate::messages::MessageSendStateKind) -> &'static str {
     match state {
+        crate::messages::MessageSendStateKind::Pending => "pending",
         crate::messages::MessageSendStateKind::Accepted => "accepted",
         crate::messages::MessageSendStateKind::Sent => "sent",
         crate::messages::MessageSendStateKind::StoredLocally => "stored_locally",
@@ -173,6 +176,10 @@ pub(crate) fn retry_plan_for_state(
     let action = match retry_target? {
         MessageRetryTarget::DirectText => crate::messages::MessageRetryAction::RetryDirectText,
         MessageRetryTarget::GroupText => crate::messages::MessageRetryAction::RetryGroupText,
+        MessageRetryTarget::DirectPayload => {
+            crate::messages::MessageRetryAction::RetryDirectPayload
+        }
+        MessageRetryTarget::GroupPayload => crate::messages::MessageRetryAction::RetryGroupPayload,
     };
     Some(crate::messages::MessageRetryPlan {
         retryable: true,
@@ -225,12 +232,19 @@ fn retry_action_from_str(value: &str) -> Option<crate::messages::MessageRetryAct
         "retry_group_text" | "group_text" => {
             Some(crate::messages::MessageRetryAction::RetryGroupText)
         }
+        "retry_direct_payload" | "direct_payload" => {
+            Some(crate::messages::MessageRetryAction::RetryDirectPayload)
+        }
+        "retry_group_payload" | "group_payload" => {
+            Some(crate::messages::MessageRetryAction::RetryGroupPayload)
+        }
         _ => None,
     }
 }
 
 fn send_state_kind_from_str(value: &str) -> Option<crate::messages::MessageSendStateKind> {
     match normalize_state(value).as_str() {
+        "pending" => Some(crate::messages::MessageSendStateKind::Pending),
         "accepted" => Some(crate::messages::MessageSendStateKind::Accepted),
         "sent" => Some(crate::messages::MessageSendStateKind::Sent),
         "stored_locally" => Some(crate::messages::MessageSendStateKind::StoredLocally),

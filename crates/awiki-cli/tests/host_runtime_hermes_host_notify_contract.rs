@@ -325,6 +325,8 @@ fn resolved_for_config(path: &std::path::Path) -> Resolved {
         output_format: String::new(),
         no_color: false,
         service_base_url: String::new(),
+        user_service_endpoint: String::new(),
+        message_service_endpoint: String::new(),
         did_domain: String::new(),
         anp_service_endpoint: String::new(),
         anp_service_did: String::new(),

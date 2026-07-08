@@ -1,7 +1,10 @@
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+pub(crate) const SCHEMA_VERSION: i64 = 22;
+pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
+const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -50,6 +53,7 @@ CREATE TABLE IF NOT EXISTS messages (
     is_read         INTEGER DEFAULT 0,
     sender_name     TEXT,
     metadata        TEXT,
+    mentions_current_user INTEGER NOT NULL DEFAULT 0,
     credential_name TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (msg_id, owner_did)
 );
@@ -197,6 +201,7 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_sessions (
     session_id        TEXT NOT NULL,
     state_blob        BLOB NOT NULL,
     metadata_json     TEXT,
+    revision          INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     PRIMARY KEY (owner_identity_id, peer_did),
@@ -230,6 +235,319 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys (
 );
 "#;
 
+const ATTACHMENT_MANIFEST_CACHE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS attachment_manifest_cache (
+    owner_identity_id       TEXT NOT NULL,
+    owner_did               TEXT NOT NULL DEFAULT '',
+    thread_kind             TEXT NOT NULL,
+    thread_id               TEXT NOT NULL,
+    message_id              TEXT NOT NULL,
+    sender_did              TEXT,
+    message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
+    content                 TEXT NOT NULL,
+    stored_at               TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_kind, thread_id, message_id)
+);
+"#;
+
+const SYNC_STATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS sync_state (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    scope             TEXT NOT NULL,
+    checkpoint_kind   TEXT NOT NULL,
+    event_seq         TEXT NOT NULL DEFAULT '0',
+    updated_at        TEXT NOT NULL,
+    metadata_json     TEXT,
+    PRIMARY KEY (owner_identity_id, scope, checkpoint_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_state_owner_kind
+ON sync_state(owner_identity_id, checkpoint_kind, updated_at DESC);
+"#;
+
+const THREAD_READ_STATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS thread_read_state (
+    owner_identity_id          TEXT NOT NULL,
+    owner_did                  TEXT NOT NULL DEFAULT '',
+    thread_scope               TEXT NOT NULL,
+    thread_id                  TEXT NOT NULL,
+    conversation_id            TEXT NOT NULL DEFAULT '',
+    read_watermark_message_id  TEXT,
+    read_watermark_seq         TEXT,
+    read_watermark_at          TEXT,
+    pending_remote_ack         INTEGER NOT NULL DEFAULT 0,
+    remote_ack_at              TEXT,
+    updated_at                 TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_scope, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_read_state_owner_pending
+ON thread_read_state(owner_identity_id, pending_remote_ack, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_thread_read_state_owner_conversation
+ON thread_read_state(owner_identity_id, conversation_id);
+"#;
+
+pub(crate) const MESSAGE_IDENTITY_ALIASES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS message_identity_aliases (
+    owner_identity_id TEXT NOT NULL,
+    alias_msg_id      TEXT NOT NULL,
+    canonical_msg_id  TEXT NOT NULL,
+    source            TEXT NOT NULL DEFAULT '',
+    stored_at         TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, alias_msg_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_identity_aliases_owner_canonical
+ON message_identity_aliases(owner_identity_id, canonical_msg_id);
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityOwnedSchemaTableMode {
+    Final,
+    RebuildNew,
+}
+
+impl IdentityOwnedSchemaTableMode {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Final => "",
+            Self::RebuildNew => "_new",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalStateOwnerHint {
+    pub(crate) owner_identity_id: String,
+    pub(crate) current_did: String,
+    pub(crate) historical_dids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RebuildRowOwnershipInput {
+    pub(crate) table: &'static str,
+    pub(crate) row_key: String,
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) credential_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RebuildRowOwnerResolution {
+    Resolved(crate::internal::local_state::owner_scope::OwnerScope),
+    Unresolved(RedactedRebuildRow),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RedactedRebuildRow {
+    pub(crate) table: &'static str,
+    pub(crate) row_key: String,
+    pub(crate) reason: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityOwnedMergeTarget {
+    Messages,
+    Contacts,
+    ContactHandleBindings,
+    Groups,
+    GroupMembers,
+    RelationshipEvents,
+    E2eeOutbox,
+    AttachmentManifestCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IdentityOwnedMergeSpec {
+    pub(crate) target: IdentityOwnedMergeTarget,
+    pub(crate) table: &'static str,
+    pub(crate) staging_table: &'static str,
+    pub(crate) key_columns: &'static [&'static str],
+    pub(crate) order_columns: &'static [&'static str],
+}
+
+const IDENTITY_OWNED_MERGE_SPECS: &[IdentityOwnedMergeSpec] = &[
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::Messages,
+        table: "messages",
+        staging_table: "messages_new",
+        key_columns: &["owner_identity_id", "msg_id"],
+        order_columns: &["stored_at", "sent_at", "msg_id"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::Contacts,
+        table: "contacts",
+        staging_table: "contacts_new",
+        key_columns: &["owner_identity_id", "did"],
+        order_columns: &["last_seen_at", "first_seen_at", "did"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::ContactHandleBindings,
+        table: "contact_handle_bindings",
+        staging_table: "contact_handle_bindings_new",
+        key_columns: &["owner_identity_id", "handle", "did"],
+        order_columns: &["last_seen_at", "first_seen_at", "did"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::Groups,
+        table: "groups",
+        staging_table: "groups_new",
+        key_columns: &["owner_identity_id", "group_id"],
+        order_columns: &["remote_updated_at", "stored_at", "group_id"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::GroupMembers,
+        table: "group_members",
+        staging_table: "group_members_new",
+        key_columns: &["owner_identity_id", "group_id", "user_id"],
+        order_columns: &["last_synced_at", "group_id", "user_id"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::RelationshipEvents,
+        table: "relationship_events",
+        staging_table: "relationship_events_new",
+        key_columns: &["owner_identity_id", "event_id"],
+        order_columns: &["updated_at", "created_at", "event_id"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::E2eeOutbox,
+        table: "e2ee_outbox",
+        staging_table: "e2ee_outbox_new",
+        key_columns: &["owner_identity_id", "outbox_id"],
+        order_columns: &["updated_at", "created_at", "outbox_id"],
+    },
+    IdentityOwnedMergeSpec {
+        target: IdentityOwnedMergeTarget::AttachmentManifestCache,
+        table: "attachment_manifest_cache",
+        staging_table: "attachment_manifest_cache_new",
+        key_columns: &[
+            "owner_identity_id",
+            "thread_kind",
+            "thread_id",
+            "message_id",
+        ],
+        order_columns: &["stored_at", "message_id"],
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct IdentityOwnedKeySpec {
+    table: &'static str,
+    key_columns: &'static [&'static str],
+}
+
+const OWNER_KEY_SPECS_V17: &[IdentityOwnedKeySpec] = &[
+    IdentityOwnedKeySpec {
+        table: "contacts",
+        key_columns: &["did"],
+    },
+    IdentityOwnedKeySpec {
+        table: "contact_handle_bindings",
+        key_columns: &["handle", "did"],
+    },
+    IdentityOwnedKeySpec {
+        table: "messages",
+        key_columns: &["msg_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "groups",
+        key_columns: &["group_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "group_members",
+        key_columns: &["group_id", "user_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "relationship_events",
+        key_columns: &["event_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "e2ee_outbox",
+        key_columns: &["outbox_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "identity_did_history",
+        key_columns: &["did"],
+    },
+    IdentityOwnedKeySpec {
+        table: "direct_e2ee_sessions",
+        key_columns: &["peer_did"],
+    },
+    IdentityOwnedKeySpec {
+        table: "direct_e2ee_signed_prekeys",
+        key_columns: &["key_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "direct_e2ee_one_time_prekeys",
+        key_columns: &["key_id"],
+    },
+    IdentityOwnedKeySpec {
+        table: "attachment_manifest_cache",
+        key_columns: &["thread_kind", "thread_id", "message_id"],
+    },
+];
+
+const OWNER_REQUIRED_TABLES_V17: &[&str] = &[
+    "contacts",
+    "contact_handle_bindings",
+    "messages",
+    "groups",
+    "group_members",
+    "relationship_events",
+    "e2ee_outbox",
+    "identity_did_history",
+    "direct_e2ee_sessions",
+    "direct_e2ee_signed_prekeys",
+    "direct_e2ee_one_time_prekeys",
+    "attachment_manifest_cache",
+];
+
+const OWNER_DID_SNAPSHOT_TABLES_V17: &[&str] = &[
+    "conversation_summaries",
+    "sync_state",
+    "contacts",
+    "contact_handle_bindings",
+    "messages",
+    "groups",
+    "group_members",
+    "relationship_events",
+    "e2ee_outbox",
+    "direct_e2ee_sessions",
+    "direct_e2ee_signed_prekeys",
+    "direct_e2ee_one_time_prekeys",
+    "attachment_manifest_cache",
+];
+
+const IDENTITY_OWNED_INDEX_TEMPLATES: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity_last_seen{s} ON contacts{s}(owner_identity_id, last_seen_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity_source_group{s} ON contacts{s}(owner_identity_id, source_group_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle_current_unique{s} ON contact_handle_bindings{s}(owner_identity_id, handle) WHERE is_current = 1",
+    "CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_did{s} ON contact_handle_bindings{s}(owner_identity_id, did, last_seen_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle{s} ON contact_handle_bindings{s}(owner_identity_id, handle, last_seen_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_thread{s} ON messages{s}(owner_identity_id, thread_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_thread_seq{s} ON messages{s}(owner_identity_id, thread_id, server_seq)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_direction{s} ON messages{s}(owner_identity_id, direction)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_sender{s} ON messages{s}(owner_identity_id, sender_did)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_conversation{s} ON messages{s}(owner_identity_id, conversation_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_conversation_expr_last{s} ON messages{s}(owner_identity_id, COALESCE(NULLIF(conversation_id, ''), thread_id), COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_identity_status{s} ON e2ee_outbox{s}(owner_identity_id, local_status, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_identity_sent_msg{s} ON e2ee_outbox{s}(owner_identity_id, sent_msg_id)",
+    "CREATE INDEX IF NOT EXISTS idx_groups_owner_identity_status_last_message{s} ON groups{s}(owner_identity_id, membership_status, last_message_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_groups_owner_identity_slug{s} ON groups{s}(owner_identity_id, slug)",
+    "CREATE INDEX IF NOT EXISTS idx_group_members_owner_identity_group_role{s} ON group_members{s}(owner_identity_id, group_id, role)",
+    "CREATE INDEX IF NOT EXISTS idx_group_members_owner_identity_group_status{s} ON group_members{s}(owner_identity_id, group_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_target_time{s} ON relationship_events{s}(owner_identity_id, target_did, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_status_time{s} ON relationship_events{s}(owner_identity_id, status, created_at DESC)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_did_history_current{s} ON identity_did_history{s}(owner_identity_id) WHERE status = 'current'",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_did_history_live_did_unique{s} ON identity_did_history{s}(did) WHERE status = 'current'",
+    "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_sessions_owner_updated{s} ON direct_e2ee_sessions{s}(owner_identity_id, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_signed_prekeys_owner_status{s} ON direct_e2ee_signed_prekeys{s}(owner_identity_id, status, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_one_time_prekeys_owner_status{s} ON direct_e2ee_one_time_prekeys{s}(owner_identity_id, status, created_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_attachment_manifest_cache_owner_thread{s} ON attachment_manifest_cache{s}(owner_identity_id, thread_kind, thread_id, message_id)",
+];
+
 const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity ON contacts(owner_identity_id, last_seen_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_did, last_seen_at DESC)",
@@ -244,6 +562,7 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_direction ON messages(owner_identity_id, direction)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_sender ON messages(owner_identity_id, sender_did)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity ON messages(owner_identity_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_conversation_expr_last ON messages(owner_identity_id, COALESCE(NULLIF(conversation_id, ''), thread_id), COALESCE(NULLIF(sent_at, ''), stored_at) DESC, msg_id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_thread ON messages(owner_did, thread_id, sent_at)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_thread_seq ON messages(owner_did, thread_id, server_seq)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_direction ON messages(owner_did, direction)",
@@ -279,6 +598,7 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_sessions_owner_updated ON direct_e2ee_sessions(owner_identity_id, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_signed_prekeys_owner_status ON direct_e2ee_signed_prekeys(owner_identity_id, status, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_one_time_prekeys_owner_status ON direct_e2ee_one_time_prekeys(owner_identity_id, status, created_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_attachment_manifest_cache_owner_thread ON attachment_manifest_cache(owner_identity_id, thread_kind, thread_id, message_id)",
 ];
 
 const VIEW_STATEMENTS: &[&str] = &[
@@ -286,30 +606,300 @@ const VIEW_STATEMENTS: &[&str] = &[
 SELECT
     owner_identity_id,
     owner_did,
-    thread_id,
+    COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
+    COALESCE(NULLIF(conversation_id, ''), thread_id) AS thread_id,
     COUNT(*) AS message_count,
     SUM(CASE WHEN is_read = 0 AND direction = 0 THEN 1 ELSE 0 END) AS unread_count,
+    SUM(CASE WHEN is_read = 0 AND direction = 0 AND mentions_current_user = 1 THEN 1 ELSE 0 END) AS unread_mention_count,
+    (SELECT m3.msg_id FROM messages m3
+     WHERE m3.owner_identity_id = m.owner_identity_id
+       AND COALESCE(NULLIF(m3.conversation_id, ''), m3.thread_id) = COALESCE(NULLIF(m.conversation_id, ''), m.thread_id)
+       AND m3.is_read = 0
+       AND m3.direction = 0
+       AND m3.mentions_current_user = 1
+     ORDER BY COALESCE(m3.sent_at, m3.stored_at) ASC, m3.msg_id ASC
+     LIMIT 1) AS first_unread_mention_message_id,
     MAX(COALESCE(sent_at, stored_at)) AS last_message_at,
     (SELECT m2.content FROM messages m2
-     WHERE COALESCE(m2.owner_identity_id, '') = COALESCE(m.owner_identity_id, '')
-       AND m2.owner_did = m.owner_did
-       AND m2.thread_id = m.thread_id
+     WHERE m2.owner_identity_id = m.owner_identity_id
+       AND COALESCE(NULLIF(m2.conversation_id, ''), m2.thread_id) = COALESCE(NULLIF(m.conversation_id, ''), m.thread_id)
      ORDER BY COALESCE(m2.sent_at, m2.stored_at) DESC
      LIMIT 1) AS last_content
 FROM messages m
-GROUP BY owner_identity_id, owner_did, thread_id"#,
+GROUP BY owner_identity_id, COALESCE(NULLIF(conversation_id, ''), thread_id)"#,
     r#"CREATE VIEW IF NOT EXISTS inbox AS
 SELECT * FROM messages WHERE direction = 0
-ORDER BY owner_did, COALESCE(sent_at, stored_at) DESC"#,
+    ORDER BY owner_identity_id, COALESCE(sent_at, stored_at) DESC"#,
     r#"CREATE VIEW IF NOT EXISTS outbox AS
 SELECT * FROM messages WHERE direction = 1
-ORDER BY owner_did, COALESCE(sent_at, stored_at) DESC"#,
+ORDER BY owner_identity_id, COALESCE(sent_at, stored_at) DESC"#,
 ];
+
+pub(crate) fn create_identity_owned_schema(
+    connection: &Connection,
+    mode: IdentityOwnedSchemaTableMode,
+) -> crate::ImResult<()> {
+    connection
+        .execute_batch(&identity_owned_tables_sql(mode))
+        .map_err(super::local_state_unavailable)?;
+    for template in IDENTITY_OWNED_INDEX_TEMPLATES {
+        connection
+            .execute(&template.replace("{s}", mode.suffix()), [])
+            .map_err(super::local_state_unavailable)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn identity_owned_merge_specs() -> &'static [IdentityOwnedMergeSpec] {
+    IDENTITY_OWNED_MERGE_SPECS
+}
+
+pub(crate) fn resolve_rebuild_row_owner(
+    input: RebuildRowOwnershipInput,
+    owner_hints: &[LocalStateOwnerHint],
+) -> crate::ImResult<RebuildRowOwnerResolution> {
+    if !input.owner_identity_id.trim().is_empty() {
+        if let Some(owner_did) = first_non_empty([
+            input.owner_did.as_str(),
+            owner_hints
+                .iter()
+                .find(|hint| hint.owner_identity_id.trim() == input.owner_identity_id.trim())
+                .map(|hint| hint.current_did.as_str())
+                .unwrap_or_default(),
+        ]) {
+            let mut scope = crate::internal::local_state::owner_scope::OwnerScope::new(
+                input.owner_identity_id,
+                owner_did,
+            )?;
+            if !input.credential_name.trim().is_empty() {
+                scope = scope.with_credential_name(input.credential_name);
+            }
+            return Ok(RebuildRowOwnerResolution::Resolved(scope));
+        }
+        return Ok(RebuildRowOwnerResolution::Unresolved(redacted_rebuild_row(
+            input,
+            "missing_owner_did_for_identity",
+        )));
+    }
+
+    let owner_did = input.owner_did.trim();
+    if owner_did.is_empty() {
+        return Ok(RebuildRowOwnerResolution::Unresolved(redacted_rebuild_row(
+            input,
+            "missing_owner_identity_id",
+        )));
+    }
+
+    let matches = owner_hints
+        .iter()
+        .filter(|hint| owner_hint_contains_did(hint, owner_did))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [hint] => {
+            let mut scope = crate::internal::local_state::owner_scope::OwnerScope::new(
+                hint.owner_identity_id.clone(),
+                hint.current_did.clone(),
+            )?;
+            if !input.credential_name.trim().is_empty() {
+                scope = scope.with_credential_name(input.credential_name);
+            }
+            Ok(RebuildRowOwnerResolution::Resolved(scope))
+        }
+        [] => Ok(RebuildRowOwnerResolution::Unresolved(redacted_rebuild_row(
+            input,
+            "unresolved_owner_did",
+        ))),
+        _ => Ok(RebuildRowOwnerResolution::Unresolved(redacted_rebuild_row(
+            input,
+            "ambiguous_owner_did",
+        ))),
+    }
+}
+
+pub(crate) fn identity_owned_owner_invariants(
+    connection: &Connection,
+    mode: IdentityOwnedSchemaTableMode,
+) -> crate::ImResult<Vec<OwnerInvariantViolation>> {
+    let suffix = mode.suffix();
+    let mut violations = Vec::new();
+
+    for table in OWNER_REQUIRED_TABLES_V17 {
+        let table_name = format!("{table}{suffix}");
+        let count = count_query(
+            connection,
+            &format!(
+                "SELECT COUNT(*) FROM {table_name} WHERE owner_identity_id IS NULL OR TRIM(owner_identity_id) = ''"
+            ),
+        )?;
+        if count > 0 {
+            violations.push(OwnerInvariantViolation {
+                table,
+                invariant: "owner_identity_id_required",
+                row_count: count,
+            });
+        }
+    }
+
+    for spec in OWNER_KEY_SPECS_V17 {
+        let table_name = format!("{}{suffix}", spec.table);
+        let group_columns = std::iter::once("owner_identity_id")
+            .chain(spec.key_columns.iter().copied())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let count = count_query(
+            connection,
+            &format!(
+                "SELECT COUNT(*) FROM (SELECT {group_columns}, COUNT(*) AS duplicate_count FROM {table_name} GROUP BY {group_columns} HAVING COUNT(*) > 1)"
+            ),
+        )?;
+        if count > 0 {
+            violations.push(OwnerInvariantViolation {
+                table: spec.table,
+                invariant: "duplicate_identity_owned_key",
+                row_count: count,
+            });
+        }
+    }
+
+    let current_per_identity = count_query(
+        connection,
+        &format!(
+            "SELECT COUNT(*) FROM (SELECT owner_identity_id FROM identity_did_history{suffix} WHERE status = 'current' GROUP BY owner_identity_id HAVING COUNT(*) > 1)"
+        ),
+    )?;
+    if current_per_identity > 0 {
+        violations.push(OwnerInvariantViolation {
+            table: "identity_did_history",
+            invariant: "one_current_did_per_identity",
+            row_count: current_per_identity,
+        });
+    }
+
+    let duplicate_current_did = count_query(
+        connection,
+        &format!(
+            "SELECT COUNT(*) FROM (SELECT did FROM identity_did_history{suffix} WHERE status = 'current' GROUP BY did HAVING COUNT(*) > 1)"
+        ),
+    )?;
+    if duplicate_current_did > 0 {
+        violations.push(OwnerInvariantViolation {
+            table: "identity_did_history",
+            invariant: "current_did_unique_across_identities",
+            row_count: duplicate_current_did,
+        });
+    }
+
+    let owner_did_in_conversation_id = count_query(
+        connection,
+        &format!(
+            "SELECT COUNT(*) FROM messages{suffix} WHERE TRIM(COALESCE(conversation_id, '')) <> '' AND TRIM(COALESCE(owner_did, '')) <> '' AND instr(conversation_id, owner_did) > 0"
+        ),
+    )?;
+    if owner_did_in_conversation_id > 0 {
+        violations.push(OwnerInvariantViolation {
+            table: "messages",
+            invariant: "conversation_id_must_not_include_owner_did",
+            row_count: owner_did_in_conversation_id,
+        });
+    }
+
+    Ok(violations)
+}
+
+pub(crate) fn record_identity_did_history_transition<S: AsRef<str>>(
+    connection: &mut Connection,
+    owner_identity_id: &str,
+    current_did: &str,
+    previous_dids: &[S],
+) -> crate::ImResult<BTreeMap<String, i64>> {
+    let scope =
+        crate::internal::local_state::owner_scope::OwnerScope::new(owner_identity_id, current_did)?;
+    ensure_schema(connection)?;
+    let now = now_utc_like();
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+
+    transaction
+        .execute(
+            r#"
+UPDATE identity_did_history
+SET status = 'previous',
+    last_seen_at = ?1
+WHERE owner_identity_id = ?2
+  AND status = 'current'
+  AND did <> ?3"#,
+            rusqlite::params![now, scope.owner_identity_id, scope.owner_did],
+        )
+        .map_err(super::local_state_unavailable)?;
+
+    for previous in normalized_previous_dids(previous_dids, &scope.owner_did) {
+        transaction
+            .execute(
+                r#"
+INSERT INTO identity_did_history
+    (owner_identity_id, did, status, first_seen_at, last_seen_at)
+VALUES (?1, ?2, 'previous', ?3, ?3)
+ON CONFLICT(owner_identity_id, did)
+DO UPDATE SET
+    status = CASE
+        WHEN identity_did_history.status = 'current' THEN 'current'
+        ELSE 'previous'
+    END,
+    last_seen_at = excluded.last_seen_at"#,
+                rusqlite::params![scope.owner_identity_id, previous, now],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
+
+    transaction
+        .execute(
+            r#"
+INSERT INTO identity_did_history
+    (owner_identity_id, did, status, first_seen_at, last_seen_at)
+VALUES (?1, ?2, 'current', ?3, ?3)
+ON CONFLICT(owner_identity_id, did)
+DO UPDATE SET
+    status = 'current',
+    last_seen_at = excluded.last_seen_at"#,
+            rusqlite::params![scope.owner_identity_id, scope.owner_did, now],
+        )
+        .map_err(super::local_state_unavailable)?;
+
+    let mut snapshot_counts = BTreeMap::new();
+    for table in OWNER_DID_SNAPSHOT_TABLES_V17 {
+        let updated = transaction
+            .execute(
+                &format!(
+                    r#"
+UPDATE {table}
+SET owner_did = ?1
+WHERE owner_identity_id = ?2
+  AND owner_did <> ?1"#
+                ),
+                rusqlite::params![scope.owner_did, scope.owner_identity_id],
+            )
+            .map_err(super::local_state_unavailable)? as i64;
+        snapshot_counts.insert((*table).to_string(), updated);
+    }
+
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(snapshot_counts)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnerInvariantViolation {
+    pub(crate) table: &'static str,
+    pub(crate) invariant: &'static str,
+    pub(crate) row_count: i64,
+}
 
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     let version = current_schema_version(connection)?;
     if version == 0 {
-        create_schema(connection)?;
+        create_schema(connection, true)?;
         return set_schema_version(connection, SCHEMA_VERSION);
     }
     if version > SCHEMA_VERSION {
@@ -319,12 +909,14 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
-    if version < 6 {
+    if version < IDENTITY_OWNED_SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUnavailable {
-            detail: format!("sqlite schema version {version} is too old for in-place upgrade"),
+            detail: format!(
+                "sqlite schema version {version} requires owner-identity migration before schema {SCHEMA_VERSION}"
+            ),
         });
     }
-    create_schema(connection)?;
+    create_schema(connection, version < CONVERSATION_SUMMARIES_SCHEMA_VERSION)?;
     set_schema_version(connection, SCHEMA_VERSION)
 }
 
@@ -334,26 +926,29 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
         .map_err(super::local_state_unavailable)
 }
 
-fn create_schema(connection: &Connection) -> crate::ImResult<()> {
-    for script in [
-        V6_TABLES_SQL,
-        V7_TABLES_SQL,
-        V8_TABLES_SQL,
-        V11_TABLES_SQL,
-        V12_TABLES_SQL,
-        V14_TABLES_SQL,
-    ] {
-        connection
-            .execute_batch(script)
-            .map_err(super::local_state_unavailable)?;
+fn create_schema(
+    connection: &Connection,
+    backfill_conversation_summaries: bool,
+) -> crate::ImResult<()> {
+    create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    connection
+        .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(SYNC_STATE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(THREAD_READ_STATE_SQL)
+        .map_err(super::local_state_unavailable)?;
+    connection
+        .execute_batch(MESSAGE_IDENTITY_ALIASES_SQL)
+        .map_err(super::local_state_unavailable)?;
+    let mut should_rebuild_conversation_summaries = backfill_conversation_summaries;
+    if ensure_message_projection_columns(connection)? {
+        backfill_message_mention_projection(connection)?;
+        should_rebuild_conversation_summaries = true;
     }
-    ensure_owner_identity_columns(connection)?;
-    backfill_contact_handle_bindings(connection)?;
-    for statement in INDEX_STATEMENTS {
-        connection
-            .execute(statement, [])
-            .map_err(super::local_state_unavailable)?;
-    }
+    super::conversation_summaries::create_schema(connection)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -364,7 +959,291 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
             .execute(statement, [])
             .map_err(super::local_state_unavailable)?;
     }
+    if super::messages::repair_control_payload_read_projection(connection)? > 0 {
+        should_rebuild_conversation_summaries = true;
+    }
+    if super::messages::repair_thread_read_state_alias_projection(connection)? > 0 {
+        should_rebuild_conversation_summaries = true;
+    }
+    if super::messages::repair_group_message_identity_projection(connection)? > 0 {
+        should_rebuild_conversation_summaries = true;
+    }
+    if should_rebuild_conversation_summaries {
+        super::conversation_summaries::rebuild_all(connection)?;
+    }
     Ok(())
+}
+
+fn identity_owned_tables_sql(mode: IdentityOwnedSchemaTableMode) -> String {
+    let suffix = mode.suffix();
+    format!(
+        r#"
+CREATE TABLE IF NOT EXISTS contacts{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    did               TEXT NOT NULL,
+    name              TEXT,
+    handle            TEXT,
+    nick_name         TEXT,
+    bio               TEXT,
+    profile_md        TEXT,
+    tags              TEXT,
+    relationship      TEXT,
+    source_type       TEXT,
+    source_name       TEXT,
+    source_group_id   TEXT,
+    connected_at      TEXT,
+    recommended_reason TEXT,
+    followed          INTEGER NOT NULL DEFAULT 0,
+    messaged          INTEGER NOT NULL DEFAULT 0,
+    note              TEXT,
+    first_seen_at     TEXT,
+    last_seen_at      TEXT,
+    metadata          TEXT,
+    credential_name   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, did)
+);
+
+CREATE TABLE IF NOT EXISTS contact_handle_bindings{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    handle            TEXT NOT NULL,
+    did               TEXT NOT NULL,
+    is_current        INTEGER NOT NULL DEFAULT 1,
+    first_seen_at     TEXT NOT NULL,
+    last_seen_at      TEXT NOT NULL,
+    source_type       TEXT,
+    source_group_id   TEXT,
+    metadata          TEXT,
+    credential_name   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, handle, did)
+);
+
+CREATE TABLE IF NOT EXISTS messages{suffix} (
+    msg_id            TEXT NOT NULL,
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    conversation_id   TEXT NOT NULL DEFAULT '',
+    thread_id         TEXT NOT NULL,
+    direction         INTEGER NOT NULL DEFAULT 0,
+    sender_did        TEXT,
+    receiver_did      TEXT,
+    group_id          TEXT,
+    group_did         TEXT,
+    content_type      TEXT DEFAULT 'text',
+    content           TEXT,
+    title             TEXT,
+    server_seq        INTEGER,
+    sent_at           TEXT,
+    stored_at         TEXT NOT NULL,
+    is_e2ee           INTEGER DEFAULT 0,
+    is_read           INTEGER DEFAULT 0,
+    sender_name       TEXT,
+    metadata          TEXT,
+    mentions_current_user INTEGER NOT NULL DEFAULT 0,
+    credential_name   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS groups{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did          TEXT NOT NULL DEFAULT '',
+    group_id           TEXT NOT NULL,
+    group_did          TEXT,
+    name               TEXT,
+    group_mode         TEXT NOT NULL DEFAULT 'general',
+    slug               TEXT,
+    description        TEXT,
+    goal               TEXT,
+    rules              TEXT,
+    message_prompt     TEXT,
+    doc_url            TEXT,
+    group_owner_did    TEXT,
+    group_owner_handle TEXT,
+    my_role            TEXT,
+    membership_status  TEXT NOT NULL DEFAULT 'active',
+    join_enabled       INTEGER,
+    join_code          TEXT,
+    join_code_expires_at TEXT,
+    member_count       INTEGER,
+    last_synced_seq    INTEGER,
+    last_read_seq      INTEGER,
+    last_message_at    TEXT,
+    remote_created_at  TEXT,
+    remote_updated_at  TEXT,
+    stored_at          TEXT NOT NULL,
+    metadata           TEXT,
+    credential_name    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, group_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_members{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    group_id          TEXT NOT NULL,
+    user_id           TEXT NOT NULL,
+    member_did        TEXT,
+    member_handle     TEXT,
+    profile_url       TEXT,
+    role              TEXT,
+    status            TEXT NOT NULL DEFAULT 'active',
+    joined_at         TEXT,
+    sent_message_count INTEGER NOT NULL DEFAULT 0,
+    last_synced_at    TEXT NOT NULL,
+    metadata          TEXT,
+    credential_name   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, group_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS relationship_events{suffix} (
+    event_id          TEXT NOT NULL,
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    target_did        TEXT NOT NULL,
+    target_handle     TEXT,
+    event_type        TEXT NOT NULL,
+    source_type       TEXT,
+    source_name       TEXT,
+    source_group_id   TEXT,
+    reason            TEXT,
+    score             REAL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    metadata          TEXT,
+    credential_name   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS e2ee_outbox{suffix} (
+    outbox_id            TEXT NOT NULL,
+    owner_identity_id    TEXT NOT NULL,
+    owner_did            TEXT NOT NULL DEFAULT '',
+    peer_did             TEXT NOT NULL,
+    session_id           TEXT,
+    original_type        TEXT NOT NULL DEFAULT 'text',
+    plaintext            TEXT NOT NULL,
+    local_status         TEXT NOT NULL DEFAULT 'queued',
+    attempt_count        INTEGER NOT NULL DEFAULT 0,
+    sent_msg_id          TEXT,
+    sent_server_seq      INTEGER,
+    last_error_code      TEXT,
+    retry_hint           TEXT,
+    failed_msg_id        TEXT,
+    failed_server_seq    INTEGER,
+    metadata             TEXT,
+    last_attempt_at      TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    credential_name      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_identity_id, outbox_id)
+);
+
+CREATE TABLE IF NOT EXISTS identity_did_history{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    did               TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'current',
+    first_seen_at     TEXT NOT NULL,
+    last_seen_at      TEXT NOT NULL,
+    metadata          TEXT,
+    PRIMARY KEY (owner_identity_id, did)
+);
+
+CREATE TABLE IF NOT EXISTS direct_e2ee_sessions{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    peer_did          TEXT NOT NULL,
+    session_id        TEXT NOT NULL,
+    state_blob        BLOB NOT NULL,
+    metadata_json     TEXT,
+    revision          INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, peer_did),
+    UNIQUE (owner_identity_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS direct_e2ee_signed_prekeys{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    key_id            TEXT NOT NULL,
+    private_key_blob  BLOB NOT NULL,
+    public_key_blob   BLOB,
+    status            TEXT NOT NULL DEFAULT 'active',
+    metadata_json     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, key_id)
+);
+
+CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys{suffix} (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    key_id            TEXT NOT NULL,
+    private_key_blob  BLOB NOT NULL,
+    public_key_blob   BLOB,
+    status            TEXT NOT NULL DEFAULT 'available',
+    metadata_json     TEXT,
+    created_at        TEXT NOT NULL,
+    consumed_at       TEXT,
+    PRIMARY KEY (owner_identity_id, key_id)
+);
+
+CREATE TABLE IF NOT EXISTS attachment_manifest_cache{suffix} (
+    owner_identity_id       TEXT NOT NULL,
+    owner_did               TEXT NOT NULL DEFAULT '',
+    thread_kind             TEXT NOT NULL,
+    thread_id               TEXT NOT NULL,
+    message_id              TEXT NOT NULL,
+    sender_did              TEXT,
+    message_security_profile TEXT NOT NULL DEFAULT 'transport-protected',
+    content                 TEXT NOT NULL,
+    stored_at               TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, thread_kind, thread_id, message_id)
+);
+"#
+    )
+}
+
+fn redacted_rebuild_row(
+    input: RebuildRowOwnershipInput,
+    reason: &'static str,
+) -> RedactedRebuildRow {
+    RedactedRebuildRow {
+        table: input.table,
+        row_key: input.row_key,
+        reason,
+    }
+}
+
+fn owner_hint_contains_did(hint: &LocalStateOwnerHint, did: &str) -> bool {
+    let did = did.trim();
+    hint.current_did.trim() == did || hint.historical_dids.iter().any(|known| known.trim() == did)
+}
+
+fn first_non_empty<const N: usize>(values: [&str; N]) -> Option<&str> {
+    values.into_iter().find(|value| !value.trim().is_empty())
+}
+
+fn normalized_previous_dids<S: AsRef<str>>(values: &[S], current_did: &str) -> Vec<String> {
+    let current_did = current_did.trim();
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.as_ref().trim();
+        if value.is_empty() || value == current_did {
+            continue;
+        }
+        if !normalized.iter().any(|known| known == value) {
+            normalized.push(value.to_owned());
+        }
+    }
+    normalized
+}
+
+fn count_query(connection: &Connection, sql: &str) -> crate::ImResult<i64> {
+    connection
+        .query_row(sql, [], |row| row.get(0))
+        .map_err(super::local_state_unavailable)
 }
 
 fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()> {
@@ -385,6 +1264,115 @@ fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()>
         "credential_name",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    Ok(())
+}
+
+fn ensure_direct_e2ee_session_columns(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(
+        connection,
+        "direct_e2ee_sessions",
+        "revision",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}
+
+fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult<bool> {
+    if has_column(connection, "messages", "mentions_current_user")? {
+        return Ok(false);
+    }
+    ensure_column(
+        connection,
+        "messages",
+        "mentions_current_user",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(true)
+}
+
+fn backfill_message_mention_projection(connection: &Connection) -> crate::ImResult<()> {
+    let updates = {
+        let mut statement = connection
+            .prepare(
+                r#"
+SELECT msg_id,
+       owner_identity_id,
+       owner_did,
+       direction,
+       thread_id,
+       group_id,
+       group_did,
+       content_type,
+       content
+FROM messages
+WHERE mentions_current_user = 0
+  AND direction = 0
+  AND content_type = 'application/json'
+  AND (
+      TRIM(COALESCE(group_id, '')) <> ''
+      OR TRIM(COALESCE(group_did, '')) <> ''
+      OR thread_id LIKE 'group:%'
+  )"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>("msg_id")?.unwrap_or_default(),
+                    row.get::<_, Option<String>>("owner_identity_id")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("owner_did")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<i64>>("direction")?.unwrap_or_default(),
+                    row.get::<_, Option<String>>("thread_id")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("group_id")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("group_did")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("content_type")?
+                        .unwrap_or_default(),
+                    row.get::<_, Option<String>>("content")?.unwrap_or_default(),
+                ))
+            })
+            .map_err(super::local_state_unavailable)?;
+        let mut updates = Vec::new();
+        for row in rows {
+            let (
+                msg_id,
+                owner_identity_id,
+                owner_did,
+                direction,
+                thread_id,
+                group_id,
+                group_did,
+                content_type,
+                content,
+            ) = row.map_err(super::local_state_unavailable)?;
+            if crate::internal::local_state::messages::mentions_current_user_for_projection(
+                &owner_did,
+                direction,
+                &thread_id,
+                &group_id,
+                &group_did,
+                &content_type,
+                &content,
+            ) {
+                updates.push((owner_identity_id, msg_id));
+            }
+        }
+        updates
+    };
+    for (owner_identity_id, msg_id) in updates {
+        connection
+            .execute(
+                r#"
+UPDATE messages
+SET mentions_current_user = 1
+WHERE owner_identity_id = ?1 AND msg_id = ?2"#,
+                rusqlite::params![owner_identity_id, msg_id],
+            )
+            .map_err(super::local_state_unavailable)?;
+    }
     Ok(())
 }
 
@@ -573,218 +1561,4 @@ fn now_utc_like() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn local_state_schema_creates_legacy_tables_views_and_version() {
-        let db = Connection::open_in_memory().unwrap();
-
-        ensure_schema(&db).unwrap();
-
-        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
-        for object in [
-            ("table", "contacts"),
-            ("table", "contact_handle_bindings"),
-            ("table", "messages"),
-            ("table", "groups"),
-            ("table", "group_members"),
-            ("table", "relationship_events"),
-            ("table", "e2ee_outbox"),
-            ("table", "e2ee_sessions"),
-            ("table", "direct_e2ee_sessions"),
-            ("table", "direct_e2ee_signed_prekeys"),
-            ("table", "direct_e2ee_one_time_prekeys"),
-            ("view", "threads"),
-            ("view", "inbox"),
-            ("view", "outbox"),
-        ] {
-            assert_schema_object_exists(&db, object.0, object.1);
-        }
-        assert_index_exists(
-            &db,
-            "idx_contact_handle_bindings_owner_handle_current_unique",
-        );
-        assert_index_exists(&db, "idx_messages_owner_thread");
-        assert_index_exists(&db, "idx_messages_owner_identity_thread");
-        assert_index_exists(&db, "idx_groups_owner_status_last_message");
-        assert_index_exists(&db, "idx_groups_owner_identity_status_last_message");
-        assert_index_exists(&db, "idx_direct_e2ee_sessions_owner_updated");
-        assert_index_exists(&db, "idx_direct_e2ee_signed_prekeys_owner_status");
-        assert_index_exists(&db, "idx_direct_e2ee_one_time_prekeys_owner_status");
-        for table in [
-            "contacts",
-            "contact_handle_bindings",
-            "messages",
-            "groups",
-            "group_members",
-            "relationship_events",
-            "e2ee_outbox",
-            "direct_e2ee_sessions",
-            "direct_e2ee_signed_prekeys",
-            "direct_e2ee_one_time_prekeys",
-        ] {
-            assert_column_exists(&db, table, "owner_identity_id");
-        }
-        assert_column_missing(&db, "e2ee_sessions", "owner_identity_id");
-    }
-
-    #[test]
-    fn local_state_schema_rejects_unsupported_versions() {
-        let old = Connection::open_in_memory().unwrap();
-        old.pragma_update(None, "user_version", 5).unwrap();
-        assert!(matches!(
-            ensure_schema(&old),
-            Err(crate::ImError::LocalStateUnavailable { detail })
-                if detail.contains("too old")
-        ));
-
-        let future = Connection::open_in_memory().unwrap();
-        future
-            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
-            .unwrap();
-        assert!(matches!(
-            ensure_schema(&future),
-            Err(crate::ImError::LocalStateUnavailable { detail })
-                if detail.contains("newer than supported")
-        ));
-    }
-
-    #[test]
-    fn local_state_schema_backfills_handle_bindings_for_legacy_contacts() {
-        let db = Connection::open_in_memory().unwrap();
-        db.pragma_update(None, "user_version", 6).unwrap();
-        db.execute_batch(V6_TABLES_SQL).unwrap();
-        db.execute(
-            r#"
-INSERT INTO contacts
-    (owner_did, did, handle, first_seen_at, last_seen_at, metadata)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-            (
-                "did:owner",
-                "did:peer",
-                "alice",
-                "2026-01-01T00:00:00Z",
-                "2026-01-01T00:00:00Z",
-                r#"{"source":"legacy"}"#,
-            ),
-        )
-        .unwrap();
-
-        ensure_schema(&db).unwrap();
-
-        let did = db
-            .query_row(
-                "SELECT did FROM contact_handle_bindings WHERE owner_did = ?1 AND handle = ?2",
-                ("did:owner", "alice"),
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap();
-        assert_eq!(did, "did:peer");
-        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn local_state_owner_backfills_identity_ids_from_credentials_then_owner_did() {
-        let db = Connection::open_in_memory().unwrap();
-        ensure_schema(&db).unwrap();
-        db.execute(
-            r#"
-INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, stored_at, credential_name)
-VALUES ('by-credential', 'did:old', 'dm:old:bob', 0, '2026-05-21T00:00:00Z', 'alice')"#,
-            [],
-        )
-        .unwrap();
-        db.execute(
-            r#"
-INSERT INTO groups
-    (owner_did, group_id, group_mode, membership_status, stored_at, credential_name)
-VALUES ('did:alice', 'group-1', 'general', 'active', '2026-05-21T00:00:00Z', '')"#,
-            [],
-        )
-        .unwrap();
-        db.execute(
-            r#"
-INSERT INTO e2ee_outbox
-    (outbox_id, owner_did, peer_did, plaintext, created_at, updated_at)
-VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2026-05-21T00:00:00Z')"#,
-            [],
-        )
-        .unwrap();
-
-        let updated = backfill_owner_identity_ids(
-            &db,
-            &[OwnerIdentityBackfill {
-                identity_id: "alice-id".to_string(),
-                owner_did: "did:alice".to_string(),
-                credential_names: vec!["alice".to_string()],
-            }],
-        )
-        .unwrap();
-
-        assert_eq!(updated, 3);
-        assert_eq!(
-            string_cell(
-                &db,
-                "SELECT owner_identity_id FROM messages WHERE msg_id = 'by-credential'"
-            ),
-            "alice-id"
-        );
-        assert_eq!(
-            string_cell(
-                &db,
-                "SELECT owner_identity_id FROM groups WHERE group_id = 'group-1'"
-            ),
-            "alice-id"
-        );
-        assert_eq!(
-            string_cell(
-                &db,
-                "SELECT owner_identity_id FROM e2ee_outbox WHERE outbox_id = 'outbox-1'"
-            ),
-            "alice-id"
-        );
-    }
-
-    fn assert_schema_object_exists(db: &Connection, object_type: &str, name: &str) {
-        let count = db
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
-                (object_type, name),
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "missing {object_type} {name}");
-    }
-
-    fn assert_index_exists(db: &Connection, name: &str) {
-        assert_schema_object_exists(db, "index", name);
-    }
-
-    fn assert_column_exists(db: &Connection, table: &str, column: &str) {
-        assert!(column_exists(db, table, column), "missing {table}.{column}");
-    }
-
-    fn assert_column_missing(db: &Connection, table: &str, column: &str) {
-        assert!(
-            !column_exists(db, table, column),
-            "unexpected {table}.{column}"
-        );
-    }
-
-    fn column_exists(db: &Connection, table: &str, column: &str) -> bool {
-        let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap();
-        let exists = rows.map(Result::unwrap).any(|name| name == column);
-        exists
-    }
-
-    fn string_cell(db: &Connection, sql: &str) -> String {
-        db.query_row(sql, [], |row| row.get::<_, Option<String>>(0))
-            .unwrap()
-            .unwrap_or_default()
-    }
-}
+mod tests;

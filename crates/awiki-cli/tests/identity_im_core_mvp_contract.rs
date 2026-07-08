@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -70,6 +71,10 @@ fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() 
 fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"access_token":"jwt-bob-refreshed"},"id":"req-1"}"#,
+    )]);
+    write_service_config(&workspace_home, &server.base_url());
     write_ready_identity(
         &workspace_home,
         TestIdentityOptions {
@@ -90,6 +95,11 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
             make_default: false,
         },
     );
+    success_json(&awiki_cmd_with_env(
+        &["--identity", "bob", "--migration", "id", "vault", "migrate"],
+        workspace.path(),
+        &[],
+    ));
     std::fs::remove_file(
         workspace_home
             .join("identities")
@@ -98,15 +108,21 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     )
     .expect("remove bob private key");
 
-    let result = awiki_cmd_with_env(
+    let result = success_json(&awiki_cmd_with_env(
         &["--identity", "bob", "id", "refresh-token"],
         workspace.path(),
         &[],
-    );
-    assert_code(&result, 3);
-    let result = error_json(&result);
-    assert_eq!(result["error"]["code"], "auth_required");
-    assert!(result["error"]["message"].as_str().unwrap().contains("bob"));
+    ));
+    assert_eq!(result["summary"], "JWT refreshed for identity bob");
+    assert_eq!(result["data"]["identity"]["identity_name"], "bob");
+    assert_eq!(result["data"]["identity"]["has_jwt"], true);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(body["method"], "get_me");
+    assert_contains_text(&requests[0], "signature-input:");
+    assert_contains_text(&requests[0], "did:wba:awiki.ai:user:bob:");
 }
 
 #[test]
@@ -159,6 +175,66 @@ fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() 
             "method": "get_me",
             "params": {},
         })
+    );
+}
+
+#[test]
+fn identity_register_vault_required_persists_without_plaintext_secret_files() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    write_service_config_with_secret_storage(&workspace_home, &server.base_url(), "vault_required");
+
+    let register = success_json(&awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key)],
+    ));
+    assert_eq!(register["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(register["data"]["identity"]["has_jwt"], true);
+    assert_eq!(register["data"]["identity"]["has_key1_private"], true);
+
+    let identity_dir = workspace_home.join("identities").join("alice");
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required register must not persist plaintext {file}"
+        );
+    }
+    let status = success_json(&awiki_cmd_with_env(
+        &["id", "vault", "status"],
+        workspace.path(),
+        &[("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key)],
+    ));
+    assert_eq!(
+        status["data"]["vault"]["identity"]["selected_backend"],
+        "vault"
+    );
+    assert_eq!(
+        status["data"]["vault"]["identity"]["plaintext_compat_retained"],
+        false
+    );
+    let encoded = serde_json::to_string(&status).expect("status json");
+    assert!(
+        !encoded.contains(root_key)
+            && !encoded.contains("jwt-register")
+            && !encoded.contains("-----BEGIN PRIVATE KEY-----"),
+        "vault status must be redacted: {encoded}"
     );
 }
 
@@ -563,7 +639,7 @@ fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
         TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_recovered","user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
+            r#"{"jsonrpc":"2.0","result":{"user_id":"user-alice-recovered","message":"Recovery successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-recover"},"id":"req-1"}"#,
         ),
     ]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
@@ -605,9 +681,12 @@ fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes
     assert_eq!(recover["data"]["action"], "recover_handle");
     assert_eq!(recover["data"]["final_identity_name"], "alice");
     assert_eq!(recover["data"]["archived_identities"], json!(["alice"]));
-    assert_eq!(
-        recover["data"]["identity"]["did"],
-        "did:wba:awiki.ai:alice:e1_recovered"
+    let recovered_did = recover["data"]["identity"]["did"]
+        .as_str()
+        .expect("recovered identity did");
+    assert!(
+        recovered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "recovery should persist the locally generated key-bound DID: {recovered_did}"
     );
     assert!(recover["data"].get("temp_identity_name").is_none());
     assert!(recover["data"].get("old_dids").is_none());
@@ -632,6 +711,10 @@ fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes
     assert_eq!(body["params"]["phone"], "+8613800138000");
     assert_eq!(body["params"]["otp_code"], "654321");
     assert!(body["params"]["did_document"].is_object());
+    assert_eq!(
+        body["params"]["did_document"]["id"].as_str(),
+        Some(recovered_did)
+    );
 }
 
 #[test]
@@ -640,7 +723,7 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
     let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
 
-    let register = awiki_cmd_with_env(
+    let register = success_json(&awiki_cmd_with_env(
         &[
             "id",
             "register",
@@ -653,8 +736,15 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
         ],
         workspace.path(),
         &[],
+    ));
+    let registered_did = register["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered identity did")
+        .to_string();
+    assert!(
+        registered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "registration should persist the locally generated key-bound DID: {registered_did}"
     );
-    assert_code(&register, 0);
 
     let replace = success_json(&awiki_cmd_with_env(
         &[
@@ -678,7 +768,7 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
     assert_eq!(plan["action"], "replace_did");
     assert_eq!(plan["dangerous"], true);
     assert_eq!(plan["identity"]["local_alias"], "alice");
-    assert_eq!(plan["identity"]["did"], "did:wba:awiki.ai:alice:e1_remote");
+    assert_eq!(plan["identity"]["did"], registered_did);
     assert_eq!(plan["backup_plan"]["required"], true);
     assert!(plan["backup_plan"]["backup_path_preview"]
         .as_str()
@@ -686,12 +776,9 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
         .contains(".legacy-backup/replace-did/<timestamp>-alice-"));
     assert_eq!(
         plan["backup_plan"]["manifest_preview"]["old_did"],
-        "did:wba:awiki.ai:alice:e1_remote"
+        registered_did
     );
-    assert_eq!(
-        plan["local_rebind_plan"]["old_owner_did"],
-        "did:wba:awiki.ai:alice:e1_remote"
-    );
+    assert_eq!(plan["local_rebind_plan"]["old_owner_did"], registered_did);
     assert_eq!(plan["local_rebind_plan"]["dry_run_only"], true);
     assert_eq!(
         plan["remote_replace_did_call_preview"]["method"],
@@ -744,7 +831,8 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64");
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -757,6 +845,27 @@ fn write_service_config(workspace: &Path, base_url: &str) {
         workspace.join("config.yaml"),
         format!(
             "services:\n  service_base_url: {base_url}\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn write_service_config_with_secret_storage(workspace: &Path, base_url: &str, mode: &str) {
+    std::fs::create_dir_all(workspace).unwrap();
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!(
+            concat!(
+                "services:\n",
+                "  service_base_url: {}\n",
+                "  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n",
+                "  anp_service_did: did:wba:awiki.ai\n",
+                "secret_storage:\n",
+                "  mode: {}\n",
+                "  workspace_id: test-workspace\n",
+                "  device_id: test-device\n"
+            ),
+            base_url, mode
         ),
     )
     .unwrap();
@@ -776,16 +885,6 @@ fn success_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("success JSON")
 }
 
-fn error_json(output: &Output) -> Value {
-    assert!(
-        !output.status.success(),
-        "command should fail\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stderr).expect("error JSON")
-}
-
 fn assert_code(output: &Output, expected: i32) {
     assert_eq!(
         output.status.code(),
@@ -801,6 +900,20 @@ fn request_body(raw: &str) -> &str {
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {
+    if let Some((header_name, expected_value)) = needle
+        .strip_suffix("\r\n")
+        .and_then(|line| line.split_once(':'))
+    {
+        let header_name = header_name.trim();
+        let expected_value = expected_value.trim();
+        if haystack.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(header_name) && value.trim() == expected_value
+            })
+        }) {
+            return;
+        }
+    }
     assert!(
         haystack.contains(needle),
         "expected request to contain {needle:?}, got:\n{haystack}"
@@ -881,7 +994,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -923,7 +1041,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;
@@ -952,12 +1076,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-id-im-core-test-{}-{nanos}",
+            "awiki-cli-rs2-id-im-core-test-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

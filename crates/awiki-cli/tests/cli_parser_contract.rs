@@ -79,12 +79,31 @@ fn unknown_global_long_flags_fail_like_go_cobra_before_missing_command() {
     }
 }
 
+#[test]
+fn root_help_prints_default_command_surface() {
+    for args in [&["--help"][..], &["-h"][..]] {
+        let output = awiki_cmd(args);
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["command"], "awiki-cli schema");
+        assert_eq!(envelope["summary"], "Static command contract");
+        assert!(
+            envelope["data"]["commands"]
+                .as_array()
+                .is_some_and(|commands| !commands.is_empty()),
+            "root help should expose the default command surface"
+        );
+    }
+}
+
 fn awiki_cmd(args: &[&str]) -> Output {
     let workspace = TempDir::new().expect("temp workspace");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.path())
+        .env("HOME", workspace.path().join("home"))
+        .env("USERPROFILE", workspace.path().join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

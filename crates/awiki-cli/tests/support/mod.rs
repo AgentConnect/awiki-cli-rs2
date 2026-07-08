@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct TestIdentity {
     pub identity_name: String,
+    pub unique_id: String,
     pub did: String,
     pub identity_dir: PathBuf,
 }
@@ -99,6 +100,7 @@ pub fn write_ready_identity(workspace: &Path, options: TestIdentityOptions<'_>) 
             did: &did,
             unique_id: &unique_id,
             display_name,
+            handle,
             full_handle: &full_handle,
             make_default: options.make_default,
         },
@@ -106,6 +108,7 @@ pub fn write_ready_identity(workspace: &Path, options: TestIdentityOptions<'_>) 
 
     TestIdentity {
         identity_name: identity_name.to_string(),
+        unique_id,
         did,
         identity_dir,
     }
@@ -141,6 +144,62 @@ pub fn test_paths(workspace: &Path) -> Paths {
     }
 }
 
+pub fn set_secret_storage_mode(workspace: &Path, mode: &str) {
+    assert!(
+        matches!(mode, "file_compat" | "vault_preferred" | "vault_required"),
+        "unsupported test secret storage mode: {mode}"
+    );
+    let config_path = workspace.join("config.yaml");
+    let text = std::fs::read_to_string(&config_path).unwrap_or_default();
+    if text.trim().is_empty() {
+        write_config_text(&config_path, &format!("secret_storage:\n  mode: {mode}\n"));
+        return;
+    }
+
+    let mut output = Vec::new();
+    let mut in_secret_storage = false;
+    let mut saw_secret_storage = false;
+    let mut wrote_mode = false;
+
+    for line in text.lines() {
+        let is_top_level =
+            !line.chars().next().is_some_and(char::is_whitespace) && !line.trim().is_empty();
+        if in_secret_storage && is_top_level {
+            if !wrote_mode {
+                output.push(format!("  mode: {mode}"));
+                wrote_mode = true;
+            }
+            in_secret_storage = false;
+        }
+
+        if line.trim() == "secret_storage:" && is_top_level {
+            saw_secret_storage = true;
+            in_secret_storage = true;
+            wrote_mode = false;
+            output.push(line.to_string());
+            continue;
+        }
+
+        if in_secret_storage && line.trim_start().starts_with("mode:") {
+            output.push(format!("  mode: {mode}"));
+            wrote_mode = true;
+            continue;
+        }
+
+        output.push(line.to_string());
+    }
+
+    if in_secret_storage && !wrote_mode {
+        output.push(format!("  mode: {mode}"));
+    }
+    if !saw_secret_storage {
+        output.push(String::new());
+        output.push("secret_storage:".to_string());
+        output.push(format!("  mode: {mode}"));
+    }
+    write_config_text(&config_path, &format!("{}\n", output.join("\n")));
+}
+
 pub fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -151,6 +210,7 @@ struct RegistryEntry<'a> {
     did: &'a str,
     unique_id: &'a str,
     display_name: &'a str,
+    handle: &'a str,
     full_handle: &'a str,
     make_default: bool,
 }
@@ -161,36 +221,36 @@ fn upsert_registry_entry(identity_root: &Path, entry: RegistryEntry<'_>) {
     let mut registry = std::fs::read(&registry_path)
         .ok()
         .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-        .filter(|value| value.get("identities").and_then(Value::as_array).is_some())
-        .unwrap_or_else(|| json!({ "default_identity": Value::Null, "identities": [] }));
-    let identities = registry
-        .get_mut("identities")
-        .and_then(Value::as_array_mut)
-        .expect("registry identities array");
-    identities.retain(|item| {
-        item.get("local_alias")
-            .and_then(Value::as_str)
-            .map_or(true, |alias| alias != entry.identity_name)
-    });
-    identities.push(json!({
-        "id": entry.unique_id,
-        "did": entry.did,
+        .filter(|value| {
+            value
+                .get("credentials")
+                .and_then(Value::as_object)
+                .is_some()
+        })
+        .unwrap_or_else(
+            || json!({ "schema_version": 3, "default_credential_name": "", "credentials": {} }),
+        );
+    registry["schema_version"] = Value::from(3);
+    registry["credentials"][entry.identity_name] = json!({
+        "credential_name": entry.identity_name,
         "dir_name": entry.dir_name,
-        "handle": entry.full_handle,
-        "display_name": entry.display_name,
-        "local_alias": entry.identity_name,
-        "ready_for_auth": true,
-        "ready_for_messaging": true,
-        "missing": [],
-    }));
+        "did": entry.did,
+        "unique_id": entry.unique_id,
+        "user_id": format!("user-{}", entry.handle),
+        "name": entry.display_name,
+        "handle": entry.handle,
+        "full_handle": entry.full_handle,
+        "created_at": "2026-05-25T00:00:00Z",
+        "is_default": entry.make_default,
+    });
     if entry.make_default
         || registry
-            .get("default_identity")
+            .get("default_credential_name")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .is_empty()
     {
-        registry["default_identity"] = Value::String(entry.identity_name.to_string());
+        registry["default_credential_name"] = Value::String(entry.identity_name.to_string());
         std::fs::write(
             identity_root.join("default"),
             format!("{}\n", entry.identity_name),
@@ -209,6 +269,13 @@ fn write_json(path: &Path, value: &Value) {
         serde_json::to_vec_pretty(value).expect("serialize json"),
     )
     .unwrap_or_else(|err| panic!("write {path:?}: {err}"));
+}
+
+fn write_config_text(path: &Path, text: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create config parent");
+    }
+    std::fs::write(path, text).unwrap_or_else(|err| panic!("write {path:?}: {err}"));
 }
 
 fn required<'a>(value: &'a str, field: &str) -> &'a str {

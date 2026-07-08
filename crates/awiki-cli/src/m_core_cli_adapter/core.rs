@@ -5,7 +5,20 @@ use crate::cli_output::ExitError;
 pub fn build_im_core(resolved: &crate::workspace_config::Resolved) -> Result<ImCore, ExitError> {
     let config = super::core_config::build_im_core_config(resolved)?;
     let paths = super::paths::build_im_core_paths(resolved)?;
-    ImCore::new(config, paths).map_err(|err| super::error::map_im_error(err, "build im-core"))
+    let options = super::vault::build_im_core_open_options(resolved)?;
+    ImCore::new_with_options(config, paths, options)
+        .map_err(|err| super::error::map_im_error(err, "build im-core"))
+}
+
+pub async fn build_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+) -> Result<ImCore, ExitError> {
+    let config = super::core_config::build_im_core_config(resolved)?;
+    let paths = super::paths::build_im_core_paths(resolved)?;
+    let options = super::vault::build_im_core_open_options(resolved)?;
+    ImCore::open_with_options(config, paths, options)
+        .await
+        .map_err(|err| super::error::map_im_error(err, "build im-core"))
 }
 
 pub fn build_im_client(
@@ -14,5 +27,15 @@ pub fn build_im_client(
 ) -> Result<ImClient, ExitError> {
     let core = build_im_core(resolved)?;
     core.client(selector)
+        .map_err(|err| super::error::map_im_error(err, "build im-client"))
+}
+
+pub async fn build_im_client_async(
+    resolved: &crate::workspace_config::Resolved,
+    selector: IdentitySelector,
+) -> Result<ImClient, ExitError> {
+    let core = build_im_core_async(resolved).await?;
+    core.client_async(selector)
+        .await
         .map_err(|err| super::error::map_im_error(err, "build im-client"))
 }

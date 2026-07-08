@@ -40,6 +40,26 @@ pub(crate) fn maybe_decrypt_group_e2ee_messages_for_client(
     )
 }
 
+pub(crate) async fn maybe_decrypt_group_e2ee_messages_for_client_async(
+    client: &crate::core::ImClient,
+    messages: &mut Vec<Value>,
+) -> Vec<String> {
+    if messages.is_empty() || !contains_group_e2ee_messages(messages) {
+        return Vec::new();
+    }
+    let provider = match super::storage::native_provider_for_client(client) {
+        Ok(provider) => provider,
+        Err(err) => return decryptor_init_error(messages, err),
+    };
+    maybe_decrypt_group_e2ee_messages_with_provider_async(
+        client.did().as_str(),
+        device_id_for_client(client).as_str(),
+        messages,
+        provider,
+    )
+    .await
+}
+
 pub(crate) fn maybe_normalize_group_e2ee_notification_for_client(
     client: &crate::core::ImClient,
     notification: Value,
@@ -59,6 +79,26 @@ pub(crate) fn maybe_normalize_group_e2ee_notification_for_client(
     )
 }
 
+pub(crate) async fn maybe_normalize_group_e2ee_notification_for_client_async(
+    client: &crate::core::ImClient,
+    notification: Value,
+) -> GroupRealtimeNotificationProjection {
+    if !is_group_e2ee_incoming_notification(&notification) {
+        return keep_realtime_notification(notification);
+    }
+    let provider = match super::storage::native_provider_for_client(client) {
+        Ok(provider) => provider,
+        Err(err) => return realtime_decryptor_init_error(notification, err),
+    };
+    maybe_normalize_group_e2ee_notification_with_provider_async(
+        client.did().as_str(),
+        device_id_for_client(client).as_str(),
+        notification,
+        provider,
+    )
+    .await
+}
+
 pub(crate) fn maybe_normalize_group_e2ee_notification_with_provider<M: GroupMlsProvider>(
     owner_did: &str,
     device_id: &str,
@@ -76,6 +116,45 @@ pub(crate) fn maybe_normalize_group_e2ee_notification_with_provider<M: GroupMlsP
         &mut messages,
         provider,
     );
+    message = messages.into_iter().next().unwrap_or(Value::Null);
+    if !warnings.is_empty()
+        || !message
+            .get("decrypted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return redacted_realtime_notification(notification, "failed", warnings);
+    }
+    let mut normalized = notification;
+    apply_decrypted_message_to_group_notification(&mut normalized, &message);
+    GroupRealtimeNotificationProjection {
+        notification: Some(normalized),
+        warnings: Vec::new(),
+        decision: GroupRealtimeNotificationDecision::Normalized,
+    }
+}
+
+pub(crate) async fn maybe_normalize_group_e2ee_notification_with_provider_async<M>(
+    owner_did: &str,
+    device_id: &str,
+    notification: Value,
+    provider: M,
+) -> GroupRealtimeNotificationProjection
+where
+    M: GroupMlsProvider + Send + 'static,
+{
+    if !is_group_e2ee_incoming_notification(&notification) {
+        return keep_realtime_notification(notification);
+    }
+    let mut message = message_view_from_group_notification(&notification);
+    let mut messages = vec![message];
+    let warnings = maybe_decrypt_group_e2ee_messages_with_provider_async(
+        owner_did,
+        device_id,
+        &mut messages,
+        provider,
+    )
+    .await;
     message = messages.into_iter().next().unwrap_or(Value::Null);
     if !warnings.is_empty()
         || !message
@@ -149,6 +228,46 @@ pub(crate) fn maybe_decrypt_group_e2ee_messages_with_provider<M: GroupMlsProvide
         }
     }
     compact_warnings(warnings)
+}
+
+pub(crate) async fn maybe_decrypt_group_e2ee_messages_with_provider_async<M>(
+    owner_did: &str,
+    device_id: &str,
+    messages: &mut Vec<Value>,
+    provider: M,
+) -> Vec<String>
+where
+    M: GroupMlsProvider + Send + 'static,
+{
+    if messages.is_empty() || !contains_group_e2ee_messages(messages) {
+        return Vec::new();
+    }
+    let owner_did = owner_did.to_owned();
+    let device_id = device_id.to_owned();
+    let messages_for_worker = messages.clone();
+    match crate::internal::runtime::worker::run_blocking(move || {
+        let mut messages = messages_for_worker;
+        let warnings = maybe_decrypt_group_e2ee_messages_with_provider(
+            &owner_did,
+            &device_id,
+            &mut messages,
+            &provider,
+        );
+        (messages, warnings)
+    })
+    .await
+    {
+        Ok((projected, warnings)) => {
+            *messages = projected;
+            warnings
+        }
+        Err(err) => {
+            redact_all_group_e2ee_messages(messages, "failed");
+            compact_warnings(vec![format!(
+                "Failed to decrypt group E2EE messages on worker: {err}"
+            )])
+        }
+    }
 }
 
 fn decryptor_init_error(messages: &mut [Value], err: crate::ImError) -> Vec<String> {
@@ -273,10 +392,23 @@ fn apply_decrypted_message_to_group_notification(notification: &mut Value, messa
             safe_body.insert("group_event_seq".to_owned(), value.clone());
         }
     }
-    safe_body.insert(
-        "text".to_owned(),
-        message.get("content").cloned().unwrap_or(Value::Null),
-    );
+    let content_type = message
+        .get("content_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if content_type == crate::attachments::manifest::attachment_manifest_content_type() {
+        let content = message
+            .get("content")
+            .cloned()
+            .map(|content| crate::attachments::manifest::redact_attachment_manifest(&content))
+            .unwrap_or(Value::Null);
+        safe_body.insert("payload".to_owned(), content);
+    } else {
+        safe_body.insert(
+            "text".to_owned(),
+            message.get("content").cloned().unwrap_or(Value::Null),
+        );
+    }
     safe_body.insert("decrypted".to_owned(), Value::Bool(true));
     params.insert("body".to_owned(), Value::Object(safe_body));
 }
@@ -356,8 +488,20 @@ fn apply_group_plaintext(
         object.insert("content".to_owned(), Value::String(text.to_owned()));
         object.insert("type".to_owned(), Value::String("text".to_owned()));
     } else if let Some(payload) = plaintext.payload.as_ref() {
+        let is_attachment_manifest = plaintext.application_content_type
+            == crate::attachments::manifest::attachment_manifest_content_type();
         object.insert("content".to_owned(), payload.clone());
-        object.insert("type".to_owned(), Value::String("json".to_owned()));
+        object.insert(
+            "type".to_owned(),
+            Value::String(
+                if is_attachment_manifest {
+                    "attachment_manifest"
+                } else {
+                    "json"
+                }
+                .to_owned(),
+            ),
+        );
     } else if let Some(payload_b64u) = plaintext
         .payload_b64u
         .as_deref()
@@ -519,7 +663,7 @@ fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::sync::{Arc, Mutex};
 
     use anp::group_e2ee::operations::{
         AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
@@ -554,7 +698,8 @@ mod tests {
         assert_eq!(
             provider
                 .last_input
-                .borrow()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .map(|input| input.group_did.as_str()),
             Some("did:example:groups:e2ee")
@@ -581,6 +726,60 @@ mod tests {
         assert!(!serde_json::to_string(&messages)
             .unwrap()
             .contains("failed-cipher"));
+    }
+
+    #[tokio::test]
+    async fn group_e2ee_message_projection_async_runs_decrypt_on_worker() {
+        let provider = StaticDecryptProvider::default();
+        let mut messages = vec![group_cipher_message("secret-cipher")];
+        let warnings = maybe_decrypt_group_e2ee_messages_with_provider_async(
+            "did:example:alice",
+            "default",
+            &mut messages,
+            provider.clone(),
+        )
+        .await;
+
+        assert!(warnings.is_empty());
+        assert_eq!(messages[0]["content"], "decrypted group text");
+        assert_eq!(messages[0]["content_type"], "text/plain");
+        assert_eq!(messages[0]["decrypted"], true);
+        let input = provider.last_input.lock().unwrap().clone().unwrap();
+        assert_eq!(input.recipient_did, "did:example:alice");
+        assert_eq!(input.group_did, "did:example:groups:e2ee");
+        assert!(!serde_json::to_string(&messages)
+            .unwrap()
+            .contains("secret-cipher"));
+    }
+
+    #[tokio::test]
+    async fn realtime_notification_projection_async_replaces_wire_body_with_plaintext() {
+        let provider = StaticDecryptProvider::default();
+        let projection = maybe_normalize_group_e2ee_notification_with_provider_async(
+            "did:example:alice",
+            "default",
+            group_cipher_notification("secret-realtime-cipher"),
+            provider,
+        )
+        .await;
+
+        assert_eq!(
+            projection.decision,
+            GroupRealtimeNotificationDecision::Normalized
+        );
+        assert!(projection.warnings.is_empty());
+        let notification = projection.notification.unwrap();
+        assert_eq!(
+            notification.pointer("/params/meta/content_type"),
+            Some(&json!("text/plain"))
+        );
+        assert_eq!(
+            notification.pointer("/params/body/text"),
+            Some(&json!("decrypted group text"))
+        );
+        assert!(!serde_json::to_string(&notification)
+            .unwrap()
+            .contains("secret-realtime-cipher"));
     }
 
     #[test]
@@ -625,14 +824,56 @@ mod tests {
         assert!(!encoded.contains("crypto_group_id_b64u"));
     }
 
-    #[derive(Default)]
+    #[test]
+    fn realtime_notification_projection_redacts_attachment_manifest_secrets() {
+        let provider = AttachmentDecryptProvider::default();
+        let projection = maybe_normalize_group_e2ee_notification_with_provider(
+            "did:example:alice",
+            "default",
+            group_cipher_notification("secret-realtime-cipher"),
+            &provider,
+        );
+
+        assert_eq!(
+            projection.decision,
+            GroupRealtimeNotificationDecision::Normalized
+        );
+        let notification = projection.notification.unwrap();
+        assert_eq!(
+            notification.pointer("/params/meta/content_type"),
+            Some(&json!(
+                crate::attachments::manifest::attachment_manifest_content_type()
+            ))
+        );
+        let encoded = serde_json::to_string(&notification).unwrap();
+        assert!(!encoded.contains("object_key_b64u"));
+        assert!(!encoded.contains("nonce_b64u"));
+        assert!(!encoded.contains("OBJECT-KEY-SECRET"));
+        assert!(!encoded.contains("NONCE-SECRET"));
+        assert_eq!(
+            notification.pointer("/params/body/payload/attachments/0/encryption_info/mode"),
+            Some(&json!("object-e2ee"))
+        );
+        assert_eq!(
+            notification
+                .pointer("/params/body/payload/attachments/0/encryption_info/plaintext_size"),
+            Some(&json!("11"))
+        );
+    }
+
+    #[derive(Clone, Default)]
     struct StaticDecryptProvider {
-        last_input: RefCell<Option<DecryptInput>>,
+        last_input: Arc<Mutex<Option<DecryptInput>>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct AttachmentDecryptProvider {
+        last_input: Arc<Mutex<Option<DecryptInput>>>,
     }
 
     impl GroupMlsProvider for StaticDecryptProvider {
         fn decrypt(&self, input: DecryptInput) -> crate::ImResult<DecryptOutput> {
-            self.last_input.borrow_mut().replace(input);
+            self.last_input.lock().unwrap().replace(input);
             Ok(DecryptOutput {
                 application_plaintext: GroupApplicationPlaintext {
                     application_content_type: "text/plain".to_owned(),
@@ -641,6 +882,130 @@ mod tests {
                     annotations: Map::new(),
                     text: Some("decrypted group text".to_owned()),
                     payload: None,
+                    payload_b64u: None,
+                },
+                epoch: "1".to_owned(),
+            })
+        }
+
+        fn generate_key_package(
+            &self,
+            _input: GenerateKeyPackageInput,
+        ) -> crate::ImResult<GroupKeyPackageOutput> {
+            unreachable!("incoming should not generate key packages")
+        }
+
+        fn create_group_prepare(
+            &self,
+            _input: CreateGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("incoming should not create groups")
+        }
+
+        fn add_member_prepare(
+            &self,
+            _input: AddMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("incoming should not add members")
+        }
+
+        fn remove_member_prepare(
+            &self,
+            _input: RemoveMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("incoming should not remove members")
+        }
+
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("incoming should not leave groups")
+        }
+
+        fn update_member_prepare(
+            &self,
+            _input: UpdateMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("incoming should not update members")
+        }
+
+        fn recover_member_prepare(
+            &self,
+            _input: RecoverMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("incoming should not recover members")
+        }
+
+        fn finalize_commit(
+            &self,
+            _input: FinalizeCommitInput,
+        ) -> crate::ImResult<FinalizeCommitOutput> {
+            unreachable!("incoming should not finalize commits")
+        }
+
+        fn abort_commit(&self, _input: AbortCommitInput) -> crate::ImResult<AbortCommitOutput> {
+            unreachable!("incoming should not abort commits")
+        }
+
+        fn process_welcome(
+            &self,
+            _input: ProcessWelcomeInput,
+        ) -> crate::ImResult<ProcessWelcomeOutput> {
+            unreachable!("incoming should not process welcomes")
+        }
+
+        fn process_notice(
+            &self,
+            _input: ProcessNoticeInput,
+        ) -> crate::ImResult<ProcessNoticeOutput> {
+            unreachable!("incoming should not process notices")
+        }
+
+        fn encrypt(&self, _input: EncryptInput) -> crate::ImResult<EncryptOutput> {
+            unreachable!("incoming should not encrypt")
+        }
+
+        fn status(&self, _input: StatusInput) -> crate::ImResult<StatusOutput> {
+            unreachable!("incoming should not read status")
+        }
+    }
+
+    impl GroupMlsProvider for AttachmentDecryptProvider {
+        fn decrypt(&self, input: DecryptInput) -> crate::ImResult<DecryptOutput> {
+            self.last_input.lock().unwrap().replace(input);
+            Ok(DecryptOutput {
+                application_plaintext: GroupApplicationPlaintext {
+                    application_content_type:
+                        crate::attachments::manifest::attachment_manifest_content_type().to_owned(),
+                    thread_id: None,
+                    reply_to_message_id: None,
+                    annotations: Map::new(),
+                    text: None,
+                    payload: Some(json!({
+                        "attachments": [{
+                            "attachment_id": "att-group-secure-rt",
+                            "filename": "secret.txt",
+                            "mime_type": "text/plain",
+                            "size": "27",
+                            "digest": {
+                                "alg": "sha-256",
+                                "value_b64u": "ciphertext-digest"
+                            },
+                            "access_info": {
+                                "object_uri": "https://objects.example/secure"
+                            },
+                            "encryption_info": {
+                                "mode": "object-e2ee",
+                                "object_cipher": "chacha20-poly1305",
+                                "object_key_b64u": "OBJECT-KEY-SECRET",
+                                "nonce_b64u": "NONCE-SECRET",
+                                "plaintext_size": "11"
+                            }
+                        }],
+                        "caption": "secure attachment",
+                        "primary_attachment_id": "att-group-secure-rt"
+                    })),
                     payload_b64u: None,
                 },
                 epoch: "1".to_owned(),

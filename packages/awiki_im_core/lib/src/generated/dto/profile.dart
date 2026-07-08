@@ -11,17 +11,26 @@ class DartProfilePatch {
   final String? bio;
   final List<String>? tags;
   final String? markdown;
+  final String? avatarUri;
+  final String? avatarUrl;
 
   const DartProfilePatch({
     this.displayName,
     this.bio,
     this.tags,
     this.markdown,
+    this.avatarUri,
+    this.avatarUrl,
   });
 
   @override
   int get hashCode =>
-      displayName.hashCode ^ bio.hashCode ^ tags.hashCode ^ markdown.hashCode;
+      displayName.hashCode ^
+      bio.hashCode ^
+      tags.hashCode ^
+      markdown.hashCode ^
+      avatarUri.hashCode ^
+      avatarUrl.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -31,40 +40,63 @@ class DartProfilePatch {
           displayName == other.displayName &&
           bio == other.bio &&
           tags == other.tags &&
-          markdown == other.markdown;
+          markdown == other.markdown &&
+          avatarUri == other.avatarUri &&
+          avatarUrl == other.avatarUrl;
 }
 
 class DartUserProfile {
   final String subject;
   final String? handle;
+  final String? fullHandle;
   final String? displayName;
   final String? bio;
+  final String? description;
   final List<String> tags;
   final String? markdown;
+  final String? avatarUri;
   final String? avatarUrl;
+  final String? profileUri;
+  final String? subjectType;
   final String? updatedAt;
+  final String? versionId;
+  final BigInt? ttl;
 
   const DartUserProfile({
     required this.subject,
     this.handle,
+    this.fullHandle,
     this.displayName,
     this.bio,
+    this.description,
     required this.tags,
     this.markdown,
+    this.avatarUri,
     this.avatarUrl,
+    this.profileUri,
+    this.subjectType,
     this.updatedAt,
+    this.versionId,
+    this.ttl,
   });
 
   @override
   int get hashCode =>
       subject.hashCode ^
       handle.hashCode ^
+      fullHandle.hashCode ^
       displayName.hashCode ^
       bio.hashCode ^
+      description.hashCode ^
       tags.hashCode ^
       markdown.hashCode ^
+      avatarUri.hashCode ^
       avatarUrl.hashCode ^
-      updatedAt.hashCode;
+      profileUri.hashCode ^
+      subjectType.hashCode ^
+      updatedAt.hashCode ^
+      versionId.hashCode ^
+      ttl.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -73,10 +105,17 @@ class DartUserProfile {
           runtimeType == other.runtimeType &&
           subject == other.subject &&
           handle == other.handle &&
+          fullHandle == other.fullHandle &&
           displayName == other.displayName &&
           bio == other.bio &&
+          description == other.description &&
           tags == other.tags &&
           markdown == other.markdown &&
+          avatarUri == other.avatarUri &&
           avatarUrl == other.avatarUrl &&
-          updatedAt == other.updatedAt;
+          profileUri == other.profileUri &&
+          subjectType == other.subjectType &&
+          updatedAt == other.updatedAt &&
+          versionId == other.versionId &&
+          ttl == other.ttl;
 }

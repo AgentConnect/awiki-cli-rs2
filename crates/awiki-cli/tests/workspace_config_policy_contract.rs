@@ -1,7 +1,10 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn config_show_rejects_deprecated_service_url_fields_like_go() {
@@ -148,6 +151,8 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", std::path::Path::new(workspace).join("home"))
+        .env("USERPROFILE", std::path::Path::new(workspace).join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -211,8 +216,11 @@ impl TempDir {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("awiki-cli-rs2-test-{}-{nanos}", std::process::id()));
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-test-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&path)?;
         Ok(Self { path })
     }

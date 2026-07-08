@@ -271,8 +271,8 @@ mod tests {
         let proxy = TestServer::new(vec![TestResponse::ok(
             r#"{"version":"1.0.11","awikiCli":{"minSupportedVersion":"1.0.9"}}"#,
         )]);
-        let _proxy = EnvVar::set("HTTP_PROXY", &proxy.url(""));
         let _urls = TestUrls::set(vec!["http://registry.example/latest".to_string()]);
+        let _proxy = EnvVar::set("HTTP_PROXY", &proxy.url(""));
         let temp = TempDir::new();
 
         let outcome = super::check_fresh(&resolved(temp.path()));
@@ -374,6 +374,8 @@ mod tests {
             output_format: "json".to_string(),
             no_color: false,
             service_base_url: "https://awiki.ai".to_string(),
+            user_service_endpoint: "https://awiki.ai".to_string(),
+            message_service_endpoint: "https://awiki.ai".to_string(),
             did_domain: "awiki.ai".to_string(),
             anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
             anp_service_did: String::new(),

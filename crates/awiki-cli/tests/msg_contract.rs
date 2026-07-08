@@ -381,6 +381,53 @@ fn msg_send_default_cutover_dry_run_routes_direct_and_group_text() {
         group_text_file["data"]["plan"]["target"],
         json!({ "did": "did:wba:awiki.ai:groups:demo:e1_group", "kind": "group" })
     );
+
+    let group_payload = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--group",
+            "did:wba:awiki.ai:groups:demo:e1_group",
+            "--payload",
+            r#"{"text":"@agent hi","mentions":[]}"#,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(group_payload["data"]["plan"]["action"], "group.send");
+    assert_eq!(
+        group_payload["data"]["plan"]["message_type"],
+        "application/json"
+    );
+    assert_eq!(
+        group_payload["data"]["plan"]["payload"],
+        json!({"text":"@agent hi","mentions":[]})
+    );
+
+    let payload_path = workspace.path().join("payload.json");
+    std::fs::write(&payload_path, r#"{"schema":"awiki.test.v1","ok":true}"#)
+        .expect("write payload file");
+    let direct_payload_file = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload-file",
+            payload_path.to_str().unwrap(),
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(direct_payload_file["data"]["plan"]["action"], "direct.send");
+    assert_eq!(
+        direct_payload_file["data"]["plan"]["payload"],
+        json!({"schema":"awiki.test.v1","ok":true})
+    );
 }
 
 #[test]
@@ -686,6 +733,46 @@ fn msg_validation_errors_match_go_handler_boundary() {
         "msg send requires --text or --text-file.",
     );
 
+    let payload_text_conflict = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            r#"{"text":"structured"}"#,
+            "--text",
+            "plain",
+        ],
+        workspace.path(),
+    );
+    assert_code(&payload_text_conflict, 2);
+    let envelope = error_json(&payload_text_conflict);
+    assert_contains(
+        &envelope["error"]["message"],
+        "--payload/--payload-file cannot be combined",
+    );
+
+    let payload_not_object = awiki_cmd(
+        &[
+            "--dry-run",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--payload",
+            r#"["not","object"]"#,
+        ],
+        workspace.path(),
+    );
+    assert_code(&payload_not_object, 2);
+    let envelope = error_json(&payload_not_object);
+    assert_contains(
+        &envelope["error"]["message"],
+        "payload must be a JSON object",
+    );
+
     let mime_without_file = awiki_cmd(
         &[
             "--dry-run",
@@ -751,13 +838,14 @@ fn msg_validation_errors_match_go_handler_boundary() {
 }
 
 #[test]
-fn msg_unsupported_secure_mode_errors_match_cutover_boundary() {
+fn msg_secure_attachment_dry_run_uses_high_level_plan() {
     let workspace = TempDir::new().expect("workspace");
     let attachment = workspace.path().join("payload.txt");
     std::fs::write(&attachment, "attachment body").expect("write attachment");
 
-    let secure_attachment = awiki_cmd(
+    let secure_attachment = success_json(&awiki_cmd(
         &[
+            "--dry-run",
             "--identity",
             "alice",
             "msg",
@@ -772,11 +860,21 @@ fn msg_unsupported_secure_mode_errors_match_cutover_boundary() {
             "on",
         ],
         workspace.path(),
+    ));
+    assert_eq!(
+        secure_attachment["data"]["plan"]["action"],
+        "attachment.send"
     );
-    assert_code(&secure_attachment, 2);
-    let envelope = error_json(&secure_attachment);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_contains(&envelope["error"]["message"], "secure attachment");
+    assert_eq!(secure_attachment["data"]["plan"]["secure"], true);
+    assert_eq!(secure_attachment["data"]["plan"]["security"], "required");
+    assert_warning_contains(
+        &secure_attachment,
+        "--secure on is deprecated; use --secure required.",
+    );
+    let serialized = serde_json::to_string(&secure_attachment).expect("serialize envelope");
+    assert!(!serialized.contains("object_key_b64u"));
+    assert!(!serialized.contains("nonce_b64u"));
+    assert!(!serialized.contains("download_ticket"));
 }
 
 #[test]
@@ -830,6 +928,8 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

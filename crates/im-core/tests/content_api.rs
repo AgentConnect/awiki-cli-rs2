@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use im_core::prelude::*;
 use serde_json::{json, Value};
 
-#[test]
-fn content_public_api_dispatches_authenticated_content_rpc() {
+#[tokio::test]
+async fn content_public_async_api_dispatches_authenticated_content_rpc() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         json!({
@@ -35,7 +35,7 @@ fn content_public_api_dispatches_authenticated_content_rpc() {
 
     let created = client
         .content()
-        .create_page(
+        .create_page_async(
             PageDraft::new(
                 PageSlug::parse("hello").unwrap(),
                 "Hello",
@@ -44,6 +44,7 @@ fn content_public_api_dispatches_authenticated_content_rpc() {
             )
             .unwrap(),
         )
+        .await
         .unwrap();
     assert_eq!(created.slug.as_str(), "hello");
     assert_eq!(created.title.as_deref(), Some("Hello"));
@@ -51,7 +52,8 @@ fn content_public_api_dispatches_authenticated_content_rpc() {
 
     let listed = client
         .content()
-        .list_pages(ContentPageQuery::default())
+        .list_pages_async(ContentPageQuery::default())
+        .await
         .unwrap();
     assert_eq!(listed.items.len(), 1);
     assert!(!listed.has_more);
@@ -77,8 +79,8 @@ fn content_public_api_dispatches_authenticated_content_rpc() {
     assert_eq!(requests[1].params, json!({}));
 }
 
-#[test]
-fn content_public_api_dispatches_all_page_rpc_methods() {
+#[tokio::test]
+async fn content_public_api_dispatches_all_page_rpc_methods() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         RpcResponse::success(json!({
@@ -107,12 +109,12 @@ fn content_public_api_dispatches_all_page_rpc_methods() {
         .unwrap();
 
     let page = PageRef::new(PageSlug::parse("hello").unwrap());
-    let fetched = client.content().get_page(page.clone()).unwrap();
+    let fetched = client.content().get_page_async(page.clone()).await.unwrap();
     assert_eq!(fetched.slug.as_str(), "hello");
 
     let updated = client
         .content()
-        .update_page(
+        .update_page_async(
             page.clone(),
             PageUpdate {
                 title: Some("Updated".to_owned()),
@@ -120,17 +122,19 @@ fn content_public_api_dispatches_all_page_rpc_methods() {
                 visibility: Some(Visibility::Unlisted),
             },
         )
+        .await
         .unwrap();
     assert_eq!(updated.title.as_deref(), Some("Updated"));
     assert!(matches!(updated.visibility, Some(Visibility::Unlisted)));
 
     let renamed = client
         .content()
-        .rename_page(page.clone(), PageSlug::parse("new").unwrap())
+        .rename_page_async(page.clone(), PageSlug::parse("new").unwrap())
+        .await
         .unwrap();
     assert_eq!(renamed.slug.as_str(), "new");
 
-    let deleted = client.content().delete_page(page).unwrap();
+    let deleted = client.content().delete_page_async(page).await.unwrap();
     assert!(deleted.deleted);
 
     let requests = server.join();
@@ -157,8 +161,8 @@ fn content_public_api_dispatches_all_page_rpc_methods() {
     assert_eq!(requests[3].params, json!({ "slug": "hello" }));
 }
 
-#[test]
-fn content_public_api_maps_remote_error_statuses() {
+#[tokio::test]
+async fn content_public_api_maps_remote_error_statuses() {
     for status in [400, 401, 403, 404, 409] {
         let fixture = Fixture::new();
         let mut responses = vec![RpcResponse::http_error(
@@ -176,7 +180,8 @@ fn content_public_api_maps_remote_error_statuses() {
 
         let err = client
             .content()
-            .get_page(PageRef::new(PageSlug::parse("hello").unwrap()))
+            .get_page_async(PageRef::new(PageSlug::parse("hello").unwrap()))
+            .await
             .expect_err("remote status should map to service error");
         assert_service_status(err, status);
         let expected_requests = if status == 401 { 2 } else { 1 };
@@ -406,7 +411,10 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
 fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {

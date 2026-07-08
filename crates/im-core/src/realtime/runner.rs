@@ -1,20 +1,37 @@
+use std::future::Future;
+#[cfg(feature = "blocking")]
 use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 
+#[cfg(feature = "sqlite")]
+use crate::internal::transport::AsyncRpcTransport;
+#[cfg(feature = "blocking")]
 use crate::internal::transport::RpcTransport;
 
+#[cfg(feature = "blocking")]
 pub trait RealtimeRunnerTransport {
     fn connect(&mut self) -> crate::ImResult<()>;
 
     fn next_notification(&mut self) -> crate::ImResult<Option<Value>>;
 }
 
+pub(crate) trait AsyncRealtimeRunnerTransport {
+    fn connect(&mut self) -> impl Future<Output = crate::ImResult<()>> + Send + '_;
+
+    fn next_notification(
+        &mut self,
+    ) -> impl Future<Output = crate::ImResult<Option<Value>>> + Send + '_;
+}
+
+#[cfg(feature = "blocking")]
 pub trait RealtimeRunnerEventSink {
     fn emit(&mut self, event: super::ImEvent) -> crate::ImResult<()>;
 }
 
+#[cfg(feature = "blocking")]
 pub struct RealtimeRunnerOutcome {
     pub exit: super::RealtimeExit,
     pub handle: super::RealtimeHandle,
@@ -22,6 +39,7 @@ pub struct RealtimeRunnerOutcome {
 
 pub(crate) struct RealtimeProjectionOutcome {
     pub(crate) event: Option<super::ImEvent>,
+    pub(crate) additional_events: Vec<super::ImEvent>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -29,6 +47,23 @@ pub(crate) trait RealtimeNotificationProjector {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome;
 }
 
+pub(crate) trait AsyncRealtimeNotificationProjector {
+    fn project_async(
+        &mut self,
+        notification: Value,
+    ) -> impl Future<Output = RealtimeProjectionOutcome> + Send + '_;
+}
+
+impl<T> AsyncRealtimeNotificationProjector for T
+where
+    T: RealtimeNotificationProjector + Send,
+{
+    async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        RealtimeNotificationProjector::project(self, notification)
+    }
+}
+
+#[cfg(feature = "blocking")]
 pub fn run_realtime_transport_until_shutdown<T>(
     options: super::RealtimeOptions,
     shutdown: super::ShutdownSignal,
@@ -52,6 +87,7 @@ where
     )
 }
 
+#[cfg(feature = "blocking")]
 pub fn run_realtime_transport_with_event_sink_until_shutdown<T, S>(
     options: super::RealtimeOptions,
     shutdown: super::ShutdownSignal,
@@ -77,6 +113,7 @@ where
     )
 }
 
+#[cfg(feature = "blocking")]
 fn run_realtime_transport_loop<T, E, P>(
     options: super::RealtimeOptions,
     shutdown: super::ShutdownSignal,
@@ -163,6 +200,18 @@ where
                     }
                     let projection = projector.project(notification);
                     warnings.extend(projection.warnings);
+                    for event in projection.additional_events {
+                        if let Err(warning) = events.emit(event) {
+                            warnings.push(warning);
+                            return Ok(outcome(
+                                receiver,
+                                control,
+                                super::RealtimeExitReason::ConnectionClosed,
+                                reconnect_attempts,
+                                warnings,
+                            ));
+                        }
+                    }
                     let Some(event) = projection.event else {
                         continue;
                     };
@@ -239,16 +288,19 @@ impl RealtimeNotificationProjector for PlainRealtimeNotificationProjector {
             event: Some(
                 crate::internal::realtime::projection::project_notification(&notification).event,
             ),
+            additional_events: Vec::new(),
             warnings: Vec::new(),
         }
     }
 }
 
+#[cfg(feature = "blocking")]
 struct SecureRealtimeNotificationProjector<'a, R> {
     client: &'a crate::core::ImClient,
     directory_transport: R,
 }
 
+#[cfg(feature = "blocking")]
 impl<R> RealtimeNotificationProjector for SecureRealtimeNotificationProjector<'_, R>
 where
     R: RpcTransport,
@@ -262,6 +314,7 @@ where
         let Some(notification) = notification else {
             return RealtimeProjectionOutcome {
                 event: None,
+                additional_events: Vec::new(),
                 warnings,
             };
         };
@@ -270,34 +323,237 @@ where
         else {
             return RealtimeProjectionOutcome {
                 event: None,
+                additional_events: Vec::new(),
                 warnings,
             };
         };
         let event =
             Some(crate::internal::realtime::projection::project_notification(&notification).event);
-        RealtimeProjectionOutcome { event, warnings }
+        RealtimeProjectionOutcome {
+            event,
+            additional_events: Vec::new(),
+            warnings,
+        }
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+struct AsyncFirstSecureRealtimeNotificationProjector<'a> {
+    client: &'a crate::core::ImClient,
+    runtime: Option<tokio::runtime::Runtime>,
+    direct_processor:
+        crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor<'a>,
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+impl<'a> AsyncFirstSecureRealtimeNotificationProjector<'a> {
+    fn new(client: &'a crate::core::ImClient) -> Self {
+        Self {
+            client,
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .ok(),
+            direct_processor:
+                crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor::new(
+                    client,
+                ),
+        }
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+impl RealtimeNotificationProjector for AsyncFirstSecureRealtimeNotificationProjector<'_> {
+    fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let projection = normalize_direct_e2ee_realtime_notification_async_first(
+            self.client,
+            self.runtime.as_ref(),
+            &self.direct_processor,
+            notification,
+        );
+        let (notification, mut warnings, additional_notifications) = match projection {
+            DirectRealtimeProjectionResult::Projected {
+                notification,
+                additional_notifications,
+                warnings,
+            } => (notification, warnings, additional_notifications),
+            DirectRealtimeProjectionResult::Fallback(notification) => (
+                Some(notification),
+                vec![
+                    "secure direct realtime async projection fell back to wire notification"
+                        .to_owned(),
+                ],
+                Vec::new(),
+            ),
+        };
+        let additional_events = additional_notifications
+            .into_iter()
+            .filter_map(|notification| {
+                let mut group_warnings = Vec::new();
+                normalize_group_e2ee_realtime_notification_async_first(
+                    self.client,
+                    self.runtime.as_ref(),
+                    notification,
+                    &mut group_warnings,
+                )
+                .map(|notification| {
+                    warnings.extend(group_warnings);
+                    crate::internal::realtime::projection::project_notification(&notification).event
+                })
+            })
+            .collect::<Vec<_>>();
+        let Some(notification) = notification else {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events,
+                warnings,
+            };
+        };
+        let Some(notification) = normalize_group_e2ee_realtime_notification_async_first(
+            self.client,
+            self.runtime.as_ref(),
+            notification,
+            &mut warnings,
+        ) else {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events,
+                warnings,
+            };
+        };
+        let event =
+            Some(crate::internal::realtime::projection::project_notification(&notification).event);
+        RealtimeProjectionOutcome {
+            event,
+            additional_events,
+            warnings,
+        }
     }
 }
 
 #[cfg(feature = "sqlite")]
+struct AsyncSecureRealtimeNotificationProjector<'a> {
+    client: &'a crate::core::ImClient,
+    direct_processor:
+        crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor<'a>,
+}
+
+#[cfg(feature = "sqlite")]
+impl<'a> AsyncSecureRealtimeNotificationProjector<'a> {
+    fn new(client: &'a crate::core::ImClient) -> Self {
+        Self {
+            client,
+            direct_processor:
+                crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor::new(
+                    client,
+                ),
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl AsyncRealtimeNotificationProjector for AsyncSecureRealtimeNotificationProjector<'_> {
+    async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let projection = normalize_direct_e2ee_realtime_notification_async(
+            self.client,
+            &self.direct_processor,
+            notification,
+        )
+        .await;
+        let (notification, mut warnings, additional_notifications) = match projection {
+            DirectRealtimeProjectionResult::Projected {
+                notification,
+                additional_notifications,
+                warnings,
+            } => (notification, warnings, additional_notifications),
+            DirectRealtimeProjectionResult::Fallback(notification) => (
+                Some(notification),
+                vec![
+                    "secure direct realtime async projection fell back to wire notification"
+                        .to_owned(),
+                ],
+                Vec::new(),
+            ),
+        };
+        let mut additional_events = Vec::new();
+        for notification in additional_notifications {
+            let mut group_warnings = Vec::new();
+            if let Some(notification) = normalize_group_e2ee_realtime_notification_async(
+                self.client,
+                notification,
+                &mut group_warnings,
+            )
+            .await
+            {
+                warnings.extend(group_warnings);
+                additional_events.push(
+                    crate::internal::realtime::projection::project_notification(&notification)
+                        .event,
+                );
+            }
+        }
+        let Some(notification) = notification else {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events,
+                warnings,
+            };
+        };
+        let Some(notification) = normalize_group_e2ee_realtime_notification_async(
+            self.client,
+            notification,
+            &mut warnings,
+        )
+        .await
+        else {
+            return RealtimeProjectionOutcome {
+                event: None,
+                additional_events,
+                warnings,
+            };
+        };
+        let event =
+            Some(crate::internal::realtime::projection::project_notification(&notification).event);
+        RealtimeProjectionOutcome {
+            event,
+            additional_events,
+            warnings,
+        }
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 struct LocalStateRealtimeNotificationProjector<'a, P> {
     client: &'a crate::core::ImClient,
     inner: P,
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 impl<P> RealtimeNotificationProjector for LocalStateRealtimeNotificationProjector<'_, P>
 where
     P: RealtimeNotificationProjector,
 {
     fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
         let outcome = self.inner.project(notification);
+        for event in &outcome.additional_events {
+            if let Err(error) = project_realtime_event_to_local_state(self.client, event) {
+                let mut warnings = outcome.warnings;
+                warnings.push(error.to_string());
+                return RealtimeProjectionOutcome {
+                    event: outcome.event,
+                    additional_events: outcome.additional_events,
+                    warnings,
+                };
+            }
+        }
         if let Some(event) = outcome.event.as_ref() {
             if let Err(error) = project_realtime_event_to_local_state(self.client, event) {
                 let mut warnings = outcome.warnings;
                 warnings.push(error.to_string());
                 return RealtimeProjectionOutcome {
                     event: outcome.event,
+                    additional_events: outcome.additional_events,
                     warnings,
                 };
             }
@@ -307,6 +563,42 @@ where
 }
 
 #[cfg(feature = "sqlite")]
+struct AsyncLocalStateRealtimeNotificationProjector<P> {
+    client: crate::core::ImClient,
+    inner: P,
+}
+
+#[cfg(feature = "sqlite")]
+impl<P> AsyncRealtimeNotificationProjector for AsyncLocalStateRealtimeNotificationProjector<P>
+where
+    P: AsyncRealtimeNotificationProjector + Send,
+{
+    async fn project_async(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let outcome = self.inner.project_async(notification).await;
+        let mut warnings = outcome.warnings;
+        for event in &outcome.additional_events {
+            if let Err(error) =
+                project_realtime_event_to_local_state_async(&self.client, event).await
+            {
+                warnings.push(error.to_string());
+            }
+        }
+        if let Some(event) = outcome.event.as_ref() {
+            if let Err(error) =
+                project_realtime_event_to_local_state_async(&self.client, event).await
+            {
+                warnings.push(error.to_string());
+            }
+        }
+        RealtimeProjectionOutcome {
+            event: outcome.event,
+            additional_events: outcome.additional_events,
+            warnings,
+        }
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn project_realtime_event_to_local_state(
     client: &crate::core::ImClient,
     event: &super::ImEvent,
@@ -323,10 +615,31 @@ fn project_realtime_event_to_local_state(
 }
 
 #[cfg(feature = "sqlite")]
+async fn project_realtime_event_to_local_state_async(
+    client: &crate::core::ImClient,
+    event: &super::ImEvent,
+) -> crate::ImResult<()> {
+    match event {
+        super::ImEvent::MessageReceived(event) => {
+            project_realtime_message_received_async(client, event).await
+        }
+        super::ImEvent::GroupUpdated(event) => {
+            project_realtime_group_updated_async(client, event).await
+        }
+        super::ImEvent::ConnectionStateChanged(_)
+        | super::ImEvent::MessageUpdated(_)
+        | super::ImEvent::LocalNotification(_)
+        | super::ImEvent::HostNotification(_)
+        | super::ImEvent::UnknownNotification(_) => Ok(()),
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn project_realtime_message_received(
     client: &crate::core::ImClient,
     event: &super::MessageReceivedEvent,
 ) -> crate::ImResult<()> {
+    let peer_scope = realtime_direct_peer_scope(client, &event.message);
     let Some(projection) =
         crate::internal::realtime::local_projection::plan_realtime_message_local_projection(
             &crate::internal::realtime::local_projection::RealtimeMessageLocalProjectionContext {
@@ -338,6 +651,7 @@ fn project_realtime_message_received(
                     .as_deref()
                     .unwrap_or_else(|| client.current_identity().id.as_str())
                     .to_string(),
+                peer_scope,
             },
             &event.message,
             event.attachment_summary.as_ref(),
@@ -369,48 +683,176 @@ fn project_realtime_message_received(
         },
         &group_did,
     )?;
+    client.emit_committed_local_message_projection("realtime_incoming");
     Ok(())
 }
 
 #[cfg(feature = "sqlite")]
+async fn project_realtime_message_received_async(
+    client: &crate::core::ImClient,
+    event: &super::MessageReceivedEvent,
+) -> crate::ImResult<()> {
+    let peer_scope = realtime_direct_peer_scope_async(client, &event.message).await;
+    let Some(projection) =
+        crate::internal::realtime::local_projection::plan_realtime_message_local_projection(
+            &crate::internal::realtime::local_projection::RealtimeMessageLocalProjectionContext {
+                owner_identity_id: client.current_identity().id.as_str().to_string(),
+                owner_did: client.did().as_str().to_string(),
+                credential_name: client
+                    .current_identity()
+                    .local_alias
+                    .as_deref()
+                    .unwrap_or_else(|| client.current_identity().id.as_str())
+                    .to_string(),
+                peer_scope,
+            },
+            &event.message,
+            event.attachment_summary.as_ref(),
+            event.download_action.as_ref(),
+            &event.warnings,
+        )
+    else {
+        return Ok(());
+    };
+    let group_did = projection.group_did().to_string();
+    let sender_did = projection.sender_did().to_string();
+    let sent_at = event.message.sent_at.clone();
+    let db = client.core_inner().local_state_db().await?;
+    db.store_messages(vec![projection.into_record()]).await?;
+    if let Some(record) = realtime_message_group_record(client, &group_did, sent_at.as_deref()) {
+        db.upsert_group(record).await?;
+    }
+    if let Some(record) = realtime_message_contact_record(
+        client,
+        &sender_did,
+        if group_did.trim().is_empty() {
+            "realtime.direct.incoming"
+        } else {
+            "realtime.group.incoming"
+        },
+        &group_did,
+    ) {
+        db.upsert_contact(record).await?;
+    }
+    client.emit_committed_local_message_projection("realtime_incoming");
+    Ok(())
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn project_realtime_message_group(
     client: &crate::core::ImClient,
     connection: &rusqlite::Connection,
     group_did: &str,
     sent_at: Option<&str>,
 ) -> crate::ImResult<()> {
-    let group = group_did.trim();
-    if group.is_empty() {
+    let Some(record) = realtime_message_group_record(client, group_did, sent_at) else {
         return Ok(());
-    }
-    crate::internal::local_state::groups::upsert_group(
-        connection,
-        crate::internal::local_state::groups::GroupRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_string(),
-            owner_did: client.did().as_str().to_string(),
-            group_id: group.to_string(),
-            group_did: group.to_string(),
-            last_message_at: sent_at
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(now_utc_like),
-            metadata: serde_json::json!({
-                "source": "im-core.realtime.message",
-            })
-            .to_string(),
-            credential_name: client
-                .current_identity()
-                .local_alias
-                .as_deref()
-                .unwrap_or_else(|| client.current_identity().id.as_str())
-                .to_string(),
-            ..crate::internal::local_state::groups::GroupRecord::default()
-        },
-    )
+    };
+    crate::internal::local_state::groups::upsert_group(connection, record)
 }
 
 #[cfg(feature = "sqlite")]
+fn realtime_message_group_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    sent_at: Option<&str>,
+) -> Option<crate::internal::local_state::groups::GroupRecord> {
+    let group = group_did.trim();
+    if group.is_empty() {
+        return None;
+    }
+    Some(crate::internal::local_state::groups::GroupRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
+        owner_did: client.did().as_str().to_string(),
+        group_id: group.to_string(),
+        group_did: group.to_string(),
+        last_message_at: sent_at
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(now_utc_like),
+        metadata: serde_json::json!({
+            "source": "im-core.realtime.message",
+        })
+        .to_string(),
+        credential_name: client
+            .current_identity()
+            .local_alias
+            .as_deref()
+            .unwrap_or_else(|| client.current_identity().id.as_str())
+            .to_string(),
+        ..crate::internal::local_state::groups::GroupRecord::default()
+    })
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn realtime_direct_peer_scope(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let peer_did = realtime_direct_peer_did(client, message)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
+        peer_did.as_str(),
+    )
+    .ok()?;
+    let raw = RpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params).ok()?;
+    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str().to_owned(),
+    )
+    .ok()
+}
+
+#[cfg(feature = "sqlite")]
+async fn realtime_direct_peer_scope_async(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> Option<crate::internal::local_state::owner_scope::DirectPeerScope> {
+    let peer_did = realtime_direct_peer_did(client, message)?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let call = crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(
+        peer_did.as_str(),
+    )
+    .ok()?;
+    let raw = AsyncRpcTransport::rpc(&mut transport, call.endpoint, call.method, call.params)
+        .await
+        .ok()?;
+    let lookup = crate::internal::directory_runtime::handle_lookup_from_value(&raw).ok()?;
+    crate::internal::local_state::owner_scope::DirectPeerScope::new(
+        lookup.user_id,
+        lookup.handle.as_str().to_owned(),
+    )
+    .ok()
+}
+
+#[cfg(feature = "sqlite")]
+fn realtime_direct_peer_did(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> Option<String> {
+    if message.group.is_some() || matches!(message.thread, crate::messages::ThreadRef::Group(_)) {
+        return None;
+    }
+    let owner = client.did().as_str().trim();
+    let sender = message.sender.as_str().trim();
+    let receiver = message
+        .receiver
+        .as_ref()
+        .map(|peer| peer.as_str().trim())
+        .unwrap_or_default();
+    let peer = if !sender.is_empty() && sender != owner {
+        sender
+    } else if !receiver.is_empty() && receiver != owner {
+        receiver
+    } else {
+        ""
+    };
+    (!peer.is_empty() && peer.starts_with("did:")).then(|| peer.to_owned())
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn project_realtime_message_contact(
     client: &crate::core::ImClient,
     connection: &mut rusqlite::Connection,
@@ -418,66 +860,106 @@ fn project_realtime_message_contact(
     source_type: &str,
     source_group_id: &str,
 ) -> crate::ImResult<()> {
-    let peer_did = peer_did.trim();
-    if peer_did.is_empty() || peer_did == client.did().as_str() {
+    let Some(record) =
+        realtime_message_contact_record(client, peer_did, source_type, source_group_id)
+    else {
         return Ok(());
-    }
-    crate::internal::contact_store::records::upsert_contact(
-        connection,
-        crate::internal::contact_store::records::ContactRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_string(),
-            owner_did: client.did().as_str().to_string(),
-            did: peer_did.to_string(),
-            source_type: source_type.to_string(),
-            source_group_id: source_group_id.trim().to_string(),
-            messaged: Some(true),
-            first_seen_at: now_utc_like(),
-            last_seen_at: now_utc_like(),
-            credential_name: client
-                .current_identity()
-                .local_alias
-                .as_deref()
-                .unwrap_or_else(|| client.current_identity().id.as_str())
-                .to_string(),
-            ..crate::internal::contact_store::records::ContactRecord::default()
-        },
-    )
+    };
+    crate::internal::contact_store::records::upsert_contact(connection, record)
 }
 
 #[cfg(feature = "sqlite")]
+fn realtime_message_contact_record(
+    client: &crate::core::ImClient,
+    peer_did: &str,
+    source_type: &str,
+    source_group_id: &str,
+) -> Option<crate::internal::contact_store::records::ContactRecord> {
+    let peer_did = peer_did.trim();
+    if peer_did.is_empty() || peer_did == client.did().as_str() {
+        return None;
+    }
+    Some(crate::internal::contact_store::records::ContactRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
+        owner_did: client.did().as_str().to_string(),
+        did: peer_did.to_string(),
+        source_type: source_type.to_string(),
+        source_group_id: source_group_id.trim().to_string(),
+        messaged: Some(true),
+        first_seen_at: now_utc_like(),
+        last_seen_at: now_utc_like(),
+        credential_name: client
+            .current_identity()
+            .local_alias
+            .as_deref()
+            .unwrap_or_else(|| client.current_identity().id.as_str())
+            .to_string(),
+        ..crate::internal::contact_store::records::ContactRecord::default()
+    })
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn project_realtime_group_updated(
     client: &crate::core::ImClient,
     event: &super::GroupUpdatedEvent,
 ) -> crate::ImResult<()> {
-    let group = event.group.as_str().trim();
-    if group.is_empty() {
+    let Some(record) = realtime_group_update_record(client, event) else {
         return Ok(());
-    }
+    };
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::groups::upsert_group(
-        &connection,
-        crate::internal::local_state::groups::GroupRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_string(),
-            owner_did: client.did().as_str().to_string(),
-            group_id: group.to_string(),
-            group_did: group.to_string(),
-            last_message_at: now_utc_like(),
-            metadata: serde_json::json!({
-                "source": "im-core.realtime",
-                "update_kind": group_update_kind_label(&event.update_kind),
-            })
+    crate::internal::local_state::groups::upsert_group(&connection, record)?;
+    if let Some(message) = realtime_group_system_message_record(client, event) {
+        crate::internal::local_state::messages::upsert_message(&connection, &message)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+async fn project_realtime_group_updated_async(
+    client: &crate::core::ImClient,
+    event: &super::GroupUpdatedEvent,
+) -> crate::ImResult<()> {
+    let Some(record) = realtime_group_update_record(client, event) else {
+        return Ok(());
+    };
+    let db = client.core_inner().local_state_db().await?;
+    db.upsert_group(record).await?;
+    if let Some(message) = realtime_group_system_message_record(client, event) {
+        db.store_messages(vec![message]).await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn realtime_group_update_record(
+    client: &crate::core::ImClient,
+    event: &super::GroupUpdatedEvent,
+) -> Option<crate::internal::local_state::groups::GroupRecord> {
+    let group = event.group.as_str().trim();
+    if group.is_empty() {
+        return None;
+    }
+    Some(crate::internal::local_state::groups::GroupRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
+        owner_did: client.did().as_str().to_string(),
+        group_id: group.to_string(),
+        group_did: group.to_string(),
+        last_message_at: now_utc_like(),
+        metadata: serde_json::json!({
+            "source": "im-core.realtime",
+            "update_kind": group_update_kind_label(&event.update_kind),
+        })
+        .to_string(),
+        credential_name: client
+            .current_identity()
+            .local_alias
+            .as_deref()
+            .unwrap_or_else(|| client.current_identity().id.as_str())
             .to_string(),
-            credential_name: client
-                .current_identity()
-                .local_alias
-                .as_deref()
-                .unwrap_or_else(|| client.current_identity().id.as_str())
-                .to_string(),
-            ..crate::internal::local_state::groups::GroupRecord::default()
-        },
-    )
+        ..crate::internal::local_state::groups::GroupRecord::default()
+    })
 }
 
 #[cfg(feature = "sqlite")]
@@ -493,13 +975,50 @@ fn group_update_kind_label(kind: &super::GroupUpdateKind) -> &'static str {
 }
 
 #[cfg(feature = "sqlite")]
+fn realtime_group_system_message_record(
+    client: &crate::core::ImClient,
+    event: &super::GroupUpdatedEvent,
+) -> Option<crate::internal::local_state::messages::MessageRecord> {
+    let group_event_seq = event.group_event_seq?;
+    if !matches!(
+        event.update_kind,
+        super::GroupUpdateKind::MemberAdded
+            | super::GroupUpdateKind::MemberRemoved
+            | super::GroupUpdateKind::Updated
+    ) {
+        return None;
+    }
+    let event_type = event
+        .event_type
+        .clone()
+        .unwrap_or_else(|| group_update_kind_label(&event.update_kind).to_owned());
+    crate::internal::group_system_events::record_from_input(
+        client,
+        crate::internal::group_system_events::GroupSystemEventInput {
+            event_type,
+            group_did: event.group.as_str().to_owned(),
+            group_event_seq,
+            group_state_version: event.group_state_version.clone(),
+            actor_did: event.actor_did.clone(),
+            subject_did: event.subject_did.clone(),
+            membership_status: event.membership_status.clone(),
+            changed_at: event.changed_at.clone(),
+            sync_event_id: event.sync.as_ref().and_then(|sync| sync.event_id.clone()),
+            sync_event_seq: event.sync.as_ref().and_then(|sync| sync.event_seq.clone()),
+            sync_event_type: event.sync.as_ref().and_then(|sync| sync.event_type.clone()),
+            source: "im-core.realtime".to_owned(),
+        },
+    )
+}
+
+#[cfg(feature = "sqlite")]
 fn now_utc_like() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
 fn normalize_direct_e2ee_realtime_notification<R>(
     client: &crate::core::ImClient,
     notification: Value,
@@ -518,7 +1037,123 @@ where
     (projection.notification, projection.warnings)
 }
 
-#[cfg(not(feature = "sqlite"))]
+#[cfg(feature = "sqlite")]
+enum DirectRealtimeProjectionResult {
+    Projected {
+        notification: Option<Value>,
+        additional_notifications: Vec<Value>,
+        warnings: Vec<String>,
+    },
+    Fallback(Value),
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn normalize_direct_e2ee_realtime_notification_async_first(
+    client: &crate::core::ImClient,
+    runtime: Option<&tokio::runtime::Runtime>,
+    processor: &crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor<
+        '_,
+    >,
+    notification: Value,
+) -> DirectRealtimeProjectionResult {
+    if !crate::internal::realtime::projection::is_direct_secure_wire_notification(&notification) {
+        return DirectRealtimeProjectionResult::Projected {
+            notification: Some(notification),
+            additional_notifications: Vec::new(),
+            warnings: Vec::new(),
+        };
+    }
+    let original = notification.clone();
+    let outcome = runtime
+        .map(|runtime| run_realtime_async_projection(client, runtime, processor, notification))
+        .unwrap_or(None);
+    match outcome {
+        Some(crate::internal::secure_direct::incoming::DirectRealtimeAsyncProjectionOutcome::Projected(projection)) => {
+            DirectRealtimeProjectionResult::Projected {
+                notification: projection.notification,
+                additional_notifications: projection.additional_notifications,
+                warnings: projection.warnings,
+            }
+        }
+        Some(crate::internal::secure_direct::incoming::DirectRealtimeAsyncProjectionOutcome::Fallback(notification)) => {
+            DirectRealtimeProjectionResult::Fallback(notification)
+        }
+        None => {
+            DirectRealtimeProjectionResult::Fallback(original)
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn normalize_direct_e2ee_realtime_notification_async(
+    client: &crate::core::ImClient,
+    processor: &crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor<
+        '_,
+    >,
+    notification: Value,
+) -> DirectRealtimeProjectionResult {
+    if !crate::internal::realtime::projection::is_direct_secure_wire_notification(&notification) {
+        return DirectRealtimeProjectionResult::Projected {
+            notification: Some(notification),
+            additional_notifications: Vec::new(),
+            warnings: Vec::new(),
+        };
+    }
+    let original = notification.clone();
+    let mut message_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let outcome =
+        crate::internal::secure_direct::incoming::normalize_direct_e2ee_notification_with_async_processor_and_directory(
+            client,
+            processor,
+            notification,
+            crate::internal::secure_direct::incoming::DirectDecryptMode::WithSideEffects,
+            &mut message_transport,
+            &mut directory_transport,
+        )
+        .await;
+    match outcome {
+        crate::internal::secure_direct::incoming::DirectRealtimeAsyncProjectionOutcome::Projected(
+            projection,
+        ) => DirectRealtimeProjectionResult::Projected {
+            notification: projection.notification,
+            additional_notifications: projection.additional_notifications,
+            warnings: projection.warnings,
+        },
+        crate::internal::secure_direct::incoming::DirectRealtimeAsyncProjectionOutcome::Fallback(
+            notification,
+        ) => {
+            if notification.is_null() {
+                DirectRealtimeProjectionResult::Fallback(original)
+            } else {
+                DirectRealtimeProjectionResult::Fallback(notification)
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "blocking", feature = "sqlite"))]
+fn run_realtime_async_projection(
+    client: &crate::core::ImClient,
+    runtime: &tokio::runtime::Runtime,
+    processor: &crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor<
+        '_,
+    >,
+    notification: Value,
+) -> Option<crate::internal::secure_direct::incoming::DirectRealtimeAsyncProjectionOutcome> {
+    let mut message_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut directory_transport = crate::internal::transport::CoreHttpTransport::new(client);
+    Some(runtime.block_on(crate::internal::secure_direct::incoming::normalize_direct_e2ee_notification_with_async_processor_and_directory(
+        client,
+        processor,
+        notification,
+        crate::internal::secure_direct::incoming::DirectDecryptMode::WithSideEffects,
+        &mut message_transport,
+        &mut directory_transport,
+    )))
+}
+
+#[cfg(all(feature = "blocking", not(feature = "sqlite")))]
 fn normalize_direct_e2ee_realtime_notification<R>(
     _client: &crate::core::ImClient,
     notification: Value,
@@ -530,27 +1165,79 @@ where
     (Some(notification), Vec::new())
 }
 
-#[cfg(feature = "group-e2ee")]
+#[cfg(all(feature = "blocking", feature = "group-e2ee"))]
 fn normalize_group_e2ee_realtime_notification(
     client: &crate::core::ImClient,
     notification: Value,
     warnings: &mut Vec<String>,
 ) -> Option<Value> {
-    let notice_projection = crate::internal::group_e2ee::notices::
-        maybe_process_group_e2ee_notice_notification_for_client(client, notification);
+    normalize_group_e2ee_realtime_notification_async_first(client, None, notification, warnings)
+}
+
+#[cfg(all(feature = "blocking", feature = "group-e2ee"))]
+fn normalize_group_e2ee_realtime_notification_async_first(
+    client: &crate::core::ImClient,
+    runtime: Option<&tokio::runtime::Runtime>,
+    notification: Value,
+    warnings: &mut Vec<String>,
+) -> Option<Value> {
+    let notice_projection = runtime
+        .map(|runtime| {
+            runtime.block_on(
+                crate::internal::group_e2ee::notices::
+                    maybe_process_group_e2ee_notice_notification_for_client_async(
+                        client,
+                        notification.clone(),
+                    ),
+            )
+        })
+        .unwrap_or_else(|| {
+            crate::internal::group_e2ee::notices::
+                maybe_process_group_e2ee_notice_notification_for_client(client, notification)
+        });
     warnings.extend(notice_projection.warnings);
     let notification = notice_projection.notification?;
 
-    let projection =
-        crate::internal::group_e2ee::incoming::maybe_normalize_group_e2ee_notification_for_client(
-            client,
-            notification,
-        );
+    let projection = runtime
+        .map(|runtime| {
+            runtime.block_on(
+                crate::internal::group_e2ee::incoming::
+                    maybe_normalize_group_e2ee_notification_for_client_async(client, notification.clone()),
+            )
+        })
+        .unwrap_or_else(|| {
+            crate::internal::group_e2ee::incoming::
+                maybe_normalize_group_e2ee_notification_for_client(client, notification)
+        });
     warnings.extend(projection.warnings);
     projection.notification
 }
 
-#[cfg(not(feature = "group-e2ee"))]
+#[cfg(feature = "group-e2ee")]
+async fn normalize_group_e2ee_realtime_notification_async(
+    client: &crate::core::ImClient,
+    notification: Value,
+    warnings: &mut Vec<String>,
+) -> Option<Value> {
+    let notice_projection =
+        crate::internal::group_e2ee::notices::
+            maybe_process_group_e2ee_notice_notification_for_client_async(
+                client,
+                notification,
+            )
+            .await;
+    warnings.extend(notice_projection.warnings);
+    let notification = notice_projection.notification?;
+
+    let projection =
+        crate::internal::group_e2ee::incoming::
+            maybe_normalize_group_e2ee_notification_for_client_async(client, notification)
+                .await;
+    warnings.extend(projection.warnings);
+    projection.notification
+}
+
+#[cfg(all(feature = "blocking", not(feature = "group-e2ee")))]
 fn normalize_group_e2ee_realtime_notification(
     _client: &crate::core::ImClient,
     notification: Value,
@@ -559,10 +1246,31 @@ fn normalize_group_e2ee_realtime_notification(
     Some(notification)
 }
 
+#[cfg(not(feature = "group-e2ee"))]
+async fn normalize_group_e2ee_realtime_notification_async(
+    _client: &crate::core::ImClient,
+    notification: Value,
+    _warnings: &mut Vec<String>,
+) -> Option<Value> {
+    Some(notification)
+}
+
+#[cfg(all(feature = "blocking", not(feature = "group-e2ee")))]
+fn normalize_group_e2ee_realtime_notification_async_first(
+    _client: &crate::core::ImClient,
+    _runtime: Option<&tokio::runtime::Runtime>,
+    notification: Value,
+    _warnings: &mut Vec<String>,
+) -> Option<Value> {
+    Some(notification)
+}
+
+#[cfg(feature = "blocking")]
 struct ChannelRunnerEvents {
     sender: mpsc::SyncSender<super::ImEvent>,
 }
 
+#[cfg(feature = "blocking")]
 impl RunnerEvents for ChannelRunnerEvents {
     fn emit(&mut self, event: super::ImEvent) -> Result<(), String> {
         self.sender
@@ -571,10 +1279,12 @@ impl RunnerEvents for ChannelRunnerEvents {
     }
 }
 
+#[cfg(feature = "blocking")]
 struct SinkRunnerEvents<'a, S> {
     sink: &'a mut S,
 }
 
+#[cfg(feature = "blocking")]
 impl<S> RunnerEvents for SinkRunnerEvents<'_, S>
 where
     S: RealtimeRunnerEventSink,
@@ -584,6 +1294,243 @@ where
     }
 }
 
+pub(crate) async fn run_realtime_async_transport_until_shutdown<T, P>(
+    options: super::RealtimeOptions,
+    shutdown: super::ShutdownSignal,
+    control: super::RealtimeControl,
+    transport: &mut T,
+    mut events: TokioRunnerEvents,
+    projector: &mut P,
+) -> crate::ImResult<super::RealtimeExit>
+where
+    T: AsyncRealtimeRunnerTransport,
+    P: AsyncRealtimeNotificationProjector,
+{
+    let mut warnings = Vec::new();
+    let mut reconnect_attempts = 0;
+    let mut first_attempt = true;
+
+    'connect: loop {
+        if shutdown.is_requested() || control.is_closed() {
+            emit_state(
+                &mut events,
+                super::RealtimeConnectionState::Closed,
+                Some("shutdown requested".to_string()),
+            );
+            return Ok(realtime_exit(
+                super::RealtimeExitReason::ShutdownRequested,
+                reconnect_attempts,
+                warnings,
+            ));
+        }
+        emit_state(
+            &mut events,
+            if first_attempt {
+                super::RealtimeConnectionState::Connecting
+            } else {
+                super::RealtimeConnectionState::Reconnecting
+            },
+            None,
+        );
+        first_attempt = false;
+
+        let connect_result = tokio::select! {
+            _ = wait_for_realtime_shutdown(&shutdown, &control) => {
+                emit_state(
+                    &mut events,
+                    super::RealtimeConnectionState::Closed,
+                    Some("shutdown requested".to_string()),
+                );
+                return Ok(realtime_exit(
+                    super::RealtimeExitReason::ShutdownRequested,
+                    reconnect_attempts,
+                    warnings,
+                ));
+            }
+            result = transport.connect() => result,
+        };
+
+        match connect_result {
+            Ok(()) => {}
+            Err(error) => {
+                warnings.push(error.to_string());
+                if !should_retry_connect(&options.reconnect, reconnect_attempts) {
+                    let reason = exit_reason_for_connect_error(&error);
+                    emit_state(
+                        &mut events,
+                        super::RealtimeConnectionState::Disconnected,
+                        None,
+                    );
+                    return Ok(realtime_exit(reason, reconnect_attempts, warnings));
+                }
+                reconnect_attempts += 1;
+                sleep_before_reconnect(&options.reconnect).await;
+                continue;
+            }
+        }
+
+        emit_state(&mut events, super::RealtimeConnectionState::Connected, None);
+        loop {
+            if shutdown.is_requested() || control.is_closed() {
+                emit_state(
+                    &mut events,
+                    super::RealtimeConnectionState::Closed,
+                    Some("shutdown requested".to_string()),
+                );
+                return Ok(realtime_exit(
+                    super::RealtimeExitReason::ShutdownRequested,
+                    reconnect_attempts,
+                    warnings,
+                ));
+            }
+            let notification_result = tokio::select! {
+                _ = wait_for_realtime_shutdown(&shutdown, &control) => {
+                    emit_state(
+                        &mut events,
+                        super::RealtimeConnectionState::Closed,
+                        Some("shutdown requested".to_string()),
+                    );
+                    return Ok(realtime_exit(
+                        super::RealtimeExitReason::ShutdownRequested,
+                        reconnect_attempts,
+                        warnings,
+                    ));
+                }
+                result = transport.next_notification() => result,
+            };
+            match notification_result {
+                Ok(Some(notification)) => {
+                    if notification.is_null() {
+                        continue;
+                    }
+                    let projection = projector.project_async(notification).await;
+                    warnings.extend(projection.warnings);
+                    for event in projection.additional_events {
+                        if let Err(warning) = events.emit(event) {
+                            events.set_status(
+                                super::RealtimeConnectionState::Closed,
+                                Some(warning.clone()),
+                            );
+                            warnings.push(warning);
+                            return Ok(realtime_exit(
+                                super::RealtimeExitReason::ConnectionClosed,
+                                reconnect_attempts,
+                                warnings,
+                            ));
+                        }
+                    }
+                    let Some(event) = projection.event else {
+                        continue;
+                    };
+                    if let Err(warning) = events.emit(event) {
+                        events.set_status(
+                            super::RealtimeConnectionState::Closed,
+                            Some(warning.clone()),
+                        );
+                        warnings.push(warning);
+                        return Ok(realtime_exit(
+                            super::RealtimeExitReason::ConnectionClosed,
+                            reconnect_attempts,
+                            warnings,
+                        ));
+                    }
+                }
+                Ok(None) => {
+                    if shutdown.is_requested() || control.is_closed() {
+                        emit_state(
+                            &mut events,
+                            super::RealtimeConnectionState::Closed,
+                            Some("shutdown requested".to_string()),
+                        );
+                        return Ok(realtime_exit(
+                            super::RealtimeExitReason::ShutdownRequested,
+                            reconnect_attempts,
+                            warnings,
+                        ));
+                    }
+                    if should_retry_connect(&options.reconnect, reconnect_attempts) {
+                        reconnect_attempts += 1;
+                        sleep_before_reconnect(&options.reconnect).await;
+                        continue 'connect;
+                    }
+                    emit_state(&mut events, super::RealtimeConnectionState::Closed, None);
+                    return Ok(realtime_exit(
+                        super::RealtimeExitReason::ConnectionClosed,
+                        reconnect_attempts,
+                        warnings,
+                    ));
+                }
+                Err(error) => {
+                    warnings.push(error.to_string());
+                    if should_retry_connect(&options.reconnect, reconnect_attempts) {
+                        reconnect_attempts += 1;
+                        sleep_before_reconnect(&options.reconnect).await;
+                        continue 'connect;
+                    }
+                    let reason = exit_reason_for_connect_error(&error);
+                    emit_state(
+                        &mut events,
+                        super::RealtimeConnectionState::Disconnected,
+                        None,
+                    );
+                    return Ok(realtime_exit(reason, reconnect_attempts, warnings));
+                }
+            }
+        }
+    }
+}
+
+async fn wait_for_realtime_shutdown(
+    shutdown: &super::ShutdownSignal,
+    control: &super::RealtimeControl,
+) {
+    while !shutdown.is_requested() && !control.is_closed() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn sleep_before_reconnect(policy: &super::ReconnectPolicy) {
+    let delay = match policy {
+        super::ReconnectPolicy::Disabled => None,
+        super::ReconnectPolicy::Fixed { delay_ms, .. } => Some(Duration::from_millis(*delay_ms)),
+        super::ReconnectPolicy::Exponential { base_delay_ms, .. } => {
+            Some(Duration::from_millis(*base_delay_ms))
+        }
+    };
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    }
+}
+
+pub(crate) struct TokioRunnerEvents {
+    sender: tokio_mpsc::Sender<super::ImEvent>,
+    status: watch::Sender<super::RealtimeStatus>,
+    subscriptions: Vec<super::RealtimeSubscription>,
+}
+
+impl TokioRunnerEvents {
+    fn set_status(&self, state: super::RealtimeConnectionState, last_error: Option<String>) {
+        let _ = self.status.send(super::RealtimeStatus {
+            connected: state == super::RealtimeConnectionState::Connected,
+            state,
+            subscriptions: self.subscriptions.clone(),
+            last_error,
+        });
+    }
+}
+
+impl RunnerEvents for TokioRunnerEvents {
+    fn emit(&mut self, event: super::ImEvent) -> Result<(), String> {
+        if let super::ImEvent::ConnectionStateChanged(state) = &event {
+            self.set_status(state.state.clone(), state.reason.clone());
+        }
+        self.sender
+            .try_send(event)
+            .map_err(|_| "realtime event buffer is full or closed".to_string())
+    }
+}
+
+#[cfg(feature = "blocking")]
 pub(crate) fn run_default_until_shutdown(
     client: &crate::core::ImClient,
     options: super::RealtimeOptions,
@@ -597,6 +1544,9 @@ pub(crate) fn run_default_until_shutdown(
     };
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = ChannelRunnerEvents { sender };
+    #[cfg(feature = "sqlite")]
+    let projector = AsyncFirstSecureRealtimeNotificationProjector::new(client);
+    #[cfg(not(feature = "sqlite"))]
     let projector = SecureRealtimeNotificationProjector {
         client,
         directory_transport: crate::internal::transport::CoreHttpTransport::new(client),
@@ -620,6 +1570,7 @@ pub(crate) fn run_default_until_shutdown(
     .map(|outcome| outcome.exit)
 }
 
+#[cfg(feature = "blocking")]
 pub(crate) fn run_default_with_event_sink_until_shutdown<S>(
     client: &crate::core::ImClient,
     options: super::RealtimeOptions,
@@ -637,6 +1588,9 @@ where
     };
     let (_sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = SinkRunnerEvents { sink: event_sink };
+    #[cfg(feature = "sqlite")]
+    let projector = AsyncFirstSecureRealtimeNotificationProjector::new(client);
+    #[cfg(not(feature = "sqlite"))]
     let projector = SecureRealtimeNotificationProjector {
         client,
         directory_transport: crate::internal::transport::CoreHttpTransport::new(client),
@@ -660,11 +1614,11 @@ where
     .map(|outcome| outcome.exit)
 }
 
+#[cfg(feature = "blocking")]
 pub(crate) fn spawn_default(
     client: crate::core::ImClient,
     options: super::RealtimeOptions,
 ) -> crate::ImResult<super::RealtimeHandle> {
-    crate::internal::realtime::transport::require_realtime_auth_token(&client)?;
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let control = super::RealtimeControl::default();
     let worker_control = control.clone();
@@ -679,6 +1633,9 @@ pub(crate) fn spawn_default(
             let receiver = mpsc::channel().1;
             let mut sink = SenderRunnerEvents { sender };
             let mut events = SinkRunnerEvents { sink: &mut sink };
+            #[cfg(feature = "sqlite")]
+            let projector = AsyncFirstSecureRealtimeNotificationProjector::new(&client);
+            #[cfg(not(feature = "sqlite"))]
             let projector = SecureRealtimeNotificationProjector {
                 client: &client,
                 directory_transport: crate::internal::transport::CoreHttpTransport::new(&client),
@@ -708,12 +1665,118 @@ pub(crate) fn spawn_default(
     ))
 }
 
+pub(crate) async fn spawn_default_async(
+    client: crate::core::ImClient,
+    options: super::RealtimeOptions,
+) -> crate::ImResult<super::RealtimeSession> {
+    let (event_sender, event_receiver) = tokio_mpsc::channel(options.event_buffer);
+    let initial_status = super::session::initial_realtime_status(
+        &options,
+        super::RealtimeConnectionState::Disconnected,
+        None,
+    );
+    let (status_sender, status_receiver) = watch::channel(initial_status);
+    let (exit_sender, exit_receiver) = oneshot::channel();
+    let shutdown = super::ShutdownSignal::pending();
+    let worker_shutdown = shutdown.clone();
+    let worker_options = options.clone();
+    let worker = tokio::spawn(async move {
+        let mut transport = AsyncDefaultRunnerTransport {
+            client: client.clone(),
+            socket: None,
+            idle_ticks: 0,
+        };
+        let events = TokioRunnerEvents {
+            sender: event_sender,
+            status: status_sender,
+            subscriptions: worker_options.subscriptions.clone(),
+        };
+        #[cfg(feature = "sqlite")]
+        let projector = AsyncSecureRealtimeNotificationProjector::new(&client);
+        #[cfg(not(feature = "sqlite"))]
+        let projector = SecureRealtimeNotificationProjector {
+            client: &client,
+            directory_transport: crate::internal::transport::CoreHttpTransport::new(&client),
+        };
+        #[cfg(feature = "sqlite")]
+        let mut projector = AsyncLocalStateRealtimeNotificationProjector {
+            client: client.clone(),
+            inner: projector,
+        };
+        #[cfg(not(feature = "sqlite"))]
+        let mut projector = projector;
+        let exit = run_realtime_async_transport_until_shutdown(
+            worker_options,
+            worker_shutdown,
+            super::RealtimeControl::default(),
+            &mut transport,
+            events,
+            &mut projector,
+        )
+        .await
+        .unwrap_or_else(|err| super::RealtimeExit {
+            reason: exit_reason_for_connect_error(&err),
+            reconnect_attempts: 0,
+            warnings: vec![err.to_string()],
+        });
+        let _ = exit_sender.send(exit);
+    });
+    Ok(super::RealtimeSession::new(
+        event_receiver,
+        status_receiver,
+        shutdown,
+        exit_receiver,
+        Some(worker),
+    ))
+}
+
+struct AsyncDefaultRunnerTransport {
+    client: crate::core::ImClient,
+    socket: Option<crate::internal::realtime::async_ws_transport::AsyncWsTransport>,
+    idle_ticks: u32,
+}
+
+impl AsyncRealtimeRunnerTransport for AsyncDefaultRunnerTransport {
+    async fn connect(&mut self) -> crate::ImResult<()> {
+        let socket =
+            crate::internal::realtime::transport::connect_async_websocket_session(&self.client)
+                .await?;
+        self.socket = Some(socket);
+        self.idle_ticks = 0;
+        Ok(())
+    }
+
+    async fn next_notification(&mut self) -> crate::ImResult<Option<Value>> {
+        let Some(socket) = self.socket.as_mut() else {
+            return Ok(None);
+        };
+        match tokio::time::timeout(Duration::from_millis(250), socket.read_json_message()).await {
+            Ok(Ok(Some(message))) => {
+                self.idle_ticks = 0;
+                Ok(Some(Value::Object(message)))
+            }
+            Ok(Ok(None)) => Ok(None),
+            Ok(Err(err)) => Err(err),
+            Err(_) => {
+                self.idle_ticks = self.idle_ticks.saturating_add(1);
+                if self.idle_ticks >= 60 {
+                    self.idle_ticks = 0;
+                    socket.ping().await?;
+                }
+                Ok(Some(Value::Null))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "blocking")]
 struct DefaultRunnerTransport<'a> {
     client: &'a crate::core::ImClient,
     socket: Option<crate::internal::realtime::ws_transport::WsTransport>,
     idle_ticks: u32,
 }
 
+#[cfg(feature = "blocking")]
 impl RealtimeRunnerTransport for DefaultRunnerTransport<'_> {
     fn connect(&mut self) -> crate::ImResult<()> {
         let socket =
@@ -752,10 +1815,12 @@ impl RealtimeRunnerTransport for DefaultRunnerTransport<'_> {
     }
 }
 
+#[cfg(feature = "blocking")]
 struct SenderRunnerEvents {
     sender: mpsc::SyncSender<super::ImEvent>,
 }
 
+#[cfg(feature = "blocking")]
 impl RealtimeRunnerEventSink for SenderRunnerEvents {
     fn emit(&mut self, event: super::ImEvent) -> crate::ImResult<()> {
         self.sender
@@ -766,6 +1831,7 @@ impl RealtimeRunnerEventSink for SenderRunnerEvents {
     }
 }
 
+#[cfg(feature = "blocking")]
 fn outcome(
     receiver: mpsc::Receiver<super::ImEvent>,
     control: super::RealtimeControl,
@@ -775,11 +1841,23 @@ fn outcome(
 ) -> RealtimeRunnerOutcome {
     RealtimeRunnerOutcome {
         exit: super::RealtimeExit {
-            reason,
+            reason: reason.clone(),
             reconnect_attempts,
-            warnings,
+            warnings: warnings.clone(),
         },
         handle: super::RealtimeHandle::new(receiver, control),
+    }
+}
+
+fn realtime_exit(
+    reason: super::RealtimeExitReason,
+    reconnect_attempts: u32,
+    warnings: Vec<String>,
+) -> super::RealtimeExit {
+    super::RealtimeExit {
+        reason,
+        reconnect_attempts,
+        warnings,
     }
 }
 
@@ -815,250 +1893,5 @@ fn exit_reason_for_connect_error(error: &crate::ImError) -> super::RealtimeExitR
     }
 }
 
-#[cfg(all(test, feature = "sqlite"))]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn realtime_local_state_projector_stores_direct_message_and_contact() {
-        let fixture = TestClientFixture::new("direct");
-        let client = fixture.client();
-        let mut projector = LocalStateRealtimeNotificationProjector {
-            client: &client,
-            inner: FixedProjector {
-                event: Some(super::super::ImEvent::MessageReceived(
-                    direct_message_event(client.did().as_str()),
-                )),
-            },
-        };
-
-        let outcome = projector.project(json!({"method": "test.direct"}));
-
-        assert!(outcome.warnings.is_empty());
-        assert!(matches!(
-            outcome.event,
-            Some(super::super::ImEvent::MessageReceived(_))
-        ));
-        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-        let message = connection
-            .query_row(
-                r#"
-SELECT owner_identity_id, owner_did, sender_did, receiver_did, content_type, content, is_read, credential_name
-FROM messages
-WHERE msg_id = ?1 AND owner_did = ?2"#,
-                rusqlite::params!["msg-direct-1", client.did().as_str()],
-                |row| {
-                    Ok(StoredDirectMessage {
-                        owner_identity_id: row.get(0)?,
-                        owner_did: row.get(1)?,
-                        sender_did: row.get(2)?,
-                        receiver_did: row.get(3)?,
-                        content_type: row.get(4)?,
-                        content: row.get(5)?,
-                        is_read: row.get::<_, i64>(6)?,
-                        credential_name: row.get(7)?,
-                    })
-                },
-            )
-            .unwrap();
-        assert_eq!(message.owner_identity_id, "alice");
-        assert_eq!(message.owner_did, client.did().as_str());
-        assert_eq!(message.sender_did, "did:example:bob");
-        assert_eq!(message.receiver_did, client.did().as_str());
-        assert_eq!(message.content_type, "text/plain");
-        assert_eq!(message.content, "hello from realtime");
-        assert_eq!(message.is_read, 0);
-        assert_eq!(message.credential_name, "alice");
-        let contact_count: i64 = connection
-            .query_row(
-                r#"
-SELECT COUNT(*)
-FROM contacts
-WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
-                rusqlite::params!["alice", client.did().as_str(), "did:example:bob"],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(contact_count, 1);
-    }
-
-    #[test]
-    fn realtime_local_state_projector_stores_group_update() {
-        let fixture = TestClientFixture::new("group");
-        let client = fixture.client();
-        let mut projector = LocalStateRealtimeNotificationProjector {
-            client: &client,
-            inner: FixedProjector {
-                event: Some(super::super::ImEvent::GroupUpdated(
-                    super::super::GroupUpdatedEvent {
-                        group: crate::ids::GroupRef::parse("did:example:group:blue").unwrap(),
-                        update_kind: super::super::GroupUpdateKind::Updated,
-                    },
-                )),
-            },
-        };
-
-        let outcome = projector.project(json!({"method": "test.group"}));
-
-        assert!(outcome.warnings.is_empty());
-        assert!(matches!(
-            outcome.event,
-            Some(super::super::ImEvent::GroupUpdated(_))
-        ));
-        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-        let group = connection
-            .query_row(
-                r#"
-SELECT owner_identity_id, owner_did, group_id, group_did, metadata, credential_name
-FROM groups
-WHERE owner_did = ?1 AND group_id = ?2"#,
-                rusqlite::params![client.did().as_str(), "did:example:group:blue"],
-                |row| {
-                    Ok(StoredGroup {
-                        owner_identity_id: row.get(0)?,
-                        owner_did: row.get(1)?,
-                        group_id: row.get(2)?,
-                        group_did: row.get(3)?,
-                        metadata: row.get(4)?,
-                        credential_name: row.get(5)?,
-                    })
-                },
-            )
-            .unwrap();
-        assert_eq!(group.owner_identity_id, "alice");
-        assert_eq!(group.owner_did, client.did().as_str());
-        assert_eq!(group.group_id, "did:example:group:blue");
-        assert_eq!(group.group_did, "did:example:group:blue");
-        assert_eq!(group.credential_name, "alice");
-        let metadata = serde_json::from_str::<serde_json::Value>(&group.metadata).unwrap();
-        assert_eq!(metadata["source"], "im-core.realtime");
-        assert_eq!(metadata["update_kind"], "updated");
-    }
-
-    struct FixedProjector {
-        event: Option<super::super::ImEvent>,
-    }
-
-    impl RealtimeNotificationProjector for FixedProjector {
-        fn project(&mut self, _notification: serde_json::Value) -> RealtimeProjectionOutcome {
-            RealtimeProjectionOutcome {
-                event: self.event.take(),
-                warnings: Vec::new(),
-            }
-        }
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct StoredDirectMessage {
-        owner_identity_id: String,
-        owner_did: String,
-        sender_did: String,
-        receiver_did: String,
-        content_type: String,
-        content: String,
-        is_read: i64,
-        credential_name: String,
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct StoredGroup {
-        owner_identity_id: String,
-        owner_did: String,
-        group_id: String,
-        group_did: String,
-        metadata: String,
-        credential_name: String,
-    }
-
-    struct TestClientFixture {
-        root: std::path::PathBuf,
-    }
-
-    impl TestClientFixture {
-        fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "im-core-realtime-runner-{name}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            Self { root }
-        }
-
-        fn client(&self) -> crate::core::ImClient {
-            self.core()
-                .client(crate::identity::IdentitySelector::LocalAlias(
-                    "alice".to_string(),
-                ))
-                .unwrap()
-        }
-
-        fn core(&self) -> crate::core::ImCore {
-            crate::core::ImCore::new(
-                crate::ImCoreConfig {
-                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
-                        .unwrap(),
-                    did_domain: "awiki.info".to_string(),
-                    user_service_endpoint: None,
-                    message_service_endpoint: None,
-                    mail_service_endpoint: None,
-                    anp_service_endpoint: None,
-                    anp_service_did: None,
-                    ca_bundle: None,
-                    transport_policy: crate::MessageTransportPolicy::Auto,
-                },
-                crate::ImCorePaths {
-                    identities: crate::IdentityRegistryPaths {
-                        identity_root_dir: self.root.join("identities"),
-                        registry_path: self.root.join("identities").join("registry.json"),
-                        default_identity_path: Some(self.root.join("identities").join("default")),
-                    },
-                    local_state: crate::LocalStatePaths {
-                        sqlite_path: self.sqlite_path(),
-                    },
-                    runtime: crate::RuntimePaths {
-                        cache_dir: self.root.join("cache"),
-                        temp_dir: self.root.join("tmp"),
-                    },
-                },
-            )
-            .unwrap()
-        }
-
-        fn sqlite_path(&self) -> std::path::PathBuf {
-            self.root.join("local").join("im.sqlite")
-        }
-    }
-
-    fn direct_message_event(owner_did: &str) -> super::super::MessageReceivedEvent {
-        let sender = crate::ids::PeerRef::parse("did:example:bob", "awiki.info").unwrap();
-        let receiver = crate::ids::PeerRef::parse(owner_did, "awiki.info").unwrap();
-        super::super::MessageReceivedEvent {
-            message: crate::messages::Message {
-                id: crate::ids::MessageId::parse("msg-direct-1").unwrap(),
-                thread: crate::messages::ThreadRef::Direct(sender.clone()),
-                direction: crate::messages::MessageDirection::Incoming,
-                sender,
-                receiver: Some(receiver),
-                group: None,
-                body: crate::messages::MessageBodyView::Text {
-                    text: "hello from realtime".to_string(),
-                    kind: crate::messages::MessageKind::Text,
-                },
-                sent_at: Some("2026-05-25T00:00:00Z".to_string()),
-                received_at: None,
-                metadata: crate::messages::MessageMetadata {
-                    content_type: Some("text/plain".to_string()),
-                    ..crate::messages::MessageMetadata::default()
-                },
-            },
-            attachment_summary: None,
-            download_action: None,
-            warnings: Vec::new(),
-        }
-    }
-}
+#[cfg(test)]
+mod tests;

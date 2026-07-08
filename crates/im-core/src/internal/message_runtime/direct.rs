@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -22,6 +22,8 @@ pub(crate) struct DirectTextCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
     pub key1_private_pem: String,
+    pub verification_method: Option<String>,
+    pub logical_sender_did: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +32,7 @@ pub(crate) struct DirectTextSendResult {
     pub target_did: String,
     pub message_type: &'static str,
     pub text: String,
+    pub payload: Option<Value>,
     pub raw: Value,
 }
 
@@ -52,30 +55,29 @@ where
 
     pub(crate) fn send(mut self, input: DirectTextSend) -> crate::ImResult<DirectTextSendResult> {
         let (peer, target_did) = direct_target(&input.request.target, input.resolved_target_did)?;
-        let (text, kind) = text_body(&input.request.body)?;
+        let body = outgoing_body(&input.request.body)?;
         validate_plain_security(&input.request.security)?;
 
         self.session_provider
             .ensure_session(crate::auth::AuthScope::Messaging)?;
 
-        let message_type = message_type(&kind);
-        let content_type =
-            crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
-        let payload = crate::internal::wire::direct::build_direct_text_payload(
-            self.client.did().as_str(),
-            &target_did,
-            text,
-            content_type,
-        )?;
         let credentials = match input.credentials {
             Some(credentials) => credentials,
-            None => load_credentials(self.client)?,
+            None => load_credentials(self.client, input.request.delegated_signing.as_ref())?,
         };
+        let sender_did = credentials
+            .logical_sender_did
+            .as_deref()
+            .unwrap_or_else(|| self.client.did().as_str());
+        let message_type = body.message_type();
+        let mut payload = build_direct_payload(sender_did, &target_did, &body)?;
+        apply_delivery_overrides(&mut payload.meta, &input.request);
         let origin_proof = crate::internal::proof::origin::build_origin_proof(
             &crate::internal::proof::origin::OriginProofIdentity {
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
+                verification_method: credentials.verification_method,
             },
             &payload,
         )?;
@@ -91,49 +93,226 @@ where
         )?;
         let mut result = direct_result_from_value(raw.clone())?;
         fill_direct_result_defaults(&mut result, &payload.meta, &target_did);
-        let sdk_result =
-            sdk_result_from_direct_result(&result, self.client.did().clone(), peer, text, kind)?;
+        let sdk_result = sdk_result_from_direct_result(&result, sender_did, peer, &body)?;
         Ok(DirectTextSendResult {
             sdk_result,
             target_did,
             message_type,
-            text: text.to_string(),
+            text: body.text_for_legacy(),
+            payload: body.payload_for_result(),
             raw,
         })
     }
 }
 
-fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<DirectTextCredentials> {
+impl<'a, P, T> DirectTextSender<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    pub(crate) async fn send_async(
+        mut self,
+        input: DirectTextSend,
+    ) -> crate::ImResult<DirectTextSendResult> {
+        let (peer, target_did) = direct_target(&input.request.target, input.resolved_target_did)?;
+        let body = outgoing_body(&input.request.body)?;
+        validate_plain_security(&input.request.security)?;
+
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => {
+                load_credentials_async(self.client, input.request.delegated_signing.as_ref())
+                    .await?
+            }
+        };
+        let sender_did = credentials
+            .logical_sender_did
+            .as_deref()
+            .unwrap_or_else(|| self.client.did().as_str());
+        let message_type = body.message_type();
+        let mut payload = build_direct_payload(sender_did, &target_did, &body)?;
+        apply_delivery_overrides(&mut payload.meta, &input.request);
+        let origin_proof = crate::internal::proof::origin::build_origin_proof(
+            &crate::internal::proof::origin::OriginProofIdentity {
+                identity_name: credentials.identity_name,
+                did_document: credentials.did_document,
+                key1_private_pem: credentials.key1_private_pem,
+                verification_method: credentials.verification_method,
+            },
+            &payload,
+        )?;
+        let params = serde_json::json!({
+            "meta": payload.meta.clone(),
+            "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
+            "body": payload.body.clone(),
+        });
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
+            .await?;
+        let mut result = direct_result_from_value(raw.clone())?;
+        fill_direct_result_defaults(&mut result, &payload.meta, &target_did);
+        let sdk_result = sdk_result_from_direct_result(&result, sender_did, peer, &body)?;
+        Ok(DirectTextSendResult {
+            sdk_result,
+            target_did,
+            message_type,
+            text: body.text_for_legacy(),
+            payload: body.payload_for_result(),
+            raw,
+        })
+    }
+}
+
+fn load_credentials(
+    client: &crate::core::ImClient,
+    delegated: Option<&crate::messages::DelegatedSigningOptions>,
+) -> crate::ImResult<DirectTextCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json(&runtime.did_document_path)?;
-    let key1_private_pem = std::fs::read_to_string(&runtime.private_key_path).map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        }
-    })?;
+    let did_document = runtime.key_provider.optional_did_document()?;
+    if let Some(delegated) = delegated {
+        return delegated_credentials(client, delegated, did_document);
+    }
+    let key1_private_pem = read_default_private_key(client)?;
     Ok(DirectTextCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
         key1_private_pem,
+        verification_method: None,
+        logical_sender_did: None,
     })
 }
 
-fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
+async fn load_credentials_async(
+    client: &crate::core::ImClient,
+    delegated: Option<&crate::messages::DelegatedSigningOptions>,
+) -> crate::ImResult<DirectTextCredentials> {
+    let runtime = client.runtime();
+    let did_document = runtime.key_provider.optional_did_document()?;
+    if let Some(delegated) = delegated {
+        return delegated_credentials_async(client, delegated, did_document).await;
+    }
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    Ok(DirectTextCredentials {
+        identity_name: runtime.owner.identity_id.as_str().to_string(),
+        did_document,
+        key1_private_pem,
+        verification_method: None,
+        logical_sender_did: None,
+    })
+}
+
+fn read_default_private_key(client: &crate::core::ImClient) -> crate::ImResult<String> {
+    client.runtime().key_provider.default_signing_private_pem()
+}
+
+fn delegated_credentials(
+    client: &crate::core::ImClient,
+    delegated: &crate::messages::DelegatedSigningOptions,
+    current_did_document: Option<Value>,
+) -> crate::ImResult<DirectTextCredentials> {
+    let owner = required_delegated_field(
+        delegated.logical_sender_did.as_deref(),
+        "logical_sender_did",
+    )?;
+    let method = required_delegated_field(
+        delegated.signing_verification_method.as_deref(),
+        "signing_verification_method",
+    )?;
+    let key_ref =
+        required_delegated_field(delegated.signing_key_ref.as_deref(), "signing_key_ref")?;
+    crate::internal::delegated_identity::require_method_owner(
+        &owner,
+        &method,
+        "logical_sender_did",
+        "signing_verification_method",
+    )?;
+    let did_document = crate::internal::delegated_identity::load_did_document_for_owner(
+        client,
+        &owner,
+        current_did_document,
+    )?;
+    crate::internal::delegated_identity::require_authentication_method(
+        &did_document,
+        &method,
+        "signing_verification_method",
+    )?;
+    let key1_private_pem =
+        crate::internal::delegated_identity::load_private_key_ref(client, &key_ref)?;
+    Ok(DirectTextCredentials {
+        identity_name: format!(
+            "{}:delegated:{}",
+            client.current_identity().id.as_str(),
+            method
+        ),
+        did_document: Some(did_document),
+        key1_private_pem,
+        verification_method: Some(method),
+        logical_sender_did: Some(owner),
+    })
+}
+
+async fn delegated_credentials_async(
+    client: &crate::core::ImClient,
+    delegated: &crate::messages::DelegatedSigningOptions,
+    current_did_document: Option<Value>,
+) -> crate::ImResult<DirectTextCredentials> {
+    let owner = required_delegated_field(
+        delegated.logical_sender_did.as_deref(),
+        "logical_sender_did",
+    )?;
+    let method = required_delegated_field(
+        delegated.signing_verification_method.as_deref(),
+        "signing_verification_method",
+    )?;
+    let key_ref =
+        required_delegated_field(delegated.signing_key_ref.as_deref(), "signing_key_ref")?;
+    crate::internal::delegated_identity::require_method_owner(
+        &owner,
+        &method,
+        "logical_sender_did",
+        "signing_verification_method",
+    )?;
+    let did_document = crate::internal::delegated_identity::load_did_document_for_owner_async(
+        client,
+        &owner,
+        current_did_document,
+    )
+    .await?;
+    crate::internal::delegated_identity::require_authentication_method(
+        &did_document,
+        &method,
+        "signing_verification_method",
+    )?;
+    let key1_private_pem =
+        crate::internal::delegated_identity::load_private_key_ref_async(client, &key_ref).await?;
+    Ok(DirectTextCredentials {
+        identity_name: format!(
+            "{}:delegated:{}",
+            client.current_identity().id.as_str(),
+            method
+        ),
+        did_document: Some(did_document),
+        key1_private_pem,
+        verification_method: Some(method),
+        logical_sender_did: Some(owner),
+    })
+}
+
+fn required_delegated_field(value: Option<&str>, field: &str) -> crate::ImResult<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some(field.to_owned()),
+                format!("{field} is required when delegated signing is set"),
+            )
         })
 }
 
@@ -157,9 +336,71 @@ fn direct_target(
     Ok((peer.clone(), resolved.to_string()))
 }
 
-fn text_body(
-    body: &crate::messages::MessageBody,
-) -> crate::ImResult<(&str, crate::messages::MessageKind)> {
+#[derive(Debug, Clone, PartialEq)]
+enum OutgoingDirectBody {
+    Text {
+        text: String,
+        kind: crate::messages::MessageKind,
+    },
+    Payload {
+        payload: Value,
+    },
+}
+
+impl OutgoingDirectBody {
+    fn message_type(&self) -> &'static str {
+        match self {
+            Self::Text { kind, .. } => message_type(kind),
+            Self::Payload { .. } => "payload",
+        }
+    }
+
+    fn content_type(&self) -> &'static str {
+        match self {
+            Self::Text { kind, .. } => content_type_for_message_type(message_type(kind)),
+            Self::Payload { .. } => "application/json",
+        }
+    }
+
+    fn retry_target(&self) -> crate::internal::message_runtime::state::MessageRetryTarget {
+        match self {
+            Self::Text { .. } => {
+                crate::internal::message_runtime::state::MessageRetryTarget::DirectText
+            }
+            Self::Payload { .. } => {
+                crate::internal::message_runtime::state::MessageRetryTarget::DirectPayload
+            }
+        }
+    }
+
+    fn body_view(&self) -> crate::messages::MessageBodyView {
+        match self {
+            Self::Text { text, kind } => crate::messages::MessageBodyView::Text {
+                text: text.clone(),
+                kind: kind.clone(),
+            },
+            Self::Payload { payload } => crate::messages::MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+        }
+    }
+
+    fn text_for_legacy(&self) -> String {
+        match self {
+            Self::Text { text, .. } => text.clone(),
+            Self::Payload { .. } => String::new(),
+        }
+    }
+
+    fn payload_for_result(&self) -> Option<Value> {
+        match self {
+            Self::Text { .. } => None,
+            Self::Payload { payload } => Some(payload.clone()),
+        }
+    }
+}
+
+fn outgoing_body(body: &crate::messages::MessageBody) -> crate::ImResult<OutgoingDirectBody> {
     match body {
         crate::messages::MessageBody::Text { text, kind: _ } if text.trim().is_empty() => {
             Err(crate::ImError::invalid_input(
@@ -167,9 +408,59 @@ fn text_body(
                 "text message must not be empty",
             ))
         }
-        crate::messages::MessageBody::Text { text, kind } => Ok((text.as_str(), kind.clone())),
+        crate::messages::MessageBody::Text { text, kind } => Ok(OutgoingDirectBody::Text {
+            text: text.clone(),
+            kind: kind.clone(),
+        }),
+        crate::messages::MessageBody::Payload { payload } if !payload.is_object() => {
+            Err(crate::ImError::invalid_input(
+                Some("payload".to_string()),
+                "message payload must be a JSON object",
+            ))
+        }
+        crate::messages::MessageBody::Payload { payload } => Ok(OutgoingDirectBody::Payload {
+            payload: payload.clone(),
+        }),
         crate::messages::MessageBody::Attachment { .. } => {
             Err(crate::ImError::unsupported("attachments"))
+        }
+    }
+}
+
+fn build_direct_payload(
+    sender_did: &str,
+    target_did: &str,
+    body: &OutgoingDirectBody,
+) -> crate::ImResult<crate::internal::wire::direct::DirectPayload> {
+    match body {
+        OutgoingDirectBody::Text { text, kind } => {
+            let content_type =
+                crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
+            crate::internal::wire::direct::build_direct_text_payload(
+                sender_did,
+                target_did,
+                text,
+                content_type,
+            )
+        }
+        OutgoingDirectBody::Payload { payload } => {
+            crate::internal::wire::direct::build_direct_json_payload(
+                sender_did,
+                target_did,
+                payload.clone(),
+            )
+        }
+    }
+}
+
+fn apply_delivery_overrides(meta: &mut Value, request: &crate::messages::SendMessageRequest) {
+    if let Some(message_id) = request.client_message_id.as_ref() {
+        meta["message_id"] = Value::String(message_id.as_str().to_string());
+    }
+    if let Some(idempotency_key) = request.delivery.idempotency_key.as_ref() {
+        let value = idempotency_key.trim();
+        if !value.is_empty() {
+            meta["operation_id"] = Value::String(value.to_string());
         }
     }
 }
@@ -210,10 +501,9 @@ fn fill_direct_result_defaults(result: &mut DirectRpcResult, meta: &Value, targe
 
 fn sdk_result_from_direct_result(
     result: &DirectRpcResult,
-    sender: crate::ids::Did,
+    sender_did: &str,
     peer: crate::ids::PeerRef,
-    text: &str,
-    kind: crate::messages::MessageKind,
+    body: &OutgoingDirectBody,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     let message_id = crate::ids::MessageId::parse(&result.message_id)?;
     let delivery = delivery_state(result);
@@ -223,7 +513,7 @@ fn sdk_result_from_direct_result(
             Some(result.operation_id.clone()).filter(|value| !value.trim().is_empty()),
             Some(message_id.clone()),
             Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
-            Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText),
+            Some(body.retry_target()),
         );
     let delivery_state = Some(result.delivery_state.clone())
         .filter(|value| !value.trim().is_empty())
@@ -231,28 +521,29 @@ fn sdk_result_from_direct_result(
             crate::internal::message_runtime::state::send_state_label(&send_state.state).to_string()
         });
     let attributes = resolved_target_attributes(&result.target_did, &peer);
+    let conversation_identity = crate::messages::ConversationIdentity::from_thread_ref(
+        &crate::messages::ThreadRef::Direct(peer.clone()),
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
             thread: crate::messages::ThreadRef::Direct(peer.clone()),
             direction: crate::messages::MessageDirection::Outgoing,
-            sender: crate::ids::PeerRef::parse(sender.as_str(), "")?,
+            sender: crate::ids::PeerRef::parse(sender_did, "")?,
             receiver: Some(peer),
             group: None,
-            body: crate::messages::MessageBodyView::Text {
-                text: text.to_string(),
-                kind: kind.clone(),
-            },
+            body: body.body_view(),
             sent_at: Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
             received_at: None,
             metadata: crate::messages::MessageMetadata {
+                conversation_identity: Some(conversation_identity),
                 operation_id: Some(result.operation_id.clone())
                     .filter(|value| !value.trim().is_empty()),
                 delivery_state: Some(delivery_state),
                 send_state: Some(send_state),
                 retry_plan,
                 server_sequence: None,
-                content_type: Some(content_type_for_message_type(message_type(&kind)).to_string()),
+                content_type: Some(body.content_type().to_string()),
                 attributes,
             },
         },
@@ -337,6 +628,10 @@ mod tests {
     use super::*;
     use crate::internal::auth::session::SessionProvider;
     use crate::internal::transport::AuthenticatedRpcTransport;
+    use crate::vault::{
+        FileSecretVault, FileSecretVaultStore, SealSecretRequest, SecretAccessPolicy, SecretBytes,
+        SecretKind, SecretMetadata, SecretVault,
+    };
     use serde_json::{json, Value};
     use std::cell::RefCell;
     use std::fs;
@@ -427,6 +722,56 @@ mod tests {
     }
 
     #[test]
+    fn messages_direct_text_sender_applies_client_message_and_idempotency_ids() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello direct",
+            crate::messages::MessageKind::Text,
+        );
+        request.client_message_id =
+            Some(crate::ids::MessageId::parse("msg_agent_im_run_001").unwrap());
+        request.delivery.idempotency_key = Some("agent-im-run-001".to_string());
+
+        let result = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.sdk_result.message.id.as_str(),
+            "msg_agent_im_run_001"
+        );
+        assert_eq!(
+            result.sdk_result.message.metadata.operation_id.as_deref(),
+            Some("agent-im-run-001")
+        );
+        let calls = calls.borrow();
+        assert_eq!(
+            calls[0].params["meta"]["message_id"],
+            "msg_agent_im_run_001"
+        );
+        assert_eq!(calls[0].params["meta"]["operation_id"], "agent-im-run-001");
+    }
+
+    #[test]
     fn message_state_direct_failed_result_has_retry_plan() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -506,6 +851,365 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn messages_direct_payload_sender_builds_body_payload_and_maps_result() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-payload-direct",
+                    "operation_id": "op-payload-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+        let payload = json!({
+            "schema": "awiki.agent.command.v1",
+            "command": "runtime.agent.create"
+        });
+
+        let result = sender
+            .send(DirectTextSend {
+                request: direct_payload_request("did:example:bob", payload.clone()),
+                resolved_target_did: None,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(result.target_did, "did:example:bob");
+        assert_eq!(result.message_type, "payload");
+        assert!(result.text.is_empty());
+        assert_eq!(result.payload, Some(payload.clone()));
+        assert_eq!(
+            result.sdk_result.message.body,
+            crate::messages::MessageBodyView::Payload {
+                payload: payload.clone()
+            }
+        );
+        assert_eq!(
+            result.sdk_result.message.metadata.content_type.as_deref(),
+            Some("application/json")
+        );
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "direct.send");
+        assert_eq!(calls[0].params["meta"]["content_type"], "application/json");
+        assert_eq!(calls[0].params["body"], json!({ "payload": payload }));
+    }
+
+    #[tokio::test]
+    async fn messages_direct_text_sender_async_builds_wire_and_maps_result() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-async-direct",
+                    "operation_id": "op-async-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+
+        let result = sender
+            .send_async(DirectTextSend {
+                request: direct_text_request(
+                    "bob.awiki.test",
+                    "hello async direct",
+                    crate::messages::MessageKind::Markdown,
+                ),
+                resolved_target_did: Some("did:example:bob".to_string()),
+                credentials: Some(fixture.credentials()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.target_did, "did:example:bob");
+        assert_eq!(result.message_type, "markdown");
+        assert_eq!(result.text, "hello async direct");
+        assert_eq!(result.sdk_result.message.id.as_str(), "msg-async-direct");
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].method, "direct.send");
+        assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind": "agent", "did": "did:example:bob"})
+        );
+        assert_eq!(
+            calls[0].params["body"],
+            json!({"text": "hello async direct"})
+        );
+    }
+
+    #[test]
+    fn messages_direct_text_sender_uses_delegated_signing_options() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-delegated-direct",
+                    "operation_id": "op-delegated-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some(delegated.user_did.clone()),
+            signing_verification_method: Some(delegated.verification_method.clone()),
+            signing_key_ref: Some(format!("file:{}", delegated.private_key_path.display())),
+            actor_agent_did: Some("did:example:agent:daemon".to_owned()),
+        });
+
+        let result = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.sdk_result.message.sender.as_str(),
+            delegated.user_did
+        );
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].params["meta"]["sender_did"], delegated.user_did);
+        assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
+            .as_str()
+            .expect("signature input")
+            .contains(&format!("keyid=\"{}\"", delegated.verification_method)));
+    }
+
+    #[test]
+    fn messages_direct_text_sender_uses_vault_delegated_key_ref() {
+        install_test_im_core_vault_root_key();
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let signing_key_ref = delegated.seal_to_vault_key_ref(&client);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-vault-delegated-direct",
+                    "operation_id": "op-vault-delegated-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello vault delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some(delegated.user_did.clone()),
+            signing_verification_method: Some(delegated.verification_method.clone()),
+            signing_key_ref: Some(signing_key_ref),
+            actor_agent_did: Some("did:example:agent:daemon".to_owned()),
+        });
+
+        let result = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.sdk_result.message.sender.as_str(),
+            delegated.user_did
+        );
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].params["meta"]["sender_did"], delegated.user_did);
+        assert!(calls[0].params["auth"]["origin_proof"]["signatureInput"]
+            .as_str()
+            .expect("signature input")
+            .contains(&format!("keyid=\"{}\"", delegated.verification_method)));
+    }
+
+    #[test]
+    fn messages_direct_text_sender_rejects_non_delegated_vault_key_ref_kind() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let signing_key_ref =
+            crate::internal::delegated_identity::encode_vault_key_ref(&crate::vault::SecretRef {
+                workspace_id: "awiki-im-core".to_owned(),
+                device_id: "local-device".to_owned(),
+                identity_id: Some("alice-id".to_owned()),
+                did: Some(delegated.user_did.clone()),
+                kind: SecretKind::DirectE2eeSessionState,
+                key_id: "session-state".to_owned(),
+                key_version: 1,
+            })
+            .unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello vault delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some(delegated.user_did),
+            signing_verification_method: Some(delegated.verification_method),
+            signing_key_ref: Some(signing_key_ref),
+            actor_agent_did: None,
+        });
+
+        let error = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::InvalidInput {
+                field: Some(field),
+                ..
+            } if field == "key_ref"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn messages_direct_text_sender_rejects_wrong_delegated_owner_locally() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some("did:example:other".to_owned()),
+            signing_verification_method: Some(delegated.verification_method),
+            signing_key_ref: Some(format!("file:{}", delegated.private_key_path.display())),
+            actor_agent_did: None,
+        });
+
+        let error = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::InvalidInput {
+                field: Some(field),
+                ..
+            } if field == "logical_sender_did"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn messages_direct_text_sender_rejects_missing_delegated_key_locally() {
+        let fixture = Fixture::new();
+        let delegated = fixture.write_delegated_identity();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+            },
+        );
+        let mut request = direct_text_request(
+            "did:example:bob",
+            "hello delegated",
+            crate::messages::MessageKind::Text,
+        );
+        request.delegated_signing = Some(crate::messages::DelegatedSigningOptions {
+            logical_sender_did: Some(delegated.user_did),
+            signing_verification_method: Some(delegated.verification_method),
+            signing_key_ref: Some("local:missing-daemon-key".to_owned()),
+            actor_agent_did: None,
+        });
+
+        let error = sender
+            .send(DirectTextSend {
+                request,
+                resolved_target_did: None,
+                credentials: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::ImError::CredentialFileUnreadable { path_kind, .. }
+                if path_kind == "delegated_private_key"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -519,6 +1223,7 @@ mod tests {
                 scope,
                 expires_at: None,
                 refreshed: false,
+                bearer_token: None,
             })
         }
 
@@ -528,6 +1233,23 @@ mod tests {
 
         fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
             unreachable!("direct sender should not read status")
+        }
+    }
+
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
         }
     }
 
@@ -552,6 +1274,17 @@ mod tests {
         }
     }
 
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
     struct RecordedCall {
         endpoint: String,
         method: String,
@@ -560,6 +1293,41 @@ mod tests {
 
     struct Fixture {
         root: PathBuf,
+    }
+
+    struct DelegatedIdentityFixture {
+        user_did: String,
+        verification_method: String,
+        private_key_path: PathBuf,
+        private_key_pem: String,
+    }
+
+    impl DelegatedIdentityFixture {
+        fn seal_to_vault_key_ref(&self, client: &crate::core::ImClient) -> String {
+            let vault = FileSecretVault::new(
+                crate::internal::secure_direct::secret_store::im_core_vault_root_key_from_env()
+                    .unwrap(),
+                FileSecretVaultStore::new(
+                    crate::internal::delegated_identity::delegated_vault_dir_for_client(client),
+                ),
+            );
+            let secret_ref = vault
+                .seal(SealSecretRequest {
+                    metadata: SecretMetadata {
+                        workspace_id: "awiki-im-core".to_owned(),
+                        device_id: "local-device".to_owned(),
+                        identity_id: Some("alice-id".to_owned()),
+                        did: Some(self.user_did.clone()),
+                        kind: SecretKind::IdentityDaemonPrivate,
+                        key_id: self.verification_method.clone(),
+                        key_version: 1,
+                        policy: SecretAccessPolicy::no_prompt_local_secret(),
+                    },
+                    plaintext: SecretBytes::from_vec(self.private_key_pem.as_bytes().to_vec()),
+                })
+                .unwrap();
+            crate::internal::delegated_identity::encode_vault_key_ref(&secret_ref).unwrap()
+        }
     }
 
     impl Fixture {
@@ -639,8 +1407,74 @@ mod tests {
                 identity_name: "alice".to_string(),
                 did_document: Some(bundle.did_document),
                 key1_private_pem,
+                verification_method: None,
+                logical_sender_did: None,
             }
         }
+
+        fn write_delegated_identity(&self) -> DelegatedIdentityFixture {
+            let bundle = anp::authentication::create_did_wba_document(
+                "awiki.test",
+                anp::authentication::DidDocumentOptions {
+                    path_segments: vec!["user".to_string()],
+                    domain: Some("awiki.test".to_string()),
+                    challenge: Some("direct-delegated-test".to_string()),
+                    ..anp::authentication::DidDocumentOptions::default()
+                },
+            )
+            .unwrap();
+            let user_did = bundle.did().unwrap().to_string();
+            let delegated_private_key = bundle.private_key_pem("key-1").unwrap().to_string();
+            let verification_method = format!("{user_did}#daemon-key-1");
+            let mut did_document = bundle.did_document;
+            let mut delegated_method = did_document["verificationMethod"][0].clone();
+            delegated_method["id"] = json!(verification_method);
+            did_document["verificationMethod"]
+                .as_array_mut()
+                .unwrap()
+                .push(delegated_method);
+            did_document["authentication"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(verification_method));
+            let identity_dir = self.root.join("identities").join("alice");
+            fs::write(
+                identity_dir.join("did.json"),
+                serde_json::to_vec_pretty(&did_document).unwrap(),
+            )
+            .unwrap();
+            let private_key_path = identity_dir.join("daemon-key-1.pem");
+            fs::write(&private_key_path, &delegated_private_key).unwrap();
+            fs::write(
+                self.root.join("identities").join("registry.json"),
+                json!({
+                    "default_identity": "alice",
+                    "identities": [{
+                        "id": "alice-id",
+                        "did": user_did,
+                        "local_alias": "alice",
+                        "ready_for_auth": true,
+                        "ready_for_messaging": true,
+                        "missing": []
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+            DelegatedIdentityFixture {
+                user_did,
+                verification_method,
+                private_key_path,
+                private_key_pem: delegated_private_key,
+            }
+        }
+    }
+
+    fn install_test_im_core_vault_root_key() {
+        std::env::set_var(
+            crate::internal::secure_direct::secret_store::IM_CORE_VAULT_ROOT_KEY_ENV,
+            "Hx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8=",
+        );
     }
 
     fn direct_text_request(
@@ -659,6 +1493,20 @@ mod tests {
             security: crate::messages::MessageSecurityMode::Plain,
             client_message_id: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
+        }
+    }
+
+    fn direct_payload_request(peer: &str, payload: Value) -> crate::messages::SendMessageRequest {
+        crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Direct(
+                crate::ids::PeerRef::parse(peer, "").unwrap(),
+            ),
+            body: crate::messages::MessageBody::Payload { payload },
+            security: crate::messages::MessageSecurityMode::Plain,
+            client_message_id: None,
+            delivery: crate::messages::MessageDeliveryOptions::default(),
+            delegated_signing: None,
         }
     }
 

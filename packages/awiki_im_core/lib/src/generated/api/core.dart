@@ -9,13 +9,33 @@ import '../frb_generated.dart';
 import 'client.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `with_inner`
+// These functions are ignored because they are not marked as `pub`: `clone_inner`, `open_core_inner`, `with_inner`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `DartImCoreState`
 
 Future<ArcDartImCore> openCore({
   required DartImCoreConfig config,
   required DartImCorePaths paths,
 }) => RustLib.instance.api.crateApiCoreOpenCore(config: config, paths: paths);
+
+Future<ArcDartImCore> openCoreWithOptions({
+  required DartImCoreConfig config,
+  required DartImCorePaths paths,
+  required DartImCoreOpenOptions options,
+}) => RustLib.instance.api.crateApiCoreOpenCoreWithOptions(
+  config: config,
+  paths: paths,
+  options: options,
+);
+
+Future<ArcDartImCore> openCoreWithOptionalOptions({
+  required DartImCoreConfig config,
+  required DartImCorePaths paths,
+  DartImCoreOpenOptions? options,
+}) => RustLib.instance.api.crateApiCoreOpenCoreWithOptionalOptions(
+  config: config,
+  paths: paths,
+  options: options,
+);
 
 Future<void> closeCore({required ArcDartImCore core}) =>
     RustLib.instance.api.crateApiCoreCloseCore(core: core);

@@ -7,7 +7,14 @@ DynamicLibrary loadAwikiImCoreLibrary() {
   if (Platform.isAndroid) {
     return DynamicLibrary.open('libawiki_im_core.so');
   }
+  if (Platform.isLinux) {
+    return DynamicLibrary.open('libawiki_im_core.so');
+  }
   if (Platform.isMacOS) {
+    final dylibPath = _configuredMacOsDylibPath();
+    if (dylibPath != null) {
+      return DynamicLibrary.open(dylibPath);
+    }
     return DynamicLibrary.process();
   }
   if (Platform.isIOS) {
@@ -25,7 +32,14 @@ ExternalLibrary loadAwikiImCoreExternalLibrary() {
   if (Platform.isAndroid) {
     return ExternalLibrary.open('libawiki_im_core.so');
   }
+  if (Platform.isLinux) {
+    return ExternalLibrary.open('libawiki_im_core.so');
+  }
   if (Platform.isMacOS) {
+    final dylibPath = _configuredMacOsDylibPath();
+    if (dylibPath != null) {
+      return ExternalLibrary.open(dylibPath);
+    }
     return ExternalLibrary.process(iKnowHowToUseIt: true);
   }
   if (Platform.isIOS) {
@@ -37,4 +51,12 @@ ExternalLibrary loadAwikiImCoreExternalLibrary() {
   throw UnsupportedError(
     'Unsupported platform for awiki_im_core native library.',
   );
+}
+
+String? _configuredMacOsDylibPath() {
+  final value = Platform.environment['AWIKI_IM_CORE_DYLIB']?.trim();
+  if (value == null || value.isEmpty) {
+    return null;
+  }
+  return value;
 }

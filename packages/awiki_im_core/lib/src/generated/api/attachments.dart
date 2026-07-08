@@ -17,6 +17,14 @@ Future<DartAttachmentSendResult> sendAttachment({
   request: request,
 );
 
+Future<DartAttachmentSendResult> sendConversationAttachment({
+  required ArcDartImClient client,
+  required DartSendConversationAttachmentRequest request,
+}) => RustLib.instance.api.crateApiAttachmentsSendConversationAttachment(
+  client: client,
+  request: request,
+);
+
 Future<DartDownloadedAttachment> downloadAttachment({
   required ArcDartImClient client,
   required DartDownloadAttachmentRequest request,

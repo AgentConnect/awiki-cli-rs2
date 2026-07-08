@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -93,6 +94,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     Command::new(bin)
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.join(".awiki-cli"))
+        .env("HOME", workspace)
+        .env("USERPROFILE", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -152,7 +155,7 @@ fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
     let meta: Value =
         serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
             .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_eq!(meta["workspace_schema_version"], 4);
     let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
     assert_eq!(
         std::fs::read_to_string(backup_dir.join("config.json.bak"))
@@ -180,12 +183,14 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-profile-set-upgrade-{}-{unique}",
+            "awiki-cli-profile-set-upgrade-{}-{unique}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

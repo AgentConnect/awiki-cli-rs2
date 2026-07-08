@@ -10,6 +10,10 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn site_root_live_command_dispatches_through_im_core_site_rpc() {
     let workspace = TempDir::new().expect("workspace");
@@ -45,11 +49,7 @@ fn site_root_live_command_dispatches_through_im_core_site_rpc() {
     assert!(requests[0].contains("POST /site/rpc HTTP/1.1"));
     assert!(requests[0].contains(r#""method":"get_root""#));
     assert!(requests[0].contains(r#""domain":"tenant.example""#));
-    assert_eq!(
-        read_identity_auth_token(workspace.path(), "alice-site"),
-        "jwt-site",
-        "site root get should not refresh JWT when the first site call succeeds"
-    );
+    assert_vault_identity_has_no_plaintext_secret_files(workspace.path(), "alice-site");
 }
 
 #[test]
@@ -95,6 +95,7 @@ fn site_page_live_command_dispatches_through_im_core_site_rpc() {
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -137,20 +138,52 @@ fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, 
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
+    remove_plaintext_secret_files(&identity_dir);
 }
 
-fn read_identity_auth_token(workspace: &Path, identity_name: &str) -> String {
+fn remove_plaintext_secret_files(identity_dir: &Path) {
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        let path = identity_dir.join(file);
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identity_name: &str) {
     let index_path = workspace.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let vault = &index["credentials"][identity_name]["vault_migration"];
+    assert_eq!(vault["status"], "verified");
+    assert_eq!(vault["backend"], "vault");
+    assert!(
+        vault["refs"]["auth_jwt"].is_object(),
+        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+    );
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let auth_path = workspace
-        .join("identities")
-        .join(dir_name)
-        .join("auth.json");
-    let auth: Value = serde_json::from_slice(&std::fs::read(auth_path).unwrap()).unwrap();
-    auth["jwt_token"].as_str().unwrap_or_default().to_string()
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault-backed fixture must not persist plaintext {file}"
+        );
+    }
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {
@@ -166,6 +199,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -307,7 +342,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

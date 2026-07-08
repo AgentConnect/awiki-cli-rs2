@@ -6,7 +6,7 @@
 - 本文中的最终投递示例主要使用 Feishu；当前实现已经支持通过 `awiki-cli runtime host-notify hermes setup --deliver <platform>` 选择其它目标平台。
 - 最新实现落地说明见 `docs/architecture/hermes-host-notify-implementation-notes.md`。
 
-**状态**: Draft v1
+**状态**: Current v1
 **适用范围**: `awiki-cli` websocket listener 的 host_notify 输出链路
 
 ---
@@ -182,7 +182,7 @@ platforms:
 ## 8. 关联文档
 
 - 运行与联调：`docs/architecture/hermes-host-notify-v1-runbook.md`
-- 代码评审：`docs/architecture/hermes-host-notify-v1-change-review.md`
+- Review 规范：`docs/harness/review-spec.md`
 - 契约：
   - `docs/architecture/contracts/notification-surface-v1.schema.json`
   - `docs/architecture/contracts/notify-hermes-v1.openapi.yaml`

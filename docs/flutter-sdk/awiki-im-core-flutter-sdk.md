@@ -15,11 +15,12 @@ Flutter app
 
 ## Supported platforms
 
-v0.1 targets native Flutter on Android, iOS, and macOS:
+v0.1 targets native Flutter on Android, iOS, macOS, and Linux:
 
 - Android: `arm64-v8a`, `x86_64`, optional `armeabi-v7a`.
 - iOS: device and simulator static-library XCFramework slices.
 - macOS: `aarch64`/`x86_64` XCFramework slices.
+- Linux: `x86_64-unknown-linux-gnu` shared library bundled through the Flutter Linux FFI plugin.
 
 Windows is not declared as a v0.1 Flutter plugin platform. Flutter Web has a stub so dependent apps can analyze; calling `AwikiImCore.open` on Web throws `UnsupportedError` because `dart:ffi` cannot load the native Rust backend there.
 
@@ -37,17 +38,377 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
 
-## Group creation service DID
+## Identity secret storage
 
-`CreateGroupRequest.serviceDid` maps to `im_core::groups::GroupCreateRequest.service_did`. Resolution order is:
+Native hosts can open `AwikiImCore` with explicit identity SecretVault options:
 
-1. `request.serviceDid`
-2. `AwikiImCoreConfig.anpServiceDid`
-3. `invalid_input(field = service_did)`
+```dart
+final core = await AwikiImCore.open(
+  config: config,
+  paths: paths,
+  openOptions: AwikiImCoreOpenOptions.vaultRequired(
+    identitySecretVault: ImCoreSecretVaultOptions(
+      rootKey: DeviceVaultRootKey.fromList(rootKeyBytes),
+      vaultDir: vaultDir,
+      workspaceId: workspaceId,
+      deviceId: deviceId,
+    ),
+  ),
+);
+```
+
+`AwikiImCoreOpenOptions.fileCompat()` keeps the compatibility default. Use
+`vaultPreferred` only as a migration-period mode; production App safety should
+use `vaultRequired` and fail closed when the host cannot provide the root key or
+matching vault context.
+
+The Dart SDK does not generate, persist, rotate, or back up the host root key.
+The host must get it from its own no-prompt secure storage path and pass it only
+for `open`. `DeviceVaultRootKey.toString()` is redacted, and App code must not
+log generated DTOs or `openOptions` that could contain root key bytes. The SDK
+does not expose generic `open_secret()`, private key, or raw `SecretRef` APIs.
+Auth APIs may still return `bearerToken` in session DTOs for existing flows;
+callers must treat it as sensitive and must not log or persist it outside the
+SDK-owned auth/session storage path.
+
+Identity vault diagnostics are exposed as narrow facade methods:
+
+```dart
+final status = await core.identityVaultStatus(selector);
+final migration = await core.migrateIdentityVault(selector);
+final verification = await core.verifyIdentityVault(selector);
+```
+
+Status/migration/verification DTOs report backend, metadata, warnings, and
+plaintext compatibility retention only. They do not expose root key material,
+JWTs, bearer tokens, or secret refs. Flutter Web remains a stub and cannot run
+the native vault-backed backend.
+
+## Directory profile metadata
+
+`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` can return a `DirectoryResolution.profile` populated from the WNS Handle Resolution Document `profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
+
+The Dart `UserProfile` model uses these standard display fields:
+
+- `displayName`
+- `avatarUri`
+- `profileUri`
+- `description`
+- `subjectType`
+- `versionId`
+- `ttl`
+
+Legacy compatibility fields remain available:
+
+- `bio` maps to / from `description` where needed.
+- `avatarUrl` maps to / from `avatarUri` where needed.
+- Older service inputs such as `nick_name`, `name`, `avatar_url`, and `avatar` are normalized by `im-core`.
+
+Display fields must not be used for routing, authentication, authorization, service endpoint selection, E2EE binding, or security-profile negotiation. Apps should keep Handle or DID visible on profile and recipient-confirmation surfaces, especially for high-risk operations.
+
+`client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally; the app should fall back to `displayName -> handle -> did` without blocking list rendering. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
+
+## Group display metadata
+
+`CreateGroupRequest.avatarUri` maps to `group_profile.avatar_uri`; `CreateGroupRequest.name` remains the Flutter convenience input for `group_profile.display_name`. `GroupSummary` and `GroupSnapshot` expose `displayName` and `avatarUri`; the old `name` field is retained as a compatibility projection of `displayName`.
+
+Group creation service DID is resolved from `AwikiImCoreConfig.anpServiceDid`. If it is absent, group create returns `invalid_input(field = anp_service_did)`.
+
+These display fields are UI metadata only. They must not be used for routing, authorization, membership checks, E2EE binding, or service endpoint selection.
 
 ## Message retry
 
 `retryMessage` is explicitly unsupported in v0.1 and returns `unsupported_capability("message-retry")`. The SDK must not rebuild a send request from display message DTOs because those DTOs can lose target, body, security, idempotency, and retry-plan information.
+
+## Local-first message reads
+
+`client.messages.conversations(...)` returns local conversation summaries from `im-core`; after schema version 18 this path is backed by `conversation_summaries` instead of the legacy dynamic `threads` view. The API is paged: pass `cursor: page.nextCursor` to continue, and stop when `hasMore` is false or `nextCursor` is null. A single page is capped at 100 items by `PageLimit::new`, so large conversation lists such as 500 or 1000 rows must be loaded by cursor pagination. The cursor is opaque and follows the local sort order `last_message_at DESC, conversation_id DESC`; callers must not parse it or treat it as an offset.
+
+Conversation list startup and realtime updates use snapshot / patch helpers under
+the same `client.messages` namespace:
+
+```dart
+final snapshot = await client.messages.loadConversationSnapshot();
+await client.messages.clearConversationSnapshot();
+final patches = client.messages.watchConversationPatches();
+final repair = await client.messages.repairConversationStore();
+final timelinePatches = client.messages.watchConversationTimelinePatches(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
+  limit: 100,
+);
+final timelineRepair = await client.messages.repairConversationTimelineStore(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
+  limit: 100,
+);
+```
+
+`loadConversationSnapshot` reads a non-authoritative redb snapshot generated from
+committed `conversation_summaries`. `clearConversationSnapshot` only clears that
+discardable snapshot cache for the current owner; it does not clear SQLite local
+projection, runtime store, read state, or reliable checkpoint. `watchConversationPatches` streams versioned
+`ConversationStorePatch` values (`reset`, `upsert`, `remove`, `reorder`,
+`repairRequired`) emitted only after the underlying local projection commit
+succeeds. `repairConversationStore` returns a reset/repair patch after lag,
+overflow, stream close, or version gaps. `watchConversationTimelinePatches` and
+`repairConversationTimelineStore` expose the same committed-projection rule for an
+opened conversation timeline keyed by `ConversationReadRef.conversationId`;
+remote history best-effort pages or realtime hints must not become authoritative
+timeline patches before persistence succeeds. `watchThreadPatches(ThreadRef)` and
+`repairThreadStore(ThreadRef)` remain compatibility adapters for CLI/legacy paths,
+not the AWiki Me display-chain owner. A
+realtime incoming message becomes patch-visible only after `im-core` has
+committed its SQLite local projection; failed or skipped realtime projection
+does not emit an authoritative conversation/thread patch.
+
+These APIs currently live under `client.messages` for SDK compatibility. If a
+future `client.conversations` namespace is added, it must wrap the same core
+store and DTOs rather than introducing another source of truth.
+
+Conversation snapshot / store DTOs are core-only. They must not carry
+`awiki-me` App-only fields such as `hidden`, `pinned`, `muted`, `customTitle`,
+`avatarSeed`, `peerLifecycleState`, `ConversationSummary`, or `ChatMessage`.
+AWiki Me applies those presentation fields in its own application layer; see
+`awiki-me/docs/conversation-presentation-ownership.md`.
+
+`client.messages.localConversationTimeline(conversation, limit: ..., cursor: ...)`
+is the App timeline first-paint API. It reads the committed local projection by
+canonical `conversationId` and does not call remote history. `localHistory(thread, ...)`
+and `history(thread, ...)` remain migration adapters:
+
+- `localConversationTimeline` / `localHistory` read only the local SQLite projection and return an opaque local cursor;
+- it does not call message-service history RPCs, directory lookup, or remote E2EE projection;
+- it is the correct API for chat first paint before background reconcile;
+- `history` keeps remote history + projection/reconcile semantics and should be called in the background when freshness is required.
+
+Both APIs are async `Future<MessagePage>` methods. Apps must not bypass the SDK or read SQLite directly.
+
+## Conversation send and local echo
+
+Conversation UI sends should use the conversationId-first APIs when the App already has a selected conversation:
+
+```dart
+final sent = await client.messages.sendConversationText(
+  const SendConversationTextRequest(
+    conversation: ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    text: 'hello',
+  ),
+);
+
+final payload = await client.messages.sendConversationPayload(
+  const SendConversationPayloadRequest(
+    conversation: ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    payloadJson: '{"text":"@agents summarize","mentions":[]}',
+  ),
+);
+```
+
+`im-core` resolves the conversation to the storage route, persists a pending local
+projection row, emits patches after the local transaction succeeds, and updates
+the same durable row to accepted/sent/failed after network send. Apps render
+`Message.metadata.sendState` / retry data from the SDK message DTO. They must not
+create a second durable optimistic message store for text or payload sends.
+
+Conversation UI attachment sends use the attachment namespace with the same
+conversation identity rule:
+
+```dart
+final attachment = await client.attachments.sendConversation(
+  SendConversationAttachmentRequest(
+    conversation: const ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    input: const AttachmentInput.bytes(
+      filename: 'note.txt',
+      mimeType: 'text/plain',
+      bytes: [104, 101, 108, 108, 111],
+    ),
+    caption: 'hello',
+    clientMessageId: 'msg-app-attachment-001',
+    idempotencyKey: 'op-msg-app-attachment-001',
+  ),
+);
+```
+
+`client.attachments.sendConversation(...)` resolves the canonical
+`ConversationReadRef.conversationId` inside `im-core`, writes the durable message
+projection, and returns the same `AttachmentSendResult` shape as the legacy
+target API. AWiki Me conversation UI should use this API for initial attachment
+sends and retries. Local file previews may be rendered as transient UI state
+while upload is in progress, but list/detail/send correctness must come from the
+SDK projection and patch stream.
+
+## Conversation read watermark
+
+Conversation-level mark-read is exposed as a watermark-first message API:
+
+```dart
+final result = await client.messages.markConversationRead(
+  const ConversationReadRef(
+    conversationId: 'dm:peer-scope:v1:alice:bob',
+  ),
+  watermark: const ReadWatermark(
+    lastReadThreadSeq: '991',
+    lastReadMessageId: 'msg_direct_991',
+  ),
+  fallbackMaxMessageIds: 500,
+);
+```
+
+`watermark` is optional. When the App omits it, the SDK computes the highest
+visible committed thread watermark from `im-core` local projection / thread
+store. App code must not page through `history()`, read SQLite, or collect
+unread message ids just to clear unread state.
+
+Watermark semantics:
+
+- direct threads use direct message `server_seq`;
+- group threads use the group thread-local `server_seq` projection, which may be
+  backed by `group_event_seq` on the service side;
+- neither value is the account-level reliable sync `event_seq`;
+- `lastReadMessageId` is for idempotency and diagnostics, not the ordering source;
+- `readAt` is an audit/display timestamp and does not participate in
+  authorization or checkpoint logic.
+
+The SDK first uses the service `read_state.mark_read` contract. When the service
+does not support the endpoint, the SDK falls back to local unread-id lookup and
+legacy direct `inbox.mark_read(message_ids)`. Group fallback on an old service is
+local/pending only. Results must expose `updatedCount`, `remoteAcknowledged`,
+`partial`, `fallbackUsed`, `pendingRemoteAck`, and `warnings`; any returned
+message ids are legacy fallback diagnostics only.
+
+`markConversationRead` does not expose or advance the reliable sync checkpoint.
+`remoteAcknowledged` and `pendingRemoteAck` describe only read-ack state.
+`markThreadRead(ThreadRef)` remains available as a CLI/legacy adapter, but AWiki Me
+must route visible conversations by `ConversationReadRef.conversationId`.
+
+## Reliable message sync
+
+Reliable sync is exposed as high-level async message APIs. The Dart SDK must not expose
+SQLite, WebSocket frames, `since_event_seq`, `next_event_seq`, or checkpoint
+load/store primitives.
+
+Expected public shape:
+
+```dart
+final delta = await client.messages.syncDelta(
+  const SyncDeltaRequest(
+    limit: 100,
+    reason: 'app_resumed',
+  ),
+);
+
+final page = await client.messages.syncConversationAfter(
+  SyncConversationAfterRequest(
+    conversation: const ConversationReadRef(
+      conversationId: 'dm:peer-scope:v1:alice:bob',
+    ),
+    afterServerSeq: '991',
+    limit: 100,
+  ),
+);
+```
+
+`syncDelta` semantics:
+
+- Rust `im-core` reads the current global message checkpoint from local SQLite.
+- Rust `im-core` sends `sync.delta` to the home message service and injects
+  `since_event_seq` internally.
+- Rust `im-core` applies all returned events and advances the checkpoint only after
+  the local apply transaction succeeds.
+- If the service returns `snapshot_required=true`, the SDK returns a failed-closed
+  result: no checkpoint advance, no local projection wipe, and diagnostic fields for
+  the App to surface a degraded sync state.
+- Dart callers can choose `limit` and `reason`; they cannot choose or store the
+  reliable checkpoint.
+
+`syncConversationAfter` semantics:
+
+- It is a thread-local freshness API for direct/group chat surfaces.
+- `afterServerSeq` is a thread-local message sequence, not the account-level
+  `event_seq`.
+- It does not read or advance the reliable global checkpoint.
+- The returned page must contain only `server_seq > afterServerSeq` messages in
+  ascending `server_seq` order.
+- Returned messages are not UI truth until `im-core` persists them to the local
+  projection and the App reloads/repairs through the conversation timeline.
+`syncThreadAfter(ThreadRef)` remains a compatibility wrapper and should not be the
+AWiki Me display-chain routing owner.
+
+Realtime integration:
+
+- Realtime events may include a readonly `RealtimeSyncHint` with `eventId`,
+  `eventSeq`, and `eventType`.
+- App code may use the hint to schedule `syncDelta` after duplicate/gap/dirty
+  detection.
+- Receiving a realtime hint or successfully projecting a realtime notification must
+  not advance the reliable checkpoint.
+- Successfully projecting a realtime incoming message to local SQLite does emit
+  committed conversation/thread patches for active subscribers; the hint alone
+  is never an authoritative patch source.
+
+The SDK must not add public APIs named `loadGlobalCheckpoint`, `storeGlobalCheckpoint`,
+`setGlobalCheckpoint`, or equivalents. Any checkpoint inspection needed for debugging
+must stay behind internal diagnostics or test-only interfaces.
+
+## Message payloads and ANP P9 mentions
+
+`SendPayloadRequest.payloadJson` accepts any JSON object up to the SDK payload
+size limit. It no longer requires a top-level `schema` field. Existing
+`awiki.agent.*` control payloads may continue to include `schema`, but App code
+must not add a fake `schema`/`protocol` field merely to send ANP-P9 mention
+payloads.
+
+The Dart SDK exposes ANP-P9 mention DTO helpers:
+
+```dart
+final payload = MessageMentionPayload(
+  text: '@agents please summarize this discussion.',
+  mentions: const [
+    MessageMention(
+      id: 'men_1',
+      range: MessageMentionRange(start: 0, end: 7),
+      target: MessageMentionTarget.groupSelector(MessageMentionSelector.agents),
+    ),
+  ],
+);
+
+validateMessageMentionPayloadJson(payload.toPayloadJson());
+await client.messages.sendPayload(
+  SendPayloadRequest(
+    target: const MessageTarget.group('did:wba:example.com:group:team'),
+    security: MessageSecurityMode.defaultPlain,
+    payloadJson: payload.toPayloadJson(),
+  ),
+);
+```
+
+P9 mention DTOs intentionally do not add sender, proof, profile, content type, or
+selector expansion fields. Single-target identity is the target DID; optional
+`displayName` is only a UI snapshot and must not be used for routing,
+authentication, authorization, E2EE binding, or runtime policy decisions.
+
+Flutter/App integration gates:
+
+```bash
+cd packages/awiki_im_core && flutter test test/message_payload_api_test.dart
+cd ../.. && scripts/flutter/codegen-check.sh
+```
+
+AWiki Me adds App-level composer, mapper, and highlight coverage in
+`awiki-me` focused tests. The desktop App + CLI peer group scenario sends a
+schema-less `@agents` P9 payload through `MessagingService.sendMentionText` and
+verifies the projected payload text can be read back by both the App and CLI
+history. Daemon prompt execution is validated separately by
+`cargo test -p awiki-deamon --locked mention` and the dedicated Agent IM /
+daemon integration gate.
 
 ## Realtime ownership
 
@@ -74,6 +435,20 @@ WebSocket remains an `im-core` internal transport concern. Transport details suc
 
 Flutter Web still receives a stub and does not support native realtime.
 
+## Attachments And E2EE
+
+`client.attachments.sendConversation(SendConversationAttachmentRequest(...))` is the conversationId-first attachment send API for apps that already have a selected conversation. `client.attachments.send(AttachmentSendRequest(...))` remains a high-level target-first compatibility facade for CLI, daemon, legacy callers, or surfaces that do not yet hold a canonical `ConversationReadRef`. `AttachmentSendRequest.security` defaults to `MessageSecurityMode.defaultPlain`; callers can set `MessageSecurityMode.e2eeRequired` for direct or group E2EE attachment messages.
+
+Plain attachment messages use `application/anp-attachment-manifest+json` with a JSON
+manifest payload. Realtime, read, sync, conversation snapshots, and local
+projection paths must expose that manifest as `MessageBodyView.payload`, while
+also attaching the attachment summary and download action when available. The
+manifest content type is not an unsupported body type.
+
+Secure attachment sends do not expose P7 control-plane calls, download tickets, object keys, nonces, raw ciphertext, secure session state, or MLS provider paths to Dart. `AttachmentSendResult.manifestJson` is the public redacted manifest projection. For E2EE attachments it may include `encryption_info.mode = object-e2ee`, `object_cipher`, and `plaintext_size`, but must not contain `object_key_b64u` or `nonce_b64u`.
+
+`UploadedAttachment.sizeBytes` / `size` describe the uploaded object bytes. For `object-e2ee` this is ciphertext size. `UploadedAttachment.plaintextSizeBytes` carries the original plaintext size when available.
+
 ## Codegen
 
 Generated files are committed so the package can be checked out and analyzed without requiring codegen first:
@@ -84,27 +459,52 @@ Generated files are committed so the package can be checked out and analyzed wit
 Run:
 
 ```bash
-scripts/flutter/codegen.sh
 scripts/flutter/codegen-check.sh
 ```
 
-If `flutter_rust_bridge_codegen` CLI flags change, update the script but keep the same input/output paths.
+`codegen-check.sh` runs the bridge generator and fails if the committed generated Rust/Dart files are not already in sync. If `flutter_rust_bridge_codegen` CLI flags change, update this script but keep the same input/output paths.
 
 ## Build commands
 
+Rebuild all native SDK artifacts after Rust SDK changes:
+
 ```bash
-scripts/flutter/build-host.sh
-scripts/flutter/build-android.sh --dry-run
-scripts/flutter/build-apple.sh --dry-run
-scripts/flutter/build-all.sh
-scripts/flutter/package.sh --dry-run
+scripts/flutter/build-sdk-native.sh
 ```
 
-Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed.
+The one-step script runs:
+
+```bash
+scripts/flutter/codegen-check.sh
+scripts/flutter/build-apple.sh
+scripts/flutter/build-android.sh
+```
+
+Linux native artifacts are host-specific and are built explicitly on Linux.
+Single-platform builds remain available:
+
+```bash
+scripts/flutter/build-sdk-native.sh --macos-only
+scripts/flutter/build-sdk-native.sh --ios-only
+scripts/flutter/build-sdk-native.sh --android-only
+scripts/flutter/build-sdk-native.sh --linux-only
+```
+
+Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed. Linux native builds must run on Linux with the Flutter Linux desktop prerequisites available in the consuming app, such as `clang`, `cmake`, `ninja-build`, `pkg-config`, GTK development headers, and Xvfb for headless integration tests. Use `--dry-run` to print the selected build steps without compiling native artifacts.
+
+Linux builds generate:
+
+```text
+packages/awiki_im_core/linux/lib/libawiki_im_core.so
+```
+
+The file is copied from `target/<target>/release/libawiki_im_core.so` and is ignored by git, matching the existing Android and Apple native artifact policy. The package's `linux/CMakeLists.txt` adds the generated `.so` to `awiki_im_core_bundled_libraries`, so Flutter installs it into the app bundle's `lib/` directory. The Dart loader opens it as `libawiki_im_core.so`, relying on the Flutter Linux runner's `$ORIGIN/lib` rpath.
 
 ## Common local errors
 
 - Missing `../anp/anp/rust` sibling checkout: this workspace depends on a sibling ANP Rust crate.
 - Missing `cargo-ndk`: required for full Android native library builds.
+- Linux `libawiki_im_core.so` missing from the app bundle or native smoke fails to load it: run `scripts/flutter/build-sdk-native.sh --linux-only` before testing a Flutter Linux app that calls `AwikiImCore.open`.
+- Linux dynamic library load error: verify the app bundle contains `lib/libawiki_im_core.so` and that the Flutter Linux runner preserves `$ORIGIN/lib` in `CMAKE_INSTALL_RPATH`.
 - iOS symbols not found: verify the podspec vendored XCFramework path and `-force_load` slice path.
 - FRB generated files stale: run `scripts/flutter/codegen-check.sh`.

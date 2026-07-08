@@ -17,6 +17,7 @@ fn msg_secure_repair_uses_im_core_and_requeues_peer_failed_outbox() {
     seed_secure_session(&alice, &bob.did);
     seed_secure_outbox_row(
         workspace.path(),
+        "e1_alice_alice-repair",
         &alice.did,
         &bob.did,
         "repair-failed-bob",
@@ -25,6 +26,7 @@ fn msg_secure_repair_uses_im_core_and_requeues_peer_failed_outbox() {
     );
     seed_secure_outbox_row(
         workspace.path(),
+        "e1_alice_alice-repair",
         &alice.did,
         &carol.did,
         "repair-failed-carol",
@@ -54,21 +56,28 @@ fn msg_secure_repair_uses_im_core_and_requeues_peer_failed_outbox() {
         envelope["data"]["repair"]["problem"]["code"],
         "PeerKeysUnavailable"
     );
+    assert_eq!(
+        envelope["data"]["repair"]["prepared_local_send_state"],
+        Value::Bool(false)
+    );
     assert_warning_contains(
         &envelope,
         "1 failed secure outbox item(s) were moved back to queued",
     );
+    assert_warning_contains(&envelope, "direct E2EE prekey preparation failed");
     assert_legacy_session_file_unchanged(&alice, &bob.did);
 
     let rows = query_rows(
         workspace.path(),
-        "SELECT outbox_id, local_status, peer_did FROM e2ee_outbox ORDER BY outbox_id",
+        "SELECT outbox_id, owner_identity_id, local_status, peer_did FROM e2ee_outbox ORDER BY outbox_id",
     );
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["outbox_id"], "repair-failed-bob");
+    assert_eq!(rows[0]["owner_identity_id"], "e1_alice_alice-repair");
     assert_eq!(rows[0]["local_status"], "queued");
     assert_eq!(rows[0]["peer_did"], bob.did);
     assert_eq!(rows[1]["outbox_id"], "repair-failed-carol");
+    assert_eq!(rows[1]["owner_identity_id"], "e1_alice_alice-repair");
     assert_eq!(rows[1]["local_status"], "failed");
     assert_eq!(rows[1]["peer_did"], carol.did);
 }
@@ -79,7 +88,7 @@ fn save_ready_identity(
     handle: &str,
     make_default: bool,
 ) -> TestIdentity {
-    write_ready_identity(
+    let identity = write_ready_identity(
         workspace,
         TestIdentityOptions {
             identity_name,
@@ -88,7 +97,20 @@ fn save_ready_identity(
             jwt_token: &format!("jwt-{handle}"),
             make_default,
         },
-    )
+    );
+    migrate_identity_to_vault(workspace);
+    identity
+}
+
+fn migrate_identity_to_vault(workspace: &Path) {
+    let output = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vault migration failed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn write_msg_config(workspace: &Path) {
@@ -118,6 +140,7 @@ fn seed_secure_session(identity: &TestIdentity, peer_did: &str) {
 
 fn seed_secure_outbox_row(
     workspace: &Path,
+    owner_identity_id: &str,
     owner_did: &str,
     peer_did: &str,
     outbox_id: &str,
@@ -128,15 +151,16 @@ fn seed_secure_outbox_row(
     connection
         .execute(
             r#"
-INSERT INTO e2ee_outbox (
-    outbox_id, owner_did, peer_did, session_id, original_type, plaintext,
-    local_status, attempt_count, last_error_code, retry_hint, created_at,
-    updated_at, credential_name
-) VALUES (?1, ?2, ?3, 'old-session', 'text', 'failed repair plaintext', ?4, 0,
-          'send_failed', 'retry', '2026-05-16T00:00:00Z', '2026-05-16T00:00:00Z', ?5)
-"#,
+	INSERT INTO e2ee_outbox (
+	    outbox_id, owner_identity_id, owner_did, peer_did, session_id, original_type, plaintext,
+	    local_status, attempt_count, last_error_code, retry_hint, created_at,
+	    updated_at, credential_name
+	) VALUES (?1, ?2, ?3, ?4, 'old-session', 'text', 'failed repair plaintext', ?5, 0,
+	          'send_failed', 'retry', '2026-05-16T00:00:00Z', '2026-05-16T00:00:00Z', ?6)
+	"#,
             rusqlite::params![
                 outbox_id,
+                owner_identity_id,
                 owner_did,
                 peer_did,
                 local_status,
@@ -167,6 +191,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

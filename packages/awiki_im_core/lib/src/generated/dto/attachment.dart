@@ -36,8 +36,10 @@ class DartAttachmentSendRequest {
   final DartMessageTarget target;
   final DartAttachmentInput input;
   final String? caption;
+  final String? mentionPayloadJson;
   final String? mimeType;
   final String? filename;
+  final DartMessageSecurityMode security;
   final String? idempotencyKey;
   final bool waitForFinalAcceptance;
 
@@ -45,8 +47,10 @@ class DartAttachmentSendRequest {
     required this.target,
     required this.input,
     this.caption,
+    this.mentionPayloadJson,
     this.mimeType,
     this.filename,
+    required this.security,
     this.idempotencyKey,
     required this.waitForFinalAcceptance,
   });
@@ -56,8 +60,10 @@ class DartAttachmentSendRequest {
       target.hashCode ^
       input.hashCode ^
       caption.hashCode ^
+      mentionPayloadJson.hashCode ^
       mimeType.hashCode ^
       filename.hashCode ^
+      security.hashCode ^
       idempotencyKey.hashCode ^
       waitForFinalAcceptance.hashCode;
 
@@ -69,8 +75,10 @@ class DartAttachmentSendRequest {
           target == other.target &&
           input == other.input &&
           caption == other.caption &&
+          mentionPayloadJson == other.mentionPayloadJson &&
           mimeType == other.mimeType &&
           filename == other.filename &&
+          security == other.security &&
           idempotencyKey == other.idempotencyKey &&
           waitForFinalAcceptance == other.waitForFinalAcceptance;
 }
@@ -197,6 +205,61 @@ sealed class DartDownloadedAttachmentDestination
   }) = DartDownloadedAttachmentDestination_Memory;
 }
 
+class DartSendConversationAttachmentRequest {
+  final DartConversationReadRef conversation;
+  final DartAttachmentInput input;
+  final String? caption;
+  final String? mentionPayloadJson;
+  final String? mimeType;
+  final String? filename;
+  final DartMessageSecurityMode security;
+  final String? clientMessageId;
+  final String? idempotencyKey;
+  final bool waitForFinalAcceptance;
+
+  const DartSendConversationAttachmentRequest({
+    required this.conversation,
+    required this.input,
+    this.caption,
+    this.mentionPayloadJson,
+    this.mimeType,
+    this.filename,
+    required this.security,
+    this.clientMessageId,
+    this.idempotencyKey,
+    required this.waitForFinalAcceptance,
+  });
+
+  @override
+  int get hashCode =>
+      conversation.hashCode ^
+      input.hashCode ^
+      caption.hashCode ^
+      mentionPayloadJson.hashCode ^
+      mimeType.hashCode ^
+      filename.hashCode ^
+      security.hashCode ^
+      clientMessageId.hashCode ^
+      idempotencyKey.hashCode ^
+      waitForFinalAcceptance.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendConversationAttachmentRequest &&
+          runtimeType == other.runtimeType &&
+          conversation == other.conversation &&
+          input == other.input &&
+          caption == other.caption &&
+          mentionPayloadJson == other.mentionPayloadJson &&
+          mimeType == other.mimeType &&
+          filename == other.filename &&
+          security == other.security &&
+          clientMessageId == other.clientMessageId &&
+          idempotencyKey == other.idempotencyKey &&
+          waitForFinalAcceptance == other.waitForFinalAcceptance;
+}
+
 class DartUploadedAttachment {
   final String attachmentId;
   final String filename;
@@ -205,6 +268,8 @@ class DartUploadedAttachment {
   final String size;
   final String digestB64U;
   final String objectUri;
+  final String objectEncryptionMode;
+  final BigInt? plaintextSizeBytes;
 
   const DartUploadedAttachment({
     required this.attachmentId,
@@ -214,6 +279,8 @@ class DartUploadedAttachment {
     required this.size,
     required this.digestB64U,
     required this.objectUri,
+    required this.objectEncryptionMode,
+    this.plaintextSizeBytes,
   });
 
   @override
@@ -224,7 +291,9 @@ class DartUploadedAttachment {
       sizeBytes.hashCode ^
       size.hashCode ^
       digestB64U.hashCode ^
-      objectUri.hashCode;
+      objectUri.hashCode ^
+      objectEncryptionMode.hashCode ^
+      plaintextSizeBytes.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -237,5 +306,7 @@ class DartUploadedAttachment {
           sizeBytes == other.sizeBytes &&
           size == other.size &&
           digestB64U == other.digestB64U &&
-          objectUri == other.objectUri;
+          objectUri == other.objectUri &&
+          objectEncryptionMode == other.objectEncryptionMode &&
+          plaintextSizeBytes == other.plaintextSizeBytes;
 }

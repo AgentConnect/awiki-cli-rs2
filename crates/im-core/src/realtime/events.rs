@@ -24,6 +24,8 @@ pub struct MessageReceivedEvent {
     pub attachment_summary: Option<AttachmentMessageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_action: Option<AttachmentDownloadAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RealtimeSyncHint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -55,6 +57,8 @@ pub struct MessageUpdatedEvent {
     pub message_id: crate::ids::MessageId,
     pub thread: crate::messages::ThreadRef,
     pub update_kind: MessageUpdateKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RealtimeSyncHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +72,22 @@ pub enum MessageUpdateKind {
 pub struct GroupUpdatedEvent {
     pub group: crate::ids::GroupRef,
     pub update_kind: GroupUpdateKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_event_seq: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_state_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RealtimeSyncHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,4 +130,18 @@ pub struct UnknownNotificationEvent {
     pub content_type: Option<String>,
     pub notification_type: Option<String>,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RealtimeSyncHint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealtimeSyncHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    pub sync_dirty: bool,
+    pub gap_detected: bool,
 }

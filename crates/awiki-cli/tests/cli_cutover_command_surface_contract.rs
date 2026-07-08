@@ -521,31 +521,24 @@ fn direct_invocation_policy_is_enforced_before_handlers() {
 
 #[test]
 fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
-    for (args, command, capability) in [(
-        &["debug", "db", "query", "SELECT 1"][..],
-        "debug.db.query",
-        "raw-sql",
-    )] {
-        let output = awiki_cmd(args);
-        assert_code(&output, 2);
-        let envelope = error_json(&output);
+    let args = &["debug", "db", "query", "SELECT 1"][..];
+    let command = "debug.db.query";
+    let capability = "raw-sql";
+    let output = awiki_cmd(args);
+    assert_code(&output, 2);
+    let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["command"], command);
-        assert_eq!(envelope["error"]["details"]["capability"], capability);
-        assert_eq!(
-            envelope["error"]["details"]["required_phase"],
-            if capability == "group secure diagnostics" {
-                "future diagnostics plan"
-            } else {
-                "outside current im-core cutover"
-            }
-        );
-        assert_eq!(
-            envelope["error"]["details"]["cutover_status"],
-            "unsupported"
-        );
-    }
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], capability);
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        "outside current im-core cutover"
+    );
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
+    );
 }
 
 fn schema_value(command: &str) -> Value {

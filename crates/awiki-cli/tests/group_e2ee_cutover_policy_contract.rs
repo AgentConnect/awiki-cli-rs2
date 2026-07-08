@@ -137,11 +137,26 @@ fn group_e2ee_internal_dry_run_plans_remain_queryable() {
 }
 
 #[test]
-fn group_e2ee_internal_live_commands_stay_unsupported() {
+fn group_e2ee_internal_live_commands_enter_supported_im_core_boundary() {
     let workspace = TempDir::new("group-e2ee-live-unsupported").expect("workspace");
-    for (args, command) in low_level_group_e2ee_commands(false) {
+    for (args, command) in supported_live_group_e2ee_commands() {
         let output = awiki_internal_cmd(&args, workspace.path());
-        assert_unsupported_capability(&output, command, "group e2ee", "Phase 6");
+        assert_identity_required(&output, command);
+    }
+
+    let output = awiki_internal_cmd(
+        &group_e2ee_args("group.e2ee.pending", false),
+        workspace.path(),
+    );
+    assert_unsupported_capability(&output, "group.e2ee.pending", "group e2ee", "Phase 6");
+}
+
+#[test]
+fn group_e2ee_public_live_commands_still_require_internal_gate() {
+    let workspace = TempDir::new("group-e2ee-public-live").expect("workspace");
+    for (args, command) in supported_live_group_e2ee_commands() {
+        let output = awiki_cmd(&args, workspace.path());
+        assert_internal_command(&output, command);
     }
 }
 
@@ -185,6 +200,19 @@ fn low_level_group_e2ee_commands(dry_run: bool) -> Vec<(Vec<&'static str>, &'sta
     ]
     .into_iter()
     .map(|command| (group_e2ee_args(command, dry_run), command))
+    .collect()
+}
+
+fn supported_live_group_e2ee_commands() -> Vec<(Vec<&'static str>, &'static str)> {
+    [
+        "group.e2ee.publish-key-package",
+        "group.e2ee.update-key",
+        "group.e2ee.rejoin",
+        "group.e2ee.recover-member",
+        "group.e2ee.process-leave-request",
+    ]
+    .into_iter()
+    .map(|command| (group_e2ee_args(command, false), command))
     .collect()
 }
 
@@ -257,6 +285,8 @@ fn base_awiki_command(args: &[&str], workspace: &Path) -> Command {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -320,6 +350,17 @@ fn assert_unsupported_capability(
         envelope["error"]["details"]["cutover_status"],
         "unsupported"
     );
+}
+
+fn assert_identity_required(output: &Output, command: &str) {
+    assert!(
+        matches!(output.status.code(), Some(1 | 2)),
+        "unexpected exit status for {command}; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = error_json(output);
+    assert_eq!(envelope["error"]["code"], "identity_required");
 }
 
 fn success_json(output: &Output) -> Value {

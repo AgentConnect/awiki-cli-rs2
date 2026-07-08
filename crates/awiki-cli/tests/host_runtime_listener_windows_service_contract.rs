@@ -45,6 +45,7 @@ fn windows_listener_service_contract_matches_go_kardianos_config_intent() {
         "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
         resolved.paths.workspace_home_dir.clone(),
     );
+    expected_env.insert("AWIKI_CLI_INTERNAL_ENTRY".to_string(), "1".to_string());
     expected_env.insert("AWIKI_LISTENER_SERVICE_MODE".to_string(), "1".to_string());
     assert_eq!(contract.env_vars, expected_env);
 
@@ -234,6 +235,8 @@ fn test_resolved() -> Resolved {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: String::new(),
+        user_service_endpoint: String::new(),
+        message_service_endpoint: String::new(),
         did_domain: String::new(),
         anp_service_endpoint: String::new(),
         anp_service_did: String::new(),

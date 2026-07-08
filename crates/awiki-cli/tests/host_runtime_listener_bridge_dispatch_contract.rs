@@ -113,6 +113,7 @@ fn listener_bridge_dispatch_maps_group_methods_like_go() {
             json!({
                 "name": "Bridge Group",
                 "description": "from listener",
+                "avatar_uri": "https://example.test/group.png",
                 "discoverability": "public",
                 "admission_mode": "approval",
                 "slug": "bridge-group",
@@ -136,6 +137,10 @@ fn listener_bridge_dispatch_maps_group_methods_like_go() {
     assert_eq!(
         create.params["body"]["group_profile"]["display_name"],
         "Bridge Group"
+    );
+    assert_eq!(
+        create.params["body"]["group_profile"]["avatar_uri"],
+        "https://example.test/group.png"
     );
     assert_eq!(
         create.params["body"]["group_policy"]["admission_mode"],
@@ -601,7 +606,6 @@ fn signed_record(identity_name: &str) -> RuntimeIdentityRecord {
         did: generated.did,
         did_document: Some(generated.did_document),
         key1_private_pem: generated.key1_private_pem,
-        ..RuntimeIdentityRecord::default()
     }
 }
 

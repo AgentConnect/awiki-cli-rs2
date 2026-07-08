@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -31,6 +31,76 @@ pub struct IdentityReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentitySecretStorageBackend {
+    FileCompat,
+    Vault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityVaultStatus {
+    pub identity: IdentitySummary,
+    pub storage_policy: crate::core::IdentitySecretStoragePolicy,
+    pub selected_backend: IdentitySecretStorageBackend,
+    pub vault_available: bool,
+    pub vault_metadata_present: bool,
+    pub vault_metadata_verified: bool,
+    pub workspace_id: Option<String>,
+    pub device_id: Option<String>,
+    pub plaintext_compat_retained: Option<bool>,
+    pub missing: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityVaultMigrationReport {
+    pub identity: IdentitySummary,
+    pub status: IdentityVaultStatus,
+    pub migrated: bool,
+    pub verified: bool,
+    pub plaintext_compat_retained: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityVaultVerificationReport {
+    pub identity: IdentitySummary,
+    pub status: IdentityVaultStatus,
+    pub verified: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct HostedIdentityMaterial {
+    pub identity_id: String,
+    pub did: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub did_document: serde_json::Value,
+    pub default_signing_private_key_pem: String,
+    pub e2ee_agreement_private_key_pem: String,
+    pub auth_token: Option<String>,
+}
+
+impl std::fmt::Debug for HostedIdentityMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostedIdentityMaterial")
+            .field("identity_id", &self.identity_id)
+            .field("did", &self.did)
+            .field("handle", &self.handle)
+            .field("display_name", &self.display_name)
+            .field("did_document", &"<redacted-hosted-did-document>")
+            .field("default_signing_private_key_pem", &"<redacted-private-key>")
+            .field("e2ee_agreement_private_key_pem", &"<redacted-private-key>")
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted-token>"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentityMissingItem {
     DidDocument,
     PrivateKey,
@@ -48,6 +118,165 @@ pub struct RegisterHandleRequest {
     pub invite_code: Option<String>,
     pub profile: InitialProfile,
     pub make_default: bool,
+}
+
+pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V1: &str = "awiki.daemon.user_subkey_package.v1";
+pub const DAEMON_SUBKEY_PACKAGE_SCHEMA_V2: &str = "awiki.daemon.user_subkey_package.v2";
+pub const DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM: &str = "pem";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonSubkeyPrivatePackage {
+    pub schema: String,
+    pub user_did: crate::ids::Did,
+    pub verification_method: String,
+    pub key_type: String,
+    pub key_algorithm: Option<String>,
+    pub public_key_multibase: String,
+    pub private_key_encoding: String,
+    pub private_key_pem: String,
+    /// Legacy compatibility field. New JSON serialization writes `private_key_pem`
+    /// instead of this v1 field, but older Rust/Dart callers may still read it.
+    pub private_key_multibase: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonSubkeyAuthorizationRevokeResult {
+    pub user_did: crate::ids::Did,
+    pub verification_method: String,
+    pub updated: bool,
+}
+
+impl DaemonSubkeyPrivatePackage {
+    pub fn new_v2_pem(
+        user_did: crate::ids::Did,
+        verification_method: String,
+        key_type: String,
+        key_algorithm: Option<String>,
+        public_key_multibase: String,
+        private_key_pem: String,
+    ) -> Self {
+        Self {
+            schema: DAEMON_SUBKEY_PACKAGE_SCHEMA_V2.to_owned(),
+            user_did,
+            verification_method,
+            key_type,
+            key_algorithm,
+            public_key_multibase,
+            private_key_encoding: DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM.to_owned(),
+            private_key_multibase: private_key_pem.clone(),
+            private_key_pem,
+        }
+    }
+
+    pub fn private_key_material(&self) -> &str {
+        if !self.private_key_pem.trim().is_empty() {
+            &self.private_key_pem
+        } else {
+            &self.private_key_multibase
+        }
+    }
+
+    pub fn is_v2_pem(&self) -> bool {
+        self.schema == DAEMON_SUBKEY_PACKAGE_SCHEMA_V2
+            && self.private_key_encoding == DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+            && !self.private_key_pem.trim().is_empty()
+    }
+}
+
+impl Serialize for DaemonSubkeyPrivatePackage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            schema: &'a str,
+            user_did: &'a crate::ids::Did,
+            verification_method: &'a str,
+            key_type: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            key_algorithm: Option<&'a str>,
+            public_key_multibase: &'a str,
+            private_key_encoding: &'a str,
+            private_key_pem: &'a str,
+        }
+
+        let private_key_pem = self.private_key_material();
+        let private_key_encoding = if self.private_key_encoding.trim().is_empty() {
+            DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+        } else {
+            self.private_key_encoding.trim()
+        };
+        Wire {
+            schema: DAEMON_SUBKEY_PACKAGE_SCHEMA_V2,
+            user_did: &self.user_did,
+            verification_method: &self.verification_method,
+            key_type: &self.key_type,
+            key_algorithm: self.key_algorithm.as_deref(),
+            public_key_multibase: &self.public_key_multibase,
+            private_key_encoding,
+            private_key_pem,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DaemonSubkeyPrivatePackage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            schema: String,
+            user_did: crate::ids::Did,
+            verification_method: String,
+            key_type: String,
+            #[serde(default)]
+            key_algorithm: Option<String>,
+            public_key_multibase: String,
+            #[serde(default)]
+            private_key_encoding: Option<String>,
+            #[serde(default)]
+            private_key_pem: Option<String>,
+            #[serde(default)]
+            private_key_multibase: Option<String>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let private_key_pem = wire
+            .private_key_pem
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                wire.private_key_multibase
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .ok_or_else(|| serde::de::Error::missing_field("private_key_pem"))?;
+        let private_key_encoding = wire
+            .private_key_encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM)
+            .to_string();
+        Ok(Self {
+            schema: wire.schema,
+            user_did: wire.user_did,
+            verification_method: wire.verification_method,
+            key_type: wire.key_type,
+            key_algorithm: wire.key_algorithm,
+            public_key_multibase: wire.public_key_multibase,
+            private_key_encoding,
+            private_key_multibase: private_key_pem.clone(),
+            private_key_pem,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,15 +335,36 @@ pub struct DefaultIdentityChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteLocalIdentityResult {
+    pub deleted: IdentitySummary,
+    pub was_default: bool,
+    pub next_default: Option<IdentitySummary>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub subject: crate::ids::Did,
     pub handle: Option<crate::ids::Handle>,
     pub display_name: Option<String>,
     pub bio: Option<String>,
+    pub description: Option<String>,
     pub tags: Vec<String>,
     pub markdown: Option<String>,
+    pub avatar_uri: Option<String>,
     pub avatar_url: Option<String>,
+    pub profile_uri: Option<String>,
+    pub subject_type: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(
+        default,
+        rename = "versionId",
+        alias = "version_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub version_id: Option<String>,
+    pub ttl: Option<u64>,
+    pub proof: Option<serde_json::Value>,
     pub metadata: Vec<ProfileAttribute>,
 }
 
@@ -125,10 +375,43 @@ pub struct ProfileAttribute {
 }
 
 impl Profile {
+    pub fn new(subject: crate::ids::Did) -> Self {
+        Self {
+            subject,
+            handle: None,
+            display_name: None,
+            bio: None,
+            description: None,
+            tags: Vec::new(),
+            markdown: None,
+            avatar_uri: None,
+            avatar_url: None,
+            profile_uri: None,
+            subject_type: None,
+            updated_at: None,
+            version_id: None,
+            ttl: None,
+            proof: None,
+            metadata: Vec::new(),
+        }
+    }
+
+    pub fn effective_description(&self) -> Option<&String> {
+        self.description.as_ref().or(self.bio.as_ref())
+    }
+
+    pub fn effective_avatar_uri(&self) -> Option<&String> {
+        self.avatar_uri.as_ref().or(self.avatar_url.as_ref())
+    }
+
     pub fn to_wire_profile_value(&self) -> serde_json::Value {
         let mut value = serde_json::Map::new();
         value.insert(
             "did".to_string(),
+            serde_json::Value::String(self.subject.as_str().to_string()),
+        );
+        value.insert(
+            "subject_did".to_string(),
             serde_json::Value::String(self.subject.as_str().to_string()),
         );
         if let Some(handle) = self.handle.as_ref() {
@@ -139,11 +422,21 @@ impl Profile {
         }
         if let Some(display_name) = self.display_name.as_ref() {
             value.insert(
+                "display_name".to_string(),
+                serde_json::Value::String(display_name.clone()),
+            );
+            value.insert(
                 "nick_name".to_string(),
                 serde_json::Value::String(display_name.clone()),
             );
         }
-        if let Some(bio) = self.bio.as_ref() {
+        if let Some(description) = self.effective_description() {
+            value.insert(
+                "description".to_string(),
+                serde_json::Value::String(description.clone()),
+            );
+        }
+        if let Some(bio) = self.bio.as_ref().or(self.description.as_ref()) {
             value.insert("bio".to_string(), serde_json::Value::String(bio.clone()));
         }
         if !self.tags.is_empty() {
@@ -155,10 +448,28 @@ impl Profile {
                 serde_json::Value::String(markdown.clone()),
             );
         }
-        if let Some(avatar_url) = self.avatar_url.as_ref() {
+        if let Some(avatar_uri) = self.effective_avatar_uri() {
+            value.insert(
+                "avatar_uri".to_string(),
+                serde_json::Value::String(avatar_uri.clone()),
+            );
+        }
+        if let Some(avatar_url) = self.avatar_url.as_ref().or(self.avatar_uri.as_ref()) {
             value.insert(
                 "avatar_url".to_string(),
                 serde_json::Value::String(avatar_url.clone()),
+            );
+        }
+        if let Some(profile_uri) = self.profile_uri.as_ref() {
+            value.insert(
+                "profile_uri".to_string(),
+                serde_json::Value::String(profile_uri.clone()),
+            );
+        }
+        if let Some(subject_type) = self.subject_type.as_ref() {
+            value.insert(
+                "subject_type".to_string(),
+                serde_json::Value::String(subject_type.clone()),
             );
         }
         if let Some(updated_at) = self.updated_at.as_ref() {
@@ -166,6 +477,22 @@ impl Profile {
                 "updated_at".to_string(),
                 serde_json::Value::String(updated_at.clone()),
             );
+            value.insert(
+                "updated".to_string(),
+                serde_json::Value::String(updated_at.clone()),
+            );
+        }
+        if let Some(version_id) = self.version_id.as_ref() {
+            value.insert(
+                "versionId".to_string(),
+                serde_json::Value::String(version_id.clone()),
+            );
+        }
+        if let Some(ttl) = self.ttl {
+            value.insert("ttl".to_string(), serde_json::json!(ttl));
+        }
+        if let Some(proof) = self.proof.as_ref() {
+            value.insert("proof".to_string(), proof.clone());
         }
         if !self.metadata.is_empty() {
             value.insert(
@@ -193,6 +520,8 @@ pub struct ProfilePatch {
     pub bio: Option<String>,
     pub tags: Option<Vec<String>>,
     pub markdown: Option<String>,
+    pub avatar_uri: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,5 +875,50 @@ mod tests {
         assert!(recover_json.get("raw_response").is_none());
         assert!(recover_json.get("raw_response").is_none());
         assert!(recover_json.get("raw").is_none());
+    }
+
+    #[test]
+    fn daemon_subkey_package_writes_v2_pem_without_legacy_private_field() {
+        let package = DaemonSubkeyPrivatePackage::new_v2_pem(
+            crate::ids::Did::parse("did:example:alice").unwrap(),
+            "did:example:alice#daemon-key-1".to_string(),
+            "Multikey/Ed25519".to_string(),
+            Some("Ed25519".to_string()),
+            "zPublic".to_string(),
+            "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----".to_string(),
+        );
+
+        let value = serde_json::to_value(&package).unwrap();
+
+        assert_eq!(value["schema"], DAEMON_SUBKEY_PACKAGE_SCHEMA_V2);
+        assert_eq!(
+            value["private_key_encoding"],
+            DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+        );
+        assert_eq!(value["private_key_pem"], package.private_key_pem);
+        assert!(value.get("private_key_multibase").is_none());
+    }
+
+    #[test]
+    fn daemon_subkey_package_reads_legacy_v1_private_key_multibase() {
+        let package: DaemonSubkeyPrivatePackage = serde_json::from_value(json!({
+            "schema": DAEMON_SUBKEY_PACKAGE_SCHEMA_V1,
+            "user_did": "did:example:alice",
+            "verification_method": "did:example:alice#daemon-key-1",
+            "key_type": "Multikey/Ed25519",
+            "public_key_multibase": "zPublic",
+            "private_key_multibase": "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
+        }))
+        .unwrap();
+
+        assert_eq!(package.schema, DAEMON_SUBKEY_PACKAGE_SCHEMA_V1);
+        assert_eq!(
+            package.private_key_encoding,
+            DAEMON_SUBKEY_PRIVATE_KEY_ENCODING_PEM
+        );
+        assert_eq!(package.private_key_pem, package.private_key_multibase);
+        assert!(package
+            .private_key_material()
+            .starts_with("-----BEGIN PRIVATE KEY-----"));
     }
 }

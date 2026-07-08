@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::set_secret_storage_mode;
+
 #[test]
 fn direct_send_http_401_refreshes_inside_im_core_transport() {
     let workspace = TempDir::new("msg-jwt-fallback-send").expect("workspace");
@@ -62,10 +66,21 @@ fn direct_send_http_401_refreshes_inside_im_core_transport() {
     assert_contains_text(&requests[2], "Authorization: Bearer jwt-refreshed\r\n");
     assert_eq!(json_body(&requests[2])["method"], "direct.send");
 
-    let auth_path = identity_auth_path(workspace.path(), "alice-msg-fallback");
-    let auth: Value =
-        serde_json::from_slice(&std::fs::read(auth_path).expect("read auth")).expect("auth json");
-    assert_eq!(auth["jwt_token"], "jwt-refreshed");
+    assert_vault_auth_token_is_used(
+        workspace.path(),
+        "alice-msg-fallback",
+        "jwt-refreshed",
+        &[
+            "--identity",
+            "alice-msg-fallback",
+            "msg",
+            "send",
+            "--to",
+            bob_did,
+            "--text",
+            "hello with cached refreshed token",
+        ],
+    );
 }
 
 #[test]
@@ -139,10 +154,21 @@ fn inbox_http_1401_refreshes_inside_im_core_transport() {
     assert_eq!(json_body(&requests[2])["method"], "inbox.get");
     assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob-fresh\r\n");
 
-    let auth_path = identity_auth_path(workspace.path(), "bob-msg-fallback");
-    let auth: Value =
-        serde_json::from_slice(&std::fs::read(auth_path).expect("read auth")).expect("auth json");
-    assert_eq!(auth["jwt_token"], "jwt-bob-fresh");
+    assert_vault_auth_token_is_used(
+        workspace.path(),
+        "bob-msg-fallback",
+        "jwt-bob-fresh",
+        &[
+            "--identity",
+            "bob-msg-fallback",
+            "msg",
+            "inbox",
+            "--scope",
+            "direct",
+            "--limit",
+            "1",
+        ],
+    );
 }
 
 fn register_ready_msg_identity(
@@ -151,6 +177,7 @@ fn register_ready_msg_identity(
     handle: &str,
     jwt_token: &str,
 ) {
+    set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
             "--migration",
@@ -207,18 +234,42 @@ fn register_ready_msg_identity(
         serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
     )
     .unwrap();
+
+    set_secret_storage_mode(workspace, "vault_required");
+    let migrate = awiki_cmd(&["--migration", "id", "vault", "migrate"], workspace);
+    assert_success(&migrate);
 }
 
-fn identity_auth_path(workspace: &Path, identity_name: &str) -> PathBuf {
+fn assert_vault_auth_token_is_used(
+    workspace: &Path,
+    identity_name: &str,
+    expected_token: &str,
+    args: &[&str],
+) {
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "accepted": true,
+        "final_acceptance": true,
+        "messages": [],
+        "total": 0,
+        "source": "remote_http"
+    })))]);
+    write_msg_config(workspace, &server.base_url());
+
+    let output = awiki_cmd(args, workspace);
+    assert_success(&output);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_contains_text(
+        &requests[0],
+        &format!("Authorization: Bearer {expected_token}\r\n"),
+    );
+
     let index_path = workspace.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(index_path).unwrap()).unwrap();
-    let dir_name = index["credentials"][identity_name]["dir_name"]
-        .as_str()
-        .unwrap();
-    workspace
-        .join("identities")
-        .join(dir_name)
-        .join("auth.json")
+    assert!(
+        index["credentials"][identity_name]["vault_migration"]["refs"]["auth_jwt"].is_object(),
+        "refreshed token should remain stored behind the vault auth_jwt ref"
+    );
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
@@ -252,6 +303,8 @@ fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -267,6 +320,8 @@ fn awiki_trace_cmd_owned(args: &[String], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")
@@ -324,6 +379,21 @@ fn assert_text_not_contains(haystack: &str, needle: &str) {
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {
+    let header_probe = needle.strip_suffix("\r\n").unwrap_or(needle);
+    if let Some((header_name, expected_value)) = header_probe.split_once(':') {
+        let header_name = header_name.trim();
+        let expected_value = expected_value.trim();
+        if !header_name.is_empty()
+            && haystack.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.trim().eq_ignore_ascii_case(header_name)
+                        && (expected_value.is_empty() || value.trim() == expected_value)
+                })
+            })
+        {
+            return;
+        }
+    }
     assert!(
         haystack.contains(needle),
         "expected request to contain {needle:?}, got:\n{haystack}"
@@ -418,7 +488,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -460,7 +535,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

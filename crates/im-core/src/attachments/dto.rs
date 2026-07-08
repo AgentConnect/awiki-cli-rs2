@@ -7,9 +7,54 @@ use serde_json::Value;
 pub struct AttachmentSendRequest {
     pub input: AttachmentInput,
     pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_payload: Option<Value>,
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub delivery: crate::messages::MessageDeliveryOptions,
+    pub security: crate::messages::MessageSecurityMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendConversationAttachmentRequest {
+    pub conversation: crate::messages::ConversationReadRef,
+    pub input: AttachmentInput,
+    pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_payload: Option<Value>,
+    pub mime_type: Option<String>,
+    pub filename: Option<String>,
+    pub security: crate::messages::MessageSecurityMode,
+    pub client_message_id: Option<crate::ids::MessageId>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+}
+
+impl SendConversationAttachmentRequest {
+    pub(crate) fn into_attachment_send_request(
+        self,
+    ) -> (
+        crate::messages::ConversationReadRef,
+        Option<crate::ids::MessageId>,
+        AttachmentSendRequest,
+    ) {
+        (
+            self.conversation,
+            self.client_message_id,
+            AttachmentSendRequest {
+                input: self.input,
+                caption: self.caption,
+                mention_payload: self.mention_payload,
+                mime_type: self.mime_type,
+                filename: self.filename,
+                delivery: crate::messages::MessageDeliveryOptions {
+                    idempotency_key: self.idempotency_key,
+                    wait_for_final_acceptance: self.wait_for_final_acceptance,
+                },
+                security: self.security,
+            },
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +75,8 @@ pub struct UploadedAttachment {
     pub size: String,
     pub digest_b64u: String,
     pub object_uri: String,
+    pub object_encryption_mode: String,
+    pub plaintext_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +125,8 @@ impl AttachmentSendResult {
     pub(crate) fn from_upload_result(
         result: crate::internal::attachment_runtime::upload::AttachmentUploadResult,
     ) -> Self {
+        let object_encryption_mode = result.prepared.object_encryption_mode();
+        let plaintext_size_bytes = result.prepared.plaintext_size_bytes;
         Self {
             message: result.sdk_result,
             target_kind: result.target_kind.to_string(),
@@ -90,6 +139,8 @@ impl AttachmentSendResult {
                 size: result.prepared.size_string,
                 digest_b64u: result.prepared.digest_b64u,
                 object_uri: result.slot.object_uri,
+                object_encryption_mode,
+                plaintext_size_bytes,
             },
             manifest: result.manifest,
         }

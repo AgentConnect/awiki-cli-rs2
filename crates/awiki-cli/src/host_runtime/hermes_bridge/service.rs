@@ -407,7 +407,7 @@ pub fn systemd_status_snapshot_with_runner(
     Ok(BridgeServiceStatusSnapshot {
         installed: status.installed,
         running: status.running,
-        platform: service_platform().to_string(),
+        platform: "linux-systemd".to_string(),
         service_name: service_name_for(Some(resolved)),
     })
 }

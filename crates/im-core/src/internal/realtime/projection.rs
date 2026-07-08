@@ -7,7 +7,7 @@ use crate::messages::{
 };
 use crate::realtime::{
     GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
-    LocalNotificationEvent, MessageReceivedEvent, UnknownNotificationEvent,
+    LocalNotificationEvent, MessageReceivedEvent, RealtimeSyncHint, UnknownNotificationEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +62,6 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
     }
 
     let content_type = fallback_string(string_from_object(meta, "content_type"), "text/plain");
-    let text = direct_text(body);
     let message_id = parse_message_id(
         &fallback_string(
             string_from_object(meta, "message_id"),
@@ -100,14 +99,14 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
         group: None,
-        body: message_body_view(&content_type, text),
+        body: message_body_view(&content_type, body),
         sent_at: none_if_empty(string_from_object(meta, "created_at")),
         received_at: None,
         metadata,
     };
     NotificationProjection {
         route: NotificationProjectionRoute::DirectIncoming,
-        event: message_received_event(message, attachment_projection),
+        event: message_received_event(message, attachment_projection, sync_hint(notification)),
     }
 }
 
@@ -180,7 +179,7 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
         group: Some(parse_group(&group_did)),
-        body: message_body_view(&content_type, string_from_object(body, "text")),
+        body: message_body_view(&content_type, body),
         sent_at: none_if_empty(fallback_string(
             string_from_object(body, "accepted_at"),
             &string_from_object(meta, "created_at"),
@@ -190,7 +189,7 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
     };
     NotificationProjection {
         route: NotificationProjectionRoute::GroupIncoming,
-        event: message_received_event(message, attachment_projection),
+        event: message_received_event(message, attachment_projection, sync_hint(notification)),
     }
 }
 
@@ -209,6 +208,14 @@ fn project_group_state_changed(notification: &Value) -> NotificationProjection {
         event: ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: parse_group(&group_did),
             update_kind,
+            event_type: none_if_empty(string_from_object(body, "event_type")),
+            group_event_seq: int64_value(value_from_object(body, "group_event_seq")),
+            group_state_version: none_if_empty(string_from_object(body, "group_state_version")),
+            actor_did: none_if_empty(string_from_object(body, "actor_did")),
+            subject_did: none_if_empty(string_from_object(body, "subject_did")),
+            membership_status: none_if_empty(string_from_object(body, "membership_status")),
+            changed_at: none_if_empty(string_from_object(body, "changed_at")),
+            sync: sync_hint(notification),
         }),
     }
 }
@@ -257,6 +264,7 @@ fn unknown_notification(
             content_type: content_type(notification),
             notification_type: none_if_empty(notification_type.to_string()),
             reason: reason.to_string(),
+            sync: sync_hint(notification),
         }),
     }
 }
@@ -266,6 +274,7 @@ fn message_received_event(
     attachment_projection: Option<
         crate::internal::realtime::attachment_projection::AttachmentProjection,
     >,
+    sync: Option<RealtimeSyncHint>,
 ) -> ImEvent {
     let (attachment_summary, download_action, warnings) =
         if let Some(attachment) = attachment_projection {
@@ -281,29 +290,85 @@ fn message_received_event(
         message,
         attachment_summary,
         download_action,
+        sync,
         warnings,
     })
 }
 
-fn direct_text(body: Option<&Map<String, Value>>) -> String {
-    let text = string_from_object(body, "text");
-    if !text.is_empty() {
-        return text;
+pub fn sync_hint(notification: &Value) -> Option<RealtimeSyncHint> {
+    let sync = map_value(notification.get("sync"))?;
+    let event_id = string_from_object(Some(sync), "event_id");
+    let event_seq = decimal_event_seq_value(value_from_object(Some(sync), "event_seq"));
+    let event_type = string_from_object(Some(sync), "event_type");
+    if event_id.is_empty() && event_seq.is_none() && event_type.is_empty() {
+        return None;
     }
-    string_like_value(value_from_object(body, "payload"))
+    Some(RealtimeSyncHint {
+        event_id: none_if_empty(event_id),
+        event_seq,
+        event_type: none_if_empty(event_type),
+        sync_dirty: true,
+        gap_detected: false,
+    })
 }
 
-fn message_body_view(content_type: &str, text: String) -> MessageBodyView {
+pub fn sync_hint_with_gap(
+    notification: &Value,
+    previous_event_seq: Option<&str>,
+) -> Option<RealtimeSyncHint> {
+    let mut hint = sync_hint(notification)?;
+    hint.gap_detected = realtime_sync_gap_detected(previous_event_seq, hint.event_seq.as_deref());
+    Some(hint)
+}
+
+pub fn realtime_sync_gap_detected(
+    previous_event_seq: Option<&str>,
+    event_seq: Option<&str>,
+) -> bool {
+    let Some(event_seq) = event_seq else {
+        return true;
+    };
+    let Ok(current) = crate::internal::local_state::sync_state::parse_decimal_seq(event_seq) else {
+        return true;
+    };
+    let Some(previous_event_seq) = previous_event_seq else {
+        return false;
+    };
+    let Ok(previous) =
+        crate::internal::local_state::sync_state::parse_decimal_seq(previous_event_seq)
+    else {
+        return true;
+    };
+    current > previous.saturating_add(1)
+}
+
+fn message_body_view(content_type: &str, body: Option<&Map<String, Value>>) -> MessageBodyView {
+    if is_payload_content_type(content_type) {
+        if let Some(payload) = value_from_object(body, "payload").filter(|value| value.is_object())
+        {
+            return MessageBodyView::Payload {
+                payload: payload.clone(),
+            };
+        }
+        return MessageBodyView::Unsupported {
+            content_type: none_if_empty(content_type.to_string()),
+        };
+    }
+    let text = string_from_object(body, "text");
     if content_type == "text/plain" && !text.is_empty() {
-        MessageBodyView::Text {
+        return MessageBodyView::Text {
             text,
             kind: MessageKind::Text,
-        }
-    } else {
-        MessageBodyView::Unsupported {
-            content_type: none_if_empty(content_type.to_string()),
-        }
+        };
     }
+    MessageBodyView::Unsupported {
+        content_type: none_if_empty(content_type.to_string()),
+    }
+}
+
+fn is_payload_content_type(content_type: &str) -> bool {
+    content_type == "application/json"
+        || content_type == crate::attachments::attachment_manifest_content_type()
 }
 
 fn message_metadata<const N: usize>(
@@ -442,6 +507,16 @@ fn string_like_value(value: Option<&Value>) -> String {
             }
         }
         _ => String::new(),
+    }
+}
+
+fn decimal_event_seq_value(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) => {
+            crate::internal::local_state::sync_state::normalize_decimal_seq(value).ok()
+        }
+        Some(Value::Number(number)) => number.as_u64().map(|value| value.to_string()),
+        _ => None,
     }
 }
 

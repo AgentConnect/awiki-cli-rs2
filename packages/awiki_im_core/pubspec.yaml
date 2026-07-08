@@ -19,6 +19,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  test: ^1.26.0
   flutter_lints: ^4.0.0
   freezed: ^3.2.5
   build_runner: ^2.15.0
@@ -31,4 +32,6 @@ flutter:
       ios:
         ffiPlugin: true
       macos:
+        ffiPlugin: true
+      linux:
         ffiPlugin: true

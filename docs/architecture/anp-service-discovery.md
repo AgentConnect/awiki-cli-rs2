@@ -103,21 +103,20 @@ services:
 
 当前 **不要求** `serviceEndpoint` 和 `serviceDid` 必须指向同一个 home message-service；两者各自只做格式与公开性校验。
 
-## 5. 实施记录
+## 5. 实现锚点
 
-本次落地包含：
+当前 Rust workspace 中的主要实现锚点：
 
-- `internal/config/config.go`
-  - 新增 `anp_service_endpoint` / `anp_service_did`
-  - 统一从 `config.yaml` 读取，并在缺省时从 `service_base_url` 自动推导默认值
-- `internal/identity/did.go`
-  - 生成 DID 文档时自动写入 `ANPMessageService`
-- `internal/identity/anp_service.go`
-  - 封装 ANP Service 默认值、校验与 service 构造
-- `internal/doctor/doctor.go`
-  - 新增 `anp_service` 检查项
+- `crates/awiki-cli/src/workspace_config/`
+  - 从 `config.yaml` 读取 `anp_service_endpoint` / `anp_service_did`，并在缺省时从 `service_base_url` 推导默认值。
+- `crates/im-core/src/config.rs`
+  - 在 `ImCoreConfig` 中承载 SDK 需要的公开 ANP service endpoint / DID。
+- `crates/im-core/src/internal/identity_generation.rs`
+  - 生成 DID 文档时写入 `ANPMessageService`。
+- `crates/awiki-cli/src/diagnostics/mod.rs`
+  - `doctor` 的 `anp_service` 检查项校验 endpoint 与 DID 的公开性和格式。
 - `docs/installation.md`
-  - 补充配置样例、环境变量和约束说明
+  - 配置样例、工作区和运行约束说明。
 
 ## 6. 验收点
 

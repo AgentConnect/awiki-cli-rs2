@@ -5,7 +5,11 @@ use awiki_cli::host_runtime::host_notify_sink::{
 };
 use awiki_cli::workspace_config::{Paths, Resolved, ValueSource};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn file_host_notify_sink_rejects_blank_path_like_go() {
@@ -76,6 +80,7 @@ fn file_host_notify_sink_appends_to_existing_file_like_go() {
 
 #[test]
 fn file_host_notify_sink_accepts_bare_relative_file_name_like_go() {
+    let _guard = CURRENT_DIR_LOCK.lock().expect("current dir lock");
     let workspace = TempDir::new().expect("temp workspace");
     let previous_dir = std::env::current_dir().expect("current dir");
     std::env::set_current_dir(workspace.path()).expect("chdir workspace");
@@ -102,7 +107,7 @@ fn new_host_notify_sink_disabled_returns_noop_and_status_like_go() {
 
     let (sink, status) = new_host_notify_sink(&resolved).expect("sink");
     assert!(matches!(sink, HostNotifySinkImpl::Noop(_)));
-    assert_eq!(status.enabled, false);
+    assert!(!status.enabled);
     assert_eq!(status.sink, "file");
     assert_eq!(status.file_path, resolved.host_notify_file_path);
     sink.notify(&host_event("disabled")).expect("noop notify");
@@ -120,7 +125,7 @@ fn new_host_notify_sink_file_returns_status_and_writes_like_go() {
 
     let (sink, status) = new_host_notify_sink(&resolved).expect("sink");
     assert!(matches!(sink, HostNotifySinkImpl::File(_)));
-    assert_eq!(status.enabled, true);
+    assert!(status.enabled);
     assert_eq!(status.sink, "file");
     assert_eq!(status.file_path, path_string(&sink_path));
     assert_eq!(status.hook_url, "");
@@ -261,6 +266,8 @@ fn test_resolved(root: &std::path::Path) -> Resolved {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: "https://awiki.ai".to_string(),
+        user_service_endpoint: "https://awiki.ai".to_string(),
+        message_service_endpoint: "https://awiki.ai".to_string(),
         did_domain: "awiki.ai".to_string(),
         anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
         anp_service_did: "did:wba:awiki.ai".to_string(),
@@ -285,12 +292,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-host-notify-sink-test-{}-{nonce}",
+            "awiki-cli-rs2-host-notify-sink-test-{}-{nonce}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

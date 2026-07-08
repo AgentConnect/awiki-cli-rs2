@@ -1,3 +1,5 @@
+import 'config.dart';
+
 sealed class IdentitySelector {
   const IdentitySelector();
 
@@ -59,6 +61,68 @@ class IdentitySummary {
   final List<String> missing;
 }
 
+enum IdentitySecretStorageBackend { fileCompat, vault }
+
+class IdentityVaultStatus {
+  const IdentityVaultStatus({
+    required this.identity,
+    required this.storagePolicy,
+    required this.selectedBackend,
+    required this.vaultAvailable,
+    required this.vaultMetadataPresent,
+    required this.vaultMetadataVerified,
+    this.workspaceId,
+    this.deviceId,
+    this.plaintextCompatRetained,
+    this.missing = const [],
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentitySecretStoragePolicy storagePolicy;
+  final IdentitySecretStorageBackend selectedBackend;
+  final bool vaultAvailable;
+  final bool vaultMetadataPresent;
+  final bool vaultMetadataVerified;
+  final String? workspaceId;
+  final String? deviceId;
+  final bool? plaintextCompatRetained;
+  final List<String> missing;
+  final List<String> warnings;
+}
+
+class IdentityVaultMigrationReport {
+  const IdentityVaultMigrationReport({
+    required this.identity,
+    required this.status,
+    required this.migrated,
+    required this.verified,
+    required this.plaintextCompatRetained,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentityVaultStatus status;
+  final bool migrated;
+  final bool verified;
+  final bool plaintextCompatRetained;
+  final List<String> warnings;
+}
+
+class IdentityVaultVerificationReport {
+  const IdentityVaultVerificationReport({
+    required this.identity,
+    required this.status,
+    required this.verified,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary identity;
+  final IdentityVaultStatus status;
+  final bool verified;
+  final List<String> warnings;
+}
+
 class InitialProfile {
   const InitialProfile({this.displayName, this.avatarUrl});
 
@@ -78,6 +142,58 @@ class DefaultIdentityChange {
   final IdentitySummary next;
   final bool requiresDefaultIdentityWrite;
   final List<String> warnings;
+}
+
+class DeleteLocalIdentityResult {
+  const DeleteLocalIdentityResult({
+    required this.deleted,
+    required this.wasDefault,
+    this.nextDefault,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary deleted;
+  final bool wasDefault;
+  final IdentitySummary? nextDefault;
+  final List<String> warnings;
+}
+
+class DaemonSubkeyPrivatePackage {
+  const DaemonSubkeyPrivatePackage({
+    required this.schema,
+    required this.userDid,
+    required this.verificationMethod,
+    required this.keyType,
+    this.keyAlgorithm,
+    required this.publicKeyMultibase,
+    this.privateKeyEncoding = 'pem',
+    String? privateKeyPem,
+    String? privateKeyMultibase,
+  }) : privateKeyPem = privateKeyPem ?? privateKeyMultibase ?? '',
+       privateKeyMultibase = privateKeyMultibase ?? privateKeyPem ?? '';
+
+  final String schema;
+  final String userDid;
+  final String verificationMethod;
+  final String keyType;
+  final String? keyAlgorithm;
+  final String publicKeyMultibase;
+  final String privateKeyEncoding;
+  final String privateKeyPem;
+  @Deprecated('Use privateKeyPem for PEM v2 packages.')
+  final String privateKeyMultibase;
+}
+
+class DaemonSubkeyAuthorizationRevokeResult {
+  const DaemonSubkeyAuthorizationRevokeResult({
+    required this.userDid,
+    required this.verificationMethod,
+    required this.updated,
+  });
+
+  final String userDid;
+  final String verificationMethod;
+  final bool updated;
 }
 
 class HandleRegistrationResult {

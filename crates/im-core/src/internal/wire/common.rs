@@ -1,6 +1,7 @@
 use time::OffsetDateTime;
 
 const ATTACHMENT_MANIFEST_CONTENT_TYPE: &str = "application/anp-attachment-manifest+json";
+pub(crate) const DEFAULT_DELEGATED_MESSAGE_SERVICE_DID: &str = "did:awiki:message-service";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireIdentity {
@@ -10,7 +11,7 @@ pub(crate) struct WireIdentity {
 pub(crate) fn now_rfc3339() -> String {
     let now = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
-        .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH);
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         now.year(),
@@ -68,6 +69,25 @@ pub(crate) fn local_meta(sender_did: &str, profile: &str) -> serde_json::Value {
         "profile": profile,
         "security_profile": "transport-protected",
         "sender_did": sender_did,
+        "operation_id": format!("op-{}", generate_operation_id()),
+        "created_at": now_rfc3339(),
+    })
+}
+
+pub(crate) fn delegated_local_meta(
+    sender_did: &str,
+    service_did: &str,
+    profile: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "anp_version": "1.0",
+        "profile": profile,
+        "security_profile": "transport-protected",
+        "sender_did": sender_did,
+        "target": {
+            "kind": "service",
+            "did": service_did,
+        },
         "operation_id": format!("op-{}", generate_operation_id()),
         "created_at": now_rfc3339(),
     })

@@ -1,8 +1,17 @@
+#[cfg(feature = "sqlite")]
+pub(crate) mod actor;
+
+pub(crate) mod attachment_manifest_cache;
 pub(crate) mod contacts;
+#[cfg(feature = "sqlite")]
+pub(crate) mod conversation_summaries;
 pub(crate) mod conversations;
 pub(crate) mod email;
 pub(crate) mod groups;
 pub(crate) mod messages;
+pub(crate) mod owner_scope;
+pub(crate) mod read_state;
+pub(crate) mod sync_state;
 
 #[cfg(feature = "sqlite")]
 pub(crate) mod schema;
@@ -83,6 +92,9 @@ pub(crate) fn configure(connection: &rusqlite::Connection) -> crate::ImResult<()
         .map_err(local_state_unavailable)?;
     connection
         .pragma_update(None, "busy_timeout", 5000)
+        .map_err(local_state_unavailable)?;
+    connection
+        .pragma_update(None, "mmap_size", 0)
         .map_err(local_state_unavailable)?;
     Ok(())
 }

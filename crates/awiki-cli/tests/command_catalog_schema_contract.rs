@@ -27,6 +27,14 @@ fn schema_flags_omit_empty_fields_like_go_catalog() {
     assert_eq!(secure["choices"], serde_json::json!(["off", "required"]));
     assert!(secure.get("required").is_none());
     assert!(secure.get("deprecated").is_none());
+    assert_eq!(
+        schema_flag(schema_command(&msg_send), "payload")["type"],
+        "string"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&msg_send), "payload-file")["type"],
+        "string"
+    );
 }
 
 #[test]
@@ -78,6 +86,11 @@ fn schema_audience_views_expose_non_default_surfaces() {
     assert!(operator_names.contains(&"runtime.host-notify.hermes.setup"));
     assert!(!operator_names.contains(&"msg.send"));
 
+    let migration = success_json(&awiki_cmd(&["schema", "--audience", "migration"]));
+    let migration_names = schema_names(&migration);
+    assert!(migration_names.contains(&"id.vault.migrate"));
+    assert!(migration_names.contains(&"id.vault.cleanup-plaintext"));
+
     let diagnostic = success_json(&awiki_cmd(&["schema", "--audience", "diagnostic"]));
     let diagnostic_names = schema_names(&diagnostic);
     assert!(diagnostic_names.contains(&"debug.db.handle-history"));
@@ -87,6 +100,11 @@ fn schema_audience_views_expose_non_default_surfaces() {
     let all_names = schema_names(&all);
     assert!(all_names.contains(&"runtime.listener.service-run"));
     assert!(all_names.contains(&"debug.raw.rpc"));
+
+    let default = success_json(&awiki_cmd(&["schema"]));
+    let default_names = schema_names(&default);
+    assert!(default_names.contains(&"id.vault.status"));
+    assert!(!default_names.contains(&"id.vault.migrate"));
 }
 
 #[test]
@@ -142,6 +160,7 @@ fn default_schema_hides_deprecated_e2ee_alias_flags_but_all_keeps_metadata() {
 fn cmdmeta_resolves_canonical_paths_and_aliases_as_single_command_tree() {
     for (words, name, consumed) in [
         (&["status"][..], "status", 1),
+        (&["id", "vault", "status"][..], "id.vault.status", 3),
         (&["group", "get"][..], "group.get", 2),
         (&["group", "show"][..], "group.get", 2),
         (&["group", "remove"][..], "group.remove", 2),
@@ -248,6 +267,9 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "id.current",
         "id.use",
         "id.status",
+        "id.vault.status",
+        "id.vault.migrate",
+        "id.vault.cleanup-plaintext",
         "id.import-v1",
         "id.bind",
         "id.refresh-token",

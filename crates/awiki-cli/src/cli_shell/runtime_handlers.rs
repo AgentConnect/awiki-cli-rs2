@@ -1,5 +1,5 @@
 use super::{
-    ensure_sqlite_schema, init_dirs, internal_anyhow, internal_io,
+    ensure_sqlite_schema, ensure_sqlite_schema_blocking, init_dirs, internal_anyhow, internal_io,
     runtime_hermes_handlers::host_notify_guidance_warnings_for,
     runtime_host_notify_refresh::refresh_listener_for_host_notify_change, App,
 };
@@ -44,7 +44,37 @@ impl App {
                 Vec::new(),
             );
         }
-        ensure_sqlite_schema(&resolved).map_err(internal_anyhow)?;
+        ensure_sqlite_schema_blocking(&resolved).map_err(internal_anyhow)?;
+        let listener = host_runtime::apply_runtime_policy(&resolved).map_err(internal_anyhow)?;
+        self.render_success(
+            "awiki-cli runtime apply",
+            &resolved,
+            json!({ "runtime": host_runtime::runtime_value(&resolved), "listener": listener }),
+            "Runtime state applied",
+            Vec::new(),
+        )
+    }
+
+    pub async fn run_runtime_apply_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime apply",
+                &resolved,
+                json!({
+                    "plan": {
+                        "action": "runtime_apply",
+                        "runtime": host_runtime::runtime_value(&resolved),
+                        "listener": host_runtime::current_listener_status(&resolved),
+                    }
+                }),
+                "Dry run: runtime apply planned",
+                Vec::new(),
+            );
+        }
+        ensure_sqlite_schema(&resolved)
+            .await
+            .map_err(internal_anyhow)?;
         let listener = host_runtime::apply_runtime_policy(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime apply",
@@ -92,7 +122,57 @@ impl App {
         for dir in init_dirs(&resolved) {
             fs::create_dir_all(dir).map_err(internal_io)?;
         }
-        ensure_sqlite_schema(&resolved).map_err(internal_anyhow)?;
+        ensure_sqlite_schema_blocking(&resolved).map_err(internal_anyhow)?;
+        let listener = host_runtime::apply_runtime_policy(&resolved).map_err(internal_anyhow)?;
+        self.render_success(
+            "awiki-cli runtime setup",
+            &resolved,
+            json!({ "action": "runtime_setup", "mode": mode, "paths": resolved.paths, "listener": listener }),
+            "Runtime setup completed",
+            Vec::new(),
+        )
+    }
+
+    pub async fn run_runtime_setup_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let mode = command
+            .flags
+            .get("mode")
+            .cloned()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| resolved.runtime_mode.clone());
+        validate_runtime_mode_for_setup(&mode)?;
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime setup",
+                &resolved,
+                json!({
+                    "plan": {
+                        "action": "runtime_setup",
+                        "mode": mode,
+                        "workspace_home": resolved.paths.workspace_home_dir,
+                        "runtime_dir": resolved.paths.state_dir,
+                        "database_file": resolved.paths.database_file,
+                        "writes": [resolved.paths.config_file, resolved.paths.database_file],
+                    }
+                }),
+                "Dry run: runtime setup planned",
+                Vec::new(),
+            );
+        }
+        workspace_config::update_runtime_settings(
+            &resolved.paths,
+            &mode,
+            &resolved.runtime_socket_path,
+        )
+        .map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        for dir in init_dirs(&resolved) {
+            fs::create_dir_all(dir).map_err(internal_io)?;
+        }
+        ensure_sqlite_schema(&resolved)
+            .await
+            .map_err(internal_anyhow)?;
         let listener = host_runtime::apply_runtime_policy(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime setup",
@@ -142,7 +222,51 @@ impl App {
         )
         .map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
-        ensure_sqlite_schema(&resolved).map_err(internal_anyhow)?;
+        ensure_sqlite_schema_blocking(&resolved).map_err(internal_anyhow)?;
+        let listener = host_runtime::apply_runtime_policy(&resolved).map_err(internal_anyhow)?;
+        self.render_success(
+            "awiki-cli runtime mode set",
+            &resolved,
+            json!({ "action": "runtime_mode_set", "mode": mode, "listener": listener }),
+            &format!("Runtime mode set to {mode}"),
+            Vec::new(),
+        )
+    }
+
+    pub async fn run_runtime_mode_set_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if command.args.len() != 1 {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "runtime mode set requires exactly one mode.",
+                "Usage: awiki-cli runtime mode set <http|websocket>",
+            ));
+        }
+        let mode = command.args[0].trim().to_ascii_lowercase();
+        validate_runtime_mode_for_set(&mode)?;
+        let resolved = self.resolve_config()?;
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime mode set",
+                &resolved,
+                json!({ "plan": { "action": "runtime_mode_set", "mode": mode, "config_file": resolved.paths.config_file } }),
+                "Dry run: runtime mode change planned",
+                Vec::new(),
+            );
+        }
+        workspace_config::update_runtime_settings(
+            &resolved.paths,
+            &mode,
+            &resolved.runtime_socket_path,
+        )
+        .map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        ensure_sqlite_schema(&resolved)
+            .await
+            .map_err(internal_anyhow)?;
         let listener = host_runtime::apply_runtime_policy(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime mode set",
@@ -368,9 +492,23 @@ impl App {
         host_runtime::listener_supervisor_run::run_foreground(resolved).map_err(internal_anyhow)
     }
 
+    pub async fn run_runtime_listener_run_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        host_runtime::listener_supervisor_run::run_foreground_async(resolved)
+            .await
+            .map_err(internal_anyhow)
+    }
+
     pub fn run_runtime_listener_service_run(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         host_runtime::listener_supervisor_run::run_service(resolved).map_err(internal_anyhow)
+    }
+
+    pub async fn run_runtime_listener_service_run_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        host_runtime::listener_supervisor_run::run_service_async(resolved)
+            .await
+            .map_err(internal_anyhow)
     }
 
     fn run_runtime_listener_lifecycle(

@@ -1,68 +1,87 @@
-# awiki-cli Direct E2EE operations
+# awiki-cli Direct E2EE Operations
 
 ## Status
 
-- P5 secure direct messaging is implemented for CLI local validation and system-test focused runs.
-- Harness map: [Direct E2EE cross-repo feature map](../../../awiki-harness/features/direct-e2ee.md).
-- SDK authority: [ANP SDK Direct E2EE P5](../../../anp/anp/docs/e2e/direct-e2ee-p5-sdk.md).
-- Service API: [message-service Direct API](../../../message-service/docs/api/ANP-client-server-api-direct.md).
-- Public `ANPMessageService` discovery remains intentionally narrower than implementation and does not advertise `anp.direct.e2ee.v1` / `direct-e2ee` until separately approved.
+Direct E2EE is a supported product capability through high-level `im-core` services and CLI flags. Public `ANPMessageService` discovery remains intentionally narrower than implementation and does not advertise `anp.direct.e2ee.v1` / `direct-e2ee` until separately approved.
 
-## CLI responsibility
+References:
 
-`awiki-cli` owns the user/agent orchestration around the ANP Go SDK direct E2EE engine:
+- SDK boundary: `docs/architecture/im-core-sdk-architecture.md`
+- Service API: `../message-service/docs/api/ANP-client-server-api-direct.md`
+- Discovery posture: `docs/architecture/anp-service-discovery.md`
 
-- `msg send --secure on` for P5 direct init/cipher sends.
-- `msg inbox` / `msg history` decrypt of P5 init/cipher messages when local state is available.
-- runtime listener inbound decrypt and local notification normalization.
-- `msg secure status`, `init`, `repair`, `failed`, `retry`, `drop` diagnostics and recovery.
-- local identity-scoped stores for sessions, signed prekeys, OPKs, and pending/outbox records.
+## Responsibility Boundary
 
-The CLI does not implement P5 cryptographic algorithms independently; it consumes `github.com/agent-network-protocol/anp/golang/direct_e2ee` through `internal/anpsdk`.
+`im-core` owns secure direct business orchestration:
 
-## Local state layout
+- prekey bundle lookup and validation.
+- direct init/cipher send.
+- inbox/history/listener decrypt when local state is available.
+- identity-scoped session, signed prekey, OPK and pending/outbox state.
+- secure status, prepare, repair and retry domain results.
 
-Per identity, the Go SDK reference stores live under the identity directory:
+Current direct E2EE runtime state is owned by `im-core` local state and keyed by
+`owner_identity_id`. `owner_did` is only the current DID snapshot and must not be
+used as a runtime owner fallback.
 
-```text
-identities/<identity-id>/p5-e2ee-sessions/
-identities/<identity-id>/p5-signed-prekeys/
-identities/<identity-id>/p5-one-time-prekeys/
-```
+`awiki-cli` owns product shell behavior:
 
-The CLI business SQLite additionally stores message indexes, local plaintext views, and E2EE outbox metadata. It must not expose or log root keys, chain keys, skipped message keys, nonces, private ratchet keys, OPK private material, or JWTs.
+- parsing `--secure required` / secure command flags.
+- building `ImCore` / `ImClient`.
+- rendering status, warnings, dry-run plans and errors.
+- protecting stdout/stderr from raw cryptographic material.
+- running listener/service infrastructure.
 
-## Main secure direct flow
+The CLI must not independently implement ratchet/session algorithms or expose raw secure artifacts.
+
+Historical Go SDK reference stores may exist under the identity directory, but active runtime state is stored through `im-core` local state rather than using those paths as owner identity.
+
+The CLI business SQLite additionally stores message indexes, local plaintext views,
+and E2EE outbox metadata. Active rows use `owner_identity_id` keys, including
+`e2ee_outbox(owner_identity_id, outbox_id)` and direct E2EE tables. It must not
+expose or log root keys, chain keys, skipped message keys, nonces, private
+ratchet keys, OPK private material, plaintext outbox payloads, raw SQLite rows,
+backup contents, or JWTs.
+
+## Local State
+
+Direct E2EE state is identity-scoped. Private session/prekey material and pending secure delivery state are owned by `im-core` internals and must not be printed, logged, or serialized into CLI output.
+
+The CLI business SQLite may store high-level message indexes, local plaintext views, delivery summaries and outbox summaries. It must not expose or log:
+
+- root keys, chain keys, skipped message keys.
+- nonces or private ratchet keys.
+- OPK private material.
+- plaintext outbox payloads, raw SQLite rows or backup contents.
+- JWTs or private identity keys.
+- raw secure wire payloads beyond explicit diagnostic gates.
+
+## Main Flow
 
 ### First secure message
 
-1. Sender calls `direct.e2ee.get_prekey_bundle` for the recipient.
-2. Go SDK verifies the recipient stable bundle and optional OPK sidecar.
-3. CLI sends `direct.send` with:
-   - `meta.profile=anp.direct.e2ee.v1`;
-   - `meta.security_profile=direct-e2ee`;
-   - `meta.content_type=application/anp-direct-init+json`;
-   - `meta.operation_id == meta.message_id`;
-   - no `params.auth` in current P5 phase-1 behavior.
-4. Sender local session enters pending-confirmation.
+1. Sender resolves the peer and fetches a prekey bundle.
+2. SDK verifies the recipient bundle and optional OPK sidecar.
+3. SDK sends `direct.send` with secure init content.
+4. Sender local session enters pending-confirmation state.
 
 ### Recipient decrypt and first reply
 
-1. Recipient inbox/history/listener sees `application/anp-direct-init+json`.
-2. CLI processes init through the Go SDK, persists session state, and presents decrypted plaintext locally.
-3. Recipient reply with `--secure on` sends `application/anp-direct-cipher+json`.
-4. Sender processes the first valid reply and moves to established state.
+1. Recipient inbox/history/listener sees secure init content.
+2. SDK processes init, persists session state and returns a safe plaintext view.
+3. Recipient reply with secure required sends a secure cipher message.
+4. Sender processes the first valid reply and marks the session established.
 
 ### Follow-up messages
 
-- Established sessions send direct ciphers with P5 ratchet headers.
-- `history` and listener decrypt ciphers into local plaintext views.
-- Replay, tamper, and skip-window behavior is delegated to SDK state.
+- Established sessions send direct cipher messages.
+- History and listener decrypt ciphers into local plaintext views.
+- Replay, tamper and skip-window behavior remains SDK-owned.
 
-## Command surface
+## Command Surface
 
 ```bash
-awiki-cli msg send --to DID --text "..." --secure on
+awiki-cli msg send --to DID --text "..." --secure required
 awiki-cli msg inbox --scope direct --with DID
 awiki-cli msg history --with DID
 
@@ -74,27 +93,28 @@ awiki-cli msg secure retry OUTBOX_ID
 awiki-cli msg secure drop OUTBOX_ID
 ```
 
-`status` and error outputs should be useful for repair while redacting private cryptographic material.
+User-facing output should help repair sessions while redacting private cryptographic material.
 
-## Discovery and DID document posture
+## Discovery Posture
 
-`awiki-cli` can operate secure direct locally, but generated DID documents currently keep the public `ANPMessageService` profile list conservative. See [`anp-service-discovery.md`](anp-service-discovery.md): direct E2EE is not advertised as public interop capability until discovery policy changes.
+Generated DID documents keep public profile lists conservative. Direct E2EE may be implemented locally without advertising it as a public interop capability. Public discovery enablement must be approved separately and reflected in `docs/architecture/anp-service-discovery.md`.
 
 ## Validation
 
-Focused CLI checks:
+Focused local checks should cover:
 
 ```bash
-cd awiki-cli
-go test ./internal/anpsdk ./internal/message ./internal/store ./internal/runtime/... -count=1
+cargo test -p im-core --locked secure
+cargo test -p awiki-cli --locked msg_secure
+cargo test -p awiki-cli --locked direct
 ```
 
-Cross-service evidence is documented in [Direct E2EE system tests](../../../awiki-system-test/docs/direct-e2ee-system-tests.md).
+System-level validation belongs in the cross-repo system test suite, not in long-lived `docs/` verification transcripts.
 
 ## Non-goals
 
 - Public discovery enablement.
-- Group E2EE / MLS.
-- Multi-device direct E2EE protocol semantics.
+- Group E2EE / MLS semantics.
+- Multi-device direct E2EE protocol expansion.
 - Service-side plaintext decrypt.
-- Compatibility with old HPKE service wire objects.
+- Compatibility with obsolete HPKE wire objects.

@@ -1,9 +1,11 @@
 use anp::group_e2ee::operations::{StatusInput, StatusOutput};
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::message_runtime::group::{load_credentials, GroupTextCredentials};
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::message_runtime::group::{
+    load_credentials, load_credentials_async, GroupTextCredentials,
+};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 use super::provider::GroupMlsProvider;
 use super::DEFAULT_GROUP_MLS_DEVICE_ID;
@@ -98,6 +100,7 @@ where
         };
 
         let mut service_head = None;
+        let mut service_disabled = None;
         let mut pending_notice_total = 0;
         if let Some(credentials) = credentials.as_ref() {
             match super::wire::build_group_e2ee_head_rpc_params(
@@ -113,39 +116,216 @@ where
                 )
             }) {
                 Ok(head) => service_head = Some(head),
+                Err(err) if super::lifecycle::is_group_e2ee_service_disabled(&err) => {
+                    service_disabled = Some(err.to_string());
+                    warnings.push(format!("group E2EE service head unavailable: {err}"));
+                }
                 Err(err) => warnings.push(format!("group E2EE service head unavailable: {err}")),
             }
 
-            match super::wire::build_group_e2ee_notice_rpc_params(
-                credentials,
-                self.client.did().as_str(),
-                group_did,
-                input.notice_limit,
-                false,
-                &[],
-            )
-            .and_then(|params| {
-                self.transport.authenticated_rpc(
-                    crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
-                    "group.e2ee.notice",
-                    params,
+            if service_disabled.is_none() {
+                match super::wire::build_group_e2ee_notice_rpc_params(
+                    credentials,
+                    self.client.did().as_str(),
+                    group_did,
+                    input.notice_limit,
+                    false,
+                    &[],
                 )
-            }) {
-                Ok(pending) => pending_notice_total = pending_notice_count(&pending),
-                Err(err) => warnings.push(format!(
-                    "group E2EE pending notice status unavailable: {err}"
-                )),
+                .and_then(|params| {
+                    self.transport.authenticated_rpc(
+                        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                        "group.e2ee.notice",
+                        params,
+                    )
+                }) {
+                    Ok(pending) => pending_notice_total = pending_notice_count(&pending),
+                    Err(err) if super::lifecycle::is_group_e2ee_service_disabled(&err) => {
+                        service_disabled = Some(err.to_string());
+                        warnings.push(format!(
+                            "group E2EE pending notice status unavailable: {err}"
+                        ));
+                    }
+                    Err(err) => warnings.push(format!(
+                        "group E2EE pending notice status unavailable: {err}"
+                    )),
+                }
             }
         }
 
-        Ok(group_status_from_parts(
+        let mut status = group_status_from_parts(
             input.group,
             local_status.as_ref(),
             service_head.as_ref(),
             pending_notice_total,
             local_error.as_deref(),
             warnings,
-        ))
+        );
+        if let Some(message) = service_disabled {
+            status.state = crate::secure::GroupSecureState::Unknown;
+            status.can_send_secure = false;
+            status.problem = Some(secure_problem(
+                crate::secure::SecureProblemCode::Unsupported,
+                format!("group-e2ee-status is unavailable: {message}"),
+                false,
+            ));
+        }
+        Ok(status)
+    }
+}
+
+impl<P, T, M> GroupE2eeStatusRuntime<'_, P, T, M>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+    M: GroupMlsProvider + Send + 'static,
+{
+    pub(crate) async fn status_async(
+        self,
+        input: GroupE2eeStatusInput,
+    ) -> crate::ImResult<GroupE2eeStatusResult> {
+        let GroupE2eeStatusRuntime {
+            client,
+            session_provider,
+            mut transport,
+            mls_provider,
+        } = self;
+        session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let device_id = device_id_for_client(client);
+        let agent_did = client.did().as_str().to_owned();
+        let group_did_for_worker = group_did.clone();
+        let mut warnings = Vec::new();
+        let local_status_result = crate::internal::runtime::worker::run_blocking(move || {
+            mls_provider.status(StatusInput {
+                request_id: format!(
+                    "group-e2ee-status-{}",
+                    crate::internal::wire::common::generate_operation_id()
+                ),
+                device_id,
+                agent_did: Some(agent_did),
+                group_did: Some(group_did_for_worker),
+            })
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: format!("group E2EE local MLS status worker failed: {err}"),
+        })?;
+        let (local_status, local_error) = match local_status_result {
+            Ok(status) => (Some(status), None),
+            Err(err) => {
+                warnings.push("group E2EE local MLS status is unavailable".to_owned());
+                (None, Some(err.to_string()))
+            }
+        };
+
+        let credentials = match input.credentials {
+            Some(credentials) => Some(credentials),
+            None => match load_credentials_async(client).await {
+                Ok(credentials) => Some(credentials),
+                Err(_err) => {
+                    warnings
+                        .push("group E2EE service status credentials are unavailable".to_owned());
+                    return Ok(group_status_from_parts(
+                        input.group,
+                        local_status.as_ref(),
+                        None,
+                        0,
+                        local_error.as_deref(),
+                        warnings,
+                    ));
+                }
+            },
+        };
+
+        let mut service_head = None;
+        let mut service_disabled = None;
+        let mut pending_notice_total = 0;
+        if let Some(credentials) = credentials.as_ref() {
+            match super::wire::build_group_e2ee_head_rpc_params(
+                credentials,
+                client.did().as_str(),
+                group_did.as_str(),
+            ) {
+                Ok(params) => {
+                    match transport
+                        .authenticated_rpc(
+                            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                            "group.e2ee.head",
+                            params,
+                        )
+                        .await
+                    {
+                        Ok(head) => service_head = Some(head),
+                        Err(err) if super::lifecycle::is_group_e2ee_service_disabled(&err) => {
+                            service_disabled = Some(err.to_string());
+                            warnings.push(format!("group E2EE service head unavailable: {err}"));
+                        }
+                        Err(err) => {
+                            warnings.push(format!("group E2EE service head unavailable: {err}"))
+                        }
+                    }
+                }
+                Err(err) => warnings.push(format!("group E2EE service head unavailable: {err}")),
+            }
+
+            if service_disabled.is_none() {
+                match super::wire::build_group_e2ee_notice_rpc_params(
+                    credentials,
+                    client.did().as_str(),
+                    group_did.as_str(),
+                    input.notice_limit,
+                    false,
+                    &[],
+                ) {
+                    Ok(params) => {
+                        match transport
+                            .authenticated_rpc(
+                                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                                "group.e2ee.notice",
+                                params,
+                            )
+                            .await
+                        {
+                            Ok(pending) => pending_notice_total = pending_notice_count(&pending),
+                            Err(err) if super::lifecycle::is_group_e2ee_service_disabled(&err) => {
+                                service_disabled = Some(err.to_string());
+                                warnings.push(format!(
+                                    "group E2EE pending notice status unavailable: {err}"
+                                ));
+                            }
+                            Err(err) => warnings.push(format!(
+                                "group E2EE pending notice status unavailable: {err}"
+                            )),
+                        }
+                    }
+                    Err(err) => warnings.push(format!(
+                        "group E2EE pending notice status unavailable: {err}"
+                    )),
+                }
+            }
+        }
+
+        let mut status = group_status_from_parts(
+            input.group,
+            local_status.as_ref(),
+            service_head.as_ref(),
+            pending_notice_total,
+            local_error.as_deref(),
+            warnings,
+        );
+        if let Some(message) = service_disabled {
+            status.state = crate::secure::GroupSecureState::Unknown;
+            status.can_send_secure = false;
+            status.problem = Some(secure_problem(
+                crate::secure::SecureProblemCode::Unsupported,
+                format!("group-e2ee-status is unavailable: {message}"),
+                false,
+            ));
+        }
+        Ok(status)
     }
 }
 
@@ -529,6 +709,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn status_async_reports_ready_using_async_transport() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let status = GroupE2eeStatusRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.head".to_owned(),
+                        json!({
+                            "epoch": "7",
+                            "actor_membership_status": "active",
+                            "group_state_ref": {
+                                "group_did": "did:example:groups:e2ee",
+                                "group_state_version": "42"
+                            }
+                        }),
+                    ),
+                    (
+                        "group.e2ee.notice".to_owned(),
+                        json!({"pending_count": 0, "notices": []}),
+                    ),
+                ],
+            },
+            StatusProvider::active("7", Vec::new()),
+        )
+        .status_async(GroupE2eeStatusInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            credentials: Some(fixture.credentials()),
+            notice_limit: 50,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(status.state, crate::secure::GroupSecureState::Ready);
+        assert!(status.can_send_secure);
+        assert!(status.local_readiness.has_local_state);
+        assert!(status.local_readiness.has_active_membership);
+        assert!(status.problem.is_none());
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "group.e2ee.head");
+        assert_eq!(calls[1].method, "group.e2ee.notice");
+        assert_eq!(calls[1].params["body"]["limit"], 50);
+    }
+
     #[test]
     fn status_fails_closed_for_pending_notices() {
         let fixture = Fixture::new();
@@ -615,6 +846,47 @@ mod tests {
     }
 
     #[test]
+    fn status_reports_unknown_when_group_e2ee_service_is_disabled() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let status = GroupE2eeStatusRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![(
+                    "group.e2ee.head".to_owned(),
+                    json!({"error": {"code": "1405", "message": "group E2EE contract-test APIs are disabled"}}),
+                )],
+            },
+            StatusProvider::empty(),
+        )
+        .status(GroupE2eeStatusInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            credentials: Some(fixture.credentials()),
+            notice_limit: 50,
+        })
+        .unwrap();
+
+        assert_eq!(status.state, crate::secure::GroupSecureState::Unknown);
+        assert!(!status.can_send_secure);
+        assert_eq!(
+            status.problem.as_ref().map(|problem| &problem.code),
+            Some(&crate::secure::SecureProblemCode::Unsupported)
+        );
+        assert!(status
+            .problem
+            .as_ref()
+            .map(|problem| problem.message.contains("group-e2ee-status")
+                && problem.message.contains("contract-test APIs are disabled"))
+            .unwrap_or(false));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.head");
+    }
+
+    #[test]
     fn status_reports_syncing_for_pending_commit() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -662,6 +934,7 @@ mod tests {
                 scope,
                 expires_at: None,
                 refreshed: false,
+                bearer_token: None,
             })
         }
 
@@ -670,6 +943,23 @@ mod tests {
         }
 
         fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("group E2EE status should not read auth status")
+        }
+    }
+
+    impl AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("group E2EE status should not refresh through the session provider")
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
             unreachable!("group E2EE status should not read auth status")
         }
     }
@@ -697,13 +987,37 @@ mod tests {
                 .enumerate()
                 .find(|(_, (candidate, _))| candidate == method)
             {
-                return Ok(self.responses.remove(index).1);
+                let value = self.responses.remove(index).1;
+                if let Some(error) = value.get("error").and_then(Value::as_object) {
+                    return Err(crate::ImError::Service {
+                        status_code: None,
+                        code: error.get("code").and_then(Value::as_str).map(str::to_owned),
+                        message: error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("service error")
+                            .to_owned(),
+                    });
+                }
+                return Ok(value);
             }
             Err(crate::ImError::Service {
                 status_code: None,
                 code: Some("missing_test_response".to_owned()),
                 message: format!("missing response for {method}"),
+                data: None,
             })
+        }
+    }
+
+    impl AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
         }
     }
 

@@ -43,6 +43,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_ArcDartConversationPatchSessionPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSessionPtr;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_ArcDartImClientPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClientPtr;
 
@@ -54,8 +58,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSessionPtr;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_ArcDartThreadMessagePatchSessionPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSessionPtr;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
+
+  @protected
+  ArcDartConversationPatchSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    dynamic raw,
+  );
 
   @protected
   ArcDartImClient
@@ -72,6 +86,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartRealtimeSession
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+    dynamic raw,
+  );
+
+  @protected
+  ArcDartThreadMessagePatchSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    dynamic raw,
+  );
+
+  @protected
+  ArcDartConversationPatchSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
     dynamic raw,
   );
 
@@ -94,6 +120,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    dynamic raw,
+  );
+
+  @protected
+  ArcDartConversationPatchSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    dynamic raw,
+  );
+
+  @protected
   ArcDartImClient
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
     dynamic raw,
@@ -112,8 +150,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    dynamic raw,
+  );
+
+  @protected
+  RustStreamSink<DartConversationStorePatch>
+  dco_decode_StreamSink_dart_conversation_store_patch_Sse(dynamic raw);
+
+  @protected
   RustStreamSink<DartRealtimeEvent>
   dco_decode_StreamSink_dart_realtime_event_Sse(dynamic raw);
+
+  @protected
+  RustStreamSink<DartThreadMessageStorePatch>
+  dco_decode_StreamSink_dart_thread_message_store_patch_Sse(dynamic raw);
 
   @protected
   String dco_decode_String(dynamic raw);
@@ -130,6 +182,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartConversationIdentity dco_decode_box_autoadd_dart_conversation_identity(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationListSnapshot
+  dco_decode_box_autoadd_dart_conversation_list_snapshot(dynamic raw);
+
+  @protected
+  DartConversationReadRef dco_decode_box_autoadd_dart_conversation_read_ref(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationSnapshotItem
+  dco_decode_box_autoadd_dart_conversation_snapshot_item(dynamic raw);
+
+  @protected
+  DartConversationSnapshotMessage
+  dco_decode_box_autoadd_dart_conversation_snapshot_message(dynamic raw);
+
+  @protected
   DartCreateGroupRequest dco_decode_box_autoadd_dart_create_group_request(
     dynamic raw,
   );
@@ -138,6 +212,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(
     dynamic raw,
   );
+
+  @protected
+  DartDelegatedSigningOptions
+  dco_decode_box_autoadd_dart_delegated_signing_options(dynamic raw);
 
   @protected
   DartDownloadAttachmentRequest
@@ -161,10 +239,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartImCoreConfig dco_decode_box_autoadd_dart_im_core_config(dynamic raw);
 
   @protected
+  DartImCoreOpenOptions dco_decode_box_autoadd_dart_im_core_open_options(
+    dynamic raw,
+  );
+
+  @protected
   DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw);
 
   @protected
+  DartImCoreSecretVaultOptions
+  dco_decode_box_autoadd_dart_im_core_secret_vault_options(dynamic raw);
+
+  @protected
+  DartInboxAuth dco_decode_box_autoadd_dart_inbox_auth(dynamic raw);
+
+  @protected
+  DartInboxHistoryOptions dco_decode_box_autoadd_dart_inbox_history_options(
+    dynamic raw,
+  );
+
+  @protected
   DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
+
+  @protected
+  DartMarkConversationReadRequest
+  dco_decode_box_autoadd_dart_mark_conversation_read_request(dynamic raw);
 
   @protected
   DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
@@ -173,7 +272,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
 
   @protected
+  DartReadWatermark dco_decode_box_autoadd_dart_read_watermark(dynamic raw);
+
+  @protected
   DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
+
+  @protected
+  DartRealtimeSyncHint dco_decode_box_autoadd_dart_realtime_sync_hint(
+    dynamic raw,
+  );
+
+  @protected
+  DartScopedInboxToken dco_decode_box_autoadd_dart_scoped_inbox_token(
+    dynamic raw,
+  );
 
   @protected
   DartSecureDelivery dco_decode_box_autoadd_dart_secure_delivery(dynamic raw);
@@ -182,7 +294,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw);
 
   @protected
+  DartSendConversationAttachmentRequest
+  dco_decode_box_autoadd_dart_send_conversation_attachment_request(dynamic raw);
+
+  @protected
+  DartSendConversationPayloadRequest
+  dco_decode_box_autoadd_dart_send_conversation_payload_request(dynamic raw);
+
+  @protected
+  DartSendConversationTextRequest
+  dco_decode_box_autoadd_dart_send_conversation_text_request(dynamic raw);
+
+  @protected
   DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(
+    dynamic raw,
+  );
+
+  @protected
+  DartSendPayloadRequest dco_decode_box_autoadd_dart_send_payload_request(
     dynamic raw,
   );
 
@@ -190,6 +319,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
     dynamic raw,
   );
+
+  @protected
+  DartSyncConversationAfterRequest
+  dco_decode_box_autoadd_dart_sync_conversation_after_request(dynamic raw);
+
+  @protected
+  DartSyncDeltaRequest dco_decode_box_autoadd_dart_sync_delta_request(
+    dynamic raw,
+  );
+
+  @protected
+  DartSyncThreadAfterRequest
+  dco_decode_box_autoadd_dart_sync_thread_after_request(dynamic raw);
 
   @protected
   DartThreadRef dco_decode_box_autoadd_dart_thread_ref(dynamic raw);
@@ -233,15 +375,89 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartConversation dco_decode_dart_conversation(dynamic raw);
 
   @protected
+  DartConversationAlias dco_decode_dart_conversation_alias(dynamic raw);
+
+  @protected
+  DartConversationAliasSource dco_decode_dart_conversation_alias_source(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationIdentity dco_decode_dart_conversation_identity(dynamic raw);
+
+  @protected
+  DartConversationIdentityScope dco_decode_dart_conversation_identity_scope(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationListSnapshot dco_decode_dart_conversation_list_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationMigrationState dco_decode_dart_conversation_migration_state(
+    dynamic raw,
+  );
+
+  @protected
   DartConversationPage dco_decode_dart_conversation_page(dynamic raw);
+
+  @protected
+  DartConversationReadRef dco_decode_dart_conversation_read_ref(dynamic raw);
+
+  @protected
+  DartConversationSnapshotItem dco_decode_dart_conversation_snapshot_item(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationSnapshotMessage dco_decode_dart_conversation_snapshot_message(
+    dynamic raw,
+  );
+
+  @protected
+  DartConversationSnapshotMessageBody
+  dco_decode_dart_conversation_snapshot_message_body(dynamic raw);
+
+  @protected
+  DartConversationStorageThreadRef
+  dco_decode_dart_conversation_storage_thread_ref(dynamic raw);
+
+  @protected
+  DartConversationStorePatch dco_decode_dart_conversation_store_patch(
+    dynamic raw,
+  );
 
   @protected
   DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw);
 
   @protected
+  DartDaemonSubkeyAuthorizationRevokeResult
+  dco_decode_dart_daemon_subkey_authorization_revoke_result(dynamic raw);
+
+  @protected
+  DartDaemonSubkeyPrivatePackage dco_decode_dart_daemon_subkey_private_package(
+    dynamic raw,
+  );
+
+  @protected
   DartDefaultIdentityChange dco_decode_dart_default_identity_change(
     dynamic raw,
   );
+
+  @protected
+  DartDelegatedSigningOptions dco_decode_dart_delegated_signing_options(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeleteLocalIdentityResult dco_decode_dart_delete_local_identity_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartDeviceVaultRootKey dco_decode_dart_device_vault_root_key(dynamic raw);
 
   @protected
   DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(
@@ -261,6 +477,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw);
+
+  @protected
+  DartDisplayProfile dco_decode_dart_display_profile(dynamic raw);
 
   @protected
   DartDownloadAttachmentRequest dco_decode_dart_download_attachment_request(
@@ -356,6 +575,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentitySecretStorageBackend
+  dco_decode_dart_identity_secret_storage_backend(dynamic raw);
+
+  @protected
+  DartIdentitySecretStoragePolicy
+  dco_decode_dart_identity_secret_storage_policy(dynamic raw);
+
+  @protected
   DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw);
 
   @protected
@@ -365,19 +592,51 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartIdentitySummary dco_decode_dart_identity_summary(dynamic raw);
 
   @protected
+  DartIdentityVaultMigrationReport
+  dco_decode_dart_identity_vault_migration_report(dynamic raw);
+
+  @protected
+  DartIdentityVaultStatus dco_decode_dart_identity_vault_status(dynamic raw);
+
+  @protected
+  DartIdentityVaultVerificationReport
+  dco_decode_dart_identity_vault_verification_report(dynamic raw);
+
+  @protected
   DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw);
+
+  @protected
+  DartImCoreOpenOptions dco_decode_dart_im_core_open_options(dynamic raw);
 
   @protected
   DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw);
 
   @protected
+  DartImCoreSecretVaultOptions dco_decode_dart_im_core_secret_vault_options(
+    dynamic raw,
+  );
+
+  @protected
   DartImError dco_decode_dart_im_error(dynamic raw);
+
+  @protected
+  DartInboxAuth dco_decode_dart_inbox_auth(dynamic raw);
+
+  @protected
+  DartInboxHistoryOptions dco_decode_dart_inbox_history_options(dynamic raw);
 
   @protected
   DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
 
   @protected
+  DartMarkConversationReadRequest
+  dco_decode_dart_mark_conversation_read_request(dynamic raw);
+
+  @protected
   DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw);
+
+  @protected
+  DartMarkThreadReadResult dco_decode_dart_mark_thread_read_result(dynamic raw);
 
   @protected
   DartMessage dco_decode_dart_message(dynamic raw);
@@ -414,6 +673,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartProfilePatch dco_decode_dart_profile_patch(dynamic raw);
 
   @protected
+  DartReadWatermark dco_decode_dart_read_watermark(dynamic raw);
+
+  @protected
   DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw);
 
   @protected
@@ -426,6 +688,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw);
 
   @protected
+  DartRealtimeSyncHint dco_decode_dart_realtime_sync_hint(dynamic raw);
+
+  @protected
   DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw);
 
   @protected
@@ -436,6 +701,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
+
+  @protected
+  DartScopedInboxToken dco_decode_dart_scoped_inbox_token(dynamic raw);
 
   @protected
   DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw);
@@ -456,6 +724,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSecureProblemCode dco_decode_dart_secure_problem_code(dynamic raw);
 
   @protected
+  DartSendConversationAttachmentRequest
+  dco_decode_dart_send_conversation_attachment_request(dynamic raw);
+
+  @protected
+  DartSendConversationPayloadRequest
+  dco_decode_dart_send_conversation_payload_request(dynamic raw);
+
+  @protected
+  DartSendConversationTextRequest
+  dco_decode_dart_send_conversation_text_request(dynamic raw);
+
+  @protected
   DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw);
 
   @protected
@@ -465,6 +745,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw);
 
   @protected
+  DartSendPayloadRequest dco_decode_dart_send_payload_request(dynamic raw);
+
+  @protected
   DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw);
 
   @protected
@@ -472,6 +755,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSessionUpdate dco_decode_dart_session_update(dynamic raw);
+
+  @protected
+  DartSyncConversationAfterRequest
+  dco_decode_dart_sync_conversation_after_request(dynamic raw);
+
+  @protected
+  DartSyncDeltaRequest dco_decode_dart_sync_delta_request(dynamic raw);
+
+  @protected
+  DartSyncDeltaResult dco_decode_dart_sync_delta_result(dynamic raw);
+
+  @protected
+  DartSyncThreadAfterRequest dco_decode_dart_sync_thread_after_request(
+    dynamic raw,
+  );
+
+  @protected
+  DartSyncThreadAfterResult dco_decode_dart_sync_thread_after_result(
+    dynamic raw,
+  );
+
+  @protected
+  DartThreadMessageStorePatch dco_decode_dart_thread_message_store_patch(
+    dynamic raw,
+  );
 
   @protected
   DartThreadRef dco_decode_dart_thread_ref(dynamic raw);
@@ -493,6 +801,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
+
+  @protected
+  List<DartConversationAlias> dco_decode_list_dart_conversation_alias(
+    dynamic raw,
+  );
+
+  @protected
+  List<DartConversationSnapshotItem>
+  dco_decode_list_dart_conversation_snapshot_item(dynamic raw);
+
+  @protected
+  List<DartDisplayProfile> dco_decode_list_dart_display_profile(dynamic raw);
 
   @protected
   List<DartEmailAttachmentMetadata>
@@ -547,8 +867,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
+  DartConversationIdentity?
+  dco_decode_opt_box_autoadd_dart_conversation_identity(dynamic raw);
+
+  @protected
+  DartConversationListSnapshot?
+  dco_decode_opt_box_autoadd_dart_conversation_list_snapshot(dynamic raw);
+
+  @protected
+  DartConversationSnapshotMessage?
+  dco_decode_opt_box_autoadd_dart_conversation_snapshot_message(dynamic raw);
+
+  @protected
   DartDefaultIdentityChange?
   dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw);
+
+  @protected
+  DartDelegatedSigningOptions?
+  dco_decode_opt_box_autoadd_dart_delegated_signing_options(dynamic raw);
 
   @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
@@ -561,7 +897,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartImCoreOpenOptions? dco_decode_opt_box_autoadd_dart_im_core_open_options(
+    dynamic raw,
+  );
+
+  @protected
+  DartImCoreSecretVaultOptions?
+  dco_decode_opt_box_autoadd_dart_im_core_secret_vault_options(dynamic raw);
+
+  @protected
+  DartInboxAuth? dco_decode_opt_box_autoadd_dart_inbox_auth(dynamic raw);
+
+  @protected
+  DartInboxHistoryOptions?
+  dco_decode_opt_box_autoadd_dart_inbox_history_options(dynamic raw);
+
+  @protected
   DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
+
+  @protected
+  DartReadWatermark? dco_decode_opt_box_autoadd_dart_read_watermark(
+    dynamic raw,
+  );
+
+  @protected
+  DartRealtimeSyncHint? dco_decode_opt_box_autoadd_dart_realtime_sync_hint(
+    dynamic raw,
+  );
 
   @protected
   DartSecureDelivery? dco_decode_opt_box_autoadd_dart_secure_delivery(
@@ -613,6 +975,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
+  ArcDartConversationPatchSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ArcDartImClient
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
     SseDeserializer deserializer,
@@ -627,6 +995,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ArcDartRealtimeSession
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ArcDartThreadMessagePatchSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ArcDartConversationPatchSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
     SseDeserializer deserializer,
   );
 
@@ -649,6 +1029,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ArcDartConversationPatchSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ArcDartImClient
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
     SseDeserializer deserializer,
@@ -667,8 +1059,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ArcDartThreadMessagePatchSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RustStreamSink<DartConversationStorePatch>
+  sse_decode_StreamSink_dart_conversation_store_patch_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<DartRealtimeEvent>
   sse_decode_StreamSink_dart_realtime_event_Sse(SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<DartThreadMessageStorePatch>
+  sse_decode_StreamSink_dart_thread_message_store_patch_Sse(
+    SseDeserializer deserializer,
+  );
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
@@ -685,12 +1095,46 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartConversationIdentity sse_decode_box_autoadd_dart_conversation_identity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationListSnapshot
+  sse_decode_box_autoadd_dart_conversation_list_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationReadRef sse_decode_box_autoadd_dart_conversation_read_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationSnapshotItem
+  sse_decode_box_autoadd_dart_conversation_snapshot_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationSnapshotMessage
+  sse_decode_box_autoadd_dart_conversation_snapshot_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartCreateGroupRequest sse_decode_box_autoadd_dart_create_group_request(
     SseDeserializer deserializer,
   );
 
   @protected
   DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDelegatedSigningOptions
+  sse_decode_box_autoadd_dart_delegated_signing_options(
     SseDeserializer deserializer,
   );
 
@@ -726,12 +1170,39 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartImCoreOpenOptions sse_decode_box_autoadd_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(
     SseDeserializer deserializer,
   );
 
   @protected
+  DartImCoreSecretVaultOptions
+  sse_decode_box_autoadd_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxAuth sse_decode_box_autoadd_dart_inbox_auth(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxHistoryOptions sse_decode_box_autoadd_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMarkConversationReadRequest
+  sse_decode_box_autoadd_dart_mark_conversation_read_request(
     SseDeserializer deserializer,
   );
 
@@ -744,7 +1215,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartReadWatermark sse_decode_box_autoadd_dart_read_watermark(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartRealtimeOptions sse_decode_box_autoadd_dart_realtime_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRealtimeSyncHint sse_decode_box_autoadd_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartScopedInboxToken sse_decode_box_autoadd_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   );
 
@@ -759,12 +1245,52 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendConversationAttachmentRequest
+  sse_decode_box_autoadd_dart_send_conversation_attachment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationPayloadRequest
+  sse_decode_box_autoadd_dart_send_conversation_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationTextRequest
+  sse_decode_box_autoadd_dart_send_conversation_text_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(
     SseDeserializer deserializer,
   );
 
   @protected
+  DartSendPayloadRequest sse_decode_box_autoadd_dart_send_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncConversationAfterRequest
+  sse_decode_box_autoadd_dart_sync_conversation_after_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncDeltaRequest sse_decode_box_autoadd_dart_sync_delta_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncThreadAfterRequest
+  sse_decode_box_autoadd_dart_sync_thread_after_request(
     SseDeserializer deserializer,
   );
 
@@ -820,7 +1346,67 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartConversation sse_decode_dart_conversation(SseDeserializer deserializer);
 
   @protected
+  DartConversationAlias sse_decode_dart_conversation_alias(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationAliasSource sse_decode_dart_conversation_alias_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationIdentity sse_decode_dart_conversation_identity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationIdentityScope sse_decode_dart_conversation_identity_scope(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationListSnapshot sse_decode_dart_conversation_list_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationMigrationState sse_decode_dart_conversation_migration_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartConversationPage sse_decode_dart_conversation_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationReadRef sse_decode_dart_conversation_read_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationSnapshotItem sse_decode_dart_conversation_snapshot_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationSnapshotMessage sse_decode_dart_conversation_snapshot_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationSnapshotMessageBody
+  sse_decode_dart_conversation_snapshot_message_body(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationStorageThreadRef
+  sse_decode_dart_conversation_storage_thread_ref(SseDeserializer deserializer);
+
+  @protected
+  DartConversationStorePatch sse_decode_dart_conversation_store_patch(
     SseDeserializer deserializer,
   );
 
@@ -830,7 +1416,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDaemonSubkeyAuthorizationRevokeResult
+  sse_decode_dart_daemon_subkey_authorization_revoke_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDaemonSubkeyPrivatePackage sse_decode_dart_daemon_subkey_private_package(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDefaultIdentityChange sse_decode_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDelegatedSigningOptions sse_decode_dart_delegated_signing_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeleteLocalIdentityResult sse_decode_dart_delete_local_identity_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeviceVaultRootKey sse_decode_dart_device_vault_root_key(
     SseDeserializer deserializer,
   );
 
@@ -856,6 +1468,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDirectoryResolution sse_decode_dart_directory_resolution(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDisplayProfile sse_decode_dart_display_profile(
     SseDeserializer deserializer,
   );
 
@@ -973,6 +1590,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentitySecretStorageBackend
+  sse_decode_dart_identity_secret_storage_backend(SseDeserializer deserializer);
+
+  @protected
+  DartIdentitySecretStoragePolicy
+  sse_decode_dart_identity_secret_storage_policy(SseDeserializer deserializer);
+
+  @protected
   DartIdentitySelector sse_decode_dart_identity_selector(
     SseDeserializer deserializer,
   );
@@ -988,13 +1613,46 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartIdentityVaultMigrationReport
+  sse_decode_dart_identity_vault_migration_report(SseDeserializer deserializer);
+
+  @protected
+  DartIdentityVaultStatus sse_decode_dart_identity_vault_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartIdentityVaultVerificationReport
+  sse_decode_dart_identity_vault_verification_report(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartImCoreConfig sse_decode_dart_im_core_config(SseDeserializer deserializer);
+
+  @protected
+  DartImCoreOpenOptions sse_decode_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer);
 
   @protected
+  DartImCoreSecretVaultOptions sse_decode_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartImError sse_decode_dart_im_error(SseDeserializer deserializer);
+
+  @protected
+  DartInboxAuth sse_decode_dart_inbox_auth(SseDeserializer deserializer);
+
+  @protected
+  DartInboxHistoryOptions sse_decode_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartInitialProfile sse_decode_dart_initial_profile(
@@ -1002,7 +1660,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartMarkConversationReadRequest
+  sse_decode_dart_mark_conversation_read_request(SseDeserializer deserializer);
+
+  @protected
   DartMarkReadResult sse_decode_dart_mark_read_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartMarkThreadReadResult sse_decode_dart_mark_thread_read_result(
     SseDeserializer deserializer,
   );
 
@@ -1051,6 +1718,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer);
 
   @protected
+  DartReadWatermark sse_decode_dart_read_watermark(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartRealtimeCapability sse_decode_dart_realtime_capability(
     SseDeserializer deserializer,
   );
@@ -1071,6 +1743,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartRealtimeSyncHint sse_decode_dart_realtime_sync_hint(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartRecoverHandleResult sse_decode_dart_recover_handle_result(
     SseDeserializer deserializer,
   );
@@ -1087,6 +1764,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRelationshipPage sse_decode_dart_relationship_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartScopedInboxToken sse_decode_dart_scoped_inbox_token(
     SseDeserializer deserializer,
   );
 
@@ -1121,6 +1803,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendConversationAttachmentRequest
+  sse_decode_dart_send_conversation_attachment_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationPayloadRequest
+  sse_decode_dart_send_conversation_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendConversationTextRequest
+  sse_decode_dart_send_conversation_text_request(SseDeserializer deserializer);
+
+  @protected
   DartSendEmailRequest sse_decode_dart_send_email_request(
     SseDeserializer deserializer,
   );
@@ -1136,6 +1834,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendPayloadRequest sse_decode_dart_send_payload_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendTextRequest sse_decode_dart_send_text_request(
     SseDeserializer deserializer,
   );
@@ -1147,6 +1850,35 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartSessionUpdate sse_decode_dart_session_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncConversationAfterRequest
+  sse_decode_dart_sync_conversation_after_request(SseDeserializer deserializer);
+
+  @protected
+  DartSyncDeltaRequest sse_decode_dart_sync_delta_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncDeltaResult sse_decode_dart_sync_delta_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncThreadAfterRequest sse_decode_dart_sync_thread_after_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSyncThreadAfterResult sse_decode_dart_sync_thread_after_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartThreadMessageStorePatch sse_decode_dart_thread_message_store_patch(
     SseDeserializer deserializer,
   );
 
@@ -1172,6 +1904,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartConversation> sse_decode_list_dart_conversation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartConversationAlias> sse_decode_list_dart_conversation_alias(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartConversationSnapshotItem>
+  sse_decode_list_dart_conversation_snapshot_item(SseDeserializer deserializer);
+
+  @protected
+  List<DartDisplayProfile> sse_decode_list_dart_display_profile(
     SseDeserializer deserializer,
   );
 
@@ -1236,8 +1982,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
+  DartConversationIdentity?
+  sse_decode_opt_box_autoadd_dart_conversation_identity(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationListSnapshot?
+  sse_decode_opt_box_autoadd_dart_conversation_list_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartConversationSnapshotMessage?
+  sse_decode_opt_box_autoadd_dart_conversation_snapshot_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDefaultIdentityChange?
   sse_decode_opt_box_autoadd_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDelegatedSigningOptions?
+  sse_decode_opt_box_autoadd_dart_delegated_signing_options(
     SseDeserializer deserializer,
   );
 
@@ -1252,7 +2022,39 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartImCoreOpenOptions? sse_decode_opt_box_autoadd_dart_im_core_open_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartImCoreSecretVaultOptions?
+  sse_decode_opt_box_autoadd_dart_im_core_secret_vault_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxAuth? sse_decode_opt_box_autoadd_dart_inbox_auth(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInboxHistoryOptions?
+  sse_decode_opt_box_autoadd_dart_inbox_history_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartMessage? sse_decode_opt_box_autoadd_dart_message(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartReadWatermark? sse_decode_opt_box_autoadd_dart_read_watermark(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRealtimeSyncHint? sse_decode_opt_box_autoadd_dart_realtime_sync_hint(
     SseDeserializer deserializer,
   );
 
@@ -1312,6 +2114,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    ArcDartConversationPatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
     ArcDartImClient self,
     SseSerializer serializer,
@@ -1328,6 +2137,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
     ArcDartRealtimeSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ArcDartThreadMessagePatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    ArcDartConversationPatchSession self,
     SseSerializer serializer,
   );
 
@@ -1354,6 +2177,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ArcDartThreadMessagePatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    ArcDartConversationPatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
     ArcDartImClient self,
     SseSerializer serializer,
@@ -1374,8 +2211,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ArcDartThreadMessagePatchSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_dart_conversation_store_patch_Sse(
+    RustStreamSink<DartConversationStorePatch> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_dart_realtime_event_Sse(
     RustStreamSink<DartRealtimeEvent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_dart_thread_message_store_patch_Sse(
+    RustStreamSink<DartThreadMessageStorePatch> self,
     SseSerializer serializer,
   );
 
@@ -1395,6 +2251,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_conversation_identity(
+    DartConversationIdentity self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_conversation_list_snapshot(
+    DartConversationListSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_conversation_read_ref(
+    DartConversationReadRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_conversation_snapshot_item(
+    DartConversationSnapshotItem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_conversation_snapshot_message(
+    DartConversationSnapshotMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_create_group_request(
     DartCreateGroupRequest self,
     SseSerializer serializer,
@@ -1403,6 +2289,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_default_identity_change(
     DartDefaultIdentityChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_delegated_signing_options(
+    DartDelegatedSigningOptions self,
     SseSerializer serializer,
   );
 
@@ -1443,14 +2335,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_im_core_open_options(
+    DartImCoreOpenOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_im_core_paths(
     DartImCorePaths self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_inbox_auth(
+    DartInboxAuth self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_inbox_history_options(
+    DartInboxHistoryOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_initial_profile(
     DartInitialProfile self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_mark_conversation_read_request(
+    DartMarkConversationReadRequest self,
     SseSerializer serializer,
   );
 
@@ -1467,8 +2389,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_read_watermark(
+    DartReadWatermark self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_realtime_options(
     DartRealtimeOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_realtime_sync_hint(
+    DartRealtimeSyncHint self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_scoped_inbox_token(
+    DartScopedInboxToken self,
     SseSerializer serializer,
   );
 
@@ -1485,14 +2425,56 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_send_conversation_attachment_request(
+    DartSendConversationAttachmentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_conversation_payload_request(
+    DartSendConversationPayloadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_send_conversation_text_request(
+    DartSendConversationTextRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_send_email_request(
     DartSendEmailRequest self,
     SseSerializer serializer,
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_send_payload_request(
+    DartSendPayloadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_send_text_request(
     DartSendTextRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_conversation_after_request(
+    DartSyncConversationAfterRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_delta_request(
+    DartSyncDeltaRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_sync_thread_after_request(
+    DartSyncThreadAfterRequest self,
     SseSerializer serializer,
   );
 
@@ -1563,8 +2545,80 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_conversation_alias(
+    DartConversationAlias self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_alias_source(
+    DartConversationAliasSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_identity(
+    DartConversationIdentity self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_identity_scope(
+    DartConversationIdentityScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_list_snapshot(
+    DartConversationListSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_migration_state(
+    DartConversationMigrationState self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_conversation_page(
     DartConversationPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_read_ref(
+    DartConversationReadRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_snapshot_item(
+    DartConversationSnapshotItem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_snapshot_message(
+    DartConversationSnapshotMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_snapshot_message_body(
+    DartConversationSnapshotMessageBody self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_storage_thread_ref(
+    DartConversationStorageThreadRef self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_conversation_store_patch(
+    DartConversationStorePatch self,
     SseSerializer serializer,
   );
 
@@ -1575,8 +2629,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_daemon_subkey_authorization_revoke_result(
+    DartDaemonSubkeyAuthorizationRevokeResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_daemon_subkey_private_package(
+    DartDaemonSubkeyPrivatePackage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_default_identity_change(
     DartDefaultIdentityChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_delegated_signing_options(
+    DartDelegatedSigningOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_delete_local_identity_result(
+    DartDeleteLocalIdentityResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_device_vault_root_key(
+    DartDeviceVaultRootKey self,
     SseSerializer serializer,
   );
 
@@ -1607,6 +2691,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_directory_resolution(
     DartDirectoryResolution self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_display_profile(
+    DartDisplayProfile self,
     SseSerializer serializer,
   );
 
@@ -1755,6 +2845,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_identity_secret_storage_backend(
+    DartIdentitySecretStorageBackend self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_secret_storage_policy(
+    DartIdentitySecretStoragePolicy self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_identity_selector(
     DartIdentitySelector self,
     SseSerializer serializer,
@@ -1773,8 +2875,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_identity_vault_migration_report(
+    DartIdentityVaultMigrationReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_vault_status(
+    DartIdentityVaultStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_identity_vault_verification_report(
+    DartIdentityVaultVerificationReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_im_core_config(
     DartImCoreConfig self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_im_core_open_options(
+    DartImCoreOpenOptions self,
     SseSerializer serializer,
   );
 
@@ -1785,7 +2911,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_im_error(DartImError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_dart_inbox_auth(DartInboxAuth self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_dart_inbox_history_options(
+    DartInboxHistoryOptions self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_dart_initial_profile(
@@ -1794,8 +2935,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_mark_conversation_read_request(
+    DartMarkConversationReadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_mark_read_result(
     DartMarkReadResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_mark_thread_read_result(
+    DartMarkThreadReadResult self,
     SseSerializer serializer,
   );
 
@@ -1857,6 +3010,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_read_watermark(
+    DartReadWatermark self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_realtime_capability(
     DartRealtimeCapability self,
     SseSerializer serializer,
@@ -1881,6 +3040,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_realtime_sync_hint(
+    DartRealtimeSyncHint self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_recover_handle_result(
     DartRecoverHandleResult self,
     SseSerializer serializer,
@@ -1901,6 +3066,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_relationship_page(
     DartRelationshipPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_scoped_inbox_token(
+    DartScopedInboxToken self,
     SseSerializer serializer,
   );
 
@@ -1941,6 +3112,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_send_conversation_attachment_request(
+    DartSendConversationAttachmentRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_conversation_payload_request(
+    DartSendConversationPayloadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_conversation_text_request(
+    DartSendConversationTextRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_send_email_request(
     DartSendEmailRequest self,
     SseSerializer serializer,
@@ -1959,6 +3148,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_send_payload_request(
+    DartSendPayloadRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_send_text_request(
     DartSendTextRequest self,
     SseSerializer serializer,
@@ -1973,6 +3168,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_session_update(
     DartSessionUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_conversation_after_request(
+    DartSyncConversationAfterRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_delta_request(
+    DartSyncDeltaRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_delta_result(
+    DartSyncDeltaResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_thread_after_request(
+    DartSyncThreadAfterRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_sync_thread_after_result(
+    DartSyncThreadAfterResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_thread_message_store_patch(
+    DartThreadMessageStorePatch self,
     SseSerializer serializer,
   );
 
@@ -2003,6 +3234,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_conversation(
     List<DartConversation> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_conversation_alias(
+    List<DartConversationAlias> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_conversation_snapshot_item(
+    List<DartConversationSnapshotItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_display_profile(
+    List<DartDisplayProfile> self,
     SseSerializer serializer,
   );
 
@@ -2085,8 +3334,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_conversation_identity(
+    DartConversationIdentity? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_conversation_list_snapshot(
+    DartConversationListSnapshot? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_conversation_snapshot_message(
+    DartConversationSnapshotMessage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_default_identity_change(
     DartDefaultIdentityChange? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_delegated_signing_options(
+    DartDelegatedSigningOptions? self,
     SseSerializer serializer,
   );
 
@@ -2103,8 +3376,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_dart_im_core_open_options(
+    DartImCoreOpenOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_im_core_secret_vault_options(
+    DartImCoreSecretVaultOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_inbox_auth(
+    DartInboxAuth? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_inbox_history_options(
+    DartInboxHistoryOptions? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_dart_message(
     DartMessage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_read_watermark(
+    DartReadWatermark? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_realtime_sync_hint(
+    DartRealtimeSyncHint? self,
     SseSerializer serializer,
   );
 
@@ -2176,6 +3485,40 @@ class RustLibWire implements BaseWire {
   /// The symbols are looked up in [dynamicLibrary].
   RustLibWire(ffi.DynamicLibrary dynamicLibrary)
     : _lookup = dynamicLibrary.lookup;
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_awiki_im_core_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_awiki_im_core_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSession =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartConversationPatchSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
@@ -2277,5 +3620,39 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_awiki_im_core_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_awiki_im_core_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSession =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartThreadMessagePatchSessionPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }

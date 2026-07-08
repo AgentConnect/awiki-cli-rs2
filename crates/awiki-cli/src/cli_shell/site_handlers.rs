@@ -37,6 +37,22 @@ impl App {
         self.render_site_result("awiki-cli site root get", &resolved, result)
     }
 
+    pub async fn run_site_root_get_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_root_get(command);
+        }
+        require_flags(command, &["domain"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::get_root_async(&client, string_flag(command, "domain"))
+            .await
+            .map_err(site_exit(
+                "site root get",
+                "Make sure the active identity is a configured tenant site admin for the requested domain.",
+            ))?;
+        self.render_site_result("awiki-cli site root get", &resolved, result)
+    }
+
     pub fn run_site_root_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain"])?;
         let body = required_markdown_body(command)?;
@@ -69,6 +85,23 @@ impl App {
                 "Make sure the active identity is a configured tenant site admin for the requested domain.",
             ),
         )?;
+        self.render_site_result("awiki-cli site root set", &resolved, result)
+    }
+
+    pub async fn run_site_root_set_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_root_set(command);
+        }
+        require_flags(command, &["domain"])?;
+        let body = required_markdown_body(command)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::set_root_async(&client, string_flag(command, "domain"), body)
+            .await
+            .map_err(site_exit(
+                "site root set",
+                "Make sure the active identity is a configured tenant site admin for the requested domain.",
+            ))?;
         self.render_site_result("awiki-cli site root set", &resolved, result)
     }
 
@@ -105,6 +138,22 @@ impl App {
         self.render_site_result("awiki-cli site page list", &resolved, result)
     }
 
+    pub async fn run_site_page_list_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_page_list(command);
+        }
+        require_flags(command, &["domain"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::list_pages_async(&client, string_flag(command, "domain"))
+            .await
+            .map_err(site_exit(
+                "site page list",
+                "Make sure the active identity is a configured tenant site admin for the requested domain.",
+            ))?;
+        self.render_site_result("awiki-cli site page list", &resolved, result)
+    }
+
     pub fn run_site_page_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
         let resolved = self.resolve_config_for_workspace()?;
@@ -135,6 +184,26 @@ impl App {
             string_flag(command, "domain"),
             string_flag(command, "slug"),
         )
+        .map_err(site_exit(
+            "site page get",
+            "Make sure the page exists and the active identity can access it.",
+        ))?;
+        self.render_site_result("awiki-cli site page get", &resolved, result)
+    }
+
+    pub async fn run_site_page_get_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_page_get(command);
+        }
+        require_flags(command, &["domain", "slug"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::get_page_async(
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+        )
+        .await
         .map_err(site_exit(
             "site page get",
             "Make sure the page exists and the active identity can access it.",
@@ -182,6 +251,31 @@ impl App {
         self.render_site_result("awiki-cli site page create", &resolved, result)
     }
 
+    pub async fn run_site_page_create_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_page_create(command);
+        }
+        require_flags(command, &["domain", "slug"])?;
+        let body = required_markdown_body(command)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::create_page_async(
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+            body,
+        )
+        .await
+        .map_err(site_exit(
+            "site page create",
+            "Make sure the active identity is a configured tenant site admin for the requested domain and the slug is available.",
+        ))?;
+        self.render_site_result("awiki-cli site page create", &resolved, result)
+    }
+
     pub fn run_site_page_update(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
         let body = required_markdown_body(command)?;
@@ -215,6 +309,31 @@ impl App {
             string_flag(command, "slug"),
             body,
         )
+        .map_err(site_exit(
+            "site page update",
+            "Make sure the page exists and the active identity can update it.",
+        ))?;
+        self.render_site_result("awiki-cli site page update", &resolved, result)
+    }
+
+    pub async fn run_site_page_update_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_page_update(command);
+        }
+        require_flags(command, &["domain", "slug"])?;
+        let body = required_markdown_body(command)?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::update_page_async(
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+            body,
+        )
+        .await
         .map_err(site_exit(
             "site page update",
             "Make sure the page exists and the active identity can update it.",
@@ -261,6 +380,30 @@ impl App {
         self.render_site_result("awiki-cli site page rename", &resolved, result)
     }
 
+    pub async fn run_site_page_rename_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_page_rename(command);
+        }
+        require_flags(command, &["domain", "slug", "to"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::rename_page_async(
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+            string_flag(command, "to"),
+        )
+        .await
+        .map_err(site_exit(
+            "site page rename",
+            "Make sure the source page exists and the target slug is available.",
+        ))?;
+        self.render_site_result("awiki-cli site page rename", &resolved, result)
+    }
+
     pub fn run_site_page_delete(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
         let resolved = self.resolve_config_for_workspace()?;
@@ -298,6 +441,29 @@ impl App {
         self.render_site_result("awiki-cli site page delete", &resolved, result)
     }
 
+    pub async fn run_site_page_delete_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_site_page_delete(command);
+        }
+        require_flags(command, &["domain", "slug"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let client = self.site_client_async(&resolved).await?;
+        let result = site::delete_page_async(
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+        )
+        .await
+        .map_err(site_exit(
+            "site page delete",
+            "Make sure the page exists and the active identity can delete it.",
+        ))?;
+        self.render_site_result("awiki-cli site page delete", &resolved, result)
+    }
+
     fn render_site_result(
         &self,
         command: &str,
@@ -321,6 +487,17 @@ impl App {
             resolved,
             crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
         )
+    }
+
+    async fn site_client_async(
+        &self,
+        resolved: &crate::workspace_config::Resolved,
+    ) -> Result<im_core::ImClient, ExitError> {
+        crate::m_core_cli_adapter::build_im_client_async(
+            resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await
     }
 }
 
@@ -400,6 +577,7 @@ fn site_exit(
             status_code,
             code,
             message,
+            ..
         } => service_exit(context, hint, status_code, code, message),
         err => crate::m_core_cli_adapter::map_im_error(err, context),
     }
@@ -438,6 +616,7 @@ fn service_exit(
                 status_code,
                 code,
                 message,
+                data: None,
             },
             context,
         ),

@@ -22,6 +22,13 @@ pub struct BridgeWireIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboxWireRequest {
     pub limit: i64,
+    pub auth: Option<InboxWireAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxWireAuth {
+    pub inbox_owner_did: String,
+    pub inbox_auth_verification_method: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +37,13 @@ pub struct HistoryWireRequest {
     pub limit: i64,
     pub cursor: Option<String>,
     pub skip: i64,
+    pub auth: Option<HistoryWireAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryWireAuth {
+    pub inbox_owner_did: String,
+    pub inbox_auth_verification_method: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +55,7 @@ pub struct MarkReadWireRequest {
 pub struct GroupCreateWireRequest {
     pub name: String,
     pub description: String,
+    pub avatar_uri: String,
     pub discoverability: String,
     pub admission_mode: String,
     pub message_security_profile: String,
@@ -90,6 +105,15 @@ pub fn build_direct_text_payload(
 }
 
 #[doc(hidden)]
+pub fn build_direct_json_payload(
+    sender_did: &str,
+    target_did: &str,
+    payload: Value,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::direct::build_direct_json_payload(sender_did, target_did, payload)
+}
+
+#[doc(hidden)]
 pub fn build_group_send_payload(
     sender_did: &str,
     group_did: &str,
@@ -102,6 +126,15 @@ pub fn build_group_send_payload(
         text,
         content_type,
     )
+}
+
+#[doc(hidden)]
+pub fn build_group_json_send_payload(
+    sender_did: &str,
+    group_did: &str,
+    payload: Value,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_json_send_payload(sender_did, group_did, payload)
 }
 
 #[doc(hidden)]
@@ -255,6 +288,7 @@ pub fn build_bridge_group_create_rpc_params(
         &crate::groups::GroupCreateRequest {
             name: request.name,
             description: optional_trimmed(request.description),
+            avatar_uri: optional_trimmed(request.avatar_uri),
             discoverability: crate::groups::GroupDiscoverability::parse_optional(
                 request.discoverability,
             )?,
@@ -415,6 +449,15 @@ pub fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWireRequest
         &to_internal_identity(identity),
         crate::internal::wire::inbox::InboxWireRequest {
             limit: request.limit,
+            auth: request
+                .auth
+                .map(|auth| crate::internal::wire::inbox::InboxWireAuth {
+                    inbox_owner_did: auth.inbox_owner_did,
+                    inbox_auth_verification_method: auth.inbox_auth_verification_method,
+                    service_did:
+                        crate::internal::wire::common::DEFAULT_DELEGATED_MESSAGE_SERVICE_DID
+                            .to_owned(),
+                }),
         },
     )
 }
@@ -431,6 +474,15 @@ pub fn build_history_rpc_params(
             limit: request.limit,
             cursor: request.cursor,
             skip: request.skip,
+            auth: request
+                .auth
+                .map(|auth| crate::internal::wire::history::HistoryWireAuth {
+                    inbox_owner_did: auth.inbox_owner_did,
+                    inbox_auth_verification_method: auth.inbox_auth_verification_method,
+                    service_did:
+                        crate::internal::wire::common::DEFAULT_DELEGATED_MESSAGE_SERVICE_DID
+                            .to_owned(),
+                }),
         },
     )
 }
@@ -485,6 +537,7 @@ fn signed_bridge_params(
             identity_name: identity.identity_name.clone(),
             did_document: identity.did_document.clone(),
             key1_private_pem: identity.key1_private_pem.clone(),
+            verification_method: None,
         },
         &payload,
     )?;
@@ -509,6 +562,7 @@ fn group_member_mutation_request(
             None => None,
         },
         reason_text: optional_trimmed(reason_text),
+        leave_request_id: None,
         security: crate::groups::GroupSecurityRequirement::Default,
     })
 }

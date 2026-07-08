@@ -117,12 +117,6 @@ pub struct CliImEventResult {
     pub host_notify_status_changed: bool,
 }
 
-impl im_core::realtime::RealtimeRunnerEventSink for CliRealtimeEventSink<'_> {
-    fn emit(&mut self, event: ImEvent) -> im_core::ImResult<()> {
-        CliRealtimeEventSink::emit(self, event)
-    }
-}
-
 fn update_connection_status(
     status: &mut Status,
     identity_name: Option<&str>,
@@ -247,6 +241,7 @@ fn message_content_type(message: &Message) -> String {
         .map(str::to_string)
         .unwrap_or_else(|| match &message.body {
             MessageBodyView::Text { .. } => "text/plain".to_string(),
+            MessageBodyView::Payload { .. } => "application/json".to_string(),
             MessageBodyView::Unsupported { content_type } => content_type
                 .as_ref()
                 .map(|value| value.trim())
@@ -265,6 +260,7 @@ fn host_notification_from_message_event(
         attachment_summary,
         download_action,
         warnings: _,
+        sync: _,
     } = event;
     host_notification_from_message(
         &message,
@@ -287,14 +283,15 @@ fn host_notification_from_message(
     let received_at = format_go_rfc3339(received_at.unwrap_or_else(OffsetDateTime::now_utc));
     let group_did = group_did_for_message(message);
     if !group_did.is_empty() {
+        let notification_message_id = host_group_message_id(message);
         return Some(HostNotificationEvent {
             version: HOST_NOTIFICATION_VERSION.to_string(),
-            id: message.id.as_str().to_string(),
+            id: notification_message_id.clone(),
             topic: "im.group.message.received".to_string(),
             received_at,
             data: Some(HostNotificationData::Group(GroupMessageNotificationData {
                 channel: "group".to_string(),
-                message_id: message.id.as_str().to_string(),
+                message_id: notification_message_id,
                 operation_id: message.metadata.operation_id.clone().unwrap_or_default(),
                 group_did,
                 sender_handle: sender_handle.to_string(),
@@ -353,6 +350,21 @@ fn host_notification_from_message(
             },
         )),
     })
+}
+
+fn host_group_message_id(message: &Message) -> String {
+    message_attribute(message, "raw_message_id")
+        .unwrap_or_else(|| message.id.as_str().trim().to_string())
+}
+
+fn message_attribute(message: &Message, key: &str) -> Option<String> {
+    message
+        .metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .map(|attribute| attribute.value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn host_notification_from_group_update(
@@ -425,6 +437,7 @@ fn host_notification_from_sdk_host_event(
 fn text_body(message: &Message) -> String {
     match &message.body {
         MessageBodyView::Text { text, .. } => text.clone(),
+        MessageBodyView::Payload { payload } => payload.to_string(),
         MessageBodyView::Unsupported { .. } => String::new(),
     }
 }

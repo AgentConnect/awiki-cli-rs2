@@ -5,3 +5,4 @@ pub(crate) mod local_projection;
 pub(crate) mod mark_read;
 pub(crate) mod read;
 pub(crate) mod state;
+pub(crate) mod sync;

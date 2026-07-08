@@ -17,7 +17,7 @@ fn realtime_service_api_shape_is_available_from_client_and_prelude() {
 }
 
 #[test]
-fn realtime_options_default_is_blocking_first_and_channel_ready() {
+fn realtime_options_default_is_async_session_ready() {
     let options = RealtimeOptions::default();
 
     assert_eq!(options.reconnect, ReconnectPolicy::Disabled);
@@ -32,81 +32,118 @@ fn realtime_options_default_is_blocking_first_and_channel_ready() {
     );
 }
 
-#[test]
-fn realtime_connect_and_runner_enter_transport_boundary() {
+#[tokio::test]
+async fn realtime_start_async_refreshes_missing_bearer_at_transport_boundary() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
 
-    let connect = client.realtime().connect(RealtimeOptions::default());
-    assert!(matches!(connect, Err(ImError::AuthRequired)));
-
-    let exit = client
+    let mut session = client
         .realtime()
-        .run_until_shutdown(RealtimeOptions::default(), ShutdownSignal::pending())
-        .unwrap();
-    assert_eq!(exit.reason, RealtimeExitReason::AuthFailed);
-    assert_eq!(exit.reconnect_attempts, 0);
-    assert_eq!(
-        exit.warnings,
-        vec!["authentication is required".to_string()]
+        .start_async(RealtimeOptions::default())
+        .await
+        .expect("missing bearer should not fail before DID-auth refresh boundary");
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(2), session.join())
+        .await
+        .expect("realtime worker should finish against the test endpoint")
+        .expect("realtime worker returns an exit status");
+    assert!(
+        matches!(
+            exit.reason,
+            RealtimeExitReason::TransportUnavailable | RealtimeExitReason::AuthFailed
+        ),
+        "unexpected realtime exit reason: {:?}",
+        exit.reason
     );
 }
 
-#[test]
-fn realtime_run_until_shutdown_returns_immediate_shutdown_exit() {
+#[tokio::test]
+async fn realtime_start_async_exposes_session_stream_and_keeps_validation() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
 
-    let exit = client
+    let zero_buffer = client
         .realtime()
-        .run_until_shutdown(RealtimeOptions::default(), ShutdownSignal::requested())
-        .unwrap();
-
-    assert_eq!(exit.reason, RealtimeExitReason::ShutdownRequested);
-    assert_eq!(exit.reconnect_attempts, 0);
-    assert!(exit.warnings.is_empty());
-}
-
-#[test]
-fn realtime_options_validate_without_touching_cli_runtime() {
-    let core = test_core();
-    let client = core
-        .client(IdentitySelector::LocalAlias("alice".to_string()))
-        .unwrap();
-
-    let zero_buffer = client.realtime().connect(RealtimeOptions {
-        event_buffer: 0,
-        ..RealtimeOptions::default()
-    });
+        .start_async(RealtimeOptions {
+            event_buffer: 0,
+            ..RealtimeOptions::default()
+        })
+        .await;
     assert!(matches!(
         zero_buffer,
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "event_buffer"
     ));
 
-    let bad_fixed = client.realtime().connect(RealtimeOptions {
-        reconnect: ReconnectPolicy::Fixed {
-            delay_ms: 0,
-            max_attempts: Some(1),
-        },
-        ..RealtimeOptions::default()
-    });
+    let mut refreshed_at_boundary = client
+        .realtime()
+        .start_async(RealtimeOptions::default())
+        .await
+        .expect("missing bearer should create a realtime session before refresh");
+    let exit = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        refreshed_at_boundary.join(),
+    )
+    .await
+    .expect("realtime worker should finish against the test endpoint")
+    .expect("realtime worker returns an exit status");
+    assert!(
+        matches!(
+            exit.reason,
+            RealtimeExitReason::TransportUnavailable | RealtimeExitReason::AuthFailed
+        ),
+        "unexpected realtime exit reason: {:?}",
+        exit.reason
+    );
+}
+
+#[tokio::test]
+async fn realtime_options_validate_without_touching_cli_runtime() {
+    let core = test_core();
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let zero_buffer = client
+        .realtime()
+        .start_async(RealtimeOptions {
+            event_buffer: 0,
+            ..RealtimeOptions::default()
+        })
+        .await;
+    assert!(matches!(
+        zero_buffer,
+        Err(ImError::InvalidInput { field: Some(field), .. }) if field == "event_buffer"
+    ));
+
+    let bad_fixed = client
+        .realtime()
+        .start_async(RealtimeOptions {
+            reconnect: ReconnectPolicy::Fixed {
+                delay_ms: 0,
+                max_attempts: Some(1),
+            },
+            ..RealtimeOptions::default()
+        })
+        .await;
     assert!(matches!(
         bad_fixed,
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "reconnect.delay_ms"
     ));
 
-    let bad_exponential = client.realtime().connect(RealtimeOptions {
-        reconnect: ReconnectPolicy::Exponential {
-            base_delay_ms: 5000,
-            max_delay_ms: 1000,
-            max_attempts: None,
-        },
-        ..RealtimeOptions::default()
-    });
+    let bad_exponential = client
+        .realtime()
+        .start_async(RealtimeOptions {
+            reconnect: ReconnectPolicy::Exponential {
+                base_delay_ms: 5000,
+                max_delay_ms: 1000,
+                max_attempts: None,
+            },
+            ..RealtimeOptions::default()
+        })
+        .await;
     assert!(matches!(
         bad_exponential,
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "reconnect"
@@ -121,6 +158,7 @@ fn realtime_event_dtos_do_not_require_raw_websocket_frames() {
         message_id,
         thread,
         update_kind: MessageUpdateKind::Read,
+        sync: None,
     });
     assert!(matches!(
         updated,
@@ -134,6 +172,7 @@ fn realtime_event_dtos_do_not_require_raw_websocket_frames() {
         content_type: Some("application/octet-stream".to_string()),
         notification_type: Some("attachment".to_string()),
         reason: "unsupported body".to_string(),
+        sync: None,
     });
     assert!(matches!(
         unknown,

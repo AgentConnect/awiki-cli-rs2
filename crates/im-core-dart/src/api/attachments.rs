@@ -3,34 +3,47 @@ use std::sync::Arc;
 use crate::dto::{
     attachment::{
         DartAttachmentSendRequest, DartAttachmentSendResult, DartDownloadAttachmentRequest,
-        DartDownloadedAttachment,
+        DartDownloadedAttachment, DartSendConversationAttachmentRequest,
     },
     error::DartImError,
 };
 
-pub fn send_attachment(
-    client: Arc<crate::api::client::DartImClient>,
+pub async fn send_attachment(
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartAttachmentSendRequest,
 ) -> Result<DartAttachmentSendResult, DartImError> {
-    client.with_inner(|inner| {
-        let (target, request) = request.into_core()?;
-        inner
-            .attachments()
-            .send(target, request)
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    let (target, request) = request.into_core()?;
+    inner
+        .attachments()
+        .send_async(target, request)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn download_attachment(
-    client: Arc<crate::api::client::DartImClient>,
+pub async fn send_conversation_attachment(
+    client: &Arc<crate::api::client::DartImClient>,
+    request: DartSendConversationAttachmentRequest,
+) -> Result<DartAttachmentSendResult, DartImError> {
+    let inner = client.clone_inner()?;
+    inner
+        .attachments()
+        .send_conversation_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
+pub async fn download_attachment(
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartDownloadAttachmentRequest,
 ) -> Result<DartDownloadedAttachment, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .attachments()
-            .download(request.try_into()?)
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .attachments()
+        .download_async(request.try_into()?)
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }

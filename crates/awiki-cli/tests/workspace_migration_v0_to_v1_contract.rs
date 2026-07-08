@@ -7,6 +7,77 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCHEMA_VERSION: i64 = im_core::compat::local_state::SCHEMA_VERSION;
 
+const LEGACY_V6_TABLES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS contacts (
+    owner_did       TEXT NOT NULL DEFAULT '',
+    did             TEXT NOT NULL,
+    name            TEXT,
+    handle          TEXT,
+    first_seen_at   TEXT,
+    last_seen_at    TEXT,
+    metadata        TEXT,
+    PRIMARY KEY (owner_did, did)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    msg_id          TEXT NOT NULL,
+    owner_did       TEXT NOT NULL DEFAULT '',
+    thread_id       TEXT NOT NULL,
+    direction       INTEGER NOT NULL DEFAULT 0,
+    sender_did      TEXT,
+    receiver_did    TEXT,
+    group_id        TEXT,
+    group_did       TEXT,
+    content_type    TEXT DEFAULT 'text',
+    content         TEXT,
+    title           TEXT,
+    server_seq      INTEGER,
+    sent_at         TEXT,
+    stored_at       TEXT NOT NULL,
+    is_e2ee         INTEGER DEFAULT 0,
+    is_read         INTEGER DEFAULT 0,
+    sender_name     TEXT,
+    metadata        TEXT,
+    credential_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (msg_id, owner_did)
+);
+
+CREATE TABLE IF NOT EXISTS e2ee_outbox (
+    outbox_id            TEXT PRIMARY KEY,
+    owner_did            TEXT NOT NULL DEFAULT '',
+    peer_did             TEXT NOT NULL,
+    session_id           TEXT,
+    original_type        TEXT NOT NULL DEFAULT 'text',
+    plaintext            TEXT NOT NULL,
+    local_status         TEXT NOT NULL DEFAULT 'queued',
+    attempt_count        INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    credential_name      TEXT NOT NULL DEFAULT ''
+);
+"#;
+
+const LEGACY_V11_EXTRA_TABLES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS e2ee_sessions (
+    owner_did        TEXT NOT NULL DEFAULT '',
+    peer_did         TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    is_initiator     INTEGER NOT NULL DEFAULT 0,
+    send_chain_key   TEXT NOT NULL,
+    recv_chain_key   TEXT NOT NULL,
+    send_seq         INTEGER NOT NULL DEFAULT 0,
+    recv_seq         INTEGER NOT NULL DEFAULT 0,
+    expires_at       REAL,
+    created_at       TEXT NOT NULL,
+    active_at        TEXT,
+    peer_confirmed   INTEGER NOT NULL DEFAULT 0,
+    credential_name  TEXT NOT NULL DEFAULT '',
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (owner_did, peer_did),
+    UNIQUE (owner_did, session_id)
+);
+"#;
+
 #[test]
 fn refresh_resolved_config_syncs_mail_service_url_from_config() {
     let workspace = TempDir::new("workspace-upgrade-refresh-mail").expect("temp workspace");
@@ -133,7 +204,8 @@ fn ensure_target_store_schema_matches_go_helper_boundary() {
     );
     assert_table_exists(&verify, "messages");
     assert_table_exists(&verify, "contact_handle_bindings");
-    assert_table_exists(&verify, "e2ee_sessions");
+    assert_table_exists(&verify, "direct_e2ee_sessions");
+    assert_table_exists(&verify, "identity_did_history");
 }
 
 #[test]
@@ -181,7 +253,7 @@ fn ensure_target_store_schema_reuses_store_version_errors() {
         .expect_err("old schema should fail");
     assert_eq!(
         err.to_string(),
-        "sqlite schema version 5 is too old for in-place upgrade"
+        format!("sqlite schema version 5 requires owner-identity migration before schema {SCHEMA_VERSION}")
     );
 }
 
@@ -305,9 +377,11 @@ fn workspace_v0_to_v1_validate_requires_imported_identity_after_legacy_detection
     let workspace = TempDir::new("workspace-v0-v1-validate-identity").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.3");
-    let mut detection = workspace_upgrade::Detection::default();
-    detection.has_workspace = false;
-    detection.legacy_identity_exists = true;
+    let detection = workspace_upgrade::Detection {
+        has_workspace: false,
+        legacy_identity_exists: true,
+        ..Default::default()
+    };
     context.inspection = Some(workspace_upgrade::Inspection {
         paths: context.paths.clone(),
         detection,
@@ -850,6 +924,8 @@ fn test_resolved(root: &Path) -> workspace_config::Resolved {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: "https://awiki.ai".to_string(),
+        user_service_endpoint: "https://awiki.ai".to_string(),
+        message_service_endpoint: "https://awiki.ai".to_string(),
         did_domain: "awiki.ai".to_string(),
         anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
         anp_service_did: "did:wba:awiki.ai".to_string(),
@@ -1008,7 +1084,12 @@ fn seed_current_legacy_db_message(
     legacy_paths.database_file = path_string(&legacy_db);
     {
         let db = open_local_state(&legacy_paths).expect("open legacy db");
-        ensure_local_state_schema(&db).expect("ensure legacy schema");
+        db.execute_batch(LEGACY_V6_TABLES_SQL)
+            .expect("create legacy v6 schema");
+        db.execute_batch(LEGACY_V11_EXTRA_TABLES_SQL)
+            .expect("create legacy v11 schema");
+        db.pragma_update(None, "user_version", 11)
+            .expect("set legacy schema version");
         db.execute(
             r#"
 INSERT INTO messages (

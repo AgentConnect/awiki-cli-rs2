@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -18,11 +18,7 @@ pub(crate) struct GroupLifecycleCredentials {
     pub key1_private_pem: String,
 }
 
-impl<'a, P, T> GroupLifecycleRuntime<'a, P, T>
-where
-    P: SessionProvider,
-    T: AuthenticatedRpcTransport,
-{
+impl<'a, P, T> GroupLifecycleRuntime<'a, P, T> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
         session_provider: P,
@@ -34,7 +30,13 @@ where
             transport,
         }
     }
+}
 
+impl<'a, P, T> GroupLifecycleRuntime<'a, P, T>
+where
+    P: SessionProvider,
+    T: AuthenticatedRpcTransport,
+{
     pub(crate) fn create(
         mut self,
         request: crate::groups::GroupCreateRequest,
@@ -158,6 +160,7 @@ where
                 identity_name: credentials.identity_name,
                 did_document: credentials.did_document,
                 key1_private_pem: credentials.key1_private_pem,
+                verification_method: None,
             },
             &payload,
         )?;
@@ -178,15 +181,159 @@ where
     }
 }
 
+impl<'a, P, T> GroupLifecycleRuntime<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    pub(crate) async fn create_async(
+        mut self,
+        request: crate::groups::GroupCreateRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let service_did = self
+            .client
+            .core_inner()
+            .sdk_config()
+            .anp_service_did
+            .as_ref()
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("anp_service_did".to_string()),
+                    "group create requires ImCoreConfig.anp_service_did",
+                )
+            })?;
+        let payload = crate::internal::wire::group::build_group_create_payload(
+            self.client.did().as_str(),
+            &request,
+            service_did,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    pub(crate) async fn join_async(
+        mut self,
+        request: crate::groups::GroupJoinRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_join_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    pub(crate) async fn leave_async(
+        mut self,
+        request: crate::groups::GroupLeaveRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_leave_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    pub(crate) async fn add_member_async(
+        mut self,
+        request: crate::groups::GroupMemberMutationRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_add_member_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    pub(crate) async fn remove_member_async(
+        mut self,
+        request: crate::groups::GroupMemberMutationRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_remove_member_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    pub(crate) async fn update_profile_async(
+        mut self,
+        request: crate::groups::GroupUpdateProfileRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_update_profile_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    pub(crate) async fn update_policy_async(
+        mut self,
+        request: crate::groups::GroupUpdatePolicyRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_update_policy_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
+    async fn ensure_group_session_async(&self) -> crate::ImResult<crate::auth::SessionBundle> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await
+    }
+
+    async fn signed_group_rpc_async(
+        &mut self,
+        payload: crate::internal::wire::direct::DirectPayload,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        let credentials = match credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let origin_proof = crate::internal::proof::origin::build_origin_proof(
+            &crate::internal::proof::origin::OriginProofIdentity {
+                identity_name: credentials.identity_name,
+                did_document: credentials.did_document,
+                key1_private_pem: credentials.key1_private_pem,
+                verification_method: None,
+            },
+            &payload,
+        )?;
+        let params = serde_json::json!({
+            "meta": payload.meta,
+            "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
+            "body": payload.body,
+        });
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
+            .await?;
+        Ok(crate::groups::GroupReadResult::from_raw_response(
+            raw,
+            Vec::new(),
+        ))
+    }
+}
+
 fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLifecycleCredentials> {
     let runtime = client.runtime();
-    let did_document = read_optional_json(&runtime.did_document_path)?;
-    let key1_private_pem = std::fs::read_to_string(&runtime.private_key_path).map_err(|err| {
-        crate::ImError::CredentialFileUnreadable {
-            path_kind: "private_key".to_string(),
-            detail: err.to_string(),
-        }
-    })?;
+    let did_document = runtime.key_provider.optional_did_document()?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
     Ok(GroupLifecycleCredentials {
         identity_name: runtime.owner.identity_id.as_str().to_string(),
         did_document,
@@ -194,22 +341,17 @@ fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupLife
     })
 }
 
-fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(crate::ImError::CredentialFileUnreadable {
-                path_kind: "did_document".to_string(),
-                detail: err.to_string(),
-            });
-        }
-    };
-    serde_json::from_slice(&raw)
-        .map(Some)
-        .map_err(|err| crate::ImError::Serialization {
-            detail: err.to_string(),
-        })
+async fn load_credentials_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<GroupLifecycleCredentials> {
+    let runtime = client.runtime();
+    let did_document = runtime.key_provider.optional_did_document()?;
+    let key1_private_pem = runtime.key_provider.default_signing_private_pem()?;
+    Ok(GroupLifecycleCredentials {
+        identity_name: runtime.owner.identity_id.as_str().to_string(),
+        did_document,
+        key1_private_pem,
+    })
 }
 
 #[cfg(test)]
@@ -243,6 +385,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
                 description: Some(" group description ".to_string()),
+                avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
                 admission_mode: Some(crate::groups::GroupAdmissionMode::OpenJoin),
                 message_security_profile: Some(
@@ -313,6 +456,10 @@ mod tests {
             "Demo Group"
         );
         assert_eq!(
+            calls[0].params["body"]["group_profile"]["avatar_uri"],
+            "https://example.test/group.png"
+        );
+        assert_eq!(
             calls[0].params["body"]["group_policy"]["message_security_profile"],
             "transport-protected"
         );
@@ -334,6 +481,169 @@ mod tests {
         assert_eq!(calls[2].params["body"], json!({}));
     }
 
+    #[tokio::test]
+    async fn group_lifecycle_runtime_builds_create_join_and_leave_rpc_async() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let credentials = fixture.credentials();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"group_did":"did:example:group"}),
+            },
+        )
+        .create_async(
+            crate::groups::GroupCreateRequest {
+                name: "  Demo Group  ".to_string(),
+                description: Some(" group description ".to_string()),
+                avatar_uri: Some(" https://example.test/group.png ".to_string()),
+                discoverability: Some(crate::groups::GroupDiscoverability::Public),
+                admission_mode: Some(crate::groups::GroupAdmissionMode::OpenJoin),
+                message_security_profile: Some(
+                    crate::groups::GroupMessageSecurityProfile::TransportProtected,
+                ),
+                security: crate::groups::GroupSecurityRequirement::Default,
+                e2ee: false,
+                slug: Some(" demo ".to_string()),
+                goal: Some("ship".to_string()),
+                rules: Some("be kind".to_string()),
+                message_prompt: Some("reply clearly".to_string()),
+                doc_url: Some("https://example.test/group".to_string()),
+                attachments_allowed: Some(true),
+                max_members: Some(crate::groups::GroupMemberLimit::new(500).unwrap()),
+                member_max_messages: Some(25),
+                member_max_total_chars: Some(2048),
+            },
+            Some(credentials.clone()),
+        )
+        .await
+        .unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"group_did":"did:example:group"}),
+            },
+        )
+        .join_async(
+            crate::groups::GroupJoinRequest {
+                group: group.clone(),
+                reason_text: Some("  hello  ".to_string()),
+            },
+            Some(credentials.clone()),
+        )
+        .await
+        .unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"left":true}),
+            },
+        )
+        .leave_async(
+            crate::groups::GroupLeaveRequest {
+                group,
+                reason_text: None,
+                security: crate::groups::GroupSecurityRequirement::Default,
+            },
+            Some(credentials),
+        )
+        .await
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].method, "group.create");
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].params["meta"]["profile"], "anp.group.base.v1");
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind":"service","did":"did:example:service"})
+        );
+        assert_eq!(
+            calls[0].params["body"]["group_profile"]["display_name"],
+            "Demo Group"
+        );
+        assert_eq!(
+            calls[0].params["body"]["group_profile"]["avatar_uri"],
+            "https://example.test/group.png"
+        );
+        assert_eq!(
+            calls[0].params["body"]["group_policy"]["message_security_profile"],
+            "transport-protected"
+        );
+        assert_eq!(
+            calls[0].params["auth"]["scheme"],
+            crate::internal::proof::origin::ORIGIN_PROOF_SCHEME
+        );
+        assert_eq!(calls[1].method, "group.join");
+        assert_eq!(calls[1].params["body"]["reason_text"], "hello");
+        assert_eq!(
+            calls[1].params["meta"]["target"],
+            json!({"kind":"group","did":"did:example:group"})
+        );
+        assert_eq!(calls[2].method, "group.leave");
+        assert_eq!(calls[2].params["body"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn group_lifecycle_async_requires_service_did_for_create() {
+        let fixture = Fixture::new();
+        let client = fixture.client_with_service_did(None);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let error = GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"group_did":"did:example:group"}),
+            },
+        )
+        .create_async(
+            crate::groups::GroupCreateRequest {
+                name: "Demo Group".to_string(),
+                description: None,
+                avatar_uri: None,
+                discoverability: None,
+                admission_mode: None,
+                message_security_profile: None,
+                security: crate::groups::GroupSecurityRequirement::Default,
+                e2ee: false,
+                slug: None,
+                goal: None,
+                rules: None,
+                message_prompt: None,
+                doc_url: None,
+                attachments_allowed: None,
+                max_members: None,
+                member_max_messages: None,
+                member_max_total_chars: None,
+            },
+            Some(fixture.credentials()),
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            crate::ImError::InvalidInput { field, .. } => {
+                assert_eq!(field.as_deref(), Some("anp_service_did"));
+            }
+            other => panic!("expected invalid input for service DID, got {other:?}"),
+        }
+        assert!(calls.borrow().is_empty());
+    }
+
     #[test]
     fn group_lifecycle_rejects_group_e2ee_create_until_phase6() {
         let fixture = Fixture::new();
@@ -352,6 +662,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
                 description: None,
+                avatar_uri: None,
                 discoverability: None,
                 admission_mode: None,
                 message_security_profile: None,
@@ -402,6 +713,7 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
                 description: None,
+                avatar_uri: None,
                 discoverability: None,
                 admission_mode: None,
                 message_security_profile: Some(
@@ -455,6 +767,7 @@ mod tests {
                 member: crate::groups::GroupMemberRef::from(member.clone()),
                 role: Some(crate::groups::GroupMemberRole::Admin),
                 reason_text: Some(" invite ".to_string()),
+                leave_request_id: None,
                 security: crate::groups::GroupSecurityRequirement::Default,
             },
             Some(credentials.clone()),
@@ -477,6 +790,7 @@ mod tests {
                     "ignored".to_string(),
                 )),
                 reason_text: Some(" cleanup ".to_string()),
+                leave_request_id: None,
                 security: crate::groups::GroupSecurityRequirement::Default,
             },
             Some(credentials.clone()),
@@ -497,6 +811,7 @@ mod tests {
                 patch: crate::groups::GroupProfilePatch {
                     name: Some(" Renamed ".to_string()),
                     description: Some(" updated ".to_string()),
+                    avatar_uri: Some(" https://example.test/new.png ".to_string()),
                     ..crate::groups::GroupProfilePatch::default()
                 },
             },
@@ -549,7 +864,11 @@ mod tests {
         assert_eq!(calls[2].method, "group.update_profile");
         assert_eq!(
             calls[2].params["body"]["group_profile_patch"],
-            json!({"display_name":"Renamed","description":"updated"})
+            json!({
+                "display_name": "Renamed",
+                "description": "updated",
+                "avatar_uri": "https://example.test/new.png",
+            })
         );
         assert_eq!(calls[3].method, "group.update_policy");
         let policy = &calls[3].params["body"]["group_policy_patch"];
@@ -576,6 +895,7 @@ mod tests {
                 scope,
                 expires_at: None,
                 refreshed: false,
+                bearer_token: None,
             })
         }
 
@@ -588,6 +908,30 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadyGroupSessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            assert_eq!(scope, crate::auth::AuthScope::GroupMessaging);
+            Ok(crate::auth::SessionBundle {
+                subject: crate::ids::Did::parse("did:example:alice")?,
+                scope,
+                expires_at: None,
+                refreshed: false,
+                bearer_token: None,
+            })
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("group lifecycle runtime should not refresh through the session provider")
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("group lifecycle runtime should not read status")
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
@@ -595,6 +939,22 @@ mod tests {
 
     impl AuthenticatedRpcTransport for RecordingTransport {
         fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            self.calls.borrow_mut().push(RecordedCall {
+                endpoint: endpoint.to_string(),
+                method: method.to_string(),
+                params,
+            });
+            Ok(self.response.clone())
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
             &mut self,
             endpoint: &str,
             method: &str,
@@ -645,6 +1005,15 @@ mod tests {
         }
 
         fn client(&self) -> crate::core::ImClient {
+            self.client_with_service_did(Some(
+                crate::ids::Did::parse("did:example:service").unwrap(),
+            ))
+        }
+
+        fn client_with_service_did(
+            &self,
+            anp_service_did: Option<crate::ids::Did>,
+        ) -> crate::core::ImClient {
             crate::core::ImCore::new(
                 crate::ImCoreConfig {
                     service_base_url: crate::ServiceEndpoint::parse("https://example.test")
@@ -654,7 +1023,7 @@ mod tests {
                     message_service_endpoint: None,
                     mail_service_endpoint: None,
                     anp_service_endpoint: None,
-                    anp_service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                    anp_service_did,
                     ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },

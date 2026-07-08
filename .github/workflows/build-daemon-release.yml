@@ -39,13 +39,13 @@ jobs:
 
     steps:
       - name: Checkout awiki-cli-rs2
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source_ref }}
           path: awiki-cli-rs2
 
       - name: Checkout ANP SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: agent-network-protocol/anp
           ref: master
@@ -101,7 +101,7 @@ jobs:
             --dist dist/daemon-release
 
       - name: Upload daemon archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: awiki-deamon-${{ matrix.os_name }}-${{ matrix.arch_name }}
           path: awiki-cli-rs2/dist/daemon-release/awiki-deamon-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz

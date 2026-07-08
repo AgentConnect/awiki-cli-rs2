@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::dto::{
     attachment::{
         DartAttachmentDestination, DartAttachmentInput, DartAttachmentSendRequest,
-        DartDownloadAttachmentRequest,
+        DartDownloadAttachmentRequest, DartSendConversationAttachmentRequest,
     },
     auth::DartAuthScope,
     config::{DartImCoreConfig, DartImCorePaths, DartMessageTransportPolicy},
@@ -12,7 +12,14 @@ use crate::dto::{
     error::DartImError,
     group::DartCreateGroupRequest,
     identity::DartIdentitySelector,
-    message::{DartMessageSecurityMode, DartMessageTarget, DartSendTextRequest, DartThreadRef},
+    message::{
+        DartConversationReadRef, DartDelegatedSigningOptions, DartInboxAuth,
+        DartInboxHistoryOptions, DartMarkConversationReadRequest, DartMessageSecurityMode,
+        DartMessageTarget, DartScopedInboxToken, DartSendConversationPayloadRequest,
+        DartSendConversationTextRequest, DartSendPayloadRequest, DartSendTextRequest,
+        DartSyncConversationAfterRequest, DartSyncDeltaRequest, DartSyncThreadAfterRequest,
+        DartThreadRef,
+    },
     profile::DartProfilePatch,
     realtime::DartRealtimeOptions,
 };
@@ -151,6 +158,72 @@ impl TryFrom<DartImCorePaths> for im_core::ImCorePaths {
     }
 }
 
+impl TryFrom<crate::dto::config::DartImCoreOpenOptions> for im_core::ImCoreOpenOptions {
+    type Error = DartImError;
+
+    fn try_from(value: crate::dto::config::DartImCoreOpenOptions) -> Result<Self, Self::Error> {
+        let mut options = im_core::ImCoreOpenOptions {
+            identity_secret_storage_policy: value.identity_secret_storage_policy.into(),
+            identity_secret_vault: None,
+        };
+        if let Some(vault) = value.identity_secret_vault {
+            options.identity_secret_vault = Some(vault.try_into()?);
+        }
+        Ok(options)
+    }
+}
+
+impl From<crate::dto::config::DartIdentitySecretStoragePolicy>
+    for im_core::IdentitySecretStoragePolicy
+{
+    fn from(value: crate::dto::config::DartIdentitySecretStoragePolicy) -> Self {
+        match value {
+            crate::dto::config::DartIdentitySecretStoragePolicy::FileCompat => Self::FileCompat,
+            crate::dto::config::DartIdentitySecretStoragePolicy::VaultPreferred => {
+                Self::VaultPreferred
+            }
+            crate::dto::config::DartIdentitySecretStoragePolicy::VaultRequired => {
+                Self::VaultRequired
+            }
+        }
+    }
+}
+
+impl TryFrom<crate::dto::config::DartImCoreSecretVaultOptions>
+    for im_core::ImCoreSecretVaultOptions
+{
+    type Error = DartImError;
+
+    fn try_from(
+        value: crate::dto::config::DartImCoreSecretVaultOptions,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self::new(
+            value.root_key.try_into()?,
+            PathBuf::from(value.vault_dir),
+            value.workspace_id,
+            value.device_id,
+        ))
+    }
+}
+
+impl TryFrom<crate::dto::config::DartDeviceVaultRootKey> for im_core::vault::DeviceVaultRootKey {
+    type Error = DartImError;
+
+    fn try_from(value: crate::dto::config::DartDeviceVaultRootKey) -> Result<Self, Self::Error> {
+        let bytes: [u8; im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN] =
+            value.bytes.try_into().map_err(|_| {
+                DartImError::invalid_input(
+                    Some("root_key".to_string()),
+                    format!(
+                        "device vault root key must be {} bytes",
+                        im_core::vault::DEVICE_VAULT_ROOT_KEY_LEN
+                    ),
+                )
+            })?;
+        Ok(Self::from_bytes(bytes))
+    }
+}
+
 impl TryFrom<DartIdentitySelector> for im_core::identity::IdentitySelector {
     type Error = DartImError;
 
@@ -261,15 +334,60 @@ impl DartAttachmentSendRequest {
             im_core::attachments::AttachmentSendRequest {
                 input: self.input.try_into()?,
                 caption: self.caption,
+                mention_payload: parse_optional_json(
+                    "mention_payload_json",
+                    self.mention_payload_json,
+                )?,
                 mime_type: self.mime_type,
                 filename: self.filename,
                 delivery: im_core::messages::MessageDeliveryOptions {
                     idempotency_key: self.idempotency_key,
                     wait_for_final_acceptance: self.wait_for_final_acceptance,
                 },
+                security: self.security.into(),
             },
         ))
     }
+}
+
+impl TryFrom<DartSendConversationAttachmentRequest>
+    for im_core::attachments::SendConversationAttachmentRequest
+{
+    type Error = DartImError;
+
+    fn try_from(value: DartSendConversationAttachmentRequest) -> Result<Self, Self::Error> {
+        let mention_payload =
+            parse_optional_json("mention_payload_json", value.mention_payload_json)?;
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            input: value.input.try_into()?,
+            caption: value.caption,
+            mention_payload,
+            mime_type: value.mime_type,
+            filename: value.filename,
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            idempotency_key: value.idempotency_key,
+            wait_for_final_acceptance: value.wait_for_final_acceptance,
+        })
+    }
+}
+
+fn parse_optional_json(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<serde_json::Value>, DartImError> {
+    value
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(&text).map_err(|err| {
+                im_core::ImError::invalid_input(Some(field.to_string()), err.to_string()).into()
+            })
+        })
+        .transpose()
 }
 
 impl TryFrom<DartDownloadAttachmentRequest> for im_core::attachments::DownloadAttachmentRequest {
@@ -323,8 +441,209 @@ impl TryFrom<DartSendTextRequest> for im_core::messages::SendMessageRequest {
                 idempotency_key: value.idempotency_key,
                 wait_for_final_acceptance: value.wait_for_final_acceptance,
             },
+            delegated_signing: value.delegated_signing.map(Into::into),
         })
     }
+}
+
+impl TryFrom<DartSendPayloadRequest> for im_core::messages::SendMessageRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSendPayloadRequest) -> Result<Self, Self::Error> {
+        let payload = parse_payload_json(value.payload_json)?;
+        Ok(Self {
+            target: value.target.try_into()?,
+            body: im_core::messages::MessageBody::Payload { payload },
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            delivery: im_core::messages::MessageDeliveryOptions {
+                idempotency_key: value.idempotency_key,
+                wait_for_final_acceptance: value.wait_for_final_acceptance,
+            },
+            delegated_signing: value.delegated_signing.map(Into::into),
+        })
+    }
+}
+
+impl TryFrom<DartSendConversationTextRequest> for im_core::messages::SendConversationTextRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSendConversationTextRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            text: value.text,
+            markdown: value.markdown,
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            idempotency_key: value.idempotency_key,
+            wait_for_final_acceptance: value.wait_for_final_acceptance,
+            delegated_signing: value.delegated_signing.map(Into::into),
+        })
+    }
+}
+
+impl TryFrom<DartSendConversationPayloadRequest>
+    for im_core::messages::SendConversationPayloadRequest
+{
+    type Error = DartImError;
+
+    fn try_from(value: DartSendConversationPayloadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            payload: parse_payload_json(value.payload_json)?,
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            idempotency_key: value.idempotency_key,
+            wait_for_final_acceptance: value.wait_for_final_acceptance,
+            delegated_signing: value.delegated_signing.map(Into::into),
+        })
+    }
+}
+
+fn parse_payload_json(value: String) -> Result<serde_json::Value, DartImError> {
+    let payload: serde_json::Value = serde_json::from_str(&value).map_err(|err| {
+        DartImError::invalid_input(
+            Some("payload_json".to_string()),
+            format!("payload_json must be a JSON object: {err}"),
+        )
+    })?;
+    if !payload.is_object() {
+        return Err(DartImError::invalid_input(
+            Some("payload_json".to_string()),
+            "payload_json must be a JSON object",
+        ));
+    }
+    Ok(payload)
+}
+
+impl From<DartDelegatedSigningOptions> for im_core::messages::DelegatedSigningOptions {
+    fn from(value: DartDelegatedSigningOptions) -> Self {
+        Self {
+            logical_sender_did: value.logical_sender_did,
+            signing_verification_method: value.signing_verification_method,
+            signing_key_ref: value.signing_key_ref,
+            actor_agent_did: value.actor_agent_did,
+        }
+    }
+}
+
+impl From<DartInboxHistoryOptions> for im_core::messages::InboxHistoryOptions {
+    fn from(value: DartInboxHistoryOptions) -> Self {
+        Self {
+            inbox_owner_did: value.inbox_owner_did,
+            inbox_auth_verification_method: value.inbox_auth_verification_method,
+            inbox_auth_key_ref: value.inbox_auth_key_ref,
+            inbox_auth: value.inbox_auth.map(Into::into),
+        }
+    }
+}
+
+impl From<DartInboxAuth> for im_core::messages::InboxAuth {
+    fn from(value: DartInboxAuth) -> Self {
+        match value {
+            DartInboxAuth::ScopedInboxToken { token } => Self::ScopedInboxToken {
+                token: token.into(),
+            },
+        }
+    }
+}
+
+impl From<DartScopedInboxToken> for im_core::messages::ScopedInboxToken {
+    fn from(value: DartScopedInboxToken) -> Self {
+        Self { token: value.token }
+    }
+}
+
+impl From<DartSyncDeltaRequest> for im_core::messages::SyncDeltaRequest {
+    fn from(value: DartSyncDeltaRequest) -> Self {
+        Self {
+            limit: value.limit,
+            device_id: value.device_id,
+            reason: value.reason,
+        }
+    }
+}
+
+impl TryFrom<DartSyncThreadAfterRequest> for im_core::messages::SyncThreadAfterRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSyncThreadAfterRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread: value.thread.try_into()?,
+            after_server_seq: value.after_server_seq,
+            limit: value.limit,
+        })
+    }
+}
+
+impl TryFrom<DartConversationReadRef> for im_core::messages::ConversationReadRef {
+    type Error = DartImError;
+
+    fn try_from(value: DartConversationReadRef) -> Result<Self, Self::Error> {
+        im_core::messages::ConversationReadRef::new(value.conversation_id).map_err(Into::into)
+    }
+}
+
+impl TryFrom<DartMarkConversationReadRequest> for im_core::messages::MarkConversationReadRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartMarkConversationReadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            watermark: value
+                .watermark
+                .map(dart_read_watermark_to_core)
+                .transpose()
+                .map_err(DartImError::from)?,
+            fallback_max_message_ids: value.fallback_max_message_ids,
+        })
+    }
+}
+
+impl TryFrom<DartSyncConversationAfterRequest> for im_core::messages::SyncConversationAfterRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSyncConversationAfterRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            conversation: value.conversation.try_into()?,
+            after_server_seq: value.after_server_seq,
+            limit: value.limit,
+        })
+    }
+}
+
+fn dart_read_watermark_to_core(
+    value: crate::dto::message::DartReadWatermark,
+) -> im_core::ImResult<im_core::messages::ReadWatermark> {
+    Ok(im_core::messages::ReadWatermark {
+        last_read_message_id: value
+            .last_read_message_id
+            .map(im_core::ids::MessageId::parse)
+            .transpose()?,
+        last_read_thread_seq: value.last_read_thread_seq,
+        read_at: value
+            .read_at
+            .map(|value| {
+                chrono::DateTime::parse_from_rfc3339(value.trim())
+                    .map(|value| value.with_timezone(&chrono::Utc))
+                    .map_err(|err| {
+                        im_core::ImError::invalid_input(Some("read_at".to_owned()), err.to_string())
+                    })
+            })
+            .transpose()?,
+    })
 }
 
 impl DartCreateGroupRequest {
@@ -332,6 +651,7 @@ impl DartCreateGroupRequest {
         Ok(im_core::groups::GroupCreateRequest {
             name: self.name,
             description: self.description,
+            avatar_uri: self.avatar_uri,
             discoverability: match self.discoverability {
                 Some(value) => Some(
                     im_core::groups::GroupDiscoverability::parse(value)
@@ -379,6 +699,8 @@ impl From<DartProfilePatch> for im_core::identity::ProfilePatch {
             bio: value.bio,
             tags: value.tags,
             markdown: value.markdown,
+            avatar_uri: value.avatar_uri,
+            avatar_url: value.avatar_url,
         }
     }
 }

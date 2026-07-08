@@ -38,6 +38,7 @@ fn secure_direct_and_group_e2ee_security_modes_can_construct() {
     assert!(matches!(required, MessageSecurityMode::E2eeRequired));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn message_security_mode_mismatches_fail_closed() {
     let core = test_core();
@@ -55,8 +56,12 @@ fn message_security_mode_mismatches_fail_closed() {
         security: MessageSecurityMode::SecureDirect,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
-    assert!(matches!(secure, Err(ImError::AuthRequired)));
+    assert!(matches!(
+        secure,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+    ));
 
     let group_e2ee = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(peer),
@@ -67,6 +72,7 @@ fn message_security_mode_mismatches_fail_closed() {
         security: MessageSecurityMode::GroupE2ee,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
     assert!(matches!(
         group_e2ee,
@@ -78,20 +84,24 @@ fn message_security_mode_mismatches_fail_closed() {
         body: MessageBody::Attachment {
             input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
             caption: None,
+            mention_payload: None,
             mime_type: None,
+            filename: None,
         },
         security: MessageSecurityMode::Plain,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
     assert!(matches!(
         attachment,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "attachments"
+        Err(ImError::InvalidInput { field: Some(field), .. }) if field == "service_did"
     ));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
-fn e2ee_required_attachment_reports_secure_attachment_boundary() {
+fn e2ee_required_attachment_routes_to_secure_path_without_plain_fallback() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
@@ -102,19 +112,23 @@ fn e2ee_required_attachment_reports_secure_attachment_boundary() {
         body: MessageBody::Attachment {
             input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
             caption: None,
+            mention_payload: None,
             mime_type: None,
+            filename: None,
         },
         security: MessageSecurityPolicy::E2eeRequired,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
 
     assert!(matches!(
         result,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "secure-attachments"
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
     ));
 }
 
+#[cfg(not(feature = "blocking"))]
 #[test]
 fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
     let core = test_core();
@@ -132,9 +146,13 @@ fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
         security: MessageSecurityPolicy::E2eeRequired,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
 
-    assert!(matches!(result, Err(ImError::AuthRequired)));
+    assert!(matches!(
+        result,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+    ));
 }
 
 #[test]
@@ -154,6 +172,7 @@ fn empty_text_returns_invalid_input() {
         security: MessageSecurityMode::Plain,
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
+        delegated_signing: None,
     });
 
     assert!(matches!(

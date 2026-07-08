@@ -34,6 +34,7 @@ const DEFAULT_OPENCLAW_AGENT_ID: &str = "main";
 const DEFAULT_OPENCLAW_HOOK_NAME: &str = "AWiki";
 const DEFAULT_HERMES_NOTIFY_URL: &str = "http://127.0.0.1:8765/notify/host-event";
 const DEFAULT_HERMES_DELIVER_TARGET: &str = "feishu";
+const DEFAULT_IDENTITY_SECRET_STORAGE_MODE: &str = "vault_required";
 pub const CONFIG_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, Default)]
@@ -106,6 +107,8 @@ pub struct Resolved {
     pub output_format: String,
     pub no_color: bool,
     pub service_base_url: String,
+    pub user_service_endpoint: String,
+    pub message_service_endpoint: String,
     pub did_domain: String,
     pub anp_service_endpoint: String,
     pub anp_service_did: String,
@@ -121,6 +124,17 @@ pub struct Resolved {
     pub sources: BTreeMap<String, ValueSource>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedSecretStorage {
+    pub mode: String,
+    pub vault_dir: String,
+    pub workspace_id: String,
+    pub device_id: String,
+    pub root_key_env: String,
+    pub root_key_available: bool,
+    pub root_key_source: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct FileConfig {
     #[serde(default)]
@@ -132,9 +146,23 @@ pub struct FileConfig {
     #[serde(default)]
     pub output: OutputConfig,
     #[serde(default)]
+    pub secret_storage: SecretStorageConfig,
+    #[serde(default)]
     pub services: ServicesConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct SecretStorageConfig {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub vault_dir: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    #[serde(default)]
+    pub device_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -219,6 +247,10 @@ pub struct ServicesConfig {
     #[serde(default)]
     pub service_base_url: String,
     #[serde(default)]
+    pub user_service_endpoint: String,
+    #[serde(default)]
+    pub message_service_endpoint: String,
+    #[serde(default)]
     pub did_domain: String,
     #[serde(default)]
     pub anp_service_endpoint: String,
@@ -285,6 +317,7 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
         DEFAULT_OUTPUT_FORMAT,
     );
     sources.insert("output_format".to_string(), output_source);
+    resolve_secret_storage_from_config(&paths, &file_config.secret_storage, &mut sources)?;
     let (service_base_url, service_source) = choose_value(
         "",
         false,
@@ -298,6 +331,18 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             value: service_base_url.clone(),
             ..service_source
         },
+    );
+    let user_service_endpoint = resolve_service_endpoint_field(
+        "user_service_endpoint",
+        &file_config.services.user_service_endpoint,
+        &service_base_url,
+        &mut sources,
+    );
+    let message_service_endpoint = resolve_service_endpoint_field(
+        "message_service_endpoint",
+        &file_config.services.message_service_endpoint,
+        &service_base_url,
+        &mut sources,
     );
     let (did_domain, did_source) = choose_value(
         "",
@@ -408,6 +453,8 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
         output_format,
         no_color: file_config.output.no_color.unwrap_or(false),
         service_base_url,
+        user_service_endpoint,
+        message_service_endpoint,
         did_domain,
         anp_service_endpoint: anp_endpoint,
         anp_service_did: anp_did,
@@ -423,7 +470,16 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
 }
 
 pub fn snapshot(resolved: &Resolved) -> Value {
-    serde_json::to_value(resolved).unwrap_or_else(|_| json!({}))
+    let mut value = serde_json::to_value(resolved).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        if let Ok(secret_storage) = resolve_secret_storage(resolved) {
+            object.insert(
+                "secret_storage".to_string(),
+                serde_json::to_value(secret_storage).unwrap_or_else(|_| json!({})),
+            );
+        }
+    }
+    value
 }
 
 pub(crate) fn read_file_config(path: &str) -> (FileConfig, bool, String) {
@@ -685,7 +741,19 @@ fn set_config_value(config: &mut FileConfig, path: &[String], value: &str) {
         }
         ["output", "format"] => config.output.format = value.to_string(),
         ["output", "no_color"] => config.output.no_color = parse_bool(value),
+        ["secret_storage", "mode"] => config.secret_storage.mode = value.to_string(),
+        ["secret_storage", "vault_dir"] => config.secret_storage.vault_dir = value.to_string(),
+        ["secret_storage", "workspace_id"] => {
+            config.secret_storage.workspace_id = value.to_string()
+        }
+        ["secret_storage", "device_id"] => config.secret_storage.device_id = value.to_string(),
         ["services", "service_base_url"] => config.services.service_base_url = value.to_string(),
+        ["services", "user_service_endpoint"] => {
+            config.services.user_service_endpoint = value.to_string()
+        }
+        ["services", "message_service_endpoint"] => {
+            config.services.message_service_endpoint = value.to_string()
+        }
         ["services", "did_domain"] => config.services.did_domain = value.to_string(),
         ["services", "anp_service_endpoint"] => {
             config.services.anp_service_endpoint = value.to_string()
@@ -814,12 +882,42 @@ fn choose_value(
     )
 }
 
+fn resolve_service_endpoint_field(
+    key: &'static str,
+    file_value: &str,
+    service_base_url: &str,
+    sources: &mut BTreeMap<String, ValueSource>,
+) -> String {
+    if file_value.trim().is_empty() {
+        let value = service_base_url.to_string();
+        sources.insert(
+            key.to_string(),
+            ValueSource {
+                source: "derived_default".to_string(),
+                key: "service_base_url".to_string(),
+                value: value.clone(),
+            },
+        );
+        return value;
+    }
+    let value = normalize_base_url(file_value);
+    sources.insert(
+        key.to_string(),
+        ValueSource {
+            source: "config_file".to_string(),
+            key: String::new(),
+            value: value.clone(),
+        },
+    );
+    value
+}
+
 fn normalized_config_schema_version(version: i64) -> i64 {
     version.max(0)
 }
 
 fn collect_env_hits() -> Vec<EnvHit> {
-    env::var("AWIKI_CLI_WORKSPACE_HOME_DIR")
+    let mut hits = env::var("AWIKI_CLI_WORKSPACE_HOME_DIR")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -831,7 +929,147 @@ fn collect_env_hits() -> Vec<EnvHit> {
                 target: "workspace_home_dir".to_string(),
             }]
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if env::var(im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        hits.push(EnvHit {
+            key: im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV.to_string(),
+            value: "[redacted]".to_string(),
+            tier: "canonical_env".to_string(),
+            target: "secret_storage.root_key".to_string(),
+        });
+    }
+    hits
+}
+
+pub fn resolve_secret_storage(resolved: &Resolved) -> anyhow::Result<ResolvedSecretStorage> {
+    let (config, _, error) = read_file_config(&resolved.paths.config_file);
+    if !error.is_empty() {
+        anyhow::bail!(error);
+    }
+    let mut sources = BTreeMap::new();
+    resolve_secret_storage_from_config(&resolved.paths, &config.secret_storage, &mut sources)
+}
+
+fn resolve_secret_storage_from_config(
+    paths: &Paths,
+    config: &SecretStorageConfig,
+    sources: &mut BTreeMap<String, ValueSource>,
+) -> anyhow::Result<ResolvedSecretStorage> {
+    let mode = normalize_secret_storage_mode(&config.mode)?;
+    sources.insert(
+        "secret_storage.mode".to_string(),
+        ValueSource {
+            source: if config.mode.trim().is_empty() {
+                "default".to_string()
+            } else {
+                "config_file".to_string()
+            },
+            key: String::new(),
+            value: mode.clone(),
+        },
+    );
+    let vault_dir = if config.vault_dir.trim().is_empty() {
+        Path::new(&paths.data_dir)
+            .join("identity-vault")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        config.vault_dir.trim().to_string()
+    };
+    sources.insert(
+        "secret_storage.vault_dir".to_string(),
+        ValueSource {
+            source: if config.vault_dir.trim().is_empty() {
+                "derived_default".to_string()
+            } else {
+                "config_file".to_string()
+            },
+            key: if config.vault_dir.trim().is_empty() {
+                "data_dir".to_string()
+            } else {
+                String::new()
+            },
+            value: vault_dir.clone(),
+        },
+    );
+    let workspace_id = if config.workspace_id.trim().is_empty() {
+        workspace_id_from_path(&paths.workspace_home_dir)
+    } else {
+        config.workspace_id.trim().to_string()
+    };
+    sources.insert(
+        "secret_storage.workspace_id".to_string(),
+        ValueSource {
+            source: if config.workspace_id.trim().is_empty() {
+                "derived_default".to_string()
+            } else {
+                "config_file".to_string()
+            },
+            key: if config.workspace_id.trim().is_empty() {
+                "workspace_home_dir".to_string()
+            } else {
+                String::new()
+            },
+            value: workspace_id.clone(),
+        },
+    );
+    let device_id = if config.device_id.trim().is_empty() {
+        "cli-local-device".to_string()
+    } else {
+        config.device_id.trim().to_string()
+    };
+    sources.insert(
+        "secret_storage.device_id".to_string(),
+        ValueSource {
+            source: if config.device_id.trim().is_empty() {
+                "default".to_string()
+            } else {
+                "config_file".to_string()
+            },
+            key: String::new(),
+            value: device_id.clone(),
+        },
+    );
+    let root_key_env = im_core::vault::IM_CORE_VAULT_ROOT_KEY_ENV.to_string();
+    let root_key_available = env::var(&root_key_env)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    Ok(ResolvedSecretStorage {
+        mode,
+        vault_dir,
+        workspace_id,
+        device_id,
+        root_key_env: root_key_env.clone(),
+        root_key_available,
+        root_key_source: if root_key_available {
+            root_key_env
+        } else {
+            "unset".to_string()
+        },
+    })
+}
+
+pub fn normalize_secret_storage_mode(raw: &str) -> anyhow::Result<String> {
+    let mode = if raw.trim().is_empty() {
+        DEFAULT_IDENTITY_SECRET_STORAGE_MODE.to_string()
+    } else {
+        raw.trim().to_ascii_lowercase().replace('-', "_")
+    };
+    match mode.as_str() {
+        "file_compat" | "vault_preferred" | "vault_required" => Ok(mode),
+        _ => anyhow::bail!("unsupported secret_storage.mode"),
+    }
+}
+
+fn workspace_id_from_path(path: &str) -> String {
+    let digest = Sha256::digest(path.as_bytes());
+    let hex = format!("{digest:x}");
+    format!("cli-workspace-{}", &hex[..16])
 }
 
 fn host_notify_file_path(paths: &Paths, config: &HostNotifyConfig, sink: &str) -> String {
@@ -1028,4 +1266,55 @@ fn expand_home(home: &Path, value: &str) -> PathBuf {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_config_accepts_distinct_service_endpoints() {
+        let raw = r#"
+schema_version: 1
+services:
+  service_base_url: https://base.example.test/
+  user_service_endpoint: https://users.example.test/
+  message_service_endpoint: https://messages.example.test/
+  did_domain: example.test
+"#;
+
+        let config = parse_file_config(raw).expect("parse config");
+
+        assert_eq!(
+            config.services.service_base_url,
+            "https://base.example.test/"
+        );
+        assert_eq!(
+            config.services.user_service_endpoint,
+            "https://users.example.test/"
+        );
+        assert_eq!(
+            config.services.message_service_endpoint,
+            "https://messages.example.test/"
+        );
+    }
+
+    #[test]
+    fn resolve_service_endpoint_field_defaults_to_service_base_url() {
+        let mut sources = BTreeMap::new();
+
+        let endpoint = super::resolve_service_endpoint_field(
+            "message_service_endpoint",
+            "",
+            "https://base.example.test",
+            &mut sources,
+        );
+
+        assert_eq!(endpoint, "https://base.example.test");
+        let source = sources
+            .get("message_service_endpoint")
+            .expect("source entry");
+        assert_eq!(source.source, "derived_default");
+        assert_eq!(source.key, "service_base_url");
+    }
 }

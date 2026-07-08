@@ -62,9 +62,33 @@ pub fn prepare_attachment_payload(
 #[doc(hidden)]
 pub fn build_attachment_manifest(descriptor: &AttachmentDescriptor, caption: &str) -> Value {
     crate::attachments::manifest::build_attachment_manifest(descriptor, caption)
+        .expect("attachment manifest without mention payload should be valid")
 }
 
 #[doc(hidden)]
+pub fn build_attachment_manifest_internal(
+    descriptor: &AttachmentDescriptor,
+    caption: &str,
+) -> Value {
+    crate::attachments::manifest::build_attachment_manifest_internal(descriptor, caption)
+        .expect("attachment manifest without mention payload should be valid")
+}
+
+#[doc(hidden)]
+pub fn redact_attachment_manifest(manifest: &Value) -> Value {
+    crate::attachments::manifest::redact_attachment_manifest(manifest)
+}
+
+#[doc(hidden)]
+pub fn parse_attachment_manifest(value: &Value) -> crate::ImResult<AttachmentManifest> {
+    crate::attachments::manifest::parse_attachment_manifest(value)
+}
+
+#[doc(hidden)]
+pub fn build_attachment_grant_ref(descriptor: &AttachmentDescriptor) -> crate::ImResult<Value> {
+    crate::attachments::manifest::build_attachment_grant_ref(descriptor)
+}
+
 pub fn manifest_content_string(manifest: &Value) -> String {
     crate::attachments::manifest::manifest_content_string(manifest)
 }
@@ -125,6 +149,7 @@ pub fn send_attachment_with_details(
             target,
             request,
             resolved_target_did,
+            client_message_id: None,
             credentials: None,
         },
     )?;
@@ -188,6 +213,25 @@ pub fn build_attachment_create_slot_rpc_params(
 }
 
 #[doc(hidden)]
+pub fn build_attachment_create_slot_rpc_params_with_security_profile(
+    sender_did: &str,
+    service_did: &str,
+    target_kind: &str,
+    target_did: &str,
+    message_security_profile: &str,
+    prepared: &PreparedAttachment,
+) -> crate::ImResult<Value> {
+    crate::internal::wire::attachment::build_attachment_create_slot_rpc_params_with_security_profile(
+        sender_did,
+        service_did,
+        target_kind,
+        target_did,
+        message_security_profile,
+        prepared,
+    )
+}
+
+#[doc(hidden)]
 pub fn build_attachment_commit_object_rpc_params(
     sender_did: &str,
     service_did: &str,
@@ -231,6 +275,8 @@ pub fn build_direct_attachment_send_rpc_params(
         &internal_signing_identity(identity),
         target_did,
         manifest,
+        None,
+        None,
     )
 }
 
@@ -244,6 +290,8 @@ pub fn build_group_attachment_send_rpc_params(
         &internal_signing_identity(identity),
         group_did,
         manifest,
+        None,
+        None,
     )
 }
 

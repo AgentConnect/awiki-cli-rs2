@@ -1,7 +1,7 @@
 # OpenClaw Host Adapter V1
 
-**Status**: Historical draft; implementation has moved to pure webhook + route registry  
-**Scope**: `awiki-cli` host notification sink for OpenClaw `/hooks/agent` fan-out  
+**Status**: Historical draft; implementation has moved to pure webhook + route registry
+**Scope**: `awiki-cli` host notification sink for OpenClaw `/hooks/agent` fan-out
 **Out of scope**: Hermes routing, mapped hooks, OpenClaw plugin-native delivery, and per-channel retry queues
 
 > Note: the current implementation no longer uses `chat.inject` or `gateway call status`.

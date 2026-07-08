@@ -4,10 +4,10 @@
 
 本文记录 `awiki-cli -> Hermes -> IM` 这条通知链路的两轮改动，说明它们分别解决了什么问题，以及现在整条链路是如何工作的。
 
-关于“邮件通知如何低风险收口到普通消息通知链路”的后续方案，见：
+邮件通知已经收口到统一 host notification / realtime 事件链路。当前 Email SDK 和 CLI 边界见：
 
-- `docs/architecture/mail-notification-unification-plan.md`
-- `docs/architecture/mail-notification-validation-runbook.md`
+- `docs/api/im-core-interface/08-email-interface.md`
+- `docs/architecture/awiki-mail-cli.md`
 
 目标场景：
 
@@ -52,7 +52,7 @@
 
 ### 1. `awiki-cli` 负责写本地 Hermes route
 
-新增了 `internal/runtime/hermesbridge` 包，负责：
+当前 Rust 实现位于 `crates/awiki-cli/src/host_runtime/hermes_bridge.rs` 和相关 runtime handler，负责：
 
 - 定位 `HERMES_HOME` / `~/.hermes`
 - 读取和写回 `~/.hermes/config.yaml`
@@ -268,21 +268,21 @@ awiki-cli runtime host-notify hermes status
 1. 先在本地编译当前工作区的 CLI 二进制：
 
 ```bash
-cd /home/ecs-user/awiki-cli
-/usr/local/go/bin/go build -o /home/ecs-user/awiki-cli/dist/local/awiki-cli ./cmd/awiki-cli
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo build -p awiki-cli --bin awiki-cli --release --locked
 ```
 
 2. 再打 npm 包：
 
 ```bash
-cd /home/ecs-user/awiki-cli
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
 npm pack
 ```
 
 3. 安装本地 tarball 时，通过环境变量明确告诉 `postinstall` 使用这个本地二进制，而不是去拉线上 GitHub release：
 
 ```bash
-AWIKI_CLI_LOCAL_BINARY=/home/ecs-user/awiki-cli/dist/local/awiki-cli npm install /home/ecs-user/awiki-cli/awiki-cli-1.0.0.tgz
+AWIKI_CLI_LOCAL_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/release/awiki-cli npm install /home/ecs-user/awiki-space/awiki-cli-rs2/awiki-cli-1.0.16.tgz
 ```
 
 说明：
@@ -307,7 +307,7 @@ AWIKI_CLI_LOCAL_BINARY=/home/ecs-user/awiki-cli/dist/local/awiki-cli npm install
 
 验证方式：
 
-- 先本地 `go build`
+- 先本地 `cargo build`
 - 再 `npm pack`
 - 安装时通过 `AWIKI_CLI_LOCAL_BINARY` 指向本地编译产物
 - 安装后执行 `awiki-cli version`
@@ -362,10 +362,10 @@ AWIKI_CLI_LOCAL_BINARY=/home/ecs-user/awiki-cli/dist/local/awiki-cli npm install
   - 修复 Python 3.10 兼容性，避免在常见 Linux 环境中启动失败
 - `.gitignore`
   - 忽略 `*.tgz`，避免 `npm pack` 产物被再次打进包里
-- `internal/runtime/hermesbridge/hermes_config.go`
+- `crates/awiki-cli/src/host_runtime/hermes_bridge.rs`
   - 默认通知模板改为中文
   - 对旧英文默认模板做自动迁移
-- `internal/runtime/hermesbridge/hermes_config_test.go`
+- `crates/awiki-cli/tests/host_runtime_hermes_*_contract.rs`
   - 增加中文模板迁移与“保留用户自定义模板”的测试
 
 本轮 review 后，没有发现必须回退的试验性代码改动。

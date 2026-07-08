@@ -113,9 +113,13 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(envelope["data"]["verification_state"], "completed");
     assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
     assert_eq!(envelope["data"]["identity"]["handle"], "alice");
-    assert_eq!(
-        envelope["data"]["identity"]["did"],
-        "did:wba:awiki.ai:alice:e1_remote"
+    let registered_did = envelope["data"]["identity"]["did"]
+        .as_str()
+        .expect("registered identity did")
+        .to_string();
+    assert!(
+        registered_did.starts_with("did:wba:awiki.ai:alice:e1_"),
+        "registration should persist the locally generated key-bound DID: {registered_did}"
     );
     assert!(envelope["data"]["identity"]["has_jwt"]
         .as_bool()
@@ -142,19 +146,18 @@ fn identity_register_email_wait_already_verified_registers_and_persists_identity
     assert_eq!(body["params"]["invite_code"], "invite-1");
     assert!(body["params"].get("phone").is_none());
     assert!(body["params"].get("otp_code").is_none());
-    assert!(body["params"]["did_document"]["id"]
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("did:wba:awiki.ai:alice:"));
+    assert_eq!(body["params"]["did_document"]["id"], registered_did);
 
     let stored = read_stored_identity(workspace.path(), "alice");
     assert_eq!(stored.index["handle"], "alice");
     assert_eq!(stored.index["full_handle"], "alice.awiki.ai");
+    assert_eq!(stored.index["did"], registered_did);
     assert_eq!(stored.index["user_id"], "user-alice");
     assert_eq!(stored.identity["handle"], "alice");
     assert_eq!(stored.identity["full_handle"], "alice.awiki.ai");
+    assert_eq!(stored.identity["did"], registered_did);
     assert_eq!(stored.identity["user_id"], "user-alice");
-    assert_eq!(stored.auth["jwt_token"], "jwt-register");
+    assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
 }
 
 #[test]
@@ -218,6 +221,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -257,7 +262,6 @@ fn request_body(raw: &str) -> &str {
 struct StoredIdentity {
     index: Value,
     identity: Value,
-    auth: Value,
 }
 
 fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity {
@@ -272,8 +276,36 @@ fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity
             &std::fs::read(identity_dir.join("identity.json")).unwrap(),
         )
         .unwrap(),
-        auth: serde_json::from_slice(&std::fs::read(identity_dir.join("auth.json")).unwrap())
-            .unwrap(),
+    }
+}
+
+fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
+    workspace: &Path,
+    identity_name: &str,
+) {
+    let index_path = workspace.join("identities").join("index.json");
+    let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let entry = &index["credentials"][identity_name];
+    let vault = &entry["vault_migration"];
+    assert_eq!(vault["status"], "verified");
+    assert_eq!(vault["backend"], "vault");
+    assert_eq!(vault["plaintext_compat_retained"], false);
+    assert!(
+        vault["refs"]["auth_jwt"].is_object(),
+        "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
+    );
+    let dir_name = entry["dir_name"].as_str().unwrap();
+    let identity_dir = workspace.join("identities").join(dir_name);
+    for file in [
+        "auth.json",
+        "key-1-private.pem",
+        "e2ee-signing-private.pem",
+        "e2ee-agreement-private.pem",
+    ] {
+        assert!(
+            !identity_dir.join(file).exists(),
+            "vault_required identity must not persist plaintext {file}"
+        );
     }
 }
 
@@ -344,7 +376,12 @@ fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Some(stream),
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("set test stream blocking");
+                return Some(stream);
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     return None;
@@ -386,7 +423,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

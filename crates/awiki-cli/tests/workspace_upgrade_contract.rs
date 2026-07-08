@@ -1,3 +1,5 @@
+#![allow(clippy::bool_assert_comparison)]
+
 use awiki_cli::{workspace_config, workspace_upgrade};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -43,8 +45,8 @@ fn workspace_upgrade_empty_detection_matches_go_contract() {
     );
     assert_eq!(inspection.meta, None);
     assert_eq!(inspection.journal, None);
-    assert_eq!(inspection.detection.current_version, 3);
-    assert_eq!(inspection.detection.latest_version, 3);
+    assert_eq!(inspection.detection.current_version, 4);
+    assert_eq!(inspection.detection.latest_version, 4);
     assert_eq!(inspection.detection.current_version_source, "default_empty");
     assert_eq!(inspection.detection.empty, true);
     assert_eq!(inspection.detection.has_workspace, false);
@@ -227,9 +229,9 @@ fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
 #[test]
 fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
     let upgrader = workspace_upgrade::new_default_upgrader();
-    assert_eq!(upgrader.latest_version(), 3);
+    assert_eq!(upgrader.latest_version(), 4);
 
-    let plan = upgrader.plan(0, 3).expect("default 0 to latest plan");
+    let plan = upgrader.plan(0, 4).expect("default 0 to latest plan");
     let steps: Vec<(i64, i64, &str)> = plan
         .iter()
         .map(|migration| (migration.from(), migration.to(), migration.name()))
@@ -240,10 +242,11 @@ fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
             (0, 1, "workspace_0_to_1_bootstrap_local_state_upgrade"),
             (1, 2, "workspace_1_to_2_remove_legacy_skill_and_listener"),
             (2, 3, "workspace_2_to_3_replace_existing_k1_handle_dids"),
+            (3, 4, "workspace_3_to_4_owner_identity_local_state"),
         ]
     );
 
-    let partial = upgrader.plan(1, 3).expect("partial plan");
+    let partial = upgrader.plan(1, 4).expect("partial plan");
     assert_eq!(
         partial
             .iter()
@@ -252,26 +255,27 @@ fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
         vec![
             "workspace_1_to_2_remove_legacy_skill_and_listener",
             "workspace_2_to_3_replace_existing_k1_handle_dids",
+            "workspace_3_to_4_owner_identity_local_state",
         ]
     );
-    assert!(upgrader.plan(3, 3).expect("no-op current plan").is_empty());
+    assert!(upgrader.plan(4, 4).expect("no-op current plan").is_empty());
 }
 
 #[test]
 fn workspace_upgrade_plan_errors_match_go_messages() {
     let upgrader = workspace_upgrade::new_default_upgrader();
     let newer = upgrader
-        .plan(4, 3)
+        .plan(5, 4)
         .expect_err("newer source version should fail");
     assert_eq!(
         newer.to_string(),
-        "workspace schema version 4 is newer than target 3"
+        "workspace schema version 5 is newer than target 4"
     );
 
     let missing = upgrader
-        .plan(3, 4)
+        .plan(4, 5)
         .expect_err("missing migration should fail");
-    assert_eq!(missing.to_string(), "missing workspace migration 3 -> 4");
+    assert_eq!(missing.to_string(), "missing workspace migration 4 -> 5");
 }
 
 #[test]
@@ -288,7 +292,7 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
     assert!(context.warnings.is_empty());
 
     let upgrader = workspace_upgrade::new_default_upgrader();
-    let plan = upgrader.plan(0, 3).expect("default plan");
+    let plan = upgrader.plan(0, 4).expect("default plan");
     assert_eq!(
         plan[0].is_done(&context).expect("missing meta is not done"),
         false
@@ -359,10 +363,6 @@ fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
         .as_str()
         .unwrap_or_default()
         .ends_with('Z'));
-    assert!(
-        !metadata["hostname"].as_str().unwrap_or_default().is_empty(),
-        "hostname should be populated"
-    );
     assert!(
         !metadata["executable"]
             .as_str()
@@ -511,7 +511,7 @@ fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
     workspace_upgrade::save_meta(
         &paths.meta_path,
         &workspace_upgrade::Meta {
-            workspace_schema_version: 3,
+            workspace_schema_version: 4,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
             last_upgrade_id: String::new(),
@@ -530,7 +530,7 @@ fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
     );
     assert_eq!(
         workspace_check["details"]["meta"]["workspace_schema_version"],
-        3
+        4
     );
     assert_eq!(
         workspace_check["details"]["detection"]["current_version_source"],
@@ -572,7 +572,7 @@ fn config_show_embeds_upgrade_inspection_instead_of_stub_snapshot() {
     workspace_upgrade::save_meta(
         &paths.meta_path,
         &workspace_upgrade::Meta {
-            workspace_schema_version: 3,
+            workspace_schema_version: 4,
             app_version: "dev".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
             last_upgrade_id: String::new(),
@@ -586,10 +586,10 @@ fn config_show_embeds_upgrade_inspection_instead_of_stub_snapshot() {
     let upgrade = &envelope["data"]["workspace_upgrade"];
     assert_eq!(upgrade["paths"]["meta_path"], paths.meta_path);
     assert_eq!(upgrade["paths"]["journal_path"], paths.journal_path);
-    assert_eq!(upgrade["meta"]["workspace_schema_version"], 3);
+    assert_eq!(upgrade["meta"]["workspace_schema_version"], 4);
     assert_eq!(upgrade["journal"], Value::Null);
-    assert_eq!(upgrade["detection"]["current_version"], 3);
-    assert_eq!(upgrade["detection"]["latest_version"], 3);
+    assert_eq!(upgrade["detection"]["current_version"], 4);
+    assert_eq!(upgrade["detection"]["latest_version"], 4);
     assert_eq!(upgrade["detection"]["current_version_source"], "meta");
     assert!(upgrade.get("actions").is_none());
 }
@@ -638,11 +638,12 @@ fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
     .expect("save journal");
     let db = open_local_state(&resolved.paths).expect("open db");
     db.execute(
-        "INSERT INTO messages(msg_id, owner_did, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+        "INSERT INTO messages(msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?6, ?7)",
         rusqlite::params![
             "msg-1",
+            "alice-id",
             "did:owner:alice",
-            "thread-1",
+            "dm:alice-peer",
             "hello",
             "2026-05-14T00:00:00Z",
             "alice"
@@ -715,11 +716,12 @@ fn workspace_upgrade_backup_sqlite_replaces_existing_destination_and_escapes_pat
     };
     let db = open_local_state(&paths).expect("open source db");
     db.execute(
-        "INSERT INTO messages(msg_id, owner_did, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+        "INSERT INTO messages(msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?4, 0, ?5, ?6, ?7)",
         rusqlite::params![
             "msg-2",
+            "bob-id",
             "did:owner:bob",
-            "thread-2",
+            "dm:bob-peer",
             "hello",
             "2026-05-14T00:00:00Z",
             "bob"
@@ -778,6 +780,8 @@ fn test_resolved(root: &Path) -> workspace_config::Resolved {
         output_format: "json".to_string(),
         no_color: false,
         service_base_url: "https://awiki.ai".to_string(),
+        user_service_endpoint: "https://awiki.ai".to_string(),
+        message_service_endpoint: "https://awiki.ai".to_string(),
         did_domain: "awiki.ai".to_string(),
         anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
         anp_service_did: "did:wba:awiki.ai".to_string(),

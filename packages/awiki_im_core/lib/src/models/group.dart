@@ -5,6 +5,9 @@ class GroupSummary {
     this.id,
     required this.did,
     this.name,
+    this.displayName,
+    this.avatarUri,
+    this.myRole,
     this.membershipStatus,
     this.memberCount,
     this.lastMessageAt,
@@ -13,6 +16,9 @@ class GroupSummary {
   final String? id;
   final String did;
   final String? name;
+  final String? displayName;
+  final String? avatarUri;
+  final String? myRole;
   final String? membershipStatus;
   final int? memberCount;
   final String? lastMessageAt;
@@ -23,15 +29,16 @@ class GroupSnapshot extends GroupSummary {
     super.id,
     required super.did,
     super.name,
+    super.displayName,
+    super.avatarUri,
+    super.myRole,
     this.description,
-    this.myRole,
     super.membershipStatus,
     super.memberCount,
     super.lastMessageAt,
   });
 
   final String? description;
-  final String? myRole;
 }
 
 class GroupMember {
@@ -41,6 +48,7 @@ class GroupMember {
     this.role,
     this.status,
     this.joinedAt,
+    this.subjectType,
   });
 
   final String? did;
@@ -48,6 +56,7 @@ class GroupMember {
   final String? role;
   final String? status;
   final String? joinedAt;
+  final String? subjectType;
 }
 
 class GroupDiscoverability {
@@ -116,6 +125,7 @@ class CreateGroupRequest {
   const CreateGroupRequest({
     required this.name,
     this.description,
+    this.avatarUri,
     this.discoverability,
     this.admissionMode,
     this.messageSecurityProfile,
@@ -133,6 +143,7 @@ class CreateGroupRequest {
 
   final String name;
   final String? description;
+  final String? avatarUri;
   final GroupDiscoverability? discoverability;
   final GroupAdmissionMode? admissionMode;
   final GroupMessageSecurityProfile? messageSecurityProfile;

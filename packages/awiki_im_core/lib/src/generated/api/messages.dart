@@ -9,7 +9,8 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `page_limit`
+// These functions are ignored because they are not marked as `pub`: `new`, `new`, `page_limit`, `read_watermark_to_core`, `stop`, `stop`, `take_session`, `take_session`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
 
 Future<DartSendMessageResult> sendText({
   required ArcDartImClient client,
@@ -19,16 +20,42 @@ Future<DartSendMessageResult> sendText({
   request: request,
 );
 
+Future<DartSendMessageResult> sendPayload({
+  required ArcDartImClient client,
+  required DartSendPayloadRequest request,
+}) => RustLib.instance.api.crateApiMessagesSendPayload(
+  client: client,
+  request: request,
+);
+
+Future<DartSendMessageResult> sendConversationText({
+  required ArcDartImClient client,
+  required DartSendConversationTextRequest request,
+}) => RustLib.instance.api.crateApiMessagesSendConversationText(
+  client: client,
+  request: request,
+);
+
+Future<DartSendMessageResult> sendConversationPayload({
+  required ArcDartImClient client,
+  required DartSendConversationPayloadRequest request,
+}) => RustLib.instance.api.crateApiMessagesSendConversationPayload(
+  client: client,
+  request: request,
+);
+
 Future<DartMessagePage> inbox({
   required ArcDartImClient client,
   required int limit,
   String? cursor,
   required bool unreadOnly,
+  DartInboxHistoryOptions? inboxHistoryOptions,
 }) => RustLib.instance.api.crateApiMessagesInbox(
   client: client,
   limit: limit,
   cursor: cursor,
   unreadOnly: unreadOnly,
+  inboxHistoryOptions: inboxHistoryOptions,
 );
 
 Future<DartMessagePage> history({
@@ -36,9 +63,35 @@ Future<DartMessagePage> history({
   required DartThreadRef thread,
   required int limit,
   String? cursor,
+  DartInboxHistoryOptions? inboxHistoryOptions,
 }) => RustLib.instance.api.crateApiMessagesHistory(
   client: client,
   thread: thread,
+  limit: limit,
+  cursor: cursor,
+  inboxHistoryOptions: inboxHistoryOptions,
+);
+
+Future<DartMessagePage> localHistory({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  required int limit,
+  String? cursor,
+}) => RustLib.instance.api.crateApiMessagesLocalHistory(
+  client: client,
+  thread: thread,
+  limit: limit,
+  cursor: cursor,
+);
+
+Future<DartMessagePage> localConversationTimeline({
+  required ArcDartImClient client,
+  required DartConversationReadRef conversation,
+  required int limit,
+  String? cursor,
+}) => RustLib.instance.api.crateApiMessagesLocalConversationTimeline(
+  client: client,
+  conversation: conversation,
   limit: limit,
   cursor: cursor,
 );
@@ -51,18 +104,151 @@ Future<DartMarkReadResult> markRead({
   messageIds: messageIds,
 );
 
+Future<DartMarkThreadReadResult> markThreadRead({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  DartReadWatermark? watermark,
+  int? fallbackMaxMessageIds,
+}) => RustLib.instance.api.crateApiMessagesMarkThreadRead(
+  client: client,
+  thread: thread,
+  watermark: watermark,
+  fallbackMaxMessageIds: fallbackMaxMessageIds,
+);
+
+Future<DartMarkThreadReadResult> markConversationRead({
+  required ArcDartImClient client,
+  required DartMarkConversationReadRequest request,
+}) => RustLib.instance.api.crateApiMessagesMarkConversationRead(
+  client: client,
+  request: request,
+);
+
+Future<DartSyncDeltaResult> syncDelta({
+  required ArcDartImClient client,
+  required DartSyncDeltaRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncDelta(
+  client: client,
+  request: request,
+);
+
+Future<DartSyncThreadAfterResult> syncThreadAfter({
+  required ArcDartImClient client,
+  required DartSyncThreadAfterRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncThreadAfter(
+  client: client,
+  request: request,
+);
+
+Future<DartSyncThreadAfterResult> syncConversationAfter({
+  required ArcDartImClient client,
+  required DartSyncConversationAfterRequest request,
+}) => RustLib.instance.api.crateApiMessagesSyncConversationAfter(
+  client: client,
+  request: request,
+);
+
 Future<DartConversationPage> conversations({
   required ArcDartImClient client,
   required int limit,
+  String? cursor,
   required bool includeGroups,
   required bool includeDirect,
   required bool unreadOnly,
 }) => RustLib.instance.api.crateApiMessagesConversations(
   client: client,
   limit: limit,
+  cursor: cursor,
   includeGroups: includeGroups,
   includeDirect: includeDirect,
   unreadOnly: unreadOnly,
+);
+
+Future<DartConversationListSnapshot?> loadConversationSnapshot({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesLoadConversationSnapshot(
+  client: client,
+);
+
+Future<void> clearConversationSnapshot({required ArcDartImClient client}) =>
+    RustLib.instance.api.crateApiMessagesClearConversationSnapshot(
+      client: client,
+    );
+
+Future<ArcDartConversationPatchSession> watchConversationPatches({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesWatchConversationPatches(
+  client: client,
+);
+
+Stream<DartConversationStorePatch> conversationPatchStream({
+  required ArcDartConversationPatchSession session,
+}) => RustLib.instance.api.crateApiMessagesConversationPatchStream(
+  session: session,
+);
+
+Future<void> stopConversationPatchSession({
+  required ArcDartConversationPatchSession session,
+}) => RustLib.instance.api.crateApiMessagesStopConversationPatchSession(
+  session: session,
+);
+
+Future<DartConversationStorePatch> repairConversationStore({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiMessagesRepairConversationStore(
+  client: client,
+);
+
+Future<ArcDartThreadMessagePatchSession> watchThreadPatches({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesWatchThreadPatches(
+  client: client,
+  thread: thread,
+  limit: limit,
+);
+
+Future<ArcDartThreadMessagePatchSession> watchConversationTimelinePatches({
+  required ArcDartImClient client,
+  required DartConversationReadRef conversation,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesWatchConversationTimelinePatches(
+  client: client,
+  conversation: conversation,
+  limit: limit,
+);
+
+Stream<DartThreadMessageStorePatch> threadMessagePatchStream({
+  required ArcDartThreadMessagePatchSession session,
+}) => RustLib.instance.api.crateApiMessagesThreadMessagePatchStream(
+  session: session,
+);
+
+Future<void> stopThreadMessagePatchSession({
+  required ArcDartThreadMessagePatchSession session,
+}) => RustLib.instance.api.crateApiMessagesStopThreadMessagePatchSession(
+  session: session,
+);
+
+Future<DartThreadMessageStorePatch> repairThreadStore({
+  required ArcDartImClient client,
+  required DartThreadRef thread,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesRepairThreadStore(
+  client: client,
+  thread: thread,
+  limit: limit,
+);
+
+Future<DartThreadMessageStorePatch> repairConversationTimelineStore({
+  required ArcDartImClient client,
+  required DartConversationReadRef conversation,
+  int? limit,
+}) => RustLib.instance.api.crateApiMessagesRepairConversationTimelineStore(
+  client: client,
+  conversation: conversation,
+  limit: limit,
 );
 
 Future<DartSendMessageResult> retryMessage({
@@ -72,3 +258,10 @@ Future<DartSendMessageResult> retryMessage({
   client: client,
   messageId: messageId,
 );
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartConversationPatchSession >>>
+abstract class ArcDartConversationPatchSession implements RustOpaqueInterface {}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartThreadMessagePatchSession >>>
+abstract class ArcDartThreadMessagePatchSession
+    implements RustOpaqueInterface {}

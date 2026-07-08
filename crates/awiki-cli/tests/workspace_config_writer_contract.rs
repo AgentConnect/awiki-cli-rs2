@@ -103,7 +103,44 @@ fn config_writer_core_mutators_match_go_contract() {
     assert_contains(&text, "    auto_install: false\n");
     assert_contains(&text, "    auto_start: true\n");
     assert_contains(&text, "    sink: hermes\n");
+    assert_contains(&text, "secret_storage:\n");
+    assert_contains(&text, "  mode: vault_required\n");
+    assert_contains(&text, "  vault_dir: ");
+    assert_contains(&text, "  workspace_id: cli-workspace-");
+    assert_contains(&text, "  device_id: cli-local-device\n");
     assert_contains(&text, "  did_domain: tenant.example\n");
+}
+
+#[test]
+fn config_writer_never_persists_identity_vault_root_key() {
+    let temp = TempDir::new("config-writer-vault-root-key").expect("temp dir");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let mut output = std::process::Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    output
+        .args(["init"])
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", temp.path())
+        .env("HOME", temp.path().join("home"))
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key);
+    let output = output.output().expect("run awiki-cli init");
+    assert!(
+        output.status.success(),
+        "init should pass; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(temp.path().join("config.yaml")).expect("read config");
+    assert_contains(&text, "secret_storage:\n");
+    assert_contains(&text, "  mode: vault_required\n");
+    assert!(
+        !text.contains(root_key),
+        "config.yaml must not persist identity vault root key: {text:?}"
+    );
+    assert!(
+        !text.contains("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"),
+        "config.yaml should not persist root key env metadata: {text:?}"
+    );
 }
 
 #[test]
@@ -281,6 +318,8 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> std::process::Out
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("HOME", std::path::Path::new(workspace).join("home"))
+        .env("USERPROFILE", std::path::Path::new(workspace).join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")

@@ -44,6 +44,57 @@ class DartDirectoryResolution {
           warnings == other.warnings;
 }
 
+class DartDisplayProfile {
+  final String? did;
+  final String? handle;
+  final String? displayName;
+  final String? avatarUri;
+  final String? avatarUrl;
+  final String? profileUri;
+  final String? subjectType;
+  final bool cacheHit;
+  final List<String> warnings;
+
+  const DartDisplayProfile({
+    this.did,
+    this.handle,
+    this.displayName,
+    this.avatarUri,
+    this.avatarUrl,
+    this.profileUri,
+    this.subjectType,
+    required this.cacheHit,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      handle.hashCode ^
+      displayName.hashCode ^
+      avatarUri.hashCode ^
+      avatarUrl.hashCode ^
+      profileUri.hashCode ^
+      subjectType.hashCode ^
+      cacheHit.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDisplayProfile &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          handle == other.handle &&
+          displayName == other.displayName &&
+          avatarUri == other.avatarUri &&
+          avatarUrl == other.avatarUrl &&
+          profileUri == other.profileUri &&
+          subjectType == other.subjectType &&
+          cacheHit == other.cacheHit &&
+          warnings == other.warnings;
+}
+
 @freezed
 sealed class DartIdentitySubject with _$DartIdentitySubject {
   const DartIdentitySubject._();
@@ -85,6 +136,10 @@ class DartRelationshipListItem {
   final String did;
   final String? handle;
   final String? displayName;
+  final String? avatarUri;
+  final String? avatarUrl;
+  final String? profileUri;
+  final String? subjectType;
   final String relationship;
   final String? createdAt;
   final List<String> warnings;
@@ -93,6 +148,10 @@ class DartRelationshipListItem {
     required this.did,
     this.handle,
     this.displayName,
+    this.avatarUri,
+    this.avatarUrl,
+    this.profileUri,
+    this.subjectType,
     required this.relationship,
     this.createdAt,
     required this.warnings,
@@ -103,6 +162,10 @@ class DartRelationshipListItem {
       did.hashCode ^
       handle.hashCode ^
       displayName.hashCode ^
+      avatarUri.hashCode ^
+      avatarUrl.hashCode ^
+      profileUri.hashCode ^
+      subjectType.hashCode ^
       relationship.hashCode ^
       createdAt.hashCode ^
       warnings.hashCode;
@@ -115,6 +178,10 @@ class DartRelationshipListItem {
           did == other.did &&
           handle == other.handle &&
           displayName == other.displayName &&
+          avatarUri == other.avatarUri &&
+          avatarUrl == other.avatarUrl &&
+          profileUri == other.profileUri &&
+          subjectType == other.subjectType &&
           relationship == other.relationship &&
           createdAt == other.createdAt &&
           warnings == other.warnings;

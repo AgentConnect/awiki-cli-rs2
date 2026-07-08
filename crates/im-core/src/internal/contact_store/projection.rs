@@ -1,15 +1,17 @@
 use serde_json::Value;
 
 use super::records::ContactRecord;
+use crate::internal::local_state::owner_scope::OwnerScope;
 
 pub(crate) fn record_from_save_request(
     client: &crate::core::ImClient,
     request: &crate::directory::SaveContactRequest,
     did: crate::ids::Did,
-) -> ContactRecord {
-    ContactRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+) -> crate::ImResult<ContactRecord> {
+    let scope = OwnerScope::for_client(client)?;
+    Ok(ContactRecord {
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         did: did.as_str().to_string(),
         name: request.display_name.clone().unwrap_or_default(),
         handle: request
@@ -26,19 +28,20 @@ pub(crate) fn record_from_save_request(
         relationship: request.relationship.clone().unwrap_or_default(),
         note: request.note.clone().unwrap_or_default(),
         source_type: "directory.save_contact".to_string(),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(&scope),
         ..ContactRecord::default()
-    }
+    })
 }
 
 pub(crate) fn record_from_profile(
     client: &crate::core::ImClient,
     profile: &crate::identity::Profile,
     source_type: &str,
-) -> ContactRecord {
-    ContactRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+) -> crate::ImResult<ContactRecord> {
+    let scope = OwnerScope::for_client(client)?;
+    Ok(ContactRecord {
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         did: profile.subject.as_str().to_string(),
         name: profile.display_name.clone().unwrap_or_default(),
         handle: profile
@@ -46,17 +49,22 @@ pub(crate) fn record_from_profile(
             .as_ref()
             .map(|handle| handle.as_str().to_string())
             .unwrap_or_default(),
-        bio: profile.bio.clone().unwrap_or_default(),
+        bio: profile
+            .bio
+            .clone()
+            .or_else(|| profile.description.clone())
+            .unwrap_or_default(),
         profile_md: profile.markdown.clone().unwrap_or_default(),
         tags: profile.tags.join(","),
         source_type: source_type.to_string(),
         last_seen_at: profile.updated_at.clone().unwrap_or_default(),
-        metadata: metadata_json(&profile.metadata),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        metadata: metadata_json(profile),
+        credential_name: credential_name(&scope),
         ..ContactRecord::default()
-    }
+    })
 }
 
+#[cfg(any(feature = "blocking", test))]
 pub(crate) fn project_directory_resolution(
     client: &crate::core::ImClient,
     resolution: &crate::directory::DirectoryResolution,
@@ -65,13 +73,43 @@ pub(crate) fn project_directory_resolution(
         Ok(connection) => connection,
         Err(_) => return,
     };
+    let record = match record_from_directory_resolution(client, resolution) {
+        Ok(record) => record,
+        Err(_) => return,
+    };
+    let _ = super::records::upsert_contact(&mut connection, record);
+}
+
+#[cfg(not(any(feature = "blocking", test)))]
+pub(crate) fn project_directory_resolution(
+    _client: &crate::core::ImClient,
+    _resolution: &crate::directory::DirectoryResolution,
+) {
+}
+
+pub(crate) async fn project_directory_resolution_async(
+    client: &crate::core::ImClient,
+    resolution: &crate::directory::DirectoryResolution,
+) -> crate::ImResult<()> {
+    let record = record_from_directory_resolution(client, resolution)?;
+    let db = client.core_inner().local_state_db().await?;
+    db.upsert_contact(record).await
+}
+
+fn record_from_directory_resolution(
+    client: &crate::core::ImClient,
+    resolution: &crate::directory::DirectoryResolution,
+) -> crate::ImResult<ContactRecord> {
+    let scope = OwnerScope::for_client(client)?;
+    let credential_name = credential_name(&scope);
     let record = resolution
         .profile
         .as_ref()
         .map(|profile| record_from_profile(client, profile, "directory.profile_projection"))
+        .transpose()?
         .unwrap_or_else(|| ContactRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_string(),
-            owner_did: client.did().as_str().to_string(),
+            owner_identity_id: scope.owner_identity_id,
+            owner_did: scope.owner_did,
             did: resolution.did.as_str().to_string(),
             handle: resolution
                 .handle
@@ -79,28 +117,59 @@ pub(crate) fn project_directory_resolution(
                 .map(|handle| handle.as_str().to_string())
                 .unwrap_or_default(),
             source_type: "directory.resolve_peer".to_string(),
-            credential_name: client.current_identity().id.as_str().to_string(),
+            credential_name,
             ..ContactRecord::default()
         });
-    let _ = super::records::upsert_contact(&mut connection, record);
+    Ok(record)
 }
 
-fn metadata_json(metadata: &[crate::identity::ProfileAttribute]) -> String {
-    if metadata.is_empty() {
+fn metadata_json(profile: &crate::identity::Profile) -> String {
+    let mut object: serde_json::Map<String, Value> = profile
+        .metadata
+        .iter()
+        .map(|attribute| {
+            (
+                attribute.key.clone(),
+                Value::String(attribute.value.clone()),
+            )
+        })
+        .collect();
+    if let Some(avatar_uri) = profile.effective_avatar_uri() {
+        object.insert("avatar_uri".to_string(), Value::String(avatar_uri.clone()));
+        object
+            .entry("avatar_url".to_string())
+            .or_insert_with(|| Value::String(avatar_uri.clone()));
+    }
+    if let Some(profile_uri) = profile.profile_uri.as_ref() {
+        object.insert(
+            "profile_uri".to_string(),
+            Value::String(profile_uri.clone()),
+        );
+    }
+    if let Some(subject_type) = profile.subject_type.as_ref() {
+        object.insert(
+            "subject_type".to_string(),
+            Value::String(subject_type.clone()),
+        );
+    }
+    if let Some(version_id) = profile.version_id.as_ref() {
+        object.insert("versionId".to_string(), Value::String(version_id.clone()));
+    }
+    if let Some(ttl) = profile.ttl {
+        object.insert("ttl".to_string(), serde_json::json!(ttl));
+    }
+    if object.is_empty() {
         return String::new();
     }
-    let value = Value::Object(
-        metadata
-            .iter()
-            .map(|attribute| {
-                (
-                    attribute.key.clone(),
-                    Value::String(attribute.value.clone()),
-                )
-            })
-            .collect(),
-    );
+    let value = Value::Object(object);
     value.to_string()
+}
+
+fn credential_name(scope: &OwnerScope) -> String {
+    scope
+        .credential_name
+        .clone()
+        .unwrap_or_else(|| scope.owner_identity_id.clone())
 }
 
 #[cfg(test)]
@@ -110,23 +179,26 @@ mod tests {
     #[test]
     fn contacts_profile_projection_maps_profile_to_contact_record() {
         let client = fixture_client();
-        let profile = crate::identity::Profile {
-            subject: crate::ids::Did::parse("did:example:bob").unwrap(),
-            handle: Some(crate::ids::Handle::parse("bob.awiki.test", "").unwrap()),
-            display_name: Some("Bob".to_string()),
-            bio: Some("Builder".to_string()),
-            tags: vec!["rust".to_string(), "sdk".to_string()],
-            markdown: Some("## Bob".to_string()),
-            avatar_url: None,
-            updated_at: Some("2026-05-21T00:00:00Z".to_string()),
-            metadata: vec![crate::identity::ProfileAttribute {
-                key: "source".to_string(),
-                value: "profile".to_string(),
-            }],
-        };
+        let mut profile =
+            crate::identity::Profile::new(crate::ids::Did::parse("did:example:bob").unwrap());
+        profile.handle = Some(crate::ids::Handle::parse("bob.awiki.test", "").unwrap());
+        profile.display_name = Some("Bob".to_string());
+        profile.bio = Some("Builder".to_string());
+        profile.tags = vec!["rust".to_string(), "sdk".to_string()];
+        profile.markdown = Some("## Bob".to_string());
+        profile.avatar_uri = Some("https://cdn.test/bob.png".to_string());
+        profile.profile_uri = Some("https://bob.awiki.test/".to_string());
+        profile.subject_type = Some("person".to_string());
+        profile.updated_at = Some("2026-05-21T00:00:00Z".to_string());
+        profile.metadata = vec![crate::identity::ProfileAttribute {
+            key: "source".to_string(),
+            value: "profile".to_string(),
+        }];
 
-        let record = record_from_profile(&client, &profile, "directory.profile_projection");
+        let record = record_from_profile(&client, &profile, "directory.profile_projection")
+            .expect("profile projection record");
 
+        assert_eq!(record.owner_identity_id, "alice-id");
         assert_eq!(record.owner_did, "did:example:alice");
         assert_eq!(record.did, "did:example:bob");
         assert_eq!(record.handle, "bob.awiki.test");
@@ -134,7 +206,13 @@ mod tests {
         assert_eq!(record.tags, "rust,sdk");
         assert_eq!(record.profile_md, "## Bob");
         assert_eq!(record.last_seen_at, "2026-05-21T00:00:00Z");
-        assert_eq!(record.metadata, r#"{"source":"profile"}"#);
+        let metadata: serde_json::Value = serde_json::from_str(&record.metadata).unwrap();
+        assert_eq!(metadata["source"], "profile");
+        assert_eq!(metadata["avatar_uri"], "https://cdn.test/bob.png");
+        assert_eq!(metadata["avatar_url"], "https://cdn.test/bob.png");
+        assert_eq!(metadata["profile_uri"], "https://bob.awiki.test/");
+        assert_eq!(metadata["subject_type"], "person");
+        assert_eq!(record.credential_name, "alice");
     }
 
     fn fixture_client() -> crate::core::ImClient {

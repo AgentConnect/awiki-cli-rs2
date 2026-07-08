@@ -20,6 +20,7 @@ pub struct DartSessionBundle {
     pub scope: DartAuthScope,
     pub expires_at: Option<String>,
     pub refreshed: bool,
+    pub bearer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,4 +29,5 @@ pub struct DartSessionUpdate {
     pub previous_expires_at: Option<String>,
     pub new_expires_at: Option<String>,
     pub refreshed: bool,
+    pub bearer_token: Option<String>,
 }

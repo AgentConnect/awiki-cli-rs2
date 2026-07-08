@@ -43,6 +43,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_awiki-cli"))
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.join(".awiki-cli"))
+        .env("HOME", workspace)
+        .env("USERPROFILE", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -73,43 +75,6 @@ fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, 
     let legacy_text = serde_json::to_string(&payload).expect("serialize legacy config");
     std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
     (legacy_config, legacy_text)
-}
-
-fn assert_migrated_config(workspace_home: &Path, service_base_url: &str, did_domain: &str) {
-    let config_text =
-        std::fs::read_to_string(workspace_home.join("config.yaml")).expect("read migrated config");
-    for needle in [
-        "schema_version: 1\n".to_string(),
-        "  mode: http\n".to_string(),
-        format!("  service_base_url: {service_base_url}\n"),
-        format!("  did_domain: {did_domain}\n"),
-    ] {
-        assert!(
-            config_text.contains(&needle),
-            "migrated config: {config_text:?}"
-        );
-    }
-}
-
-fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
-    let meta_path = workspace_home.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert!(meta["last_upgrade_id"]
-        .as_str()
-        .is_some_and(|id| !id.is_empty()));
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
-        legacy_text
-    );
-    assert!(!workspace_home
-        .join("upgrade")
-        .join("upgrade_journal.json")
-        .exists());
 }
 
 fn assert_no_runtime_state(workspace_home: &Path) {

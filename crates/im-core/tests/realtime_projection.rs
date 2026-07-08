@@ -30,6 +30,7 @@ fn realtime_projection_direct_incoming_becomes_message_received() {
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -87,6 +88,7 @@ fn realtime_projection_direct_attachment_like_notification_is_generic_unsupporte
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -104,6 +106,51 @@ fn realtime_projection_direct_attachment_like_notification_is_generic_unsupporte
     assert_eq!(
         message.metadata.content_type.as_deref(),
         Some("application/octet-stream")
+    );
+}
+
+#[test]
+fn realtime_projection_direct_json_payload_becomes_payload_body() {
+    let projection = project_notification(&json!({
+        "method": "direct.incoming",
+        "params": {
+            "meta": {
+                "message_id": "msg-payload",
+                "operation_id": "op-payload",
+                "sender_did": "did:example:bob",
+                "target": {"did": "did:example:alice"},
+                "content_type": "application/json",
+                "created_at": "2026-05-22T00:00:00Z"
+            },
+            "body": {
+                "payload": {
+                    "schema": "awiki.agent.command.v1",
+                    "command": "runtime.agent.create"
+                }
+            }
+        }
+    }));
+
+    assert_eq!(
+        projection.route,
+        NotificationProjectionRoute::DirectIncoming
+    );
+    let ImEvent::MessageReceived(MessageReceivedEvent { message, .. }) = projection.event else {
+        panic!("expected message received");
+    };
+    assert_eq!(message.id.as_str(), "msg-payload");
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command": "runtime.agent.create"
+            })
+        }
+    );
+    assert_eq!(
+        message.metadata.content_type.as_deref(),
+        Some("application/json")
     );
 }
 
@@ -135,6 +182,7 @@ fn realtime_attachment_projection_direct_manifest_enriches_message_event() {
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected attachment-enriched message received");
@@ -143,8 +191,8 @@ fn realtime_attachment_projection_direct_manifest_enriches_message_event() {
     assert_eq!(message.id.as_str(), "msg-attachment");
     assert_eq!(
         message.body,
-        MessageBodyView::Unsupported {
-            content_type: Some("application/anp-attachment-manifest+json".to_string()),
+        MessageBodyView::Payload {
+            payload: attachment_manifest(),
         }
     );
     assert_eq!(summary.attachment_id.as_deref(), Some("att-1"));
@@ -193,6 +241,7 @@ fn realtime_attachment_projection_partial_manifest_warns_without_blocking_event(
         NotificationProjectionRoute::DirectIncoming
     );
     let ImEvent::MessageReceived(MessageReceivedEvent {
+        message,
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
@@ -201,6 +250,17 @@ fn realtime_attachment_projection_partial_manifest_warns_without_blocking_event(
     else {
         panic!("expected attachment-enriched message received");
     };
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: json!({
+                "attachments": [{
+                    "attachment_id": "att-1"
+                }],
+                "primary_attachment_id": "att-1"
+            }),
+        }
+    );
     assert_eq!(summary.attachment_id.as_deref(), Some("att-1"));
     assert!(summary.filename.is_none());
     assert!(summary.mime_type.is_none());
@@ -241,6 +301,7 @@ fn realtime_attachment_projection_missing_attachment_id_uses_selection_fallback_
     }));
 
     let ImEvent::MessageReceived(MessageReceivedEvent {
+        message,
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
@@ -249,6 +310,18 @@ fn realtime_attachment_projection_missing_attachment_id_uses_selection_fallback_
     else {
         panic!("expected attachment-enriched message received");
     };
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: json!({
+                "attachments": [{
+                    "filename": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "size": "1234"
+                }]
+            }),
+        }
+    );
     assert!(summary.attachment_id.is_none());
     assert_eq!(summary.filename.as_deref(), Some("report.pdf"));
     assert!(download_action.attachment_id.is_none());
@@ -277,6 +350,7 @@ fn realtime_attachment_projection_missing_manifest_warns_and_keeps_generic_body(
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -331,14 +405,26 @@ fn realtime_attachment_projection_encrypted_manifest_warns_without_enrichment() 
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
     };
     assert_eq!(
         message.body,
-        MessageBodyView::Unsupported {
-            content_type: Some("application/anp-attachment-manifest+json".to_string()),
+        MessageBodyView::Payload {
+            payload: json!({
+                "attachments": [{
+                    "attachment_id": "att-1",
+                    "filename": "secret.pdf",
+                    "mime_type": "application/pdf",
+                    "size": "1234",
+                    "encryption_info": {
+                        "mode": "group-e2ee"
+                    }
+                }],
+                "primary_attachment_id": "att-1"
+            }),
         }
     );
     assert!(attachment_summary.is_none());
@@ -381,6 +467,7 @@ fn realtime_projection_group_incoming_becomes_group_message_received() {
         attachment_summary,
         download_action,
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected message received");
@@ -443,6 +530,7 @@ fn realtime_attachment_projection_group_manifest_enriches_message_event() {
         attachment_summary: Some(summary),
         download_action: Some(download_action),
         warnings,
+        ..
     }) = projection.event
     else {
         panic!("expected attachment-enriched group message received");
@@ -456,6 +544,12 @@ fn realtime_attachment_projection_group_manifest_enriches_message_event() {
     assert_eq!(download_action.message_id.as_str(), "did:example:group:43");
     assert_eq!(download_action.attachment_id.as_deref(), Some("att-1"));
     assert_eq!(summary.filename.as_deref(), Some("report.pdf"));
+    assert_eq!(
+        message.body,
+        MessageBodyView::Payload {
+            payload: attachment_manifest(),
+        }
+    );
     assert_eq!(message.metadata.server_sequence, Some(43));
     assert!(message.metadata.attributes.iter().any(|attribute| {
         attribute.key == "raw_message_id" && attribute.value == "group-msg-attachment"
@@ -492,6 +586,14 @@ fn realtime_projection_group_state_changed_becomes_group_updated() {
         ImEvent::GroupUpdated(GroupUpdatedEvent {
             group: GroupRef::parse("did:example:group").unwrap(),
             update_kind: GroupUpdateKind::MemberAdded,
+            event_type: None,
+            group_event_seq: Some(7),
+            group_state_version: None,
+            actor_did: None,
+            subject_did: Some("did:example:bob".to_owned()),
+            membership_status: Some("active".to_owned()),
+            changed_at: None,
+            sync: None,
         })
     );
 }
@@ -593,6 +695,7 @@ fn realtime_projection_unknown_notification_preserves_type_and_content_type() {
             content_type: Some("application/vnd.awiki.attachment+json".to_string()),
             notification_type: Some("attachment.ready".to_string()),
             reason: "unsupported notification method".to_string(),
+            sync: None,
         })
     );
 }
@@ -617,6 +720,34 @@ fn realtime_projection_missing_required_fields_becomes_unknown_instead_of_panic(
             content_type: Some("text/plain".to_string()),
             notification_type: Some("direct.incoming".to_string()),
             reason: "missing sender or target".to_string(),
+            sync: None,
         })
     );
+}
+
+#[test]
+fn realtime_projection_unknown_notification_preserves_sync_hint_for_delta_recovery() {
+    let projection = project_notification(&json!({
+        "method": "direct.incoming",
+        "params": {
+            "meta": {
+                "content_type": "text/plain",
+                "target": {"did": "did:example:alice"}
+            },
+            "body": {"text": "missing sender"}
+        },
+        "sync": {
+            "event_id": "sev-20",
+            "event_seq": "20",
+            "event_type": "message.created"
+        }
+    }));
+
+    let ImEvent::UnknownNotification(event) = projection.event else {
+        panic!("expected unknown notification");
+    };
+    let sync = event.sync.expect("sync hint should be preserved");
+    assert_eq!(sync.event_seq.as_deref(), Some("20"));
+    assert!(sync.sync_dirty);
+    assert!(!sync.gap_detected);
 }

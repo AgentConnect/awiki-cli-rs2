@@ -217,6 +217,33 @@ fn identity_register_recover_and_replace_rpc_params_match_go_service() {
         })
     );
 
+    let update = identity::build_update_document_rpc_call(identity::UpdateDocumentRpcParams {
+        did_document: did_document(),
+        ..identity::UpdateDocumentRpcParams::default()
+    });
+    assert_eq!(update.endpoint, identity::DID_AUTH_RPC_ENDPOINT);
+    assert_eq!(update.method, "update_document");
+    assert_eq!(update.params, json!({ "did_document": did_document() }));
+
+    let update_metadata =
+        identity::build_update_document_rpc_call(identity::UpdateDocumentRpcParams {
+            did_document: did_document(),
+            is_public: Some(false),
+            is_agent: Some(true),
+            role: Some(" ".to_string()),
+            endpoint_url: Some(" https://example.com/agent ".to_string()),
+        });
+    assert_eq!(
+        update_metadata.params,
+        json!({
+            "did_document": did_document(),
+            "is_public": false,
+            "is_agent": true,
+            "role": Value::Null,
+            "endpoint_url": "https://example.com/agent",
+        })
+    );
+
     let replace = identity::build_replace_did_rpc_call(identity::ReplaceDidRpcParams {
         new_did_document: did_document(),
         is_public: Some(false),
@@ -322,6 +349,8 @@ fn identity_profile_update_payload_matches_go_mapping_and_order() {
             bio: " Rust port ".to_string(),
             tags_csv: " rust, port, ,cli ".to_string(),
             markdown: " # Profile ".to_string(),
+            avatar_uri: String::new(),
+            avatar_url: String::new(),
             preserve_markdown: false,
         })
         .unwrap();
@@ -354,6 +383,18 @@ fn identity_profile_update_payload_matches_go_mapping_and_order() {
     assert_eq!(call.call.params, json!({ "nick_name": "Alice" }));
     assert_eq!(call.changed_fields, vec!["display_name".to_string()]);
 
+    let (avatar_payload, avatar_changed_fields) =
+        identity::build_update_profile_payload(identity::UpdateProfileParams {
+            avatar_uri: " https://cdn.test/alice.png ".to_string(),
+            ..identity::UpdateProfileParams::default()
+        })
+        .unwrap();
+    assert_eq!(
+        avatar_payload,
+        json!({ "avatar_url": "https://cdn.test/alice.png" })
+    );
+    assert_eq!(avatar_changed_fields, vec!["avatar_uri".to_string()]);
+
     assert!(
         identity::build_update_profile_payload(identity::UpdateProfileParams::default())
             .unwrap_err()
@@ -364,31 +405,39 @@ fn identity_profile_update_payload_matches_go_mapping_and_order() {
 
 #[test]
 fn identity_profile_wire_view_matches_cli_compat_shape() {
-    let profile = Profile {
-        subject: Did::parse("did:example:alice").unwrap(),
-        handle: Some(Handle::parse("alice.awiki.test", "").unwrap()),
-        display_name: Some("Alice".to_string()),
-        bio: Some("Rust port".to_string()),
-        tags: vec!["rust".to_string(), "cli".to_string()],
-        markdown: Some("# Profile".to_string()),
-        avatar_url: Some("https://example.test/avatar.png".to_string()),
-        updated_at: Some("2026-05-25T00:00:00Z".to_string()),
-        metadata: vec![ProfileAttribute {
-            key: "source".to_string(),
-            value: "profile".to_string(),
-        }],
-    };
+    let mut profile = Profile::new(Did::parse("did:example:alice").unwrap());
+    profile.handle = Some(Handle::parse("alice.awiki.test", "").unwrap());
+    profile.display_name = Some("Alice".to_string());
+    profile.bio = Some("Rust port".to_string());
+    profile.tags = vec!["rust".to_string(), "cli".to_string()];
+    profile.markdown = Some("# Profile".to_string());
+    profile.avatar_uri = Some("https://example.test/avatar.png".to_string());
+    profile.avatar_url = Some("https://example.test/avatar.png".to_string());
+    profile.profile_uri = Some("https://alice.awiki.test/".to_string());
+    profile.subject_type = Some("person".to_string());
+    profile.updated_at = Some("2026-05-25T00:00:00Z".to_string());
+    profile.metadata = vec![ProfileAttribute {
+        key: "source".to_string(),
+        value: "profile".to_string(),
+    }];
 
     assert_eq!(
         profile.to_wire_profile_value(),
         json!({
             "did": "did:example:alice",
+            "subject_did": "did:example:alice",
             "handle": "alice.awiki.test",
+            "display_name": "Alice",
             "nick_name": "Alice",
+            "description": "Rust port",
             "bio": "Rust port",
             "tags": ["rust", "cli"],
             "profile_md": "# Profile",
+            "avatar_uri": "https://example.test/avatar.png",
             "avatar_url": "https://example.test/avatar.png",
+            "profile_uri": "https://alice.awiki.test/",
+            "subject_type": "person",
+            "updated": "2026-05-25T00:00:00Z",
             "updated_at": "2026-05-25T00:00:00Z",
             "metadata": {
                 "source": "profile",

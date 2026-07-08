@@ -1,19 +1,27 @@
+#[cfg(feature = "blocking")]
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
+#[cfg(feature = "blocking")]
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(feature = "blocking")]
 use std::io::{Read, Write};
+#[cfg(feature = "blocking")]
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
+#[cfg(feature = "blocking")]
 use std::sync::Arc;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct HttpClient {
+    #[cfg(feature = "blocking")]
     tls_config: Arc<ClientConfig>,
+    async_client: Result<reqwest::Client, crate::ImError>,
+    #[cfg(feature = "blocking")]
     init_error: Option<crate::ImError>,
 }
 
@@ -38,6 +46,7 @@ impl HttpClient {
     }
 
     fn with_ca_bundle(ca_bundle: Option<&str>) -> Self {
+        #[cfg(feature = "blocking")]
         let (roots, init_error) = match root_store(ca_bundle) {
             Ok(roots) => (roots, None),
             Err(err) => (
@@ -47,15 +56,20 @@ impl HttpClient {
                 Some(err),
             ),
         };
-        let tls_config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
         Self {
-            tls_config: Arc::new(tls_config),
+            #[cfg(feature = "blocking")]
+            tls_config: Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            ),
+            async_client: async_client(ca_bundle),
+            #[cfg(feature = "blocking")]
             init_error,
         }
     }
 
+    #[cfg(feature = "blocking")]
     pub(crate) fn execute(&self, request: HttpRequest) -> crate::ImResult<HttpResponse> {
         if let Some(err) = &self.init_error {
             return Err(err.clone());
@@ -87,8 +101,108 @@ impl HttpClient {
             read_http_response(&mut stream)
         }
     }
+
+    #[cfg(not(feature = "blocking"))]
+    pub(crate) fn execute(&self, _request: HttpRequest) -> crate::ImResult<HttpResponse> {
+        Err(crate::ImError::unsupported("sync-http"))
+    }
+
+    pub(crate) async fn execute_async(
+        &self,
+        request: HttpRequest,
+    ) -> crate::ImResult<HttpResponse> {
+        #[cfg(feature = "blocking")]
+        if let Some(err) = &self.init_error {
+            return Err(err.clone());
+        }
+        let client = self.async_client.as_ref().map_err(Clone::clone)?;
+        let mut builder = client
+            .request(parse_method(&request.method)?, request.url.trim())
+            .timeout(RESPONSE_TIMEOUT);
+        for (key, value) in request.headers {
+            builder = builder.header(key.trim(), value.trim());
+        }
+        if !request.body.is_empty() {
+            builder = builder.body(request.body);
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(reqwest_transport_unavailable)?;
+        let status_code = response.status().as_u16();
+        let headers = response_headers(response.headers());
+        let body = response
+            .bytes()
+            .await
+            .map_err(reqwest_transport_unavailable)?
+            .to_vec();
+        Ok(HttpResponse {
+            status_code,
+            headers,
+            body,
+        })
+    }
+
+    pub(crate) fn async_client(&self) -> crate::ImResult<reqwest::Client> {
+        self.async_client.clone()
+    }
 }
 
+fn async_client(ca_bundle: Option<&str>) -> Result<reqwest::Client, crate::ImError> {
+    let mut builder = reqwest::Client::builder()
+        .use_rustls_tls()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(RESPONSE_TIMEOUT);
+    if let Some(ca_bundle) = ca_bundle {
+        let raw =
+            fs::read(Path::new(ca_bundle)).map_err(|err| crate::ImError::TransportUnavailable {
+                detail: format!("read ca bundle: {err}"),
+            })?;
+        let certs = reqwest::Certificate::from_pem_bundle(&raw).map_err(|err| {
+            crate::ImError::TransportUnavailable {
+                detail: format!("parse ca bundle: {err}"),
+            }
+        })?;
+        if certs.is_empty() {
+            return Err(crate::ImError::TransportUnavailable {
+                detail: format!("invalid ca bundle: {ca_bundle}"),
+            });
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder.build().map_err(reqwest_transport_unavailable)
+}
+
+fn parse_method(method: &str) -> crate::ImResult<reqwest::Method> {
+    method
+        .trim()
+        .parse::<reqwest::Method>()
+        .map_err(|err| crate::ImError::TransportUnavailable {
+            detail: format!("invalid HTTP method: {err}"),
+        })
+}
+
+fn response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(key, value)| {
+            Some((
+                key.as_str().to_string(),
+                value.to_str().ok()?.trim().to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn reqwest_transport_unavailable(err: reqwest::Error) -> crate::ImError {
+    crate::ImError::TransportUnavailable {
+        detail: err.to_string(),
+    }
+}
+
+#[cfg(feature = "blocking")]
 fn root_store(ca_bundle: Option<&str>) -> crate::ImResult<RootCertStore> {
     let mut root_store = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
@@ -122,6 +236,7 @@ struct ParsedUrl {
     path_and_query: String,
 }
 
+#[cfg(feature = "blocking")]
 impl ParsedUrl {
     fn parse(raw: &str) -> crate::ImResult<Self> {
         let (scheme, rest) =
@@ -154,6 +269,7 @@ impl ParsedUrl {
     }
 }
 
+#[cfg(feature = "blocking")]
 fn split_host_port(authority: &str, scheme: &str) -> crate::ImResult<(String, u16)> {
     let trimmed = authority.trim();
     if trimmed.is_empty() {
@@ -177,6 +293,7 @@ fn split_host_port(authority: &str, scheme: &str) -> crate::ImResult<(String, u1
     Ok((trimmed.to_string(), default_port(scheme)))
 }
 
+#[cfg(feature = "blocking")]
 fn default_port(scheme: &str) -> u16 {
     if scheme == "https" {
         443
@@ -185,6 +302,7 @@ fn default_port(scheme: &str) -> u16 {
     }
 }
 
+#[cfg(feature = "blocking")]
 fn connect_tcp(parsed: &ParsedUrl) -> crate::ImResult<TcpStream> {
     let addrs = (parsed.host.as_str(), parsed.port)
         .to_socket_addrs()
@@ -205,6 +323,7 @@ fn connect_tcp(parsed: &ParsedUrl) -> crate::ImResult<TcpStream> {
     })
 }
 
+#[cfg(feature = "blocking")]
 fn write_http_request(
     mut writer: impl Write,
     parsed: &ParsedUrl,
@@ -234,6 +353,7 @@ fn write_http_request(
     Ok(())
 }
 
+#[cfg(feature = "blocking")]
 fn host_header(parsed: &ParsedUrl) -> String {
     if parsed.port == default_port(&parsed.scheme) {
         parsed.host.clone()
@@ -242,11 +362,13 @@ fn host_header(parsed: &ParsedUrl) -> String {
     }
 }
 
+#[cfg(feature = "blocking")]
 fn read_http_response(mut reader: impl Read) -> crate::ImResult<HttpResponse> {
     let raw = read_http_response_bytes(&mut reader)?;
     parse_http_response(&raw)
 }
 
+#[cfg(feature = "blocking")]
 fn read_http_response_bytes(reader: &mut impl Read) -> crate::ImResult<Vec<u8>> {
     let mut raw = Vec::new();
     let mut buffer = [0_u8; 8192];
@@ -261,6 +383,7 @@ fn read_http_response_bytes(reader: &mut impl Read) -> crate::ImResult<Vec<u8>> 
     Ok(raw)
 }
 
+#[cfg(feature = "blocking")]
 fn parse_http_response(raw: &[u8]) -> crate::ImResult<HttpResponse> {
     let split = raw
         .windows(4)
@@ -298,6 +421,7 @@ fn parse_http_response(raw: &[u8]) -> crate::ImResult<HttpResponse> {
     })
 }
 
+#[cfg(feature = "blocking")]
 fn parse_status_code(status_line: &str) -> crate::ImResult<u16> {
     let mut parts = status_line.split_whitespace();
     let _version = parts
@@ -316,6 +440,7 @@ fn parse_status_code(status_line: &str) -> crate::ImResult<u16> {
         })
 }
 
+#[cfg(feature = "blocking")]
 fn is_chunked(headers: &BTreeMap<String, String>) -> bool {
     headers.iter().any(|(key, value)| {
         key.eq_ignore_ascii_case("transfer-encoding")
@@ -325,6 +450,7 @@ fn is_chunked(headers: &BTreeMap<String, String>) -> bool {
     })
 }
 
+#[cfg(feature = "blocking")]
 fn decode_chunked_body(bytes: &[u8]) -> crate::ImResult<Vec<u8>> {
     let mut offset = 0usize;
     let mut decoded = Vec::new();
@@ -357,6 +483,7 @@ fn decode_chunked_body(bytes: &[u8]) -> crate::ImResult<Vec<u8>> {
     Ok(decoded)
 }
 
+#[cfg(feature = "blocking")]
 fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
     bytes[start..]
         .windows(2)
@@ -364,6 +491,7 @@ fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
         .map(|offset| start + offset)
 }
 
+#[cfg(feature = "blocking")]
 fn is_tolerable_response_eof(err: &std::io::Error, raw: &[u8]) -> bool {
     if err.kind() != std::io::ErrorKind::UnexpectedEof {
         return false;
@@ -375,6 +503,7 @@ fn is_tolerable_response_eof(err: &std::io::Error, raw: &[u8]) -> bool {
     response_is_complete(raw)
 }
 
+#[cfg(feature = "blocking")]
 fn response_is_complete(raw: &[u8]) -> bool {
     let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
         return false;

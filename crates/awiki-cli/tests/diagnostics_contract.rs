@@ -1,7 +1,12 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod support;
+
+use support::set_secret_storage_mode;
 
 #[test]
 fn doctor_empty_workspace_reports_go_check_names_and_counts() {
@@ -19,6 +24,7 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
             "config_file",
             "environment",
             "anp_service",
+            "identity_vault",
             "runtime",
             "identity_store",
             "sqlite",
@@ -31,13 +37,14 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     assert_eq!(status_of(&envelope, "config_file"), "warn");
     assert_eq!(status_of(&envelope, "environment"), "ok");
     assert_eq!(status_of(&envelope, "anp_service"), "ok");
+    assert_eq!(status_of(&envelope, "identity_vault"), "ok");
     assert_eq!(status_of(&envelope, "runtime"), "warn");
     assert_eq!(status_of(&envelope, "identity_store"), "warn");
     assert_eq!(status_of(&envelope, "sqlite"), "info");
     assert_eq!(status_of(&envelope, "anp_mls"), "info");
     assert_eq!(status_of(&envelope, "workspace_upgrade"), "ok");
     assert_eq!(status_of(&envelope, "legacy_paths"), "info");
-    assert_eq!(envelope["data"]["counts"]["ok"], 4);
+    assert_eq!(envelope["data"]["counts"]["ok"], 5);
     assert_eq!(envelope["data"]["counts"]["warn"], 3);
     assert_eq!(envelope["data"]["counts"]["error"], 0);
     assert_eq!(envelope["data"]["counts"]["info"], 3);
@@ -50,10 +57,15 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let sqlite = check_by_name(&envelope, "sqlite");
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], false);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 0);
+    assert_eq!(sqlite["details"]["owner_identity_invariant_count"], 0);
+    assert_eq!(
+        sqlite["details"]["legacy_secure_tables"]["e2ee_sessions_count"],
+        0
+    );
     let workspace_upgrade = check_by_name(&envelope, "workspace_upgrade");
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version"],
-        3
+        4
     );
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version_source"],
@@ -67,9 +79,41 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
 }
 
 #[test]
+fn doctor_identity_vault_reports_root_key_availability_without_secret_value() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    std::fs::write(
+        workspace.path().join("config.yaml"),
+        "secret_storage:\n  mode: vault_required\n",
+    )
+    .expect("write vault config");
+
+    let mut command = awiki_command(&["doctor"], workspace.path());
+    command.env("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key);
+    let output = command.output().expect("run doctor");
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    let vault = check_by_name(&envelope, "identity_vault");
+    assert_eq!(vault["status"], "ok");
+    assert_eq!(vault["details"]["mode"], "vault_required");
+    assert_eq!(vault["details"]["root_key"]["available"], true);
+    assert_eq!(
+        vault["details"]["root_key"]["source"],
+        "AWIKI_IM_CORE_VAULT_ROOT_KEY_B64"
+    );
+    let encoded = serde_json::to_string(&envelope).expect("doctor json");
+    assert!(
+        !encoded.contains(root_key),
+        "doctor must not expose vault root key: {encoded}"
+    );
+}
+
+#[test]
 fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     let workspace = TempDir::new().expect("temp workspace");
     assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
+    set_secret_storage_mode(workspace.path(), "file_compat");
     assert_success(&awiki_cmd_with_workspace(
         &[
             "--migration",
@@ -111,6 +155,46 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     );
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], true);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 1);
+    assert_eq!(sqlite["details"]["owner_identity_invariant_count"], 0);
+}
+
+#[test]
+fn doctor_reports_owner_invariant_summary_without_secure_plaintext() {
+    let workspace = TempDir::new().expect("temp workspace");
+    assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
+    seed_owner_invariant_violation_with_sentinels(workspace.path());
+
+    let output = awiki_cmd_with_workspace(&["doctor"], workspace.path());
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(status_of(&envelope, "sqlite"), "warn");
+    let sqlite = check_by_name(&envelope, "sqlite");
+    assert_eq!(sqlite["details"]["owner_identity_invariant_count"], 1);
+    assert_eq!(
+        sqlite["details"]["owner_identity_invariants"][0]["table"],
+        "messages"
+    );
+    assert_eq!(
+        sqlite["details"]["owner_identity_invariants"][0]["invariant"],
+        "conversation_id_must_not_include_owner_did"
+    );
+    assert_eq!(
+        sqlite["details"]["owner_identity_invariants"][0]["row_count"],
+        1
+    );
+    let encoded = serde_json::to_string(sqlite).expect("sqlite json");
+    for forbidden in [
+        "plaintext-sentinel-do-not-leak",
+        "private-key-sentinel-do-not-leak",
+        "jwt-token-sentinel-do-not-leak",
+        "raw-ciphertext-sentinel-do-not-leak",
+    ] {
+        assert!(
+            !encoded.contains(forbidden),
+            "doctor sqlite details must not expose sentinel {forbidden}: {encoded}"
+        );
+    }
 }
 
 #[test]
@@ -173,10 +257,28 @@ fn doctor_anp_mls_probe_and_state_details_match_go_contract() {
     let anp_mls = check_by_name(&envelope, "anp_mls");
     assert_eq!(anp_mls["status"], "ok");
     assert_eq!(anp_mls["details"]["version"]["api_version"], "anp-mls/v1");
+    assert_eq!(
+        anp_mls["details"]["version"]["supports_system_version"],
+        true
+    );
+    assert_eq!(anp_mls["details"]["binary_available"], true);
     assert_eq!(anp_mls["details"]["data_dir_status"], "ok");
     assert_eq!(anp_mls["details"]["state_db_status"], "ok");
     assert_eq!(anp_mls["details"]["scoped_state_count"], 1);
     assert_eq!(anp_mls["details"]["scoped_state_db_count"], 1);
+    let encoded = serde_json::to_string(anp_mls).expect("anp_mls json");
+    assert!(
+        !encoded.contains(bin_dir.path().to_string_lossy().as_ref()),
+        "doctor anp_mls details must not expose provider binary paths: {encoded}"
+    );
+    assert!(
+        !encoded.contains(workspace.path().to_string_lossy().as_ref()),
+        "doctor anp_mls details must not expose MLS state paths: {encoded}"
+    );
+    assert!(
+        !encoded.contains("state.db") && !encoded.contains("state.lock"),
+        "doctor anp_mls details must not expose MLS state file paths: {encoded}"
+    );
 }
 
 fn awiki_cmd_with_workspace(args: &[&str], workspace: &Path) -> Output {
@@ -200,7 +302,8 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT")
-        .env_remove("AWIKI_ANP_MLS_BINARY");
+        .env_remove("AWIKI_ANP_MLS_BINARY")
+        .env_remove("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64");
     command
 }
 
@@ -210,8 +313,9 @@ fn seed_contact_handle_binding(workspace: &Path) {
     im_core::compat::local_state::ensure_schema(&connection).expect("ensure schema");
     connection
         .execute(
-            "INSERT INTO contact_handle_bindings (owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO contact_handle_bindings (owner_identity_id, owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
+                "alice",
                 "did:wba:alice.example",
                 "bob",
                 "did:wba:bob.example",
@@ -221,6 +325,53 @@ fn seed_contact_handle_binding(workspace: &Path) {
             ],
         )
         .expect("seed contact handle binding");
+}
+
+fn seed_owner_invariant_violation_with_sentinels(workspace: &Path) {
+    let database = workspace.join("data").join("awiki-cli.db");
+    let connection = rusqlite::Connection::open(&database).expect("open sqlite database");
+    im_core::compat::local_state::ensure_schema(&connection).expect("ensure schema");
+    connection
+        .execute(
+            "INSERT INTO identity_did_history (owner_identity_id, did, status, first_seen_at, last_seen_at)
+             VALUES (?1, ?2, 'current', ?3, ?3)",
+            rusqlite::params![
+                "alice",
+                "did:wba:alice.example",
+                "2026-05-31T00:00:00Z",
+            ],
+        )
+        .expect("seed identity DID history");
+    connection
+        .execute(
+            "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, content, metadata, stored_at)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "msg-owner-invariant",
+                "alice",
+                "did:wba:alice.example",
+                "dm:did:wba:alice.example:did:wba:bob.example",
+                "plaintext-sentinel-do-not-leak",
+                r#"{"private_key":"private-key-sentinel-do-not-leak","jwt_token":"jwt-token-sentinel-do-not-leak"}"#,
+                "2026-05-31T00:00:00Z",
+            ],
+        )
+        .expect("seed invariant message");
+    connection
+        .execute(
+            "INSERT INTO e2ee_outbox (outbox_id, owner_identity_id, owner_did, peer_did, plaintext, metadata, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            rusqlite::params![
+                "outbox-owner-invariant",
+                "alice",
+                "did:wba:alice.example",
+                "did:wba:bob.example",
+                "plaintext-sentinel-do-not-leak",
+                r#"{"ciphertext":"raw-ciphertext-sentinel-do-not-leak"}"#,
+                "2026-05-31T00:00:00Z",
+            ],
+        )
+        .expect("seed secure outbox sentinel");
 }
 
 fn check_names(envelope: &Value) -> Vec<&str> {
@@ -289,12 +440,20 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("awiki-cli-rs2-test-{}-{nanos}", std::process::id()));
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-test-{}-{nanos}-{thread_id}-{counter}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&path)?;
         Ok(Self { path })
     }

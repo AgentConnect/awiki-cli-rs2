@@ -79,6 +79,18 @@ pub(crate) fn build_update_profile_payload(
         );
         changed_fields.push("tags".to_string());
     }
+    let avatar_url = if params.avatar_uri.trim().is_empty() {
+        params.avatar_url.trim().to_string()
+    } else {
+        params.avatar_uri.trim().to_string()
+    };
+    if !avatar_url.trim().is_empty() {
+        payload.insert(
+            "avatar_url".to_string(),
+            Value::String(avatar_url.trim().to_string()),
+        );
+        changed_fields.push("avatar_uri".to_string());
+    }
     let markdown = if params.preserve_markdown {
         params.markdown.clone()
     } else {
