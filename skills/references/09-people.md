@@ -29,7 +29,10 @@ Do not describe people search as implemented.
 - `awiki-cli people followers [--limit N] [--offset N] [--profile]`
 - `awiki-cli people following [--limit N] [--offset N] [--profile]`
 - `awiki-cli people contacts list`
-- `awiki-cli people contacts save --did <did> [--handle <handle>] [--name <name>] [--relationship <label>] [--reason <text>]`
+- `awiki-cli people contacts save --did <did> [--handle <handle>] [--display-name <name>] [--relationship <label>] [--reason <text>]`
+
+`--name` is retained as a deprecated alias for `people contacts save`, but
+new references should use `--display-name`.
 
 ## Future Planned Scope
 

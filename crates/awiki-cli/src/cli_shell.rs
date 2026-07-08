@@ -429,7 +429,8 @@ impl App {
                     "enabled": resolved.runtime_listener_enabled,
                     "auto_install": resolved.runtime_listener_auto_install,
                     "auto_start": resolved.runtime_listener_auto_start,
-                    "status": "not_managed_in_rust_slice",
+                    "managed_by": "awiki-cli runtime listener",
+                    "status_command": "awiki-cli runtime listener status",
                 }
             }),
             "Workspace initialized",

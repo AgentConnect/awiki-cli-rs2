@@ -1,3 +1,4 @@
+use awiki_cli::command_catalog::{CutoverStatus, DirectInvocationPolicy};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::process::{Command, Output};
@@ -154,6 +155,128 @@ fn default_schema_hides_deprecated_e2ee_alias_flags_but_all_keeps_metadata() {
         profile["choices"],
         serde_json::json!(["transport-protected", "group-e2ee"])
     );
+}
+
+#[test]
+fn default_schema_surface_does_not_advertise_non_product_commands() {
+    let default = success_json(&awiki_cmd(&["schema"]));
+    let commands = default["data"]["commands"]
+        .as_array()
+        .expect("default schema commands");
+    let mut leaked = Vec::new();
+
+    for command in commands {
+        let name = command["name"].as_str().expect("schema name");
+        let cutover = command["cutover"]["status"].as_str().unwrap_or("missing");
+        let policy = command["direct_invocation"]["policy"]
+            .as_str()
+            .unwrap_or("missing");
+        let hidden = command["hidden"].as_bool().unwrap_or(false);
+        if matches!(
+            cutover,
+            "unsupported" | "removed" | "hidden" | "diagnostic_only"
+        ) || matches!(
+            policy,
+            "require_diagnostic_gate"
+                | "require_migration_gate"
+                | "require_internal_service_gate"
+                | "stable_unsupported"
+                | "removed"
+        ) || hidden
+        {
+            leaked.push(format!(
+                "{name}: cutover={cutover}, policy={policy}, hidden={hidden}"
+            ));
+        }
+    }
+
+    assert!(
+        leaked.is_empty(),
+        "default schema must stay limited to current public product commands: {leaked:?}"
+    );
+}
+
+#[test]
+fn documented_current_user_commands_resolve_to_supported_current_surface() {
+    for words in [
+        &["status"][..],
+        &["doctor"][..],
+        &["version"][..],
+        &["init"][..],
+        &["config", "show"][..],
+        &["id", "list"][..],
+        &["id", "current"][..],
+        &["id", "status"][..],
+        &["id", "register"][..],
+        &["id", "bind"][..],
+        &["id", "recover"][..],
+        &["id", "resolve"][..],
+        &["id", "profile", "get"][..],
+        &["id", "profile", "set"][..],
+        &["msg", "send"][..],
+        &["msg", "inbox"][..],
+        &["msg", "history"][..],
+        &["msg", "mark-read"][..],
+        &["msg", "attachment", "download"][..],
+        &["mail", "inbox"][..],
+        &["mail", "read"][..],
+        &["mail", "mark-read"][..],
+        &["mail", "send"][..],
+        &["mail", "attachment", "download"][..],
+        &["group", "create"][..],
+        &["group", "list"][..],
+        &["group", "get"][..],
+        &["group", "join"][..],
+        &["group", "leave"][..],
+        &["group", "add"][..],
+        &["group", "remove"][..],
+        &["group", "members"][..],
+        &["group", "messages"][..],
+        &["group", "secure", "status"][..],
+        &["group", "secure", "repair"][..],
+        &["people", "contacts", "list"][..],
+        &["people", "contacts", "save"][..],
+        &["page", "list"][..],
+        &["page", "get"][..],
+        &["page", "create"][..],
+        &["page", "update"][..],
+        &["page", "delete"][..],
+        &["site", "root", "get"][..],
+        &["site", "root", "set"][..],
+        &["site", "page", "list"][..],
+        &["site", "page", "create"][..],
+        &["runtime", "status"][..],
+        &["runtime", "listener", "status"][..],
+        &["runtime", "host-notify", "config", "show"][..],
+    ] {
+        let resolved =
+            awiki_cli::command_catalog::resolve_command(words).expect("documented command");
+        assert_eq!(
+            resolved.consumed_words,
+            words.len(),
+            "documented command should resolve exactly: {words:?}"
+        );
+        let spec = awiki_cli::command_catalog::lookup(&resolved.name)
+            .expect("resolved documented command has schema");
+        assert!(
+            matches!(
+                spec.cutover_status(),
+                CutoverStatus::CliOwned | CutoverStatus::ImCore
+            ),
+            "{:?} resolves to non-current cutover status {:?}",
+            words,
+            spec.cutover_status()
+        );
+        assert!(
+            matches!(
+                spec.direct_invocation(),
+                DirectInvocationPolicy::Allow | DirectInvocationPolicy::AllowWithWarning
+            ),
+            "{:?} resolves to gated or unsupported direct invocation {:?}",
+            words,
+            spec.direct_invocation()
+        );
+    }
 }
 
 #[test]

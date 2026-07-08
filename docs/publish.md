@@ -2,6 +2,12 @@
 
 本文档描述当前有效的发布方式：在本地或服务器构建 release 产物，然后由维护者把产物放到实际文件服务目录。
 
+发布边界：
+
+- `awiki-cli` 是 npm 包和单二进制命令行产品；`awiki-cli upgrade` 只检查/升级 CLI 自身。
+- `awiki-deamon` 是 awiki-me 客户端安装到宿主机的 daemon 包；它使用 daemon manifest、install.sh 和客户端/daemon 升级路径，不通过 `awiki-cli runtime listener` 管理。
+- `awiki-cli runtime listener` 是 CLI 的本机 WebSocket receiving helper/service，属于 CLI runtime UX，不是 daemon release 包。
+
 ## 1. 版本号约定
 
 - 公开版本真相是仓库根目录的 `package.json.version`。
@@ -87,7 +93,7 @@ Linux/macOS 构建还会检查 E2EE feature graph，确认 `awiki-cli -> im-core
 
 ## 4. 发布 awiki-deamon 包
 
-Daemon release 包用于客户端安装/升级。当前统一在目标服务器上执行高层发布脚本，
+Daemon release 包用于 awiki-me 客户端安装/升级宿主机 daemon。当前统一在目标服务器上执行高层发布脚本，
 由 GitHub Actions 构建 Linux amd64、macOS arm64 和 macOS amd64 三个平台包，
 再发布到本机 Nginx daemon 静态目录：
 
@@ -131,6 +137,10 @@ manifest 中的 `sha256` 校验；校验失败或下载失败会继续尝试下�
 
 脚本不会修改版本号、提交代码或推送代码。发布前需要先在
 `crates/awiki-deamon/Cargo.toml` 中更新版本，并确保 `Cargo.lock` 已同步。
+
+注意：daemon 发布和 CLI 发布是两条发布线。daemon manifest 的 `latest` / `min_supported`
+只约束 awiki-me daemon 安装和升级；不会改变 `@awiki/cli` 的 npm 版本，也不会影响
+`awiki-cli upgrade` 的行为。
 
 ## 5. 手工准备 daemon 下载目录
 

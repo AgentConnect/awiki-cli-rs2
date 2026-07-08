@@ -86,14 +86,14 @@ awiki-cli msg inbox --scope direct --with DID
 awiki-cli msg history --with DID
 
 awiki-cli msg secure status --with DID
-awiki-cli msg secure init --with DID
 awiki-cli msg secure repair --with DID
-awiki-cli msg secure failed
-awiki-cli msg secure retry OUTBOX_ID
-awiki-cli msg secure drop OUTBOX_ID
 ```
 
 User-facing output should help repair sessions while redacting private cryptographic material.
+
+`msg secure init`, `msg secure failed`, `msg secure retry`, and `msg secure drop`
+are reserved internal/diagnostic command shapes in this branch. They are stable
+unsupported at the product surface and must not be documented as user workflows.
 
 ## Discovery Posture
 

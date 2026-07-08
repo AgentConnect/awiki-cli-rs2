@@ -12,9 +12,16 @@
 - `schema`、help、completion、docs 和 skill reference 应从同一命令事实源保持一致。
 - 业务流程通过 `im-core` public services 执行；CLI 保留 parse/build/call/render。
 
+当前收口边界：
+
+- 本文档描述当前分支已经纳入命令契约的 CLI 产品面，不承诺未完成能力。
+- `awiki-cli schema` 是命令事实源；本文档只解释产品意图、常用路径和边界。
+- 默认用户面只包含 `cli_owned` 和 `im_core` 命令；diagnostic、migration、internal、unsupported 和 removed 命令不得进入默认 Agent 工作流。
+- `awiki-cli runtime listener` 是 CLI 自己的本机 realtime listener/service 能力；`crates/awiki-deamon` 是 awiki-me 客户端安装到宿主机的 daemon 包。两者同在本仓库，但不是同一个产品入口，也不共享用户操作路径。
+
 ## 2. 顶层命令
 
-当前公共顶层命令：
+当前默认用户顶层命令：
 
 ```text
 awiki-cli status
@@ -32,7 +39,6 @@ awiki-cli people
 awiki-cli page
 awiki-cli site
 awiki-cli runtime
-awiki-cli debug
 ```
 
 命令归属：
@@ -44,8 +50,14 @@ awiki-cli debug
 - `people`：联系人、关系、profile/directory 相关能力。
 - `page`：当前身份 handle 级内容页。
 - `site`：tenant bare-domain site pages，必须显式 `--domain`。
-- `runtime`：运行模式、listener、service、host notification。
-- `debug`：本地诊断、数据库 inspection 和专家排障。
+- `runtime`：CLI runtime 状态、listener 状态/开关、host notification 开关。listener 安装、启动、停止、Hermes/OpenClaw 配置等属于 operator/diagnostic 面，不进入默认用户面。
+
+非默认命令域：
+
+- `debug`：专家排障和本地 inspection，需要 diagnostic gate；raw SQL / raw RPC 不属于当前支持能力。
+- `id.import-v1`、`id.vault.migrate`、`id.vault.cleanup-plaintext`：历史迁移入口，需要 migration gate。
+- `runtime.listener.run`、`runtime.listener.service-run`、`runtime.host-notify.hermes.bridge.service-run`：内部服务入口，需要 internal service gate。
+- unsupported / removed 命令只保留稳定错误和兼容提示，不代表可用功能。
 
 ## 3. 全局参数
 
@@ -71,7 +83,7 @@ awiki-cli debug
 ```bash
 awiki-cli id list
 awiki-cli id current
-awiki-cli id use --identity alice
+awiki-cli id use alice
 awiki-cli id status
 awiki-cli id register --handle alice
 awiki-cli id bind --email alice@example.com
@@ -83,7 +95,8 @@ awiki-cli id profile set --markdown-file ./profile.md
 边界：
 
 - `id` 命令的业务能力归 `im-core::identity` 和 `im-core::auth`。
-- CLI 负责 OTP 输入、文件读取、default identity 文件写入、dry-run 和输出。
+- CLI 负责参数解析、OTP 输入、文件读取、default identity 文件写入、dry-run 和输出。
+- `--identity` 是全局选择参数，用于选择本次命令读取/操作哪个本地身份；切换默认身份使用 `awiki-cli id use <identity>`。
 - 私钥、JWT、DID document 写入细节不进入普通输出。
 
 ## 5. Messaging
@@ -115,6 +128,7 @@ x ReceiveMode(pull | realtime)
 - 群发消息的 canonical 入口是 `msg send --group`。
 - `ReceiveMode` 属于 runtime，不作为普通 `msg send` 语义暴露。
 - 附件字节走附件能力，不塞进普通消息 JSON。
+- `msg.secure.status` 和 `msg.secure.repair` 是当前默认 secure direct 入口；`msg.secure.init`、failed/retry/drop 等低层 direct secure 命令当前是 stable unsupported，不进入默认产品面。
 
 ## 6. Group
 
@@ -138,7 +152,8 @@ awiki-cli group secure repair --group GROUP_DID
 
 - 群对象是独立资源，归 `group` 顶级域。
 - 向群发消息仍通过 `msg send --group`。
-- 低层 `group e2ee *` 不属于默认产品契约；secure 用户入口是高层 status/repair 和 `--secure required`。
+- `group secure status` 和 `group secure repair` 是默认用户入口。
+- 低层 `group e2ee *` 不属于默认产品契约；部分命令仅在 diagnostic/internal 场景下保留，不能作为普通用户流程或 Agent 默认技能入口。
 
 ## 7. Mail
 
@@ -179,8 +194,19 @@ awiki-cli site page create --domain example.com --slug about --markdown-file ./a
 
 ```bash
 awiki-cli runtime setup --mode websocket
-awiki-cli runtime apply
+awiki-cli runtime status
 awiki-cli runtime listener status
+awiki-cli runtime listener enable
+awiki-cli runtime listener disable
+awiki-cli runtime host-notify enable
+awiki-cli runtime host-notify disable
+```
+
+Operator / diagnostic 常用命令：
+
+```bash
+awiki-cli runtime setup --mode http
+awiki-cli runtime apply
 awiki-cli runtime listener start
 awiki-cli runtime listener stop
 awiki-cli runtime host-notify config show
@@ -194,14 +220,15 @@ awiki-cli runtime host-notify hermes status
 - `im-core` 提供 realtime runner/session/event。
 - CLI 负责 systemd/launchd/Windows service、socket/pipe、pid/log/status 和 host notification 配置。
 - host notification sink 属于 runtime UX，不进入普通 message API。
+- CLI runtime listener 是 `awiki-cli` 的本机消息接收辅助能力；awiki-me 使用的 `awiki-deamon` release / install / upgrade 流程见 `docs/publish.md`，不通过 `awiki-cli runtime listener` 管理。
+- `runtime.heartbeat *` 是 stable unsupported，不属于当前 CLI runtime 产品面。
 
 ## 10. Debug
 
-`debug` 域用于专家排障和本地 inspection：
+`debug` 域用于专家排障和本地 inspection，需要 `--diagnostic` gate：
 
 ```bash
-awiki-cli debug db query --sql "select ..."
-awiki-cli debug db handle-history alice
+awiki-cli --diagnostic debug db handle-history alice
 ```
 
 规则：
@@ -209,6 +236,8 @@ awiki-cli debug db handle-history alice
 - Debug 命令不进入默认 Agent 工作流。
 - Debug 输出也必须遵守脱敏规则。
 - 不要把 debug/raw 能力提升为普通产品命令。
+- `debug db query` 是 stable unsupported；raw SQL 不属于当前支持能力。
+- `debug raw *` 已移除；如果需要新增专家诊断能力，应定义受控命令和脱敏输出，而不是恢复 raw RPC。
 
 ## 11. Schema 与 Docs
 
@@ -216,11 +245,13 @@ awiki-cli debug db handle-history alice
 
 ```bash
 awiki-cli schema
-awiki-cli docs list
-awiki-cli docs topic architecture
+awiki-cli schema --audience operator
+awiki-cli schema --all
+awiki-cli docs
+awiki-cli docs architecture
 ```
 
-命令树、schema、help、docs 和 skill reference 必须保持一致。新增或改名命令时，需要同步相关文档和测试。
+命令树、schema、help、docs 和 skill reference 必须保持一致。新增或改名命令时，需要同步相关文档和测试。默认用户文档不得推荐 `schema` 中标记为 unsupported、removed、hidden、diagnostic-only、migration-only 或 internal-only 的能力，除非文案明确说明它是非默认面。
 
 ## 12. 发布与版本
 

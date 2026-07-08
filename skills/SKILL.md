@@ -43,7 +43,7 @@ Prefer opening only the minimal document set required by the current task:
 | SitePages | Tenant bare-domain site pages and root/page management | `site`/`tenant`/`domain`/`root`/`pages` | `references/11-site-pages.md` |
 | Discovery | Group review, candidate review, manual introduction drafts | `discovery`/`intro`/`groupreview` | `references/07-discovery.md` |
 | Debug | SQLite, local import, last-resort troubleshooting | `debug`/`sqlite`/`import-v1` | `references/08-debug.md` |
-| PeoplePlanned | Future people/relationship contract | `people`/`follow`/`contacts` | `references/09-people-planned.md` |
+| People | Relationship and local-contact commands; people search boundary | `people`/`follow`/`contacts` | `references/09-people.md` |
 
 
 - Open the matching `references` document based on the task's business domain.
@@ -203,7 +203,7 @@ When the command surface is unclear, use these methods to explore:
 - page: implemented
 - site pages: implemented
 - discovery workflow: partially implemented
-- people: planned
+- people: partially implemented
 - debug helpers: partially implemented
 
 Do not describe capabilities that are "partially implemented" or "planned" as behavior that is directly production-ready.
@@ -214,7 +214,7 @@ Do not describe capabilities that are "partially implemented" or "planned" as be
 - `msg send --secure required` is the canonical secure flag for direct/group text messages and direct/group attachments. For attachments, use the existing `msg send --file ... --secure required` command surface rather than inventing a separate secure-attachment command.
 - `msg secure status` and `msg secure repair` are supported high-level secure-message commands; `msg secure init/failed/retry/drop` remain unsupported/internal.
 - `runtime heartbeat` is planned but not yet implemented.
-- The `people` command is reserved but not yet implemented.
+- The `people` command supports relationship and local-contact operations; `people search` remains unsupported.
 - If the command shape is unclear, check `awiki-cli schema [command]` before making temporary guesses.
 
 ## Troubleshooting Escalation Order

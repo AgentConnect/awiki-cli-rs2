@@ -841,6 +841,19 @@ fn init_creates_real_sqlite_schema() {
     let workspace = TempDir::new().expect("temp workspace");
     let init_output = awiki_cmd_with_workspace(&["init"], workspace.path().to_str().unwrap());
     assert_success(&init_output);
+    let envelope = success_json(&init_output);
+    assert_eq!(
+        envelope["data"]["listener"]["managed_by"],
+        "awiki-cli runtime listener"
+    );
+    assert_eq!(
+        envelope["data"]["listener"]["status_command"],
+        "awiki-cli runtime listener status"
+    );
+    assert!(
+        !String::from_utf8_lossy(&init_output.stdout).contains("not_managed_in_rust_slice"),
+        "init output must not expose old slice-era implementation wording"
+    );
 
     let connection =
         Connection::open(workspace.path().join("data").join("awiki-cli.db")).expect("open db");

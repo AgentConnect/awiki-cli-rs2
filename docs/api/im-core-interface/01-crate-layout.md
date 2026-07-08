@@ -205,7 +205,7 @@ P1A 完成后至少满足：
 ```bash
 cargo test -p im-core --locked
 cargo test -p awiki-cli --locked
-cargo +1.79.0 fmt --check
+cargo +1.88.0 fmt --check
 ```
 
-如果当前工具链以 workspace `rust-version = 1.78` 为准，接口不得依赖高于 1.78/1.79 的 Rust 语法。
+当前 workspace 固定 Rust `1.88.0`；接口和测试不得依赖仓库 toolchain 之外的编译器行为。

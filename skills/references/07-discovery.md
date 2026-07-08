@@ -14,8 +14,11 @@ This file is a **workflow reference**, not an entry skill. Load it only when the
   - member review
   - direct-message history review
   - profile lookup
+  - relationship commands
+  - local contacts list/save
 - Planned next:
-  - `people` search, follow, contacts, and relationship management
+  - `people search`
+  - richer recommendation and discovery workflows
 
 ## When to Use
 
@@ -58,14 +61,23 @@ After collecting the structured output, draft the introduction or direct message
 
 Do not send messages automatically. If the user requests sending, switch to `03-messaging.md` and prefer a dry-run first.
 
-## Planned Follow-Up Capabilities
+## People Commands in This Workflow
 
-The following command families are reserved but not yet implemented:
+Relationship and local-contact commands are implemented and can be used when
+the workflow requires explicit relationship context:
 
-- `awiki-cli people search <QUERY>`
-- `awiki-cli people contacts save --did <did> [...]`
+- `awiki-cli people status <TARGET>`
+- `awiki-cli people followers [--limit N] [--offset N] [--profile]`
+- `awiki-cli people following [--limit N] [--offset N] [--profile]`
+- `awiki-cli people contacts list`
+- `awiki-cli people contacts save --did <did> [--handle <handle>] [--display-name <name>] [--relationship <label>] [--reason <text>]`
 
-When the user requests these operations, explain that the contract exists, but the current repository does not implement the corresponding handlers yet.
+`awiki-cli people search <QUERY>` remains unsupported until a search API is
+designed.
+
+When the user requests search or automated discovery, explain that relationship
+and local-contact operations are available, but people search is not implemented
+in the current repository.
 
 ## Safety Notes
 
@@ -78,4 +90,4 @@ When the user requests these operations, explain that the contract exists, but t
 - `02-identity.md`
 - `03-messaging.md`
 - `04-groups.md`
-- `09-people-planned.md`
+- `09-people.md`
