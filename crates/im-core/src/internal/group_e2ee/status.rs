@@ -997,6 +997,7 @@ mod tests {
                             .and_then(Value::as_str)
                             .unwrap_or("service error")
                             .to_owned(),
+                        data: None,
                     });
                 }
                 return Ok(value);

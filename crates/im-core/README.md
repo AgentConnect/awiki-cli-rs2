@@ -1,8 +1,8 @@
-# im-core
+# awiki-im-core
 
 > English is the default language for this README. For Chinese, see [README.zh-CN.md](./README.zh-CN.md).
 
-`im-core` is the reusable Rust IM SDK for the Awiki client stack. It owns the
+`awiki-im-core` is the reusable Rust IM SDK for the Awiki client stack. It owns the
 shared product flows behind the Awiki CLI, the Flutter/Dart SDK bridge, and
 native app integrations: identity, DID-WBA authentication, messaging, groups,
 attachments, realtime notifications, E2EE-ready secure messaging, local state,
@@ -42,9 +42,9 @@ Useful ANP links:
 - Rust `anp` crate on crates.io: <https://crates.io/crates/anp>
 - Rust `anp` docs: <https://docs.rs/anp>
 
-`im-core` depends on the Rust `anp` SDK for low-level ANP protocol machinery, but
+`awiki-im-core` depends on the Rust `anp` SDK for low-level ANP protocol machinery, but
 it keeps those details behind Awiki-oriented product APIs. Application code
-should normally call `im-core` services rather than constructing raw ANP wire
+should normally call `awiki-im-core` services rather than constructing raw ANP wire
 payloads itself.
 
 ## What this crate provides
@@ -68,13 +68,13 @@ payloads itself.
 The dependency direction is fixed:
 
 ```text
-awiki-cli      -> im-core
-im-core-dart   -> im-core
+awiki-cli      -> awiki-im-core
+im-core-dart   -> awiki-im-core
 awiki_im_core  -> im-core-dart native library
 awiki-me       -> awiki_im_core
 ```
 
-`im-core` owns product behavior and local state. It does **not** own:
+`awiki-im-core` owns product behavior and local state. It does **not** own:
 
 - CLI argument parsing, terminal output, exit codes, or workspace discovery.
 - Flutter widget state, app presentation DTOs, or UI cache models.
@@ -88,21 +88,28 @@ After publication to crates.io, add the crate to your Rust project:
 
 ```toml
 [dependencies]
-im-core = "0.1"
+awiki-im-core = "0.1"
 ```
 
 For local workspace development, use a path dependency:
 
 ```toml
 [dependencies]
-im-core = { path = "../awiki-cli-rs2/crates/im-core" }
+awiki-im-core = { path = "../awiki-cli-rs2/crates/im-core" }
+```
+
+If you want the Rust import name to stay `im_core`, use Cargo dependency renaming:
+
+```toml
+[dependencies]
+im-core = { package = "awiki-im-core", version = "0.1" }
 ```
 
 To enable additional capability groups:
 
 ```toml
 [dependencies]
-im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attachments"] }
+awiki-im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attachments"] }
 ```
 
 ## Feature flags
@@ -128,7 +135,7 @@ The default feature set is `sqlite` + `http`.
 ```rust
 use std::path::PathBuf;
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 
 #[tokio::main]
 async fn main() -> ImResult<()> {
@@ -197,7 +204,7 @@ Hosts pass all environment configuration explicitly through `ImCoreConfig`:
 
 The SDK does not discover CLI workspaces or read app config files by itself. CLI,
 Flutter, daemon, and test hosts are responsible for resolving configuration and
-passing normalized values into `im-core`.
+passing normalized values into `awiki-im-core`.
 
 ## Storage and paths
 
@@ -245,7 +252,7 @@ Security rules:
 
 ## Realtime and local-first reads
 
-`im-core` treats committed local projection as the durable source for fast UI
+`awiki-im-core` treats committed local projection as the durable source for fast UI
 reads. Conversation snapshots and patch streams are acceleration layers over
 SQLite state, not separate sources of truth.
 
@@ -278,10 +285,10 @@ messages, telemetry, and retry policies without exposing secrets.
 From the workspace root:
 
 ```bash
-cargo test -p im-core --locked
+cargo test -p awiki-im-core --locked
 cargo test --workspace --locked
-cargo package -p im-core --allow-dirty
-cargo publish -p im-core --dry-run
+cargo package -p awiki-im-core --allow-dirty
+cargo publish -p awiki-im-core --dry-run
 ```
 
 For publishing, every non-dev dependency must include a crates.io `version`.

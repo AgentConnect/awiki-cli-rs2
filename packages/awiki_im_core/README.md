@@ -1,8 +1,8 @@
 # awiki_im_core
 
-General-purpose Flutter/Dart SDK package for Awiki `im-core`, backed by the Rust facade crate `im-core-dart`.
+General-purpose Flutter/Dart SDK package for Awiki `awiki-im-core`, backed by the Rust facade crate `im-core-dart`.
 
-This package is not an `awiki-me` adapter and intentionally exposes DTOs that follow `im-core` semantics rather than app UI/cache models.
+This package is not an `awiki-me` adapter and intentionally exposes DTOs that follow `awiki-im-core` semantics rather than app UI/cache models.
 
 Native support in v0.1 targets Android, iOS, macOS, and Linux. Flutter Web receives a stub that throws `UnsupportedError` at runtime.
 
