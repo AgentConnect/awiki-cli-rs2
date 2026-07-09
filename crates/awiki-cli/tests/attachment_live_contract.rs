@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{set_secret_storage_mode, tenant_config_path, tenant_workspace};
 
 #[test]
 fn msg_group_attachment_send_live_uploads_commits_and_group_sends_like_go() {
@@ -699,6 +699,8 @@ fn register_ready_identity(
     attachment_service_path: &str,
     attachment_service_did: &str,
 ) {
+    configure_default_tenant_if_needed(workspace, service_base_url);
+    write_msg_config_with_runtime(workspace, service_base_url, "http");
     set_secret_storage_mode(workspace, "file_compat");
     let create = awiki_cmd(
         &[
@@ -715,7 +717,8 @@ fn register_ready_identity(
     assert_success(&create);
 
     let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant_workspace = tenant_workspace(workspace);
+    let index_path = tenant_workspace.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     index["credentials"][identity_name]["did"] = json!(did);
     index["credentials"][identity_name]["handle"] = json!(handle);
@@ -726,7 +729,7 @@ fn register_ready_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant_workspace.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -779,13 +782,119 @@ fn write_msg_config(workspace: &Path, base_url: &str) {
 }
 
 fn write_msg_config_with_runtime(workspace: &Path, base_url: &str, runtime_mode: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "runtime:\n  mode: {runtime_mode}\nservices:\n  service_base_url: {base_url}\n  anp_service_did: did:wba:awiki.ai\n"
-        ),
-    )
-    .unwrap();
+    configure_default_tenant_if_needed(workspace, base_url);
+    let config_path = tenant_config_path(workspace);
+    let text = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut output = String::new();
+    let mut in_runtime = false;
+    let mut in_services = false;
+    let mut wrote_mode = false;
+    let mut wrote_anp_endpoint = false;
+    let mut wrote_anp_did = false;
+    let mut saw_runtime = false;
+    let mut saw_services = false;
+    for line in text.lines() {
+        let is_top_level =
+            !line.chars().next().is_some_and(char::is_whitespace) && !line.trim().is_empty();
+        if in_runtime && is_top_level {
+            if !wrote_mode {
+                output.push_str(&format!("  mode: {runtime_mode}\n"));
+            }
+            in_runtime = false;
+        }
+        if in_services && is_top_level {
+            if !wrote_anp_endpoint {
+                output.push_str("  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n");
+            }
+            if !wrote_anp_did {
+                output.push_str("  anp_service_did: did:wba:awiki.ai\n");
+            }
+            in_services = false;
+        }
+        if is_top_level && line.trim() == "runtime:" {
+            saw_runtime = true;
+            in_runtime = true;
+            wrote_mode = false;
+            output.push_str(line);
+            output.push('\n');
+            continue;
+        }
+        if is_top_level && line.trim() == "services:" {
+            saw_services = true;
+            in_services = true;
+            wrote_anp_endpoint = false;
+            wrote_anp_did = false;
+            output.push_str(line);
+            output.push('\n');
+            continue;
+        }
+        if in_runtime && line.trim_start().starts_with("mode:") {
+            output.push_str(&format!("  mode: {runtime_mode}\n"));
+            wrote_mode = true;
+            continue;
+        }
+        if in_services && line.trim_start().starts_with("anp_service_endpoint:") {
+            output.push_str("  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n");
+            wrote_anp_endpoint = true;
+            continue;
+        }
+        if in_services && line.trim_start().starts_with("anp_service_did:") {
+            output.push_str("  anp_service_did: did:wba:awiki.ai\n");
+            wrote_anp_did = true;
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    if in_runtime && !wrote_mode {
+        output.push_str(&format!("  mode: {runtime_mode}\n"));
+    }
+    if in_services {
+        if !wrote_anp_endpoint {
+            output.push_str("  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n");
+        }
+        if !wrote_anp_did {
+            output.push_str("  anp_service_did: did:wba:awiki.ai\n");
+        }
+    }
+    if !saw_runtime {
+        output.push_str(&format!("\nruntime:\n  mode: {runtime_mode}\n"));
+    }
+    if !saw_services {
+        output.push_str(
+            "\nservices:\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n",
+        );
+    }
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(config_path, output).unwrap();
+}
+
+fn configure_default_tenant_if_needed(workspace: &Path, base_url: &str) {
+    let current = awiki_cmd(&["tenant", "current"], workspace);
+    assert_success(&current);
+    let envelope: Value = serde_json::from_slice(&current.stdout).expect("tenant current JSON");
+    if envelope["data"]["tenant"]["profile"]["backend_base_url"]
+        .as_str()
+        .map(|value| value.trim_end_matches('/') == base_url.trim_end_matches('/'))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let output = awiki_cmd(
+        &[
+            "tenant",
+            "reconfigure",
+            "default",
+            "--backend-base-url",
+            base_url,
+            "--did-host",
+            "awiki.ai",
+        ],
+        workspace,
+    );
+    assert_success(&output);
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

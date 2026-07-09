@@ -1,6 +1,7 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -9,10 +10,13 @@ fn unknown_local_flags_fail_like_go_cobra_before_handler_execution() {
         &["status", "--bogus"][..],
         &["version", "--bogus=value"][..],
         &[
-            "config",
-            "set",
-            "--did-domain",
-            "awiki.info",
+            "tenant",
+            "create",
+            "acme",
+            "--backend-base-url",
+            "https://api.acme.test",
+            "--did-host",
+            "acme.test",
             "--bogus",
             "value",
         ][..],
@@ -84,14 +88,45 @@ fn root_help_prints_default_command_surface() {
     for args in [&["--help"][..], &["-h"][..]] {
         let output = awiki_cmd(args);
         assert_success(&output);
-        let envelope = success_json(&output);
-        assert_eq!(envelope["command"], "awiki-cli schema");
-        assert_eq!(envelope["summary"], "Static command contract");
+        assert_stderr_empty(&output);
+        let text = stdout_text(&output);
+        assert_text_contains(&text, "AWiki CLI");
+        assert_text_contains(&text, "Usage:");
+        assert_text_contains(&text, "Commands:");
+        assert_text_contains(&text, "tenant");
+        assert_text_contains(&text, "schema [COMMAND]");
+    }
+}
+
+#[test]
+fn command_help_prints_human_readable_text() {
+    for (args, expected_usage, expected_text) in [
+        (
+            &["tenant", "--help"][..],
+            "awiki-cli tenant",
+            "Manage backend and DID host tenants",
+        ),
+        (
+            &["tenant", "create", "--help"][..],
+            "awiki-cli tenant create <name>",
+            "--backend-base-url <string>",
+        ),
+        (
+            &["tenant", "current", "-h"][..],
+            "awiki-cli tenant current",
+            "Show the current tenant",
+        ),
+    ] {
+        let output = awiki_cmd(args);
+        assert_success(&output);
+        assert_stderr_empty(&output);
+        let text = stdout_text(&output);
+        assert_text_contains(&text, expected_usage);
+        assert_text_contains(&text, expected_text);
+        assert_text_contains(&text, "machine-readable command metadata");
         assert!(
-            envelope["data"]["commands"]
-                .as_array()
-                .is_some_and(|commands| !commands.is_empty()),
-            "root help should expose the default command surface"
+            serde_json::from_str::<Value>(&text).is_err(),
+            "help should be human-readable text, not a JSON envelope: {text}"
         );
     }
 }
@@ -136,6 +171,25 @@ fn assert_stdout_empty(output: &Output) {
     );
 }
 
+fn assert_stderr_empty(output: &Output) {
+    assert!(
+        output.stderr.is_empty(),
+        "stderr should be empty, got {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn stdout_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn assert_text_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected {haystack:?} to contain {needle:?}"
+    );
+}
+
 fn success_json(output: &Output) -> Value {
     assert!(
         output.stderr.is_empty(),
@@ -162,12 +216,20 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("awiki-cli-rs2-test-{}-{nanos}", std::process::id()));
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-test-{}-{nanos}-{thread_id}-{counter}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&path)?;
         Ok(Self { path })
     }

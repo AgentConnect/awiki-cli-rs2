@@ -61,7 +61,9 @@ For the full first-time flow (identity registration or recovery, runtime setup, 
 ## Config Template
 
 - Standard config template: `./config.template.yaml`
-- Default workspace config path: `~/.awiki-cli/config.yaml`
+- Default product home: `~/.awiki-cli/`
+- Default tenant config path: `~/.awiki-cli/tenants/default/config.yaml`
+- Tenant backend/DID host values are managed with `awiki-cli tenant create`, `awiki-cli tenant use`, and `awiki-cli tenant reconfigure`.
 
 ## Getting Help
 

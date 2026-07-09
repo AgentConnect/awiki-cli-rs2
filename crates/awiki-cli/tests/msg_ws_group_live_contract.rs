@@ -15,13 +15,17 @@ const GROUP_DID: &str = "did:wba:awiki.ai:groups:ws:e1_group";
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{
+    set_secret_storage_mode, tenant_workspace, write_default_tenant_registry, write_tenant_config,
+};
 
 #[test]
 fn msg_send_group_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     let workspace = TempDir::new("gws-send-http-cutover").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "accepted": true,
         "final_acceptance": true,
@@ -93,7 +97,9 @@ fn msg_send_group_websocket_mode_uses_im_core_http_not_legacy_bridge() {
 fn group_messages_websocket_mode_uses_im_core_http_not_legacy_bridge_or_cache() {
     let workspace = TempDir::new("gws-msgs-http-cutover").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "messages": [{
             "id": "msg-http-group-message-1",
@@ -165,7 +171,9 @@ fn group_messages_websocket_mode_uses_im_core_http_not_legacy_bridge_or_cache() 
 fn msg_send_group_websocket_mode_reports_http_transport_failure_without_bridge_fallback() {
     let workspace = TempDir::new("gws-send-http-failure").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     write_group_ws_config(
         workspace.path(),
         &closed_local_url(),
@@ -193,7 +201,9 @@ fn msg_send_group_websocket_mode_reports_http_transport_failure_without_bridge_f
 fn group_messages_websocket_mode_reports_http_transport_failure_without_cache_fallback() {
     let workspace = TempDir::new("gws-msgs-http-failure").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     write_group_ws_config(
         workspace.path(),
         &closed_local_url(),
@@ -236,7 +246,8 @@ fn register_ready_group_identity(
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
     index["credentials"][identity_name]["did"] = json!(did);
@@ -248,7 +259,7 @@ fn register_ready_group_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -285,13 +296,11 @@ fn register_ready_group_identity(
 }
 
 fn write_group_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n"
-        ),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(
+        workspace,
+        format!("runtime:\n  mode: websocket\n  socket_path: {socket_path}\n").as_str(),
+    );
 }
 
 fn closed_local_url() -> String {

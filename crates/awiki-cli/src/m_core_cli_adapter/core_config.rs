@@ -36,8 +36,8 @@ pub(crate) fn build_im_core_config_from_parts(
         return Err(ExitError::new(
             "invalid_config",
             2,
-            "did_domain is required to build ImCoreConfig.",
-            "Set services.did_domain in the awiki-cli config.",
+            "did_host is required to build ImCoreConfig.",
+            "Create or switch to a tenant with a DID host.",
         ));
     }
     Ok(ImCoreConfig {

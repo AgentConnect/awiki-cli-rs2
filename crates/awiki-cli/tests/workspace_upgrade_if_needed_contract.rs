@@ -261,8 +261,8 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     let config = std::fs::read_to_string(&paths.config_file).expect("read migrated config");
     assert_contains(&config, "schema_version: 1\n");
     assert_contains(&config, "  mode: http\n");
-    assert_contains(&config, "  service_base_url: https://legacy.example\n");
-    assert_contains(&config, "  did_domain: legacy.example\n");
+    assert_not_contains(&config, "service_base_url:");
+    assert_not_contains(&config, "did_domain:");
     let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta after v2 to v4");
@@ -1305,6 +1305,13 @@ fn assert_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected config to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
+fn assert_not_contains(haystack: &str, needle: &str) {
+    assert!(
+        !haystack.contains(needle),
+        "expected config to omit {needle:?}, got:\n{haystack}"
     );
 }
 

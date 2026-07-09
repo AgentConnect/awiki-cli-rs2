@@ -10,7 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
+use support::{
+    open_local_state, write_default_tenant_registry, write_ready_identity, write_tenant_config,
+    TestIdentity, TestIdentityOptions,
+};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -527,11 +530,8 @@ fn migrate_identity_to_vault(workspace: &Path) {
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("schema_version: 1\nruntime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(workspace, "schema_version: 1\nruntime:\n  mode: http\n");
 }
 
 fn seed_message(
@@ -581,8 +581,7 @@ fn conversation_id_for_fixture(
 }
 
 fn is_read(workspace: &Path, owner_identity_id: &str, message_id: &str) -> i64 {
-    let connection =
-        rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db")).unwrap();
+    let connection = open_local_state(workspace);
     connection
         .query_row(
             "SELECT is_read FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",

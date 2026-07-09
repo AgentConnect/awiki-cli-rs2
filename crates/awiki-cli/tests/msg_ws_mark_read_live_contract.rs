@@ -11,7 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{open_local_state, set_secret_storage_mode};
+use support::{
+    open_local_state, set_secret_storage_mode, tenant_workspace, write_default_tenant_registry,
+    write_tenant_config,
+};
 
 #[test]
 fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
@@ -29,7 +32,9 @@ fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
         "hello over HTTP cutover",
         "2026-05-16T01:02:03Z",
     );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "updated_count": 1
     })))]);
@@ -92,7 +97,9 @@ fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
         "still unread after transport failure",
         "2026-05-16T02:03:04Z",
     );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     let server = TestServer::new(vec![TestResponse::internal_error(
         r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"http mark-read failed"},"id":"req-1"}"#,
     )]);
@@ -154,7 +161,9 @@ fn msg_mark_read_websocket_mode_reports_transport_unavailable_without_cache_fall
         "still unread after unavailable transport",
         "2026-05-16T03:04:05Z",
     );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     write_msg_ws_config(
         workspace.path(),
         &closed_local_url(),
@@ -206,7 +215,9 @@ fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_only() {
         "mail hello",
         "2026-05-16T04:06:07Z",
     );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_socket = tenant_workspace(workspace.path())
+        .join("runtime")
+        .join("missing.sock");
     let server = TestServer::new(Vec::new());
     write_msg_ws_config(
         workspace.path(),
@@ -268,7 +279,8 @@ fn register_ready_msg_identity(
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let unique_id = index["credentials"][identity_name]["unique_id"]
         .as_str()
@@ -284,7 +296,7 @@ fn register_ready_msg_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -322,13 +334,12 @@ fn register_ready_msg_identity(
 }
 
 fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "schema_version: 1\nruntime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n"
-        ),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(
+        workspace,
+        format!("schema_version: 1\nruntime:\n  mode: websocket\n  socket_path: {socket_path}\n")
+            .as_str(),
+    );
 }
 
 fn seed_direct_message(

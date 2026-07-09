@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread;
@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{set_secret_storage_mode, tenant_workspace, write_default_tenant_registry};
 
 #[test]
 fn site_root_live_command_dispatches_through_im_core_site_rpc() {
@@ -110,7 +110,8 @@ fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, 
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     index["credentials"][identity_name]["handle"] = json!(handle);
     index["credentials"][identity_name]["full_handle"] = json!(format!("{handle}@awiki.ai"));
@@ -120,7 +121,7 @@ fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, 
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -160,7 +161,8 @@ fn remove_plaintext_secret_files(identity_dir: &Path) {
 }
 
 fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identity_name: &str) {
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let vault = &index["credentials"][identity_name]["vault_migration"];
     assert_eq!(vault["status"], "verified");
@@ -172,7 +174,7 @@ fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identit
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     for file in [
         "auth.json",
         "key-1-private.pem",
@@ -187,11 +189,7 @@ fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identit
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("services:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -377,12 +375,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-site-live-cutover-test-{}-{nanos}",
+            "awiki-cli-rs2-site-live-cutover-test-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

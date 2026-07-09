@@ -17,6 +17,6 @@
 
 ## 配置说明
 - 邮件服务地址通过 `config.yaml` 的 `services.mail_service_url` 配置。
-- 若未配置，默认复用 `services.service_base_url` 作为邮件服务基础地址。
+- 若未配置，默认复用当前租户的 `backend_base_url` 作为邮件服务基础地址。
 - 在 awiki.ai 线上环境，推荐在 `config.yaml` 中显式设置：`services.mail_service_url: https://mail.awiki.ai`。
 - `config show` 会展示 `mail_service_url` 及其来源。

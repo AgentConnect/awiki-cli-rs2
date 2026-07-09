@@ -8,7 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{open_local_state, set_secret_storage_mode};
+use support::{
+    open_local_state, set_secret_storage_mode, tenant_workspace, write_default_tenant_registry,
+    write_tenant_config,
+};
 
 #[test]
 fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
@@ -274,7 +277,8 @@ fn register_ready_msg_identity(
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
     index["credentials"][identity_name]["did"] = json!(did);
@@ -286,7 +290,7 @@ fn register_ready_msg_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -325,15 +329,18 @@ fn register_ready_msg_identity(
 }
 
 fn write_msg_ws_config(workspace: &Path, base_url: &str) {
-    let socket_path = workspace.join("runtime").join("missing.sock");
-    std::fs::write(
-        workspace.join("config.yaml"),
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    let socket_path = tenant_workspace(workspace)
+        .join("runtime")
+        .join("missing.sock");
+    write_tenant_config(
+        workspace,
         format!(
-            "runtime:\n  mode: websocket\n  socket_path: {}\nservices:\n  service_base_url: {base_url}\n",
+            "runtime:\n  mode: websocket\n  socket_path: {}\n",
             socket_path.to_string_lossy()
-        ),
-    )
-    .unwrap();
+        )
+        .as_str(),
+    );
 }
 
 fn seed_direct_message(

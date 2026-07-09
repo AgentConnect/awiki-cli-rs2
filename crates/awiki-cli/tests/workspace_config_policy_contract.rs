@@ -9,16 +9,19 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn config_show_rejects_deprecated_service_url_fields_like_go() {
     for field in [
+        "service_base_url",
+        "user_service_endpoint",
+        "message_service_endpoint",
+        "did_domain",
         "user_service_url",
         "message_service_url",
         "message_service_ws_url",
     ] {
         let workspace = TempDir::new().expect("temp workspace");
-        std::fs::write(
-            workspace.path().join("config.yaml"),
-            format!("services:\n  {field}: https://awiki.ai\n"),
-        )
-        .expect("write config");
+        write_tenant_config(
+            workspace.path(),
+            &format!("services:\n  {field}: https://awiki.ai\n"),
+        );
 
         let output =
             awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
@@ -36,11 +39,7 @@ fn config_show_rejects_deprecated_service_url_fields_like_go() {
 #[test]
 fn config_show_rejects_empty_deprecated_service_url_field_like_go() {
     let workspace = TempDir::new().expect("temp workspace");
-    std::fs::write(
-        workspace.path().join("config.yaml"),
-        "services:\n  user_service_url:\n",
-    )
-    .expect("write config");
+    write_tenant_config(workspace.path(), "services:\n  user_service_url:\n");
 
     let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
     assert_code(&output, 1);
@@ -54,75 +53,45 @@ fn config_show_rejects_empty_deprecated_service_url_field_like_go() {
 }
 
 #[test]
-fn config_show_still_accepts_service_base_url_after_deprecated_field_guard() {
-    let workspace = TempDir::new().expect("temp workspace");
-    std::fs::write(
-        workspace.path().join("config.yaml"),
-        "services:\n  service_base_url: https://platform.example///\n",
-    )
-    .expect("write config");
-
-    let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["data"]["service_base_url"],
-        "https://platform.example"
-    );
-}
-
-#[test]
 fn config_show_preserves_hash_inside_quoted_yaml_scalars_like_go() {
     let workspace = TempDir::new().expect("temp workspace");
-    let config_path = workspace.path().join("config.yaml");
-    std::fs::write(
-        &config_path,
-        "services:\n  service_base_url: \"https://awiki.info/api#v1\"\n  did_domain: 'awiki.info#tenant'\n  ca_bundle: \"/tmp/ca#bundle.pem\" # inline comment\n",
-    )
-    .expect("write config");
+    write_tenant_config(
+        workspace.path(),
+        "services:\n  ca_bundle: \"/tmp/ca#bundle.pem\" # inline comment\n",
+    );
 
     let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
     assert_success(&output);
     let envelope = success_json(&output);
 
-    assert_eq!(
-        envelope["data"]["service_base_url"],
-        "https://awiki.info/api#v1"
-    );
-    assert_eq!(envelope["data"]["did_domain"], "awiki.info#tenant");
+    assert_eq!(envelope["data"]["service_base_url"], "https://awiki.ai");
+    assert_eq!(envelope["data"]["did_domain"], "awiki.ai");
     assert_eq!(envelope["data"]["ca_bundle"], "/tmp/ca#bundle.pem");
     assert_eq!(
         envelope["data"]["sources"]["service_base_url"]["value"],
-        "https://awiki.info/api#v1"
+        "https://awiki.ai"
     );
 }
 
 #[test]
 fn config_show_decodes_common_quoted_yaml_scalars_like_go() {
     let workspace = TempDir::new().expect("temp workspace");
-    std::fs::write(
-        workspace.path().join("config.yaml"),
+    write_tenant_config(
+        workspace.path(),
         concat!(
-            "services:\n",
-            "  service_base_url: \"https://platform.example/api\\nnext\"\n",
-            "  did_domain: 'Tenant.Example'\n",
             "runtime:\n",
             "  host_notify:\n",
             "    sink: null\n",
             "output:\n",
             "  format: \"false\"\n",
         ),
-    )
-    .expect("write config");
+    );
 
     let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
     assert_success(&output);
     let envelope = success_json(&output);
-    assert_eq!(
-        envelope["data"]["service_base_url"],
-        "https://platform.example/api\nnext"
-    );
-    assert_eq!(envelope["data"]["did_domain"], "Tenant.Example");
+    assert_eq!(envelope["data"]["service_base_url"], "https://awiki.ai");
+    assert_eq!(envelope["data"]["did_domain"], "awiki.ai");
     assert_eq!(envelope["data"]["host_notify_sink"], "log");
     assert_eq!(envelope["data"]["output_format"], "false");
 }
@@ -130,20 +99,44 @@ fn config_show_decodes_common_quoted_yaml_scalars_like_go() {
 #[test]
 fn config_show_reports_malformed_yaml_in_config_error_like_go() {
     let workspace = TempDir::new().expect("temp workspace");
-    std::fs::write(
-        workspace.path().join("config.yaml"),
+    write_tenant_config(
+        workspace.path(),
         "services:\n  service_base_url: \"https://platform.example\n",
-    )
-    .expect("write config");
+    );
 
     let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["data"]["config_exists"], true);
-    assert_contains(&envelope["data"]["config_error"], "yaml:");
-    assert_eq!(envelope["data"]["service_base_url"], "https://awiki.ai");
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+    assert_contains(
+        &envelope["error"]["message"],
+        "deprecated config.yaml fields are no longer supported",
+    );
+    assert_contains(&envelope["error"]["message"], "services.service_base_url");
     assert!(!workspace.path().join("data").exists());
     assert!(!workspace.path().join("runtime").exists());
+}
+
+fn write_tenant_config(workspace: &Path, text: &str) {
+    std::fs::write(
+        workspace.join("global.json"),
+        r#"{"schema_version":1,"active_tenant":"default"}"#,
+    )
+    .expect("write global tenant config");
+    let registry = workspace.join("tenants").join("registry.json");
+    std::fs::create_dir_all(registry.parent().expect("registry parent"))
+        .expect("create registry parent");
+    std::fs::write(
+        &registry,
+        r#"{"schema_version":1,"tenants":[{"name":"default","display_name":"AWiki","backend_base_url":"https://awiki.ai","did_host":"awiki.ai","dir_name":"default","created_at":"2026-05-25T00:00:00Z","updated_at":"2026-05-25T00:00:00Z"}]}"#,
+    )
+    .expect("write tenant registry");
+    let config = workspace
+        .join("tenants")
+        .join("default")
+        .join("config.yaml");
+    std::fs::create_dir_all(config.parent().expect("tenant config parent"))
+        .expect("create tenant config parent");
+    std::fs::write(config, text).expect("write tenant config");
 }
 
 fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {

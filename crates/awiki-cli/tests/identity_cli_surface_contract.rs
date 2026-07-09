@@ -8,7 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{set_secret_storage_mode, write_ready_identity, TestIdentityOptions};
+use support::{
+    set_secret_storage_mode, tenant_config_path, tenant_workspace, write_ready_identity,
+    write_tenant_config, TestIdentityOptions,
+};
 
 #[test]
 fn identity_create_list_current_use_and_status_match_local_contract() {
@@ -97,7 +100,7 @@ fn identity_create_refuses_legacy_plaintext_storage_by_default() {
         "legacy_plaintext_identity_storage_disabled"
     );
     assert!(
-        !workspace_home
+        !tenant_workspace(&workspace_home)
             .join("identities")
             .join("vault-required")
             .join("key-1-private.pem")
@@ -120,12 +123,8 @@ fn identity_vault_required_creates_local_root_key_without_env() {
             make_default: true,
         },
     );
-    std::fs::write(
-        workspace_home.join("config.yaml"),
-        "secret_storage:\n  mode: vault_required\n",
-    )
-    .expect("write vault config");
-    let local_root_key_file = workspace_home
+    write_tenant_config(&workspace_home, "secret_storage:\n  mode: vault_required\n");
+    let local_root_key_file = tenant_workspace(&workspace_home)
         .join("data")
         .join("identity-vault")
         .join("root-key.b64u");
@@ -181,7 +180,7 @@ fn identity_vault_required_creates_local_root_key_without_env() {
         "vault mutation should create no-prompt local root key file"
     );
     assert!(
-        workspace_home
+        tenant_workspace(&workspace_home)
             .join("identities")
             .join("alice")
             .join("key-1-private.pem")
@@ -205,11 +204,10 @@ fn identity_vault_status_and_mutation_plans_redact_root_key_material() {
             make_default: true,
         },
     );
-    std::fs::write(
-        workspace_home.join("config.yaml"),
+    write_tenant_config(
+        &workspace_home,
         "secret_storage:\n  mode: vault_preferred\n  workspace_id: test-workspace\n  device_id: test-device\n",
-    )
-    .expect("write vault config");
+    );
 
     let status = success_json(&awiki_cmd_with_vault_root(
         &["id", "vault", "status"],
@@ -301,7 +299,7 @@ fn identity_current_migrates_legacy_anp_pem_before_im_core_store_read() {
 }
 
 #[test]
-fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
+fn identity_status_archives_legacy_config_json_before_store_read() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -324,15 +322,10 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
 
     assert!(
         !legacy_config.exists(),
-        "legacy config.json should be removed after workspace upgrade"
+        "legacy config.json should be archived when tenant state is initialized"
     );
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-status.example",
-        "legacy-id-status.example",
-    );
-
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_default_tenant_config(&workspace_home);
+    assert_legacy_archived(&workspace_home, "config.json", &legacy_text);
     assert_no_runtime_state(&workspace_home, "id status");
 }
 
@@ -368,17 +361,17 @@ fn identity_create_validates_name_before_workspace_upgrade_like_go() {
         "missing --name must not trigger workspace upgrade before validation"
     );
     assert!(
-        !workspace_home.join("config.yaml").exists(),
-        "missing --name must not write migrated config"
+        !tenant_config_path(&workspace_home).exists(),
+        "missing --name must not initialize tenant config before argument validation"
     );
     assert!(
-        !workspace_home.join("upgrade").join("meta.json").exists(),
-        "missing --name must not write upgrade metadata"
+        !workspace_home.join("global.json").exists(),
+        "missing --name must not initialize tenant registry before argument validation"
     );
 }
 
 #[test]
-fn identity_create_migrates_legacy_config_json_before_create_like_go() {
+fn identity_create_archives_legacy_config_json_before_create() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -415,16 +408,12 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
 
     assert!(
         !legacy_config.exists(),
-        "legacy config.json should still be migrated before the storage policy gate"
+        "legacy config.json should be archived before the storage policy gate"
     );
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-create.example",
-        "legacy-id-create.example",
-    );
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_default_tenant_config(&workspace_home);
+    assert_legacy_archived(&workspace_home, "config.json", &legacy_text);
     assert!(
-        !workspace_home
+        !tenant_workspace(&workspace_home)
             .join("identities")
             .join("legacy-create")
             .join("key-1-private.pem")
@@ -466,7 +455,7 @@ fn identity_create_allows_legacy_plaintext_storage_when_file_compat_is_explicit(
         "legacy-create"
     );
     assert!(
-        workspace_home
+        tenant_workspace(&workspace_home)
             .join("identities")
             .join(unique_id)
             .join("key-1-private.pem")
@@ -507,17 +496,17 @@ fn identity_use_validates_argument_before_workspace_upgrade_like_go() {
         "missing identity arg must not trigger workspace upgrade before validation"
     );
     assert!(
-        !workspace_home.join("config.yaml").exists(),
-        "missing identity arg must not write migrated config"
+        !tenant_config_path(&workspace_home).exists(),
+        "missing identity arg must not initialize tenant config before argument validation"
     );
     assert!(
-        !workspace_home.join("upgrade").join("meta.json").exists(),
-        "missing identity arg must not write upgrade metadata"
+        !workspace_home.join("global.json").exists(),
+        "missing identity arg must not initialize tenant registry before argument validation"
     );
 }
 
 #[test]
-fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
+fn identity_use_ignores_legacy_root_config_json_after_tenant_state_exists() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -565,25 +554,23 @@ fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
     assert_eq!(current["data"]["identity"]["identity_name"], "bob");
 
     assert!(
-        !legacy_config.exists(),
-        "legacy config.json should be removed before identity switch"
+        legacy_config.exists(),
+        "legacy config.json should remain inert once tenant state already exists"
     );
-    let config_text = assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-use.example",
-        "legacy-id-use.example",
+    assert_default_tenant_config(&workspace_home);
+    assert_eq!(
+        std::fs::read_to_string(&legacy_config).expect("read inert legacy config"),
+        legacy_text
     );
     assert!(
-        config_text.contains("  active: alice\n"),
-        "id use should leave migrated config active identity unchanged like Go, got {config_text:?}"
+        !workspace_home.join("legacy-archive").exists(),
+        "existing tenant state should not re-enter legacy root archive mode"
     );
-
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
     assert_no_runtime_state(&workspace_home, "id use");
 }
 
 #[test]
-fn identity_resolve_migrates_legacy_config_json_before_target_validation_like_go() {
+fn identity_resolve_archives_legacy_config_json_before_target_validation() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -610,20 +597,16 @@ fn identity_resolve_migrates_legacy_config_json_before_target_validation_like_go
 
     assert!(
         !legacy_config.exists(),
-        "legacy config.json should be removed before resolve target validation"
+        "legacy config.json should be archived before resolve target validation"
     );
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-resolve.example",
-        "legacy-id-resolve.example",
-    );
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_default_tenant_config(&workspace_home);
+    assert_legacy_archived(&workspace_home, "config.json", &legacy_text);
     assert_no_runtime_state(&workspace_home, "id resolve validation");
 }
 
 #[test]
-fn identity_profile_get_migrates_legacy_config_json_before_self_identity_boundary_like_go() {
-    assert_identity_boundary_after_legacy_config_upgrade(
+fn identity_profile_get_archives_legacy_config_json_before_self_identity_boundary() {
+    assert_identity_boundary_after_legacy_archive(
         &["id", "profile", "get"],
         "profile",
         "id profile get self boundary",
@@ -631,8 +614,8 @@ fn identity_profile_get_migrates_legacy_config_json_before_self_identity_boundar
 }
 
 #[test]
-fn identity_bind_migrates_legacy_config_json_before_active_identity_boundary_like_go() {
-    assert_identity_boundary_after_legacy_config_upgrade(
+fn identity_bind_archives_legacy_config_json_before_active_identity_boundary() {
+    assert_identity_boundary_after_legacy_archive(
         &["id", "bind", "--phone", "13800138000"],
         "bind",
         "id bind identity boundary",
@@ -640,15 +623,15 @@ fn identity_bind_migrates_legacy_config_json_before_active_identity_boundary_lik
 }
 
 #[test]
-fn identity_refresh_token_migrates_legacy_config_json_before_active_identity_boundary_like_go() {
-    assert_identity_boundary_after_legacy_config_upgrade(
+fn identity_refresh_token_archives_legacy_config_json_before_active_identity_boundary() {
+    assert_identity_boundary_after_legacy_archive(
         &["id", "refresh-token"],
         "refresh",
         "id refresh-token identity boundary",
     );
 }
 
-fn assert_identity_boundary_after_legacy_config_upgrade(args: &[&str], label: &str, state: &str) {
+fn assert_identity_boundary_after_legacy_archive(args: &[&str], label: &str, state: &str) {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -678,8 +661,8 @@ fn assert_identity_boundary_after_legacy_config_upgrade(args: &[&str], label: &s
         .contains("identity not found: no active identity is configured"));
 
     assert!(!legacy_config.exists());
-    assert_migrated_config(&workspace_home, &service_base_url, &did_domain);
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_default_tenant_config(&workspace_home);
+    assert_legacy_archived(&workspace_home, "config.json", &legacy_text);
     assert_no_runtime_state(&workspace_home, state);
 }
 
@@ -1032,7 +1015,7 @@ fn identity_import_v1_flat_legacy_contract() {
 }
 
 #[test]
-fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
+fn identity_import_v1_archives_legacy_config_json_before_import() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -1087,15 +1070,10 @@ fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
 
     assert!(
         !legacy_config.exists(),
-        "legacy config.json should be removed before import"
+        "legacy config.json should be archived before import"
     );
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-import.example",
-        "legacy-id-import.example",
-    );
-
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_default_tenant_config(&workspace_home);
+    assert_legacy_archived(&workspace_home, "config.json", &legacy_text);
     assert_no_runtime_state(&workspace_home, "id import-v1");
 }
 
@@ -1131,79 +1109,71 @@ fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, 
 }
 
 fn write_file_compat_config(workspace_home: &Path) {
-    std::fs::create_dir_all(workspace_home).expect("create workspace home");
-    std::fs::write(
-        workspace_home.join("config.yaml"),
-        "secret_storage:\n  mode: file_compat\n",
-    )
-    .expect("write file_compat config");
+    write_tenant_config(workspace_home, "secret_storage:\n  mode: file_compat\n");
 }
 
-fn assert_migrated_config(
-    workspace_home: &Path,
-    service_base_url: &str,
-    did_domain: &str,
-) -> String {
+fn assert_default_tenant_config(workspace_home: &Path) -> String {
     let config_text =
-        std::fs::read_to_string(workspace_home.join("config.yaml")).expect("read migrated config");
-    for (needle, label) in [
-        ("schema_version: 1\n".to_string(), "config schema"),
-        ("  mode: http\n".to_string(), "runtime mode"),
-        (
-            format!("  service_base_url: {service_base_url}\n"),
-            "service URL",
-        ),
-        (format!("  did_domain: {did_domain}\n"), "DID domain"),
-    ] {
-        assert!(
-            config_text.contains(&needle),
-            "migrated config should keep {label}, got {config_text:?}"
-        );
-    }
+        std::fs::read_to_string(tenant_config_path(workspace_home)).expect("read tenant config");
+    assert!(
+        config_text.contains("schema_version: 1\n"),
+        "default tenant config should contain config schema, got {config_text:?}"
+    );
+    assert!(
+        !config_text.contains("service_base_url:"),
+        "default tenant config must not persist registry-owned backend URL, got {config_text:?}"
+    );
+    assert!(
+        !config_text.contains("did_domain:"),
+        "default tenant config must not persist registry-owned DID host, got {config_text:?}"
+    );
     config_text
 }
 
-fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
-    let meta_path = workspace_home.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 4);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+fn assert_legacy_archived(workspace_home: &Path, relative: &str, expected_text: &str) -> PathBuf {
+    let archive_dir = single_legacy_archive_dir(workspace_home);
     assert_eq!(
-        backup_dir.parent(),
-        Some(workspace_home.join("upgrade").join("backups").as_path())
+        std::fs::read_to_string(archive_dir.join(relative)).expect("read archived legacy file"),
+        expected_text
     );
+    archive_dir
+}
+
+fn single_legacy_archive_dir(workspace_home: &Path) -> PathBuf {
+    let archive_root = workspace_home.join("legacy-archive");
+    let entries = std::fs::read_dir(&archive_root)
+        .unwrap_or_else(|err| panic!("read legacy archive {}: {err}", archive_root.display()))
+        .map(|entry| entry.expect("legacy archive entry").path())
+        .collect::<Vec<_>>();
     assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
-        legacy_text
+        entries.len(),
+        1,
+        "expected exactly one legacy archive entry under {}",
+        archive_root.display()
     );
-    assert!(
-        !workspace_home
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
-    );
+    entries.into_iter().next().expect("legacy archive entry")
 }
 
 fn assert_no_runtime_state(workspace_home: &Path, label: &str) {
     assert!(
-        !workspace_home.join("data").join("awiki-cli.db").exists(),
+        !tenant_workspace(workspace_home)
+            .join("data")
+            .join("awiki-cli.db")
+            .exists(),
         "{label} should not create SQLite state"
     );
     assert!(
-        !workspace_home
+        !tenant_workspace(workspace_home)
             .join("runtime")
             .join("message-daemon.sock")
             .exists(),
         "{label} must not create runtime socket artifacts"
     );
     assert!(
-        !workspace_home.join("runtime").join("listener.pid").exists(),
+        !tenant_workspace(workspace_home)
+            .join("runtime")
+            .join("listener.pid")
+            .exists(),
         "{label} must not create listener pid artifacts"
     );
 }
@@ -1340,13 +1310,6 @@ fn assert_code(output: &Output, code: i32) {
         "stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn assert_non_empty_string(value: &Value, field: &str) {
-    assert!(
-        value.as_str().is_some_and(|text| !text.trim().is_empty()),
-        "{field} should be a non-empty string: {value:?}"
     );
 }
 

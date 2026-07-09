@@ -31,6 +31,7 @@ awiki-cli doctor
 awiki-cli version
 awiki-cli completion
 awiki-cli config
+awiki-cli tenant
 awiki-cli id
 awiki-cli msg
 awiki-cli mail
@@ -45,6 +46,7 @@ awiki-cli runtime
 
 - `id`：身份、Handle、profile、recover、replace DID。
 - `msg`：direct/group 消息、inbox/history、mark-read、附件发送/下载、消息 secure 操作。
+- `tenant`：管理后端地址、DID host 和租户隔离工作区。
 - `mail`：邮件 inbox/read/send/mark-read/attachment。
 - `group`：群生命周期、成员、群消息读取、group secure 状态。
 - `people`：联系人、关系、profile/directory 相关能力。
@@ -64,6 +66,7 @@ awiki-cli runtime
 | 参数 | 说明 |
 | --- | --- |
 | `--identity` | 选择本地身份；未传时使用默认身份。 |
+| `--tenant` | 临时选择本次命令使用的租户；不改写全局 active tenant。 |
 | `--format` | 输出格式：`json`、`pretty`、`table`、`ndjson`。 |
 | `--jq` | 对 JSON 输出执行过滤。 |
 | `--dry-run` | 返回计划，不执行副作用。 |
@@ -72,11 +75,34 @@ awiki-cli runtime
 规则：
 
 - `--identity` 是用户层身份选择参数；legacy credential 只能作为兼容概念。
+- `--tenant` 只接受已存在租户名。创建租户必须使用 `tenant create`，切换全局默认租户使用 `tenant use`。
 - `--format json` 是 canonical 输出。
 - `--jq` 不应改变命令语义，只过滤 JSON 结果。
 - `--dry-run` 不能写远端状态或本地业务状态。
 
-## 4. Identity
+## 4. Tenant
+
+租户是 `backend_base_url + did_host` 的原子组合，并拥有独立的本地身份、SQLite、runtime、cache 和 logs 目录。CLI 二进制版本和更新元数据是产品级全局状态，不随租户切换。
+
+常用命令：
+
+```bash
+awiki-cli tenant list
+awiki-cli tenant current
+awiki-cli tenant create acme --backend-base-url https://api.acme.example --did-host acme.example
+awiki-cli tenant use acme
+awiki-cli tenant reconfigure acme --backend-base-url https://api2.acme.example --did-host acme.example
+```
+
+规则：
+
+- `tenant create` 只创建租户，不自动切换 active tenant。
+- `tenant use <name>` 只能按已有租户名切换，不能携带 backend 或 DID host 字段。
+- `tenant reconfigure` 只允许修改还没有身份或本地数据库数据的空租户；已有数据时应创建新租户。
+- `backend_base_url` 和 `did_host` 只保存在租户注册表中，不写入 `tenants/<name>/config.yaml`。
+- `--tenant <name>` 是本次命令的临时覆盖，不会改写 `global.json` 中的 active tenant。
+
+## 5. Identity
 
 常用命令：
 
@@ -99,7 +125,7 @@ awiki-cli id profile set --markdown-file ./profile.md
 - `--identity` 是全局选择参数，用于选择本次命令读取/操作哪个本地身份；切换默认身份使用 `awiki-cli id use <identity>`。
 - 私钥、JWT、DID document 写入细节不进入普通输出。
 
-## 5. Messaging
+## 6. Messaging
 
 常用命令：
 
@@ -130,7 +156,7 @@ x ReceiveMode(pull | realtime)
 - 附件字节走附件能力，不塞进普通消息 JSON。
 - `msg.secure.status` 和 `msg.secure.repair` 是当前默认 secure direct 入口；`msg.secure.init`、failed/retry/drop 等低层 direct secure 命令当前是 stable unsupported，不进入默认产品面。
 
-## 6. Group
+## 7. Group
 
 常用命令：
 
@@ -155,7 +181,7 @@ awiki-cli group secure repair --group GROUP_DID
 - `group secure status` 和 `group secure repair` 是默认用户入口。
 - 低层 `group e2ee *` 不属于默认产品契约；部分命令仅在 diagnostic/internal 场景下保留，不能作为普通用户流程或 Agent 默认技能入口。
 
-## 7. Mail
+## 8. Mail
 
 ```bash
 awiki-cli mail inbox --folder inbox --limit 20
@@ -167,7 +193,7 @@ awiki-cli mail attachment download --message-id MESSAGE_ID --attachment-index 0 
 
 `mail.*` 默认通过 `im-core::email` 执行。CLI 负责 flags、dry-run、输出 envelope 和附件文件写入。
 
-## 8. Page 与 Site
+## 9. Page 与 Site
 
 Handle page：
 
@@ -190,7 +216,7 @@ awiki-cli site page create --domain example.com --slug about --markdown-file ./a
 
 `page` 绑定当前身份的 handle；`site` 绑定显式 tenant domain，不从当前 DID/handle 反推。
 
-## 9. Runtime
+## 10. Runtime
 
 ```bash
 awiki-cli runtime setup --mode websocket
@@ -223,7 +249,7 @@ awiki-cli runtime host-notify hermes status
 - CLI runtime listener 是 `awiki-cli` 的本机消息接收辅助能力；awiki-me 使用的 `awiki-deamon` release / install / upgrade 流程见 `docs/publish.md`，不通过 `awiki-cli runtime listener` 管理。
 - `runtime.heartbeat *` 是 stable unsupported，不属于当前 CLI runtime 产品面。
 
-## 10. Debug
+## 11. Debug
 
 `debug` 域用于专家排障和本地 inspection，需要 `--diagnostic` gate：
 
@@ -239,9 +265,9 @@ awiki-cli --diagnostic debug db handle-history alice
 - `debug db query` 是 stable unsupported；raw SQL 不属于当前支持能力。
 - `debug raw *` 已移除；如果需要新增专家诊断能力，应定义受控命令和脱敏输出，而不是恢复 raw RPC。
 
-## 11. Schema 与 Docs
+## 12. Schema 与 Docs
 
-`schema` 用于机器读取命令、参数、输出、能力状态和默认 surface。`docs` 用于内置文档主题索引。
+`--help` / `-h` 用于人类可读的简洁命令说明。`schema` 用于机器读取命令、参数、输出、能力状态和默认 surface。`docs` 用于内置文档主题索引。
 
 ```bash
 awiki-cli schema
@@ -249,11 +275,13 @@ awiki-cli schema --audience operator
 awiki-cli schema --all
 awiki-cli docs
 awiki-cli docs architecture
+awiki-cli tenant --help
+awiki-cli tenant create --help
 ```
 
-命令树、schema、help、docs 和 skill reference 必须保持一致。新增或改名命令时，需要同步相关文档和测试。默认用户文档不得推荐 `schema` 中标记为 unsupported、removed、hidden、diagnostic-only、migration-only 或 internal-only 的能力，除非文案明确说明它是非默认面。
+命令树、schema、help、docs 和 skill reference 必须保持一致，并共用 command catalog 作为命令事实源。`--help` 默认输出纯文本，不包 JSON envelope；完整机器可读数据只通过 `schema` 输出。新增或改名命令时，需要同步相关文档和测试。默认用户文档不得推荐 `schema` 中标记为 unsupported、removed、hidden、diagnostic-only、migration-only 或 internal-only 的能力，除非文案明确说明它是非默认面。
 
-## 12. 发布与版本
+## 13. 发布与版本
 
 公开版本以 `package.json.version` 为事实源，并通过 `xtask check-version` 约束 npm package、`crates/awiki-cli/Cargo.toml` 和 release tag。
 

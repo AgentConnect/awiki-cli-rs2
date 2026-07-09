@@ -61,6 +61,8 @@ pub struct GlobalOptions {
     pub migration: bool,
     pub identity: String,
     pub identity_changed: bool,
+    pub tenant: String,
+    pub tenant_changed: bool,
     pub verbose: bool,
 }
 
@@ -75,6 +77,8 @@ impl Default for GlobalOptions {
             migration: false,
             identity: String::new(),
             identity_changed: false,
+            tenant: String::new(),
+            tenant_changed: false,
             verbose: false,
         }
     }
@@ -149,6 +153,8 @@ impl App {
         let result = workspace_config::resolve(Overrides {
             identity: self.globals.identity.clone(),
             identity_changed: self.globals.identity_changed,
+            tenant: self.globals.tenant.clone(),
+            tenant_changed: self.globals.tenant_changed,
             format: self.globals.format.clone(),
             format_changed: self.globals.format_changed,
         });
@@ -213,50 +219,131 @@ impl App {
         )
     }
 
-    pub fn run_config_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config_for_workspace()?;
-        let Some(raw_did_domain) = command.flags.get("did-domain") else {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "config set requires --did-domain.",
-                "Use --did-domain <domain>.",
-            ));
+    pub fn run_tenant_list(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let current =
+            workspace_config::tenant_context_for_resolved(&resolved).map_err(internal_anyhow)?;
+        let tenants = workspace_config::list_tenants().map_err(internal_anyhow)?;
+        self.render_success(
+            "awiki-cli tenant list",
+            &resolved,
+            json!({
+                "active": current.active,
+                "tenants": tenants,
+            }),
+            "Tenants loaded",
+            Vec::new(),
+        )
+    }
+
+    pub fn run_tenant_current(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let current =
+            workspace_config::tenant_context_for_resolved(&resolved).map_err(internal_anyhow)?;
+        self.render_success(
+            "awiki-cli tenant current",
+            &resolved,
+            json!({ "tenant": current }),
+            "Current tenant loaded",
+            Vec::new(),
+        )
+    }
+
+    pub fn run_tenant_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let name = required_arg(command, "tenant create", "name")?;
+        let input = workspace_config::TenantCreateInput {
+            name: name.to_string(),
+            display_name: command.flags.get("display-name").cloned(),
+            backend_base_url: required_flag(command, "tenant create", "backend-base-url")?
+                .to_string(),
+            did_host: required_flag(command, "tenant create", "did-host")?.to_string(),
         };
-        let did_domain = workspace_config::normalize_did_domain(raw_did_domain).map_err(|err| {
-            ExitError::new(
-                "invalid_argument",
-                2,
-                err.to_string(),
-                "Use a bare domain such as tenant.example.",
-            )
-        })?;
+        let before = self.resolve_config()?;
         if self.globals.dry_run {
+            let planned =
+                workspace_config::preview_create_tenant(input).map_err(internal_anyhow)?;
             return self.render_success(
-                "awiki-cli config set",
-                &resolved,
+                "awiki-cli tenant create",
+                &before,
                 json!({
                     "plan": {
-                        "action": "config_set_did_domain",
-                        "did_domain": did_domain,
-                        "config_file": resolved.paths.config_file,
+                        "action": "tenant_create",
+                        "tenant": planned,
                     }
                 }),
-                "Dry run: DID domain update planned",
+                "Dry run: tenant creation planned",
                 Vec::new(),
             );
         }
-        workspace_config::update_did_domain(&resolved.paths, &did_domain)
-            .map_err(internal_anyhow)?;
-        let resolved = self.resolve_config_for_workspace()?;
+        let tenant = workspace_config::create_tenant(input).map_err(internal_anyhow)?;
         self.render_success(
-            "awiki-cli config set",
+            "awiki-cli tenant create",
+            &before,
+            json!({ "tenant": tenant }),
+            "Tenant created",
+            Vec::new(),
+        )
+    }
+
+    pub fn run_tenant_use(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let name = required_arg(command, "tenant use", "name")?;
+        let before = self.resolve_config()?;
+        if self.globals.dry_run {
+            let planned = workspace_config::preview_use_tenant(name).map_err(internal_anyhow)?;
+            return self.render_success(
+                "awiki-cli tenant use",
+                &before,
+                json!({
+                    "plan": {
+                        "action": "tenant_use",
+                        "tenant": planned,
+                    }
+                }),
+                "Dry run: tenant switch planned",
+                Vec::new(),
+            );
+        }
+        let tenant = workspace_config::use_tenant(name).map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        self.render_success(
+            "awiki-cli tenant use",
             &resolved,
-            json!({
-                "did_domain": resolved.did_domain,
-                "config_file": resolved.paths.config_file,
-            }),
-            "DID domain updated",
+            json!({ "tenant": tenant }),
+            "Tenant switched",
+            Vec::new(),
+        )
+    }
+
+    pub fn run_tenant_reconfigure(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let name = required_arg(command, "tenant reconfigure", "name")?;
+        let backend_base_url = required_flag(command, "tenant reconfigure", "backend-base-url")?;
+        let did_host = required_flag(command, "tenant reconfigure", "did-host")?;
+        let before = self.resolve_config()?;
+        if self.globals.dry_run {
+            let planned =
+                workspace_config::preview_reconfigure_tenant(name, backend_base_url, did_host)
+                    .map_err(internal_anyhow)?;
+            return self.render_success(
+                "awiki-cli tenant reconfigure",
+                &before,
+                json!({
+                    "plan": {
+                        "action": "tenant_reconfigure",
+                        "tenant": planned,
+                    }
+                }),
+                "Dry run: tenant reconfiguration planned",
+                Vec::new(),
+            );
+        }
+        let tenant = workspace_config::reconfigure_tenant(name, backend_base_url, did_host)
+            .map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        self.render_success(
+            "awiki-cli tenant reconfigure",
+            &resolved,
+            json!({ "tenant": tenant }),
+            "Tenant reconfigured",
             Vec::new(),
         )
     }
@@ -275,11 +362,9 @@ impl App {
     }
 
     pub fn run_docs(&self, args: &[String]) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
         if args.is_empty() {
-            return self.render_success(
+            return self.render_static_success(
                 "awiki-cli docs",
-                &resolved,
                 json!({ "topics": cli_docs::all() }),
                 "Available documentation topics",
                 Vec::new(),
@@ -302,9 +387,8 @@ impl App {
                 "Run `awiki-cli docs` to list available topics.",
             ));
         };
-        self.render_success(
+        self.render_static_success(
             "awiki-cli docs",
-            &resolved,
             json!({ "topic": topic }),
             &format!("Documentation topic {}", topic.name),
             Vec::new(),
@@ -312,7 +396,6 @@ impl App {
     }
 
     pub fn run_schema(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
         if command.flags.contains_key("all") && command.flags.contains_key("audience") {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -322,9 +405,8 @@ impl App {
             ));
         }
         if command.flags.contains_key("all") {
-            return self.render_success(
+            return self.render_static_success(
                 "awiki-cli schema",
-                &resolved,
                 json!({ "commands": command_catalog::specs(), "phase": "phase1-shell", "audience": "all" }),
                 "Static command contract",
                 Vec::new(),
@@ -339,18 +421,16 @@ impl App {
                     "Use default, advanced, operator, diagnostic, migration, internal, or all.",
                 ));
             };
-            return self.render_success(
+            return self.render_static_success(
                 "awiki-cli schema",
-                &resolved,
                 json!({ "commands": commands, "phase": "phase1-shell", "audience": audience }),
                 "Static command contract",
                 Vec::new(),
             );
         }
         if command.args.is_empty() {
-            return self.render_success(
+            return self.render_static_success(
                 "awiki-cli schema",
-                &resolved,
                 json!({ "commands": command_catalog::default_surface_schema_specs(), "phase": "phase1-shell" }),
                 "Static command contract",
                 Vec::new(),
@@ -365,9 +445,8 @@ impl App {
                 "Use `awiki-cli schema` to list command contracts.",
             ));
         };
-        self.render_success(
+        self.render_static_success(
             "awiki-cli schema",
-            &resolved,
             json!({
                 "command": command_catalog::schema_spec_for_command(&spec),
                 "children": if spec.include_in_default_surface() {
@@ -379,6 +458,25 @@ impl App {
             &format!("Static contract for {}", spec.name),
             Vec::new(),
         )
+    }
+
+    pub fn run_help(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let text = if command.args.is_empty() {
+            render_root_help()
+        } else {
+            let target = command.args.join(" ");
+            let Some(spec) = command_catalog::lookup(&target) else {
+                return Err(ExitError::new(
+                    "not_found",
+                    5,
+                    format!("Unknown command help target {target:?}"),
+                    "Use `awiki-cli --help` to inspect supported commands.",
+                ));
+            };
+            render_command_help(&spec)
+        };
+        print!("{text}");
+        Ok(())
     }
 
     pub async fn run_init_async(&self) -> Result<(), ExitError> {
@@ -1037,6 +1135,33 @@ impl App {
             .map_err(internal_anyhow)
     }
 
+    fn render_static_success(
+        &self,
+        command: &str,
+        data: Value,
+        summary: &str,
+        warnings: Vec<String>,
+    ) -> Result<(), ExitError> {
+        let format = cli_output::normalize_format(&self.globals.format).unwrap_or(Format::Json);
+        let warnings = update_preflight::merge_update_warning(&self.update_warning, warnings);
+        let envelope = SuccessEnvelope {
+            ok: true,
+            command: command.to_string(),
+            data,
+            warnings,
+            summary: summary.to_string(),
+            notice: None,
+            meta: Meta {
+                version: crate::build_info::VERSION.to_string(),
+                identity: None,
+                dry_run: self.globals.dry_run,
+                format: format.as_str().to_string(),
+            },
+        };
+        cli_output::render_success(io::stdout(), format, &self.globals.jq, &envelope)
+            .map_err(internal_anyhow)
+    }
+
     fn handle_error(&self, err: ExitError) -> i32 {
         let format = cli_output::normalize_format(&self.globals.format).unwrap_or(Format::Json);
         let envelope = ErrorEnvelope {
@@ -1156,6 +1281,49 @@ fn init_dirs(resolved: &Resolved) -> Vec<String> {
     ]
 }
 
+fn required_arg<'a>(
+    command: &'a ParsedCommand,
+    usage: &str,
+    name: &str,
+) -> Result<&'a str, ExitError> {
+    match command.args.as_slice() {
+        [value] if !value.trim().is_empty() => Ok(value.trim()),
+        [] => Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{usage} requires <{name}>."),
+            format!("Usage: awiki-cli {usage} <{name}>."),
+        )),
+        _ => Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{usage} accepts exactly one <{name}>."),
+            format!("Usage: awiki-cli {usage} <{name}>."),
+        )),
+    }
+}
+
+fn required_flag<'a>(
+    command: &'a ParsedCommand,
+    usage: &str,
+    name: &str,
+) -> Result<&'a str, ExitError> {
+    let value = command
+        .flags
+        .get(name)
+        .map(String::as_str)
+        .unwrap_or_default();
+    if value.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{usage} requires --{name}."),
+            format!("Usage: awiki-cli {usage} --{name} <value>."),
+        ));
+    }
+    Ok(value.trim())
+}
+
 async fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
     crate::m_core_cli_adapter::build_im_core(resolved)?
         .bootstrap()
@@ -1209,6 +1377,116 @@ fn sanitize_public_value(value: Value) -> Value {
         Value::Array(items) => Value::Array(items.into_iter().map(sanitize_public_value).collect()),
         other => other,
     }
+}
+
+fn render_root_help() -> String {
+    let mut lines = vec![
+        "AWiki CLI".to_string(),
+        String::new(),
+        "Usage:".to_string(),
+        "  awiki-cli <command> [flags]".to_string(),
+        String::new(),
+        "Commands:".to_string(),
+    ];
+    append_command_rows(&mut lines, &command_catalog::public_help_root_specs());
+    lines.extend([
+        String::new(),
+        "Global Flags:".to_string(),
+        "  --tenant <name>      Use an existing tenant for this command only".to_string(),
+        "  --identity <name>    Use a local identity for this command only".to_string(),
+        "  --format <format>    Output format for data commands: json, pretty, table, ndjson"
+            .to_string(),
+        "  --dry-run            Show the planned side effects without applying them".to_string(),
+        "  --help, -h           Show help".to_string(),
+        String::new(),
+        "Use `awiki-cli <command> --help` for command-specific help.".to_string(),
+        "Use `awiki-cli schema [COMMAND]` for machine-readable command metadata.".to_string(),
+    ]);
+    finish_help(lines)
+}
+
+fn render_command_help(spec: &command_catalog::CommandSpec) -> String {
+    let mut lines = vec![spec.short.to_string()];
+    if !spec.long.trim().is_empty() {
+        lines.extend([String::new(), spec.long.to_string()]);
+    }
+    lines.extend([
+        String::new(),
+        "Usage:".to_string(),
+        format!("  awiki-cli {}", command_usage(spec)),
+    ]);
+
+    let children = command_catalog::public_help_children_of(spec.name);
+    if !children.is_empty() {
+        lines.extend([String::new(), "Commands:".to_string()]);
+        append_command_rows(&mut lines, &children);
+    }
+
+    if !spec.flags.is_empty() {
+        lines.extend([String::new(), "Flags:".to_string()]);
+        append_flag_rows(&mut lines, spec.flags);
+    }
+
+    lines.extend([
+        String::new(),
+        format!(
+            "Use `awiki-cli schema {}` for machine-readable command metadata.",
+            spec.name.replace('.', " ")
+        ),
+    ]);
+    finish_help(lines)
+}
+
+fn command_usage(spec: &command_catalog::CommandSpec) -> String {
+    let mut segments: Vec<&str> = spec.name.split('.').collect();
+    if !segments.is_empty() {
+        let last = segments.len() - 1;
+        segments[last] = spec.use_;
+    }
+    segments.join(" ")
+}
+
+fn append_command_rows(lines: &mut Vec<String>, commands: &[command_catalog::CommandSpec]) {
+    for spec in commands {
+        lines.push(format!(
+            "  {:<18} {}",
+            command_display_name(spec),
+            spec.short
+        ));
+    }
+}
+
+fn command_display_name(spec: &command_catalog::CommandSpec) -> String {
+    spec.use_
+        .split_whitespace()
+        .next()
+        .unwrap_or(spec.use_)
+        .to_string()
+}
+
+fn append_flag_rows(lines: &mut Vec<String>, flags: &[command_catalog::FlagSpec]) {
+    for flag in flags {
+        if flag.deprecated {
+            continue;
+        }
+        let value_hint = match flag.flag_type {
+            "bool" => String::new(),
+            value if value.is_empty() => " <value>".to_string(),
+            value => format!(" <{value}>"),
+        };
+        let required = if flag.required { " (required)" } else { "" };
+        lines.push(format!(
+            "  --{:<22} {}{}",
+            format!("{}{}", flag.name, value_hint),
+            flag.usage,
+            required
+        ));
+    }
+}
+
+fn finish_help(mut lines: Vec<String>) -> String {
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn is_sensitive_public_key(key: &str) -> bool {

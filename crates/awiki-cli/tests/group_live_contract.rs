@@ -9,12 +9,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{set_secret_storage_mode, tenant_workspace, write_tenant_config};
 
 #[test]
 fn group_get_live_posts_group_get_and_maps_snapshot_like_go() {
     let workspace = TempDir::new("group-live-get").expect("workspace");
-    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "group_did": group_did,
@@ -35,6 +34,7 @@ fn group_get_live_posts_group_get_and_maps_snapshot_like_go() {
         "source": "remote_http"
     })))]);
     write_group_config(workspace.path(), &server.base_url());
+    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
 
     let output = awiki_cmd(
         &[
@@ -78,7 +78,6 @@ fn group_get_live_posts_group_get_and_maps_snapshot_like_go() {
 #[test]
 fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
     let workspace = TempDir::new("group-live-members").expect("workspace");
-    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
@@ -95,6 +94,7 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
         "source": "remote_http"
     })))]);
     write_group_config(workspace.path(), &server.base_url());
+    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
 
     let output = awiki_cmd(
         &[
@@ -139,7 +139,6 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
 #[test]
 fn group_control_websocket_mode_stays_http_and_warns_like_go() {
     let workspace = TempDir::new("group-live-ws-control-warning").expect("workspace");
-    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
@@ -171,6 +170,7 @@ fn group_control_websocket_mode_stays_http_and_warns_like_go() {
         }))),
     ]);
     write_group_websocket_config(workspace.path(), &server.base_url());
+    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
 
     let list = success_json(&awiki_cmd(
         &["--identity", "alice-group", "group", "list"],
@@ -234,7 +234,6 @@ fn group_control_websocket_mode_stays_http_and_warns_like_go() {
 #[test]
 fn group_add_live_error_preserves_go_owner_hint() {
     let workspace = TempDir::new("group-live-add-owner-hint").expect("workspace");
-    register_ready_group_identity(workspace.path(), "bob-group", "bob", "jwt-bob");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let member_did = "did:wba:awiki.ai:alice:e1_alice";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_error(
@@ -242,6 +241,7 @@ fn group_add_live_error_preserves_go_owner_hint() {
         "actor cannot add members",
     ))]);
     write_group_config(workspace.path(), &server.base_url());
+    register_ready_group_identity(workspace.path(), "bob-group", "bob", "jwt-bob");
 
     let output = awiki_cmd(
         &[
@@ -283,7 +283,6 @@ fn group_add_live_error_preserves_go_owner_hint() {
 #[test]
 fn msg_send_group_live_posts_group_send_and_maps_message_id_suffix_like_go() {
     let workspace = TempDir::new("group-live-send").expect("workspace");
-    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "accepted": true,
@@ -297,6 +296,7 @@ fn msg_send_group_live_posts_group_send_and_maps_message_id_suffix_like_go() {
         "source": "remote_http"
     })))]);
     write_group_config(workspace.path(), &server.base_url());
+    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
 
     let output = awiki_cmd(
         &[
@@ -380,7 +380,8 @@ fn register_ready_group_identity(
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant_workspace = tenant_workspace(workspace);
+    let index_path = tenant_workspace.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
     index["credentials"][identity_name]["did"] = json!(did);
@@ -392,7 +393,7 @@ fn register_ready_group_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant_workspace.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -428,19 +429,38 @@ fn register_ready_group_identity(
 }
 
 fn write_group_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_group_config_with_runtime(workspace, base_url, "http");
 }
 
 fn write_group_websocket_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("runtime:\n  mode: websocket\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_group_config_with_runtime(workspace, base_url, "websocket");
+}
+
+fn write_group_config_with_runtime(workspace: &Path, base_url: &str, runtime_mode: &str) {
+    if tenant_workspace(workspace).join("data").exists()
+        || tenant_workspace(workspace).join("identities").exists()
+    {
+        panic!("group live test tenant must be configured before local tenant data is created");
+    }
+    let output = awiki_cmd(
+        &[
+            "tenant",
+            "reconfigure",
+            "default",
+            "--backend-base-url",
+            base_url,
+            "--did-host",
+            "awiki.ai",
+        ],
+        workspace,
+    );
+    assert_success(&output);
+    write_tenant_config(
+        workspace,
+        &format!(
+            "runtime:\n  mode: {runtime_mode}\nservices:\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
+        ),
+    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

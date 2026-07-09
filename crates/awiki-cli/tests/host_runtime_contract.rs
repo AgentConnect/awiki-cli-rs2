@@ -86,7 +86,7 @@ fn runtime_validation_and_dry_run_plans_match_go_contracts() {
 #[test]
 fn listener_status_merges_saved_sessions_and_host_notify_state() {
     let workspace = TempDir::new().expect("temp workspace");
-    let runtime_dir = workspace.path().join("runtime");
+    let runtime_dir = tenant_workspace(workspace.path()).join("runtime");
     std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
     let status_file = runtime_dir.join("listener.status.json");
     std::fs::write(
@@ -983,6 +983,10 @@ fn assert_not_contains(haystack: &str, needle: &str) {
         !haystack.contains(needle),
         "{haystack:?} should not contain {needle:?}"
     );
+}
+
+fn tenant_workspace(product_home: &std::path::Path) -> std::path::PathBuf {
+    product_home.join("tenants").join("default")
 }
 
 struct TempDir {

@@ -173,8 +173,11 @@ impl App {
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        let notify_url = changed_flag(command, "notify-url")
-            .map(|value| value.trim().to_string())
+        let notify_url_override = changed_flag(command, "notify-url");
+        let notify_url = notify_url_override
+            .as_deref()
+            .map(str::trim)
+            .map(ToOwned::to_owned)
             .unwrap_or_else(|| resolve_hermes_notify_url(&resolved));
         if notify_url.trim().is_empty() {
             return Err(ExitError::new(
@@ -192,13 +195,10 @@ impl App {
                 "Use a local notify URL such as http://127.0.0.1:8765/notify/host-event for the fully managed Hermes flow.",
             )
         })?;
+        let deliver_override = changed_flag(command, "deliver");
         let deliver = resolve_hermes_deliver_target(
             &resolved,
-            command
-                .flags
-                .get("deliver")
-                .map(String::as_str)
-                .unwrap_or_default(),
+            deliver_override.as_deref().unwrap_or_default(),
         );
         if !host_runtime::hermes_bridge::is_supported_deliver_target(&deliver) {
             return Err(ExitError::new(
@@ -260,9 +260,9 @@ impl App {
 
         workspace_config::configure_hermes_host_notify(
             &resolved.paths,
-            &notify_url,
+            notify_url_override.as_deref(),
             Some(&secret_value),
-            &deliver,
+            deliver_override.as_deref(),
             true,
         )
         .map_err(|err| {

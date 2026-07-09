@@ -53,13 +53,6 @@ pub fn refresh_resolved_config_optional(
     if let Some(no_color) = file_config.output.no_color {
         refreshed.no_color = no_color;
     }
-    if !file_config.services.service_base_url.trim().is_empty() {
-        refreshed.service_base_url =
-            workspace_config::normalize_base_url(file_config.services.service_base_url.trim());
-    }
-    if !file_config.services.did_domain.trim().is_empty() {
-        refreshed.did_domain = file_config.services.did_domain.trim().to_string();
-    }
     if !file_config.services.anp_service_endpoint.trim().is_empty() {
         refreshed.anp_service_endpoint =
             file_config.services.anp_service_endpoint.trim().to_string();
@@ -134,8 +127,6 @@ pub fn apply_workspace_v0_to_v1_config_optional(
             ..Default::default()
         };
         file_config.runtime.mode = legacy_config.runtime_mode;
-        file_config.services.service_base_url = legacy_config.service_base_url;
-        file_config.services.did_domain = legacy_config.did_domain;
         workspace_config::write_file_config_raw(&context.paths.config_file, file_config)
             .map_err(|err| MigrationError::Message(err.to_string()))?;
     }

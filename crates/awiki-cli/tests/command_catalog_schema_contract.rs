@@ -1,19 +1,24 @@
 use awiki_cli::command_catalog::{CutoverStatus, DirectInvocationPolicy};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn schema_flags_omit_empty_fields_like_go_catalog() {
-    let config = schema_for(&["config", "set"]);
-    let did_domain = schema_flag(schema_command(&config), "did-domain");
+    let tenant_create = schema_for(&["tenant", "create"]);
+    let backend_base_url = schema_flag(schema_command(&tenant_create), "backend-base-url");
 
-    assert_eq!(did_domain["name"], "did-domain");
-    assert_eq!(did_domain["type"], "string");
-    assert!(did_domain.get("default").is_none());
-    assert!(did_domain.get("required").is_none());
-    assert!(did_domain.get("choices").is_none());
-    assert!(did_domain.get("deprecated").is_none());
+    assert_eq!(backend_base_url["name"], "backend-base-url");
+    assert_eq!(backend_base_url["type"], "string");
+    assert_eq!(backend_base_url["required"], true);
+    assert!(backend_base_url.get("default").is_none());
+    assert!(backend_base_url.get("choices").is_none());
+    assert!(backend_base_url.get("deprecated").is_none());
 
     let create = schema_for(&["id", "create"]);
     let name = schema_flag(schema_command(&create), "name");
@@ -218,6 +223,11 @@ fn documented_current_user_commands_resolve_to_supported_current_surface() {
         &["msg", "history"][..],
         &["msg", "mark-read"][..],
         &["msg", "attachment", "download"][..],
+        &["tenant", "list"][..],
+        &["tenant", "current"][..],
+        &["tenant", "create"][..],
+        &["tenant", "use"][..],
+        &["tenant", "reconfigure"][..],
         &["mail", "inbox"][..],
         &["mail", "read"][..],
         &["mail", "mark-read"][..],
@@ -330,8 +340,8 @@ fn cmdmeta_bool_flag_lookup_is_command_scoped() {
         "follow"
     ));
     assert!(!awiki_cli::command_catalog::is_local_bool_flag(
-        "config.set",
-        "did-domain"
+        "tenant.create",
+        "backend-base-url"
     ));
     assert!(!awiki_cli::command_catalog::is_local_bool_flag(
         "status", "enabled"
@@ -375,10 +385,15 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "version",
         "upgrade",
         "config.show",
-        "config.set",
+        "tenant.list",
+        "tenant.current",
+        "tenant.create",
+        "tenant.use",
+        "tenant.reconfigure",
         "doctor",
         "docs",
         "schema",
+        "help",
         "init",
         "completion.bash",
         "completion.zsh",
@@ -553,9 +568,13 @@ fn assert_subsequence(actual: &[&str], expected: &[&str]) {
 }
 
 fn awiki_cmd(args: &[&str]) -> Output {
+    let workspace = TempDir::new().expect("temp workspace");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.path())
+        .env("HOME", workspace.path().join("home"))
+        .env("USERPROFILE", workspace.path().join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -565,6 +584,36 @@ fn awiki_cmd(args: &[&str]) -> Output {
         .env_remove("AVIKI_FORMAT")
         .env_remove("AWIKI_CLI_TRACE_TIMING");
     command.output().expect("run awiki-cli binary")
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new() -> std::io::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-schema-test-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 fn assert_success(output: &Output) {

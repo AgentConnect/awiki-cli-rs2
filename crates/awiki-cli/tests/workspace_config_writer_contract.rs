@@ -56,8 +56,6 @@ fn config_writer_updates_schema_version_and_preserves_existing_values() {
         concat!(
             "schema_version: 0\n",
             "services:\n",
-            "  service_base_url: https://platform.example\n",
-            "  did_domain: old.example\n",
             "  anp_service_endpoint: https://rpc.example/anp\n",
             "  anp_service_did: did:wba:rpc.example\n",
         ),
@@ -67,8 +65,14 @@ fn config_writer_updates_schema_version_and_preserves_existing_values() {
     workspace_config::ensure_config_schema_version(&paths.config_file).expect("update schema");
     let text = read_config(&paths);
     assert_contains(&text, "schema_version: 1\n");
-    assert_contains(&text, "  service_base_url: https://platform.example\n");
-    assert_contains(&text, "  did_domain: old.example\n");
+    assert!(
+        !text.contains("service_base_url:"),
+        "tenant config must not persist registry-owned backend URL: {text:?}"
+    );
+    assert!(
+        !text.contains("did_domain:"),
+        "tenant config must not persist registry-owned DID host: {text:?}"
+    );
     assert_contains(&text, "  anp_service_endpoint: https://rpc.example/anp\n");
     assert_contains(&text, "  anp_service_did: did:wba:rpc.example\n");
 }
@@ -88,12 +92,9 @@ fn config_writer_core_mutators_match_go_contract() {
         Some(true),
     )
     .expect("listener booleans");
-    let did_domain =
-        workspace_config::update_did_domain(&paths, " Tenant.Example. ").expect("did domain");
     workspace_config::update_host_notify_sink(&paths, "webhook").expect("host notify sink");
     workspace_config::update_host_notify_enabled(&paths, false).expect("host notify enabled");
 
-    assert_eq!(did_domain, "tenant.example");
     let text = read_config(&paths);
     assert_contains(&text, "schema_version: 1\n");
     assert_contains(&text, "  active: alice\n");
@@ -108,7 +109,10 @@ fn config_writer_core_mutators_match_go_contract() {
     assert_contains(&text, "  vault_dir: ");
     assert_contains(&text, "  workspace_id: cli-workspace-");
     assert_contains(&text, "  device_id: cli-local-device\n");
-    assert_contains(&text, "  did_domain: tenant.example\n");
+    assert!(
+        !text.contains("did_domain:"),
+        "tenant config must not persist registry-owned DID host: {text:?}"
+    );
 }
 
 #[test]
@@ -130,7 +134,13 @@ fn config_writer_never_persists_identity_vault_root_key() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let text = std::fs::read_to_string(temp.path().join("config.yaml")).expect("read config");
+    let text = std::fs::read_to_string(
+        temp.path()
+            .join("tenants")
+            .join("default")
+            .join("config.yaml"),
+    )
+    .expect("read config");
     assert_contains(&text, "secret_storage:\n");
     assert_contains(&text, "  mode: vault_required\n");
     assert!(
@@ -195,7 +205,7 @@ fn config_writer_hermes_mutators_double_write_legacy_webhook() {
     let temp = TempDir::new("config-writer-hermes").expect("temp dir");
     let paths = test_paths(temp.path());
 
-    let notify_url = "  http://127.0.0.1:8765/notify/host-event  ";
+    let notify_url = "  http://127.0.0.1:9876/custom-notify  ";
     let deliver = " Telegram ";
     workspace_config::update_host_notify_sink(&paths, "hermes").expect("host notify sink");
     workspace_config::update_hermes_settings(&paths, Some(notify_url), Some(deliver))
@@ -206,14 +216,14 @@ fn config_writer_hermes_mutators_double_write_legacy_webhook() {
     assert_contains(&text, "    sink: hermes\n");
     assert_contains(
         &text,
-        "      notify_url: http://127.0.0.1:8765/notify/host-event\n",
+        "      notify_url: http://127.0.0.1:9876/custom-notify\n",
     );
     assert_contains(&text, "      deliver: telegram\n");
     assert_contains(&text, "      secret: secret-123\n");
     assert_contains(&text, "    webhook:\n");
     assert_contains(
         &text,
-        "      notify_url: http://127.0.0.1:8765/notify/host-event\n",
+        "      notify_url: http://127.0.0.1:9876/custom-notify\n",
     );
     assert_contains(&text, "      secret: secret-123\n");
 
@@ -229,9 +239,9 @@ fn config_writer_configure_hermes_one_shot_matches_go_contract() {
 
     workspace_config::configure_hermes_host_notify(
         &paths,
-        "  http://127.0.0.1:8765/notify/host-event  ",
+        Some("  http://127.0.0.1:9876/custom-notify  "),
         Some(" secret-setup "),
-        " Telegram ",
+        Some(" Telegram "),
         false,
     )
     .expect("configure hermes");
@@ -241,9 +251,31 @@ fn config_writer_configure_hermes_one_shot_matches_go_contract() {
     assert_contains(&text, "    sink: hermes\n");
     assert_contains(
         &text,
-        "      notify_url: http://127.0.0.1:8765/notify/host-event\n",
+        "      notify_url: http://127.0.0.1:9876/custom-notify\n",
     );
     assert_contains(&text, "      deliver: telegram\n");
+    assert_contains(&text, "      secret: secret-setup\n");
+}
+
+#[test]
+fn config_writer_configure_hermes_does_not_persist_runtime_defaults() {
+    let temp = TempDir::new("config-writer-hermes-defaults").expect("temp dir");
+    let paths = test_paths(temp.path());
+
+    workspace_config::configure_hermes_host_notify(
+        &paths,
+        None,
+        Some(" secret-setup "),
+        None,
+        true,
+    )
+    .expect("configure hermes defaults");
+
+    let text = read_config(&paths);
+    assert_contains(&text, "    enabled: true\n");
+    assert_contains(&text, "    sink: hermes\n");
+    assert_contains(&text, "      notify_url: \n");
+    assert_contains(&text, "      deliver: \n");
     assert_contains(&text, "      secret: secret-setup\n");
 }
 

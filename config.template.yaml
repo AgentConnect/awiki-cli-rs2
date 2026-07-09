@@ -22,14 +22,12 @@ output:
   format: json
   no_color: false
 services:
-  # Platform service URL used for User-Service and Message-Service APIs.
-  service_base_url: https://awiki.ai
-  # DID provider domain. Tenant identities may set this to a.com while keeping service_base_url on awiki.ai.
-  # Bare handles entered in id/msg/group commands are completed against this domain before lookup/register/recover.
-  # Explicit full handles like alice.example.com keep their own domain for that command.
-  did_domain: awiki.ai
-  # Defaults derive from service_base_url, not did_domain; set explicitly when advertising a custom ANP service.
-  anp_service_endpoint: https://awiki.ai/anp-im/rpc
-  anp_service_did: did:wba:awiki.ai
+  # Backend base URL and DID host are tenant registry values. Create or switch tenants with:
+  # awiki-cli tenant create <name> --backend-base-url <url> --did-host <host>
+  # awiki-cli tenant use <name>
+  # Set these only when the DID document should advertise a custom public ANP service.
+  anp_service_endpoint: ""
+  anp_service_did: ""
   ca_bundle: ""
-  mail_service_url: https://mail.awiki.ai
+  # Empty means reuse the active tenant backend base URL.
+  mail_service_url: ""

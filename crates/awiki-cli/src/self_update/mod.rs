@@ -2,7 +2,7 @@ mod cache;
 mod version;
 
 use crate::build_info;
-use crate::workspace_config::Resolved;
+use crate::workspace_config::{self, Resolved};
 
 const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 43_200;
 
@@ -39,18 +39,47 @@ pub struct CheckOutcome {
 }
 
 pub fn check(resolved: &Resolved) -> CheckOutcome {
-    check_inner(resolved, false)
+    check_with_settings(check_settings_from_resolved(resolved), false)
 }
 
 pub fn check_fresh(resolved: &Resolved) -> CheckOutcome {
-    check_inner(resolved, true)
+    check_with_settings(check_settings_from_resolved(resolved), true)
 }
 
-fn check_inner(resolved: &Resolved, prefer_fresh: bool) -> CheckOutcome {
+pub fn check_preflight() -> CheckOutcome {
+    check_with_settings(CheckSettings::preflight(), false)
+}
+
+#[derive(Debug, Clone, Default)]
+struct CheckSettings {
+    strict_disabled: bool,
+    metadata_cache_ttl_seconds: i64,
+    cache_dir: String,
+}
+
+impl CheckSettings {
+    fn preflight() -> Self {
+        Self {
+            strict_disabled: false,
+            metadata_cache_ttl_seconds: 0,
+            cache_dir: workspace_config::product_cache_dir().unwrap_or_default(),
+        }
+    }
+}
+
+fn check_settings_from_resolved(resolved: &Resolved) -> CheckSettings {
+    CheckSettings {
+        strict_disabled: resolved.update_disable_strict_version,
+        metadata_cache_ttl_seconds: resolved.update_metadata_cache_ttl_seconds,
+        cache_dir: update_cache_dir(resolved),
+    }
+}
+
+fn check_with_settings(settings: CheckSettings, prefer_fresh: bool) -> CheckOutcome {
     let current_version = current_version();
     let dev_build = version::is_dev_version(&current_version);
-    let strict_disabled = strict_disabled(resolved);
-    let ttl_seconds = metadata_cache_ttl_seconds(resolved);
+    let strict_disabled = strict_disabled(settings.strict_disabled);
+    let ttl_seconds = metadata_cache_ttl_seconds(settings.metadata_cache_ttl_seconds);
     let mut decision = Decision {
         current_version,
         strict_disabled,
@@ -59,7 +88,7 @@ fn check_inner(resolved: &Resolved, prefer_fresh: bool) -> CheckOutcome {
     };
 
     let metadata = match cache::load_metadata(
-        &resolved.paths.cache_dir,
+        &settings.cache_dir,
         ttl_seconds,
         prefer_fresh,
         update_cache_only_enabled(),
@@ -117,8 +146,8 @@ fn current_version() -> String {
     }
 }
 
-fn strict_disabled(resolved: &Resolved) -> bool {
-    let mut disabled = resolved.update_disable_strict_version;
+fn strict_disabled(configured: bool) -> bool {
+    let mut disabled = configured;
     if let Ok(raw) = std::env::var("AWIKI_CLI_DISABLE_STRICT_VERSION") {
         if !raw.trim().is_empty() {
             disabled = parse_bool(&raw);
@@ -127,9 +156,9 @@ fn strict_disabled(resolved: &Resolved) -> bool {
     disabled
 }
 
-fn metadata_cache_ttl_seconds(resolved: &Resolved) -> i64 {
-    let mut ttl = if resolved.update_metadata_cache_ttl_seconds > 0 {
-        resolved.update_metadata_cache_ttl_seconds
+fn metadata_cache_ttl_seconds(configured: i64) -> i64 {
+    let mut ttl = if configured > 0 {
+        configured
     } else {
         DEFAULT_METADATA_CACHE_TTL_SECONDS
     };
@@ -141,6 +170,18 @@ fn metadata_cache_ttl_seconds(resolved: &Resolved) -> i64 {
         }
     }
     ttl
+}
+
+fn update_cache_dir(resolved: &Resolved) -> String {
+    if std::env::var("AWIKI_CLI_WORKSPACE_HOME_DIR")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return workspace_config::product_cache_dir()
+            .unwrap_or_else(|_| resolved.paths.cache_dir.clone());
+    }
+    resolved.paths.cache_dir.clone()
 }
 
 fn update_cache_only_enabled() -> bool {

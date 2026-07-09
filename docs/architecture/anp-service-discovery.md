@@ -46,46 +46,42 @@
 
 ## 3. 本地配置项
 
-`config.yaml` 的 `services` 下包含两个显式字段：
+租户注册表拥有平台后端和 DID host；`config.yaml` 只保存租户本地运行配置和可选服务覆盖。
 
-```json
-{
-  "services": {
-    "service_base_url": "https://awiki.ai",
-    "did_domain": "awiki.ai",
-    "anp_service_endpoint": "https://awiki.ai/anp-im/rpc",
-    "anp_service_did": "did:wba:awiki.ai"
-  }
-}
+```text
+~/.awiki-cli/
+  global.json
+  tenants/
+    registry.json
+    default/
+      config.yaml
 ```
 
 职责拆分：
 
-- `did_domain`：决定本地生成的 DID provider domain；租户身份可设置为 `a.com`
-- `service_base_url`：CLI 连接 User-Service / Message-Service 的平台服务基础地址，默认 `https://awiki.ai`
-- `anp_service_endpoint`：写入 DID 文档的公开 RPC 地址
-- `anp_service_did`：写入 DID 文档的 service DID
+- `tenants/registry.json` 中的 `backend_base_url`：CLI 连接 User-Service / Message-Service / content / group 等平台服务的基础地址。
+- `tenants/registry.json` 中的 `did_host`：决定本地生成的 DID provider host；bare handle 会按当前租户 host 补全。
+- `config.yaml` 中的 `services.anp_service_endpoint`：写入 DID 文档的公开 RPC 地址，可选。
+- `config.yaml` 中的 `services.anp_service_did`：写入 DID 文档的 service DID，可选。
 
 默认值：
 
-- `anp_service_endpoint` 从 `service_base_url` 推导：`<service_base_url>/anp-im/rpc`
-- `anp_service_did` 从 `service_base_url` 的 hostname 推导：`did:wba:<service_base_url-host>`
+- `anp_service_endpoint` 从当前租户 `backend_base_url` 推导：`<backend_base_url>/anp-im/rpc`
+- `anp_service_did` 从当前租户 `backend_base_url` 的 hostname 推导：`did:wba:<backend-base-url-host>`
 
-租户 DID 域名示例：
+租户创建示例：
 
-```yaml
-services:
-  service_base_url: https://awiki.ai
-  did_domain: a.com
-  anp_service_endpoint: https://awiki.ai/anp-im/rpc
-  anp_service_did: did:wba:awiki.ai
+```bash
+awiki-cli tenant create acme --backend-base-url https://awiki.ai --did-host a.com
+awiki-cli tenant use acme
 ```
 
-该配置会生成 `did:wba:a.com:...`，但 DID 文档中的默认 `ANPMessageService` 仍指向平台服务。user-service 不强制该字段必须使用 awiki.ai；显式配置可声明其他公开消息服务。
+该租户会生成 `did:wba:a.com:...`，默认 DID 文档中的 `ANPMessageService` 仍从租户后端推导。需要声明其他公开消息服务时，只配置 `anp_service_endpoint` / `anp_service_did`。
 
 配置来源：
 
-- 业务配置统一来自 `config.yaml`
+- 后端地址和 DID host 统一来自租户注册表
+- 租户内运行配置来自 `tenants/<name>/config.yaml`
 - 未配置时使用默认推导值
 - 除 `AWIKI_CLI_WORKSPACE_HOME_DIR` 外，不再支持通过环境变量注入这些字段
 
@@ -108,7 +104,7 @@ services:
 当前 Rust workspace 中的主要实现锚点：
 
 - `crates/awiki-cli/src/workspace_config/`
-  - 从 `config.yaml` 读取 `anp_service_endpoint` / `anp_service_did`，并在缺省时从 `service_base_url` 推导默认值。
+  - 从租户注册表读取 `backend_base_url` / `did_host`，从 `config.yaml` 读取 `anp_service_endpoint` / `anp_service_did`，并在缺省时从当前租户后端推导默认值。
 - `crates/im-core/src/config.rs`
   - 在 `ImCoreConfig` 中承载 SDK 需要的公开 ANP service endpoint / DID。
 - `crates/im-core/src/internal/identity_generation.rs`

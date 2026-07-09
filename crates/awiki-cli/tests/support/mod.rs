@@ -23,6 +23,7 @@ pub struct TestIdentityOptions<'a> {
 }
 
 pub fn write_ready_identity(workspace: &Path, options: TestIdentityOptions<'_>) -> TestIdentity {
+    let workspace = tenant_workspace(workspace);
     let identity_name = required(options.identity_name, "identity_name");
     let handle = required(options.handle, "handle");
     let display_name = if options.display_name.trim().is_empty() {
@@ -125,13 +126,14 @@ pub fn open_local_state(workspace: &Path) -> rusqlite::Connection {
 }
 
 pub fn test_paths(workspace: &Path) -> Paths {
+    let workspace = tenant_workspace(workspace);
     for directory in ["data", "runtime", "cache", "logs"] {
         std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
     }
     Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(workspace),
+        workspace_home_dir: path_string(&workspace),
+        root_dir: path_string(&workspace),
+        config_dir: path_string(&workspace),
         data_dir: path_string(&workspace.join("data")),
         state_dir: path_string(&workspace.join("runtime")),
         cache_dir: path_string(&workspace.join("cache")),
@@ -144,12 +146,51 @@ pub fn test_paths(workspace: &Path) -> Paths {
     }
 }
 
+pub fn tenant_workspace(product_home: &Path) -> PathBuf {
+    product_home.join("tenants").join("default")
+}
+
+pub fn tenant_config_path(product_home: &Path) -> PathBuf {
+    tenant_workspace(product_home).join("config.yaml")
+}
+
+pub fn write_tenant_config(product_home: &Path, text: &str) {
+    let path = tenant_config_path(product_home);
+    write_config_text(&path, text);
+}
+
+pub fn write_default_tenant_registry(product_home: &Path, backend_base_url: &str, did_host: &str) {
+    let now = "2026-05-25T00:00:00Z";
+    write_json(
+        &product_home.join("global.json"),
+        &json!({
+            "schema_version": 1,
+            "active_tenant": "default",
+        }),
+    );
+    write_json(
+        &product_home.join("tenants").join("registry.json"),
+        &json!({
+            "schema_version": 1,
+            "tenants": [{
+                "name": "default",
+                "display_name": "AWiki",
+                "backend_base_url": backend_base_url.trim().trim_end_matches('/'),
+                "did_host": normalize_test_host(did_host),
+                "dir_name": "default",
+                "created_at": now,
+                "updated_at": now,
+            }],
+        }),
+    );
+}
+
 pub fn set_secret_storage_mode(workspace: &Path, mode: &str) {
     assert!(
         matches!(mode, "file_compat" | "vault_preferred" | "vault_required"),
         "unsupported test secret storage mode: {mode}"
     );
-    let config_path = workspace.join("config.yaml");
+    let config_path = tenant_config_path(workspace);
     let text = std::fs::read_to_string(&config_path).unwrap_or_default();
     if text.trim().is_empty() {
         write_config_text(&config_path, &format!("secret_storage:\n  mode: {mode}\n"));
@@ -298,6 +339,10 @@ fn sanitize_component(raw: &str) -> String {
         .collect::<String>()
         .trim_matches(['.', '_', '-'])
         .to_string()
+}
+
+fn normalize_test_host(raw: &str) -> String {
+    raw.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn private_key(bundle: &anp::authentication::DidDocumentBundle, fragment: &str) -> String {

@@ -10,7 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
+use support::{
+    open_local_state, write_default_tenant_registry, write_ready_identity, write_tenant_config,
+    TestIdentity, TestIdentityOptions,
+};
 
 #[test]
 fn msg_send_live_posts_direct_rpc_and_persists_outbound_row_like_go() {
@@ -492,11 +495,8 @@ fn migrate_identity_to_vault(workspace: &Path) {
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(workspace, "runtime:\n  mode: http\n");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -51,11 +52,14 @@ fn upgrade_cache_only_uses_seeded_metadata_for_dev_builds() {
 fn upgrade_strict_disable_follows_config_and_env_override() {
     let config_workspace = TempDir::new().expect("temp workspace");
     seed_metadata(config_workspace.path(), "0.0.1-beta.5", "10.0.1");
-    fs::write(
-        config_workspace.path().join("config.yaml"),
-        "update:\n  disable_strict_version: true\n",
-    )
-    .expect("write config");
+    let config_path = config_workspace
+        .path()
+        .join("tenants")
+        .join("default")
+        .join("config.yaml");
+    fs::create_dir_all(config_path.parent().expect("tenant config parent"))
+        .expect("create tenant config parent");
+    fs::write(config_path, "update:\n  disable_strict_version: true\n").expect("write config");
 
     let output = awiki_cmd_with_workspace(
         &["upgrade", "--format", "json"],
@@ -139,6 +143,8 @@ fn root_preflight_exempts_local_recovery_commands_from_update_check() {
         &["schema", "--format", "json"],
         &["config", "show", "--format", "json"],
         &["doctor", "--format", "json"],
+        &["--help"],
+        &["tenant", "--help"],
         &["completion", "bash"],
     ];
 
@@ -284,12 +290,18 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let thread_id = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-update-test-{}-{nanos}",
+            "awiki-cli-rs2-update-test-{}-{nanos}-{thread_id}-{counter}",
             std::process::id()
         ));
         fs::create_dir_all(&path)?;

@@ -88,35 +88,55 @@ scripts/flutter/build-sdk-native.sh
 
 ## 3. 工作区布局
 
-默认工作区为 `~/.awiki-cli/`，Windows 对应 `%USERPROFILE%\.awiki-cli\`。只支持通过 `AWIKI_CLI_WORKSPACE_HOME_DIR` 切换整个工作区根目录，不再支持分别覆盖 config/data/runtime/cache 路径。
+默认产品目录为 `~/.awiki-cli/`，Windows 对应 `%USERPROFILE%\.awiki-cli\`。只支持通过 `AWIKI_CLI_WORKSPACE_HOME_DIR` 切换整个产品目录根路径。
+
+CLI 以租户为单位隔离后端地址、DID host 和本地数据。租户是 `backend_base_url + did_host` 的原子组合；要使用新的组合，必须先创建租户，再按租户名切换。
 
 ```text
 ~/.awiki-cli/
-  config.yaml
-  identities/
-  data/awiki-cli.db
+  global.json
   cache/
-  runtime/
-  mls/
-  logs/
+  tenants/
+    registry.json
+    default/
+      config.yaml
+      identities/
+      data/awiki-cli.db
+      cache/
+      runtime/
+      logs/
 ```
 
 用途：
 
-- `identities/`：身份索引、DID document、私钥和 auth/session 文件。
-- `data/awiki-cli.db`：SQLite 本地缓存，使用 bundled SQLite，不需要系统 SQLite。
-- `runtime/`：listener socket、pid/status、host-notify 事件等运行时文件。
-- `mls/`：`im-core` group E2EE native provider 的私有 MLS 状态。
-- `logs/`：本地服务日志。
+- `global.json`：记录当前激活租户。
+- `tenants/registry.json`：记录所有租户的 `backend_base_url`、`did_host`、展示名和目录名。
+- `tenants/<name>/config.yaml`：租户内本地运行配置，例如 runtime、输出格式、secret storage、ANP/mail override。
+- `tenants/<name>/identities/`：该租户下的身份索引、DID document、私钥和 auth/session 文件。
+- `tenants/<name>/data/awiki-cli.db`：该租户的 SQLite 本地缓存，使用 bundled SQLite，不需要系统 SQLite。
+- `tenants/<name>/runtime/`：该租户的 listener socket、pid/status、host-notify 事件等运行时文件。
+- `cache/`：全局缓存，例如 CLI 更新元数据；CLI 二进制版本本身也是全局的，不随租户切换。
 
 ## 4. 配置文件
 
-推荐通过 `awiki-cli init` 创建 `config.yaml`：
+推荐通过 `awiki-cli init` 创建默认租户配置：
 
 ```bash
 awiki-cli init
 awiki-cli config show
 ```
+
+租户管理：
+
+```bash
+awiki-cli tenant list
+awiki-cli tenant current
+awiki-cli tenant create acme --backend-base-url https://api.acme.example --did-host acme.example
+awiki-cli tenant use acme
+awiki-cli tenant reconfigure acme --backend-base-url https://api2.acme.example --did-host acme.example
+```
+
+`tenant reconfigure` 只允许修改还没有身份或本地数据库数据的租户；如果租户已经有数据，请创建一个新租户。
 
 最小配置示例：
 
@@ -140,24 +160,25 @@ output:
   format: json
   no_color: false
 services:
-  service_base_url: https://awiki.ai
-  did_domain: awiki.ai
-  anp_service_endpoint: https://awiki.ai/anp-im/rpc
-  anp_service_did: did:wba:awiki.ai
+  anp_service_endpoint: ""
+  anp_service_did: ""
   ca_bundle: ""
+  mail_service_url: ""
 ```
 
 配置优先级：
 
 ```text
-flag > config.yaml > default
+flag > tenant config.yaml > tenant registry > default
 ```
 
-`service_base_url` 是 CLI 连接 user-service、message-service、content、group 等服务的基础地址。`did_domain` 用于补全 bare handle，例如 `alice` 会按当前 domain 补全。`anp_service_endpoint` 和 `anp_service_did` 会写入本地 DID document 的 `ANPMessageService`。
+`backend_base_url` 是 CLI 连接 user-service、message-service、content、group 等服务的基础地址；`did_host` 用于补全 bare handle，例如 `alice` 会按当前租户 DID host 补全。它们只来自租户注册表，不在 `config.yaml` 中配置。
+
+`anp_service_endpoint` 和 `anp_service_did` 会写入本地 DID document 的 `ANPMessageService`。为空时会从当前租户的 `backend_base_url` 自动推导。`mail_service_url` 为空时复用当前租户的 `backend_base_url`。
 
 ## 5. 身份与本地状态
 
-身份文件位于 `identities/<identity-dir>/`：
+身份文件位于 `tenants/<name>/identities/<identity-dir>/`：
 
 ```text
 identity.json
@@ -279,7 +300,8 @@ cargo check -p awiki-cli --locked
 
 ```bash
 awiki-cli config show
-awiki-cli config set --did-domain tenant.example
+awiki-cli tenant current
+awiki-cli tenant list
 ```
 
 ### 重置本地数据库
@@ -287,7 +309,7 @@ awiki-cli config set --did-domain tenant.example
 确认不需要保留本地缓存后删除：
 
 ```bash
-rm ~/.awiki-cli/data/awiki-cli.db
+rm ~/.awiki-cli/tenants/<tenant-name>/data/awiki-cli.db
 ```
 
 下次运行会自动重建 schema。
