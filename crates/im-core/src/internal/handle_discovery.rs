@@ -1,0 +1,507 @@
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectHandleResolution {
+    pub(crate) target_did: String,
+    pub(crate) full_handle: String,
+    pub(crate) user_id: String,
+}
+
+pub(crate) fn resolve_direct_handle(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<DirectHandleResolution> {
+    match resolution_route_for_client(client, raw_handle)? {
+        HandleResolutionRoute::Local { full_handle } => {
+            let lookup = client
+                .directory()
+                .lookup_handle(crate::ids::Handle::parse(full_handle.as_str(), "")?)?;
+            resolution_from_lookup(full_handle.as_str(), lookup)
+        }
+        HandleResolutionRoute::Public { full_handle, url } => {
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+            let raw = crate::internal::transport::RawJsonTransport::get_json_url(
+                &mut transport,
+                url.as_str(),
+                BTreeMap::new(),
+            )?;
+            resolution_from_public_document(full_handle.as_str(), raw)
+        }
+    }
+}
+
+pub(crate) async fn resolve_direct_handle_async(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<DirectHandleResolution> {
+    match resolution_route_for_client(client, raw_handle)? {
+        HandleResolutionRoute::Local { full_handle } => {
+            let lookup = client
+                .directory()
+                .lookup_handle_async(crate::ids::Handle::parse(full_handle.as_str(), "")?)
+                .await?;
+            resolution_from_lookup(full_handle.as_str(), lookup)
+        }
+        HandleResolutionRoute::Public { full_handle, url } => {
+            let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+            let raw = crate::internal::transport::AsyncRawJsonTransport::get_json_url(
+                &mut transport,
+                url.as_str(),
+                BTreeMap::new(),
+            )
+            .await?;
+            resolution_from_public_document(full_handle.as_str(), raw)
+        }
+    }
+}
+
+fn resolution_from_lookup(
+    expected_handle: &str,
+    lookup: crate::directory::HandleLookupResult,
+) -> crate::ImResult<DirectHandleResolution> {
+    if let Some(status) = lookup.status.as_deref() {
+        validate_active_status(expected_handle, status)?;
+    }
+    let full_handle = lookup.handle.as_str().to_owned();
+    validate_handle_match(expected_handle, full_handle.as_str())?;
+    Ok(DirectHandleResolution {
+        target_did: lookup.did.as_str().to_owned(),
+        full_handle,
+        user_id: lookup.user_id,
+    })
+}
+
+fn resolution_from_public_document(
+    expected_handle: &str,
+    raw: Value,
+) -> crate::ImResult<DirectHandleResolution> {
+    let status = string_field(&raw, "status")?;
+    validate_active_status(expected_handle, status.as_str())?;
+    let full_handle = first_string_field(&raw, &["full_handle", "handle"])?;
+    validate_handle_match(expected_handle, full_handle.as_str())?;
+    let target_did = string_field(&raw, "did")?;
+    let did = crate::ids::Did::parse(target_did.as_str())?;
+    validate_did_matches_handle_domain(full_handle.as_str(), did.as_str())?;
+    Ok(DirectHandleResolution {
+        target_did: did.as_str().to_owned(),
+        full_handle,
+        user_id: first_non_empty_string(&raw, &["user_id", "userId", "subject_id", "subjectId"])
+            .unwrap_or_else(|| did.as_str().to_owned()),
+    })
+}
+
+fn validate_active_status(handle: &str, status: &str) -> crate::ImResult<()> {
+    if status.trim().eq_ignore_ascii_case("active") {
+        return Ok(());
+    }
+    Err(crate::ImError::PeerNotFound {
+        peer: handle.to_owned(),
+    })
+}
+
+fn validate_handle_match(expected: &str, actual: &str) -> crate::ImResult<()> {
+    let expected = normalize_handle(expected)?;
+    let actual = normalize_handle(actual)?;
+    if expected.full_handle == actual.full_handle {
+        return Ok(());
+    }
+    Err(crate::ImError::InvalidInput {
+        field: Some("handle".to_owned()),
+        message: format!(
+            "handle discovery returned {} for {}",
+            actual.full_handle, expected.full_handle
+        ),
+    })
+}
+
+fn validate_did_matches_handle_domain(handle: &str, did: &str) -> crate::ImResult<()> {
+    let normalized = normalize_handle(handle)?;
+    let Some(did_domain) = did_wba_domain(did) else {
+        return Err(crate::ImError::InvalidInput {
+            field: Some("did".to_owned()),
+            message: format!("handle discovery DID {did} is not did:wba"),
+        });
+    };
+    if did_domain == normalized.domain {
+        return Ok(());
+    }
+    Err(crate::ImError::InvalidInput {
+        field: Some("did".to_owned()),
+        message: format!(
+            "handle discovery DID domain {did_domain} does not match handle domain {}",
+            normalized.domain
+        ),
+    })
+}
+
+fn is_local_handle(client: &crate::core::ImClient, full_handle: &str) -> bool {
+    let Ok(normalized) = normalize_handle(full_handle) else {
+        return false;
+    };
+    let local_domain = normalize_domain(client.core_inner().sdk_config().did_domain.as_str());
+    normalized.domain == local_domain
+}
+
+fn normalize_handle_for_client(
+    client: &crate::core::ImClient,
+    raw: &str,
+) -> crate::ImResult<NormalizedHandle> {
+    normalize_handle_with_default_domain(raw, client.core_inner().sdk_config().did_domain.as_str())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HandleResolutionRoute {
+    Local { full_handle: String },
+    Public { full_handle: String, url: String },
+}
+
+fn resolution_route_for_client(
+    client: &crate::core::ImClient,
+    raw_handle: &str,
+) -> crate::ImResult<HandleResolutionRoute> {
+    let normalized = normalize_handle_for_client(client, raw_handle)?;
+    if is_local_handle(client, normalized.full_handle.as_str()) {
+        return Ok(HandleResolutionRoute::Local {
+            full_handle: normalized.full_handle,
+        });
+    }
+    Ok(HandleResolutionRoute::Public {
+        url: discovery_url(normalized.domain.as_str(), normalized.local_part.as_str()),
+        full_handle: normalized.full_handle,
+    })
+}
+
+fn discovery_url(domain: &str, local_part: &str) -> String {
+    format!(
+        "https://{}/.well-known/handle/{}",
+        domain.trim().trim_end_matches('.'),
+        percent_encode_path_segment(local_part)
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedHandle {
+    full_handle: String,
+    local_part: String,
+    domain: String,
+}
+
+fn normalize_handle(raw: &str) -> crate::ImResult<NormalizedHandle> {
+    normalize_handle_with_default_domain(raw, "")
+}
+
+fn normalize_handle_with_default_domain(
+    raw: &str,
+    default_domain: &str,
+) -> crate::ImResult<NormalizedHandle> {
+    let handle = crate::ids::Handle::parse(raw.trim(), default_domain)?;
+    let full_handle = handle
+        .as_str()
+        .trim()
+        .trim_start_matches('@')
+        .to_ascii_lowercase();
+    let (local_part, domain) =
+        full_handle
+            .split_once('.')
+            .ok_or_else(|| crate::ImError::InvalidInput {
+                field: Some("handle".to_owned()),
+                message: "cross-domain handle must include a domain".to_owned(),
+            })?;
+    if local_part.trim().is_empty() || domain.trim().is_empty() {
+        return Err(crate::ImError::InvalidInput {
+            field: Some("handle".to_owned()),
+            message: "handle must include local part and domain".to_owned(),
+        });
+    }
+    let local_part = local_part.to_owned();
+    let domain = normalize_domain(domain);
+    Ok(NormalizedHandle {
+        full_handle,
+        local_part,
+        domain,
+    })
+}
+
+fn normalize_domain(raw: &str) -> String {
+    raw.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn did_wba_domain(did: &str) -> Option<String> {
+    did.strip_prefix("did:wba:")
+        .and_then(|rest| rest.split(':').next())
+        .map(normalize_domain)
+        .filter(|domain| !domain.is_empty())
+}
+
+fn string_field(value: &Value, key: &str) -> crate::ImResult<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| crate::ImError::PeerNotFound {
+            peer: format!("handle discovery missing {key}"),
+        })
+}
+
+fn first_string_field(value: &Value, keys: &[&str]) -> crate::ImResult<String> {
+    first_non_empty_string(value, keys).ok_or_else(|| crate::ImError::PeerNotFound {
+        peer: "handle discovery missing handle".to_owned(),
+    })
+}
+
+fn first_non_empty_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| value.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        let ch = *byte as char;
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+            encoded.push(ch);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalize_handle_splits_local_part_and_domain() {
+        let handle = super::normalize_handle(" Alice.AWiki.Info ").unwrap();
+
+        assert_eq!(handle.full_handle, "alice.awiki.info");
+        assert_eq!(handle.local_part, "alice");
+        assert_eq!(handle.domain, "awiki.info");
+    }
+
+    #[test]
+    fn normalize_handle_for_client_expands_bare_local_handle() {
+        let fixture = Fixture::new("bare-local-handle");
+        let client = fixture.client();
+
+        let handle = super::normalize_handle_for_client(&client, "Alice").unwrap();
+
+        assert_eq!(handle.full_handle, "alice.awiki.test");
+        assert_eq!(handle.local_part, "alice");
+        assert_eq!(handle.domain, "awiki.test");
+    }
+
+    #[test]
+    fn route_for_client_keeps_local_handles_on_local_rpc() {
+        let fixture = Fixture::new("local-route");
+        let client = fixture.client();
+
+        let route = super::resolution_route_for_client(&client, "Alice").unwrap();
+
+        assert_eq!(
+            route,
+            super::HandleResolutionRoute::Local {
+                full_handle: "alice.awiki.test".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn route_for_client_sends_remote_handles_to_public_discovery() {
+        let fixture = Fixture::new("remote-route");
+        let client = fixture.client();
+
+        let route = super::resolution_route_for_client(&client, "Peer.AWiki.Info").unwrap();
+
+        assert_eq!(
+            route,
+            super::HandleResolutionRoute::Public {
+                full_handle: "peer.awiki.info".to_owned(),
+                url: "https://awiki.info/.well-known/handle/peer".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn did_wba_domain_reads_first_wba_segment() {
+        assert_eq!(
+            super::did_wba_domain("did:wba:Awiki.Info:user:alice:e1").as_deref(),
+            Some("awiki.info")
+        );
+    }
+
+    #[test]
+    fn public_document_resolution_accepts_active_matching_wba_handle() {
+        let resolved = super::resolution_from_public_document(
+            "peer.awiki.info",
+            json!({
+                "status": "active",
+                "handle": "peer.awiki.info",
+                "did": "did:wba:awiki.info:user:peer:e1",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.full_handle, "peer.awiki.info");
+        assert_eq!(resolved.target_did, "did:wba:awiki.info:user:peer:e1");
+        assert_eq!(resolved.user_id, "did:wba:awiki.info:user:peer:e1");
+    }
+
+    #[test]
+    fn public_document_resolution_rejects_handle_mismatch() {
+        let err = super::resolution_from_public_document(
+            "peer.awiki.info",
+            json!({
+                "status": "active",
+                "handle": "mallory.awiki.info",
+                "did": "did:wba:awiki.info:user:peer:e1",
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "handle"
+        ));
+    }
+
+    #[test]
+    fn public_document_resolution_rejects_inactive_status() {
+        let err = super::resolution_from_public_document(
+            "peer.awiki.info",
+            json!({
+                "status": "revoked",
+                "handle": "peer.awiki.info",
+                "did": "did:wba:awiki.info:user:peer:e1",
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::PeerNotFound { ref peer } if peer == "peer.awiki.info"
+        ));
+    }
+
+    #[test]
+    fn public_document_resolution_rejects_did_domain_mismatch() {
+        let err = super::resolution_from_public_document(
+            "peer.awiki.info",
+            json!({
+                "status": "active",
+                "handle": "peer.awiki.info",
+                "did": "did:wba:rwiki.cn:user:peer:e1",
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "did"
+        ));
+    }
+
+    #[test]
+    fn validate_did_rejects_non_wba() {
+        let err =
+            super::validate_did_matches_handle_domain("alice.awiki.info", "did:example:alice")
+                .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(ref field),
+                ..
+            } if field == "did"
+        ));
+    }
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(prefix: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "im-core-handle-discovery-{prefix}-{}-{nanos}",
+                std::process::id()
+            ));
+            let identity_root = root.join("identities");
+            let identity_dir = identity_root.join("alice");
+            fs::create_dir_all(&identity_dir).unwrap();
+            fs::write(identity_root.join("default"), "alice\n").unwrap();
+            fs::write(
+                identity_root.join("registry.json"),
+                r#"{
+                  "default_identity": "alice",
+                  "identities": [{
+                    "id": "alice-id",
+                    "did": "did:example:alice",
+                    "local_alias": "alice",
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                  }]
+                }"#,
+            )
+            .unwrap();
+            fs::write(identity_dir.join("did.json"), "{}").unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_owned(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    mail_service_endpoint: None,
+                    anp_service_endpoint: None,
+                    anp_service_did: None,
+                    ca_bundle: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::IdentityRegistryPaths {
+                        identity_root_dir: self.root.join("identities"),
+                        registry_path: self.root.join("identities").join("registry.json"),
+                        default_identity_path: Some(self.root.join("identities").join("default")),
+                    },
+                    local_state: crate::LocalStatePaths {
+                        sqlite_path: self.root.join("local").join("im.sqlite"),
+                    },
+                    runtime: crate::RuntimePaths {
+                        cache_dir: self.root.join("cache"),
+                        temp_dir: self.root.join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_owned(),
+            ))
+            .unwrap()
+        }
+    }
+}

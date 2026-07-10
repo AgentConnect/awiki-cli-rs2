@@ -1,12 +1,12 @@
-# im-core 中文说明
+# awiki-im-core 中文说明
 
 > 英文版为默认 README： [README.md](./README.md)。
 
-> 本文是 `im-core` README 的中文版本，方便 AWiki / ANP 协作者快速理解 crate 边界、配置方式和发布前检查项。
+> 本文是 `awiki-im-core` README 的中文版本，方便 AWiki / ANP 协作者快速理解 crate 边界、配置方式和发布前检查项。
 
-## im-core 是什么
+## awiki-im-core 是什么
 
-`im-core` 是 Awiki 客户端栈复用的 Rust IM SDK。它承载 Awiki CLI、Flutter/Dart SDK 桥接层以及原生应用集成共同依赖的产品能力，包括身份、DID-WBA 认证、消息、群组、附件、实时通知、E2EE-ready 安全消息、本地状态、邮件以及内容/站点 API。
+`awiki-im-core` 是 Awiki 客户端栈复用的 Rust IM SDK。它承载 Awiki CLI、Flutter/Dart SDK 桥接层以及原生应用集成共同依赖的产品能力，包括身份、DID-WBA 认证、消息、群组、附件、实时通知、E2EE-ready 安全消息、本地状态、邮件以及内容/站点 API。
 
 这个 crate 是 **产品 SDK**，不是 CLI helper。宿主应用负责构造 `ImCore`，再把某个身份绑定为 `ImClient`，然后调用 `messages()`、`groups()`、`directory()`、`realtime()` 等高层服务。
 
@@ -19,7 +19,7 @@
 
 ## 与 ANP 的关系
 
-Awiki IM 基于 Agent Network Protocol（ANP）的身份、DID-WBA 认证、proof、服务互操作和安全通信能力构建。`im-core` 依赖 Rust `anp` SDK 处理底层协议机制，但对业务调用方暴露 Awiki 产品语义 API，避免应用层直接拼装 ANP wire payload。
+Awiki IM 基于 Agent Network Protocol（ANP）的身份、DID-WBA 认证、proof、服务互操作和安全通信能力构建。`awiki-im-core` 依赖 Rust `anp` SDK 处理底层协议机制，但对业务调用方暴露 Awiki 产品语义 API，避免应用层直接拼装 ANP wire payload。
 
 ANP 相关链接：
 
@@ -51,13 +51,13 @@ ANP 相关链接：
 固定依赖方向：
 
 ```text
-awiki-cli      -> im-core
-im-core-dart   -> im-core
+awiki-cli      -> awiki-im-core
+im-core-dart   -> awiki-im-core
 awiki_im_core  -> im-core-dart native library
 awiki-me       -> awiki_im_core
 ```
 
-`im-core` 负责产品行为和本地状态，不负责：
+`awiki-im-core` 负责产品行为和本地状态，不负责：
 
 - CLI 参数解析、终端输出、退出码或 workspace 自动发现。
 - Flutter widget 状态、App 展示 DTO 或 UI cache model。
@@ -71,21 +71,28 @@ awiki-me       -> awiki_im_core
 
 ```toml
 [dependencies]
-im-core = "0.1"
+awiki-im-core = "0.1"
 ```
 
 本地工作区开发可使用 path dependency：
 
 ```toml
 [dependencies]
-im-core = { path = "../awiki-cli-rs2/crates/im-core" }
+awiki-im-core = { path = "../awiki-cli-rs2/crates/im-core" }
+```
+
+如果希望 Rust 代码中的 import 名保持 `im_core`，可以使用 Cargo dependency renaming：
+
+```toml
+[dependencies]
+im-core = { package = "awiki-im-core", version = "0.1" }
 ```
 
 启用额外能力：
 
 ```toml
 [dependencies]
-im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attachments"] }
+awiki-im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attachments"] }
 ```
 
 ## Feature flags
@@ -130,7 +137,7 @@ im-core = { version = "0.1", features = ["group-e2ee", "realtime", "attachments"
 - 可选 `ca_bundle`，用于自定义 TLS trust root。
 - `transport_policy`：`Auto`、`HttpOnly` 或 `RealtimePreferred`。
 
-SDK 不会自行发现 CLI workspace，也不会直接读取 App 配置文件。CLI、Flutter、daemon 和测试宿主必须自己解析配置并把规范化结果传入 `im-core`。
+SDK 不会自行发现 CLI workspace，也不会直接读取 App 配置文件。CLI、Flutter、daemon 和测试宿主必须自己解析配置并把规范化结果传入 `awiki-im-core`。
 
 ## 存储和路径
 
@@ -157,7 +164,7 @@ SDK 不会自行发现 CLI workspace，也不会直接读取 App 配置文件。
 
 ## Realtime 和本地优先读取
 
-`im-core` 把已提交的本地投影视为快速 UI 读取的持久真相源。conversation snapshot 和 patch stream 是 SQLite 状态上的加速层，不是第二套真相源。
+`awiki-im-core` 把已提交的本地投影视为快速 UI 读取的持久真相源。conversation snapshot 和 patch stream 是 SQLite 状态上的加速层，不是第二套真相源。
 
 典型 App 流程：
 
@@ -183,10 +190,10 @@ pub type ImResult<T> = Result<T, ImError>;
 在工作区根目录执行：
 
 ```bash
-cargo test -p im-core --locked
+cargo test -p awiki-im-core --locked
 cargo test --workspace --locked
-cargo package -p im-core --allow-dirty
-cargo publish -p im-core --dry-run
+cargo package -p awiki-im-core --allow-dirty
+cargo publish -p awiki-im-core --dry-run
 ```
 
 发布到 crates.io 时，每个 non-dev dependency 都必须带 crates.io `version`。本地 path dependency 可以保留，但需要同时写上已发布版本，例如：

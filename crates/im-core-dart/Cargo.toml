@@ -27,7 +27,7 @@ group-e2ee = ["im-core/group-e2ee"]
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-im-core = { path = "../im-core", default-features = false }
+im-core = { package = "awiki-im-core", path = "../im-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 flutter_rust_bridge = "=2.12.0"

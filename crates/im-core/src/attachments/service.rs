@@ -691,11 +691,8 @@ fn resolve_peer_current_did(
     if raw.is_empty() || raw.starts_with("did:") {
         return Ok(None);
     }
-    let handle = crate::ids::Handle::parse(raw, "")?;
-    client
-        .directory()
-        .lookup_handle(handle)
-        .map(|lookup| Some(lookup.did.as_str().to_string()))
+    crate::internal::handle_discovery::resolve_direct_handle(client, raw)
+        .map(|lookup| Some(lookup.target_did))
 }
 
 async fn resolve_peer_current_did_async(
@@ -706,12 +703,9 @@ async fn resolve_peer_current_did_async(
     if raw.is_empty() || raw.starts_with("did:") {
         return Ok(None);
     }
-    let handle = crate::ids::Handle::parse(raw, "")?;
-    client
-        .directory()
-        .lookup_handle_async(handle)
+    crate::internal::handle_discovery::resolve_direct_handle_async(client, raw)
         .await
-        .map(|lookup| Some(lookup.did.as_str().to_string()))
+        .map(|lookup| Some(lookup.target_did))
 }
 
 fn resolve_peer(
@@ -726,15 +720,14 @@ fn resolve_peer(
             peer_scope: None,
         });
     }
-    let handle = crate::ids::Handle::parse(raw, "")?;
-    let lookup = client.directory().lookup_handle(handle)?;
+    let lookup = crate::internal::handle_discovery::resolve_direct_handle(client, raw)?;
     Ok(ResolvedDirectTarget {
-        target_did: Some(lookup.did.as_str().to_string()),
-        direct_handle: Some(lookup.handle.as_str().to_string()),
+        target_did: Some(lookup.target_did),
+        direct_handle: Some(lookup.full_handle.clone()),
         peer_scope: Some(
             crate::internal::local_state::owner_scope::DirectPeerScope::new(
                 lookup.user_id,
-                lookup.handle.as_str().to_string(),
+                lookup.full_handle,
             )?,
         ),
     })
@@ -752,15 +745,15 @@ async fn resolve_peer_async(
             peer_scope: None,
         });
     }
-    let handle = crate::ids::Handle::parse(raw, "")?;
-    let lookup = client.directory().lookup_handle_async(handle).await?;
+    let lookup =
+        crate::internal::handle_discovery::resolve_direct_handle_async(client, raw).await?;
     Ok(ResolvedDirectTarget {
-        target_did: Some(lookup.did.as_str().to_string()),
-        direct_handle: Some(lookup.handle.as_str().to_string()),
+        target_did: Some(lookup.target_did),
+        direct_handle: Some(lookup.full_handle.clone()),
         peer_scope: Some(
             crate::internal::local_state::owner_scope::DirectPeerScope::new(
                 lookup.user_id,
-                lookup.handle.as_str().to_string(),
+                lookup.full_handle,
             )?,
         ),
     })
