@@ -1,4 +1,4 @@
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -9,7 +9,7 @@ fn email_notifications_are_owner_scoped_and_legacy_compatible() {
     let temp = tempdir().unwrap();
     let db_path = temp.path().join("state.sqlite3");
     let db = Connection::open(&db_path).unwrap();
-    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
     db.execute(
         r#"
 INSERT INTO messages
@@ -47,7 +47,7 @@ VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9)"#,
     )
     .unwrap();
 
-    let page = im_core::compat::local_state::list_email_notifications_for_test(
+    let page = awiki_im_core::compat::local_state::list_email_notifications_for_test(
         &db_path,
         "alice-id",
         "did:example:alice",
@@ -103,7 +103,7 @@ async fn email_notifications_async_are_actor_backed_and_owner_scoped() {
     let client = core.client_async(IdentitySelector::Default).await.unwrap();
 
     let db = Connection::open(temp.path().join("local").join("im.sqlite")).unwrap();
-    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
     db.execute(
         r#"
 INSERT INTO messages

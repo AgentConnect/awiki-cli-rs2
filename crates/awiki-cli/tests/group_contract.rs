@@ -1713,7 +1713,11 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Each assertion invokes the real debug CLI binary. On a cold or contended
+    // workspace the identity/vault bootstrap before the first HTTP request can
+    // exceed five seconds, so keep the fake server alive for the command-level
+    // contract rather than turning host load into transport_unavailable.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         match listener.accept() {
             Ok((stream, _)) => {

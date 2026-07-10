@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use im_core::prelude::*;
-use im_core::vault::{
+use awiki_im_core::prelude::*;
+use awiki_im_core::vault::{
     DeviceVaultRootKey, FileSecretVault, FileSecretVaultStore, SealSecretRequest,
     SecretAccessPolicy, SecretBytes, SecretKind, SecretMetadata, SecretVault,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);

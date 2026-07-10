@@ -2,8 +2,8 @@
 
 use std::collections::VecDeque;
 
-use im_core::prelude::*;
-use im_core::realtime::{
+use awiki_im_core::prelude::*;
+use awiki_im_core::realtime::{
     run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
     RealtimeRunnerEventSink, RealtimeRunnerTransport,
 };

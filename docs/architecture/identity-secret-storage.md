@@ -250,8 +250,8 @@ App、CLI 和 daemon 是不同宿主进程。当前设计不假设一个系统 k
 
 ```bash
 cd awiki-cli-rs2
-cargo test -p im-core --test vault_api --locked -j1
-cargo test -p im-core identity_vault --locked -j1
+cargo test -p awiki-im-core --test vault_api --locked -j1
+cargo test -p awiki-im-core identity_vault --locked -j1
 cargo test -p awiki-cli --test identity_cli_surface_contract --locked -j1
 cargo test -p awiki-cli --test diagnostics_contract --locked -j1
 cargo test -p awiki-deamon --locked -j1 secret_vault
