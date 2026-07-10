@@ -8,7 +8,7 @@ use crate::cli_trace;
 use crate::command_catalog;
 use crate::diagnostics;
 use crate::m_core_cli_adapter::message_result::CommandResult;
-use crate::workspace_config::{self, Overrides, Resolved};
+use crate::workspace_config::{self, Overrides, Resolved, WorkspaceConfigErrorKind};
 use crate::workspace_upgrade;
 use serde_json::{json, Value};
 use std::fs;
@@ -1671,11 +1671,31 @@ fn internal_io(err: std::io::Error) -> ExitError {
 }
 
 fn internal_anyhow(err: anyhow::Error) -> ExitError {
+    if let Some(err) = err.downcast_ref::<workspace_config::WorkspaceConfigError>() {
+        return workspace_config_exit(err);
+    }
     let hint = error_hints::refine_workspace_write_hint(
         &err,
         "Run `awiki-cli doctor` to inspect the local workspace state.",
     );
     ExitError::new("internal_error", 1, err.to_string(), hint)
+}
+
+fn workspace_config_exit(err: &workspace_config::WorkspaceConfigError) -> ExitError {
+    match err.kind() {
+        WorkspaceConfigErrorKind::InvalidArgument => {
+            ExitError::new("invalid_argument", 2, err.to_string(), err.hint())
+        }
+        WorkspaceConfigErrorKind::InvalidConfig => {
+            ExitError::new("invalid_config", 2, err.to_string(), err.hint())
+        }
+        WorkspaceConfigErrorKind::NotFound => {
+            ExitError::new("not_found", 5, err.to_string(), err.hint())
+        }
+        WorkspaceConfigErrorKind::Conflict => {
+            ExitError::new("conflict", 1, err.to_string(), err.hint())
+        }
+    }
 }
 
 fn store_exit(err: StoreError, hint: &str) -> ExitError {

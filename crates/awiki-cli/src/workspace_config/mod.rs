@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -96,6 +97,67 @@ pub struct TenantContext {
     pub tenants_dir: String,
     pub tenant_dir: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceConfigErrorKind {
+    InvalidArgument,
+    InvalidConfig,
+    NotFound,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceConfigError {
+    kind: WorkspaceConfigErrorKind,
+    message: String,
+    hint: String,
+}
+
+impl WorkspaceConfigError {
+    fn new(
+        kind: WorkspaceConfigErrorKind,
+        message: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            hint: hint.into(),
+        }
+    }
+
+    pub fn invalid_argument(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::InvalidArgument, message, hint)
+    }
+
+    pub fn invalid_config(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::InvalidConfig, message, hint)
+    }
+
+    pub fn not_found(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::NotFound, message, hint)
+    }
+
+    pub fn conflict(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::Conflict, message, hint)
+    }
+
+    pub fn kind(&self) -> WorkspaceConfigErrorKind {
+        self.kind
+    }
+
+    pub fn hint(&self) -> &str {
+        &self.hint
+    }
+}
+
+impl fmt::Display for WorkspaceConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WorkspaceConfigError {}
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct GlobalConfig {
@@ -606,6 +668,32 @@ pub struct TenantCreateInput {
     pub did_host: String,
 }
 
+fn tenant_name_hint() -> &'static str {
+    "Use a tenant name like `default`, `acme`, or `team-1`. Use --display-name for spaces, uppercase presentation, or non-ASCII labels."
+}
+
+fn did_host_hint() -> &'static str {
+    "Use a bare DID host like `awiki.ai` or `tenant.example`, not a URL."
+}
+
+fn backend_base_url_hint() -> &'static str {
+    "Use an absolute http(s) backend base URL like `https://awiki.ai`."
+}
+
+fn tenant_not_found_error(label: &str, name: &str) -> WorkspaceConfigError {
+    WorkspaceConfigError::not_found(
+        format!("{label} {name:?} does not exist"),
+        "Run `awiki-cli tenant list` to inspect tenants, or create one with `awiki-cli tenant create <name> --backend-base-url <url> --did-host <domain>`.",
+    )
+}
+
+fn duplicate_tenant_endpoint_error(prefix: &str) -> WorkspaceConfigError {
+    WorkspaceConfigError::conflict(
+        format!("{prefix}tenant with the same backend_base_url and did_host already exists"),
+        "Use the existing tenant for that backend/DID host pair, or choose a different backend_base_url + did_host combination.",
+    )
+}
+
 pub fn product_cache_dir() -> anyhow::Result<String> {
     let home = home_dir()?;
     let (product_home_dir, _) = resolve_workspace_home(&home);
@@ -648,7 +736,7 @@ pub fn tenant_context_for_resolved(resolved: &Resolved) -> anyhow::Result<Tenant
         .iter()
         .find(|tenant| tenant.name == name)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("active tenant {name:?} does not exist"))?;
+        .ok_or_else(|| tenant_not_found_error("active tenant", &name))?;
     Ok(tenant_context(
         &product_home_dir,
         profile,
@@ -692,7 +780,7 @@ pub fn preview_use_tenant(name: &str) -> anyhow::Result<TenantContext> {
         .iter()
         .find(|tenant| tenant.name == name)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("tenant {name:?} does not exist"))?;
+        .ok_or_else(|| tenant_not_found_error("tenant", &name))?;
     Ok(tenant_context(
         &product_home_dir,
         profile,
@@ -713,14 +801,18 @@ fn prepare_tenant_create(
     let did_host = normalize_did_domain(&input.did_host)?;
     let registry = load_tenant_registry(&product_home_dir)?;
     if registry.tenants.iter().any(|tenant| tenant.name == name) {
-        anyhow::bail!("tenant {name:?} already exists");
+        return Err(WorkspaceConfigError::conflict(
+            format!("tenant {name:?} already exists"),
+            "Run `awiki-cli tenant list` to inspect existing tenants, or choose a different tenant name.",
+        )
+        .into());
     }
     if registry
         .tenants
         .iter()
         .any(|tenant| tenant.backend_base_url == backend_base_url && tenant.did_host == did_host)
     {
-        anyhow::bail!("a tenant with the same backend_base_url and did_host already exists");
+        return Err(duplicate_tenant_endpoint_error("a ").into());
     }
     let now = now_compact();
     let profile = TenantProfile {
@@ -753,7 +845,7 @@ pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
         .iter()
         .find(|tenant| tenant.name == name)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("tenant {name:?} does not exist"))?;
+        .ok_or_else(|| tenant_not_found_error("tenant", &name))?;
     let mut global = load_global_config(&product_home_dir)?;
     global.schema_version = 1;
     global.active_tenant = name;
@@ -815,12 +907,16 @@ fn prepare_tenant_reconfigure(
         .iter()
         .position(|tenant| tenant.name == name)
     else {
-        anyhow::bail!("tenant {name:?} does not exist");
+        return Err(tenant_not_found_error("tenant", &name).into());
     };
     if tenant_has_data(&product_home_dir, &registry.tenants[index])? {
-        anyhow::bail!(
-            "tenant {name:?} already has local data; create a new tenant instead of changing its backend_base_url or did_host"
-        );
+        return Err(WorkspaceConfigError::conflict(
+            format!(
+                "tenant {name:?} already has local data; create a new tenant instead of changing its backend_base_url or did_host"
+            ),
+            "Create a new tenant for the new backend/DID host. Existing tenant-local identity and database data are immutable.",
+        )
+        .into());
     }
     if registry
         .tenants
@@ -832,7 +928,7 @@ fn prepare_tenant_reconfigure(
                 && tenant.did_host == did_host
         })
     {
-        anyhow::bail!("another tenant with the same backend_base_url and did_host already exists");
+        return Err(duplicate_tenant_endpoint_error("another ").into());
     }
     let mut profile = registry.tenants[index].clone();
     profile.backend_base_url = backend_base_url;
@@ -866,7 +962,7 @@ fn resolve_active_tenant(
         .iter()
         .find(|tenant| tenant.name == active)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("active tenant {active:?} does not exist"))?;
+        .ok_or_else(|| tenant_not_found_error("active tenant", &active))?;
     Ok(tenant_context(product_home_dir, profile, active_source))
 }
 
@@ -1184,30 +1280,47 @@ fn global_config_path(product_home_dir: &Path) -> PathBuf {
     product_home_dir.join(GLOBAL_CONFIG_FILE_NAME)
 }
 
-fn normalize_tenant_name(raw: &str) -> anyhow::Result<String> {
+fn normalize_tenant_name(raw: &str) -> Result<String, WorkspaceConfigError> {
     let value = raw.trim().to_ascii_lowercase();
     if value.is_empty() {
-        anyhow::bail!("tenant name is required");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name is required",
+            tenant_name_hint(),
+        ));
     }
     if value.len() > 64 {
-        anyhow::bail!("tenant name must be at most 64 characters");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name must be at most 64 characters",
+            tenant_name_hint(),
+        ));
     }
     if !value
         .chars()
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
     {
-        anyhow::bail!("tenant name may only contain lowercase letters, numbers, and '-'");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name may only contain ASCII letters, numbers, and '-'",
+            tenant_name_hint(),
+        ));
     }
     if value.starts_with('-') || value.ends_with('-') || value.contains("--") {
-        anyhow::bail!("tenant name must not start/end with '-' or contain '--'");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name must not start or end with '-' or contain '--'",
+            tenant_name_hint(),
+        ));
     }
     Ok(value)
 }
 
-fn validate_service_base_url(value: &str) -> anyhow::Result<()> {
+fn validate_service_base_url(value: &str) -> Result<(), WorkspaceConfigError> {
     im_core::ServiceEndpoint::parse(value.to_string())
         .map(|_| ())
-        .map_err(|err| anyhow::anyhow!("{err}"))
+        .map_err(|err| {
+            WorkspaceConfigError::invalid_argument(
+                format!("backend_base_url is invalid: {err}"),
+                backend_base_url_hint(),
+            )
+        })
 }
 
 fn now_compact() -> String {
@@ -1265,10 +1378,14 @@ fn validate_deprecated_config_fields(path: &str) -> anyhow::Result<()> {
     if deprecated_fields.is_empty() {
         return Ok(());
     }
-    anyhow::bail!(
-        "deprecated config.yaml fields are no longer supported: {}",
-        deprecated_fields.join(", ")
+    Err(WorkspaceConfigError::invalid_config(
+        format!(
+            "deprecated config.yaml fields are no longer supported: {}",
+            deprecated_fields.join(", ")
+        ),
+        "Remove deprecated services.* backend/DID fields from tenant config.yaml. Manage backend_base_url and did_host with `awiki-cli tenant create` or `awiki-cli tenant reconfigure`.",
     )
+    .into())
 }
 
 fn collect_deprecated_config_fields(raw: &str) -> Vec<String> {
@@ -1913,26 +2030,44 @@ pub fn derive_anp_service_did(service_base_url: &str) -> String {
     format!("did:wba:{}", service_host_from_base_url(service_base_url))
 }
 
-pub fn normalize_did_domain(raw: &str) -> anyhow::Result<String> {
+pub fn normalize_did_domain(raw: &str) -> Result<String, WorkspaceConfigError> {
     let normalized = raw.trim().to_ascii_lowercase();
     let normalized = normalized.trim_end_matches('.').to_string();
     if normalized.is_empty() {
-        anyhow::bail!("did_host is required");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host is required",
+            did_host_hint(),
+        ));
     }
     if normalized.contains("://") {
-        anyhow::bail!("did_host must be a bare domain without a URL scheme");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must be a bare domain without a URL scheme",
+            did_host_hint(),
+        ));
     }
     if normalized.contains(['/', '?', '#']) {
-        anyhow::bail!("did_host must not include a path, query, or fragment");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must not include a path, query, or fragment",
+            did_host_hint(),
+        ));
     }
     if normalized.contains(':') {
-        anyhow::bail!("did_host must not include a port");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must not include a port",
+            did_host_hint(),
+        ));
     }
     if normalized.chars().any(char::is_whitespace) {
-        anyhow::bail!("did_host must not contain whitespace");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must not contain whitespace",
+            did_host_hint(),
+        ));
     }
     if normalized.contains('@') || normalized.contains('%') {
-        anyhow::bail!("did_host must be a bare domain");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must be a bare domain",
+            did_host_hint(),
+        ));
     }
     Ok(normalized)
 }

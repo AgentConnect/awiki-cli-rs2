@@ -270,8 +270,9 @@ fn tenant_commands_create_switch_and_validate_new_tenant_boundary() {
         ],
         workspace.path().to_str().unwrap(),
     );
-    assert_code(&bad_host, 1);
+    assert_code(&bad_host, 2);
     let envelope = error_json(&bad_host);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
     assert_contains(
         &envelope["error"]["message"],
         "did_host must be a bare domain",
@@ -533,7 +534,7 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
 }
 
 #[test]
-fn group_e2ee_unknown_subcommands_match_go_cobra_boundary() {
+fn group_e2ee_unknown_subcommands_are_invalid_arguments() {
     for args in [
         &["group", "e2ee", "leave-requests", "--group", "did:group"][..],
         &[
@@ -546,11 +547,11 @@ fn group_e2ee_unknown_subcommands_match_go_cobra_boundary() {
         ][..],
     ] {
         let output = awiki_cmd(args);
-        assert_code(&output, 1);
+        assert_code(&output, 2);
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
         assert_contains(&envelope["error"]["message"], "unknown command");
         assert_contains(&envelope["error"]["hint"], "awiki-cli group e2ee --help");
     }

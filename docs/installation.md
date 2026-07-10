@@ -136,6 +136,8 @@ awiki-cli tenant use acme
 awiki-cli tenant reconfigure acme --backend-base-url https://api2.acme.example --did-host acme.example
 ```
 
+租户名会 trim 并规范化为小写；只允许 ASCII 字母、数字和单个 `-` 分隔符，最长 64 个字符，不能以 `-` 开头或结尾，也不能包含 `--`。如果需要中文、空格或展示用大小写，使用 `--display-name`。
+
 `tenant reconfigure` 只允许修改还没有身份或本地数据库数据的租户；如果租户已经有数据，请创建一个新租户。
 
 最小配置示例：

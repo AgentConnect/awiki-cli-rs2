@@ -383,8 +383,8 @@ fn command_name(tokens: &[String]) -> Result<command_catalog::ResolvedCommand, E
 
 fn unknown_subcommand(parent: &str, subcommand: &str) -> ExitError {
     ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("unknown command {subcommand:?} for \"awiki-cli {parent}\""),
         format!("Use `awiki-cli {parent} --help` to inspect supported subcommands."),
     )
@@ -491,8 +491,8 @@ fn validate_local_flag(command_name: &str, flag_name: &str) -> Result<(), ExitEr
 
 fn unknown_long_flag(flag_name: &str) -> ExitError {
     ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("unknown flag: --{flag_name}"),
         "",
     )
@@ -517,8 +517,8 @@ fn unknown_shorthand_flag(token: &str) -> ExitError {
         .next()
         .unwrap_or_default();
     ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("unknown shorthand flag: '{shorthand}' in {token}"),
         "",
     )

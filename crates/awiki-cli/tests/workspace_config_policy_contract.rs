@@ -25,9 +25,9 @@ fn config_show_rejects_deprecated_service_url_fields_like_go() {
 
         let output =
             awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
-        assert_code(&output, 1);
+        assert_code(&output, 2);
         let envelope = error_json(&output);
-        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["code"], "invalid_config");
         assert_contains(
             &envelope["error"]["message"],
             "deprecated config.yaml fields are no longer supported",
@@ -42,9 +42,9 @@ fn config_show_rejects_empty_deprecated_service_url_field_like_go() {
     write_tenant_config(workspace.path(), "services:\n  user_service_url:\n");
 
     let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
-    assert_code(&output, 1);
+    assert_code(&output, 2);
     let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_eq!(envelope["error"]["code"], "invalid_config");
     assert_contains(
         &envelope["error"]["message"],
         "deprecated config.yaml fields are no longer supported",
@@ -105,8 +105,9 @@ fn config_show_reports_malformed_yaml_in_config_error_like_go() {
     );
 
     let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
-    assert_code(&output, 1);
+    assert_code(&output, 2);
     let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "invalid_config");
     assert_contains(
         &envelope["error"]["message"],
         "deprecated config.yaml fields are no longer supported",

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn unknown_local_flags_fail_like_go_cobra_before_handler_execution() {
+fn unknown_local_flags_are_reported_as_invalid_arguments_before_handler_execution() {
     for args in [
         &["status", "--bogus"][..],
         &["version", "--bogus=value"][..],
@@ -22,10 +22,10 @@ fn unknown_local_flags_fail_like_go_cobra_before_handler_execution() {
         ][..],
     ] {
         let output = awiki_cmd(args);
-        assert_code(&output, 1);
+        assert_code(&output, 2);
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
-        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
         assert_eq!(envelope["error"]["message"], "unknown flag: --bogus");
         assert_eq!(envelope["error"]["hint"], Value::Null);
     }
@@ -37,7 +37,7 @@ fn unknown_local_flags_fail_like_go_cobra_before_handler_execution() {
 }
 
 #[test]
-fn unknown_shorthand_flags_fail_like_go_cobra_before_handler_execution() {
+fn unknown_shorthand_flags_are_reported_as_invalid_arguments_before_handler_execution() {
     for (args, message) in [
         (&["status", "-v"][..], "unknown shorthand flag: 'v' in -v"),
         (
@@ -52,10 +52,10 @@ fn unknown_shorthand_flags_fail_like_go_cobra_before_handler_execution() {
         (&["status", "-vh"][..], "unknown shorthand flag: 'v' in -vh"),
     ] {
         let output = awiki_cmd(args);
-        assert_code(&output, 1);
+        assert_code(&output, 2);
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
-        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
         assert_eq!(envelope["error"]["message"], message);
         assert_eq!(envelope["error"]["hint"], Value::Null);
     }
@@ -67,17 +67,17 @@ fn unknown_shorthand_flags_fail_like_go_cobra_before_handler_execution() {
 }
 
 #[test]
-fn unknown_global_long_flags_fail_like_go_cobra_before_missing_command() {
+fn unknown_global_long_flags_are_reported_as_invalid_arguments_before_missing_command() {
     for args in [
         &["--bogus", "status"][..],
         &["--bogus"][..],
         &["--format", "json", "--bogus", "status"][..],
     ] {
         let output = awiki_cmd(args);
-        assert_code(&output, 1);
+        assert_code(&output, 2);
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
-        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
         assert_eq!(envelope["error"]["message"], "unknown flag: --bogus");
         assert_eq!(envelope["error"]["hint"], Value::Null);
     }

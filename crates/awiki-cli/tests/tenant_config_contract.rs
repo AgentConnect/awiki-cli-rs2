@@ -159,20 +159,23 @@ fn tenant_use_accepts_only_existing_tenant_names_not_ad_hoc_fields() {
         ],
         workspace.path(),
     );
-    assert_code(&with_fields, 1);
+    assert_code(&with_fields, 2);
     let envelope = error_json(&with_fields);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
     assert_eq!(
         envelope["error"]["message"],
         "unknown flag: --backend-base-url"
     );
 
     let missing = awiki_cmd(&["tenant", "use", "missing"], workspace.path());
-    assert_code(&missing, 1);
+    assert_code(&missing, 5);
     let envelope = error_json(&missing);
+    assert_eq!(envelope["error"]["code"], "not_found");
     assert_value_contains(
         &envelope["error"]["message"],
         "tenant \"missing\" does not exist",
     );
+    assert_value_contains(&envelope["error"]["hint"], "tenant list");
 }
 
 #[test]
@@ -264,8 +267,119 @@ fn tenant_reconfigure_only_allows_empty_tenants_and_preserves_local_settings() {
     );
     assert_code(&blocked, 1);
     let envelope = error_json(&blocked);
+    assert_eq!(envelope["error"]["code"], "conflict");
     assert_value_contains(&envelope["error"]["message"], "already has local data");
     assert_value_contains(&envelope["error"]["message"], "create a new tenant");
+}
+
+#[test]
+fn tenant_user_errors_are_typed_and_actionable() {
+    let workspace = TempDir::new("tenant-user-errors").expect("workspace");
+
+    let invalid_name = awiki_cmd(
+        &[
+            "tenant",
+            "create",
+            "acme_team",
+            "--backend-base-url",
+            "https://api.example.test",
+            "--did-host",
+            "example.test",
+        ],
+        workspace.path(),
+    );
+    assert_code(&invalid_name, 2);
+    let envelope = error_json(&invalid_name);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_value_contains(
+        &envelope["error"]["message"],
+        "tenant name may only contain ASCII letters",
+    );
+    assert_value_contains(&envelope["error"]["hint"], "--display-name");
+
+    let invalid_did_host = awiki_cmd(
+        &[
+            "tenant",
+            "create",
+            "bad-did",
+            "--backend-base-url",
+            "https://api.example.test",
+            "--did-host",
+            "https://tenant.example",
+        ],
+        workspace.path(),
+    );
+    assert_code(&invalid_did_host, 2);
+    let envelope = error_json(&invalid_did_host);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_value_contains(
+        &envelope["error"]["message"],
+        "did_host must be a bare domain",
+    );
+    assert_value_contains(&envelope["error"]["hint"], "bare DID host");
+
+    let invalid_backend = awiki_cmd(
+        &[
+            "tenant",
+            "create",
+            "bad-backend",
+            "--backend-base-url",
+            "not-a-url",
+            "--did-host",
+            "example.test",
+        ],
+        workspace.path(),
+    );
+    assert_code(&invalid_backend, 2);
+    let envelope = error_json(&invalid_backend);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_value_contains(&envelope["error"]["message"], "backend_base_url is invalid");
+    assert_value_contains(&envelope["error"]["hint"], "https://awiki.ai");
+
+    assert_success(&awiki_cmd(
+        &[
+            "tenant",
+            "create",
+            "acme",
+            "--backend-base-url",
+            "https://api.acme.test",
+            "--did-host",
+            "acme.test",
+        ],
+        workspace.path(),
+    ));
+
+    let duplicate_name = awiki_cmd(
+        &[
+            "tenant",
+            "create",
+            "Acme",
+            "--backend-base-url",
+            "https://api2.acme.test",
+            "--did-host",
+            "api2.acme.test",
+        ],
+        workspace.path(),
+    );
+    assert_code(&duplicate_name, 1);
+    let envelope = error_json(&duplicate_name);
+    assert_eq!(envelope["error"]["code"], "conflict");
+    assert_value_contains(
+        &envelope["error"]["message"],
+        "tenant \"acme\" already exists",
+    );
+
+    let invalid_override = awiki_cmd(
+        &["--tenant", "acme_team", "config", "show"],
+        workspace.path(),
+    );
+    assert_code(&invalid_override, 2);
+    let envelope = error_json(&invalid_override);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_value_contains(
+        &envelope["error"]["message"],
+        "tenant name may only contain ASCII",
+    );
 }
 
 #[test]
@@ -298,6 +412,7 @@ fn tenant_create_rejects_duplicate_backend_and_did_combinations() {
     );
     assert_code(&duplicate, 1);
     let envelope = error_json(&duplicate);
+    assert_eq!(envelope["error"]["code"], "conflict");
     assert_value_contains(
         &envelope["error"]["message"],
         "same backend_base_url and did_host",

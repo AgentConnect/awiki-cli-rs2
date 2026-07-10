@@ -96,11 +96,13 @@ awiki-cli tenant reconfigure acme --backend-base-url https://api2.acme.example -
 
 规则：
 
+- 租户名会 trim 并规范化为小写；只允许 ASCII 字母、数字和单个 `-` 分隔符，最长 64 个字符，不能以 `-` 开头或结尾，也不能包含 `--`。需要中文、空格或展示用大小写时，使用 `--display-name`。
 - `tenant create` 只创建租户，不自动切换 active tenant。
 - `tenant use <name>` 只能按已有租户名切换，不能携带 backend 或 DID host 字段。
 - `tenant reconfigure` 只允许修改还没有身份或本地数据库数据的空租户；已有数据时应创建新租户。
 - `backend_base_url` 和 `did_host` 只保存在租户注册表中，不写入 `tenants/<name>/config.yaml`。
 - `--tenant <name>` 是本次命令的临时覆盖，不会改写 `global.json` 中的 active tenant。
+- 租户名、`backend_base_url`、`did_host` 等输入不合法时返回 `invalid_argument`；租户不存在返回 `not_found`；重复租户或已有数据阻止重配置返回 `conflict`。这些都不是 `internal_error`。
 
 ## 5. Identity
 
