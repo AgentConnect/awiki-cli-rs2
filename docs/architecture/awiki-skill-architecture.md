@@ -32,7 +32,6 @@
 当本文档与历史 skill 设计稿存在冲突时，以当前仓库的实际文件为准，尤其是：
 
 - `skills/SKILL.md`
-- `skills/README.md`
 - `skills/references/*.md`
 
 ---
@@ -42,7 +41,6 @@
 本方案综合以下输入：
 
 - `skills/SKILL.md`
-- `skills/README.md`
 - `skills/references/00-installation.md`
 - `skills/references/01-onboarding.md`
 - `skills/references/02-identity.md`
@@ -52,7 +50,9 @@
 - `skills/references/06-pages.md`
 - `skills/references/07-discovery.md`
 - `skills/references/08-debug.md`
-- `skills/references/09-people-planned.md`
+- `skills/references/09-people.md`
+- `skills/references/10-upgrade.md`
+- `skills/references/11-site-pages.md`
 - `docs/architecture/awiki-v2-architecture.md`
 - `docs/architecture/awiki-command-v2.md`
 - `docs/architecture/output-format.md`
@@ -74,7 +74,7 @@
    路由规则、通用安全规则、确认矩阵、输出契约、升级顺序不再分散在多个 skill 中，而是统一放进单一入口。
 
 5. **以当前实现状态为准，不提前承诺未落地能力**
-   `people`、secure direct messaging、heartbeat、部分 debug 能力必须显式标为 `planned` 或 `partial`。
+   people search、低层 secure direct diagnostics、heartbeat、raw debug 能力必须显式标为 `unsupported`、`planned` 或 `partial`。
 
 6. **`group` 仍是一等领域**
    群生命周期与群读路径依然单列，但 `msg send --group` 仍归 messaging 路径，不迁移到 groups reference。
@@ -91,18 +91,18 @@
 | 域 | 当前状态 | 说明 |
 |---|---|---|
 | product surface | implemented | `status / docs / schema / doctor / config show / version / completion` |
-| id | implemented | 含 register / bind / recover / profile / import-v1 |
+| id | implemented | 含 register / bind / recover / profile；`import-v1`、vault migrate/cleanup 属于 migration-only |
 | msg plain | implemented | direct/group plain send + inbox/history/mark-read |
-| msg secure | partial | `--secure` direct flow、listener auto-ack/queued flush、以及 `msg secure status/init/repair/failed/retry/drop` 首版已落地；仍缺更强系统测试与部分恢复细节 |
+| msg secure | partial | 默认产品面支持 `msg send --secure required`、`msg secure status`、`msg secure repair`；`msg secure init/failed/retry/drop` 当前是 stable unsupported |
 | group | implemented | create/get/join/add/remove/leave/update/members/messages |
-| runtime mode | implemented | `runtime status/setup/mode get/set` |
-| runtime listener | partial | status/install/start/stop/restart/uninstall 已可用；heartbeat 仍未落地 |
+| runtime mode | implemented | 默认产品面暴露 `runtime status`；setup/apply/mode get/set 属于 operator 面 |
+| runtime listener | partial | 默认产品面暴露 status/enable/disable；install/start/stop/restart/uninstall/config 属于 operator 面；heartbeat 仍未落地 |
 | runtime heartbeat | planned | contract 已保留，但当前未实现 |
 | page | implemented | create/list/get/update/rename/delete |
-| people | planned | command contract 保留，但处理器未实现 |
-| debug db | implemented | `debug db query` / `debug db import-v1` |
-| debug raw/logs/schema-cache | planned | contract 已保留，但当前未实现 |
-| discovery workflow | partial | 基于 group/id/msg 的只读编排已可表达，people 相关仍未落地 |
+| people | partial | follow/unfollow/status/followers/following/contacts list/save 已通过 `im-core` DirectoryService 实现；`people search` 仍 unsupported |
+| debug db | partial | `debug db handle-history` 和 `debug db import-v1` 是受控 diagnostic/migration 入口；`debug db query` 是 stable unsupported |
+| debug raw/logs/schema-cache | planned/removed | raw RPC 已 removed；logs/schema-cache 为 hidden diagnostic contract，不能作为默认 workflow |
+| discovery workflow | partial | 基于 group/id/msg/people contacts 的只读编排已可表达，people search 仍未落地 |
 | onboarding workflow | implemented | 可指导注册、runtime bootstrap、listener smoke-check |
 
 基于该快照，新的 skill 架构必须同时表达：
@@ -121,7 +121,6 @@ awiki 当前正式采用以下结构：
 ```text
 skills/
   SKILL.md
-  README.md
   references/
     00-installation.md
     01-onboarding.md
@@ -132,7 +131,9 @@ skills/
     06-pages.md
     07-discovery.md
     08-debug.md
-    09-people-planned.md
+    09-people.md
+    10-upgrade.md
+    11-site-pages.md
 ```
 
 ### 4.1 两层定义
@@ -140,7 +141,7 @@ skills/
 | 层级 | 数量 | 作用 |
 |---|---:|---|
 | entry skill | 1 | 默认入口、路由、共享规则、最小高频命令、安全边界 |
-| references | 10 | 领域细节、workflow 流程、debug 兜底、planned appendix、installation 长文 |
+| references | 12 | 领域细节、workflow 流程、debug 兜底、people 边界、upgrade、site pages、installation 长文 |
 
 ### 4.2 架构结论
 
@@ -237,7 +238,7 @@ skills/
 - onboarding/discovery 的多步 workflow 细节
 - installation 长文
 - debug SQL 与低层排查说明
-- people 的 planned contract 细节
+- people/relationship/local-contact 的部分实现边界
 
 这些内容必须通过按需加载 reference 获得。
 
@@ -318,8 +319,8 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 特别规则：
 
-- 当前 workflow 以 group/id/msg 的只读能力为主
-- `people` 相关能力仍为 future contract
+- 当前 workflow 以 group/id/msg/people contacts 的只读能力为主
+- relationship 和 local-contact 命令可用，`people search` 仍 unsupported
 - 只能“review first, send later”
 
 ### 7.8 `08-debug.md`
@@ -335,14 +336,33 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - debug 不能绕过入口层安全规则
 - destructive SQL、raw RPC 假定执行、泄露本地秘密材料均被禁止
 
-### 7.9 `09-people-planned.md`
+### 7.9 `09-people.md`
 
-**职责**：planned appendix。
+**职责**：people、relationship 与 local-contact 当前边界参考。
 **适用场景**：用户询问 people/follow/contact 是否已支持。
-**加载策略**：不进入默认上下文，只在用户明确问及 future contract 时加载。
-**状态**：planned。
+**加载策略**：不进入默认上下文，只在用户明确问及 people/relationship/contact 能力时加载。
+**状态**：partial。
 
-### 7.10 `00-installation.md`
+### 7.10 `10-upgrade.md`
+
+**职责**：CLI upgrade 与 skill refresh 参考。
+**适用场景**：检查 `@awiki/cli` 更新、全局 npm 升级、处理 CLI 版本过旧提示。
+**加载策略**：只有升级或版本不匹配任务时加载。
+**状态**：implemented operational guide。
+
+特别规则：
+
+- `awiki-cli upgrade` 只负责 CLI npm package，不负责 awiki-me host daemon package
+- daemon 安装/升级走 daemon manifest、installer 和客户端 daemon upgrade 流程
+
+### 7.11 `11-site-pages.md`
+
+**职责**：tenant bare-domain site pages reference。
+**适用场景**：site root/page get/list/create/update/delete、tenant bare-domain 页面管理。
+**加载策略**：仅在 site/root/page tenant-domain 任务时加载。
+**状态**：implemented。
+
+### 7.12 `00-installation.md`
 
 **职责**：低频 installation reference。
 **适用场景**：安装 `awiki-cli`、安装 Awiki Skills、初始化 workspace prerequisite。
@@ -401,16 +421,19 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - 对应 domain/workflow reference 也不足以指导排查
 - 用户确实需要更底层的本地检查
 
-### 8.5 planned appendix 与 installation 长文
+### 8.5 people reference 与 installation 长文
 
 以下内容默认不进入上下文：
 
-- `09-people-planned.md`
+- `09-people.md`
+- `10-upgrade.md`
+- `11-site-pages.md`
 - `00-installation.md`
 
 原因是：
 
-- `people` 不是当前工作能力
+- `people` 是部分实现能力，默认入口只保留状态摘要，完整边界按需加载
+- upgrade 与 site pages 是低频领域，默认入口只保留路由和高频命令提示
 - installation 文档体积大、频率低，不适合默认装载
 
 ---
@@ -481,10 +504,12 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 | group domain skill | `skills/references/04-groups.md` |
 | runtime domain skill | `skills/references/05-runtime.md` |
 | page domain skill | `skills/references/06-pages.md` |
+| site pages domain skill | `skills/references/11-site-pages.md` |
 | onboarding workflow skill | `skills/references/01-onboarding.md` |
+| upgrade workflow skill | `skills/references/10-upgrade.md` |
 | discovery workflow skill | `skills/references/07-discovery.md` |
 | debug skill | `skills/references/08-debug.md` |
-| people skill | `skills/references/09-people-planned.md` |
+| people skill | `skills/references/09-people.md` |
 | onboarding installation long guide | `skills/references/00-installation.md` |
 | templates/generator 叙事 | 不再作为当前正式架构的一部分 |
 
@@ -532,7 +557,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - 文档明确说明默认只加载 `skills/SKILL.md`
 - 文档明确说明单领域任务只应补读一个 matching reference
 - 文档明确说明 workflow 与 debug 的进入条件
-- 文档明确说明 planned appendix 与 installation 文档不进入默认上下文
+- 文档明确说明 people、upgrade、site pages 与 installation reference 不进入默认上下文
 
 ### C. 路由正确
 
@@ -540,7 +565,10 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - messaging 任务稳定路由到 `03-messaging.md`
 - group lifecycle 任务稳定路由到 `04-groups.md`
 - runtime/listener 任务稳定路由到 `05-runtime.md`
-- onboarding/discovery 任务稳定路由到 `06/07`
+- page 任务稳定路由到 `06-pages.md`
+- onboarding/discovery 任务稳定路由到 `01-onboarding.md` / `07-discovery.md`
+- upgrade 任务稳定路由到 `10-upgrade.md`
+- site pages 任务稳定路由到 `11-site-pages.md`
 - debug 被识别为最后兜底
 
 ### D. 契约一致

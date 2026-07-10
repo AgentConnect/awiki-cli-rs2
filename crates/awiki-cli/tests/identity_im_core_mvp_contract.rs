@@ -10,7 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{write_ready_identity, TestIdentityOptions};
+use support::{
+    tenant_workspace, write_default_tenant_registry, write_ready_identity, write_tenant_config,
+    TestIdentityOptions,
+};
 
 #[test]
 fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() {
@@ -101,7 +104,7 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
         &[],
     ));
     std::fs::remove_file(
-        workspace_home
+        tenant_workspace(&workspace_home)
             .join("identities")
             .join("bob")
             .join("key-1-private.pem"),
@@ -204,7 +207,9 @@ fn identity_register_vault_required_persists_without_plaintext_secret_files() {
     assert_eq!(register["data"]["identity"]["has_jwt"], true);
     assert_eq!(register["data"]["identity"]["has_key1_private"], true);
 
-    let identity_dir = workspace_home.join("identities").join("alice");
+    let identity_dir = tenant_workspace(&workspace_home)
+        .join("identities")
+        .join("alice");
     for file in [
         "auth.json",
         "key-1-private.pem",
@@ -840,24 +845,20 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {
-    std::fs::create_dir_all(workspace).unwrap();
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "services:\n  service_base_url: {base_url}\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
-        ),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(
+        workspace,
+        "services:\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n",
+    );
 }
 
 fn write_service_config_with_secret_storage(workspace: &Path, base_url: &str, mode: &str) {
-    std::fs::create_dir_all(workspace).unwrap();
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(
+        workspace,
+        &format!(
             concat!(
                 "services:\n",
-                "  service_base_url: {}\n",
                 "  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n",
                 "  anp_service_did: did:wba:awiki.ai\n",
                 "secret_storage:\n",
@@ -865,10 +866,9 @@ fn write_service_config_with_secret_storage(workspace: &Path, base_url: &str, mo
                 "  workspace_id: test-workspace\n",
                 "  device_id: test-device\n"
             ),
-            base_url, mode
+            mode
         ),
-    )
-    .unwrap();
+    );
 }
 
 fn register_alice_response() -> &'static str {

@@ -3,21 +3,32 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::durable_fs;
 
 mod write;
 pub(crate) use write::write_file_config_raw;
 pub use write::{
     clear_hermes_secret, clear_openclaw_token, configure_hermes_host_notify,
     ensure_config_schema_version, read_openclaw_token, set_hermes_secret, set_openclaw_token,
-    update_active_identity, update_did_domain, update_hermes_settings, update_host_notify_enabled,
+    update_active_identity, update_hermes_settings, update_host_notify_enabled,
     update_host_notify_sink, update_openclaw_settings, update_runtime_listener_settings,
     update_runtime_settings, write_file_config,
 };
 
 const APP_NAME: &str = "awiki-cli";
 const CONFIG_FILE_NAME: &str = "config.yaml";
+const GLOBAL_CONFIG_FILE_NAME: &str = "global.json";
+const TENANT_REGISTRY_FILE_NAME: &str = "registry.json";
+const TENANTS_DIR_NAME: &str = "tenants";
+const LEGACY_ARCHIVE_DIR_NAME: &str = "legacy-archive";
+const LEGACY_ARCHIVE_LOCK_DIR_NAME: &str = ".legacy-archive.lock";
+const DEFAULT_TENANT_NAME: &str = "default";
+const DEFAULT_TENANT_DISPLAY_NAME: &str = "AWiki";
 const DEFAULT_SERVICE_BASE_URL: &str = "https://awiki.ai";
 const DEFAULT_DID_DOMAIN: &str = "awiki.ai";
 const DEFAULT_ANP_PATH: &str = "/anp-im/rpc";
@@ -41,6 +52,8 @@ pub const CONFIG_SCHEMA_VERSION: i64 = 1;
 pub struct Overrides {
     pub identity: String,
     pub identity_changed: bool,
+    pub tenant: String,
+    pub tenant_changed: bool,
     pub format: String,
     pub format_changed: bool,
 }
@@ -59,6 +72,107 @@ pub struct Paths {
     pub database_file: String,
     pub legacy_credentials_dir: String,
     pub legacy_data_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TenantProfile {
+    pub name: String,
+    pub display_name: String,
+    pub backend_base_url: String,
+    pub did_host: String,
+    pub dir_name: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TenantContext {
+    pub active: String,
+    pub active_source: String,
+    pub profile: TenantProfile,
+    pub registry_file: String,
+    pub global_config_file: String,
+    pub tenants_dir: String,
+    pub tenant_dir: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceConfigErrorKind {
+    InvalidArgument,
+    InvalidConfig,
+    NotFound,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceConfigError {
+    kind: WorkspaceConfigErrorKind,
+    message: String,
+    hint: String,
+}
+
+impl WorkspaceConfigError {
+    fn new(
+        kind: WorkspaceConfigErrorKind,
+        message: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            hint: hint.into(),
+        }
+    }
+
+    pub fn invalid_argument(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::InvalidArgument, message, hint)
+    }
+
+    pub fn invalid_config(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::InvalidConfig, message, hint)
+    }
+
+    pub fn not_found(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::NotFound, message, hint)
+    }
+
+    pub fn conflict(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(WorkspaceConfigErrorKind::Conflict, message, hint)
+    }
+
+    pub fn kind(&self) -> WorkspaceConfigErrorKind {
+        self.kind
+    }
+
+    pub fn hint(&self) -> &str {
+        &self.hint
+    }
+}
+
+impl fmt::Display for WorkspaceConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WorkspaceConfigError {}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct GlobalConfig {
+    #[serde(default)]
+    schema_version: i64,
+    #[serde(default)]
+    active_tenant: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct TenantRegistry {
+    #[serde(default)]
+    schema_version: i64,
+    #[serde(default)]
+    tenants: Vec<TenantProfile>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,13 +386,47 @@ pub struct UpdateConfig {
 
 pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     let home = home_dir()?;
-    let (workspace_home_dir, workspace_source) = resolve_workspace_home(&home);
-    let paths = build_paths(&home, &workspace_home_dir);
+    let (product_home_dir, product_source) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    let tenant = resolve_active_tenant(&product_home_dir, &overrides)?;
+    let tenant_dir = tenant_dir(&product_home_dir, &tenant.profile);
+    let paths = build_paths(&home, &tenant_dir);
     validate_deprecated_config_fields(&paths.config_file)?;
     let (file_config, config_exists, config_error) = read_file_config(&paths.config_file);
     let mut sources = BTreeMap::new();
-    sources.insert("workspace_home_dir".to_string(), workspace_source.clone());
-    sources.insert("root_dir".to_string(), workspace_source);
+    sources.insert("product_home_dir".to_string(), product_source.clone());
+    sources.insert(
+        "active_tenant".to_string(),
+        ValueSource {
+            source: tenant.active_source.clone(),
+            key: String::new(),
+            value: tenant.active.clone(),
+        },
+    );
+    sources.insert(
+        "tenant_dir".to_string(),
+        ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "active_tenant".to_string(),
+            value: tenant.tenant_dir.clone(),
+        },
+    );
+    sources.insert(
+        "workspace_home_dir".to_string(),
+        ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "active_tenant".to_string(),
+            value: paths.workspace_home_dir.clone(),
+        },
+    );
+    sources.insert(
+        "root_dir".to_string(),
+        ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "active_tenant".to_string(),
+            value: paths.root_dir.clone(),
+        },
+    );
     for (key, value) in [
         ("config_dir", &paths.config_dir),
         ("data_dir", &paths.data_dir),
@@ -290,7 +438,7 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             key.to_string(),
             ValueSource {
                 source: "derived".to_string(),
-                key: "workspace_home_dir".to_string(),
+                key: "active_tenant".to_string(),
                 value: value.clone(),
             },
         );
@@ -318,39 +466,42 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     );
     sources.insert("output_format".to_string(), output_source);
     resolve_secret_storage_from_config(&paths, &file_config.secret_storage, &mut sources)?;
-    let (service_base_url, service_source) = choose_value(
-        "",
-        false,
-        &file_config.services.service_base_url,
-        DEFAULT_SERVICE_BASE_URL,
-    );
-    let service_base_url = normalize_base_url(&service_base_url);
+    let service_base_url = normalize_base_url(&tenant.profile.backend_base_url);
     sources.insert(
         "service_base_url".to_string(),
         ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "backend_base_url".to_string(),
             value: service_base_url.clone(),
-            ..service_source
         },
     );
-    let user_service_endpoint = resolve_service_endpoint_field(
-        "user_service_endpoint",
-        &file_config.services.user_service_endpoint,
-        &service_base_url,
-        &mut sources,
+    let user_service_endpoint = service_base_url.clone();
+    sources.insert(
+        "user_service_endpoint".to_string(),
+        ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "backend_base_url".to_string(),
+            value: user_service_endpoint.clone(),
+        },
     );
-    let message_service_endpoint = resolve_service_endpoint_field(
-        "message_service_endpoint",
-        &file_config.services.message_service_endpoint,
-        &service_base_url,
-        &mut sources,
+    let message_service_endpoint = service_base_url.clone();
+    sources.insert(
+        "message_service_endpoint".to_string(),
+        ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "backend_base_url".to_string(),
+            value: message_service_endpoint.clone(),
+        },
     );
-    let (did_domain, did_source) = choose_value(
-        "",
-        false,
-        &file_config.services.did_domain,
-        DEFAULT_DID_DOMAIN,
+    let did_domain = tenant.profile.did_host.clone();
+    sources.insert(
+        "did_domain".to_string(),
+        ValueSource {
+            source: "tenant_registry".to_string(),
+            key: "did_host".to_string(),
+            value: did_domain.clone(),
+        },
     );
-    sources.insert("did_domain".to_string(), did_source);
     let (mut anp_endpoint, anp_endpoint_source) =
         choose_value("", false, &file_config.services.anp_service_endpoint, "");
     if anp_endpoint.trim().is_empty() {
@@ -359,7 +510,7 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             "anp_service_endpoint".to_string(),
             ValueSource {
                 source: "derived_default".to_string(),
-                key: "service_base_url".to_string(),
+                key: "backend_base_url".to_string(),
                 value: anp_endpoint.clone(),
             },
         );
@@ -374,7 +525,7 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             "anp_service_did".to_string(),
             ValueSource {
                 source: "derived_default".to_string(),
-                key: "service_base_url".to_string(),
+                key: "backend_base_url".to_string(),
                 value: anp_did.clone(),
             },
         );
@@ -387,12 +538,12 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             service_base_url.clone(),
             ValueSource {
                 source: "derived_default".to_string(),
-                key: "service_base_url".to_string(),
+                key: "backend_base_url".to_string(),
                 value: service_base_url.clone(),
             },
         )
     } else {
-        let value = file_config.services.mail_service_url.trim().to_string();
+        let value = normalize_base_url(&file_config.services.mail_service_url);
         (
             value.clone(),
             ValueSource {
@@ -414,8 +565,16 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
         "host_notify_openclaw_hook_url".to_string(),
         openclaw_hook_source,
     );
-    let (hermes_notify_url, hermes_deliver) =
+    let (hermes_notify_url, hermes_notify_source, hermes_deliver, hermes_deliver_source) =
         resolve_hermes_fields(&file_config.runtime.host_notify, &host_notify_sink);
+    sources.insert(
+        "host_notify_hermes_notify_url".to_string(),
+        hermes_notify_source,
+    );
+    sources.insert(
+        "host_notify_hermes_deliver".to_string(),
+        hermes_deliver_source,
+    );
 
     Ok(Resolved {
         paths,
@@ -472,6 +631,12 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
 pub fn snapshot(resolved: &Resolved) -> Value {
     let mut value = serde_json::to_value(resolved).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
+        if let Ok(tenant) = tenant_context_for_resolved(resolved) {
+            object.insert(
+                "tenant".to_string(),
+                serde_json::to_value(tenant).unwrap_or_else(|_| json!({})),
+            );
+        }
         if let Ok(secret_storage) = resolve_secret_storage(resolved) {
             object.insert(
                 "secret_storage".to_string(),
@@ -493,6 +658,677 @@ pub(crate) fn read_file_config(path: &str) -> (FileConfig, bool, String) {
         }
         Err(err) => (FileConfig::default(), false, err.to_string()),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantCreateInput {
+    pub name: String,
+    pub display_name: Option<String>,
+    pub backend_base_url: String,
+    pub did_host: String,
+}
+
+fn tenant_name_hint() -> &'static str {
+    "Use a tenant name like `default`, `acme`, or `team-1`. Use --display-name for spaces, uppercase presentation, or non-ASCII labels."
+}
+
+fn did_host_hint() -> &'static str {
+    "Use a bare DID host like `awiki.ai` or `tenant.example`, not a URL."
+}
+
+fn backend_base_url_hint() -> &'static str {
+    "Use an absolute http(s) backend base URL like `https://awiki.ai`."
+}
+
+fn tenant_not_found_error(label: &str, name: &str) -> WorkspaceConfigError {
+    WorkspaceConfigError::not_found(
+        format!("{label} {name:?} does not exist"),
+        "Run `awiki-cli tenant list` to inspect tenants, or create one with `awiki-cli tenant create <name> --backend-base-url <url> --did-host <domain>`.",
+    )
+}
+
+fn duplicate_tenant_endpoint_error(prefix: &str) -> WorkspaceConfigError {
+    WorkspaceConfigError::conflict(
+        format!("{prefix}tenant with the same backend_base_url and did_host already exists"),
+        "Use the existing tenant for that backend/DID host pair, or choose a different backend_base_url + did_host combination.",
+    )
+}
+
+pub fn product_cache_dir() -> anyhow::Result<String> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    Ok(path_string(&product_home_dir.join("cache")))
+}
+
+pub fn list_tenants() -> anyhow::Result<Vec<TenantProfile>> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    Ok(load_tenant_registry(&product_home_dir)?.tenants)
+}
+
+pub fn current_tenant_context() -> anyhow::Result<TenantContext> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    resolve_active_tenant(&product_home_dir, &Overrides::default())
+}
+
+pub fn tenant_context_for_resolved(resolved: &Resolved) -> anyhow::Result<TenantContext> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    let active_source = resolved
+        .sources
+        .get("active_tenant")
+        .cloned()
+        .unwrap_or(ValueSource {
+            source: "default".to_string(),
+            key: String::new(),
+            value: DEFAULT_TENANT_NAME.to_string(),
+        });
+    let name = normalize_tenant_name(&active_source.value)?;
+    let registry = load_tenant_registry(&product_home_dir)?;
+    let profile = registry
+        .tenants
+        .iter()
+        .find(|tenant| tenant.name == name)
+        .cloned()
+        .ok_or_else(|| tenant_not_found_error("active tenant", &name))?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        active_source.source,
+    ))
+}
+
+pub fn create_tenant(input: TenantCreateInput) -> anyhow::Result<TenantContext> {
+    let (product_home_dir, mut registry, profile) = prepare_tenant_create(input)?;
+    write_tenant_config(&product_home_dir, &profile)?;
+    registry.tenants.push(profile.clone());
+    registry
+        .tenants
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    write_tenant_registry(&product_home_dir, &registry)?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        "created".to_string(),
+    ))
+}
+
+pub fn preview_create_tenant(input: TenantCreateInput) -> anyhow::Result<TenantContext> {
+    let (product_home_dir, _registry, profile) = prepare_tenant_create(input)?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        "planned".to_string(),
+    ))
+}
+
+pub fn preview_use_tenant(name: &str) -> anyhow::Result<TenantContext> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    let name = normalize_tenant_name(name)?;
+    let registry = load_tenant_registry(&product_home_dir)?;
+    let profile = registry
+        .tenants
+        .iter()
+        .find(|tenant| tenant.name == name)
+        .cloned()
+        .ok_or_else(|| tenant_not_found_error("tenant", &name))?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        "planned".to_string(),
+    ))
+}
+
+fn prepare_tenant_create(
+    input: TenantCreateInput,
+) -> anyhow::Result<(PathBuf, TenantRegistry, TenantProfile)> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    let name = normalize_tenant_name(&input.name)?;
+    let backend_base_url = normalize_base_url(&input.backend_base_url);
+    validate_service_base_url(&backend_base_url)?;
+    let did_host = normalize_did_domain(&input.did_host)?;
+    let registry = load_tenant_registry(&product_home_dir)?;
+    if registry.tenants.iter().any(|tenant| tenant.name == name) {
+        return Err(WorkspaceConfigError::conflict(
+            format!("tenant {name:?} already exists"),
+            "Run `awiki-cli tenant list` to inspect existing tenants, or choose a different tenant name.",
+        )
+        .into());
+    }
+    if registry
+        .tenants
+        .iter()
+        .any(|tenant| tenant.backend_base_url == backend_base_url && tenant.did_host == did_host)
+    {
+        return Err(duplicate_tenant_endpoint_error("a ").into());
+    }
+    let now = now_compact();
+    let profile = TenantProfile {
+        name: name.clone(),
+        display_name: input
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&name)
+            .to_string(),
+        backend_base_url,
+        did_host,
+        dir_name: name.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    Ok((product_home_dir, registry, profile))
+}
+
+pub fn use_tenant(name: &str) -> anyhow::Result<TenantContext> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    let name = normalize_tenant_name(name)?;
+    let registry = load_tenant_registry(&product_home_dir)?;
+    let profile = registry
+        .tenants
+        .iter()
+        .find(|tenant| tenant.name == name)
+        .cloned()
+        .ok_or_else(|| tenant_not_found_error("tenant", &name))?;
+    let mut global = load_global_config(&product_home_dir)?;
+    global.schema_version = 1;
+    global.active_tenant = name;
+    write_global_config(&product_home_dir, &global)?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        "global_config".to_string(),
+    ))
+}
+
+pub fn reconfigure_tenant(
+    name: &str,
+    backend_base_url: &str,
+    did_host: &str,
+) -> anyhow::Result<TenantContext> {
+    let (product_home_dir, mut registry, index, profile) =
+        prepare_tenant_reconfigure(name, backend_base_url, did_host)?;
+    registry.tenants[index] = profile.clone();
+    write_tenant_config(&product_home_dir, &profile)?;
+    write_tenant_registry(&product_home_dir, &registry)?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        "tenant_registry".to_string(),
+    ))
+}
+
+pub fn preview_reconfigure_tenant(
+    name: &str,
+    backend_base_url: &str,
+    did_host: &str,
+) -> anyhow::Result<TenantContext> {
+    let (product_home_dir, _registry, _index, profile) =
+        prepare_tenant_reconfigure(name, backend_base_url, did_host)?;
+    Ok(tenant_context(
+        &product_home_dir,
+        profile,
+        "planned".to_string(),
+    ))
+}
+
+fn prepare_tenant_reconfigure(
+    name: &str,
+    backend_base_url: &str,
+    did_host: &str,
+) -> anyhow::Result<(PathBuf, TenantRegistry, usize, TenantProfile)> {
+    let home = home_dir()?;
+    let (product_home_dir, _) = resolve_workspace_home(&home);
+    archive_legacy_product_root(&product_home_dir)?;
+    ensure_tenant_state(&product_home_dir)?;
+    let name = normalize_tenant_name(name)?;
+    let backend_base_url = normalize_base_url(backend_base_url);
+    validate_service_base_url(&backend_base_url)?;
+    let did_host = normalize_did_domain(did_host)?;
+    let registry = load_tenant_registry(&product_home_dir)?;
+    let Some(index) = registry
+        .tenants
+        .iter()
+        .position(|tenant| tenant.name == name)
+    else {
+        return Err(tenant_not_found_error("tenant", &name).into());
+    };
+    if tenant_has_data(&product_home_dir, &registry.tenants[index])? {
+        return Err(WorkspaceConfigError::conflict(
+            format!(
+                "tenant {name:?} already has local data; create a new tenant instead of changing its backend_base_url or did_host"
+            ),
+            "Create a new tenant for the new backend/DID host. Existing tenant-local identity and database data are immutable.",
+        )
+        .into());
+    }
+    if registry
+        .tenants
+        .iter()
+        .enumerate()
+        .any(|(other_index, tenant)| {
+            other_index != index
+                && tenant.backend_base_url == backend_base_url
+                && tenant.did_host == did_host
+        })
+    {
+        return Err(duplicate_tenant_endpoint_error("another ").into());
+    }
+    let mut profile = registry.tenants[index].clone();
+    profile.backend_base_url = backend_base_url;
+    profile.did_host = did_host;
+    profile.updated_at = now_compact();
+    Ok((product_home_dir, registry, index, profile))
+}
+
+fn resolve_active_tenant(
+    product_home_dir: &Path,
+    overrides: &Overrides,
+) -> anyhow::Result<TenantContext> {
+    ensure_tenant_state(product_home_dir)?;
+    let registry = load_tenant_registry(product_home_dir)?;
+    let global = load_global_config(product_home_dir)?;
+    let (active, active_source) = if overrides.tenant_changed {
+        (
+            normalize_tenant_name(&overrides.tenant)?,
+            "flag".to_string(),
+        )
+    } else if !global.active_tenant.trim().is_empty() {
+        (
+            normalize_tenant_name(&global.active_tenant)?,
+            "global_config".to_string(),
+        )
+    } else {
+        (DEFAULT_TENANT_NAME.to_string(), "default".to_string())
+    };
+    let profile = registry
+        .tenants
+        .iter()
+        .find(|tenant| tenant.name == active)
+        .cloned()
+        .ok_or_else(|| tenant_not_found_error("active tenant", &active))?;
+    Ok(tenant_context(product_home_dir, profile, active_source))
+}
+
+fn tenant_context(
+    product_home_dir: &Path,
+    profile: TenantProfile,
+    active_source: String,
+) -> TenantContext {
+    let tenant_dir = tenant_dir(product_home_dir, &profile);
+    TenantContext {
+        active: profile.name.clone(),
+        active_source,
+        profile,
+        registry_file: path_string(&tenant_registry_path(product_home_dir)),
+        global_config_file: path_string(&global_config_path(product_home_dir)),
+        tenants_dir: path_string(&product_home_dir.join(TENANTS_DIR_NAME)),
+        tenant_dir: path_string(&tenant_dir),
+    }
+}
+
+fn ensure_tenant_state(product_home_dir: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(product_home_dir)
+        .map_err(|err| anyhow::anyhow!("create awiki-cli home: {err}"))?;
+    fs::create_dir_all(product_home_dir.join(TENANTS_DIR_NAME))
+        .map_err(|err| anyhow::anyhow!("create tenant directory: {err}"))?;
+    if !tenant_registry_path(product_home_dir).exists() {
+        let profile = default_tenant_profile();
+        write_tenant_config(product_home_dir, &profile)?;
+        write_tenant_registry(
+            product_home_dir,
+            &TenantRegistry {
+                schema_version: 1,
+                tenants: vec![profile],
+            },
+        )?;
+    }
+    if !global_config_path(product_home_dir).exists() {
+        write_global_config(
+            product_home_dir,
+            &GlobalConfig {
+                schema_version: 1,
+                active_tenant: DEFAULT_TENANT_NAME.to_string(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn default_tenant_profile() -> TenantProfile {
+    let now = now_compact();
+    TenantProfile {
+        name: DEFAULT_TENANT_NAME.to_string(),
+        display_name: DEFAULT_TENANT_DISPLAY_NAME.to_string(),
+        backend_base_url: DEFAULT_SERVICE_BASE_URL.to_string(),
+        did_host: DEFAULT_DID_DOMAIN.to_string(),
+        dir_name: DEFAULT_TENANT_NAME.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn load_tenant_registry(product_home_dir: &Path) -> anyhow::Result<TenantRegistry> {
+    let path = tenant_registry_path(product_home_dir);
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| anyhow::anyhow!("read tenant registry {}: {err}", path.display()))?;
+    let mut registry: TenantRegistry = serde_json::from_str(&raw)
+        .map_err(|err| anyhow::anyhow!("parse tenant registry {}: {err}", path.display()))?;
+    registry.schema_version = 1;
+    registry
+        .tenants
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(registry)
+}
+
+fn write_tenant_registry(product_home_dir: &Path, registry: &TenantRegistry) -> anyhow::Result<()> {
+    write_json_file(&tenant_registry_path(product_home_dir), registry)
+}
+
+fn load_global_config(product_home_dir: &Path) -> anyhow::Result<GlobalConfig> {
+    let path = global_config_path(product_home_dir);
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| anyhow::anyhow!("read global config {}: {err}", path.display()))?;
+    let mut config: GlobalConfig = serde_json::from_str(&raw)
+        .map_err(|err| anyhow::anyhow!("parse global config {}: {err}", path.display()))?;
+    config.schema_version = 1;
+    Ok(config)
+}
+
+fn write_global_config(product_home_dir: &Path, config: &GlobalConfig) -> anyhow::Result<()> {
+    write_json_file(&global_config_path(product_home_dir), config)
+}
+
+fn write_tenant_config(product_home_dir: &Path, profile: &TenantProfile) -> anyhow::Result<()> {
+    let tenant_dir = tenant_dir(product_home_dir, profile);
+    fs::create_dir_all(&tenant_dir)
+        .map_err(|err| anyhow::anyhow!("create tenant directory: {err}"))?;
+    let paths = build_paths(&home_dir()?, &tenant_dir);
+    let (mut config, exists, error) = read_file_config(&paths.config_file);
+    if exists && error.is_empty() {
+        config.schema_version = CONFIG_SCHEMA_VERSION;
+        rewrite_tenant_services_config(&mut config.services, profile);
+        return write_file_config_raw(&paths.config_file, config);
+    }
+    let resolved = Resolved {
+        paths: paths.clone(),
+        config_schema_version: CONFIG_SCHEMA_VERSION,
+        active_identity: String::new(),
+        runtime_mode: DEFAULT_RUNTIME_MODE.to_string(),
+        runtime_socket_path: default_runtime_bridge_path(&paths),
+        runtime_listener_enabled: DEFAULT_LISTENER_ENABLED,
+        runtime_listener_auto_install: DEFAULT_LISTENER_AUTO_INSTALL,
+        runtime_listener_auto_start: DEFAULT_LISTENER_AUTO_START,
+        host_notify_enabled: DEFAULT_HOST_NOTIFY_ENABLED,
+        host_notify_sink: DEFAULT_HOST_NOTIFY_SINK.to_string(),
+        host_notify_file_path: path_string(&tenant_dir.join("logs").join(DEFAULT_HOST_NOTIFY_FILE)),
+        host_notify_openclaw_hook_url: DEFAULT_OPENCLAW_HOOK_URL.to_string(),
+        host_notify_openclaw_agent_id: DEFAULT_OPENCLAW_AGENT_ID.to_string(),
+        host_notify_openclaw_hook_name: DEFAULT_OPENCLAW_HOOK_NAME.to_string(),
+        host_notify_hermes_notify_url: DEFAULT_HERMES_NOTIFY_URL.to_string(),
+        host_notify_hermes_deliver: DEFAULT_HERMES_DELIVER_TARGET.to_string(),
+        output_format: DEFAULT_OUTPUT_FORMAT.to_string(),
+        no_color: false,
+        service_base_url: profile.backend_base_url.clone(),
+        user_service_endpoint: profile.backend_base_url.clone(),
+        message_service_endpoint: profile.backend_base_url.clone(),
+        did_domain: profile.did_host.clone(),
+        anp_service_endpoint: derive_anp_service_endpoint(&profile.backend_base_url),
+        anp_service_did: derive_anp_service_did(&profile.backend_base_url),
+        mail_service_url: profile.backend_base_url.clone(),
+        ca_bundle: String::new(),
+        update_disable_strict_version: false,
+        update_metadata_cache_ttl_seconds: 0,
+        config_exists: false,
+        config_error: String::new(),
+        env_hits: Vec::new(),
+        sources: BTreeMap::new(),
+    };
+    write_file_config(&paths.config_file, &resolved)
+}
+
+fn rewrite_tenant_services_config(config: &mut ServicesConfig, profile: &TenantProfile) {
+    let _ = profile;
+    config.service_base_url.clear();
+    config.user_service_endpoint.clear();
+    config.message_service_endpoint.clear();
+    config.did_domain.clear();
+}
+
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| anyhow::anyhow!("create config directory: {err}"))?;
+    }
+    let raw = serde_json::to_vec_pretty(value)?;
+    let temp_path = path.with_extension(format!("tmp-{}-{}", std::process::id(), now_compact()));
+    fs::write(&temp_path, raw).map_err(|err| anyhow::anyhow!("write temp config: {err}"))?;
+    fs::rename(&temp_path, path).map_err(|err| anyhow::anyhow!("replace config: {err}"))?;
+    if let Some(parent) = path.parent() {
+        durable_fs::sync_directory(parent)
+            .map_err(|err| anyhow::anyhow!("sync config dir: {err}"))?;
+    }
+    Ok(())
+}
+
+fn archive_legacy_product_root(product_home_dir: &Path) -> anyhow::Result<()> {
+    if !legacy_root_has_active_state(product_home_dir) {
+        return Ok(());
+    }
+    fs::create_dir_all(product_home_dir)
+        .map_err(|err| anyhow::anyhow!("create awiki-cli home: {err}"))?;
+    let lock_dir = product_home_dir.join(LEGACY_ARCHIVE_LOCK_DIR_NAME);
+    let owns_lock = acquire_legacy_archive_lock(&lock_dir)?;
+    if !owns_lock {
+        return Ok(());
+    }
+    let _guard = LegacyArchiveLockGuard { path: lock_dir };
+    if !legacy_root_has_active_state(product_home_dir) {
+        return Ok(());
+    }
+    let archive_root = product_home_dir.join(LEGACY_ARCHIVE_DIR_NAME);
+    fs::create_dir_all(&archive_root)
+        .map_err(|err| anyhow::anyhow!("create legacy archive directory: {err}"))?;
+    let archive_dir = unique_archive_dir(&archive_root);
+    fs::create_dir_all(&archive_dir)
+        .map_err(|err| anyhow::anyhow!("create legacy archive target: {err}"))?;
+    for name in [
+        CONFIG_FILE_NAME,
+        "config.json",
+        "identities",
+        "data",
+        "runtime",
+        "cache",
+        "logs",
+    ] {
+        let source = product_home_dir.join(name);
+        match fs::rename(&source, archive_dir.join(name)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => anyhow::bail!("archive legacy awiki-cli state {}: {err}", source.display()),
+        }
+    }
+    durable_fs::sync_directory(product_home_dir)
+        .map_err(|err| anyhow::anyhow!("sync awiki-cli home after legacy archive: {err}"))?;
+    Ok(())
+}
+
+struct LegacyArchiveLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for LegacyArchiveLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn acquire_legacy_archive_lock(lock_dir: &Path) -> anyhow::Result<bool> {
+    for _ in 0..200 {
+        match fs::create_dir(lock_dir) {
+            Ok(()) => return Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if !legacy_root_has_active_state(lock_dir.parent().unwrap_or(lock_dir)) {
+                    return Ok(false);
+                }
+            }
+            Err(err) => anyhow::bail!("create legacy archive lock {}: {err}", lock_dir.display()),
+        }
+    }
+    anyhow::bail!("timed out waiting for legacy awiki-cli state archive lock")
+}
+
+fn legacy_root_has_active_state(product_home_dir: &Path) -> bool {
+    if !product_home_dir.exists() {
+        return false;
+    }
+    if product_home_dir.join(TENANTS_DIR_NAME).exists() {
+        return false;
+    }
+    [
+        CONFIG_FILE_NAME,
+        "config.json",
+        "identities",
+        "data",
+        "runtime",
+    ]
+    .iter()
+    .any(|name| product_home_dir.join(name).exists())
+}
+
+fn unique_archive_dir(archive_root: &Path) -> PathBuf {
+    for attempt in 0..1000 {
+        let suffix = if attempt == 0 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let candidate = archive_root.join(format!("{}{}", now_compact(), suffix));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    archive_root.join(format!("{}-{}", now_compact(), std::process::id()))
+}
+
+fn tenant_has_data(product_home_dir: &Path, profile: &TenantProfile) -> anyhow::Result<bool> {
+    let tenant_dir = tenant_dir(product_home_dir, profile);
+    for relative in [Path::new("identities"), Path::new("data")] {
+        let path = tenant_dir.join(relative);
+        if path_has_data(&path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn path_has_data(path: &Path) -> anyhow::Result<bool> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => anyhow::bail!("inspect tenant data {}: {err}", path.display()),
+    };
+    if metadata.is_file() {
+        return Ok(metadata.len() > 0);
+    }
+    if !metadata.is_dir() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(path)
+        .map_err(|err| anyhow::anyhow!("inspect tenant data {}: {err}", path.display()))?
+    {
+        let entry = entry.map_err(|err| {
+            anyhow::anyhow!("inspect tenant data entry {}: {err}", path.display())
+        })?;
+        if path_has_data(&entry.path())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn tenant_dir(product_home_dir: &Path, profile: &TenantProfile) -> PathBuf {
+    product_home_dir
+        .join(TENANTS_DIR_NAME)
+        .join(profile.dir_name.trim())
+}
+
+fn tenant_registry_path(product_home_dir: &Path) -> PathBuf {
+    product_home_dir
+        .join(TENANTS_DIR_NAME)
+        .join(TENANT_REGISTRY_FILE_NAME)
+}
+
+fn global_config_path(product_home_dir: &Path) -> PathBuf {
+    product_home_dir.join(GLOBAL_CONFIG_FILE_NAME)
+}
+
+fn normalize_tenant_name(raw: &str) -> Result<String, WorkspaceConfigError> {
+    let value = raw.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name is required",
+            tenant_name_hint(),
+        ));
+    }
+    if value.len() > 64 {
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name must be at most 64 characters",
+            tenant_name_hint(),
+        ));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name may only contain ASCII letters, numbers, and '-'",
+            tenant_name_hint(),
+        ));
+    }
+    if value.starts_with('-') || value.ends_with('-') || value.contains("--") {
+        return Err(WorkspaceConfigError::invalid_argument(
+            "tenant name must not start or end with '-' or contain '--'",
+            tenant_name_hint(),
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_service_base_url(value: &str) -> Result<(), WorkspaceConfigError> {
+    im_core::ServiceEndpoint::parse(value.to_string())
+        .map(|_| ())
+        .map_err(|err| {
+            WorkspaceConfigError::invalid_argument(
+                format!("backend_base_url is invalid: {err}"),
+                backend_base_url_hint(),
+            )
+        })
+}
+
+fn now_compact() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string()
 }
 
 fn parse_file_config(raw: &str) -> Result<FileConfig, String> {
@@ -542,10 +1378,14 @@ fn validate_deprecated_config_fields(path: &str) -> anyhow::Result<()> {
     if deprecated_fields.is_empty() {
         return Ok(());
     }
-    anyhow::bail!(
-        "deprecated config.yaml fields are no longer supported: {}",
-        deprecated_fields.join(", ")
+    Err(WorkspaceConfigError::invalid_config(
+        format!(
+            "deprecated config.yaml fields are no longer supported: {}",
+            deprecated_fields.join(", ")
+        ),
+        "Remove deprecated services.* backend/DID fields from tenant config.yaml. Manage backend_base_url and did_host with `awiki-cli tenant create` or `awiki-cli tenant reconfigure`.",
     )
+    .into())
 }
 
 fn collect_deprecated_config_fields(raw: &str) -> Vec<String> {
@@ -625,8 +1465,12 @@ fn strip_yaml_inline_comment(line: &str) -> &str {
     line
 }
 
-fn deprecated_service_keys() -> [&'static str; 3] {
+fn deprecated_service_keys() -> [&'static str; 7] {
     [
+        "service_base_url",
+        "user_service_endpoint",
+        "message_service_endpoint",
+        "did_domain",
         "user_service_url",
         "message_service_url",
         "message_service_ws_url",
@@ -882,36 +1726,6 @@ fn choose_value(
     )
 }
 
-fn resolve_service_endpoint_field(
-    key: &'static str,
-    file_value: &str,
-    service_base_url: &str,
-    sources: &mut BTreeMap<String, ValueSource>,
-) -> String {
-    if file_value.trim().is_empty() {
-        let value = service_base_url.to_string();
-        sources.insert(
-            key.to_string(),
-            ValueSource {
-                source: "derived_default".to_string(),
-                key: "service_base_url".to_string(),
-                value: value.clone(),
-            },
-        );
-        return value;
-    }
-    let value = normalize_base_url(file_value);
-    sources.insert(
-        key.to_string(),
-        ValueSource {
-            source: "config_file".to_string(),
-            key: String::new(),
-            value: value.clone(),
-        },
-    );
-    value
-}
-
 fn normalized_config_schema_version(version: i64) -> i64 {
     version.max(0)
 }
@@ -1115,18 +1929,74 @@ fn resolve_openclaw_fields(
     )
 }
 
-fn resolve_hermes_fields(config: &HostNotifyConfig, sink: &str) -> (String, String) {
+fn resolve_hermes_fields(
+    config: &HostNotifyConfig,
+    sink: &str,
+) -> (String, ValueSource, String, ValueSource) {
+    let (deliver, deliver_source) = resolve_hermes_deliver_field(config);
     if sink != "hermes" {
-        return (String::new(), String::new());
+        return (
+            String::new(),
+            ValueSource {
+                source: "unset".to_string(),
+                key: String::new(),
+                value: String::new(),
+            },
+            deliver,
+            deliver_source,
+        );
     }
-    let notify_url = if config.hermes.notify_url.trim().is_empty() {
-        &config.webhook.notify_url
+    let (notify_url, notify_source) = if !config.hermes.notify_url.trim().is_empty() {
+        (
+            config.hermes.notify_url.trim().to_string(),
+            ValueSource {
+                source: "config_file".to_string(),
+                key: "runtime.host_notify.hermes.notify_url".to_string(),
+                value: config.hermes.notify_url.trim().to_string(),
+            },
+        )
+    } else if !config.webhook.notify_url.trim().is_empty() {
+        (
+            config.webhook.notify_url.trim().to_string(),
+            ValueSource {
+                source: "config_file".to_string(),
+                key: "runtime.host_notify.webhook.notify_url".to_string(),
+                value: config.webhook.notify_url.trim().to_string(),
+            },
+        )
     } else {
-        &config.hermes.notify_url
+        (
+            DEFAULT_HERMES_NOTIFY_URL.to_string(),
+            ValueSource {
+                source: "default".to_string(),
+                key: String::new(),
+                value: DEFAULT_HERMES_NOTIFY_URL.to_string(),
+            },
+        )
     };
+    (notify_url, notify_source, deliver, deliver_source)
+}
+
+fn resolve_hermes_deliver_field(config: &HostNotifyConfig) -> (String, ValueSource) {
+    let value = config.hermes.deliver.trim();
+    if !value.is_empty() {
+        let value = value.to_ascii_lowercase();
+        return (
+            value.clone(),
+            ValueSource {
+                source: "config_file".to_string(),
+                key: "runtime.host_notify.hermes.deliver".to_string(),
+                value,
+            },
+        );
+    }
     (
-        default_trimmed_string(notify_url, DEFAULT_HERMES_NOTIFY_URL),
-        default_string(&config.hermes.deliver, DEFAULT_HERMES_DELIVER_TARGET),
+        DEFAULT_HERMES_DELIVER_TARGET.to_string(),
+        ValueSource {
+            source: "default".to_string(),
+            key: String::new(),
+            value: DEFAULT_HERMES_DELIVER_TARGET.to_string(),
+        },
     )
 }
 
@@ -1160,26 +2030,44 @@ pub fn derive_anp_service_did(service_base_url: &str) -> String {
     format!("did:wba:{}", service_host_from_base_url(service_base_url))
 }
 
-pub fn normalize_did_domain(raw: &str) -> anyhow::Result<String> {
+pub fn normalize_did_domain(raw: &str) -> Result<String, WorkspaceConfigError> {
     let normalized = raw.trim().to_ascii_lowercase();
     let normalized = normalized.trim_end_matches('.').to_string();
     if normalized.is_empty() {
-        anyhow::bail!("did_domain is required");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host is required",
+            did_host_hint(),
+        ));
     }
     if normalized.contains("://") {
-        anyhow::bail!("did_domain must be a bare domain without a URL scheme");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must be a bare domain without a URL scheme",
+            did_host_hint(),
+        ));
     }
     if normalized.contains(['/', '?', '#']) {
-        anyhow::bail!("did_domain must not include a path, query, or fragment");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must not include a path, query, or fragment",
+            did_host_hint(),
+        ));
     }
     if normalized.contains(':') {
-        anyhow::bail!("did_domain must not include a port");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must not include a port",
+            did_host_hint(),
+        ));
     }
     if normalized.chars().any(char::is_whitespace) {
-        anyhow::bail!("did_domain must not contain whitespace");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must not contain whitespace",
+            did_host_hint(),
+        ));
     }
     if normalized.contains('@') || normalized.contains('%') {
-        anyhow::bail!("did_domain must be a bare domain");
+        return Err(WorkspaceConfigError::invalid_argument(
+            "did_host must be a bare domain",
+            did_host_hint(),
+        ));
     }
     Ok(normalized)
 }
@@ -1273,7 +2161,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_config_accepts_distinct_service_endpoints() {
+    fn parse_config_still_accepts_legacy_service_endpoint_fields_for_config_preservation() {
         let raw = r#"
 schema_version: 1
 services:
@@ -1297,24 +2185,5 @@ services:
             config.services.message_service_endpoint,
             "https://messages.example.test/"
         );
-    }
-
-    #[test]
-    fn resolve_service_endpoint_field_defaults_to_service_base_url() {
-        let mut sources = BTreeMap::new();
-
-        let endpoint = super::resolve_service_endpoint_field(
-            "message_service_endpoint",
-            "",
-            "https://base.example.test",
-            &mut sources,
-        );
-
-        assert_eq!(endpoint, "https://base.example.test");
-        let source = sources
-            .get("message_service_endpoint")
-            .expect("source entry");
-        assert_eq!(source.source, "derived_default");
-        assert_eq!(source.key, "service_base_url");
     }
 }

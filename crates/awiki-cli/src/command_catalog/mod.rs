@@ -128,6 +128,7 @@ pub enum CliShellRole {
     RendersDryRunPlan,
     ManagesLocalService,
     ManagesHostNotifyConfig,
+    ManagesTenantConfig,
 }
 
 impl CliShellRole {
@@ -141,6 +142,7 @@ impl CliShellRole {
             Self::RendersDryRunPlan => "renders_dry_run_plan",
             Self::ManagesLocalService => "manages_local_service",
             Self::ManagesHostNotifyConfig => "manages_host_notify_config",
+            Self::ManagesTenantConfig => "manages_tenant_config",
         }
     }
 }
@@ -299,6 +301,15 @@ pub fn default_surface_specs() -> Vec<CommandSpec> {
     default_specs()
         .iter()
         .filter(|spec| spec.include_in_default_surface())
+        .cloned()
+        .collect()
+}
+
+pub fn public_help_root_specs() -> Vec<CommandSpec> {
+    default_specs()
+        .iter()
+        .filter(|spec| parent_name(spec.name).is_empty())
+        .filter(|spec| include_in_public_help(spec))
         .cloned()
         .collect()
 }
@@ -545,6 +556,7 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
         name,
         &[
             "status",
+            "help",
             "docs",
             "schema",
             "doctor",
@@ -558,7 +570,12 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "completion.powershell",
             "config",
             "config.show",
-            "config.set",
+            "tenant",
+            "tenant.list",
+            "tenant.current",
+            "tenant.create",
+            "tenant.use",
+            "tenant.reconfigure",
             "runtime",
             "runtime.status",
             "runtime.apply",
@@ -664,7 +681,7 @@ pub fn command_audience(raw: &str) -> CommandAudience {
     ) {
         return CommandAudience::Diagnostic;
     }
-    if name == "config.set" {
+    if has_command_prefix(name, "tenant") {
         return CommandAudience::AdvancedUser;
     }
     if has_any_command_prefix(name, &["runtime.host-notify.openclaw"]) {
@@ -839,6 +856,9 @@ pub fn cli_shell_role(raw: &str) -> CliShellRole {
     if has_command_prefix(name, "runtime.host-notify") {
         return CliShellRole::ManagesHostNotifyConfig;
     }
+    if has_command_prefix(name, "tenant") {
+        return CliShellRole::ManagesTenantConfig;
+    }
     CliShellRole::None
 }
 
@@ -956,6 +976,18 @@ pub fn children_of(parent: &str) -> Vec<CommandSpec> {
     let mut children: Vec<_> = default_specs()
         .iter()
         .filter(|spec| parent_name(spec.name) == needle)
+        .cloned()
+        .collect();
+    children.sort_by_key(|spec| spec.name);
+    children
+}
+
+pub fn public_help_children_of(parent: &str) -> Vec<CommandSpec> {
+    let needle = normalize_name(parent);
+    let mut children: Vec<_> = default_specs()
+        .iter()
+        .filter(|spec| parent_name(spec.name) == needle)
+        .filter(|spec| include_in_public_help(spec))
         .cloned()
         .collect();
     children.sort_by_key(|spec| spec.name);
@@ -1089,6 +1121,20 @@ fn has_any_command_prefix(name: &str, prefixes: &[&str]) -> bool {
     prefixes
         .iter()
         .any(|prefix| has_command_prefix(name, prefix))
+}
+
+fn include_in_public_help(spec: &CommandSpec) -> bool {
+    if spec.hidden {
+        return false;
+    }
+    matches!(
+        spec.direct_invocation(),
+        DirectInvocationPolicy::Allow
+            | DirectInvocationPolicy::AllowWithWarning
+            | DirectInvocationPolicy::RequireDiagnosticGate
+            | DirectInvocationPolicy::RequireMigrationGate
+            | DirectInvocationPolicy::RequireInternalServiceGate
+    )
 }
 
 fn default_surface_owner(owner: CommandOwner) -> bool {
@@ -1229,10 +1275,16 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "completion.zsh", use_: "zsh", short: "Generate Zsh completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.zsh", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.fish", use_: "fish", short: "Generate Fish completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.fish", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.powershell", use_: "powershell", short: "Generate PowerShell completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.powershell", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "help", use_: "help [COMMAND]", short: "Show human-readable command help", long: "Show concise command usage, flags, and subcommands. For machine-readable command metadata, use `awiki-cli schema`.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "help", side_effect: false, outputs: &["text"], flags: &[] },
         CommandSpec { name: "schema", use_: "schema [COMMAND]", short: "Show static command contracts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "schema", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("all", "bool", "Show every command surface"), flag!("audience", "string", "Show one command audience", choices = ["default", "advanced", "operator", "diagnostic", "migration", "internal", "all"])] },
         CommandSpec { name: "config", use_: "config", short: "Inspect resolved CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("config.show", "show", "Show resolved configuration values", "phase1", "config.show"),
-        CommandSpec { name: "config.set", use_: "set", short: "Update persistent CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "config.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did-domain", "string", "Bare DID provider domain to persist in services.did_domain")] },
+        CommandSpec { name: "tenant", use_: "tenant", short: "Manage backend and DID host tenants", long: "A tenant is an atomic backend_base_url + did_host profile with an isolated local workspace under ~/.awiki-cli/tenants/<name>. Create a tenant first, then switch by name; backend and DID host values are not edited in config.yaml.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "tenant.list", use_: "list", short: "List configured tenants", long: "List tenant profiles from the product-level tenant registry and show the active tenant for this command invocation.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "tenant.current", use_: "current", short: "Show the current tenant", long: "Show the tenant selected by global config or by this command's --tenant override.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.current", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "tenant.create", use_: "create <name>", short: "Create a tenant from backend and DID host", long: "Create a named tenant profile. Tenant names are normalized to lowercase and may contain only ASCII letters, numbers, and single '-' separators; use --display-name for spaces, uppercase presentation, or non-ASCII labels. This writes the tenant registry and initializes the tenant-local config directory, but does not make the new tenant active; run `awiki-cli tenant use <name>` to switch.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.create", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("backend-base-url", "string", "Backend base URL for User-Service and Message-Service", required), flag!("did-host", "string", "Bare DID host for handles and DID service discovery", required), flag!("display-name", "string", "Human-readable tenant name")] },
+        CommandSpec { name: "tenant.use", use_: "use <name>", short: "Switch the active tenant", long: "Switch the product-level active tenant by name. The tenant must already exist; this command intentionally does not accept backend or DID host fields.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.use", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "tenant.reconfigure", use_: "reconfigure <name>", short: "Update an empty tenant's backend and DID host", long: "Update backend_base_url and did_host only for an empty tenant. If the tenant already has identities or local database data, create a new tenant instead.", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "tenant.reconfigure", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("backend-base-url", "string", "New backend base URL", required), flag!("did-host", "string", "New bare DID host", required)] },
         CommandSpec { name: "id", use_: "id", short: "Identity lifecycle commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.status", use_: "status", short: "Show identity status", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.status", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "id.vault", use_: "vault", short: "Inspect or migrate identity secret vault state", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },

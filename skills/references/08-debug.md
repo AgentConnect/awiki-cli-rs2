@@ -10,12 +10,12 @@ This file is a **reference**, not an entry skill. Load it only after all safe in
 
 - Status: **partially implemented**
 - Currently implemented:
-  - `debug db query`
+  - `debug db handle-history`
   - `debug db import-v1`
-- Planned but not yet implemented:
-  - `debug raw rpc`
-  - `debug schema-cache`
-  - `debug logs`
+- Stable unsupported / non-default:
+  - `debug db query` is stable unsupported; raw SQL is not a current supported capability.
+  - `debug raw rpc` is removed.
+  - `debug schema-cache` and `debug logs` are hidden diagnostic contracts, not default product workflows.
 
 ## When to Use
 
@@ -37,18 +37,18 @@ Use debug only when the following paths are still not enough:
 
 ## Currently Available Commands
 
-- `awiki-cli debug db query "<SQL>"`
-- `awiki-cli debug db import-v1 [--path <legacy_dir>]`
+- `awiki-cli --diagnostic debug db handle-history <handle>`
+- `awiki-cli --migration debug db import-v1 [--path <legacy_db>]`
 
-## Planned but Not Yet Implemented
+## Unsupported, Removed, or Hidden Commands
 
-- `awiki-cli debug raw rpc`
-- `awiki-cli debug schema-cache`
-- `awiki-cli debug logs [--follow]`
+- `awiki-cli debug db query "<SQL>"` returns stable unsupported capability.
+- `awiki-cli debug raw rpc` returns removed command.
+- `awiki-cli debug schema-cache` and `awiki-cli debug logs [--follow]` are hidden diagnostic contracts and should not be used as normal product flows.
 
 ## Limitations
 
-- Do not execute destructive SQL
+- Do not suggest raw SQL as a current supported inspection path
 - Do not assume raw RPC is already available before the command is implemented
 - Do not expose JWTs, private keys, secure session material, or unrelated local files
 - Do not use debug to bypass domain-level confirmation rules
@@ -56,13 +56,13 @@ Use debug only when the following paths are still not enough:
 ## Side Effects and Confirmation
 
 - Safe for narrow, non-destructive inspection:
-  - `debug db query`
+  - `debug db handle-history`
 - Require explicit confirmation and should use dry-run first:
   - `debug db import-v1`
 
 ## Recovery Pattern
 
-1. Inspect with `debug db query`
+1. Inspect with `debug db handle-history` or the matching domain command/schema.
 2. Translate the findings back into canonical runtime, identity, or messaging behavior
 3. Return to the matching domain reference instead of staying on the debug path for long
 

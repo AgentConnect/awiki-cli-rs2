@@ -136,7 +136,8 @@ fn config_show_reports_resolved_configuration_snapshot() {
     );
     assert_eq!(envelope["data"]["output_format"], "json");
     assert_eq!(envelope["data"]["did_domain"], "awiki.ai");
-    assert_eq!(envelope["data"]["config_exists"], false);
+    assert_eq!(envelope["data"]["config_exists"], true);
+    assert_eq!(envelope["data"]["tenant"]["active"], "default");
     assert_has_keys(
         &envelope["data"]["identity_store"],
         &[
@@ -162,189 +163,120 @@ fn config_show_reports_resolved_configuration_snapshot() {
 }
 
 #[test]
-fn config_set_did_domain_matches_go_contract() {
+fn tenant_commands_create_switch_and_validate_new_tenant_boundary() {
     let workspace = TempDir::new().expect("temp workspace");
 
     let dry_run = awiki_cmd_with_workspace(
         &[
             "--dry-run",
-            "config",
-            "set",
-            "--did-domain",
-            "Tenant.Example.",
+            "tenant",
+            "create",
+            "acme",
+            "--backend-base-url",
+            "https://api.acme.test/",
+            "--did-host",
+            "Acme.Test.",
         ],
         workspace.path().to_str().unwrap(),
     );
     assert_success(&dry_run);
     let envelope = success_json(&dry_run);
-    assert_eq!(envelope["command"], "awiki-cli config set");
-    assert_eq!(envelope["summary"], "Dry run: DID domain update planned");
+    assert_eq!(envelope["command"], "awiki-cli tenant create");
+    assert_eq!(envelope["summary"], "Dry run: tenant creation planned");
     assert_eq!(envelope["meta"]["dry_run"], true);
-    assert_eq!(envelope["data"]["plan"]["action"], "config_set_did_domain");
-    assert_eq!(envelope["data"]["plan"]["did_domain"], "tenant.example");
+    assert_eq!(envelope["data"]["plan"]["action"], "tenant_create");
     assert_eq!(
-        envelope["data"]["plan"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
-            .to_string_lossy()
-            .as_ref()
+        envelope["data"]["plan"]["tenant"]["profile"]["backend_base_url"],
+        "https://api.acme.test"
     );
-    assert!(
-        !workspace.path().join("config.yaml").exists(),
-        "dry-run config set must not write config.yaml"
-    );
-
-    let update = awiki_cmd_with_workspace(
-        &["config", "set", "--did-domain", " Tenant.Example. "],
-        workspace.path().to_str().unwrap(),
-    );
-    assert_success(&update);
-    let envelope = success_json(&update);
-    assert_eq!(envelope["summary"], "DID domain updated");
-    assert_eq!(envelope["data"]["did_domain"], "tenant.example");
     assert_eq!(
-        envelope["data"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
-            .to_string_lossy()
-            .as_ref()
-    );
-    let config_text = std::fs::read_to_string(workspace.path().join("config.yaml"))
-        .expect("config.yaml should be written");
-    assert!(
-        config_text.contains("  did_domain: tenant.example"),
-        "config.yaml should contain normalized did_domain, got {config_text:?}"
+        envelope["data"]["plan"]["tenant"]["profile"]["did_host"],
+        "acme.test"
     );
     assert!(
-        !workspace
-            .path()
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "config set must not create runtime socket artifacts"
-    );
-    assert!(
-        !workspace
-            .path()
-            .join("runtime")
-            .join("listener.service.pid")
-            .exists(),
-        "config set must not create listener pid artifacts"
-    );
-}
-
-#[test]
-fn config_set_migrates_legacy_config_json_before_writing_like_go() {
-    let workspace = TempDir::new().expect("temp workspace");
-    let config_json = workspace.path().join("config.json");
-    std::fs::write(
-        &config_json,
-        r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
-    )
-    .expect("write legacy config");
-
-    let update = awiki_cmd_with_workspace(
-        &["config", "set", "--did-domain", " Tenant.Example. "],
-        workspace.path().to_str().unwrap(),
-    );
-    assert_success(&update);
-    let envelope = success_json(&update);
-    assert_eq!(envelope["command"], "awiki-cli config set");
-    assert_eq!(envelope["summary"], "DID domain updated");
-    assert_eq!(envelope["data"]["did_domain"], "tenant.example");
-    assert_eq!(
-        envelope["data"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
-            .to_string_lossy()
-            .as_ref()
+        !workspace.path().join("tenants").join("acme").exists(),
+        "dry-run tenant create must not write tenant state"
     );
 
-    assert!(
-        !config_json.exists(),
-        "legacy config.json should be removed after workspace upgrade"
-    );
-    let config_yaml = workspace.path().join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert_text_contains(&config_text, "schema_version: 1\n");
-    assert_text_contains(&config_text, "  mode: http\n");
-    assert_text_contains(&config_text, "  service_base_url: https://legacy.example\n");
-    assert_text_contains(&config_text, "  did_domain: tenant.example\n");
-
-    let meta_path = workspace.path().join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 4);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        backup_dir.parent(),
-        Some(workspace.path().join("upgrade").join("backups").as_path())
-    );
-    assert!(backup_dir.join("config.json.bak").is_file());
-    assert!(
-        !workspace
-            .path()
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
-    );
-    assert!(
-        !workspace.path().join("data").join("awiki-cli.db").exists(),
-        "config-only migration should not create SQLite state"
-    );
-}
-
-#[test]
-fn config_set_validates_did_domain_like_go() {
-    let workspace = TempDir::new().expect("temp workspace");
-
-    let missing = awiki_cmd_with_workspace(&["config", "set"], workspace.path().to_str().unwrap());
-    assert_code(&missing, 2);
-    let envelope = error_json(&missing);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(
-        &envelope["error"]["message"],
-        "config set requires --did-domain",
-    );
-
-    let url_like = awiki_cmd_with_workspace(
-        &["config", "set", "--did-domain", "https://tenant.example"],
-        workspace.path().to_str().unwrap(),
-    );
-    assert_code(&url_like, 2);
-    let envelope = error_json(&url_like);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(&envelope["error"]["message"], "bare domain");
-    assert_contains(&envelope["error"]["hint"], "tenant.example");
-
-    let with_path = awiki_cmd_with_workspace(
-        &["config", "set", "--did-domain", "tenant.example/path"],
-        workspace.path().to_str().unwrap(),
-    );
-    assert_code(&with_path, 2);
-    let envelope = error_json(&with_path);
-    assert_contains(&envelope["error"]["message"], "path, query, or fragment");
-
-    let go_accepted_host_shapes = awiki_cmd_with_workspace(
+    let create = awiki_cmd_with_workspace(
         &[
-            "--dry-run",
-            "config",
-            "set",
-            "--did-domain",
-            "Tenant..Example",
+            "tenant",
+            "create",
+            "acme",
+            "--backend-base-url",
+            "https://api.acme.test/",
+            "--did-host",
+            "Acme.Test.",
         ],
         workspace.path().to_str().unwrap(),
     );
-    assert_success(&go_accepted_host_shapes);
-    let envelope = success_json(&go_accepted_host_shapes);
-    assert_eq!(envelope["data"]["plan"]["did_domain"], "tenant..example");
+    assert_success(&create);
+    let envelope = success_json(&create);
+    assert_eq!(envelope["summary"], "Tenant created");
+    assert_eq!(envelope["data"]["tenant"]["active"], "acme");
+    let acme_dir = workspace.path().join("tenants").join("acme");
+    assert!(acme_dir.join("config.yaml").is_file());
+
+    let switch = awiki_cmd_with_workspace(
+        &["tenant", "use", "acme"],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_success(&switch);
+    let envelope = success_json(&switch);
+    assert_eq!(envelope["summary"], "Tenant switched");
+    assert_eq!(envelope["data"]["tenant"]["active"], "acme");
+
+    let show = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
+    assert_success(&show);
+    let envelope = success_json(&show);
+    assert_eq!(
+        envelope["data"]["service_base_url"],
+        "https://api.acme.test"
+    );
+    assert_eq!(envelope["data"]["did_domain"], "acme.test");
+    assert_eq!(
+        envelope["data"]["paths"]["workspace_home_dir"],
+        acme_dir.to_string_lossy().as_ref()
+    );
+
+    let missing_name = awiki_cmd_with_workspace(
+        &[
+            "tenant",
+            "create",
+            "--backend-base-url",
+            "https://api.example.test",
+            "--did-host",
+            "example.test",
+        ],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_code(&missing_name, 2);
+    let envelope = error_json(&missing_name);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "tenant create requires <name>",
+    );
+
+    let bad_host = awiki_cmd_with_workspace(
+        &[
+            "tenant",
+            "create",
+            "bad",
+            "--backend-base-url",
+            "https://api.example.test",
+            "--did-host",
+            "https://tenant.example",
+        ],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_code(&bad_host, 2);
+    let envelope = error_json(&bad_host);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "did_host must be a bare domain",
+    );
 }
 
 #[test]
@@ -388,6 +320,17 @@ fn docs_list_and_topic_lookup_preserve_go_topic_contracts() {
         "output topic should preserve Go's canonical output-format reference: {references:?}"
     );
     assert_docs_references_exist(references);
+
+    let tenant_topic = success_json(&awiki_cmd(&["docs", "tenant"]));
+    assert_eq!(tenant_topic["data"]["topic"]["name"], "tenant");
+    assert!(
+        tenant_topic["data"]["topic"]["references"]
+            .as_array()
+            .expect("tenant topic references")
+            .iter()
+            .any(|reference| reference == "docs/installation.md"),
+        "tenant docs topic should point to installation docs: {tenant_topic:?}"
+    );
 }
 
 #[test]
@@ -420,6 +363,58 @@ fn schema_lists_contracts_and_supports_space_joined_targets() {
     assert_eq!(command["data"]["command"]["handler"], "config.show");
     assert_eq!(command["data"]["command"]["implemented"], true);
     assert!(command["data"]["children"].is_array());
+
+    let tenant_output = awiki_cmd(&["schema", "tenant"]);
+    assert_success(&tenant_output);
+    let tenant = success_json(&tenant_output);
+    assert_eq!(schema_command(&tenant)["name"], "tenant");
+    assert_text_contains(
+        schema_command(&tenant)["long"].as_str().unwrap_or_default(),
+        "backend_base_url + did_host",
+    );
+    assert!(schema_child(&tenant, "tenant.create").is_object());
+
+    let tenant_create_help = awiki_cmd(&["tenant", "create", "--help"]);
+    assert_success(&tenant_create_help);
+    assert_stderr_empty(&tenant_create_help);
+    let tenant_create = stdout_text(&tenant_create_help);
+    assert_text_contains(&tenant_create, "awiki-cli tenant create <name>");
+    assert_text_contains(&tenant_create, "does not make the new tenant active");
+    assert_text_contains(&tenant_create, "--backend-base-url <string>");
+}
+
+#[test]
+fn static_schema_and_docs_do_not_require_valid_workspace_config() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let config = workspace
+        .path()
+        .join("tenants")
+        .join("default")
+        .join("config.yaml");
+    std::fs::create_dir_all(config.parent().expect("config parent")).expect("tenant dir");
+    std::fs::write(
+        &config,
+        "schema_version: 1\nservices:\n  service_base_url: https://legacy.example\n  did_domain: legacy.example\n",
+    )
+    .expect("write deprecated config");
+
+    let schema =
+        awiki_cmd_with_workspace(&["schema", "tenant"], workspace.path().to_str().unwrap());
+    assert_success(&schema);
+    let schema = success_json(&schema);
+    assert_eq!(schema["data"]["command"]["name"], "tenant");
+
+    let help = awiki_cmd_with_workspace(&["tenant", "--help"], workspace.path().to_str().unwrap());
+    assert_success(&help);
+    assert_stderr_empty(&help);
+    let help = stdout_text(&help);
+    assert_text_contains(&help, "awiki-cli tenant");
+    assert_text_contains(&help, "Commands:");
+
+    let docs = awiki_cmd_with_workspace(&["docs", "tenant"], workspace.path().to_str().unwrap());
+    assert_success(&docs);
+    let docs = success_json(&docs);
+    assert_eq!(docs["data"]["topic"]["name"], "tenant");
 }
 
 #[test]
@@ -539,7 +534,7 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
 }
 
 #[test]
-fn group_e2ee_unknown_subcommands_match_go_cobra_boundary() {
+fn group_e2ee_unknown_subcommands_are_invalid_arguments() {
     for args in [
         &["group", "e2ee", "leave-requests", "--group", "did:group"][..],
         &[
@@ -552,11 +547,11 @@ fn group_e2ee_unknown_subcommands_match_go_cobra_boundary() {
         ][..],
     ] {
         let output = awiki_cmd(args);
-        assert_code(&output, 1);
+        assert_code(&output, 2);
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["code"], "invalid_argument");
         assert_contains(&envelope["error"]["message"], "unknown command");
         assert_contains(&envelope["error"]["hint"], "awiki-cli group e2ee --help");
     }
@@ -827,12 +822,27 @@ fn dry_run_init_returns_plan_without_writing_workspace() {
     assert_eq!(envelope["data"]["plan"]["action"], "init_workspace");
     assert_eq!(
         envelope["data"]["plan"]["root_dir"],
-        workspace.path().to_string_lossy().as_ref()
+        workspace
+            .path()
+            .join("tenants")
+            .join("default")
+            .to_string_lossy()
+            .as_ref()
     );
-    assert_eq!(envelope["data"]["plan"]["config_exists"], false);
+    assert_eq!(envelope["data"]["plan"]["config_exists"], true);
     assert!(
         !workspace.path().join("config.yaml").exists(),
-        "dry-run init must not write config.yaml"
+        "dry-run init must not write legacy root config.yaml"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("tenants")
+            .join("default")
+            .join("data")
+            .join("awiki-cli.db")
+            .exists(),
+        "dry-run init must not initialize tenant SQLite state"
     );
 }
 
@@ -841,9 +851,29 @@ fn init_creates_real_sqlite_schema() {
     let workspace = TempDir::new().expect("temp workspace");
     let init_output = awiki_cmd_with_workspace(&["init"], workspace.path().to_str().unwrap());
     assert_success(&init_output);
+    let envelope = success_json(&init_output);
+    assert_eq!(
+        envelope["data"]["listener"]["managed_by"],
+        "awiki-cli runtime listener"
+    );
+    assert_eq!(
+        envelope["data"]["listener"]["status_command"],
+        "awiki-cli runtime listener status"
+    );
+    assert!(
+        !String::from_utf8_lossy(&init_output.stdout).contains("not_managed_in_rust_slice"),
+        "init output must not expose old slice-era implementation wording"
+    );
 
-    let connection =
-        Connection::open(workspace.path().join("data").join("awiki-cli.db")).expect("open db");
+    let connection = Connection::open(
+        workspace
+            .path()
+            .join("tenants")
+            .join("default")
+            .join("data")
+            .join("awiki-cli.db"),
+    )
+    .expect("open db");
     let table_name: String = connection
         .query_row(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
@@ -1277,6 +1307,10 @@ fn assert_stderr_empty(output: &Output) {
         "stderr should be empty, got {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn stdout_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn stderr_text(output: &Output) -> String {

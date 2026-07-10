@@ -8,7 +8,10 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use support::{write_ready_identity, TestIdentity, TestIdentityOptions};
+use support::{
+    write_default_tenant_registry, write_ready_identity, write_tenant_config, TestIdentity,
+    TestIdentityOptions,
+};
 
 #[test]
 fn msg_inbox_target_filter_is_unsupported_before_legacy_secure_prekey_side_effects() {
@@ -166,11 +169,8 @@ fn migrate_identity_to_vault(workspace: &Path) {
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(workspace, "runtime:\n  mode: http\n");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

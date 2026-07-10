@@ -96,8 +96,6 @@ fn refresh_resolved_config_syncs_mail_service_url_from_config() {
             "  format: table\n",
             "  no_color: true\n",
             "services:\n",
-            "  service_base_url: https://api.example///\n",
-            "  did_domain: tenant.example\n",
             "  mail_service_url: https://mail.example///\n",
             "  anp_service_endpoint: https://api.example/anp-im/rpc\n",
             "  anp_service_did: did:wba:api.example\n",
@@ -115,8 +113,8 @@ fn refresh_resolved_config_syncs_mail_service_url_from_config() {
     assert_eq!(refreshed.runtime_socket_path, "/tmp/awiki.sock");
     assert_eq!(refreshed.output_format, "table");
     assert!(refreshed.no_color);
-    assert_eq!(refreshed.service_base_url, "https://api.example");
-    assert_eq!(refreshed.did_domain, "tenant.example");
+    assert_eq!(refreshed.service_base_url, "https://stale.example");
+    assert_eq!(refreshed.did_domain, "awiki.ai");
     assert_eq!(refreshed.mail_service_url, "https://mail.example");
     assert_eq!(
         refreshed.anp_service_endpoint,
@@ -130,14 +128,11 @@ fn refresh_resolved_config_syncs_mail_service_url_from_config() {
 fn refresh_resolved_config_derives_mail_service_url_from_service_base_url() {
     let workspace = TempDir::new("workspace-upgrade-refresh-mail-derived").expect("temp workspace");
     let mut resolved = test_resolved(workspace.path());
+    resolved.service_base_url = "https://awiki.info".to_string();
     resolved.mail_service_url.clear();
     resolved.anp_service_endpoint.clear();
     resolved.anp_service_did.clear();
-    std::fs::write(
-        &resolved.paths.config_file,
-        "services:\n  service_base_url: https://awiki.info///\n",
-    )
-    .expect("write config");
+    std::fs::write(&resolved.paths.config_file, "services:\n").expect("write config");
 
     let refreshed =
         workspace_upgrade::refresh_resolved_config(&resolved).expect("refresh resolved");
@@ -159,14 +154,14 @@ fn refresh_resolved_config_preserves_current_mail_when_config_omits_mail() {
     resolved.mail_service_url = "https://mail.current.example".to_string();
     std::fs::write(
         &resolved.paths.config_file,
-        "services:\n  service_base_url: https://api.changed.example///\n",
+        "services:\n  ca_bundle: /tmp/ca.pem\n",
     )
     .expect("write config");
 
     let refreshed =
         workspace_upgrade::refresh_resolved_config(&resolved).expect("refresh resolved");
 
-    assert_eq!(refreshed.service_base_url, "https://api.changed.example");
+    assert_eq!(refreshed.service_base_url, "https://awiki.ai");
     assert_eq!(refreshed.mail_service_url, "https://mail.current.example");
 }
 
@@ -438,8 +433,8 @@ fn workspace_v0_to_v1_config_apply_stamps_existing_config_schema() {
     let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
     assert_contains(&text, "schema_version: 1\n");
     assert_contains(&text, "  mode: http\n");
-    assert_contains(&text, "  service_base_url: https://platform.example\n");
-    assert_contains(&text, "  did_domain: old.example\n");
+    assert_not_contains(&text, "service_base_url:");
+    assert_not_contains(&text, "did_domain:");
     assert!(
         Path::new(&paths.legacy_config_file).exists(),
         "legacy config should remain when canonical config wins precedence"
@@ -470,8 +465,8 @@ fn workspace_v0_to_v1_config_apply_migrates_legacy_config_json_and_removes_it() 
     let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
     assert_contains(&text, "schema_version: 1\n");
     assert_contains(&text, "  mode: http\n");
-    assert_contains(&text, "  service_base_url: https://legacy.example\n");
-    assert_contains(&text, "  did_domain: legacy.example\n");
+    assert_not_contains(&text, "service_base_url:");
+    assert_not_contains(&text, "did_domain:");
 }
 
 #[test]
@@ -497,8 +492,8 @@ fn workspace_v0_to_v1_config_apply_imports_legacy_settings_when_no_workspace() {
     let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
     assert_contains(&text, "schema_version: 1\n");
     assert_contains(&text, "  mode: websocket\n");
-    assert_contains(&text, "  service_base_url: https://settings.example\n");
-    assert_contains(&text, "  did_domain: tenant.example\n");
+    assert_not_contains(&text, "service_base_url:");
+    assert_not_contains(&text, "did_domain:");
     assert!(
         !Path::new(&resolved.paths.database_file).exists(),
         "config migration must not create sqlite database"
@@ -769,13 +764,13 @@ fn workspace_v0_to_v1_local_state_applies_config_imports_and_refreshes_context()
 
     assert_eq!(imported.imported.len(), 1);
     assert_eq!(context.resolved.runtime_mode, "websocket");
-    assert_eq!(context.resolved.service_base_url, "https://local.example");
-    assert_eq!(context.resolved.did_domain, "tenant.local");
+    assert_eq!(context.resolved.service_base_url, "https://awiki.ai");
+    assert_eq!(context.resolved.did_domain, "awiki.ai");
     assert_eq!(
         context.resolved.anp_service_endpoint,
-        "https://local.example/anp-im/rpc"
+        "https://awiki.ai/anp-im/rpc"
     );
-    assert_eq!(context.resolved.anp_service_did, "did:wba:local.example");
+    assert_eq!(context.resolved.anp_service_did, "did:wba:awiki.ai");
     assert_eq!(
         context.paths.config_file,
         workspace_upgrade::resolve_paths(&context.resolved).config_file
@@ -786,7 +781,8 @@ fn workspace_v0_to_v1_local_state_applies_config_imports_and_refreshes_context()
     );
     let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
     assert_contains(&text, "schema_version: 1\n");
-    assert_contains(&text, "  service_base_url: https://local.example\n");
+    assert_not_contains(&text, "service_base_url:");
+    assert_not_contains(&text, "did_domain:");
     let target = open_read_only(&resolved.paths.database_file).expect("open target db");
     assert_eq!(
         current_schema_version(&target).expect("schema version"),
@@ -1171,6 +1167,13 @@ fn assert_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected config to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
+fn assert_not_contains(haystack: &str, needle: &str) {
+    assert!(
+        !haystack.contains(needle),
+        "expected config to omit {needle:?}, got:\n{haystack}"
     );
 }
 

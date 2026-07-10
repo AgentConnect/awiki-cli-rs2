@@ -3,8 +3,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::tenant_workspace;
+
 #[test]
-fn replace_did_migrates_legacy_config_json_before_active_identity_boundary_like_go() {
+fn replace_did_policy_gate_runs_before_legacy_archive_side_effects() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
@@ -78,12 +82,10 @@ fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, 
 }
 
 fn assert_no_runtime_state(workspace_home: &Path) {
-    assert!(!workspace_home.join("data").join("awiki-cli.db").exists());
-    assert!(!workspace_home
-        .join("runtime")
-        .join("message-daemon.sock")
-        .exists());
-    assert!(!workspace_home.join("runtime").join("listener.pid").exists());
+    let tenant = tenant_workspace(workspace_home);
+    assert!(!tenant.join("data").join("awiki-cli.db").exists());
+    assert!(!tenant.join("runtime").join("message-daemon.sock").exists());
+    assert!(!tenant.join("runtime").join("listener.pid").exists());
 }
 
 struct TempDir {

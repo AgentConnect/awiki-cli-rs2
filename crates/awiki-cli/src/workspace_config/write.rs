@@ -1,9 +1,9 @@
 use super::{
-    normalize_did_domain, read_file_config, FileConfig, HermesConfig, HostNotifyConfig,
-    IdentityConfig, LegacyWebhookConfig, ListenerConfig, OpenClawConfig, OutputConfig, Paths,
-    Resolved, RuntimeConfig, SecretStorageConfig, ServicesConfig, UpdateConfig,
-    CONFIG_SCHEMA_VERSION, DEFAULT_HOST_NOTIFY_ENABLED, DEFAULT_LISTENER_AUTO_INSTALL,
-    DEFAULT_LISTENER_AUTO_START, DEFAULT_LISTENER_ENABLED,
+    read_file_config, FileConfig, HermesConfig, HostNotifyConfig, IdentityConfig,
+    LegacyWebhookConfig, ListenerConfig, OpenClawConfig, OutputConfig, Paths, Resolved,
+    RuntimeConfig, SecretStorageConfig, ServicesConfig, UpdateConfig, CONFIG_SCHEMA_VERSION,
+    DEFAULT_HOST_NOTIFY_ENABLED, DEFAULT_LISTENER_AUTO_INSTALL, DEFAULT_LISTENER_AUTO_START,
+    DEFAULT_LISTENER_ENABLED,
 };
 use crate::durable_fs;
 use std::fs::{self, File, OpenOptions};
@@ -30,14 +30,26 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
                 sink: resolved.host_notify_sink.clone(),
                 file_path: resolved.host_notify_file_path.clone(),
                 openclaw: OpenClawConfig {
-                    hook_url: resolved.host_notify_openclaw_hook_url.clone(),
+                    hook_url: persisted_config_value(
+                        resolved,
+                        "host_notify_openclaw_hook_url",
+                        &resolved.host_notify_openclaw_hook_url,
+                    ),
                     agent_id: resolved.host_notify_openclaw_agent_id.clone(),
                     hook_name: resolved.host_notify_openclaw_hook_name.clone(),
                     token: String::new(),
                 },
                 hermes: HermesConfig {
-                    notify_url: resolved.host_notify_hermes_notify_url.clone(),
-                    deliver: resolved.host_notify_hermes_deliver.clone(),
+                    notify_url: persisted_config_value(
+                        resolved,
+                        "host_notify_hermes_notify_url",
+                        &resolved.host_notify_hermes_notify_url,
+                    ),
+                    deliver: persisted_config_value(
+                        resolved,
+                        "host_notify_hermes_deliver",
+                        &resolved.host_notify_hermes_deliver,
+                    ),
                     secret: String::new(),
                 },
                 webhook: LegacyWebhookConfig::default(),
@@ -57,14 +69,23 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
             device_id: "cli-local-device".to_string(),
         },
         services: ServicesConfig {
-            service_base_url: resolved.service_base_url.clone(),
-            user_service_endpoint: resolved.user_service_endpoint.clone(),
-            message_service_endpoint: resolved.message_service_endpoint.clone(),
-            did_domain: resolved.did_domain.clone(),
-            anp_service_endpoint: resolved.anp_service_endpoint.clone(),
-            anp_service_did: resolved.anp_service_did.clone(),
+            service_base_url: String::new(),
+            user_service_endpoint: String::new(),
+            message_service_endpoint: String::new(),
+            did_domain: String::new(),
+            anp_service_endpoint: persisted_service_override(
+                &resolved.anp_service_endpoint,
+                &super::derive_anp_service_endpoint(&resolved.service_base_url),
+            ),
+            anp_service_did: persisted_service_override(
+                &resolved.anp_service_did,
+                &super::derive_anp_service_did(&resolved.service_base_url),
+            ),
             ca_bundle: resolved.ca_bundle.clone(),
-            mail_service_url: resolved.mail_service_url.clone(),
+            mail_service_url: persisted_service_override(
+                &resolved.mail_service_url,
+                &resolved.service_base_url,
+            ),
         },
         update: UpdateConfig::default(),
     };
@@ -103,15 +124,6 @@ pub fn update_active_identity(paths: &Paths, identity_name: &str) -> anyhow::Res
         config.identity.active = identity_name.trim().to_string();
         Ok(())
     })
-}
-
-pub fn update_did_domain(paths: &Paths, value: &str) -> anyhow::Result<String> {
-    let normalized = normalize_did_domain(value)?;
-    update_file_config(&paths.config_file, |config| {
-        config.services.did_domain = normalized.clone();
-        Ok(())
-    })?;
-    Ok(normalized)
 }
 
 pub fn update_runtime_listener_settings(
@@ -169,7 +181,7 @@ pub fn update_hermes_settings(
 ) -> anyhow::Result<()> {
     update_file_config(&paths.config_file, |config| {
         if let Some(value) = notify_url {
-            let value = value.trim().to_string();
+            let value = persisted_hermes_notify_url(value);
             config.runtime.host_notify.hermes.notify_url = value.clone();
             config.runtime.host_notify.webhook.notify_url = value;
         }
@@ -182,18 +194,22 @@ pub fn update_hermes_settings(
 
 pub fn configure_hermes_host_notify(
     paths: &Paths,
-    notify_url: &str,
+    notify_url: Option<&str>,
     secret: Option<&str>,
-    deliver: &str,
+    deliver: Option<&str>,
     enabled: bool,
 ) -> anyhow::Result<()> {
     update_file_config(&paths.config_file, |config| {
-        let notify_url = notify_url.trim().to_string();
         config.runtime.host_notify.enabled = Some(enabled);
         config.runtime.host_notify.sink = "hermes".to_string();
-        config.runtime.host_notify.hermes.notify_url = notify_url.clone();
-        config.runtime.host_notify.hermes.deliver = deliver.trim().to_ascii_lowercase();
-        config.runtime.host_notify.webhook.notify_url = notify_url;
+        if let Some(value) = notify_url {
+            let notify_url = persisted_hermes_notify_url(value);
+            config.runtime.host_notify.hermes.notify_url = notify_url.clone();
+            config.runtime.host_notify.webhook.notify_url = notify_url;
+        }
+        if let Some(value) = deliver {
+            config.runtime.host_notify.hermes.deliver = value.trim().to_ascii_lowercase();
+        }
         if let Some(value) = secret {
             let value = value.trim().to_string();
             config.runtime.host_notify.hermes.secret = value.clone();
@@ -430,10 +446,6 @@ fn render_file_config(config: &FileConfig) -> String {
             "  workspace_id: {}\n",
             "  device_id: {}\n",
             "services:\n",
-            "  service_base_url: {}\n",
-            "  user_service_endpoint: {}\n",
-            "  message_service_endpoint: {}\n",
-            "  did_domain: {}\n",
             "  anp_service_endpoint: {}\n",
             "  anp_service_did: {}\n",
             "  ca_bundle: {}\n",
@@ -483,10 +495,6 @@ fn render_file_config(config: &FileConfig) -> String {
         yaml_scalar(&config.secret_storage.vault_dir),
         yaml_scalar(&config.secret_storage.workspace_id),
         yaml_scalar(&config.secret_storage.device_id),
-        yaml_scalar(&config.services.service_base_url),
-        yaml_scalar(&config.services.user_service_endpoint),
-        yaml_scalar(&config.services.message_service_endpoint),
-        yaml_scalar(&config.services.did_domain),
         yaml_scalar(&config.services.anp_service_endpoint),
         yaml_scalar(&config.services.anp_service_did),
         yaml_scalar(&config.services.ca_bundle),
@@ -494,6 +502,38 @@ fn render_file_config(config: &FileConfig) -> String {
         config.update.disable_strict_version,
         config.update.metadata_cache_ttl_seconds,
     )
+}
+
+fn persisted_service_override(value: &str, default_value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value.trim_end_matches('/') == default_value.trim_end_matches('/') {
+        String::new()
+    } else {
+        value.to_string()
+    }
+}
+
+fn persisted_config_value(resolved: &Resolved, source_key: &str, value: &str) -> String {
+    if resolved
+        .sources
+        .get(source_key)
+        .is_some_and(|source| source.source == "config_file")
+    {
+        value.to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn persisted_hermes_notify_url(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty()
+        || value.trim_end_matches('/') == super::DEFAULT_HERMES_NOTIFY_URL.trim_end_matches('/')
+    {
+        String::new()
+    } else {
+        value.to_string()
+    }
 }
 
 fn yaml_scalar(value: &str) -> String {

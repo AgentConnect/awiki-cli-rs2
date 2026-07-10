@@ -23,7 +23,7 @@ impl ParsedCommand {
     }
 
     pub fn emits_raw_output(&self) -> bool {
-        self.name.starts_with("completion.")
+        self.name == "help" || self.name.starts_with("completion.")
     }
 }
 
@@ -46,7 +46,7 @@ where
             && matches!(arg.as_str(), "--help" | "-h")
         {
             return Ok(ParsedCommand {
-                name: "schema".to_string(),
+                name: "help".to_string(),
                 ..ParsedCommand::default()
             });
         }
@@ -74,6 +74,10 @@ where
                 globals.identity = take_flag_value("identity", value, &mut iter)?;
                 globals.identity_changed = true;
             }
+            Some(("tenant", value)) => {
+                globals.tenant = take_flag_value("tenant", value, &mut iter)?;
+                globals.tenant_changed = true;
+            }
             Some((name, _)) if command_words.is_empty() && !name.is_empty() => {
                 return Err(unknown_long_flag(name));
             }
@@ -86,6 +90,7 @@ where
         }
     }
 
+    let remaining = rewrite_help_tail(remaining)?;
     let resolved = command_name(&remaining)?;
     let name = resolved.name;
     let path_len = resolved.consumed_words;
@@ -108,10 +113,15 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "version" => app.run_version(),
         "upgrade" => app.run_upgrade(),
         "config.show" => app.run_config_show(),
-        "config.set" => app.run_config_set(command),
+        "tenant.list" => app.run_tenant_list(),
+        "tenant.current" => app.run_tenant_current(),
+        "tenant.create" => app.run_tenant_create(command),
+        "tenant.use" => app.run_tenant_use(command),
+        "tenant.reconfigure" => app.run_tenant_reconfigure(command),
         "doctor" => app.run_doctor(),
         "docs" => app.run_docs(&command.args),
         "schema" => app.run_schema(command),
+        "help" => app.run_help(command),
         "init" => Err(ExitError::new(
             "unsupported_capability",
             1,
@@ -373,11 +383,52 @@ fn command_name(tokens: &[String]) -> Result<command_catalog::ResolvedCommand, E
 
 fn unknown_subcommand(parent: &str, subcommand: &str) -> ExitError {
     ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("unknown command {subcommand:?} for \"awiki-cli {parent}\""),
         format!("Use `awiki-cli {parent} --help` to inspect supported subcommands."),
     )
+}
+
+fn rewrite_help_tail(mut tokens: Vec<String>) -> Result<Vec<String>, ExitError> {
+    let Some(last) = tokens.last() else {
+        return Ok(tokens);
+    };
+    if !matches!(last.as_str(), "--help" | "-h") {
+        return Ok(tokens);
+    }
+    tokens.pop();
+    let words: Vec<_> = tokens
+        .iter()
+        .take_while(|token| !token.starts_with("--"))
+        .map(String::as_str)
+        .collect();
+    if words.is_empty() {
+        return Ok(vec!["help".to_string()]);
+    }
+    let resolved = command_catalog::resolve_command(&words).map_err(|err| match err {
+        command_catalog::CommandResolveError::MissingCommand => ExitError::new(
+            "invalid_argument",
+            2,
+            "missing command.",
+            "Use `awiki-cli schema` to list command contracts.",
+        ),
+        command_catalog::CommandResolveError::UnknownSubcommand { parent, subcommand } => {
+            unknown_subcommand(parent, &subcommand)
+        }
+    })?;
+    let spec = command_catalog::lookup(&resolved.name).ok_or_else(|| {
+        ExitError::new(
+            "not_found",
+            5,
+            format!("Unknown command help target {:?}", words.join(" ")),
+            "Use `awiki-cli schema` to list command contracts.",
+        )
+    })?;
+    Ok(["help".to_string()]
+        .into_iter()
+        .chain(spec.name.split('.').map(str::to_string))
+        .collect())
 }
 
 fn drop_command_words(tokens: &[String], path_len: usize) -> Vec<String> {
@@ -440,8 +491,8 @@ fn validate_local_flag(command_name: &str, flag_name: &str) -> Result<(), ExitEr
 
 fn unknown_long_flag(flag_name: &str) -> ExitError {
     ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("unknown flag: --{flag_name}"),
         "",
     )
@@ -466,8 +517,8 @@ fn unknown_shorthand_flag(token: &str) -> ExitError {
         .next()
         .unwrap_or_default();
     ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("unknown shorthand flag: '{shorthand}' in {token}"),
         "",
     )

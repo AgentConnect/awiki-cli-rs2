@@ -9,7 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{
+    set_secret_storage_mode, tenant_workspace, write_default_tenant_registry, write_tenant_config,
+};
 
 #[test]
 fn direct_send_http_401_refreshes_inside_im_core_transport() {
@@ -192,7 +194,8 @@ fn register_ready_msg_identity(
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
     index["credentials"][identity_name]["did"] = json!(did);
@@ -204,7 +207,7 @@ fn register_ready_msg_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -264,7 +267,9 @@ fn assert_vault_auth_token_is_used(
         &format!("Authorization: Bearer {expected_token}\r\n"),
     );
 
-    let index_path = workspace.join("identities").join("index.json");
+    let index_path = tenant_workspace(workspace)
+        .join("identities")
+        .join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(index_path).unwrap()).unwrap();
     assert!(
         index["credentials"][identity_name]["vault_migration"]["refs"]["auth_jwt"].is_object(),
@@ -273,11 +278,8 @@ fn assert_vault_auth_token_is_used(
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(workspace, "runtime:\n  mode: http\n");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

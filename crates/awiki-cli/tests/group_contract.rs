@@ -11,7 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
+use support::{
+    open_local_state, tenant_workspace, write_ready_identity, write_tenant_config, TestIdentity,
+    TestIdentityOptions,
+};
 
 #[test]
 fn group_create_and_update_dry_run_match_go_policy_contracts() {
@@ -359,16 +362,9 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
 #[test]
 fn group_reads_default_cutover_route_through_group_service_bridge() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_group_identity(
-        workspace.path(),
-        "alice-group-cutover",
-        "alice",
-        "jwt-alice",
-    );
-    let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
+            "group_did": "did:wba:awiki.ai:groups:demo:e1_group",
             "group_state_version": "v7",
             "group_event_seq": 7,
             "group_profile": {
@@ -382,7 +378,7 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "groups": [{
-                "group_did": group_did,
+                "group_did": "did:wba:awiki.ai:groups:demo:e1_group",
                 "name": "Demo Group",
                 "member_role": "member",
                 "member_status": "active"
@@ -403,8 +399,8 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [{
                 "id": "group-msg-1",
-                "sender_did": alice.did,
-                "group_did": group_did,
+                "sender_did": "did:wba:placeholder",
+                "group_did": "did:wba:awiki.ai:groups:demo:e1_group",
                 "content": "hello group",
                 "content_type": "text/plain",
                 "server_seq": 42,
@@ -417,6 +413,13 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
         }))),
     ]);
     write_group_config(workspace.path(), &server.base_url());
+    let alice = register_generated_group_identity(
+        workspace.path(),
+        "alice-group-cutover",
+        "alice",
+        "jwt-alice",
+    );
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
 
     let get = success_json(&awiki_cmd(
         &[
@@ -506,12 +509,6 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
 #[test]
 fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_group_identity(
-        workspace.path(),
-        "alice-group-life-cutover",
-        "alice",
-        "jwt-alice",
-    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group_lifecycle";
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
@@ -529,7 +526,7 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "members": [{
-                "member_did": alice.did,
+                "member_did": "did:wba:awiki.ai:user:alice:e1_alice",
                 "role": "owner",
                 "status": "active"
             }],
@@ -551,7 +548,7 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         }))),
         TestResponse::ok(&json_rpc_result(json!({
             "members": [{
-                "member_did": alice.did,
+                "member_did": "did:wba:awiki.ai:user:alice:e1_alice",
                 "role": "member",
                 "status": "active"
             }],
@@ -564,6 +561,12 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         }))),
     ]);
     write_group_config(workspace.path(), &server.base_url());
+    let alice = register_generated_group_identity(
+        workspace.path(),
+        "alice-group-life-cutover",
+        "alice",
+        "jwt-alice",
+    );
 
     let create = success_json(&awiki_cmd(
         &[
@@ -582,7 +585,10 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
     ));
     assert_eq!(create["summary"], format!("Created group {group_did}"));
     assert_eq!(create["data"]["group"]["group_did"], group_did);
-    assert_eq!(create["data"]["members"][0]["member_did"], alice.did);
+    assert_eq!(
+        create["data"]["members"][0]["member_did"],
+        "did:wba:awiki.ai:user:alice:e1_alice"
+    );
 
     let join = success_json(&awiki_cmd(
         &[
@@ -712,6 +718,7 @@ fn group_lifecycle_dry_run_maps_e2ee_create_alias_to_secure_required() {
 #[test]
 fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     let workspace = TempDir::new().expect("workspace");
+    write_group_config(workspace.path(), "http://127.0.0.1:9");
     let alice = register_generated_group_identity(
         workspace.path(),
         "alice-owner-guard-cutover",
@@ -719,7 +726,6 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
         "jwt-alice",
     );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_owner_guard";
-    write_group_config(workspace.path(), "http://127.0.0.1:9");
     seed_group_snapshot(
         workspace.path(),
         &alice.unique_id,
@@ -806,12 +812,6 @@ fn group_mutation_dry_run_maps_e2ee_member_aliases_to_secure_required() {
 #[test]
 fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     let workspace = TempDir::new().expect("workspace");
-    let alice = register_generated_group_identity(
-        workspace.path(),
-        "alice-group-mutation-cutover",
-        "alice",
-        "jwt-alice",
-    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group_mutation";
     let bob_did = "did:wba:awiki.ai:user:bob:e1_bob";
     let server = TestServer::new(vec![
@@ -893,6 +893,12 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
         }))),
     ]);
     write_group_config(workspace.path(), &server.base_url());
+    let alice = register_generated_group_identity(
+        workspace.path(),
+        "alice-group-mutation-cutover",
+        "alice",
+        "jwt-alice",
+    );
 
     let add = success_json(&awiki_cmd(
         &[
@@ -1506,11 +1512,25 @@ fn register_generated_group_identity(
 }
 
 fn write_group_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
+    if tenant_workspace(workspace).join("data").exists()
+        || tenant_workspace(workspace).join("identities").exists()
+    {
+        panic!("group test tenant must be configured before local tenant data is created");
+    }
+    let output = awiki_cmd(
+        &[
+            "tenant",
+            "reconfigure",
+            "default",
+            "--backend-base-url",
+            base_url,
+            "--did-host",
+            "awiki.ai",
+        ],
+        workspace,
+    );
+    assert_code(&output, 0);
+    write_tenant_config(workspace, "runtime:\n  mode: http\n");
 }
 
 fn seed_group_snapshot(

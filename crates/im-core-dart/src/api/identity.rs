@@ -195,6 +195,31 @@ pub async fn register_handle_with_email(
         .map_err(DartImError::from)
 }
 
+pub async fn register_handle_without_contact_verification(
+    core: &Arc<crate::api::core::DartImCore>,
+    local_alias: Option<String>,
+    requested_handle: String,
+    invite_code: Option<String>,
+    profile: DartInitialProfile,
+    make_default: bool,
+) -> Result<DartHandleRegistrationResult, DartImError> {
+    let inner = core.clone_inner()?;
+    inner
+        .identities()
+        .register_handle_async(im_core::identity::RegisterHandleRequest {
+            local_alias,
+            requested_handle: im_core::ids::Handle::parse(requested_handle, "")
+                .map_err(DartImError::from)?,
+            verification: im_core::identity::VerificationInput::AlreadyVerified,
+            invite_code,
+            profile: profile.into(),
+            make_default,
+        })
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
+}
+
 pub async fn recover_handle(
     core: &Arc<crate::api::core::DartImCore>,
     handle: String,

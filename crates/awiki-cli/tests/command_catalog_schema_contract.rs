@@ -1,18 +1,24 @@
+use awiki_cli::command_catalog::{CutoverStatus, DirectInvocationPolicy};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn schema_flags_omit_empty_fields_like_go_catalog() {
-    let config = schema_for(&["config", "set"]);
-    let did_domain = schema_flag(schema_command(&config), "did-domain");
+    let tenant_create = schema_for(&["tenant", "create"]);
+    let backend_base_url = schema_flag(schema_command(&tenant_create), "backend-base-url");
 
-    assert_eq!(did_domain["name"], "did-domain");
-    assert_eq!(did_domain["type"], "string");
-    assert!(did_domain.get("default").is_none());
-    assert!(did_domain.get("required").is_none());
-    assert!(did_domain.get("choices").is_none());
-    assert!(did_domain.get("deprecated").is_none());
+    assert_eq!(backend_base_url["name"], "backend-base-url");
+    assert_eq!(backend_base_url["type"], "string");
+    assert_eq!(backend_base_url["required"], true);
+    assert!(backend_base_url.get("default").is_none());
+    assert!(backend_base_url.get("choices").is_none());
+    assert!(backend_base_url.get("deprecated").is_none());
 
     let create = schema_for(&["id", "create"]);
     let name = schema_flag(schema_command(&create), "name");
@@ -157,6 +163,133 @@ fn default_schema_hides_deprecated_e2ee_alias_flags_but_all_keeps_metadata() {
 }
 
 #[test]
+fn default_schema_surface_does_not_advertise_non_product_commands() {
+    let default = success_json(&awiki_cmd(&["schema"]));
+    let commands = default["data"]["commands"]
+        .as_array()
+        .expect("default schema commands");
+    let mut leaked = Vec::new();
+
+    for command in commands {
+        let name = command["name"].as_str().expect("schema name");
+        let cutover = command["cutover"]["status"].as_str().unwrap_or("missing");
+        let policy = command["direct_invocation"]["policy"]
+            .as_str()
+            .unwrap_or("missing");
+        let hidden = command["hidden"].as_bool().unwrap_or(false);
+        if matches!(
+            cutover,
+            "unsupported" | "removed" | "hidden" | "diagnostic_only"
+        ) || matches!(
+            policy,
+            "require_diagnostic_gate"
+                | "require_migration_gate"
+                | "require_internal_service_gate"
+                | "stable_unsupported"
+                | "removed"
+        ) || hidden
+        {
+            leaked.push(format!(
+                "{name}: cutover={cutover}, policy={policy}, hidden={hidden}"
+            ));
+        }
+    }
+
+    assert!(
+        leaked.is_empty(),
+        "default schema must stay limited to current public product commands: {leaked:?}"
+    );
+}
+
+#[test]
+fn documented_current_user_commands_resolve_to_supported_current_surface() {
+    for words in [
+        &["status"][..],
+        &["doctor"][..],
+        &["version"][..],
+        &["init"][..],
+        &["config", "show"][..],
+        &["id", "list"][..],
+        &["id", "current"][..],
+        &["id", "status"][..],
+        &["id", "register"][..],
+        &["id", "bind"][..],
+        &["id", "recover"][..],
+        &["id", "resolve"][..],
+        &["id", "profile", "get"][..],
+        &["id", "profile", "set"][..],
+        &["msg", "send"][..],
+        &["msg", "inbox"][..],
+        &["msg", "history"][..],
+        &["msg", "mark-read"][..],
+        &["msg", "attachment", "download"][..],
+        &["tenant", "list"][..],
+        &["tenant", "current"][..],
+        &["tenant", "create"][..],
+        &["tenant", "use"][..],
+        &["tenant", "reconfigure"][..],
+        &["mail", "inbox"][..],
+        &["mail", "read"][..],
+        &["mail", "mark-read"][..],
+        &["mail", "send"][..],
+        &["mail", "attachment", "download"][..],
+        &["group", "create"][..],
+        &["group", "list"][..],
+        &["group", "get"][..],
+        &["group", "join"][..],
+        &["group", "leave"][..],
+        &["group", "add"][..],
+        &["group", "remove"][..],
+        &["group", "members"][..],
+        &["group", "messages"][..],
+        &["group", "secure", "status"][..],
+        &["group", "secure", "repair"][..],
+        &["people", "contacts", "list"][..],
+        &["people", "contacts", "save"][..],
+        &["page", "list"][..],
+        &["page", "get"][..],
+        &["page", "create"][..],
+        &["page", "update"][..],
+        &["page", "delete"][..],
+        &["site", "root", "get"][..],
+        &["site", "root", "set"][..],
+        &["site", "page", "list"][..],
+        &["site", "page", "create"][..],
+        &["runtime", "status"][..],
+        &["runtime", "listener", "status"][..],
+        &["runtime", "host-notify", "config", "show"][..],
+    ] {
+        let resolved =
+            awiki_cli::command_catalog::resolve_command(words).expect("documented command");
+        assert_eq!(
+            resolved.consumed_words,
+            words.len(),
+            "documented command should resolve exactly: {words:?}"
+        );
+        let spec = awiki_cli::command_catalog::lookup(&resolved.name)
+            .expect("resolved documented command has schema");
+        assert!(
+            matches!(
+                spec.cutover_status(),
+                CutoverStatus::CliOwned | CutoverStatus::ImCore
+            ),
+            "{:?} resolves to non-current cutover status {:?}",
+            words,
+            spec.cutover_status()
+        );
+        assert!(
+            matches!(
+                spec.direct_invocation(),
+                DirectInvocationPolicy::Allow | DirectInvocationPolicy::AllowWithWarning
+            ),
+            "{:?} resolves to gated or unsupported direct invocation {:?}",
+            words,
+            spec.direct_invocation()
+        );
+    }
+}
+
+#[test]
 fn cmdmeta_resolves_canonical_paths_and_aliases_as_single_command_tree() {
     for (words, name, consumed) in [
         (&["status"][..], "status", 1),
@@ -207,8 +340,8 @@ fn cmdmeta_bool_flag_lookup_is_command_scoped() {
         "follow"
     ));
     assert!(!awiki_cli::command_catalog::is_local_bool_flag(
-        "config.set",
-        "did-domain"
+        "tenant.create",
+        "backend-base-url"
     ));
     assert!(!awiki_cli::command_catalog::is_local_bool_flag(
         "status", "enabled"
@@ -252,10 +385,15 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "version",
         "upgrade",
         "config.show",
-        "config.set",
+        "tenant.list",
+        "tenant.current",
+        "tenant.create",
+        "tenant.use",
+        "tenant.reconfigure",
         "doctor",
         "docs",
         "schema",
+        "help",
         "init",
         "completion.bash",
         "completion.zsh",
@@ -430,9 +568,13 @@ fn assert_subsequence(actual: &[&str], expected: &[&str]) {
 }
 
 fn awiki_cmd(args: &[&str]) -> Output {
+    let workspace = TempDir::new().expect("temp workspace");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace.path())
+        .env("HOME", workspace.path().join("home"))
+        .env("USERPROFILE", workspace.path().join("home"))
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
@@ -442,6 +584,36 @@ fn awiki_cmd(args: &[&str]) -> Output {
         .env_remove("AVIKI_FORMAT")
         .env_remove("AWIKI_CLI_TRACE_TIMING");
     command.output().expect("run awiki-cli binary")
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new() -> std::io::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-schema-test-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 fn assert_success(output: &Output) {

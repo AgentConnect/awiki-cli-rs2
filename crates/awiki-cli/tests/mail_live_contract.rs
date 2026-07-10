@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{set_secret_storage_mode, tenant_workspace, write_tenant_config};
 
 #[test]
 fn mail_inbox_live_posts_mail_rpc_through_im_core() {
@@ -163,7 +163,8 @@ fn register_ready_mail_identity(
     );
     assert_success(&create);
 
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     index["credentials"][identity_name]["handle"] = json!(handle);
     index["credentials"][identity_name]["full_handle"] = json!(format!("{handle}@awiki.ai"));
@@ -173,7 +174,7 @@ fn register_ready_mail_identity(
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     let identity_path = identity_dir.join("identity.json");
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
@@ -213,7 +214,8 @@ fn remove_plaintext_secret_files(identity_dir: &Path) {
 }
 
 fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identity_name: &str) {
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let vault = &index["credentials"][identity_name]["vault_migration"];
     assert_eq!(vault["status"], "verified");
@@ -225,7 +227,7 @@ fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identit
     let dir_name = index["credentials"][identity_name]["dir_name"]
         .as_str()
         .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     for file in [
         "auth.json",
         "key-1-private.pem",
@@ -240,13 +242,10 @@ fn assert_vault_identity_has_no_plaintext_secret_files(workspace: &Path, identit
 }
 
 fn write_mail_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "services:\n  service_base_url: https://awiki.ai\n  did_domain: awiki.ai\n  mail_service_url: {base_url}\n"
-        ),
-    )
-    .unwrap();
+    write_tenant_config(
+        workspace,
+        &format!("services:\n  mail_service_url: {base_url}\n"),
+    );
 }
 
 fn mail_attachment_download_args(output_path: &Path) -> Vec<String> {

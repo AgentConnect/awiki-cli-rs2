@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::{tenant_workspace, write_default_tenant_registry, write_tenant_config};
+
 #[test]
 fn identity_register_email_without_wait_checks_status_then_sends_activation_like_go() {
     let workspace = TempDir::new("identity-register-email-send").expect("workspace");
@@ -67,6 +71,8 @@ fn identity_register_email_without_wait_checks_status_then_sends_activation_like
     assert!(
         !workspace
             .path()
+            .join("tenants")
+            .join("default")
             .join("identities")
             .join("index.json")
             .exists(),
@@ -207,13 +213,11 @@ fn identity_register_email_wait_sends_then_polls_before_register_like_go() {
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "services:\n  service_base_url: {base_url}\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
-        ),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(
+        workspace,
+        "services:\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n",
+    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -265,11 +269,12 @@ struct StoredIdentity {
 }
 
 fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity {
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let entry = index["credentials"][identity_name].clone();
     let dir_name = entry["dir_name"].as_str().unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     StoredIdentity {
         index: entry,
         identity: serde_json::from_slice(
@@ -283,7 +288,8 @@ fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
     workspace: &Path,
     identity_name: &str,
 ) {
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let entry = &index["credentials"][identity_name];
     let vault = &entry["vault_migration"];
@@ -295,7 +301,7 @@ fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
         "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
     );
     let dir_name = entry["dir_name"].as_str().unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     for file in [
         "auth.json",
         "key-1-private.pem",

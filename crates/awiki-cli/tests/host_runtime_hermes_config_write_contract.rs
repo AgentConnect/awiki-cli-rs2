@@ -129,9 +129,7 @@ fn hermes_set_dry_run_reports_plan_like_go_contract() {
     assert_eq!(envelope["data"]["plan"]["deliver"], "telegram");
     assert_eq!(
         envelope["data"]["plan"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
+        tenant_config_path(workspace.path())
             .to_string_lossy()
             .as_ref()
     );
@@ -217,9 +215,9 @@ fn hermes_set_live_writes_config_without_requiring_secret_like_go_contract() {
         false
     );
 
-    let config_file = std::fs::read_to_string(workspace.path().join("config.yaml"))
+    let config_file = std::fs::read_to_string(tenant_config_path(workspace.path()))
         .expect("config file should be written");
-    assert!(config_file.contains("notify_url: http://127.0.0.1:8765/notify/host-event"));
+    assert!(!config_file.contains("notify_url: http://127.0.0.1:8765/notify/host-event"));
     assert!(config_file.contains("deliver: telegram"));
 }
 
@@ -320,9 +318,7 @@ fn hermes_set_secret_dry_run_reports_redacted_plan_like_go_contract() {
     assert_eq!(envelope["data"]["plan"]["configured"], true);
     assert_eq!(
         envelope["data"]["plan"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
+        tenant_config_path(workspace.path())
             .to_string_lossy()
             .as_ref()
     );
@@ -427,9 +423,7 @@ fn hermes_clear_secret_dry_run_reports_plan_like_go_contract() {
     );
     assert_eq!(
         envelope["data"]["plan"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
+        tenant_config_path(workspace.path())
             .to_string_lossy()
             .as_ref()
     );
@@ -562,6 +556,13 @@ fn assert_not_contains(haystack: &str, needle: &str) {
         !haystack.contains(needle),
         "{haystack:?} should not contain {needle:?}"
     );
+}
+
+fn tenant_config_path(product_home: &Path) -> std::path::PathBuf {
+    product_home
+        .join("tenants")
+        .join("default")
+        .join("config.yaml")
 }
 
 struct TempDir {

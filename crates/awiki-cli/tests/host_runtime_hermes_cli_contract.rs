@@ -171,12 +171,10 @@ fn hermes_status_default_matches_go_readiness_contract() {
 #[test]
 fn hermes_status_reports_configured_sink_and_env_secret_when_available() {
     let workspace = TempDir::new("status-configured").expect("temp workspace");
-    let config_path = workspace.path().join("config.yaml");
-    std::fs::write(
-        &config_path,
+    write_tenant_config(
+        workspace.path(),
         "runtime:\n  host_notify:\n    enabled: true\n    sink: hermes\n    hermes:\n      notify_url: http://127.0.0.1:8765/notify/host-event\n      deliver: log\n",
-    )
-    .expect("write config");
+    );
 
     let output = awiki_cmd(
         &["runtime", "host-notify", "hermes", "status"],
@@ -213,12 +211,10 @@ fn hermes_status_reports_configured_sink_and_env_secret_when_available() {
 #[test]
 fn host_notify_config_show_includes_go_hermes_guidance_warnings() {
     let workspace = TempDir::new("config-show-guidance").expect("temp workspace");
-    let config_path = workspace.path().join("config.yaml");
-    std::fs::write(
-        &config_path,
+    write_tenant_config(
+        workspace.path(),
         "runtime:\n  host_notify:\n    enabled: true\n    sink: hermes\n    hermes:\n      notify_url: http://127.0.0.1:8765/notify/host-event\n      deliver: telegram\n",
-    )
-    .expect("write config");
+    );
 
     let output = awiki_cmd(
         &["runtime", "host-notify", "config", "show"],
@@ -251,11 +247,10 @@ fn host_notify_config_show_includes_go_hermes_guidance_warnings() {
         "`awiki-cli runtime host-notify hermes setup` now also updates the local Hermes notify route and starts the local bridge automatically.",
     );
 
-    std::fs::write(
-        &config_path,
+    write_tenant_config(
+        workspace.path(),
         "runtime:\n  host_notify:\n    enabled: true\n    sink: log\n",
-    )
-    .expect("write log config");
+    );
 
     let output = awiki_cmd(
         &["runtime", "host-notify", "config", "show"],
@@ -481,6 +476,16 @@ fn assert_warning_contains(envelope: &Value, needle: &str) {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn write_tenant_config(product_home: &Path, text: &str) {
+    let config_path = product_home
+        .join("tenants")
+        .join("default")
+        .join("config.yaml");
+    std::fs::create_dir_all(config_path.parent().expect("tenant config parent"))
+        .expect("create tenant config dir");
+    std::fs::write(&config_path, text).expect("write tenant config");
 }
 
 #[cfg(unix)]

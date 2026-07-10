@@ -6,10 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 
-use support::set_secret_storage_mode;
+use support::{set_secret_storage_mode, tenant_workspace, write_tenant_config};
 
 #[test]
-fn doctor_empty_workspace_reports_go_check_names_and_counts() {
+fn doctor_default_tenant_workspace_reports_go_check_names_and_counts() {
     let workspace = TempDir::new().expect("temp workspace");
     let output = awiki_cmd_with_workspace(&["doctor"], workspace.path());
     assert_success(&output);
@@ -34,7 +34,7 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
         ]
     );
     assert_eq!(status_of(&envelope, "build"), "ok");
-    assert_eq!(status_of(&envelope, "config_file"), "warn");
+    assert_eq!(status_of(&envelope, "config_file"), "ok");
     assert_eq!(status_of(&envelope, "environment"), "ok");
     assert_eq!(status_of(&envelope, "anp_service"), "ok");
     assert_eq!(status_of(&envelope, "identity_vault"), "ok");
@@ -42,7 +42,7 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     assert_eq!(status_of(&envelope, "identity_store"), "warn");
     assert_eq!(status_of(&envelope, "sqlite"), "info");
     assert_eq!(status_of(&envelope, "anp_mls"), "info");
-    assert_eq!(status_of(&envelope, "workspace_upgrade"), "ok");
+    assert_eq!(status_of(&envelope, "workspace_upgrade"), "warn");
     assert_eq!(status_of(&envelope, "legacy_paths"), "info");
     assert_eq!(envelope["data"]["counts"]["ok"], 5);
     assert_eq!(envelope["data"]["counts"]["warn"], 3);
@@ -65,16 +65,16 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let workspace_upgrade = check_by_name(&envelope, "workspace_upgrade");
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version"],
-        4
+        0
     );
     assert_eq!(
         workspace_upgrade["details"]["detection"]["current_version_source"],
-        "default_empty"
+        "legacy_detector"
     );
-    assert_eq!(workspace_upgrade["details"]["detection"]["empty"], true);
+    assert_eq!(workspace_upgrade["details"]["detection"]["empty"], false);
     assert_eq!(
         workspace_upgrade["details"]["detection"]["has_workspace"],
-        false
+        true
     );
 }
 
@@ -82,11 +82,10 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
 fn doctor_identity_vault_reports_root_key_availability_without_secret_value() {
     let workspace = TempDir::new().expect("temp workspace");
     let root_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    std::fs::write(
-        workspace.path().join("config.yaml"),
+    write_tenant_config(
+        workspace.path(),
         "secret_storage:\n  mode: vault_required\n",
-    )
-    .expect("write vault config");
+    );
 
     let mut command = awiki_command(&["doctor"], workspace.path());
     command.env("AWIKI_IM_CORE_VAULT_ROOT_KEY_B64", root_key);
@@ -200,12 +199,10 @@ fn doctor_reports_owner_invariant_summary_without_secure_plaintext() {
 #[test]
 fn doctor_reports_invalid_config_and_anp_service_as_blocking() {
     let workspace = TempDir::new().expect("temp workspace");
-    let config = workspace.path().join("config.yaml");
-    std::fs::write(
-        &config,
-        "schema_version: 1\nservices:\n  service_base_url: https://127.0.0.1\n  anp_service_endpoint: https://127.0.0.1/anp-im/rpc\n  anp_service_did: did:key:z6Mkwrong\n",
-    )
-    .expect("write invalid ANP config");
+    write_tenant_config(
+        workspace.path(),
+        "schema_version: 1\nservices:\n  anp_service_endpoint: https://127.0.0.1/anp-im/rpc\n  anp_service_did: did:key:z6Mkwrong\n",
+    );
 
     let output = awiki_cmd_with_workspace(&["doctor"], workspace.path());
     assert_success(&output);
@@ -234,7 +231,7 @@ fn doctor_anp_mls_probe_and_state_details_match_go_contract() {
         &bin_dir.path().join("anp-mls"),
         r#"{"ok":true,"api_version":"anp-mls/v1","request_id":"doctor-system-version","result":{"api_version":"anp-mls/v1","binary_name":"anp-mls","binary_version":"test","supported_commands":["system version","key-package generate"]}}"#,
     );
-    let mls_dir = workspace.path().join("mls");
+    let mls_dir = tenant_workspace(workspace.path()).join("mls");
     std::fs::create_dir_all(mls_dir.join("agents").join("agent-a").join("device-1"))
         .expect("create scoped MLS state");
     std::fs::write(mls_dir.join("state.db"), b"root").expect("write root state");
@@ -308,7 +305,11 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
 }
 
 fn seed_contact_handle_binding(workspace: &Path) {
-    let database = workspace.join("data").join("awiki-cli.db");
+    let database = tenant_workspace(workspace)
+        .join("data")
+        .join("awiki-cli.db");
+    std::fs::create_dir_all(database.parent().expect("database parent"))
+        .expect("create sqlite parent");
     let connection = rusqlite::Connection::open(&database).expect("open sqlite database");
     im_core::compat::local_state::ensure_schema(&connection).expect("ensure schema");
     connection
@@ -328,7 +329,11 @@ fn seed_contact_handle_binding(workspace: &Path) {
 }
 
 fn seed_owner_invariant_violation_with_sentinels(workspace: &Path) {
-    let database = workspace.join("data").join("awiki-cli.db");
+    let database = tenant_workspace(workspace)
+        .join("data")
+        .join("awiki-cli.db");
+    std::fs::create_dir_all(database.parent().expect("database parent"))
+        .expect("create sqlite parent");
     let connection = rusqlite::Connection::open(&database).expect("open sqlite database");
     im_core::compat::local_state::ensure_schema(&connection).expect("ensure schema");
     connection

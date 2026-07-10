@@ -23,11 +23,7 @@ impl App {
             return Ok(());
         }
 
-        let resolved = match self.resolve_config_raw() {
-            Ok(resolved) => resolved,
-            Err(_) => return Ok(()),
-        };
-        let outcome = self_update::check(&resolved);
+        let outcome = self_update::check_preflight();
         if let Some(err) = outcome.error {
             if self.globals.verbose {
                 let _ = writeln!(io::stderr(), "[awiki-cli] update check failed: {err}");

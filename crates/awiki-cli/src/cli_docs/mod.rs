@@ -42,8 +42,18 @@ fn topics() -> &'static [Topic] {
             references: &[
                 "docs/architecture/awiki-v2-architecture.md",
                 "docs/architecture/awiki-command-v2.md",
+                "docs/installation.md",
                 "docs/architecture/awiki-mail-cli.md",
                 "docs/architecture/awiki-skill-architecture.md",
+            ],
+        },
+        Topic {
+            name: "tenant",
+            summary: "Tenant registry, backend base URL, DID host, and workspace switching",
+            references: &[
+                "docs/installation.md",
+                "docs/architecture/awiki-command-v2.md",
+                "docs/architecture/anp-service-discovery.md",
             ],
         },
         Topic {

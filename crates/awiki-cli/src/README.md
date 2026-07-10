@@ -61,7 +61,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `cli_docs/mod.rs` | `docs list` / `docs topic` 之类内置文档主题和查询逻辑。 |
+| `cli_docs/mod.rs` | `docs` / `docs <topic>` 内置文档主题和查询逻辑。 |
 
 ## `cli_http`
 

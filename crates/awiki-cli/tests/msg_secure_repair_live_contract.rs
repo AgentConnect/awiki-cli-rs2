@@ -4,7 +4,10 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
-use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
+use support::{
+    open_local_state, write_default_tenant_registry, write_ready_identity, TestIdentity,
+    TestIdentityOptions,
+};
 
 #[test]
 fn msg_secure_repair_uses_im_core_and_requeues_peer_failed_outbox() {
@@ -114,11 +117,7 @@ fn migrate_identity_to_vault(workspace: &Path) {
 }
 
 fn write_msg_config(workspace: &Path) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        "services:\n  service_base_url: http://127.0.0.1:9\n",
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, "http://127.0.0.1:9", "awiki.ai");
 }
 
 fn seed_secure_session(identity: &TestIdentity, peer_did: &str) {

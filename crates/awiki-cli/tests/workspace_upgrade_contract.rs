@@ -504,9 +504,8 @@ fn workspace_upgrade_file_lock_rejects_recent_legacy_live_pid() {
 #[test]
 fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
     let workspace = TempDir::new("workspace-upgrade-doctor").expect("temp workspace");
-    let resolved = test_resolved(workspace.path());
-    std::fs::write(workspace.path().join("config.yaml"), "schema_version: 1\n")
-        .expect("write config");
+    success_json(&awiki_cmd(&["status"], workspace.path()));
+    let resolved = tenant_resolved(workspace.path());
     let paths = workspace_upgrade::resolve_paths(&resolved);
     workspace_upgrade::save_meta(
         &paths.meta_path,
@@ -567,7 +566,8 @@ fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
 #[test]
 fn config_show_embeds_upgrade_inspection_instead_of_stub_snapshot() {
     let workspace = TempDir::new("workspace-upgrade-config-show").expect("temp workspace");
-    let resolved = test_resolved(workspace.path());
+    success_json(&awiki_cmd(&["status"], workspace.path()));
+    let resolved = tenant_resolved(workspace.path());
     let paths = workspace_upgrade::resolve_paths(&resolved);
     workspace_upgrade::save_meta(
         &paths.meta_path,
@@ -794,6 +794,10 @@ fn test_resolved(root: &Path) -> workspace_config::Resolved {
         env_hits: Vec::new(),
         sources: Default::default(),
     }
+}
+
+fn tenant_resolved(product_home: &Path) -> workspace_config::Resolved {
+    test_resolved(&product_home.join("tenants").join("default"))
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

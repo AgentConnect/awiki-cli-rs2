@@ -26,7 +26,7 @@ fn foreground_listener_exits_and_cleans_runtime_artifacts_on_signal(signal: std:
         .spawn()
         .expect("spawn foreground listener");
 
-    let runtime_dir = workspace.path().join("runtime");
+    let runtime_dir = tenant_workspace(workspace.path()).join("runtime");
     let pid_file = runtime_dir.join("listener.pid");
     let status_file = runtime_dir.join("listener.status.json");
 
@@ -71,15 +71,20 @@ fn awiki_command(workspace: &Path) -> Command {
 }
 
 fn write_runtime_config(workspace: &Path, socket_path: &Path) {
-    std::fs::create_dir_all(workspace).expect("workspace dir");
+    let tenant = tenant_workspace(workspace);
+    std::fs::create_dir_all(&tenant).expect("tenant workspace dir");
     std::fs::write(
-        workspace.join("config.yaml"),
+        tenant.join("config.yaml"),
         format!(
             "runtime:\n  mode: websocket\n  socket_path: {}\n  listener:\n    enabled: true\n  host_notify:\n    enabled: true\n    sink: log\n",
             socket_path.to_string_lossy()
         ),
     )
     .expect("write config");
+}
+
+fn tenant_workspace(product_home: &Path) -> PathBuf {
+    product_home.join("tenants").join("default")
 }
 
 fn wait_for_path(path: &Path) {

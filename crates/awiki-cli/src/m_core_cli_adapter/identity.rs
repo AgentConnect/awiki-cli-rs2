@@ -1909,7 +1909,7 @@ fn register_plan_target(raw: &str, did_domain: &str) -> Result<RegisterPlanTarge
             "invalid_argument",
             2,
             "id register requires a handle local part and domain.",
-            "Use --handle <local> with configured did_domain, or --handle <local.domain>.",
+            "Use --handle <local> with the active tenant DID host, or --handle <local.domain>.",
         ));
     }
     let full_handle = Handle::parse(format!("{local_part}.{effective_domain}"), "")

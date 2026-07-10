@@ -26,9 +26,7 @@ fn host_notify_enable_disable_dry_run_matches_go_contract() {
     assert_eq!(envelope["data"]["plan"]["enabled"], true);
     assert_eq!(
         envelope["data"]["plan"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
+        tenant_config_path(workspace.path())
             .to_string_lossy()
             .as_ref()
     );
@@ -51,9 +49,7 @@ fn host_notify_enable_disable_dry_run_matches_go_contract() {
     assert_eq!(envelope["data"]["plan"]["enabled"], false);
     assert_eq!(
         envelope["data"]["plan"]["config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
+        tenant_config_path(workspace.path())
             .to_string_lossy()
             .as_ref()
     );
@@ -259,6 +255,13 @@ fn assert_warning_absent(envelope: &Value, unexpected: &str) {
         !has_unexpected,
         "unexpected warning containing {unexpected:?}; envelope: {envelope}"
     );
+}
+
+fn tenant_config_path(product_home: &Path) -> std::path::PathBuf {
+    product_home
+        .join("tenants")
+        .join("default")
+        .join("config.yaml")
 }
 
 struct TempDir {

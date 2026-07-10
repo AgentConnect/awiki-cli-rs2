@@ -92,8 +92,7 @@ fn debug_db_handle_history_normalizes_handle_and_aggregates_rows_by_owner() {
     assert_eq!(envelope["data"]["handle"], "alice");
     assert_eq!(
         envelope["data"]["database_file"],
-        workspace
-            .path()
+        tenant_workspace(workspace.path())
             .join("data")
             .join("awiki-cli.db")
             .to_string_lossy()
@@ -190,7 +189,10 @@ fn debug_db_query_returns_stable_unsupported_capability_without_opening_store() 
         "unsupported"
     );
     assert!(
-        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        !tenant_workspace(workspace.path())
+            .join("data")
+            .join("awiki-cli.db")
+            .exists(),
         "unsupported debug db query must not create the local SQLite store"
     );
     assert!(
@@ -212,7 +214,11 @@ fn debug_db_query_returns_stable_unsupported_capability_without_opening_store() 
 }
 
 fn seed_handle_history(workspace: &Path) {
-    let database_file = workspace.join("data").join("awiki-cli.db");
+    let tenant_workspace = tenant_workspace(workspace);
+    let database_file = tenant_workspace.join("data").join("awiki-cli.db");
+    if let Some(parent) = database_file.parent() {
+        std::fs::create_dir_all(parent).expect("create database parent");
+    }
     let connection = Connection::open(&database_file).expect("open test database");
     connection
         .execute(
@@ -303,6 +309,10 @@ INSERT INTO contact_handle_bindings (
             ],
         )
         .expect("insert unrelated handle binding");
+}
+
+fn tenant_workspace(product_home: &Path) -> PathBuf {
+    product_home.join("tenants").join("default")
 }
 
 fn assert_owner(value: &Value, owner_did: &str, current_did: &str, historical_dids: &[&str]) {

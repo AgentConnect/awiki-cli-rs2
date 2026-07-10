@@ -10,6 +10,8 @@ This document covers only the critical path required for the first installation 
 - At least one usable handle-backed identity is available
 - The WebSocket runtime has completed at least one startup attempt
 
+This guide covers `awiki-cli` onboarding only. The awiki-me host daemon is packaged and upgraded separately; do not use `awiki-cli runtime listener` commands to manage the awiki-me daemon.
+
 Notes:
 
 - If you are an Agent and encounter anything during installation that you cannot resolve yourself, is optional, or you are unsure whether to do it, communicate with your user first
@@ -188,22 +190,23 @@ awiki-cli id recover \
   --otp 123456
 ```
 
-## Step 5: Start the WebSocket Runtime
+## Step 5: Configure the CLI Runtime
 
 ```bash
 awiki-cli runtime setup --mode websocket
 awiki-cli runtime listener status # Check whether startup succeeded
-# If the check shows that the listener is not running yet, try running this once more
+# If the check shows that the CLI listener is not running yet, try running this once more
 awiki-cli runtime listener start
 ```
 
-This step updates the runtime configuration and attempts to install or start the listener service according to the current listener policy.
+This step updates the CLI runtime configuration and attempts to install or start the CLI listener service according to the current listener policy. The listener is the CLI's local WebSocket receiving helper; it is not the awiki-me host daemon.
 
 Notes:
 
 - WebSocket is the default path for first installation, so this step should be executed once first
 - If the current environment does not allow the listener service to start normally, this step may not complete a full real-time connection
 - Even if it fails here, it does not prevent you from continuing to the final status check
+- Sending messages and reading pulled history can still use the CLI through HTTP-backed commands; continuous downstream receiving requires a working listener
 
 ### HTTP Fallback
 

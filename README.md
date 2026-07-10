@@ -9,6 +9,14 @@ the local Agent Runtime Host daemon, the Rust-Dart facade, the Flutter/Dart SDK
 package used by AWiki Me, Agent Skills, release scripts, and the stable client
 architecture documentation.
 
+The `awiki-cli` binary is the official Awiki command-line client and Skill
+backend. This README describes the whole client workspace and highlights the CLI
+product surface where it matters.
+
+Quick links: [Onboarding](./onboarding.md) ·
+[Command Tree](./docs/architecture/awiki-command-v2.md) ·
+[Architecture](./docs/architecture/awiki-v2-architecture.md)
+
 The workspace is built around one rule: product hosts should call high-level
 `im-core` APIs instead of rebuilding DID auth, message-service payloads,
 realtime frames, local projection, E2EE state, or attachment flows in each app.
@@ -18,7 +26,7 @@ realtime frames, local projection, E2EE state, or attachment flows in each app.
 | Path | Role |
 | --- | --- |
 | [`crates/im-core`](./crates/im-core) | Reusable Rust IM SDK (`awiki-im-core`) for identity, auth, messaging, groups, attachments, secure/E2EE, realtime, email, content/site, local state, and service orchestration. |
-| [`crates/awiki-cli`](./crates/awiki-cli) | Thin CLI shell (`awiki-cli`) for humans and agents: parse flags/config/files, call `im-core`, render JSON/pretty/table/ndjson output, manage local listener UX, and map exit behavior. |
+| [`crates/awiki-cli`](./crates/awiki-cli) | Thin CLI shell (`awiki-cli`) and Skill runner for humans and agents: parse flags/config/files, call `im-core`, render JSON/pretty/table/ndjson output, manage local listener UX, and map exit behavior. |
 | [`crates/awiki-deamon`](./crates/awiki-deamon) | Local ANP Agent Runtime Host (`awiki-deamon`) that owns Daemon/Runtime Agent DID lifecycle, runtime plugins, local RPC callbacks, workspace/session/audit state, service install/start/stop, and controller-driven automation. |
 | [`crates/im-core-dart`](./crates/im-core-dart) | Rust-Dart FFI facade over `im-core`, generated with `flutter_rust_bridge`. |
 | [`packages/awiki_im_core`](./packages/awiki_im_core) | Flutter/Dart SDK package consumed by native apps such as AWiki Me. It exposes SDK DTOs and streams, not app UI/cache adapters. |
@@ -267,6 +275,9 @@ For local AWiki daemon package staging, see repository-local guidance in
 - Standard CLI config template: [`config.template.yaml`](./config.template.yaml)
 - Default CLI workspace: `~/.awiki-cli/`
 - CLI workspace root override: `AWIKI_CLI_WORKSPACE_HOME_DIR`
+- Default tenant config path: `~/.awiki-cli/tenants/default/config.yaml`
+- Tenant backend/DID host values are managed with `awiki-cli tenant create`,
+  `awiki-cli tenant use`, and `awiki-cli tenant reconfigure`.
 - Default product daemon state root: `~/.awiki-daemon/`
 
 Security-sensitive material is not ordinary config. Identity private keys,
@@ -289,6 +300,13 @@ Start here:
 7. [`docs/flutter-sdk/awiki-im-core-flutter-sdk.md`](./docs/flutter-sdk/awiki-im-core-flutter-sdk.md) — Flutter SDK usage and boundaries.
 8. [`crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md`](./crates/awiki-deamon/docs/awiki_agent_runtime_host_architecture.md) — daemon runtime host architecture.
 9. [`docs/installation.md`](./docs/installation.md) and [`docs/publish.md`](./docs/publish.md) — install and release operations.
+
+Useful implementation landmarks:
+
+- `crates/awiki-cli/src/` — Rust CLI implementation, command metadata,
+  handlers, runtime, storage, and update logic.
+- `crates/awiki-cli/tests/` — Rust integration and contract tests.
+- `xtask/` — repository checks such as structure and version consistency.
 
 ## Development rules
 

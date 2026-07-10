@@ -37,9 +37,7 @@ fn hermes_setup_default_dry_run_reports_managed_plan_like_go_contract() {
     assert_eq!(plan["secret_source"], "generated");
     assert_eq!(
         plan["awiki_config_file"],
-        workspace
-            .path()
-            .join("config.yaml")
+        tenant_config_path(workspace.path())
             .to_string_lossy()
             .as_ref()
     );
@@ -52,21 +50,13 @@ fn hermes_setup_default_dry_run_reports_managed_plan_like_go_contract() {
             .to_string_lossy()
             .as_ref()
     );
+    assert!(tenant_config_path(workspace.path()).exists());
     assert!(!workspace.path().join("config.yaml").exists());
     assert!(!workspace.path().join("hermes-home/config.yaml").exists());
-    assert!(!workspace.path().join("runtime/listener.pid").exists());
-    assert!(!workspace
-        .path()
-        .join("runtime/listener.status.json")
-        .exists());
-    assert!(!workspace
-        .path()
-        .join("runtime/listener.expected-boot-id")
-        .exists());
-    assert!(!workspace
-        .path()
-        .join("runtime/message-daemon.sock")
-        .exists());
+    assert!(!tenant_runtime_path(workspace.path(), "listener.pid").exists());
+    assert!(!tenant_runtime_path(workspace.path(), "listener.status.json").exists());
+    assert!(!tenant_runtime_path(workspace.path(), "listener.expected-boot-id").exists());
+    assert!(!tenant_runtime_path(workspace.path(), "message-daemon.sock").exists());
 }
 
 #[test]
@@ -98,6 +88,7 @@ fn hermes_setup_dry_run_accepts_explicit_flags_and_redacts_secret_like_go_contra
     assert_eq!(plan["notify_url"], "http://127.0.0.1:9999/hook");
     assert_eq!(plan["deliver"], "telegram");
     assert_eq!(plan["secret_source"], "flag");
+    assert!(tenant_config_path(workspace.path()).exists());
     assert!(!workspace.path().join("config.yaml").exists());
     assert!(!workspace.path().join("hermes-home/config.yaml").exists());
 }
@@ -131,11 +122,10 @@ fn webhook_alias_setup_dry_run_uses_canonical_command_like_go_contract() {
 #[test]
 fn hermes_setup_dry_run_uses_raw_hermes_config_when_sink_is_not_hermes_like_go_contract() {
     let workspace = TempDir::new("setup-raw-hermes-config").expect("temp workspace");
-    std::fs::write(
-        workspace.path().join("config.yaml"),
+    write_tenant_config(
+        workspace.path(),
         "runtime:\n  host_notify:\n    sink: log\n    hermes:\n      notify_url: http://127.0.0.1:9999/config-hook\n      deliver: telegram\n      secret: config-secret\n",
-    )
-    .expect("write config");
+    );
 
     let output = awiki_cmd(
         &["--dry-run", "runtime", "host-notify", "hermes", "setup"],
@@ -161,11 +151,10 @@ fn hermes_setup_dry_run_uses_raw_hermes_config_when_sink_is_not_hermes_like_go_c
 #[test]
 fn hermes_setup_dry_run_uses_raw_legacy_webhook_config_like_go_contract() {
     let workspace = TempDir::new("setup-raw-webhook-config").expect("temp workspace");
-    std::fs::write(
-        workspace.path().join("config.yaml"),
+    write_tenant_config(
+        workspace.path(),
         "runtime:\n  host_notify:\n    sink: log\n    webhook:\n      notify_url: http://127.0.0.1:9998/legacy-hook\n      secret: legacy-config-secret\n",
-    )
-    .expect("write config");
+    );
 
     let output = awiki_cmd(
         &["--dry-run", "runtime", "host-notify", "hermes", "setup"],
@@ -288,15 +277,12 @@ fn hermes_setup_non_dry_run_writes_local_awiki_and_hermes_files_without_bridge_s
         "gate-off setup must report passive bridge status instead of implying the bridge service was started"
     );
 
-    let config = std::fs::read_to_string(workspace.path().join("config.yaml"))
+    let config = std::fs::read_to_string(tenant_config_path(workspace.path()))
         .expect("awiki config should be written");
     assert_contains(&config, "    enabled: true\n");
     assert_contains(&config, "    sink: hermes\n");
-    assert_contains(
-        &config,
-        "      notify_url: http://127.0.0.1:8765/notify/host-event\n",
-    );
-    assert_contains(&config, "      deliver: feishu\n");
+    assert_contains(&config, "      notify_url: \n");
+    assert_contains(&config, "      deliver: \n");
     assert_contains(&config, "      secret: ");
 
     let hermes_config = read_hermes_config(workspace.path());
@@ -307,19 +293,10 @@ fn hermes_setup_non_dry_run_writes_local_awiki_and_hermes_files_without_bridge_s
     assert_contains(&hermes_config, "        notify:\n");
     assert_contains(&hermes_config, "          secret: ");
     assert_contains(&hermes_config, "          deliver: feishu\n");
-    assert!(!workspace.path().join("runtime/listener.pid").exists());
-    assert!(!workspace
-        .path()
-        .join("runtime/listener.status.json")
-        .exists());
-    assert!(!workspace
-        .path()
-        .join("runtime/listener.expected-boot-id")
-        .exists());
-    assert!(!workspace
-        .path()
-        .join("runtime/message-daemon.sock")
-        .exists());
+    assert!(!tenant_runtime_path(workspace.path(), "listener.pid").exists());
+    assert!(!tenant_runtime_path(workspace.path(), "listener.status.json").exists());
+    assert!(!tenant_runtime_path(workspace.path(), "listener.expected-boot-id").exists());
+    assert!(!tenant_runtime_path(workspace.path(), "message-daemon.sock").exists());
 }
 
 #[test]
@@ -365,7 +342,7 @@ fn hermes_setup_non_dry_run_accepts_explicit_flags_and_redacts_secret() {
     );
     assert_eq!(envelope["data"]["bridge"]["running"], false);
 
-    let config = std::fs::read_to_string(workspace.path().join("config.yaml"))
+    let config = std::fs::read_to_string(tenant_config_path(workspace.path()))
         .expect("awiki config should be written");
     assert_contains(&config, "      notify_url: http://127.0.0.1:9999/hook\n");
     assert_contains(&config, "      deliver: telegram\n");
@@ -436,7 +413,12 @@ fn hermes_setup_dry_run_rejects_blank_explicit_secret_like_go_contract() {
 #[test]
 fn hermes_setup_dry_run_rejects_malformed_config_for_secret_resolution_like_go_contract() {
     let workspace = TempDir::new("setup-malformed-config").expect("temp workspace");
-    std::fs::write(workspace.path().join("config.yaml"), "{ not json").expect("write config");
+    let init = awiki_cmd(&["config", "show"], workspace.path());
+    assert_success(&init);
+    write_tenant_config(
+        workspace.path(),
+        "runtime:\n  host_notify:\n    sink: 'unterminated\n",
+    );
 
     let output = awiki_cmd(
         &["--dry-run", "runtime", "host-notify", "hermes", "setup"],
@@ -450,7 +432,7 @@ fn hermes_setup_dry_run_rejects_malformed_config_for_secret_resolution_like_go_c
         envelope["error"]["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("line 1 column"),
+            .contains("quoted scalar"),
         "unexpected message: {envelope:#?}"
     );
     assert_eq!(
@@ -566,8 +548,30 @@ fn assert_not_contains(haystack: &str, needle: &str) {
 
 fn assert_config_contains(workspace: &Path, needle: &str) {
     let config =
-        std::fs::read_to_string(workspace.join("config.yaml")).expect("config should exist");
+        std::fs::read_to_string(tenant_config_path(workspace)).expect("config should exist");
     assert_contains(&config, needle);
+}
+
+fn write_tenant_config(product_home: &Path, text: &str) {
+    let config_path = tenant_config_path(product_home);
+    std::fs::create_dir_all(config_path.parent().expect("tenant config parent"))
+        .expect("create tenant config dir");
+    std::fs::write(&config_path, text).expect("write tenant config");
+}
+
+fn tenant_config_path(product_home: &Path) -> std::path::PathBuf {
+    product_home
+        .join("tenants")
+        .join("default")
+        .join("config.yaml")
+}
+
+fn tenant_runtime_path(product_home: &Path, file_name: &str) -> std::path::PathBuf {
+    product_home
+        .join("tenants")
+        .join("default")
+        .join("runtime")
+        .join(file_name)
 }
 
 fn read_hermes_config(workspace: &Path) -> String {

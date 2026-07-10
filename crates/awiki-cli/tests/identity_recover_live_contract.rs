@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::{tenant_workspace, write_default_tenant_registry, write_tenant_config};
+
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
@@ -61,6 +65,8 @@ fn identity_recover_phone_without_otp_live_posts_send_otp_and_does_not_create_id
     assert!(
         !workspace
             .path()
+            .join("tenants")
+            .join("default")
             .join("identities")
             .join("index.json")
             .exists(),
@@ -69,11 +75,12 @@ fn identity_recover_phone_without_otp_live_posts_send_otp_and_does_not_create_id
 }
 
 #[test]
-fn identity_recover_migrates_legacy_config_json_before_send_otp_like_go() {
+fn identity_recover_ignores_legacy_root_config_json_after_tenant_state_exists() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![TestResponse::ok(
         r#"{"jsonrpc":"2.0","result":{"sent":true},"id":"req-1"}"#,
     )]);
+    write_service_config(workspace.path(), &server.base_url());
     let legacy_config = workspace.path().join("config.json");
     let legacy_payload = json!({
         "schema_version": 1,
@@ -104,13 +111,10 @@ fn identity_recover_migrates_legacy_config_json_before_send_otp_like_go() {
     let envelope = success_json(&output);
     assert_eq!(
         envelope["summary"],
-        "OTP sent for handle alice.legacy-recover.example recovery"
+        "OTP sent for handle alice.awiki.ai recovery"
     );
     assert_eq!(envelope["data"]["action"], "send_recover_otp");
-    assert_eq!(
-        envelope["data"]["full_handle"],
-        "alice.legacy-recover.example"
-    );
+    assert_eq!(envelope["data"]["full_handle"], "alice.awiki.ai");
     assert_eq!(envelope["data"]["verification_state"], "otp_sent");
     assert_eq!(envelope["data"]["result"], json!({ "sent": true }));
 
@@ -129,76 +133,43 @@ fn identity_recover_migrates_legacy_config_json_before_send_otp_like_go() {
     );
 
     assert!(
-        !legacy_config.exists(),
-        "legacy config.json should be removed after workspace upgrade"
-    );
-    let config_yaml = workspace.path().join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("schema_version: 1\n"),
-        "migrated config should keep config schema, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  mode: http\n"),
-        "migrated config should keep runtime mode, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains(&format!("  service_base_url: {}\n", server.base_url())),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy-recover.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
-    );
-
-    let meta_path = workspace.path().join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 4);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        backup_dir.parent(),
-        Some(workspace.path().join("upgrade").join("backups").as_path())
+        legacy_config.exists(),
+        "legacy config.json should remain inert once tenant state already exists"
     );
     assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
+        std::fs::read_to_string(&legacy_config).expect("read inert legacy config"),
         legacy_text
     );
     assert!(
-        !workspace
-            .path()
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
+        !workspace.path().join("legacy-archive").exists(),
+        "existing tenant state should not re-enter legacy root archive mode"
     );
     assert!(
         !workspace
             .path()
+            .join("tenants")
+            .join("default")
             .join("identities")
             .join("index.json")
             .exists(),
         "send_recover_otp should not create a final recovered identity index"
     );
     assert!(
-        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        !tenant_workspace(workspace.path())
+            .join("data")
+            .join("awiki-cli.db")
+            .exists(),
         "send_recover_otp should not create SQLite state"
     );
     assert!(
-        !workspace
-            .path()
+        !tenant_workspace(workspace.path())
             .join("runtime")
             .join("message-daemon.sock")
             .exists(),
         "send_recover_otp must not create runtime socket artifacts"
     );
     assert!(
-        !workspace
-            .path()
+        !tenant_workspace(workspace.path())
             .join("runtime")
             .join("listener.pid")
             .exists(),
@@ -334,29 +305,30 @@ fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_l
     assert_eq!(stored.identity["user_id"], "user-alice-recovered");
     assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(workspace.path(), "alice");
 
-    let index_path = workspace.path().join("identities").join("index.json");
+    let index_path = tenant_workspace(workspace.path())
+        .join("identities")
+        .join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     assert!(index["credentials"].get("alice-recover-tmp").is_none());
     assert!(workspace
         .path()
+        .join("tenants")
+        .join("default")
         .join("identities")
         .join(old_dir_name)
         .exists());
-    assert!(workspace
-        .path()
+    assert!(tenant_workspace(workspace.path())
         .join(".legacy-backup")
         .join("recover-handle")
         .exists());
 }
 
 fn write_service_config(workspace: &Path, base_url: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "services:\n  service_base_url: {base_url}\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
-        ),
-    )
-    .unwrap();
+    write_default_tenant_registry(workspace, base_url, "awiki.ai");
+    write_tenant_config(
+        workspace,
+        "services:\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n",
+    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -408,13 +380,6 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn assert_non_empty_string(value: &Value, field: &str) {
-    assert!(
-        value.as_str().is_some_and(|text| !text.trim().is_empty()),
-        "{field} should be a non-empty string: {value:?}"
-    );
-}
-
 fn success_json(output: &Output) -> Value {
     assert!(
         output.stderr.is_empty(),
@@ -437,11 +402,12 @@ struct StoredIdentity {
 }
 
 fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity {
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let entry = index["credentials"][identity_name].clone();
     let dir_name = entry["dir_name"].as_str().unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     StoredIdentity {
         index: entry,
         identity: serde_json::from_slice(
@@ -455,7 +421,8 @@ fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
     workspace: &Path,
     identity_name: &str,
 ) {
-    let index_path = workspace.join("identities").join("index.json");
+    let tenant = tenant_workspace(workspace);
+    let index_path = tenant.join("identities").join("index.json");
     let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
     let entry = &index["credentials"][identity_name];
     let vault = &entry["vault_migration"];
@@ -467,7 +434,7 @@ fn assert_vault_identity_has_auth_ref_and_no_plaintext_secret_files(
         "vault-backed identity should store auth JWT as a vault ref: {vault:?}"
     );
     let dir_name = entry["dir_name"].as_str().unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
+    let identity_dir = tenant.join("identities").join(dir_name);
     for file in [
         "auth.json",
         "key-1-private.pem",
