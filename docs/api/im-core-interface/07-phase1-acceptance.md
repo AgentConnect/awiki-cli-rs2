@@ -3,7 +3,7 @@
 ## 1. 编译验收
 
 ```bash
-cargo test -p im-core --locked
+cargo test -p awiki-im-core --locked
 cargo test -p awiki-cli --locked
 cargo fmt --check
 cargo run --bin xtask --locked -- check-structure

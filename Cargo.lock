@@ -192,8 +192,8 @@ version = "1.0.16"
 dependencies = [
  "anp",
  "anyhow",
- "base64",
  "awiki-im-core",
+ "base64",
  "rand 0.8.6",
  "rusqlite",
  "rustls",
@@ -212,11 +212,11 @@ version = "0.1.74"
 dependencies = [
  "anp",
  "anyhow",
+ "awiki-im-core",
  "base64",
  "bs58",
  "chacha20poly1305",
  "futures-util",
- "awiki-im-core",
  "libc",
  "rand 0.8.6",
  "reqwest",
@@ -229,6 +229,35 @@ dependencies = [
  "time",
  "tokio",
  "x25519-dalek",
+]
+
+[[package]]
+name = "awiki-im-core"
+version = "0.1.0"
+dependencies = [
+ "anp",
+ "base64",
+ "bs58",
+ "chacha20poly1305",
+ "chrono",
+ "ed25519-dalek",
+ "futures-util",
+ "hkdf",
+ "rand 0.8.6",
+ "redb",
+ "reqwest",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "webpki-roots 0.26.11",
+ "zeroize",
 ]
 
 [[package]]
@@ -1410,42 +1439,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "awiki-im-core"
-version = "0.1.0"
-dependencies = [
- "anp",
- "base64",
- "bs58",
- "chacha20poly1305",
- "chrono",
- "ed25519-dalek",
- "futures-util",
- "hkdf",
- "rand 0.8.6",
- "redb",
- "reqwest",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "time",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "webpki-roots 0.26.11",
- "zeroize",
-]
-
-[[package]]
 name = "im-core-dart"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "awiki-im-core",
  "chrono",
  "flutter_rust_bridge",
- "awiki-im-core",
  "serde",
  "serde_json",
  "tempfile",

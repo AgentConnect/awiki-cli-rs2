@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use anp::authentication::verification_methods::extract_public_key;
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 use anp::proof::{verify_w3c_proof, ProofVerificationOptions};
-use im_core::prelude::*;
-use im_core::vault::DeviceVaultRootKey;
+use awiki_im_core::prelude::*;
+use awiki_im_core::vault::DeviceVaultRootKey;
 use serde_json::{json, Value};
 
 static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);

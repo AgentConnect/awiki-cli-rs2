@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use im_core::prelude::*;
+use awiki_im_core::prelude::*;
 use serde_json::json;
 use serde_json::Value;
 
@@ -174,7 +174,7 @@ async fn attachments_service_send_conversation_direct_uses_canonical_projection(
     assert_eq!(rows[0]["receiver_did"], "did:example:bob");
     assert_eq!(
         rows[0]["content_type"],
-        im_core::attachments::attachment_manifest_content_type()
+        awiki_im_core::attachments::attachment_manifest_content_type()
     );
     let stored_manifest: Value =
         serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
@@ -294,7 +294,7 @@ async fn attachments_service_send_conversation_group_uses_group_route() {
     assert_eq!(rows[0]["group_did"], "did:example:group");
     assert_eq!(
         rows[0]["content_type"],
-        im_core::attachments::attachment_manifest_content_type()
+        awiki_im_core::attachments::attachment_manifest_content_type()
     );
     let stored_manifest: Value =
         serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
@@ -485,7 +485,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     assert_eq!(rows[0]["receiver_did"], "did:example:bob");
     assert_eq!(
         rows[0]["content_type"],
-        im_core::attachments::attachment_manifest_content_type()
+        awiki_im_core::attachments::attachment_manifest_content_type()
     );
     assert_eq!(rows[0]["is_read"], 1);
     let stored_manifest: Value =
@@ -551,7 +551,7 @@ async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     );
     assert_eq!(
         requests[4].params()["meta"]["content_type"],
-        im_core::compat::attachments::attachment_manifest_content_type()
+        awiki_im_core::compat::attachments::attachment_manifest_content_type()
     );
     assert_eq!(
         requests[4].params()["body"]["payload"]["primary_attachment_id"],
@@ -644,23 +644,24 @@ fn attachments_dto_supports_explicit_local_file_destination() {
 
 #[test]
 fn attachments_manifest_and_content_type_match_wire_contract() {
-    let prepared = im_core::compat::attachments::PreparedAttachment {
+    let prepared = awiki_im_core::compat::attachments::PreparedAttachment {
         filename: "hello.txt".to_string(),
         mime_type: "text/plain".to_string(),
         size_string: "5".to_string(),
         digest_b64u: "digest".to_string(),
-        ..im_core::compat::attachments::PreparedAttachment::default()
+        ..awiki_im_core::compat::attachments::PreparedAttachment::default()
     };
-    let descriptor = im_core::compat::attachments::AttachmentDescriptor::from_prepared(
+    let descriptor = awiki_im_core::compat::attachments::AttachmentDescriptor::from_prepared(
         &prepared,
         "att-1",
         "http://127.0.0.1:8080/objects/obj-1",
     );
 
-    let manifest = im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello");
+    let manifest =
+        awiki_im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello");
 
     assert_eq!(
-        im_core::compat::attachments::attachment_manifest_content_type(),
+        awiki_im_core::compat::attachments::attachment_manifest_content_type(),
         "application/anp-attachment-manifest+json"
     );
     assert_eq!(manifest["primary_attachment_id"], "att-1");
@@ -674,14 +675,14 @@ fn attachments_manifest_and_content_type_match_wire_contract() {
         "http://127.0.0.1:8080/objects/obj-1"
     );
     assert!(
-        im_core::compat::attachments::manifest_content_string(&manifest)
+        awiki_im_core::compat::attachments::manifest_content_string(&manifest)
             .contains("\"primary_attachment_id\":\"att-1\"")
     );
 }
 
 #[test]
 fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
-    let prepared = im_core::compat::attachments::prepare_attachment_payload(
+    let prepared = awiki_im_core::compat::attachments::prepare_attachment_payload(
         "hello.txt",
         "",
         b"hello".to_vec(),
@@ -698,7 +699,7 @@ fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
     );
     assert_eq!(prepared.payload, b"hello".to_vec());
 
-    let overridden = im_core::compat::attachments::prepare_attachment_payload(
+    let overridden = awiki_im_core::compat::attachments::prepare_attachment_payload(
         "payload.bin",
         "application/custom",
         b"\x89PNG\r\n\x1a\n".to_vec(),
@@ -706,7 +707,7 @@ fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
     .expect("prepared with mime override");
     assert_eq!(overridden.mime_type, "application/custom");
 
-    let detected_png = im_core::compat::attachments::prepare_attachment_payload(
+    let detected_png = awiki_im_core::compat::attachments::prepare_attachment_payload(
         "payload.bin",
         "",
         b"\x89PNG\r\n\x1a\n".to_vec(),
@@ -717,7 +718,7 @@ fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
 
 #[test]
 fn attachment_manifest_object_e2ee_redacted_and_grant_ref_contract() {
-    let descriptor = im_core::compat::attachments::AttachmentDescriptor {
+    let descriptor = awiki_im_core::compat::attachments::AttachmentDescriptor {
         attachment_id: "att-e2ee-1".to_string(),
         filename: "secret.pdf".to_string(),
         mime_type: "application/pdf".to_string(),
@@ -729,8 +730,10 @@ fn attachment_manifest_object_e2ee_redacted_and_grant_ref_contract() {
         plaintext_size: Some("16".to_string()),
     };
 
-    let redacted =
-        im_core::compat::attachments::build_attachment_manifest_internal(&descriptor, "secret");
+    let redacted = awiki_im_core::compat::attachments::build_attachment_manifest_internal(
+        &descriptor,
+        "secret",
+    );
     assert_eq!(redacted["primary_attachment_id"], "att-e2ee-1");
     assert_eq!(
         redacted["attachments"][0]["encryption_info"]["mode"],
@@ -754,17 +757,17 @@ fn attachment_manifest_object_e2ee_redacted_and_grant_ref_contract() {
     );
 
     let default_public =
-        im_core::compat::attachments::build_attachment_manifest(&descriptor, "secret");
+        awiki_im_core::compat::attachments::build_attachment_manifest(&descriptor, "secret");
     assert_eq!(default_public, redacted);
 
-    let parsed = im_core::compat::attachments::parse_attachment_manifest(&redacted)
+    let parsed = awiki_im_core::compat::attachments::parse_attachment_manifest(&redacted)
         .expect("manifest parses");
     let parsed_descriptor = &parsed.attachments[0];
     assert_eq!(parsed_descriptor.encryption_mode, "object-e2ee");
     assert_eq!(parsed_descriptor.plaintext_size.as_deref(), Some("16"));
 
-    let grant_ref =
-        im_core::compat::attachments::build_attachment_grant_ref(&descriptor).expect("grant ref");
+    let grant_ref = awiki_im_core::compat::attachments::build_attachment_grant_ref(&descriptor)
+        .expect("grant ref");
     assert_eq!(grant_ref["attachment_id"], "att-e2ee-1");
     assert_eq!(
         grant_ref["object_uri"],
@@ -779,30 +782,32 @@ fn attachment_manifest_object_e2ee_redacted_and_grant_ref_contract() {
 
 #[test]
 fn attachment_manifest_plain_mode_remains_redacted_compatible() {
-    let prepared = im_core::compat::attachments::prepare_attachment_payload(
+    let prepared = awiki_im_core::compat::attachments::prepare_attachment_payload(
         "hello.txt",
         "",
         b"hello".to_vec(),
     )
     .expect("plain prepared");
-    let descriptor = im_core::compat::attachments::AttachmentDescriptor::from_prepared(
+    let descriptor = awiki_im_core::compat::attachments::AttachmentDescriptor::from_prepared(
         &prepared,
         "att-plain-1",
         "https://objects.example/att-plain-1",
     );
 
-    let manifest =
-        im_core::compat::attachments::build_attachment_manifest_internal(&descriptor, "hello");
+    let manifest = awiki_im_core::compat::attachments::build_attachment_manifest_internal(
+        &descriptor,
+        "hello",
+    );
     assert_eq!(
         manifest["attachments"][0]["encryption_info"],
         json!({"mode": "none"})
     );
     assert_eq!(
-        im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello"),
+        awiki_im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello"),
         manifest
     );
-    let grant_ref =
-        im_core::compat::attachments::build_attachment_grant_ref(&descriptor).expect("grant ref");
+    let grant_ref = awiki_im_core::compat::attachments::build_attachment_grant_ref(&descriptor)
+        .expect("grant ref");
     assert_eq!(grant_ref["object_encryption_mode"], "none");
     assert_eq!(grant_ref.get("plaintext_size"), None);
 }
@@ -849,7 +854,7 @@ fn attachments_selection_matches_visible_or_raw_message_id() {
         }
     })];
 
-    let by_visible_id = im_core::compat::attachments::find_attachment_selection(
+    let by_visible_id = awiki_im_core::compat::attachments::find_attachment_selection(
         &messages,
         "did:wba:awiki.ai:groups:test:e1_group:7",
         "",
@@ -864,9 +869,12 @@ fn attachments_selection_matches_visible_or_raw_message_id() {
     assert_eq!(by_visible_id.sender_did, "did:wba:awiki.ai:user:alice:e1");
     assert_eq!(by_visible_id.caption, "hello");
 
-    let by_raw_id =
-        im_core::compat::attachments::find_attachment_selection(&messages, "msg-raw-1", "att-1")
-            .expect("selection by raw id");
+    let by_raw_id = awiki_im_core::compat::attachments::find_attachment_selection(
+        &messages,
+        "msg-raw-1",
+        "att-1",
+    )
+    .expect("selection by raw id");
     assert_eq!(by_raw_id.object_uri, "http://127.0.0.1:8080/objects/obj-1");
     assert_eq!(by_raw_id.digest_b64u, "digest");
 }
@@ -898,7 +906,7 @@ fn attachments_selection_parses_object_e2ee_metadata_but_redacts_key_nonce() {
     })];
 
     let selection =
-        im_core::compat::attachments::find_attachment_selection(&messages, "msg-e2ee-1", "")
+        awiki_im_core::compat::attachments::find_attachment_selection(&messages, "msg-e2ee-1", "")
             .expect("public selection");
     assert_eq!(selection.message_security_profile, "direct-e2ee");
     assert_eq!(selection.object_encryption_mode, "object-e2ee");
@@ -934,21 +942,21 @@ fn attachments_selection_requires_id_for_multiple_attachments() {
         }
     })];
 
-    let err = im_core::compat::attachments::find_attachment_selection(&messages, "msg-1", "")
+    let err = awiki_im_core::compat::attachments::find_attachment_selection(&messages, "msg-1", "")
         .expect_err("missing attachment id should fail");
 
     assert!(matches!(
         err,
         ImError::InvalidInput { field: Some(field), message }
             if field == "attachment_id"
-                && message == im_core::compat::attachments::ERR_ATTACHMENT_ID_REQUIRED
+                && message == awiki_im_core::compat::attachments::ERR_ATTACHMENT_ID_REQUIRED
     ));
 }
 
 #[test]
 fn attachments_selection_with_paging_advances_until_match() {
     let mut requested_skips = Vec::new();
-    let selection = im_core::compat::attachments::find_attachment_selection_with_paging(
+    let selection = awiki_im_core::compat::attachments::find_attachment_selection_with_paging(
         |skip| {
             requested_skips.push(skip);
             if skip == 0 {
@@ -1016,7 +1024,7 @@ fn attachment_discovery_selects_lowest_priority_compatible_service() {
         ]
     });
 
-    let service = im_core::compat::attachments::select_attachment_rpc_service_from_document(
+    let service = awiki_im_core::compat::attachments::select_attachment_rpc_service_from_document(
         "did:wba:example.com:user:alice:e1",
         &document,
     )
@@ -1052,7 +1060,7 @@ fn attachment_discovery_requires_attachment_profile_and_transport_security() {
         ]
     });
 
-    let err = im_core::compat::attachments::select_attachment_rpc_service_from_document(
+    let err = awiki_im_core::compat::attachments::select_attachment_rpc_service_from_document(
         "did:wba:example.com:user:alice:e1",
         &document,
     )
@@ -1079,7 +1087,7 @@ fn attachment_discovery_rejects_endpoint_without_http_scheme() {
         }]
     });
 
-    let err = im_core::compat::attachments::select_attachment_rpc_service_from_document(
+    let err = awiki_im_core::compat::attachments::select_attachment_rpc_service_from_document(
         "did:wba:example.com:user:alice:e1",
         &document,
     )
@@ -1095,15 +1103,15 @@ fn attachment_discovery_rejects_endpoint_without_http_scheme() {
 
 #[test]
 fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
-    let prepared = im_core::compat::attachments::PreparedAttachment {
+    let prepared = awiki_im_core::compat::attachments::PreparedAttachment {
         filename: "hello.txt".to_string(),
         mime_type: "text/plain".to_string(),
         size_string: "5".to_string(),
         digest_b64u: "digest".to_string(),
-        ..im_core::compat::attachments::PreparedAttachment::default()
+        ..awiki_im_core::compat::attachments::PreparedAttachment::default()
     };
 
-    let create_slot = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+    let create_slot = awiki_im_core::compat::attachments::build_attachment_create_slot_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai:services:message:e1",
         "agent",
@@ -1127,14 +1135,14 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     );
     assert_eq!(create_slot.get("auth"), None);
 
-    let slot = im_core::compat::attachments::AttachmentCreateSlotResult {
+    let slot = awiki_im_core::compat::attachments::AttachmentCreateSlotResult {
         attachment_id: "att-1".to_string(),
         slot_id: "slot-1".to_string(),
         commit_token: "commit-token".to_string(),
         object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
-        ..im_core::compat::attachments::AttachmentCreateSlotResult::default()
+        ..awiki_im_core::compat::attachments::AttachmentCreateSlotResult::default()
     };
-    let commit = im_core::compat::attachments::build_attachment_commit_object_rpc_params(
+    let commit = awiki_im_core::compat::attachments::build_attachment_commit_object_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai:services:message:e1",
         &prepared,
@@ -1150,12 +1158,12 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     assert_eq!(commit["body"].get("object_key_b64u"), None);
     assert_eq!(commit["body"].get("nonce_b64u"), None);
 
-    let selection = im_core::compat::attachments::AttachmentSelection {
+    let selection = awiki_im_core::compat::attachments::AttachmentSelection {
         attachment_id: "att-1".to_string(),
         object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
-        ..im_core::compat::attachments::AttachmentSelection::default()
+        ..awiki_im_core::compat::attachments::AttachmentSelection::default()
     };
-    let ticket = im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+    let ticket = awiki_im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai",
         "did:wba:awiki.ai:user:bob:e1_bob",
@@ -1178,14 +1186,14 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     );
     assert_eq!(ticket.get("auth"), None);
 
-    let direct_e2ee_selection = im_core::compat::attachments::AttachmentSelection {
+    let direct_e2ee_selection = awiki_im_core::compat::attachments::AttachmentSelection {
         attachment_id: "att-e2ee-1".to_string(),
         object_uri: "http://127.0.0.1:8080/objects/e2ee-1".to_string(),
         object_encryption_mode: "object-e2ee".to_string(),
-        ..im_core::compat::attachments::AttachmentSelection::default()
+        ..awiki_im_core::compat::attachments::AttachmentSelection::default()
     };
     let direct_e2ee_ticket =
-        im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+        awiki_im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
             "did:wba:awiki.ai:user:alice:e1_alice",
             "did:wba:awiki.ai",
             "did:wba:awiki.ai:user:bob:e1_bob",
@@ -1205,7 +1213,7 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     assert_eq!(direct_e2ee_ticket["body"].get("group_did"), None);
 
     let group_e2ee_ticket =
-        im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+        awiki_im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
             "did:wba:awiki.ai:user:alice:e1_alice",
             "did:wba:awiki.ai",
             "did:wba:awiki.ai:user:bob:e1_bob",
@@ -1232,7 +1240,7 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
         }],
         "primary_attachment_id": "att-1"
     });
-    let direct = im_core::compat::attachments::build_direct_attachment_send_rpc_params(
+    let direct = awiki_im_core::compat::attachments::build_direct_attachment_send_rpc_params(
         &identity,
         "did:wba:awiki.ai:user:bob:e1_bob",
         manifest.clone(),
@@ -1245,15 +1253,15 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     );
     assert_eq!(
         direct["meta"]["content_type"],
-        im_core::compat::attachments::attachment_manifest_content_type()
+        awiki_im_core::compat::attachments::attachment_manifest_content_type()
     );
     assert_eq!(direct["body"]["payload"], manifest);
     assert_eq!(
         direct["auth"]["scheme"],
-        im_core::compat::proof::ORIGIN_PROOF_SCHEME
+        awiki_im_core::compat::proof::ORIGIN_PROOF_SCHEME
     );
 
-    let group = im_core::compat::attachments::build_group_attachment_send_rpc_params(
+    let group = awiki_im_core::compat::attachments::build_group_attachment_send_rpc_params(
         &identity,
         "did:wba:awiki.ai:groups:test:e1_group",
         direct["body"]["payload"].clone(),
@@ -1266,17 +1274,17 @@ fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
     );
     assert_eq!(
         group["meta"]["content_type"],
-        im_core::compat::attachments::attachment_manifest_content_type()
+        awiki_im_core::compat::attachments::attachment_manifest_content_type()
     );
     assert_eq!(
         group["auth"]["scheme"],
-        im_core::compat::proof::ORIGIN_PROOF_SCHEME
+        awiki_im_core::compat::proof::ORIGIN_PROOF_SCHEME
     );
 }
 
 #[test]
 fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
-    let prepared = im_core::compat::attachments::PreparedAttachment {
+    let prepared = awiki_im_core::compat::attachments::PreparedAttachment {
         filename: "hello.txt".to_string(),
         mime_type: "text/plain".to_string(),
         size_bytes: 33,
@@ -1289,7 +1297,7 @@ fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
         plaintext_size_string: Some("12".to_string()),
     };
 
-    let err = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+    let err = awiki_im_core::compat::attachments::build_attachment_create_slot_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai:services:message:e1",
         "agent",
@@ -1304,7 +1312,7 @@ fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
     ));
 
     let create_slot =
-        im_core::compat::attachments::build_attachment_create_slot_rpc_params_with_security_profile(
+        awiki_im_core::compat::attachments::build_attachment_create_slot_rpc_params_with_security_profile(
             "did:wba:awiki.ai:user:alice:e1_alice",
             "did:wba:awiki.ai:services:message:e1",
             "agent",
@@ -1326,14 +1334,14 @@ fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
     assert_eq!(create_slot["body"].get("object_key_b64u"), None);
     assert_eq!(create_slot["body"].get("nonce_b64u"), None);
 
-    let slot = im_core::compat::attachments::AttachmentCreateSlotResult {
+    let slot = awiki_im_core::compat::attachments::AttachmentCreateSlotResult {
         attachment_id: "att-1".to_string(),
         slot_id: "slot-1".to_string(),
         commit_token: "commit-token".to_string(),
         object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
-        ..im_core::compat::attachments::AttachmentCreateSlotResult::default()
+        ..awiki_im_core::compat::attachments::AttachmentCreateSlotResult::default()
     };
-    let commit = im_core::compat::attachments::build_attachment_commit_object_rpc_params(
+    let commit = awiki_im_core::compat::attachments::build_attachment_commit_object_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai:services:message:e1",
         &prepared,
@@ -1351,8 +1359,8 @@ fn attachment_wire_object_e2ee_control_params_exclude_key_nonce() {
 
 #[test]
 fn attachment_wire_maps_validation_to_core_errors() {
-    let prepared = im_core::compat::attachments::PreparedAttachment::default();
-    let err = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+    let prepared = awiki_im_core::compat::attachments::PreparedAttachment::default();
+    let err = awiki_im_core::compat::attachments::build_attachment_create_slot_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai:services:message:e1",
         "agent",
@@ -1367,8 +1375,8 @@ fn attachment_wire_maps_validation_to_core_errors() {
             if field == "file_path" && message == "attachment file path is required"
     ));
 
-    let selection = im_core::compat::attachments::AttachmentSelection::default();
-    let err = im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+    let selection = awiki_im_core::compat::attachments::AttachmentSelection::default();
+    let err = awiki_im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
         "did:wba:awiki.ai:user:alice:e1_alice",
         "did:wba:awiki.ai",
         "did:wba:awiki.ai:user:bob:e1_bob",
@@ -1382,7 +1390,7 @@ fn attachment_wire_maps_validation_to_core_errors() {
         err,
         ImError::InvalidInput { field: Some(field), message }
             if field == "attachment_id"
-                && message == im_core::compat::attachments::ERR_ATTACHMENT_NOT_FOUND
+                && message == awiki_im_core::compat::attachments::ERR_ATTACHMENT_NOT_FOUND
     ));
 }
 
@@ -1439,7 +1447,7 @@ fn test_core_with_base_url_ready_identity_and_service_did(
 
 fn local_message_rows(paths: &ImCorePaths, statement: &str) -> Vec<Value> {
     let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
-    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    awiki_im_core::compat::local_state::ensure_schema(&db).unwrap();
     let mut statement = db.prepare(statement).unwrap();
     let names = statement
         .column_names()
@@ -1503,7 +1511,8 @@ fn write_ready_identity(identities: &Path, alias: &str) {
     .unwrap();
 }
 
-fn generated_attachment_wire_identity() -> im_core::compat::attachments::AttachmentSigningIdentity {
+fn generated_attachment_wire_identity(
+) -> awiki_im_core::compat::attachments::AttachmentSigningIdentity {
     use anp::authentication::{create_did_wba_document, DidDocumentOptions};
 
     let bundle = create_did_wba_document(
@@ -1520,7 +1529,7 @@ fn generated_attachment_wire_identity() -> im_core::compat::attachments::Attachm
         .private_key_pem("key-1")
         .expect("key-1 private pem")
         .to_string();
-    im_core::compat::attachments::AttachmentSigningIdentity {
+    awiki_im_core::compat::attachments::AttachmentSigningIdentity {
         identity_name: "alice".to_string(),
         did: bundle.did().expect("generated did").to_string(),
         did_document: Some(bundle.did_document),

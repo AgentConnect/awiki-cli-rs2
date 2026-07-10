@@ -1,5 +1,5 @@
-use im_core::prelude::*;
-use im_core::realtime::{project_notification, NotificationProjectionRoute};
+use awiki_im_core::prelude::*;
+use awiki_im_core::realtime::{project_notification, NotificationProjectionRoute};
 use serde_json::json;
 
 #[test]

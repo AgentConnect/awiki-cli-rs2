@@ -1,9 +1,11 @@
-use im_core::compat::content::{
+use awiki_im_core::compat::content::{
     build_create_page_rpc_call, build_delete_page_rpc_call, build_get_page_rpc_call,
     build_list_pages_rpc_call, build_rename_page_rpc_call, build_update_page_rpc_call,
     TransportProfile, CONTENT_RPC_ENDPOINT,
 };
-use im_core::content::{ContentPageQuery, PageDraft, PageRef, PageSlug, PageUpdate, Visibility};
+use awiki_im_core::content::{
+    ContentPageQuery, PageDraft, PageRef, PageSlug, PageUpdate, Visibility,
+};
 use serde_json::json;
 
 #[test]
@@ -119,7 +121,7 @@ fn content_validation_matches_go_live_boundaries() {
 
 #[test]
 fn content_normalizers_return_typed_documents_with_raw_payloads() {
-    let page = im_core::compat::content::normalize_page(json!({
+    let page = awiki_im_core::compat::content::normalize_page(json!({
         "slug": "hello",
         "title": "Hello",
         "body": "# Body",
@@ -132,7 +134,7 @@ fn content_normalizers_return_typed_documents_with_raw_payloads() {
     assert_eq!(page.visibility, Some(Visibility::Draft));
     assert_eq!(page.raw["extra"], true);
 
-    let list = im_core::compat::content::normalize_page_list(json!({
+    let list = awiki_im_core::compat::content::normalize_page_list(json!({
         "count": 1,
         "pages": [{ "slug": "hello" }],
     }))

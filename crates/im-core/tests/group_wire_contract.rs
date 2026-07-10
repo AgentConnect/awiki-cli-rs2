@@ -1,4 +1,4 @@
-use im_core::compat;
+use awiki_im_core::compat;
 use serde_json::json;
 
 #[test]

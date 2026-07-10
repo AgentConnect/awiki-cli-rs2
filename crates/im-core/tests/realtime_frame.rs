@@ -1,4 +1,4 @@
-use im_core::realtime;
+use awiki_im_core::realtime;
 use serde_json::{json, Map, Value};
 
 #[test]
