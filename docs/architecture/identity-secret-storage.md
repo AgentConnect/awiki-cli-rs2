@@ -147,17 +147,21 @@ AWiki Me 通过 Dart SDK 打开 `im-core`，生产路径使用 `VaultRequired`�
 
 ```text
 StoredAwikiImCoreVaultSecretProvider
-  -> root key + device id
+  -> one namespace-scoped secret bundle
   -> AwikiImCoreOpenOptions.vaultRequired
   -> im-core identity SecretVault
 ```
 
 当前 root key 持久化策略：
 
-- 生产和普通 custom state root 使用 `SecureAppKeyValueStore`，底层是 `flutter_secure_storage`。
+- 生产和普通 custom state root 使用 `SecureAppKeyValueStore`，macOS 上写入一个
+  `awiki_me.im_core.identity_vault.<namespace>.secrets_v1` Keychain item。
+- `secrets_v1` 是结构化 JSON bundle，包含 `schema`、`root_key_b64` 和 `device_id`。
+- 新版本不迁移、不读取旧的 `.root_key_b64` / `.device_id` 拆分 key；这是一次不向后兼容的
+  AWiki Me 本地 vault secret 存储模型调整。
 - 只有显式 E2E mode，也就是设置 `AWIKI_E2E_APP_STATE_ROOT` 时，才使用 `awiki_me_im_core_vault.json` 私有 file test provider。
 - 普通 `appStateRoot` override 不会把 root key 移到 JSON。
-- E2E JSON 可能包含 base64 root key，必须保持 local/untracked。
+- E2E JSON 可能包含 `secrets_v1` bundle 以及其中的 base64 root key，必须保持 local/untracked。
 
 App state namespace 决定 vault 路径和 workspace id：
 
