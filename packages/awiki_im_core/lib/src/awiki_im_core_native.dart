@@ -268,6 +268,27 @@ class AwikiImCore {
     return result._toModel();
   }
 
+  Future<HandleRegistrationResult> registerHandleWithoutContactVerification({
+    String? localAlias,
+    required String requestedHandle,
+    String? inviteCode,
+    InitialProfile profile = const InitialProfile(),
+    bool makeDefault = true,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.registerHandleWithoutContactVerification(
+        core: _inner,
+        localAlias: localAlias,
+        requestedHandle: requestedHandle,
+        inviteCode: inviteCode,
+        profile: profile._toGen(),
+        makeDefault: makeDefault,
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<RecoverHandleResult> recoverHandle({
     required String handle,
     required String phone,

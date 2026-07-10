@@ -124,6 +124,23 @@ Future<DartHandleRegistrationResult> registerHandleWithEmail({
   makeDefault: makeDefault,
 );
 
+Future<DartHandleRegistrationResult> registerHandleWithoutContactVerification({
+  required ArcDartImCore core,
+  String? localAlias,
+  required String requestedHandle,
+  String? inviteCode,
+  required DartInitialProfile profile,
+  required bool makeDefault,
+}) => RustLib.instance.api
+    .crateApiIdentityRegisterHandleWithoutContactVerification(
+      core: core,
+      localAlias: localAlias,
+      requestedHandle: requestedHandle,
+      inviteCode: inviteCode,
+      profile: profile,
+      makeDefault: makeDefault,
+    );
+
 Future<DartRecoverHandleResult> recoverHandle({
   required ArcDartImCore core,
   required String handle,
