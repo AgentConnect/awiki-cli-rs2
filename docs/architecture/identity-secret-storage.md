@@ -143,54 +143,28 @@ Flutter Web 是 stub，不能运行 native vault-backed backend。
 
 ## 7. AWiki Me 当前方案
 
-AWiki Me 通过 Dart SDK 打开 `im-core`，生产路径使用 `VaultRequired`：
+AWiki Me 通过 Dart SDK 以 `VaultRequired` 打开 `im-core`。当前首发实现已采用 UUID Storage Scope clean cut：
 
 ```text
-StoredAwikiImCoreVaultSecretProvider
-  -> one namespace-scoped secret bundle
-  -> AwikiImCoreOpenOptions.vaultRequired
-  -> im-core identity SecretVault
+Tenant Registry
+  -> immutable storage_scope_id
+    -> storage-scopes/<uuid>/im-core/identity-vault
+    -> platform account scope/<uuid>
+    -> workspace awiki-me.scope.v1.<uuid>
+    -> device context awiki-me.scope-device.v1.<uuid>
+      -> AwikiImCoreOpenOptions.vaultRequired
 ```
 
-当前 root key 持久化策略：
+App 只有显式 `StorageScopeProvisioner` 可以通过 exclusive create 生成 scope root key；runtime 只调用
+`readExisting`，不会 get-or-create、扫描旧 namespace 或执行 identity migration。生产与开发使用不同
+application identity / Keychain service；只有显式 `AWIKI_E2E_APP_STATE_ROOT` 使用权限受限的 file test
+provider。tenant display name、backend URL、DID host、`awiki.ai` 和 `tenant-default` 都不参与
+path、Keychain account 或 vault context 派生。
 
-- 生产和普通 custom state root 使用 `SecureAppKeyValueStore`，macOS 上写入一个
-  `awiki_me.im_core.identity_vault.<namespace>.secrets_v1` Keychain item。
-- `secrets_v1` 是结构化 JSON bundle，包含 `schema`、`root_key_b64` 和 `device_id`。
-- 新版本不迁移、不读取旧的 `.root_key_b64` / `.device_id` 拆分 key；这是一次不向后兼容的
-  AWiki Me 本地 vault secret 存储模型调整。
-- 只有显式 E2E mode，也就是设置 `AWIKI_E2E_APP_STATE_ROOT` 时，才使用 `awiki_me_im_core_vault.json` 私有 file test provider。
-- 普通 `appStateRoot` override 不会把 root key 移到 JSON。
-- E2E JSON 可能包含 `secrets_v1` bundle 以及其中的 base64 root key，必须保持 local/untracked。
+完整 App schema、lifecycle 与平台 locator 权威位于
+`awiki-me/docs/storage-scope-vault-contract.md`、`awiki-me/docs/identity-secret-storage.md` 和
+`awiki-me/docs/scope-secret-platform.md`。本文件只冻结 im-core 的 host-neutral 边界。
 
-App state namespace 决定 vault 路径和 workspace id：
-
-```text
-<app support>/im-core/<namespace>/identity-vault
-vaultWorkspaceId = awiki-me-<namespace>
-deviceId = app-device-<stable-random>
-```
-
-身份激活前必须先验证 vault：
-
-```text
-identityVaultStatus
-  -> migrateIdentityVault when legacy metadata is absent
-  -> verifyIdentityVault
-  -> switchIdentity
-  -> ensureSession
-```
-
-如果已有 vault metadata 但不能选中或验证，App fail closed，不使用新 root key 重新 seal 旧明文。
-
-详细 App 接入说明见 `awiki-me/docs/identity-secret-storage.md`。
-
-### 7.1 AWiki Me 首发 Storage Scope host contract
-
-`release/0707` 与 `release/0710` 尚未上线。AWiki Me 已批准首个正式版本采用
-UUID Storage Scope clean cut；当前 namespace-scoped 代码将在 App 实施步骤中替换。
-完整 App schema 和 lifecycle 权威位于
-`awiki-me/docs/storage-scope-vault-contract.md`。本文件只冻结 im-core 的 host-neutral 边界：
 
 - App 的 `tenant_profile_id`、`storage_scope_id`、registry、manifest 和平台 Keychain
   locator 属于 AWiki Me，不进入 `im-core` public model。
