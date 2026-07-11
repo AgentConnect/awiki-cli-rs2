@@ -185,6 +185,38 @@ identityVaultStatus
 
 详细 App 接入说明见 `awiki-me/docs/identity-secret-storage.md`。
 
+### 7.1 AWiki Me 首发 Storage Scope host contract
+
+`release/0707` 与 `release/0710` 尚未上线。AWiki Me 已批准首个正式版本采用
+UUID Storage Scope clean cut；当前 namespace-scoped 代码将在 App 实施步骤中替换。
+完整 App schema 和 lifecycle 权威位于
+`awiki-me/docs/storage-scope-vault-contract.md`。本文件只冻结 im-core 的 host-neutral 边界：
+
+- App 的 `tenant_profile_id`、`storage_scope_id`、registry、manifest 和平台 Keychain
+  locator 属于 AWiki Me，不进入 `im-core` public model。
+- App 从不可变 scope UUID 确定性派生并永久冻结 host context：
+
+  ```text
+  workspace_id = awiki-me.scope.v1.<scope_uuid>
+  device_id    = awiki-me.scope-device.v1.<scope_uuid>
+  ```
+
+- `ImCoreSecretVaultOptions` 继续只接收 host 提供的 root key、vault directory、
+  workspace ID 和 device ID；SDK 不生成、不持久化、不恢复 App root key。
+- runtime open 只能使用 host 的 `readExisting` 结果。只有 App 的显式 scope
+  provisioning transaction 可以 `createExclusive` root key。已有 scope 缺 key、ACL denied、
+  envelope corrupt、context mismatch 或 verify failure 都必须 fail closed。
+- Production 不保留 `awiki.ai`、`tenant-default`、split key 或 namespace bundle resolver；
+  这些只属于预发布 developer archive/reset 范围。
+- App、CLI、daemon 继续使用彼此独立的 root-key provider 和 vault context。
+- im-core diagnostics 必须保持 redacted，并允许 host 区分 vault unavailable、metadata
+  unverified、workspace/device context mismatch 和 record open/verification failure；不得要求
+  host 解析 human error string。
+
+该 contract 不改变 SecretVault record schema，也不把 App scope UUID作为新的 im-core
+领域类型。未来 App root rotation、backup 或 database encryption 必须在同一 scope/account
+内版本化演进；这些能力落地前不得在 SDK 文档中宣称已经支持。
+
 ## 8. Daemon 当前方案
 
 daemon 有两个 vault 相关边界：
