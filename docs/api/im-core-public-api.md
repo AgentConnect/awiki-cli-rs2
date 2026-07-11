@@ -522,6 +522,11 @@ Reliable sync 补充：
 
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 
+当 `msg send --payload` 成功时，`im-core` 返回的 `MessageBodyView::Payload`
+必须被 CLI 作为正常的结构化消息结果渲染，JSON 输出中的
+`data.message.type` 为 `application/json`；不得将 payload 成功回执误判为仅允许
+text body 的内部错误。
+
 ## 9. directory：P2+
 
 ```rust

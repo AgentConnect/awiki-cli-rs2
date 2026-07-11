@@ -4,7 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use im_core::prelude::{
     AttachmentInput, AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody,
-    MessageId, MessageKind, MessageSecurityMode, MessageTarget, ThreadRef, VerificationInput,
+    MessageBodyView, MessageId, MessageKind, MessageSecurityMode, MessageTarget, ThreadRef,
+    VerificationInput,
 };
 
 use crate::cli_parser::ParsedCommand;
@@ -560,6 +561,18 @@ fn send_message_request_builds_group_payload_dto() {
     assert_eq!(
         request.delivery.idempotency_key.as_deref(),
         Some("idem-payload-1")
+    );
+}
+
+#[test]
+fn payload_send_result_uses_application_json_message_type() {
+    let body = MessageBodyView::Payload {
+        payload: serde_json::json!({"text": "@agent hi", "mentions": []}),
+    };
+
+    assert_eq!(
+        messages::send_result_message_type(&body).unwrap(),
+        "application/json"
     );
 }
 

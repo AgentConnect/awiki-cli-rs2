@@ -1307,14 +1307,12 @@ fn raw_content_value(attributes: &[MessageMetadataAttribute]) -> Option<Value> {
         .or(Some(Value::String(raw)))
 }
 
-fn message_text_and_type(
+pub(super) fn send_result_message_type(
     body: &MessageBodyView,
-) -> Result<(&str, &'static str), MessageAdapterError> {
+) -> Result<&'static str, MessageAdapterError> {
     match body {
-        MessageBodyView::Text { text, kind } => Ok((text.as_str(), message_type_for_kind(kind))),
-        MessageBodyView::Payload { .. } => Err(MessageAdapterError::Internal(
-            "payload message body returned by im-core where text was required".to_string(),
-        )),
+        MessageBodyView::Text { kind, .. } => Ok(message_type_for_kind(kind)),
+        MessageBodyView::Payload { .. } => Ok("application/json"),
         MessageBodyView::Unsupported { content_type } => {
             Err(MessageAdapterError::Internal(format!(
                 "unsupported message body returned by im-core: {}",
@@ -1717,7 +1715,7 @@ fn render_send_result(
     secure: bool,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = DirectSendResult::from_sdk_result(sdk_result, target);
-    let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
+    let message_type = send_result_message_type(&sdk_result.message.body)?;
     let warnings = sdk_result.warnings.clone();
     Ok(CommandResult {
         data: json!({
@@ -1746,7 +1744,7 @@ fn render_group_send_result(
     secure: bool,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = GroupSendResult::from_sdk_result(sdk_result, group_did);
-    let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
+    let message_type = send_result_message_type(&sdk_result.message.body)?;
     let warnings = sdk_result.warnings.clone();
     Ok(CommandResult {
         data: json!({
