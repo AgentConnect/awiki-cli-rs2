@@ -13,6 +13,7 @@ class DartDirectoryResolution {
   final String input;
   final String did;
   final String? handle;
+  final String conversationId;
   final DartUserProfile? profile;
   final List<String> warnings;
 
@@ -20,6 +21,7 @@ class DartDirectoryResolution {
     required this.input,
     required this.did,
     this.handle,
+    required this.conversationId,
     this.profile,
     required this.warnings,
   });
@@ -29,6 +31,7 @@ class DartDirectoryResolution {
       input.hashCode ^
       did.hashCode ^
       handle.hashCode ^
+      conversationId.hashCode ^
       profile.hashCode ^
       warnings.hashCode;
 
@@ -40,6 +43,7 @@ class DartDirectoryResolution {
           input == other.input &&
           did == other.did &&
           handle == other.handle &&
+          conversationId == other.conversationId &&
           profile == other.profile &&
           warnings == other.warnings;
 }

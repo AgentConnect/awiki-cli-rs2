@@ -28,6 +28,7 @@ class DirectoryResolution {
     required this.input,
     required this.did,
     this.handle,
+    required this.conversationId,
     this.profile,
     this.warnings = const [],
   });
@@ -35,6 +36,7 @@ class DirectoryResolution {
   final String input;
   final String did;
   final String? handle;
+  final String conversationId;
   final UserProfile? profile;
   final List<String> warnings;
 }

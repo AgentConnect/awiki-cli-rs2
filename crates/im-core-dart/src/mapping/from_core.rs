@@ -474,6 +474,7 @@ impl From<im_core::directory::DirectoryResolution> for DartDirectoryResolution {
             input: value.input,
             did: value.did.as_str().to_string(),
             handle: value.handle.map(|handle| handle.as_str().to_string()),
+            conversation_id: value.conversation_id,
             profile: value.profile.map(Into::into),
             warnings: value.warnings,
         }

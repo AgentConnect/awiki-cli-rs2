@@ -10,6 +10,7 @@ pub struct DartDirectoryResolution {
     pub input: String,
     pub did: String,
     pub handle: Option<String>,
+    pub conversation_id: String,
     pub profile: Option<crate::dto::profile::DartUserProfile>,
     pub warnings: Vec<String>,
 }

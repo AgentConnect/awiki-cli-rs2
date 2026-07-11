@@ -5815,14 +5815,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return DartDirectoryResolution(
       input: dco_decode_String(arr[0]),
       did: dco_decode_String(arr[1]),
       handle: dco_decode_opt_String(arr[2]),
-      profile: dco_decode_opt_box_autoadd_dart_user_profile(arr[3]),
-      warnings: dco_decode_list_String(arr[4]),
+      conversationId: dco_decode_String(arr[3]),
+      profile: dco_decode_opt_box_autoadd_dart_user_profile(arr[4]),
+      warnings: dco_decode_list_String(arr[5]),
     );
   }
 
@@ -8906,6 +8907,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_input = sse_decode_String(deserializer);
     var var_did = sse_decode_String(deserializer);
     var var_handle = sse_decode_opt_String(deserializer);
+    var var_conversationId = sse_decode_String(deserializer);
     var var_profile = sse_decode_opt_box_autoadd_dart_user_profile(
       deserializer,
     );
@@ -8914,6 +8916,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       input: var_input,
       did: var_did,
       handle: var_handle,
+      conversationId: var_conversationId,
       profile: var_profile,
       warnings: var_warnings,
     );
@@ -12559,6 +12562,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.input, serializer);
     sse_encode_String(self.did, serializer);
     sse_encode_opt_String(self.handle, serializer);
+    sse_encode_String(self.conversationId, serializer);
     sse_encode_opt_box_autoadd_dart_user_profile(self.profile, serializer);
     sse_encode_list_String(self.warnings, serializer);
   }

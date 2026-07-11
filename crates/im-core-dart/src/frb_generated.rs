@@ -7192,6 +7192,7 @@ impl SseDecode for crate::dto::directory::DartDirectoryResolution {
         let mut var_input = <String>::sse_decode(deserializer);
         let mut var_did = <String>::sse_decode(deserializer);
         let mut var_handle = <Option<String>>::sse_decode(deserializer);
+        let mut var_conversationId = <String>::sse_decode(deserializer);
         let mut var_profile =
             <Option<crate::dto::profile::DartUserProfile>>::sse_decode(deserializer);
         let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
@@ -7199,6 +7200,7 @@ impl SseDecode for crate::dto::directory::DartDirectoryResolution {
             input: var_input,
             did: var_did,
             handle: var_handle,
+            conversation_id: var_conversationId,
             profile: var_profile,
             warnings: var_warnings,
         };
@@ -10928,6 +10930,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::directory::DartDirectoryResol
             self.input.into_into_dart().into_dart(),
             self.did.into_into_dart().into_dart(),
             self.handle.into_into_dart().into_dart(),
+            self.conversation_id.into_into_dart().into_dart(),
             self.profile.into_into_dart().into_dart(),
             self.warnings.into_into_dart().into_dart(),
         ]
@@ -13982,6 +13985,7 @@ impl SseEncode for crate::dto::directory::DartDirectoryResolution {
         <String>::sse_encode(self.input, serializer);
         <String>::sse_encode(self.did, serializer);
         <Option<String>>::sse_encode(self.handle, serializer);
+        <String>::sse_encode(self.conversation_id, serializer);
         <Option<crate::dto::profile::DartUserProfile>>::sse_encode(self.profile, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }

@@ -189,6 +189,9 @@ impl<'a> DirectoryService<'a> {
                 input: result.did.as_str().to_string(),
                 did: result.did.clone(),
                 handle: result.handle.clone(),
+                conversation_id: crate::internal::local_state::owner_scope::direct_conversation_id(
+                    result.did.as_str(),
+                ),
                 profile: Some(result.profile.clone()),
                 warnings: result.warnings.clone(),
             },
@@ -215,6 +218,9 @@ impl<'a> DirectoryService<'a> {
                 input: result.did.as_str().to_string(),
                 did: result.did.clone(),
                 handle: result.handle.clone(),
+                conversation_id: crate::internal::local_state::owner_scope::direct_conversation_id(
+                    result.did.as_str(),
+                ),
                 profile: Some(result.profile.clone()),
                 warnings: result.warnings.clone(),
             },
@@ -1053,6 +1059,7 @@ fn handle_lookup_resolution(lookup: &super::HandleLookupResult) -> super::Direct
         input: lookup.handle.as_str().to_owned(),
         did: lookup.did.clone(),
         handle: Some(lookup.handle.clone()),
+        conversation_id: lookup.direct_conversation_id(),
         profile: lookup.profile.clone(),
         warnings: lookup.warnings.clone(),
     }

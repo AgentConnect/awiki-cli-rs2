@@ -1736,6 +1736,7 @@ extension on gen_directory_dto.DartDirectoryResolution {
     input: input,
     did: did,
     handle: handle,
+    conversationId: conversationId,
     profile: profile?._toModel(),
     warnings: warnings,
   );

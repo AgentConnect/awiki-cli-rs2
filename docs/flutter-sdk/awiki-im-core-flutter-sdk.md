@@ -86,7 +86,12 @@ the native vault-backed backend.
 
 ## Directory profile metadata
 
-`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` can return a `DirectoryResolution.profile` populated from the WNS Handle Resolution Document `profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
+`client.directory.resolvePeer(handle)` and `client.directory.lookupHandle(handle)` return a
+`DirectoryResolution.conversationId` together with the resolved DID/Handle. When the directory
+provides a stable user ID and full Handle, this is the canonical `dm:peer-scope:v1:*` identity and
+must be used by App start-conversation flows before the first message arrives. The same result can
+also carry `DirectoryResolution.profile` populated from the WNS Handle Resolution Document
+`profile` object. This profile is a DID Subject Profile projection, not routing or security metadata.
 
 The Dart `UserProfile` model uses these standard display fields:
 

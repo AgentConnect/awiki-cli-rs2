@@ -85,6 +85,7 @@ where
         let lookup_raw = lookup_by_handle(&mut self.transport, &handle)
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        let conversation_id = lookup.direct_conversation_id();
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok()
@@ -110,6 +111,7 @@ where
                 input: handle,
                 did: lookup.did.clone(),
                 handle: Some(lookup.handle),
+                conversation_id,
                 profile: profile_dto,
                 warnings,
             },
@@ -125,9 +127,12 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
+        let mut conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did(&mut self.transport, did.as_str()) {
             Ok(raw) => {
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
+                conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
@@ -151,6 +156,7 @@ where
                 input: did.as_str().to_string(),
                 did,
                 handle,
+                conversation_id,
                 profile,
                 warnings,
             },
@@ -274,6 +280,7 @@ where
             .await
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value_with_client(self.client, &lookup_raw)?;
+        let conversation_id = lookup.direct_conversation_id();
         let warnings = lookup.warnings.clone();
         let fallback_profile = if lookup.profile.is_none() {
             public_profile_by_did_async(&mut self.transport, lookup.did.as_str())
@@ -302,6 +309,7 @@ where
                 input: handle,
                 did: lookup.did.clone(),
                 handle: Some(lookup.handle),
+                conversation_id,
                 profile: profile_dto,
                 warnings,
             },
@@ -317,9 +325,12 @@ where
         let mut warnings = Vec::new();
         let mut lookup_raw = None;
         let mut handle = None;
+        let mut conversation_id =
+            crate::internal::local_state::owner_scope::direct_conversation_id(did.as_str());
         match lookup_by_did_async(&mut self.transport, did.as_str()).await {
             Ok(raw) => {
                 let lookup = handle_lookup_from_value_with_client(self.client, &raw)?;
+                conversation_id = lookup.direct_conversation_id();
                 warnings.extend(lookup.warnings);
                 handle = Some(lookup.handle);
                 lookup_raw = Some(raw);
@@ -343,6 +354,7 @@ where
                 input: did.as_str().to_string(),
                 did,
                 handle,
+                conversation_id,
                 profile,
                 warnings,
             },

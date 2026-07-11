@@ -40,6 +40,7 @@ pub async fn lookup_handle(
         input: result.handle.as_str().to_string(),
         did: result.did.as_str().to_string(),
         handle: Some(result.handle.as_str().to_string()),
+        conversation_id: result.direct_conversation_id(),
         profile: result.profile.map(Into::into),
         warnings: result.warnings,
     })
