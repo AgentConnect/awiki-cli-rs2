@@ -65,6 +65,35 @@ fn direct_thread_send_result_renders_as_direct_delivery() {
 }
 
 #[test]
+fn direct_delivery_preserves_final_acceptance_from_core_metadata() {
+    let result = thread_scoped_send_result(&[
+        ("resolved_target_did", "did:wba:awiki.ai:bob:e1"),
+        ("final_acceptance", "true"),
+    ]);
+    let target = direct_target_from_result(&result);
+
+    let rendered = render_send_result(&target, &result, false).expect("render");
+
+    assert_eq!(rendered.data["delivery"]["accepted"], true);
+    assert_eq!(rendered.data["delivery"]["delivery_state"], "accepted");
+    assert_eq!(rendered.data["delivery"]["final_acceptance"], true);
+}
+
+#[test]
+fn group_delivery_preserves_final_acceptance_from_core_metadata() {
+    let result = thread_scoped_send_result(&[
+        ("raw_message_id", "msg-group"),
+        ("final_acceptance", "true"),
+    ]);
+
+    let mapped = GroupSendResult::from_sdk_result(&result, "did:example:group");
+
+    assert!(mapped.accepted);
+    assert!(mapped.final_acceptance);
+    assert_eq!(mapped.delivery_state, "accepted");
+}
+
+#[test]
 fn direct_thread_attachment_target_falls_back_to_attachment_target_did() {
     let message = thread_scoped_send_result(&[("target_handle", "bob.awiki.ai")]);
     let result = AttachmentSendResult {

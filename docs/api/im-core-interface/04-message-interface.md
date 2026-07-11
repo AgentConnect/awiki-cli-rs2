@@ -178,6 +178,10 @@ pub struct MessageDeliveryOptions {
     pub wait_for_final_acceptance: bool,
 }
 
+成功发送的 `SendMessageResult.message.metadata.attributes` 会保留服务响应中的
+`final_acceptance`（字符串布尔值），供 CLI 等薄适配层在 `delivery_state=accepted`
+时仍能准确报告最终接受状态；适配层不得仅从压缩后的 `DeliveryState` 反推该字段。
+
 impl Default for MessageDeliveryOptions {
     fn default() -> Self {
         Self { idempotency_key: None, wait_for_final_acceptance: false }

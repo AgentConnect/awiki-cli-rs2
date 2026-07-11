@@ -472,7 +472,10 @@ fn message_id_from_group_result(
 }
 
 fn metadata_attributes(result: &GroupRpcResult) -> Vec<crate::messages::MessageMetadataAttribute> {
-    let mut attributes = Vec::new();
+    let mut attributes = vec![crate::messages::MessageMetadataAttribute {
+        key: "final_acceptance".to_owned(),
+        value: result.final_acceptance.to_string(),
+    }];
     if !result.message_id.trim().is_empty() {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "raw_message_id".to_string(),
@@ -639,6 +642,13 @@ mod tests {
             .any(|attribute| {
                 attribute.key == "raw_message_id" && attribute.value == "server-message-id"
             }));
+        assert!(result
+            .sdk_result
+            .message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "final_acceptance" && attribute.value == "true"));
         assert!(matches!(
             result.sdk_result.delivery,
             crate::messages::DeliveryState::Accepted
