@@ -2031,7 +2031,7 @@ async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
         .local_state_db()
         .await
         .unwrap()
-        .get_direct_secure_session("alice-id", exchange.sender_did)
+        .get_direct_secure_session("alice-id", exchange.sender_did.clone())
         .await
         .unwrap()
         .unwrap();
@@ -2094,6 +2094,7 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         ],
         "has_more": false
     });
+    let repeated_response = response.clone();
     let runtime = MessageReadRuntime::new(
         &client,
         ReadyAnyReadSessionProvider,
@@ -2149,7 +2150,7 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         .local_state_db()
         .await
         .unwrap()
-        .get_direct_secure_session("alice-id", exchange.sender_did)
+        .get_direct_secure_session("alice-id", exchange.sender_did.clone())
         .await
         .unwrap()
         .unwrap();
@@ -2158,6 +2159,67 @@ async fn messages_read_async_replays_pending_direct_cipher_after_init() {
         crate::internal::secure_direct::sqlite_store::direct_session_from_blob(&saved.state_blob)
             .unwrap();
     assert_eq!(saved_session.recv_n, 2);
+    let cached = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .list_decrypted_secure_messages("alice-id", vec!["msg-pending-follow-up".to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(
+        cached.len(),
+        1,
+        "expected one committed decrypted projection"
+    );
+    assert_eq!(cached[0].content_type, "text/plain");
+    assert_eq!(cached[0].content, "follow-up after init");
+
+    let repeated_runtime = MessageReadRuntime::new(
+        &client,
+        ReadyAnyReadSessionProvider,
+        RecordingTransport {
+            calls: Rc::new(RefCell::new(Vec::new())),
+            response: repeated_response,
+        },
+        NoopDirectoryTransport,
+    );
+    let repeated = repeated_runtime
+        .inbox_async(InboxRead {
+            query: crate::messages::InboxQuery {
+                scope: crate::messages::InboxScope::All,
+                limit: crate::ids::PageLimit(20),
+                cursor: None,
+                unread_only: false,
+                inbox_history_options: None,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        repeated.page.items[0].body,
+        crate::messages::MessageBodyView::Text {
+            text: "follow-up after init".to_owned(),
+            kind: crate::messages::MessageKind::Text,
+        }
+    );
+    assert_eq!(repeated.raw["messages"][0]["decryption_state"], "decrypted");
+    let saved_after_repeat = client
+        .core_inner()
+        .local_state_db()
+        .await
+        .unwrap()
+        .get_direct_secure_session("alice-id", exchange.sender_did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved_after_repeat.revision, saved.revision);
+    let session_after_repeat =
+        crate::internal::secure_direct::sqlite_store::direct_session_from_blob(
+            &saved_after_repeat.state_blob,
+        )
+        .unwrap();
+    assert_eq!(session_after_repeat.recv_n, saved_session.recv_n);
 }
 
 #[derive(Clone)]

@@ -126,6 +126,11 @@ enum LocalStateCommand {
         limit: i64,
         reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
     },
+    ListDecryptedSecureMessages {
+        owner_identity_id: String,
+        message_ids: Vec<String>,
+        reply: oneshot::Sender<crate::ImResult<Vec<super::messages::MessageRecord>>>,
+    },
     ListMessagesForThreadRef {
         owner_identity_id: String,
         owner_did: String,
@@ -639,6 +644,21 @@ impl LocalStateDb {
             owner_identity_id: owner_identity_id.into(),
             conversation_ids,
             limit,
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn list_decrypted_secure_messages(
+        &self,
+        owner_identity_id: impl Into<String>,
+        message_ids: Vec<String>,
+    ) -> crate::ImResult<Vec<super::messages::MessageRecord>> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::ListDecryptedSecureMessages {
+            owner_identity_id: owner_identity_id.into(),
+            message_ids,
             reply,
         })
         .await?;
@@ -1344,6 +1364,18 @@ fn run_actor(
                     &owner_identity_id,
                     &conversation_ids,
                     limit,
+                );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::ListDecryptedSecureMessages {
+                owner_identity_id,
+                message_ids,
+                reply,
+            } => {
+                let result = super::messages::list_decrypted_secure_messages_for_owner_identity(
+                    &connection,
+                    &owner_identity_id,
+                    &message_ids,
                 );
                 let _ = reply.send(result);
             }
