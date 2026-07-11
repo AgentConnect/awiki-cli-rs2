@@ -6773,12 +6773,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartRelationStatus dco_decode_dart_relation_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return DartRelationStatus(
       peer: dco_decode_String(arr[0]),
-      relationship: dco_decode_opt_String(arr[1]),
-      displayName: dco_decode_opt_String(arr[2]),
+      did: dco_decode_String(arr[1]),
+      isFollowing: dco_decode_bool(arr[2]),
+      isFollower: dco_decode_bool(arr[3]),
+      isFriend: dco_decode_bool(arr[4]),
+      isBlocked: dco_decode_bool(arr[5]),
+      isBlockedBy: dco_decode_bool(arr[6]),
+      isContact: dco_decode_bool(arr[7]),
+      messaged: dco_decode_bool(arr[8]),
+      relationship: dco_decode_opt_String(arr[9]),
+      displayName: dco_decode_opt_String(arr[10]),
+      warnings: dco_decode_list_String(arr[11]),
     );
   }
 
@@ -10132,12 +10141,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_peer = sse_decode_String(deserializer);
+    var var_did = sse_decode_String(deserializer);
+    var var_isFollowing = sse_decode_bool(deserializer);
+    var var_isFollower = sse_decode_bool(deserializer);
+    var var_isFriend = sse_decode_bool(deserializer);
+    var var_isBlocked = sse_decode_bool(deserializer);
+    var var_isBlockedBy = sse_decode_bool(deserializer);
+    var var_isContact = sse_decode_bool(deserializer);
+    var var_messaged = sse_decode_bool(deserializer);
     var var_relationship = sse_decode_opt_String(deserializer);
     var var_displayName = sse_decode_opt_String(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
     return DartRelationStatus(
       peer: var_peer,
+      did: var_did,
+      isFollowing: var_isFollowing,
+      isFollower: var_isFollower,
+      isFriend: var_isFriend,
+      isBlocked: var_isBlocked,
+      isBlockedBy: var_isBlockedBy,
+      isContact: var_isContact,
+      messaged: var_messaged,
       relationship: var_relationship,
       displayName: var_displayName,
+      warnings: var_warnings,
     );
   }
 
@@ -13433,8 +13460,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.peer, serializer);
+    sse_encode_String(self.did, serializer);
+    sse_encode_bool(self.isFollowing, serializer);
+    sse_encode_bool(self.isFollower, serializer);
+    sse_encode_bool(self.isFriend, serializer);
+    sse_encode_bool(self.isBlocked, serializer);
+    sse_encode_bool(self.isBlockedBy, serializer);
+    sse_encode_bool(self.isContact, serializer);
+    sse_encode_bool(self.messaged, serializer);
     sse_encode_opt_String(self.relationship, serializer);
     sse_encode_opt_String(self.displayName, serializer);
+    sse_encode_list_String(self.warnings, serializer);
   }
 
   @protected

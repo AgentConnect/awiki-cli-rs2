@@ -8426,12 +8426,30 @@ impl SseDecode for crate::dto::directory::DartRelationStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_peer = <String>::sse_decode(deserializer);
+        let mut var_did = <String>::sse_decode(deserializer);
+        let mut var_isFollowing = <bool>::sse_decode(deserializer);
+        let mut var_isFollower = <bool>::sse_decode(deserializer);
+        let mut var_isFriend = <bool>::sse_decode(deserializer);
+        let mut var_isBlocked = <bool>::sse_decode(deserializer);
+        let mut var_isBlockedBy = <bool>::sse_decode(deserializer);
+        let mut var_isContact = <bool>::sse_decode(deserializer);
+        let mut var_messaged = <bool>::sse_decode(deserializer);
         let mut var_relationship = <Option<String>>::sse_decode(deserializer);
         let mut var_displayName = <Option<String>>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
         return crate::dto::directory::DartRelationStatus {
             peer: var_peer,
+            did: var_did,
+            is_following: var_isFollowing,
+            is_follower: var_isFollower,
+            is_friend: var_isFriend,
+            is_blocked: var_isBlocked,
+            is_blocked_by: var_isBlockedBy,
+            is_contact: var_isContact,
+            messaged: var_messaged,
             relationship: var_relationship,
             display_name: var_displayName,
+            warnings: var_warnings,
         };
     }
 }
@@ -12470,8 +12488,17 @@ impl flutter_rust_bridge::IntoDart for crate::dto::directory::DartRelationStatus
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.peer.into_into_dart().into_dart(),
+            self.did.into_into_dart().into_dart(),
+            self.is_following.into_into_dart().into_dart(),
+            self.is_follower.into_into_dart().into_dart(),
+            self.is_friend.into_into_dart().into_dart(),
+            self.is_blocked.into_into_dart().into_dart(),
+            self.is_blocked_by.into_into_dart().into_dart(),
+            self.is_contact.into_into_dart().into_dart(),
+            self.messaged.into_into_dart().into_dart(),
             self.relationship.into_into_dart().into_dart(),
             self.display_name.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -14837,8 +14864,17 @@ impl SseEncode for crate::dto::directory::DartRelationStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.peer, serializer);
+        <String>::sse_encode(self.did, serializer);
+        <bool>::sse_encode(self.is_following, serializer);
+        <bool>::sse_encode(self.is_follower, serializer);
+        <bool>::sse_encode(self.is_friend, serializer);
+        <bool>::sse_encode(self.is_blocked, serializer);
+        <bool>::sse_encode(self.is_blocked_by, serializer);
+        <bool>::sse_encode(self.is_contact, serializer);
+        <bool>::sse_encode(self.messaged, serializer);
         <Option<String>>::sse_encode(self.relationship, serializer);
         <Option<String>>::sse_encode(self.display_name, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }
 

@@ -1745,8 +1745,17 @@ extension on gen_directory_dto.DartDirectoryResolution {
 extension on gen_directory_dto.DartRelationStatus {
   RelationStatus _toModel() => RelationStatus(
     peer: peer,
+    did: did,
+    isFollowing: isFollowing,
+    isFollower: isFollower,
+    isFriend: isFriend,
+    isBlocked: isBlocked,
+    isBlockedBy: isBlockedBy,
+    isContact: isContact,
+    messaged: messaged,
     relationship: relationship,
     displayName: displayName,
+    warnings: warnings,
   );
 }
 

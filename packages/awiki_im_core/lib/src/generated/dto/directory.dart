@@ -113,18 +113,47 @@ sealed class DartIdentitySubject with _$DartIdentitySubject {
 
 class DartRelationStatus {
   final String peer;
+  final String did;
+  final bool isFollowing;
+  final bool isFollower;
+  final bool isFriend;
+  final bool isBlocked;
+  final bool isBlockedBy;
+  final bool isContact;
+  final bool messaged;
   final String? relationship;
   final String? displayName;
+  final List<String> warnings;
 
   const DartRelationStatus({
     required this.peer,
+    required this.did,
+    required this.isFollowing,
+    required this.isFollower,
+    required this.isFriend,
+    required this.isBlocked,
+    required this.isBlockedBy,
+    required this.isContact,
+    required this.messaged,
     this.relationship,
     this.displayName,
+    required this.warnings,
   });
 
   @override
   int get hashCode =>
-      peer.hashCode ^ relationship.hashCode ^ displayName.hashCode;
+      peer.hashCode ^
+      did.hashCode ^
+      isFollowing.hashCode ^
+      isFollower.hashCode ^
+      isFriend.hashCode ^
+      isBlocked.hashCode ^
+      isBlockedBy.hashCode ^
+      isContact.hashCode ^
+      messaged.hashCode ^
+      relationship.hashCode ^
+      displayName.hashCode ^
+      warnings.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -132,8 +161,17 @@ class DartRelationStatus {
       other is DartRelationStatus &&
           runtimeType == other.runtimeType &&
           peer == other.peer &&
+          did == other.did &&
+          isFollowing == other.isFollowing &&
+          isFollower == other.isFollower &&
+          isFriend == other.isFriend &&
+          isBlocked == other.isBlocked &&
+          isBlockedBy == other.isBlockedBy &&
+          isContact == other.isContact &&
+          messaged == other.messaged &&
           relationship == other.relationship &&
-          displayName == other.displayName;
+          displayName == other.displayName &&
+          warnings == other.warnings;
 }
 
 class DartRelationshipListItem {

@@ -497,12 +497,21 @@ impl From<im_core::directory::DisplayProfile> for crate::dto::directory::DartDis
     }
 }
 
-impl From<im_core::directory::RelationStatus> for DartRelationStatus {
-    fn from(value: im_core::directory::RelationStatus) -> Self {
+impl From<im_core::directory::RelationshipStatus> for DartRelationStatus {
+    fn from(value: im_core::directory::RelationshipStatus) -> Self {
         Self {
             peer: value.peer.as_str().to_string(),
+            did: value.did.as_str().to_string(),
+            is_following: value.is_following,
+            is_follower: value.is_follower,
+            is_friend: value.is_friend,
+            is_blocked: value.is_blocked,
+            is_blocked_by: value.is_blocked_by,
+            is_contact: value.is_contact,
+            messaged: value.messaged,
             relationship: value.relationship,
             display_name: None,
+            warnings: value.warnings,
         }
     }
 }
@@ -1564,9 +1573,10 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
 
 #[cfg(test)]
 mod tests {
-    use super::realtime_event_to_dart;
+    use super::{realtime_event_to_dart, DartRelationStatus};
     use im_core::{
-        ids::{GroupRef, MessageId, PeerRef, ThreadId},
+        directory::RelationshipStatus,
+        ids::{Did, GroupRef, MessageId, PeerRef, ThreadId},
         messages::{
             Message, MessageBodyView, MessageDirection, MessageKind, MessageMetadata, ThreadRef,
         },
@@ -1577,6 +1587,34 @@ mod tests {
             UnknownNotificationEvent,
         },
     };
+
+    #[test]
+    fn relationship_status_mapping_preserves_directional_truth() {
+        let mapped: DartRelationStatus = RelationshipStatus {
+            peer: PeerRef::parse("bob.awiki", "").unwrap(),
+            did: Did::parse("did:example:bob").unwrap(),
+            is_following: false,
+            is_follower: true,
+            is_friend: false,
+            is_blocked: false,
+            is_blocked_by: false,
+            is_contact: true,
+            messaged: true,
+            relationship: Some("none".to_owned()),
+            warnings: vec!["status-warning".to_owned()],
+        }
+        .into();
+
+        assert_eq!(mapped.peer, "bob.awiki");
+        assert_eq!(mapped.did, "did:example:bob");
+        assert!(!mapped.is_following);
+        assert!(mapped.is_follower);
+        assert!(!mapped.is_friend);
+        assert!(mapped.is_contact);
+        assert!(mapped.messaged);
+        assert_eq!(mapped.relationship.as_deref(), Some("none"));
+        assert_eq!(mapped.warnings, vec!["status-warning"]);
+    }
 
     #[test]
     fn realtime_event_mapping_preserves_connection_and_message_events() {

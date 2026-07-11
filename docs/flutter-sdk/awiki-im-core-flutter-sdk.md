@@ -113,6 +113,8 @@ Display fields must not be used for routing, authentication, authorization, serv
 
 `client.directory.hydrateDisplayProfiles(peers)` reads only the local `im-core` contact/profile cache. It does not call WNS or User Service, and is intended for hot UI paths such as conversation lists, contact lists, and member lists. A returned `DisplayProfile` has `cacheHit = false` when the peer is absent locally; the app should fall back to `displayName -> handle -> did` without blocking list rendering. Remote refresh must be explicit through `resolvePeer`, `lookupHandle`, `loadPublicProfile`, or the send-time security verification path.
 
+`client.directory.relationStatus(peer)` is the authenticated remote relationship status query despite its retained Dart method name. `RelationStatus` exposes `isFollowing`, `isFollower`, `isFriend`, `isBlocked`, `isBlockedBy`, `isContact`, and `messaged` independently. Its nullable `relationship` field is only the caller's outbound local projection (`following` or `none`) and must not be treated as the combined relationship state. A consumer derives `friend` only when both directional flags and `isFriend` agree; missing or contradictory directional truth fails closed.
+
 ## Group display metadata
 
 `CreateGroupRequest.avatarUri` maps to `group_profile.avatar_uri`; `CreateGroupRequest.name` remains the Flutter convenience input for `group_profile.display_name`. `GroupSummary` and `GroupSnapshot` expose `displayName` and `avatarUri`; the old `name` field is retained as a compatibility projection of `displayName`.
