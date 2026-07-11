@@ -213,6 +213,25 @@ UUID Storage Scope clean cut；当前 namespace-scoped 代码将在 App 实施�
   unverified、workspace/device context mismatch 和 record open/verification failure；不得要求
   host 解析 human error string。
 
+Host 调用 `verify_identity_vault` 时使用以下稳定 error code 分支，human message 仅用于诊断，
+不得作为程序判断依据：
+
+| Dart error code | 含义 | Host 动作 |
+|---|---|---|
+| `identity_vault_unavailable` | 未提供 SecretVault context | fail closed，检查 host secret provider |
+| `identity_vault_metadata_missing` | Identity Registry 缺少 Vault metadata | fail closed；仅显式 provisioning/migration 可创建 metadata |
+| `identity_vault_metadata_unverified` | metadata 未进入 verified 状态 | fail closed，不回退明文 |
+| `identity_vault_workspace_mismatch` | host workspace 与 metadata 不一致 | fail closed，检查 scope/context 派生 |
+| `identity_vault_device_mismatch` | host device 与 metadata 不一致 | fail closed，检查 scope/context 派生 |
+| `identity_vault_record_open_failed` | record 缺失、不可读、损坏或 AEAD 打开失败 | fail closed；该错误刻意不区分错误 root key 与密文损坏 |
+| `identity_vault_verification_failed` | record 打开后内容/身份验证失败 | fail closed，保留原数据供诊断 |
+
+`IdentityVaultStatus.missing` 对 workspace/device 分别使用
+`identity_vault_workspace_match` 和 `identity_vault_device_match`。这些是 machine-readable
+诊断 item；warning 和 `Display` 文本不能参与 host 控制流。为避免 oracle 和 secret 泄漏，
+wrong root key 与 AEAD/ciphertext integrity failure 统一报告为
+`identity_vault_record_open_failed`。
+
 该 contract 不改变 SecretVault record schema，也不把 App scope UUID作为新的 im-core
 领域类型。未来 App root rotation、backup 或 database encryption 必须在同一 scope/account
 内版本化演进；这些能力落地前不得在 SDK 文档中宣称已经支持。

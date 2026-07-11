@@ -79,6 +79,10 @@ impl From<im_core::ImError> for DartImError {
                 "identity_not_ready",
                 format!("identity {identity} is not ready: {}", missing.join(", ")),
             ),
+            im_core::ImError::IdentityVault { failure } => Self::simple(
+                failure.code(),
+                format!("identity vault failure: {}", failure.code()),
+            ),
             im_core::ImError::AuthRequired => Self::simple("auth_required", value),
             im_core::ImError::SessionExpired => Self::simple("session_expired", value),
             im_core::ImError::PermissionDenied => Self::simple("permission_denied", value),

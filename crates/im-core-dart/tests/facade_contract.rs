@@ -9,6 +9,54 @@ fn dart_error_unsupported_has_stable_code() {
 }
 
 #[test]
+fn identity_vault_failures_have_stable_redacted_dart_codes() {
+    let cases = [
+        (
+            im_core::IdentityVaultFailure::Unavailable,
+            "identity_vault_unavailable",
+        ),
+        (
+            im_core::IdentityVaultFailure::MetadataMissing,
+            "identity_vault_metadata_missing",
+        ),
+        (
+            im_core::IdentityVaultFailure::MetadataUnverified,
+            "identity_vault_metadata_unverified",
+        ),
+        (
+            im_core::IdentityVaultFailure::WorkspaceMismatch,
+            "identity_vault_workspace_mismatch",
+        ),
+        (
+            im_core::IdentityVaultFailure::DeviceMismatch,
+            "identity_vault_device_mismatch",
+        ),
+        (
+            im_core::IdentityVaultFailure::RecordOpenFailed,
+            "identity_vault_record_open_failed",
+        ),
+        (
+            im_core::IdentityVaultFailure::VerificationFailed,
+            "identity_vault_verification_failed",
+        ),
+    ];
+
+    for (failure, expected_code) in cases {
+        let error = awiki_im_core::dto::error::DartImError::from(im_core::ImError::IdentityVault {
+            failure,
+        });
+        assert_eq!(error.code, expected_code);
+        assert_eq!(
+            error.message,
+            format!("identity vault failure: {expected_code}")
+        );
+        assert!(!error.message.contains("root"));
+        assert!(!error.message.contains("SecretRef"));
+        assert!(!error.message.contains("private"));
+    }
+}
+
+#[test]
 fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
     let err = awiki_im_core::dto::error::DartImError::unsupported("message-retry");
     assert_eq!(err.code, "unsupported_capability");

@@ -255,6 +255,13 @@ device context, warnings, and plaintext compatibility retention, but they must
 not expose root keys, private PEM, JWTs, bearer tokens, raw `SecretRef` JSON, or
 ciphertext internals. `VaultRequired` is fail-closed for new secret persistence.
 
+`verify_identity_vault` 的失败分支使用 `ImError::IdentityVault` 与稳定的
+`IdentityVaultFailure`：`Unavailable`、`MetadataMissing`、`MetadataUnverified`、
+`WorkspaceMismatch`、`DeviceMismatch`、`RecordOpenFailed` 和
+`VerificationFailed`。Dart facade 将其映射为同义的稳定 snake-case error code；host
+必须按 code 分支，不得解析 message。出于安全边界，错误 root key、密文损坏和 AEAD
+authentication failure 均归一为 `RecordOpenFailed`。
+
 P2+ API：
 
 ```rust

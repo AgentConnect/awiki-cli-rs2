@@ -153,6 +153,14 @@ Vault DTO boundary:
   result verified, and whether plaintext compatibility files remain.
 - `IdentityVaultVerificationReport` verifies that the selected identity can be
   opened through the vault-backed provider.
+- Verification failures use stable typed `ImError::IdentityVault` reasons. The
+  Dart facade maps them to `identity_vault_unavailable`,
+  `identity_vault_metadata_missing`, `identity_vault_metadata_unverified`,
+  `identity_vault_workspace_mismatch`, `identity_vault_device_mismatch`,
+  `identity_vault_record_open_failed`, or
+  `identity_vault_verification_failed`. Hosts must branch on the code, not the
+  human message. Wrong root keys and corrupt/authentication-failing records
+  intentionally share `identity_vault_record_open_failed`.
 - These DTOs do not expose root keys, JWTs, private PEM, full `SecretRef` JSON,
   ciphertext internals, or local auth/token file contents.
 

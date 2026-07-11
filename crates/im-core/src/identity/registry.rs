@@ -1274,20 +1274,28 @@ impl IdentityRegistry<'_> {
         if require_vault_backend
             && status.selected_backend != super::IdentitySecretStorageBackend::Vault
         {
-            return Err(crate::ImError::IdentityNotReady {
-                identity: status.identity.did.as_str().to_owned(),
-                missing: if status.missing.is_empty() {
-                    vec!["identity_vault_backend".to_owned()]
-                } else {
-                    status.missing.clone()
-                },
+            return Err(crate::ImError::IdentityVault {
+                failure: identity_vault_failure_from_status(&status),
             });
         }
-        let runtime = self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
-        let _ = runtime.key_provider.optional_did_document()?;
-        let _ = runtime.key_provider.default_signing_private_pem()?;
-        let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
-        let _ = runtime.key_provider.auth_state()?;
+        let verify = || -> crate::ImResult<()> {
+            let runtime =
+                self.load_runtime(super::IdentitySelector::Id(status.identity.id.clone()))?;
+            let _ = runtime.key_provider.optional_did_document()?;
+            let _ = runtime.key_provider.default_signing_private_pem()?;
+            let _ = runtime.key_provider.e2ee_agreement_private_pem()?;
+            let _ = runtime.key_provider.auth_state()?;
+            Ok(())
+        };
+        verify().map_err(|error| crate::ImError::IdentityVault {
+            failure: match error {
+                crate::ImError::PermissionDenied
+                | crate::ImError::CredentialFileUnreadable { .. }
+                | crate::ImError::Io { .. } => crate::IdentityVaultFailure::RecordOpenFailed,
+                crate::ImError::IdentityVault { failure } => failure,
+                _ => crate::IdentityVaultFailure::VerificationFailed,
+            },
+        })?;
         let mut warnings = status.warnings.clone();
         if status.plaintext_compat_retained.unwrap_or(false) {
             warnings.push("identity plaintext compatibility files are still retained".to_owned());
@@ -1310,10 +1318,15 @@ impl IdentityRegistry<'_> {
         let metadata = entry.and_then(|entry| entry.vault_migration.as_ref());
         let vault_metadata_present = metadata.is_some();
         let vault_metadata_verified = metadata.map(vault_metadata_is_verified).unwrap_or(false);
-        let vault_context_matches = metadata
+        let vault_workspace_matches = metadata
             .zip(context)
-            .map(|(metadata, context)| vault_context_matches_metadata(context, metadata))
+            .map(|(metadata, context)| metadata.workspace_id == context.workspace_id())
             .unwrap_or(false);
+        let vault_device_matches = metadata
+            .zip(context)
+            .map(|(metadata, context)| metadata.device_id == context.device_id())
+            .unwrap_or(false);
+        let vault_context_matches = vault_workspace_matches && vault_device_matches;
         let selected_backend =
             if vault_metadata_verified && context.is_some() && vault_context_matches {
                 super::IdentitySecretStorageBackend::Vault
@@ -1331,11 +1344,17 @@ impl IdentityRegistry<'_> {
         if !context.is_some() {
             missing.push("identity_secret_vault".to_owned());
         }
-        if vault_metadata_present && context.is_some() && !vault_context_matches {
-            missing.push("identity_vault_context_match".to_owned());
+        if vault_metadata_present && context.is_some() && !vault_workspace_matches {
+            missing.push("identity_vault_workspace_match".to_owned());
             warnings.push(
-                "identity vault metadata workspace/device does not match provided vault context"
+                "identity vault metadata workspace does not match provided vault context"
                     .to_owned(),
+            );
+        }
+        if vault_metadata_present && context.is_some() && !vault_device_matches {
+            missing.push("identity_vault_device_match".to_owned());
+            warnings.push(
+                "identity vault metadata device does not match provided vault context".to_owned(),
             );
         }
         if metadata
@@ -1360,6 +1379,32 @@ impl IdentityRegistry<'_> {
             missing,
             warnings,
         }
+    }
+}
+
+fn identity_vault_failure_from_status(
+    status: &super::IdentityVaultStatus,
+) -> crate::IdentityVaultFailure {
+    if !status.vault_available {
+        crate::IdentityVaultFailure::Unavailable
+    } else if !status.vault_metadata_present {
+        crate::IdentityVaultFailure::MetadataMissing
+    } else if !status.vault_metadata_verified {
+        crate::IdentityVaultFailure::MetadataUnverified
+    } else if status
+        .missing
+        .iter()
+        .any(|item| item == "identity_vault_workspace_match")
+    {
+        crate::IdentityVaultFailure::WorkspaceMismatch
+    } else if status
+        .missing
+        .iter()
+        .any(|item| item == "identity_vault_device_match")
+    {
+        crate::IdentityVaultFailure::DeviceMismatch
+    } else {
+        crate::IdentityVaultFailure::VerificationFailed
     }
 }
 
@@ -1963,10 +2008,16 @@ fn legacy_readiness_missing(
 fn vault_metadata_is_verified(
     metadata: &crate::internal::identity_store::IdentityVaultMigrationMetadata,
 ) -> bool {
-    matches!(
-        metadata.status,
-        crate::internal::identity_store::IdentityVaultMigrationStatus::Verified
-    )
+    metadata.schema_version
+        == crate::internal::identity_store::IDENTITY_VAULT_MIGRATION_SCHEMA_VERSION
+        && matches!(
+            metadata.status,
+            crate::internal::identity_store::IdentityVaultMigrationStatus::Verified
+        )
+        && metadata.backend == "vault"
+        && metadata.unlock_policy == "explicit_root_key"
+        && !metadata.workspace_id.trim().is_empty()
+        && !metadata.device_id.trim().is_empty()
 }
 
 fn vault_context_matches_metadata(
@@ -2278,7 +2329,7 @@ mod tests {
                 crate::IdentitySecretStoragePolicy::VaultRequired,
                 crate::ImCoreSecretVaultOptions::new(
                     DeviceVaultRootKey::from_bytes([31_u8; 32]),
-                    vault_dir,
+                    &vault_dir,
                     "workspace-a",
                     "device-a",
                 ),
@@ -2327,6 +2378,139 @@ mod tests {
         write_registry(&rewritten, &written).unwrap();
         let reparsed = parse_registry(&std::fs::read(rewritten).unwrap()).unwrap();
         assert!(reparsed.entries[0].vault_migration.is_some());
+
+        let open_with = |key: [u8; 32], workspace_id: &str, device_id: &str| {
+            crate::ImCore::new_with_options(
+                test_config(),
+                test_paths(root.path()),
+                crate::ImCoreOpenOptions::default().with_identity_secret_vault(
+                    crate::IdentitySecretStoragePolicy::VaultRequired,
+                    crate::ImCoreSecretVaultOptions::new(
+                        DeviceVaultRootKey::from_bytes(key),
+                        &vault_dir,
+                        workspace_id,
+                        device_id,
+                    ),
+                ),
+            )
+            .unwrap()
+        };
+
+        let wrong_workspace = open_with([31_u8; 32], "workspace-b", "device-a");
+        let status = wrong_workspace
+            .identities()
+            .vault_status(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert!(status
+            .missing
+            .contains(&"identity_vault_workspace_match".to_owned()));
+        assert!(!status
+            .missing
+            .contains(&"identity_vault_device_match".to_owned()));
+        assert_eq!(
+            wrong_workspace
+                .identities()
+                .verify_identity_vault(crate::identity::IdentitySelector::Default)
+                .unwrap_err(),
+            crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::WorkspaceMismatch,
+            }
+        );
+
+        let wrong_device = open_with([31_u8; 32], "workspace-a", "device-b");
+        let status = wrong_device
+            .identities()
+            .vault_status(crate::identity::IdentitySelector::Default)
+            .unwrap();
+        assert!(!status
+            .missing
+            .contains(&"identity_vault_workspace_match".to_owned()));
+        assert!(status
+            .missing
+            .contains(&"identity_vault_device_match".to_owned()));
+        assert_eq!(
+            wrong_device
+                .identities()
+                .verify_identity_vault(crate::identity::IdentitySelector::Default)
+                .unwrap_err(),
+            crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::DeviceMismatch,
+            }
+        );
+
+        let wrong_root = open_with([32_u8; 32], "workspace-a", "device-a");
+        assert_eq!(
+            wrong_root
+                .identities()
+                .verify_identity_vault(crate::identity::IdentitySelector::Default)
+                .unwrap_err(),
+            crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::RecordOpenFailed,
+            }
+        );
+
+        let unavailable = crate::ImCore::new_with_options(
+            test_config(),
+            test_paths(root.path()),
+            crate::ImCoreOpenOptions {
+                identity_secret_storage_policy: crate::IdentitySecretStoragePolicy::VaultPreferred,
+                identity_secret_vault: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            unavailable
+                .identities()
+                .verify_identity_vault(crate::identity::IdentitySelector::Default)
+                .unwrap_err(),
+            crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::Unavailable,
+            }
+        );
+
+        let original_registry = std::fs::read(&registry_path).unwrap();
+        let mut registry_json: serde_json::Value =
+            serde_json::from_slice(&original_registry).unwrap();
+        registry_json["credentials"]["alice"]
+            .as_object_mut()
+            .unwrap()
+            .remove("vault_migration");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry_json).unwrap(),
+        )
+        .unwrap();
+        let missing_metadata = open_with([31_u8; 32], "workspace-a", "device-a");
+        assert_eq!(
+            missing_metadata
+                .identities()
+                .verify_identity_vault(crate::identity::IdentitySelector::Default)
+                .unwrap_err(),
+            crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::MetadataMissing,
+            }
+        );
+
+        let mut registry_json: serde_json::Value =
+            serde_json::from_slice(&original_registry).unwrap();
+        registry_json["credentials"]["alice"]["vault_migration"]["backend"] =
+            json!("tampered-backend");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry_json).unwrap(),
+        )
+        .unwrap();
+        let unverified_metadata = open_with([31_u8; 32], "workspace-a", "device-a");
+        assert_eq!(
+            unverified_metadata
+                .identities()
+                .verify_identity_vault(crate::identity::IdentitySelector::Default)
+                .unwrap_err(),
+            crate::ImError::IdentityVault {
+                failure: crate::IdentityVaultFailure::MetadataUnverified,
+            }
+        );
+        std::fs::write(&registry_path, original_registry).unwrap();
     }
 
     #[test]

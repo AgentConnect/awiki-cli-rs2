@@ -404,6 +404,21 @@ fn common_im_errors_map_to_exit_errors() {
 }
 
 #[test]
+fn identity_vault_error_maps_to_stable_redacted_exit_error() {
+    let mapped = error::map_im_error(
+        ImError::IdentityVault {
+            failure: im_core::IdentityVaultFailure::RecordOpenFailed,
+        },
+        "id vault verify",
+    );
+
+    assert_eq!(mapped.exit_code, 3);
+    assert_eq!(mapped.detail.code, "identity_vault_record_open_failed");
+    assert!(!mapped.detail.message.contains("root key"));
+    assert!(!mapped.detail.message.contains("SecretRef"));
+}
+
+#[test]
 fn auth_scope_from_cli_accepts_phase1_scopes() {
     assert_eq!(
         auth::auth_scope_from_cli("").unwrap(),

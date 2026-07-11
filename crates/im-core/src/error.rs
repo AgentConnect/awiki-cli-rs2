@@ -2,6 +2,32 @@ use std::fmt;
 
 pub type ImResult<T> = Result<T, ImError>;
 
+/// Stable, redacted reasons why an identity vault cannot be opened or verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityVaultFailure {
+    Unavailable,
+    MetadataMissing,
+    MetadataUnverified,
+    WorkspaceMismatch,
+    DeviceMismatch,
+    RecordOpenFailed,
+    VerificationFailed,
+}
+
+impl IdentityVaultFailure {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unavailable => "identity_vault_unavailable",
+            Self::MetadataMissing => "identity_vault_metadata_missing",
+            Self::MetadataUnverified => "identity_vault_metadata_unverified",
+            Self::WorkspaceMismatch => "identity_vault_workspace_mismatch",
+            Self::DeviceMismatch => "identity_vault_device_mismatch",
+            Self::RecordOpenFailed => "identity_vault_record_open_failed",
+            Self::VerificationFailed => "identity_vault_verification_failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImError {
     InvalidInput {
@@ -16,6 +42,9 @@ pub enum ImError {
     IdentityNotReady {
         identity: String,
         missing: Vec<String>,
+    },
+    IdentityVault {
+        failure: IdentityVaultFailure,
     },
     AuthRequired,
     SessionExpired,
@@ -100,6 +129,9 @@ impl fmt::Display for ImError {
                     "identity {identity} is not ready: {}",
                     missing.join(", ")
                 )
+            }
+            Self::IdentityVault { failure } => {
+                write!(f, "identity vault failure: {}", failure.code())
             }
             Self::AuthRequired => f.write_str("authentication is required"),
             Self::SessionExpired => f.write_str("session expired"),
