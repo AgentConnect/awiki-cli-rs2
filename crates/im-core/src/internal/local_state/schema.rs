@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 22;
+pub(crate) const SCHEMA_VERSION: i64 = 23;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 const CONVERSATION_SUMMARIES_SCHEMA_VERSION: i64 = 18;
 
@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS group_members (
     user_id           TEXT NOT NULL,
     member_did        TEXT,
     member_handle     TEXT,
+    anchor_kind       TEXT NOT NULL DEFAULT 'did',
+    anchor_value      TEXT NOT NULL DEFAULT '',
+    handle_binding_generation TEXT,
     profile_url       TEXT,
     role              TEXT,
     status            TEXT NOT NULL DEFAULT 'active',
@@ -931,6 +934,7 @@ fn create_schema(
     backfill_conversation_summaries: bool,
 ) -> crate::ImResult<()> {
     create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
+    ensure_group_member_identity_columns(connection)?;
     connection
         .execute_batch(ATTACHMENT_MANIFEST_CACHE_SQL)
         .map_err(super::local_state_unavailable)?;
@@ -1084,6 +1088,9 @@ CREATE TABLE IF NOT EXISTS group_members{suffix} (
     user_id           TEXT NOT NULL,
     member_did        TEXT,
     member_handle     TEXT,
+    anchor_kind       TEXT NOT NULL DEFAULT 'did',
+    anchor_value      TEXT NOT NULL DEFAULT '',
+    handle_binding_generation TEXT,
     profile_url       TEXT,
     role              TEXT,
     status            TEXT NOT NULL DEFAULT 'active',
@@ -1287,6 +1294,37 @@ fn ensure_message_projection_columns(connection: &Connection) -> crate::ImResult
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     Ok(true)
+}
+
+fn ensure_group_member_identity_columns(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(
+        connection,
+        "group_members",
+        "anchor_kind",
+        "TEXT NOT NULL DEFAULT 'did'",
+    )?;
+    ensure_column(
+        connection,
+        "group_members",
+        "anchor_value",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        connection,
+        "group_members",
+        "handle_binding_generation",
+        "TEXT",
+    )?;
+    connection
+        .execute(
+            r#"
+UPDATE group_members
+SET anchor_kind = 'did', anchor_value = COALESCE(member_did, user_id)
+WHERE TRIM(COALESCE(anchor_value, '')) = ''"#,
+            [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
 }
 
 fn backfill_message_mention_projection(connection: &Connection) -> crate::ImResult<()> {

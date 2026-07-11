@@ -32,6 +32,7 @@ pub async fn join_group(
         .groups()
         .join_async(im_core::groups::GroupJoinRequest {
             group,
+            member_handle: None,
             reason_text: None,
         })
         .await

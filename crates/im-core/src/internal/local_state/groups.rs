@@ -33,6 +33,91 @@ pub(crate) struct GroupRecord {
     pub(crate) credential_name: String,
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+mod handle_member_identity_tests {
+    use super::*;
+
+    #[test]
+    fn handle_rebind_reuses_local_id_and_did_only_remains_distinct() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        let handle_member = |did: &str, generation: &str| GroupMemberRecord {
+            member_did: did.to_owned(),
+            member_handle: "alice.example.com".to_owned(),
+            anchor_kind: "handle".to_owned(),
+            anchor_value: "alice.example.com".to_owned(),
+            handle_binding_generation: generation.to_owned(),
+            ..GroupMemberRecord::default()
+        };
+        replace_group_members(
+            &mut db,
+            "owner-id",
+            "did:owner",
+            "did:group",
+            &[handle_member("did:alice:old", "1")],
+            "owner",
+        )
+        .unwrap();
+        let first_id: String = db
+            .query_row("SELECT user_id FROM group_members", [], |row| row.get(0))
+            .unwrap();
+        assert!(first_id.starts_with("peer_"));
+
+        replace_group_members(
+            &mut db,
+            "owner-id",
+            "did:owner",
+            "did:group",
+            &[
+                handle_member("did:alice:new", "2"),
+                GroupMemberRecord {
+                    member_did: "did:alice:new".to_owned(),
+                    anchor_kind: "did".to_owned(),
+                    anchor_value: "did:alice:new".to_owned(),
+                    ..GroupMemberRecord::default()
+                },
+            ],
+            "owner",
+        )
+        .unwrap();
+        let rows = list_cached_group_members_for_owner_identity(
+            &db,
+            "owner-id",
+            "did:owner",
+            "did:group",
+            10,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        let handle = rows
+            .iter()
+            .find(|row| row["anchor_kind"] == "handle")
+            .unwrap();
+        let did = rows.iter().find(|row| row["anchor_kind"] == "did").unwrap();
+        assert_eq!(handle["user_id"], first_id);
+        assert_eq!(handle["member_did"], "did:alice:new");
+        assert_ne!(handle["user_id"], did["user_id"]);
+
+        let rollback = replace_group_members(
+            &mut db,
+            "owner-id",
+            "did:owner",
+            "did:group",
+            &[handle_member("did:alice:rollback", "1")],
+            "owner",
+        );
+        assert!(rollback.is_err());
+        let preserved: (String, String) = db
+            .query_row(
+                "SELECT user_id, member_did FROM group_members WHERE anchor_kind = 'handle'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, (first_id, "did:alice:new".to_owned()));
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct GroupMemberRecord {
     pub(crate) owner_identity_id: String,
@@ -41,6 +126,9 @@ pub(crate) struct GroupMemberRecord {
     pub(crate) user_id: String,
     pub(crate) member_did: String,
     pub(crate) member_handle: String,
+    pub(crate) anchor_kind: String,
+    pub(crate) anchor_value: String,
+    pub(crate) handle_binding_generation: String,
     pub(crate) profile_url: String,
     pub(crate) role: String,
     pub(crate) status: String,
@@ -202,6 +290,34 @@ pub(crate) fn replace_group_members(
     let transaction = connection
         .transaction()
         .map_err(super::local_state_unavailable)?;
+    let existing_ids = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT anchor_kind, anchor_value, user_id, COALESCE(member_did, ''), COALESCE(handle_binding_generation, '') FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2",
+            )
+            .map_err(super::local_state_unavailable)?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![owner_identity_id.as_str(), group_id.as_str()],
+                |row| {
+                    Ok((
+                        (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                        (
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                        ),
+                    ))
+                },
+            )
+            .map_err(super::local_state_unavailable)?;
+        let mut values = std::collections::BTreeMap::new();
+        for row in rows {
+            let (anchor, user_id) = row.map_err(super::local_state_unavailable)?;
+            values.insert(anchor, user_id);
+        }
+        values
+    };
     transaction
         .execute(
             "DELETE FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2",
@@ -210,20 +326,44 @@ pub(crate) fn replace_group_members(
         .map_err(super::local_state_unavailable)?;
     let now = now_utc();
     {
+        let mut seen_anchors = std::collections::BTreeSet::new();
         let mut statement = transaction
             .prepare(
                 r#"
 INSERT INTO group_members
-    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
-     joined_at, sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, anchor_kind,
+     anchor_value, handle_binding_generation, profile_url, role, status, joined_at,
+     sent_message_count, last_synced_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"#,
             )
             .map_err(super::local_state_unavailable)?;
         for member in members {
-            let user_id = normalize(&member.user_id);
-            if user_id.is_empty() {
+            let anchor_kind = default_string(normalize(&member.anchor_kind), "did");
+            let anchor_value = default_string(
+                normalize(&member.anchor_value),
+                &normalize(&member.member_did),
+            );
+            if !matches!(anchor_kind.as_str(), "did" | "handle") || anchor_value.is_empty() {
                 continue;
             }
+            if !seen_anchors.insert((anchor_kind.clone(), anchor_value.clone())) {
+                return Err(crate::ImError::invalid_input(
+                    Some("group_members".to_owned()),
+                    "group member snapshot contains a duplicate membership anchor",
+                ));
+            }
+            let existing = existing_ids.get(&(anchor_kind.clone(), anchor_value.clone()));
+            if anchor_kind == "handle" {
+                validate_handle_generation_transition(
+                    existing.map(|(_, did, generation)| (did.as_str(), generation.as_str())),
+                    &member.member_did,
+                    &member.handle_binding_generation,
+                )?;
+            }
+            let user_id = existing
+                .map(|(user_id, _, _)| user_id.clone())
+                .or_else(|| optional_string(&member.user_id))
+                .unwrap_or_else(generate_peer_user_id);
             let last_synced_at = default_string(member.last_synced_at.clone(), &now);
             statement
                 .execute(rusqlite::params![
@@ -233,6 +373,9 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
                     user_id,
                     optional_string(&member.member_did),
                     optional_string(&member.member_handle),
+                    anchor_kind,
+                    anchor_value,
+                    optional_string(&member.handle_binding_generation),
                     optional_string(&member.profile_url),
                     optional_string(&member.role),
                     default_string(member.status.clone(), "active"),
@@ -252,6 +395,68 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
         .commit()
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn generate_peer_user_id() -> String {
+    use rand::RngCore as _;
+    let mut bytes = [0_u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut value = String::with_capacity(37);
+    value.push_str("peer_");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_handle_generation_transition(
+    existing: Option<(&str, &str)>,
+    next_did: &str,
+    next_generation: &str,
+) -> crate::ImResult<()> {
+    let next = canonical_generation(next_generation).ok_or_else(|| {
+        crate::ImError::invalid_input(
+            Some("handle_binding_generation".to_owned()),
+            "Handle-backed member requires a canonical positive decimal generation",
+        )
+    })?;
+    let Some((existing_did, existing_generation)) = existing else {
+        return Ok(());
+    };
+    let Some(existing_generation) = canonical_generation(existing_generation) else {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "stored Handle-backed member has invalid binding generation".to_owned(),
+        });
+    };
+    match next
+        .len()
+        .cmp(&existing_generation.len())
+        .then_with(|| next.cmp(existing_generation))
+    {
+        std::cmp::Ordering::Less => Err(crate::ImError::invalid_input(
+            Some("handle_binding_generation".to_owned()),
+            "Handle binding generation rollback rejected",
+        )),
+        std::cmp::Ordering::Equal if next_did.trim() != existing_did.trim() => {
+            Err(crate::ImError::invalid_input(
+                Some("handle_binding_generation".to_owned()),
+                "Handle DID changed without a newer binding generation",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn canonical_generation(value: &str) -> Option<&str> {
+    (!value.is_empty()
+        && value != "0"
+        && !value.starts_with('0')
+        && value.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some(value)
 }
 
 #[cfg(feature = "sqlite")]

@@ -634,13 +634,17 @@ fn sync_delta_group_system_message_record(
         return Ok(None);
     };
     let membership_status = string_from_object(membership, "status");
-    let event_type = match membership_status.as_deref().unwrap_or_default() {
-        "active" | "activated" => "member_added",
-        "removed" => "member_removed",
-        "left" => "member_left",
-        _ => "member_changed",
-    }
-    .to_owned();
+    let event_type = string_from_object(membership, "event_type")
+        .or_else(|| string_from_object(Some(payload), "event_type"))
+        .unwrap_or_else(|| {
+            match membership_status.as_deref().unwrap_or_default() {
+                "active" | "activated" => "member_added",
+                "removed" => "member_removed",
+                "left" => "member_left",
+                _ => "member_changed",
+            }
+            .to_owned()
+        });
     Ok(crate::internal::group_system_events::record_from_input(
         client,
         crate::internal::group_system_events::GroupSystemEventInput {
@@ -651,6 +655,12 @@ fn sync_delta_group_system_message_record(
             actor_did: string_from_object(membership, "actor_did")
                 .or_else(|| string_from_object(Some(payload), "actor_did")),
             subject_did: string_from_object(membership, "subject_did"),
+            subject_handle: string_from_object(membership, "subject_handle")
+                .or_else(|| string_from_object(Some(payload), "subject_handle")),
+            previous_subject_did: string_from_object(membership, "previous_subject_did")
+                .or_else(|| string_from_object(Some(payload), "previous_subject_did")),
+            handle_binding_generation: string_from_object(membership, "handle_binding_generation")
+                .or_else(|| string_from_object(Some(payload), "handle_binding_generation")),
             membership_status,
             changed_at: event.created_at.clone(),
             sync_event_id: Some(event.event_id.clone()),
@@ -688,6 +698,9 @@ fn sync_delta_group_profile_system_message_record(
             group_state_version: string_from_object(group, "group_state_version"),
             actor_did: string_from_object(Some(payload), "actor_did"),
             subject_did: None,
+            subject_handle: None,
+            previous_subject_did: None,
+            handle_binding_generation: None,
             membership_status: None,
             changed_at: event.created_at.clone(),
             sync_event_id: Some(event.event_id.clone()),

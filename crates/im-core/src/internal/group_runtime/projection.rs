@@ -131,27 +131,12 @@ pub(crate) fn project_group_members(
     let Ok(scope) = OwnerScope::for_client(client) else {
         return;
     };
-    let members = group_member_records(&scope, group_did, result);
-    let raw_has_members = result
-        .raw_response()
-        .and_then(|raw| raw.get("members"))
-        .is_some();
-    if members.is_empty() && !raw_has_members {
-        return;
-    }
     let Ok(mut connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     ) else {
         return;
     };
-    let _ = crate::internal::local_state::groups::replace_group_members(
-        &mut connection,
-        scope.owner_identity_id.as_str(),
-        scope.owner_did.as_str(),
-        &group_storage_key(group_did),
-        &members,
-        credential_name(&scope).as_str(),
-    );
+    let _ = project_group_members_with_connection(&mut connection, &scope, group_did, result);
 }
 
 #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
@@ -177,7 +162,7 @@ pub(crate) async fn project_group_members_async(
     result: &crate::groups::GroupReadResult,
 ) -> crate::ImResult<()> {
     let scope = OwnerScope::for_client(client)?;
-    let members = group_member_records(&scope, group_did, result);
+    let members = group_member_records(&scope, group_did, result)?;
     let raw_has_members = result
         .raw_response()
         .and_then(|raw| raw.get("members"))
@@ -378,13 +363,41 @@ fn group_member_records(
     scope: &OwnerScope,
     group_did: &str,
     result: &crate::groups::GroupReadResult,
-) -> Vec<crate::internal::local_state::groups::GroupMemberRecord> {
+) -> crate::ImResult<Vec<crate::internal::local_state::groups::GroupMemberRecord>> {
     let raw = result.raw_response().cloned().unwrap_or(Value::Null);
     let members = members_from_result(result, &raw);
-    members
-        .iter()
-        .filter_map(|member| group_member_record(scope, group_did, member))
-        .collect()
+    let mut records = Vec::with_capacity(members.len());
+    for member in &members {
+        if let Some(record) = group_member_record(scope, group_did, member)? {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+#[cfg(feature = "sqlite")]
+fn project_group_members_with_connection(
+    connection: &mut rusqlite::Connection,
+    scope: &OwnerScope,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let members = group_member_records(scope, group_did, result)?;
+    let raw_has_members = result
+        .raw_response()
+        .and_then(|raw| raw.get("members"))
+        .is_some();
+    if members.is_empty() && !raw_has_members {
+        return Ok(());
+    }
+    crate::internal::local_state::groups::replace_group_members(
+        connection,
+        scope.owner_identity_id.as_str(),
+        scope.owner_did.as_str(),
+        &group_storage_key(group_did),
+        &members,
+        credential_name(scope).as_str(),
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -430,7 +443,7 @@ fn group_member_record(
     scope: &OwnerScope,
     group_did: &str,
     member: &Value,
-) -> Option<crate::internal::local_state::groups::GroupMemberRecord> {
+) -> crate::ImResult<Option<crate::internal::local_state::groups::GroupMemberRecord>> {
     let member_did = default_string(
         &string_value(member.get("did")),
         &default_string(
@@ -439,9 +452,10 @@ fn group_member_record(
         ),
     );
     if member_did.trim().is_empty() {
-        return None;
+        return Ok(None);
     }
     let use_agent_handle = member_identity_uses_agent_fields(member);
+    let protocol_member_handle = normalize_handle_value(&string_value(member.get("member_handle")));
     let member_handle = normalize_handle_value(&default_string(
         &string_value(member.get("handle")),
         &default_string(
@@ -451,20 +465,45 @@ fn group_member_record(
                 .unwrap_or_default(),
         ),
     ));
-    Some(crate::internal::local_state::groups::GroupMemberRecord {
-        owner_identity_id: scope.owner_identity_id.clone(),
-        owner_did: scope.owner_did.clone(),
-        group_id: group_storage_key(group_did),
-        user_id: member_did.clone(),
-        member_did,
-        member_handle,
-        role: string_value(member.get("role")),
-        status: string_value(member.get("status")),
-        joined_at: string_value(member.get("joined_at")),
-        metadata: metadata_string(member.clone()),
-        credential_name: credential_name(scope),
-        ..crate::internal::local_state::groups::GroupMemberRecord::default()
-    })
+    let handle_binding_generation = string_value(member.get("handle_binding_generation"));
+    let has_protocol_handle = !protocol_member_handle.is_empty();
+    let has_generation = !handle_binding_generation.is_empty();
+    if has_protocol_handle != has_generation {
+        return Err(crate::ImError::invalid_input(
+            Some("group_member".to_owned()),
+            "member_handle and handle_binding_generation must appear together",
+        ));
+    }
+    let handle_backed = has_protocol_handle;
+    Ok(Some(
+        crate::internal::local_state::groups::GroupMemberRecord {
+            owner_identity_id: scope.owner_identity_id.clone(),
+            owner_did: scope.owner_did.clone(),
+            group_id: group_storage_key(group_did),
+            user_id: String::new(),
+            member_did,
+            member_handle: member_handle.clone(),
+            anchor_kind: if handle_backed { "handle" } else { "did" }.to_owned(),
+            anchor_value: if handle_backed {
+                protocol_member_handle
+            } else {
+                default_string(
+                    &string_value(member.get("did")),
+                    &default_string(
+                        &string_value(member.get("member_did")),
+                        &string_value(member.get("agent_did")),
+                    ),
+                )
+            },
+            handle_binding_generation,
+            role: string_value(member.get("role")),
+            status: string_value(member.get("status")),
+            joined_at: string_value(member.get("joined_at")),
+            metadata: metadata_string(member.clone()),
+            credential_name: credential_name(scope),
+            ..crate::internal::local_state::groups::GroupMemberRecord::default()
+        },
+    ))
 }
 
 #[cfg(feature = "sqlite")]
@@ -587,6 +626,12 @@ fn group_record_from_snapshot(
 
 #[cfg(feature = "sqlite")]
 fn members_from_result(result: &crate::groups::GroupReadResult, raw: &Value) -> Vec<Value> {
+    if raw.get("members").is_some() {
+        return values_from_array(raw.get("members"))
+            .into_iter()
+            .map(normalize_group_member_json)
+            .collect();
+    }
     if !result.members.is_empty() {
         return result
             .members
@@ -603,11 +648,16 @@ fn members_from_result(result: &crate::groups::GroupReadResult, raw: &Value) -> 
                     .map(crate::ids::Handle::as_str)
                     .map(normalize_handle_value)
                     .unwrap_or_default();
+                let generation = member
+                    .handle_binding_generation
+                    .as_deref()
+                    .unwrap_or_default();
                 serde_json::json!({
                     "member_did": did,
                     "did": did,
-                    "member_handle": handle,
+                    "member_handle": if generation.is_empty() { "" } else { handle.as_str() },
                     "handle": handle,
+                    "handle_binding_generation": generation,
                     "subject_type": member.subject_type,
                     "role": member.role,
                     "status": member.status,
@@ -616,10 +666,7 @@ fn members_from_result(result: &crate::groups::GroupReadResult, raw: &Value) -> 
             })
             .collect();
     }
-    values_from_array(raw.get("members"))
-        .into_iter()
-        .map(normalize_group_member_json)
-        .collect()
+    Vec::new()
 }
 
 #[cfg(feature = "sqlite")]
@@ -722,17 +769,23 @@ fn normalize_group_member_json(mut member: Value) -> Value {
             .entry("did".to_string())
             .or_insert_with(|| Value::String(did));
     }
+    let protocol_member_handle = normalize_handle_value(&string_value(object.get("member_handle")));
     let handle = normalize_handle_value(&default_string(
         &string_value(object.get("handle")),
         &default_string(
-            &string_value(object.get("member_handle")),
+            &protocol_member_handle,
             &use_agent_handle
                 .then(|| string_value(object.get("agent_handle")))
                 .unwrap_or_default(),
         ),
     ));
+    if !protocol_member_handle.is_empty() {
+        object.insert(
+            "member_handle".to_string(),
+            Value::String(protocol_member_handle),
+        );
+    }
     if !handle.is_empty() {
-        object.insert("member_handle".to_string(), Value::String(handle.clone()));
         object
             .entry("handle".to_string())
             .or_insert_with(|| Value::String(handle));
@@ -853,15 +906,85 @@ mod tests {
             Vec::new(),
         );
 
-        let records = group_member_records(&scope(), "did:example:group", &result);
+        let records = group_member_records(&scope(), "did:example:group", &result).unwrap();
 
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].member_did,
             "did:wba:anpclaw.com:zhuocheng:e1_human"
         );
-        assert_eq!(records[0].user_id, records[0].member_did);
+        assert!(records[0].user_id.is_empty());
+        assert_eq!(records[0].anchor_kind, "did");
+        assert_eq!(records[0].anchor_value, records[0].member_did);
         assert_eq!(records[0].member_handle, "zhuocheng");
+    }
+
+    fn assert_partial_handle_pair_preserves_existing_snapshot(member: Value) {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        crate::internal::local_state::groups::replace_group_members(
+            &mut db,
+            "owner-identity",
+            "did:example:alice",
+            "did:example:group",
+            &[crate::internal::local_state::groups::GroupMemberRecord {
+                user_id: "existing-peer-id".to_owned(),
+                member_did: "did:example:existing".to_owned(),
+                role: "admin".to_owned(),
+                joined_at: "2026-01-01T00:00:00Z".to_owned(),
+                ..crate::internal::local_state::groups::GroupMemberRecord::default()
+            }],
+            "owner-identity",
+        )
+        .unwrap();
+        let result = crate::groups::GroupReadResult::from_raw_response(
+            json!({
+                "group_did": "did:example:group",
+                "members": [member]
+            }),
+            Vec::new(),
+        );
+
+        let error =
+            project_group_members_with_connection(&mut db, &scope(), "did:example:group", &result)
+                .unwrap_err();
+        assert!(error.to_string().contains("must appear together"));
+        let preserved: (String, String, String, String) = db
+            .query_row(
+                "SELECT user_id, member_did, role, joined_at FROM group_members",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            (
+                "existing-peer-id".to_owned(),
+                "did:example:existing".to_owned(),
+                "admin".to_owned(),
+                "2026-01-01T00:00:00Z".to_owned(),
+            )
+        );
+    }
+
+    #[test]
+    fn snapshot_member_handle_without_generation_fails_closed_before_replace() {
+        assert_partial_handle_pair_preserves_existing_snapshot(json!({
+            "member_did": "did:example:new",
+            "member_handle": "new.example.com",
+            "role": "member",
+            "status": "active"
+        }));
+    }
+
+    #[test]
+    fn snapshot_generation_without_member_handle_fails_closed_before_replace() {
+        assert_partial_handle_pair_preserves_existing_snapshot(json!({
+            "member_did": "did:example:new",
+            "handle_binding_generation": "2",
+            "role": "member",
+            "status": "active"
+        }));
     }
 }
 

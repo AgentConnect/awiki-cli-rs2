@@ -366,6 +366,9 @@ where
             "op-{}",
             crate::internal::wire::common::generate_operation_id()
         );
+        let group_state_ref = input
+            .group_state_ref
+            .or_else(|| local_group_state_ref(self.client, &group_did));
         let prepared = self.mls_provider.add_member_prepare(AddMemberInput {
             actor_did: self.client.did().as_str().to_owned(),
             device_id: device_id_for_client(self.client),
@@ -375,10 +378,8 @@ where
             operation_id: operation_id.clone(),
             request_id: format!("group-e2ee-add-{operation_id}"),
             pending_commit_id: Some(format!("pc-{operation_id}")),
+            group_state_ref: group_state_ref.clone(),
         })?;
-        let group_state_ref = input
-            .group_state_ref
-            .or_else(|| local_group_state_ref(self.client, &group_did));
         let params = super::wire::build_group_e2ee_add_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -1223,6 +1224,10 @@ where
             "op-{}",
             crate::internal::wire::common::generate_operation_id()
         );
+        let group_state_ref = match input.group_state_ref {
+            Some(reference) => Some(reference),
+            None => local_group_state_ref_async(self.client, &group_did).await,
+        };
         let add_input = AddMemberInput {
             actor_did: self.client.did().as_str().to_owned(),
             device_id: device_id_for_client(self.client),
@@ -1232,16 +1237,13 @@ where
             operation_id: operation_id.clone(),
             request_id: format!("group-e2ee-add-{operation_id}"),
             pending_commit_id: Some(format!("pc-{operation_id}")),
+            group_state_ref: group_state_ref.clone(),
         };
         let mls_provider = self.mls_provider.clone();
         let prepared = run_lifecycle_mls_blocking("add prepare", move || {
             mls_provider.add_member_prepare(add_input)
         })
         .await?;
-        let group_state_ref = match input.group_state_ref {
-            Some(reference) => Some(reference),
-            None => local_group_state_ref_async(self.client, &group_did).await,
-        };
         let params = super::wire::build_group_e2ee_add_rpc_params(
             &credentials,
             self.client.did().as_str(),

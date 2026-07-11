@@ -90,6 +90,8 @@ impl GroupReadResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupCreateRequest {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_handle: Option<crate::ids::Handle>,
     pub description: Option<String>,
     pub avatar_uri: Option<String>,
     pub discoverability: Option<GroupDiscoverability>,
@@ -113,6 +115,7 @@ impl GroupCreateRequest {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            creator_handle: None,
             description: None,
             avatar_uri: None,
             discoverability: None,
@@ -136,7 +139,18 @@ impl GroupCreateRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupJoinRequest {
     pub group: crate::ids::GroupRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_handle: Option<crate::ids::Handle>,
     pub reason_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupRebindMemberRequest {
+    pub group: crate::ids::GroupRef,
+    pub member_handle: crate::ids::Handle,
+    pub previous_member_did: crate::ids::Did,
+    pub new_member_did: crate::ids::Did,
+    pub handle_binding_generation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -800,6 +814,8 @@ pub struct GroupSummary {
 pub struct GroupMember {
     pub did: Option<crate::ids::Did>,
     pub handle: Option<crate::ids::Handle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_binding_generation: Option<String>,
     pub role: Option<String>,
     pub status: Option<String>,
     pub joined_at: Option<String>,
@@ -927,6 +943,7 @@ fn group_member_from_value(value: Value) -> Option<GroupMember> {
                     .flatten()
             })
             .and_then(|value| crate::ids::Handle::parse(value, "").ok()),
+        handle_binding_generation: optional_string(object.get("handle_binding_generation")),
         role: optional_string(object.get("role")),
         status: optional_string(object.get("status")),
         joined_at: optional_string(object.get("joined_at")),
@@ -1156,6 +1173,7 @@ mod tests {
         let request = GroupCreateRequest::new("Demo Group");
 
         assert_eq!(request.name, "Demo Group");
+        assert_eq!(request.creator_handle, None);
         assert_eq!(request.description, None);
         assert_eq!(request.avatar_uri, None);
         assert_eq!(request.security, GroupSecurityRequirement::default());
@@ -1181,6 +1199,7 @@ mod tests {
                 "members": [{
                     "member_did": "did:example:bob",
                     "handle": "bob.example",
+                    "handle_binding_generation": "100000000000000000000000",
                     "role": "member",
                     "status": "active"
                 }],
@@ -1206,6 +1225,10 @@ mod tests {
         assert_eq!(
             result.members[0].did.as_ref().map(crate::ids::Did::as_str),
             Some("did:example:bob")
+        );
+        assert_eq!(
+            result.members[0].handle_binding_generation.as_deref(),
+            Some("100000000000000000000000")
         );
         assert_eq!(result.messages.items[0].id.as_str(), "msg-1");
         assert_eq!(result.total, Some(1));

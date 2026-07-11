@@ -370,10 +370,7 @@ impl<'a> GroupService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .add_member(
-            resolved_group_member_request(request, &resolved_member),
-            None,
-        )?;
+        .add_member(request, None)?;
         result.resolved_member = Some(resolved_member.clone());
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         project_group_system_event_best_effort(self.client, &group, &mut result);
@@ -443,10 +440,7 @@ impl<'a> GroupService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .add_member_async(
-            resolved_group_member_request(request, &resolved_member),
-            None,
-        )
+        .add_member_async(request, None)
         .await?;
         result.resolved_member = Some(resolved_member.clone());
         let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
@@ -484,6 +478,46 @@ impl<'a> GroupService<'a> {
             self.refresh_group_state_for_async(&mut result, &group, true)
                 .await;
         }
+        Ok(result)
+    }
+
+    pub fn rebind_member(
+        &self,
+        request: super::GroupRebindMemberRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        let group = request.group.as_str().to_owned();
+        let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .rebind_member(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        project_group_system_event_best_effort(self.client, &group, &mut result);
+        self.refresh_group_state_for(&mut result, &group, true);
+        Ok(result)
+    }
+
+    pub async fn rebind_member_async(
+        &self,
+        request: super::GroupRebindMemberRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        let group = request.group.as_str().to_owned();
+        let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .rebind_member_async(request, None)
+        .await?;
+        let _ = crate::internal::group_runtime::projection::project_group_snapshot_async(
+            self.client,
+            &result,
+        )
+        .await;
+        project_group_system_event_best_effort_async(self.client, &group, &mut result).await;
+        self.refresh_group_state_for_async(&mut result, &group, true)
+            .await;
         Ok(result)
     }
 

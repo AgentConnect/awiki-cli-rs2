@@ -109,6 +109,17 @@ pub(crate) fn build_group_create_payload(
         );
     }
 
+    let mut body = Map::new();
+    body.insert("group_profile".to_string(), Value::Object(profile));
+    body.insert("group_policy".to_string(), Value::Object(policy));
+    insert_optional_trimmed_string(
+        &mut body,
+        "creator_handle",
+        request
+            .creator_handle
+            .as_ref()
+            .map(crate::ids::Handle::as_str),
+    );
     Ok(DirectPayload {
         method: "group.create".to_string(),
         meta: signed_group_meta(
@@ -118,10 +129,7 @@ pub(crate) fn build_group_create_payload(
             "application/json",
             false,
         ),
-        body: json!({
-            "group_profile": profile,
-            "group_policy": policy,
-        }),
+        body: Value::Object(body),
     })
 }
 
@@ -130,6 +138,14 @@ pub(crate) fn build_group_join_payload(
     request: &crate::groups::GroupJoinRequest,
 ) -> crate::ImResult<DirectPayload> {
     let mut body = Map::new();
+    insert_optional_trimmed_string(
+        &mut body,
+        "member_handle",
+        request
+            .member_handle
+            .as_ref()
+            .map(crate::ids::Handle::as_str),
+    );
     insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
     build_group_lifecycle_payload(
         sender_did,
@@ -158,10 +174,14 @@ pub(crate) fn build_group_add_member_payload(
     request: &crate::groups::GroupMemberMutationRequest,
 ) -> crate::ImResult<DirectPayload> {
     let mut body = Map::new();
-    let member = request.member.as_did()?;
+    let field = if request.member.is_did() {
+        "member_did"
+    } else {
+        "member_handle"
+    };
     body.insert(
-        "member_did".to_string(),
-        Value::String(member.as_str().to_string()),
+        field.to_string(),
+        Value::String(request.member.as_str().to_string()),
     );
     insert_optional_trimmed_string(
         &mut body,
@@ -175,6 +195,40 @@ pub(crate) fn build_group_add_member_payload(
         request.group.as_str(),
         "group.add",
         Value::Object(body),
+    )
+}
+
+pub(crate) fn build_group_rebind_member_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupRebindMemberRequest,
+) -> crate::ImResult<DirectPayload> {
+    if sender_did != request.new_member_did.as_str() {
+        return Err(crate::ImError::invalid_input(
+            Some("new_member_did".to_string()),
+            "group rebind must be initiated by the new DID",
+        ));
+    }
+    let generation = request.handle_binding_generation.as_str();
+    if generation.is_empty()
+        || generation == "0"
+        || generation.starts_with('0')
+        || !generation.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("handle_binding_generation".to_string()),
+            "handle binding generation must be a canonical positive decimal string",
+        ));
+    }
+    build_group_lifecycle_payload(
+        sender_did,
+        request.group.as_str(),
+        "group.rebind_member",
+        json!({
+            "member_handle": request.member_handle.as_str(),
+            "previous_member_did": request.previous_member_did.as_str(),
+            "new_member_did": request.new_member_did.as_str(),
+            "handle_binding_generation": generation,
+        }),
     )
 }
 
@@ -567,4 +621,87 @@ fn group_local_meta(sender_did: &str, group_did: Option<&str>) -> Value {
         );
     }
     Value::Object(meta)
+}
+
+#[cfg(test)]
+mod handle_identity_tests {
+    use super::*;
+
+    #[test]
+    fn p4_wire_preserves_explicit_handle_mode_without_internal_ids() {
+        let mut create = crate::groups::GroupCreateRequest::new("Demo");
+        create.creator_handle = Some(crate::ids::Handle::parse("alice.example.com", "").unwrap());
+        let created = build_group_create_payload(
+            "did:example:alice",
+            &create,
+            &crate::ids::Did::parse("did:example:service").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(created.body["creator_handle"], "alice.example.com");
+
+        let joined = build_group_join_payload(
+            "did:example:alice",
+            &crate::groups::GroupJoinRequest {
+                group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+                member_handle: Some(crate::ids::Handle::parse("alice.example.com", "").unwrap()),
+                reason_text: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(joined.body["member_handle"], "alice.example.com");
+
+        let added = build_group_add_member_payload(
+            "did:example:alice",
+            &crate::groups::GroupMemberMutationRequest {
+                group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+                member: crate::groups::GroupMemberRef::parse("bob.example.com", "").unwrap(),
+                role: None,
+                reason_text: None,
+                leave_request_id: None,
+                security: crate::groups::GroupSecurityRequirement::Default,
+            },
+        )
+        .unwrap();
+        assert_eq!(added.body["member_handle"], "bob.example.com");
+        assert!(added.body.get("member_did").is_none());
+        let encoded = serde_json::to_string(&added.body).unwrap();
+        for forbidden in ["user_id", "member_user_id", "peer_user_id"] {
+            assert!(!encoded.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn p4_wire_keeps_did_only_and_validates_rebind_generation() {
+        let added = build_group_add_member_payload(
+            "did:example:alice",
+            &crate::groups::GroupMemberMutationRequest {
+                group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+                member: crate::groups::GroupMemberRef::parse("did:example:bob", "").unwrap(),
+                role: None,
+                reason_text: None,
+                leave_request_id: None,
+                security: crate::groups::GroupSecurityRequirement::Default,
+            },
+        )
+        .unwrap();
+        assert_eq!(added.body["member_did"], "did:example:bob");
+        assert!(added.body.get("member_handle").is_none());
+
+        let request = crate::groups::GroupRebindMemberRequest {
+            group: crate::ids::GroupRef::parse("did:example:group").unwrap(),
+            member_handle: crate::ids::Handle::parse("bob.example.com", "").unwrap(),
+            previous_member_did: crate::ids::Did::parse("did:example:bob-old").unwrap(),
+            new_member_did: crate::ids::Did::parse("did:example:bob-new").unwrap(),
+            handle_binding_generation: "100000000000000000000000000000000000000".to_owned(),
+        };
+        let rebound = build_group_rebind_member_payload("did:example:bob-new", &request).unwrap();
+        assert_eq!(rebound.method, "group.rebind_member");
+        assert_eq!(
+            rebound.body["handle_binding_generation"],
+            "100000000000000000000000000000000000000"
+        );
+        let mut invalid = request;
+        invalid.handle_binding_generation = "01".to_owned();
+        assert!(build_group_rebind_member_payload("did:example:bob-new", &invalid).is_err());
+    }
 }

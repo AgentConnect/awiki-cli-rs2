@@ -213,6 +213,12 @@ fn project_group_state_changed(notification: &Value) -> NotificationProjection {
             group_state_version: none_if_empty(string_from_object(body, "group_state_version")),
             actor_did: none_if_empty(string_from_object(body, "actor_did")),
             subject_did: none_if_empty(string_from_object(body, "subject_did")),
+            subject_handle: none_if_empty(string_from_object(body, "subject_handle")),
+            previous_subject_did: none_if_empty(string_from_object(body, "previous_subject_did")),
+            handle_binding_generation: none_if_empty(string_from_object(
+                body,
+                "handle_binding_generation",
+            )),
             membership_status: none_if_empty(string_from_object(body, "membership_status")),
             changed_at: none_if_empty(string_from_object(body, "changed_at")),
             sync: sync_hint(notification),

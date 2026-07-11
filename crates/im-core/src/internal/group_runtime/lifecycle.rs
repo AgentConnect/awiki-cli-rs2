@@ -115,6 +115,19 @@ where
         self.signed_group_rpc(payload, credentials)
     }
 
+    pub(crate) fn rebind_member(
+        mut self,
+        request: crate::groups::GroupRebindMemberRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session()?;
+        let payload = crate::internal::wire::group::build_group_rebind_member_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc(payload, credentials)
+    }
+
     pub(crate) fn update_profile(
         mut self,
         request: crate::groups::GroupUpdateProfileRequest,
@@ -264,6 +277,19 @@ where
         self.signed_group_rpc_async(payload, credentials).await
     }
 
+    pub(crate) async fn rebind_member_async(
+        mut self,
+        request: crate::groups::GroupRebindMemberRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session_async().await?;
+        let payload = crate::internal::wire::group::build_group_rebind_member_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc_async(payload, credentials).await
+    }
+
     pub(crate) async fn update_profile_async(
         mut self,
         request: crate::groups::GroupUpdateProfileRequest,
@@ -384,6 +410,7 @@ mod tests {
         .create(
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
+                creator_handle: None,
                 description: Some(" group description ".to_string()),
                 avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
@@ -418,6 +445,7 @@ mod tests {
         .join(
             crate::groups::GroupJoinRequest {
                 group: group.clone(),
+                member_handle: None,
                 reason_text: Some("  hello  ".to_string()),
             },
             Some(credentials.clone()),
@@ -500,6 +528,7 @@ mod tests {
         .create_async(
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
+                creator_handle: None,
                 description: Some(" group description ".to_string()),
                 avatar_uri: Some(" https://example.test/group.png ".to_string()),
                 discoverability: Some(crate::groups::GroupDiscoverability::Public),
@@ -535,6 +564,7 @@ mod tests {
         .join_async(
             crate::groups::GroupJoinRequest {
                 group: group.clone(),
+                member_handle: None,
                 reason_text: Some("  hello  ".to_string()),
             },
             Some(credentials.clone()),
@@ -613,6 +643,7 @@ mod tests {
         .create_async(
             crate::groups::GroupCreateRequest {
                 name: "Demo Group".to_string(),
+                creator_handle: None,
                 description: None,
                 avatar_uri: None,
                 discoverability: None,
@@ -661,6 +692,7 @@ mod tests {
         .create(
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
+                creator_handle: None,
                 description: None,
                 avatar_uri: None,
                 discoverability: None,
@@ -712,6 +744,7 @@ mod tests {
         .create(
             crate::groups::GroupCreateRequest {
                 name: "Secure Group".to_string(),
+                creator_handle: None,
                 description: None,
                 avatar_uri: None,
                 discoverability: None,

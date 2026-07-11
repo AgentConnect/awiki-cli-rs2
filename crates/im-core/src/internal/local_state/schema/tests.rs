@@ -138,6 +138,49 @@ fn local_state_schema_sync_state_is_created_during_v17_upgrade() {
 }
 
 #[test]
+fn local_state_schema_backfills_existing_group_members_as_did_only() {
+    let db = Connection::open_in_memory().unwrap();
+    create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();
+    db.execute(
+        r#"
+INSERT INTO group_members
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle,
+     last_synced_at, credential_name)
+VALUES ('owner-id', 'did:owner', 'did:group', 'legacy-id', 'did:member',
+        'member.example.com', '2026-07-12T00:00:00Z', 'owner')"#,
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 22).unwrap();
+
+    ensure_schema(&db).unwrap();
+
+    let identity = db
+        .query_row(
+            "SELECT user_id, anchor_kind, anchor_value, handle_binding_generation FROM group_members",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        identity,
+        (
+            "legacy-id".to_owned(),
+            "did".to_owned(),
+            "did:member".to_owned(),
+            None
+        )
+    );
+}
+
+#[test]
 fn local_state_schema_upgrades_v17_with_conversation_summary_backfill() {
     let db = Connection::open_in_memory().unwrap();
     create_identity_owned_schema(&db, IdentityOwnedSchemaTableMode::Final).unwrap();

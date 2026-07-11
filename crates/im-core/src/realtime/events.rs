@@ -83,6 +83,12 @@ pub struct GroupUpdatedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_subject_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_binding_generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_at: Option<String>,
